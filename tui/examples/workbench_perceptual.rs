@@ -33,7 +33,7 @@ use future_tui::workbench::diff_review::DiffFile;
 use future_tui::workbench::i18n::LanguagePreference;
 use future_tui::workbench::preferences::PreferenceRow;
 use future_tui::workbench::state::{
-    DiffView, ForkPoint, PanelId, QueuedPrompt, SessionRow, WorkbenchData, WorktreeView,
+    DiffView, ForkPoint, ForkRole, PanelId, QueuedPrompt, SessionRow, WorkbenchData, WorktreeView,
 };
 use future_tui::workbench::{Overlay, WbEvent, Workbench, COMMANDS};
 
@@ -110,53 +110,10 @@ fn surfaces() -> Vec<Surface> {
     let mut out = Vec::new();
 
     let mut data = demo::chat();
-    data.sessions = (0..12)
-        .map(|index| SessionRow {
-            id: format!("20261026-{index:06}-ebfc7c89507d4867b57705bd7789cf70"),
-            title: format!("H{index:02} 重构整理 TUI 的浮层布局，顺便把鼠标命中区域也一起收拾"),
-            workspace: format!("D:/future-os/.worktrees/a-fairly-long-branch-name-{index}"),
-            ..SessionRow::default()
-        })
-        .collect();
-    out.push(Surface {
-        name: "history",
-        data,
-        open: Box::new(|wb, _| wb.overlay = Some(Overlay::History)),
-        id: |index| format!("workflow.row.{index}"),
-        token: |index| format!("H{index:02} "),
-        marker: true,
-        selection: Selection::Workflow,
-        down: "down",
-        count: 12,
-    });
-
-    let mut data = demo::chat();
-    data.sessions = (0..10)
-        .map(|index| SessionRow {
-            id: format!("T{index:02}-session-identifier-that-is-quite-long-indeed"),
-            title: format!("T{index:02} 一个会被迫换行的中文会话标题，长度足以撑满整行"),
-            workspace: format!("D:/future-os/.worktrees/tree-branch-{index}"),
-            parent_id: (index > 0 && index < 5)
-                .then(|| "T00-session-identifier-that-is-quite-long-indeed".to_string()),
-            ..SessionRow::default()
-        })
-        .collect();
-    out.push(Surface {
-        name: "tree",
-        data,
-        open: Box::new(|wb, _| wb.overlay = Some(Overlay::Tree)),
-        id: |index| format!("workflow.row.{index}"),
-        token: |index| format!("T{index:02} "),
-        marker: true,
-        selection: Selection::Workflow,
-        down: "down",
-        count: 10,
-    });
-
-    let mut data = demo::chat();
     data.fork_points = (0..9)
         .map(|index| ForkPoint {
             id: format!("e{index}"),
+            role: ForkRole::User,
             text: format!(
                 "F{index:02} 这一段用户消息特别长，长到一行绝对放不下，而且还带了换行\n第二行也跟着一起来"
             ),

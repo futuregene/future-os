@@ -49,7 +49,7 @@
     "searchFailed": "搜索未完成，请关闭后重新打开搜索重试。",
     "searchResults": "{{current}} / {{total}} 个结果",
     "questionPrevious": "上一个问题",
-    "nextPassage": "下一段",
+    "questionNext": "下一个问题",
     "defaultTitle": "FutureOS",
     "agentDoneNoText": "助手已完成回复，但没有返回内容。",
     "noFinalReply": "模型已结束生成，未提供最终回复",

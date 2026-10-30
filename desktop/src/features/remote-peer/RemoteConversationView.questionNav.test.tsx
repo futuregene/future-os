@@ -79,7 +79,7 @@ async function mount(messages: AgentMessage[]) {
   return {
     container,
     header: () => container.querySelector<HTMLElement>("header"),
-    nextButton: () => container.querySelector<HTMLButtonElement>("[aria-label='Next passage']"),
+    nextButton: () => container.querySelector<HTMLButtonElement>("[aria-label='Next question']"),
     previousButton: () => container.querySelector<HTMLButtonElement>("[aria-label='Previous question']"),
     unmount: async () => {
       await act(async () => root.unmount());

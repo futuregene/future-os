@@ -16,7 +16,7 @@ import { MessageMeta } from "./MessageMeta";
 import { AttachmentChip } from "./messages/AttachmentChip";
 import { MessageFrame } from "./messages/MessageFrame";
 import { CompactionDivider, StatusDivider } from "./messages/MessageStatus";
-import { buildReplyBlocks, replyCopyText, replyTailBlock, splitFinalAnswer } from "./replyBlocks";
+import { buildReplyBlocks, replyCopyText, splitFinalAnswer } from "./replyBlocks";
 import { ReplyProcess } from "./ReplyProcess";
 import { ReplySteps } from "./ReplySteps";
 import { ThinkingBlock } from "./ThinkingBlock";
@@ -112,11 +112,7 @@ function MessageBlockImpl({
         return null;
       })()
     : null;
-  // The reply's rendered slices, and the one ↑/↓ lands on when the ladder stops
-  // at this turn's reply: its last slice that still has output. A reply opens
-  // with the work it ran, so the row's own top would put reasoning at the
-  // reading edge and the answer below it — the rung names this block instead,
-  // and the row marks it so a jump can measure it (`useQuestionNav`).
+  // The reply's rendered slices.
   const blocks = segments ? buildReplyBlocks(segments, streaming) : null;
   // Fold the work only once the reply settles: while it streams the reader is
   // watching it happen, and every live block stays on screen. A reply with no
@@ -127,7 +123,6 @@ function MessageBlockImpl({
   const hiddenSteps = hiddenWork ? replySteps(hiddenWork) : [];
   const hiddenTools = hiddenSteps.reduce((total, segment) => segment.kind === "activity" ? total + (segment.item.count ?? 1) : total, 0);
   const hiddenThoughts = hiddenSteps.filter(segment => segment.kind === "thinking").length;
-  const tailBlock = visibleBlocks ? replyTailBlock(visibleBlocks) : null;
   // The reply's final slice, whatever kind it is — what "this reply is still
   // being written" means for a reasoning block.
   const lastSegmentId = segments ? (segments[segments.length - 1]?.id ?? null) : null;
@@ -177,9 +172,8 @@ function MessageBlockImpl({
     );
   }
 
-  // One rendered slice of the reply; `tail` is the index of the block the ↑/↓
-  // ladder lands on, measured over whatever the row currently shows.
-  const renderBlocks = (list: readonly ReplyBlock[], tail: number | null) => list.map((block, index) => {
+  // One rendered slice of the reply.
+  const renderBlocks = (list: readonly ReplyBlock[]) => list.map((block) => {
     const key = blockKey(block);
     const body = (
       <ReplyBlockBody
@@ -193,13 +187,7 @@ function MessageBlockImpl({
         workspacePath={workspacePath}
       />
     );
-    // The block the ladder's reply-tail rung lands on is wrapped so
-    // its own top can be measured inside this row: the wrapper
-    // carries no style, so it reports where the block sits without
-    // moving it (`[data-reply-tail]`, read by `useQuestionNav`).
-    return index === tail
-      ? <div data-reply-tail="" key={key}>{body}</div>
-      : <Fragment key={key}>{body}</Fragment>;
+    return <Fragment key={key}>{body}</Fragment>;
   });
 
   return (
@@ -224,11 +212,11 @@ function MessageBlockImpl({
                       tools={hiddenTools}
                       onToggle={() => setProcessExpanded(value => !value)}
                     >
-                      {renderBlocks(hiddenWork, null)}
+                      {renderBlocks(hiddenWork)}
                     </ReplyProcess>
                   )
                 : null}
-              {renderBlocks(visibleBlocks, tailBlock)}
+              {renderBlocks(visibleBlocks)}
             </div>
           )
         : message.content
@@ -382,11 +370,6 @@ function replySteps(blocks: readonly ReplyBlock[]): StepSegment[] {
 /**
  * One rendered slice of a reply: folded steps, prose, reasoning, a compaction
  * divider or an activity line.
- *
- * Extracted from the row's map so the one block the ↑/↓ ladder lands on can be
- * wrapped (and therefore measured) without a second copy of this switch — the
- * ladder's reply-tail rung names a slice, and the wrapper is how the jump finds
- * where that slice starts.
  */
 function ReplyBlockBody({
   block,

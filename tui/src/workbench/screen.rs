@@ -180,16 +180,18 @@ pub(crate) fn compose(
         // checkpoint lands), and a box that looks ready would take the draft as
         // a send that silently did nothing.
         let images = data.input.editor.image_attachment_count();
+        let hint = t(workbench.lang, Key::InputHintChat);
+        // The count is the picture's door, so the painter keeps the two halves
+        // apart: the hit map needs the cells the count covers, and the hint is
+        // what says where they start.
+        let attachments = (images > 0 && !data.compacting)
+            .then(|| i18n::render(workbench.lang, Key::AttachmentsInDraft, &[&images]));
         let title = if data.compacting {
             t(workbench.lang, Key::ComposerCompacting).to_string()
-        } else if images == 0 {
-            t(workbench.lang, Key::InputHintChat).to_string()
+        } else if let Some(attachments) = &attachments {
+            format!("{hint}{attachments}")
         } else {
-            format!(
-                "{}{}",
-                t(workbench.lang, Key::InputHintChat),
-                i18n::render(workbench.lang, Key::AttachmentsInDraft, &[&images])
-            )
+            hint.to_string()
         };
         let (input_lines, cursor_column, cursor_row) = widgets::input_box(
             &palette,
@@ -212,6 +214,25 @@ pub(crate) fn compose(
             frame.input.h.saturating_add(composer_extra),
         );
         workbench.hit_map().push(input_rect, "input");
+        // The attachment count on the box's title is the picture's own door: a
+        // draft's image is invisible until it is sent (`[Image #n]` is a
+        // marker, not the picture), so the cells that count it open the
+        // preview box — the click the `/preview` verb used to spell.
+        if let Some(attachments) = &attachments {
+            if let Some((x, w)) =
+                widgets::title_tail_cells(frame.input.w as usize, hint, attachments)
+            {
+                workbench.hit_map().push(
+                    Rect::new(
+                        frame.input.x.saturating_add(x),
+                        frame.input.y.saturating_sub(composer_extra),
+                        w,
+                        1,
+                    ),
+                    "input.attachments",
+                );
+            }
+        }
         paint(&mut rows, input_rect, input_lines);
         if workbench.overlay.is_none() {
             // The box is drawn at `frame.input.x`; the cursor has to be offset
@@ -295,14 +316,7 @@ pub(crate) fn compose(
             paint_overlay(&mut rows, &palette, lines, columns);
             workbench.set_cursor(None);
         }
-        Some(
-            overlay @ (Overlay::Approval
-            | Overlay::Diff
-            | Overlay::History
-            | Overlay::Tree
-            | Overlay::Fork
-            | Overlay::Worktree),
-        ) => {
+        Some(overlay @ (Overlay::Approval | Overlay::Diff | Overlay::Fork | Overlay::Worktree)) => {
             let lines = workflow_box(workbench, data, &palette, w, h, overlay);
             paint_overlay(&mut rows, &palette, lines, columns);
             workbench.set_cursor(None);
@@ -853,6 +867,37 @@ fn wrap_words(text: &str, line_width: usize) -> Vec<String> {
     out
 }
 
+/// The hit id a transcript stop answers to.
+///
+/// Two namespaces, because a control shares its row with nothing but itself:
+/// the rows that *open* something (a folded reply, a burst of work, a call's
+/// body, a thinking marker) keep `chat.row.<row>`, while the control under a
+/// message — copy, which changes nothing on screen — says what was pressed. A
+/// shared id would make a click resolve to whichever stop the hit map saw
+/// first.
+fn stop_region_id(stop: &crate::components::chat_area::RowStop) -> String {
+    use crate::components::chat_area::RowAction;
+    match stop.action {
+        RowAction::Copy { .. } => format!("chat.button.{}.copy", stop.row),
+        RowAction::Process { .. }
+        | RowAction::Burst { .. }
+        | RowAction::Tool { .. }
+        | RowAction::Thinking { .. } => format!("chat.row.{}", stop.row),
+    }
+}
+
+/// What one `/fork` row says about its message: the first words of it, as one
+/// line.
+///
+/// The row is a *label*, not the message: a markdown heading's `#` and the
+/// blank lines between paragraphs are structure, and a frame that shows them
+/// verbatim makes a column of `###` where the reader wants to recognise their
+/// own question.
+fn fork_preview(text: &str) -> String {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    collapsed.trim_start_matches('#').trim_start().to_string()
+}
+
 fn conversation(
     workbench: &mut Workbench,
     data: &WorkbenchData,
@@ -1044,7 +1089,7 @@ fn conversation(
                         (to - from) as u16,
                         1,
                     ),
-                    format!("chat.row.{}", stop.row),
+                    stop_region_id(stop),
                 );
             }
         }
@@ -1303,8 +1348,6 @@ fn workflow_box(
     let (title_key, hint_key) = match overlay {
         Overlay::Approval => (Key::ApprovalTitle, Key::ApprovalHint),
         Overlay::Diff => (Key::DiffTitle, Key::DiffHint),
-        Overlay::History => (Key::HistoryTitle, Key::HistoryHint),
-        Overlay::Tree => (Key::TreeTitle, Key::TreeHint),
         Overlay::Fork => (Key::ForkTitle, Key::ForkHint),
         Overlay::Worktree => (Key::WorktreeTitle, Key::WorktreeHint),
         _ => unreachable!(),
@@ -1323,13 +1366,6 @@ fn workflow_box(
             columns,
         ));
     }
-    if overlay == Overlay::History {
-        rows.push(widgets::box_row(
-            palette,
-            &format!("> {}", workbench.history_query),
-            columns,
-        ));
-    }
     let header = rows.len();
     let available = (h as usize).saturating_sub(header + 1);
     workbench.set_list_page(available);
@@ -1338,34 +1374,6 @@ fn workflow_box(
         return indent(rows, left, w as usize);
     }
     let body = match overlay {
-        Overlay::History => {
-            let sessions = workflows::filtered_sessions(&data.sessions, &workbench.history_query);
-            if sessions.is_empty() {
-                vec![t(workbench.lang, Key::HistoryEmpty).into()]
-            } else {
-                // One table for the whole list, so the workspace and age
-                // columns line up down the rows instead of starting wherever
-                // each title ended (`#` read as ragged text before this).
-                workflows::session_table(
-                    &sessions,
-                    workbench.workflow_index,
-                    columns.saturating_sub(4),
-                )
-            }
-        }
-        Overlay::Tree => workflows::tree_sessions(&data.sessions)
-            .iter()
-            .enumerate()
-            .map(|(index, (row, depth))| {
-                let indent = "  ".repeat(*depth);
-                workflows::record_line(
-                    index == workbench.workflow_index,
-                    &indent,
-                    &[&row.title, &row.id],
-                    columns.saturating_sub(4),
-                )
-            })
-            .collect(),
         Overlay::Fork => {
             if data.fork_points.is_empty() {
                 vec![t(workbench.lang, Key::ForkEmpty).into()]
@@ -1374,11 +1382,23 @@ fn workflow_box(
                     .iter()
                     .enumerate()
                     .map(|(index, point)| {
-                        let number = format!("{}. ", index + 1);
-                        let text = point.text.replace('\n', " ↵ ");
+                        // Whose message it is, then the text: a fork after a
+                        // question and a fork after an answer are different
+                        // points in the same list, and the label is the only
+                        // thing telling them apart.
+                        let role = match point.role {
+                            crate::workbench::state::ForkRole::Assistant => {
+                                t(workbench.lang, Key::ForkRoleAssistant)
+                            }
+                            crate::workbench::state::ForkRole::User => {
+                                t(workbench.lang, Key::ForkRoleUser)
+                            }
+                        };
+                        let prefix = format!("{}. {role} · ", index + 1);
+                        let text = fork_preview(&point.text);
                         workflows::record_line(
                             index == workbench.workflow_index,
-                            &number,
+                            &prefix,
                             &[&text],
                             columns.saturating_sub(4),
                         )
@@ -1418,10 +1438,7 @@ fn workflow_box(
     // and a long title would otherwise fold into two rows — the marker then
     // jumps two rows per press and the entries seem to skip. The detail
     // overlays are prose and keep wrapping.
-    let body = if matches!(
-        overlay,
-        Overlay::History | Overlay::Tree | Overlay::Fork | Overlay::Worktree
-    ) {
+    let body = if matches!(overlay, Overlay::Fork | Overlay::Worktree) {
         body.into_iter()
             .map(|line| fit(&line, columns.saturating_sub(4)))
             .collect()
@@ -1447,10 +1464,7 @@ fn workflow_box(
     .into_iter()
     .enumerate()
     {
-        if matches!(
-            overlay,
-            Overlay::History | Overlay::Tree | Overlay::Fork | Overlay::Worktree
-        ) {
+        if matches!(overlay, Overlay::Fork | Overlay::Worktree) {
             workbench.hit_map().push(
                 Rect::new(
                     (left + 1) as u16,
@@ -1596,7 +1610,7 @@ fn sidebar_rows(
     let lang = workbench.lang;
     let panel = workbench.panel;
     let folded = workbench.rail.clone();
-    let frame = workbench.row_spinner();
+    let frame = workbench.spinner_frame();
     let body = panels::render_with(
         panel,
         data,
@@ -1639,11 +1653,7 @@ fn activity_row(
 ) -> Vec<String> {
     let activity = &data.activity;
     let spinner = if activity.is_busy() {
-        let glyph = if workbench.motion_enabled() {
-            format!("{} ", widgets::spinner(workbench.spinner_frame()))
-        } else {
-            "… ".into()
-        };
+        let glyph = format!("{} ", widgets::spinner(workbench.spinner_frame()));
         palette.text(palette.amber, &glyph)
     } else {
         palette.dim("· ")
@@ -2702,27 +2712,42 @@ fn lane_colour(palette: &Palette, lane: usize) -> u8 {
 
 /// Paint the log's graph gutter, one colour per lane.
 ///
-/// `git log --graph` puts lane `n` at column `2n` — a glyph and a cell of air —
-/// so a glyph's lane is its column divided by two, and a branch keeps one colour
-/// for as long as it keeps one column. The glyphs are swapped for box-drawing
-/// twins (`●`, `│`, `╱`, `╲`) so a run of verticals reads as one line instead of
-/// a dotted column of `|`. Counting *characters* is counting cells here because
-/// the prefix is git's own graph vocabulary (`* | / \ _` and spaces): the
-/// subject travels after the record separator in `parse_log`, so no free text
-/// ever reaches this string.
+/// A lane is at column `2n` and the cell to its right carries the connection
+/// toward the next lane, so a glyph's lane is its column divided by two: a
+/// branch keeps one colour for as long as it keeps one column. Vertical runs are
+/// `│` and `●` rather than `|` and `*` so a lane reads as one line instead of a
+/// dotted column, and a connection is drawn with verticals, horizontals and
+/// elbows only — a diagonal would say two lanes crossed where they in fact
+/// join.
+///
+/// Counting *characters* is counting cells here because the gutter is this
+/// file's own vocabulary (`o M ● │ ─ ┐ ┘ ┤ ┬ ┴` and spaces): the subject
+/// travels after the record separator in `parse_log`, so no free text ever
+/// reaches this string.
 fn paint_graph(palette: &Palette, prefix: &str) -> String {
+    // The commit's lane colours its horizontal: one connection, one colour. A
+    // line repainted per segment would read as a different branch at every
+    // elbow it passes.
+    let mine = prefix
+        .chars()
+        .position(|glyph| glyph == 'o' || glyph == 'M')
+        .map(|at| at / 2);
     let mut out = String::new();
     for (column, glyph) in prefix.chars().enumerate() {
-        let colour = lane_colour(palette, column / 2);
+        let lane = column / 2;
+        let colour = lane_colour(palette, lane);
         let painted = match glyph {
-            '*' => palette.strong(colour, "●"),
-            '|' => palette.text(colour, "│"),
-            '/' => palette.text(colour, "╱"),
-            '\\' => palette.text(colour, "╲"),
-            // git's horizontal filler: an empty slot where two lanes meet.
-            '_' => palette.text(colour, "─"),
-            // The lane separator and anything git adds later: left as it is, so
-            // an unknown glyph is visible rather than silently dropped.
+            // A commit, and a commit that joins lines: tig's two, in the lane's
+            // own colour so a branch keeps one colour from tip to junction.
+            'o' | 'M' => palette.strong(colour, &glyph.to_string()),
+            // The badge other sections put in the gutter ("this is the one you
+            // are on"), which is not a graph node.
+            '●' => palette.strong(colour, "●"),
+            '│' => palette.text(colour, "│"),
+            '─' => palette.text(lane_colour(palette, mine.unwrap_or(lane)), "─"),
+            '┐' | '┘' | '┤' | '┬' | '┴' => palette.text(colour, &glyph.to_string()),
+            // The lane separator and anything a later glyph adds: left as it
+            // is, so an unknown glyph is visible rather than silently dropped.
             other => other.to_string(),
         };
         out.push_str(&painted);
@@ -2790,15 +2815,57 @@ fn pane_window(text: &str, offset: usize, columns: usize) -> String {
     )
 }
 
-/// One line of the `/git` list: the marker, the graph in its lanes, then the
-/// row's fields each in the colour its kind earns. The selected row is a band
-/// across the whole pane, so the eye finds it without reading the marker — and
-/// the band keeps every field's own colour (a reset inside the row is re-opened
-/// on the band, not left to the panel's background).
+/// How much of a pane the subject must keep before the log's date-time and
+/// committer columns are worth painting. A title cut to a few cells is not a
+/// title, and those columns say what the detail pane beside the list already
+/// says in full.
+const MIN_SUBJECT: usize = 12;
+
+/// The log's columns, cut from the right until the row can hold them *and*
+/// [`MIN_SUBJECT`] cells of subject — a column is painted whole or not at all,
+/// so a narrow box loses the committer first and the date-time last. Each cell is
+/// already padded to its column's width, so dropping one from the right cannot
+/// move what is left.
+///
+/// One space between columns, not two: the cells are already padded, and a
+/// second space only pushes the graph — and with it every lane — away from the
+/// name it belongs to.
+fn log_columns(palette: &Palette, columns: &[String], graph_width: usize, pane: usize) -> String {
+    let mut kept = columns;
+    loop {
+        if kept.is_empty() {
+            return String::new();
+        }
+        let width: usize = kept.iter().map(|cell| ansi::width(cell)).sum();
+        // One separator between the cells and one before the graph.
+        let needed = width + kept.len() + graph_width + MIN_SUBJECT;
+        if needed <= pane {
+            break;
+        }
+        kept = &kept[..kept.len() - 1];
+    }
+    let mut text = String::new();
+    for (index, cell) in kept.iter().enumerate() {
+        if index > 0 {
+            text.push(' ');
+        }
+        text.push_str(cell);
+    }
+    text.push(' ');
+    palette.dim(&text)
+}
+
+/// One line of the `/git` list: the marker, the date-time and committer
+/// columns, the graph in its lanes, then the row's fields each in the colour its
+/// kind earns. The selected row is a band across the whole pane, so the eye
+/// finds it without reading the marker — and the band keeps every field's own
+/// colour (a reset inside the row is re-opened on the band, not left to the
+/// panel's background).
 ///
 /// The row is composed whole and then panned to `offset`: nothing is dropped
 /// for being too wide, so `→` reaches the tail of a subject that runs past the
-/// divider instead of finding it cut off.
+/// divider instead of finding it cut off — except the columns, which are dropped
+/// whole when the pane cannot hold them *and* a readable subject.
 fn git_row_line(
     palette: &Palette,
     row: &GitRow,
@@ -2807,11 +2874,16 @@ fn git_row_line(
     selected: bool,
 ) -> String {
     let columns = columns.max(1);
+    // The gutter is padded to the widest lane in the page, so whatever follows
+    // it — the refs, then the subject — starts in the same cell on every row.
+    // Each lane already owns two cells (a glyph and the air beside it), so the
+    // padding ends in the one cell that separates the drawing from the fields.
     let graph = paint_graph(palette, &row.prefix);
+    let side = log_columns(palette, &row.columns, ansi::width(&row.prefix), columns);
     let full = if row.key.is_none() {
         // The graph continuing through a column: painted in the gutter, never
         // selectable, so it gets no arrow.
-        format!("  {graph}")
+        format!("  {side}{graph}")
     } else {
         let marker = if selected {
             palette.strong(palette.accent, "› ")
@@ -2824,7 +2896,7 @@ fn git_row_line(
             .map(|piece| piece.replace('\n', " ↵ "))
             .unwrap_or_default();
         let mut line = format!(
-            "{marker}{graph}{}",
+            "{marker}{side}{graph}{}",
             paint_kind(palette, row.kind(0), &lead, selected)
         );
         for (index, piece) in row.pieces.iter().enumerate().skip(1) {
@@ -3062,7 +3134,7 @@ fn files_box(
                 .files_index
                 .min(data.tree.rows().len().saturating_sub(1)),
         };
-        let frame = workbench.row_spinner();
+        let frame = workbench.spinner_frame();
         panels::render_with(
             PanelId::Files,
             data,
@@ -3184,7 +3256,6 @@ fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
             PreferenceRow::Mouse => enabled(workbench.mouse_capture, lang).to_string(),
             PreferenceRow::Notifications => enabled(workbench.notify.enabled, lang).to_string(),
             PreferenceRow::NotificationBell => enabled(workbench.notify.bell, lang).to_string(),
-            PreferenceRow::Motion => enabled(workbench.reduced_motion, lang).to_string(),
             // The two menus show what is in force: the language *preference*
             // (so a reader on `system` is not told they chose Chinese) and the
             // palette id the surface is actually painting.
@@ -3201,8 +3272,7 @@ fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
             | PreferenceRow::SidebarVisible
             | PreferenceRow::Mouse
             | PreferenceRow::Notifications
-            | PreferenceRow::NotificationBell
-            | PreferenceRow::Motion => format!("‹ {value} ›"),
+            | PreferenceRow::NotificationBell => format!("‹ {value} ›"),
             PreferenceRow::Language | PreferenceRow::Theme => format!("{value} ›"),
             PreferenceRow::Shortcuts | PreferenceRow::Reset => value,
         };
@@ -4252,7 +4322,7 @@ fn panel_box(
         selected: workbench.sidebar_index,
     };
     let folded = workbench.rail.clone();
-    let frame = workbench.row_spinner();
+    let frame = workbench.spinner_frame();
     let body = panels::render_with(
         panel,
         data,
@@ -5067,9 +5137,9 @@ mod tests {
     #[test]
     fn the_graph_paints_one_colour_per_lane() {
         let palette = FUTURE_DARK;
-        let graph = paint_graph(&palette, "| * ");
-        assert_eq!(plain(&graph), "│ ● ", "the glyphs are the drawing ones");
-        assert_eq!(width(&graph), 4, "a repainted gutter is as wide as git's");
+        let graph = paint_graph(&palette, "│ ● ");
+        assert_eq!(plain(&graph), "│ ● ", "the drawing is already cells");
+        assert_eq!(width(&graph), 4, "a lane is a glyph and the air beside it");
         assert_ne!(
             lane_colour(&palette, 0),
             lane_colour(&palette, 1),
@@ -5090,10 +5160,19 @@ mod tests {
             graph.contains("\x1b[1m"),
             "the commit glyph is bold, so a tip stands out from its lane"
         );
-        assert_eq!(
-            plain(&paint_graph(&palette, "|\\ ")),
-            "│╲ ",
-            "a merge's fork is drawn, not typed"
+        // A fork is an elbow and a horizontal, and the horizontal keeps the
+        // commit's own colour: one connection, one colour.
+        assert_eq!(plain(&paint_graph(&palette, "●─┐ ")), "●─┐ ");
+        assert_eq!(plain(&paint_graph(&palette, "●─│─┘ ")), "●─│─┘ ");
+        assert_eq!(plain(&paint_graph(&palette, "●─┤ ")), "●─┤ ");
+        let elbow = paint_graph(&palette, "●─┐ ");
+        assert!(
+            elbow.contains(&format!("\x1b[38;5;{}m─", lane_colour(&palette, 0))),
+            "the horizontal is the commit's lane colour: {elbow:?}"
+        );
+        assert!(
+            elbow.contains(&format!("\x1b[38;5;{}m┐", lane_colour(&palette, 1))),
+            "the lane it opens keeps its own: {elbow:?}"
         );
     }
 
@@ -5106,21 +5185,10 @@ mod tests {
         let palette = FUTURE_DARK;
         let row = GitRow {
             key: Some("abc1234".into()),
-            prefix: "* ".into(),
-            pieces: vec![
-                "fix(tui): one row".into(),
-                "HEAD -> main, tag: v1".into(),
-                "abc1234".into(),
-                "2026-10-27".into(),
-                "Ada".into(),
-            ],
-            kinds: vec![
-                state::GitKind::Plain,
-                state::GitKind::Decoration,
-                state::GitKind::Sha,
-                state::GitKind::Meta,
-                state::GitKind::Meta,
-            ],
+            columns: vec!["2026-10-27 09:15".into(), "Ada".into()],
+            prefix: "● ".into(),
+            pieces: vec!["HEAD -> main, tag: v1".into(), "fix(tui): one row".into()],
+            kinds: vec![state::GitKind::Decoration, state::GitKind::Plain],
         };
         let selected = git_row_line(&palette, &row, 0, 100, true);
         assert_eq!(width(&selected), 100, "the band fills the pane");
@@ -5132,11 +5200,14 @@ mod tests {
             "the selection is a background, not just an arrow: {selected:?}"
         );
         let marked = plain(&selected);
-        assert!(marked.starts_with("› ● fix(tui): one row"), "{marked:?}");
+        assert!(
+            marked
+                .starts_with("› 2026-10-27 09:15 Ada ● HEAD -> main, tag: v1 · fix(tui): one row"),
+            "{marked:?}"
+        );
         for (colour, what) in [
-            (palette.amber, "the sha"),
             (palette.green, "the decorations"),
-            (palette.muted, "the date"),
+            (palette.muted, "the date-time and committer columns"),
         ] {
             assert!(
                 selected.contains(&format!("\x1b[38;5;{colour}m")),
@@ -5149,9 +5220,65 @@ mod tests {
             "an unselected row paints no background: {idle:?}"
         );
         assert!(
-            plain(&idle).starts_with("  ● fix(tui): one row"),
+            plain(&idle)
+                .starts_with("  2026-10-27 09:15 Ada ● HEAD -> main, tag: v1 · fix(tui): one row"),
             "{idle:?}"
         );
+    }
+
+    /// The columns are dropped whole when the pane cannot hold them *and* a
+    /// readable subject: a title cut to eight cells is not a title, and the
+    /// detail pane beside the list says the same thing in full. They come back
+    /// as one unit, never half of one.
+    #[test]
+    fn a_narrow_pane_drops_the_columns_and_keeps_the_subject() {
+        let palette = FUTURE_DARK;
+        let row = GitRow {
+            key: Some("abc1234".into()),
+            columns: vec!["2026-10-27 09:15".into(), "Ada".into()],
+            prefix: "● ".into(),
+            pieces: vec!["fix(tui): one row per record".into()],
+            kinds: vec![state::GitKind::Plain],
+        };
+        let narrow = plain(&git_row_line(&palette, &row, 0, 30, false));
+        assert_eq!(width(&narrow), 30, "the pane is filled: {narrow:?}");
+        assert!(
+            narrow.starts_with("  ● fix(tui): one row"),
+            "the subject starts where the columns were: {narrow:?}"
+        );
+        assert!(!narrow.contains("2026"), "{narrow:?}");
+        // One step wider and the committer comes back only if it also leaves
+        // room for the subject; in between, the date-time stands alone.
+        let middle = plain(&git_row_line(&palette, &row, 0, 34, false));
+        assert!(middle.starts_with("  2026-10-27 09:15 ● fix"), "{middle:?}");
+        assert!(!middle.contains("Ada"), "{middle:?}");
+        let wide = plain(&git_row_line(&palette, &row, 0, 80, false));
+        assert!(wide.starts_with("  2026-10-27 09:15 Ada ● "), "{wide:?}");
+    }
+
+    /// The refs column is one cell in every row: the gutter is kept at the page's
+    /// widest drawing, so a commit whose own lanes end early still starts its
+    /// refs — and its subject — where the row above it does.
+    #[test]
+    fn the_row_starts_its_refs_in_one_cell() {
+        let palette = FUTURE_DARK;
+        let row = |prefix: &str| GitRow {
+            key: Some("abc1234".into()),
+            columns: Vec::new(),
+            prefix: prefix.into(),
+            pieces: vec!["origin/main · Merge branch 'x'".into()],
+            kinds: vec![state::GitKind::Plain],
+        };
+        let wide = plain(&git_row_line(&palette, &row("● │ │       "), 0, 60, false));
+        let narrow = plain(&git_row_line(&palette, &row("●           "), 0, 60, false));
+        // Columns, not bytes: the box glyphs are three bytes wide and one cell.
+        let start = |line: &str| ansi::width(line.split("origin/main").next().unwrap());
+        assert_eq!(
+            start(&wide),
+            start(&narrow),
+            "two rows, two drawings, one refs column: {wide:?} / {narrow:?}"
+        );
+        assert_eq!(start(&wide), 14, "marker, gutter and one cell of air");
     }
 
     /// The band has to exist in every palette: it is a member of the one ordered

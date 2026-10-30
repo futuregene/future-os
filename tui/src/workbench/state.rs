@@ -586,7 +586,8 @@ pub struct WorkbenchData {
     pub approval: Option<ApprovalView>,
     /// Read-only git working-tree review.
     pub diff: Option<DiffView>,
-    /// Real user-message fork points from `get_fork_messages`.
+    /// The messages a `/fork` can stop after, in transcript order: every
+    /// question and every answer the session has persisted (`get_fork_entries`).
     pub fork_points: Vec<ForkPoint>,
     /// Read-only git worktree list.
     pub worktrees: Vec<WorktreeView>,
@@ -695,9 +696,24 @@ pub struct DiffView {
     pub error: Option<String>,
 }
 
+/// Whose message a `/fork` point is: the reader's or the model's.
+///
+/// The picker lists both, because "fork after this message" means the same
+/// thing either way — the child ends with the message the reader picked. The
+/// role is only what the row is labelled by.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ForkRole {
+    /// A question the reader asked.
+    #[default]
+    User,
+    /// An answer the model wrote.
+    Assistant,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ForkPoint {
     pub id: String,
+    pub role: ForkRole,
     pub text: String,
 }
 
@@ -766,14 +782,22 @@ pub enum GitKind {
 /// One painted line of the `/git` list.
 ///
 /// `key` is what the row *is* (`abc1234`, `refs/heads/main`, `src/a.rs`,
-/// `stash@{0}`) and what the detail pane loads; a row without one is the log's
-/// graph continuing through a column that has no commit on it — painted, but
-/// never selected, the same way the graph is drawn in a terminal git client.
+/// `stash@{0}`) and what the detail pane loads. A row without one is painted
+/// but never selected — a drawing, not an object — so the cursor can step over
+/// it: no section produces one today (every row of the log carries a commit),
+/// and the rule is what keeps a section that adds one from breaking `enter`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GitRow {
     pub key: Option<String>,
-    /// The gutter before the fields: the graph (`* `, `| * `), a badge (`● `),
-    /// a porcelain status (`M `), a stash number (`#0 `).
+    /// The columns left of the gutter, one padded cell each: a commit's
+    /// date-time and then its committer, in fixed widths so the graph lines up
+    /// under them (the id is not here — the detail pane beside the list already
+    /// names the whole commit). The painter draws them joined by two spaces and
+    /// drops them from the right as the pane narrows, so a column is shown whole
+    /// or not at all.
+    pub columns: Vec<String>,
+    /// The gutter before the fields: the log's graph (`●─┐ `, `│ ● `), a badge
+    /// (`● `), a porcelain status (`M `), a stash number (`#0 `).
     pub prefix: String,
     /// The row's fields, most important first — a narrow box drops the tail
     /// whole rather than cutting a field in half.
@@ -911,6 +935,7 @@ mod tests {
     fn the_git_cursor_skips_rows_that_are_only_drawing() {
         let row = |key: Option<&str>| GitRow {
             key: key.map(str::to_string),
+            columns: Vec::new(),
             prefix: String::new(),
             pieces: Vec::new(),
             kinds: Vec::new(),

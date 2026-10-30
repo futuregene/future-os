@@ -137,8 +137,6 @@ pub enum Overlay {
     /// preview. Its own surface — the rail lists conversations, which belong to
     /// the agent, while a tree belongs to the session on screen.
     Files,
-    History,
-    Tree,
     Fork,
     Worktree,
     /// The confirm box in front of a delete. The one destructive verb on the
@@ -301,8 +299,6 @@ pub enum WbAction {
     /// Put this text on the clipboard (`y` in the `/git` panel copies the
     /// selected commit's sha, a ref's name or a file's path).
     CopyText(String),
-    OpenHistory,
-    OpenTree,
     OpenFork,
     OpenWorktree,
     ApprovalDecision {
@@ -354,6 +350,11 @@ pub enum WbAction {
     /// frame painted and the driver's snapshot handed out (see
     /// `chat_area::RowStop`).
     ToggleChatRow(usize),
+    /// The `[复制]` control under a message: the message covering this rendered
+    /// row goes to the clipboard. The row, not the text: the surface paints
+    /// ANSI and never sees the message, so the driver is what reads the words
+    /// off the transcript (`Live::copy_message`).
+    CopyMessage(usize),
     SetTools(Vec<String>),
     CancelQueued(String),
     RecallQueued(String),
@@ -660,7 +661,6 @@ pub struct Workbench {
     pub sidebar_visible: bool,
     pub sidebar_w: u16,
     pub sidebar_position: preferences::SidebarPosition,
-    pub reduced_motion: bool,
     pub notify: crate::notifications::NotifyConfig,
     pub keys: preferences::Keybindings,
     pub preferences_index: usize,
@@ -784,7 +784,6 @@ pub struct Workbench {
     /// A divider drag in progress: the cell the pointer went down on and the
     /// list width at that moment.
     pub(crate) git_drag: Option<GitSplitDrag>,
-    pub history_query: String,
     session_key: String,
     pub mouse_capture: bool,
     pub(crate) composer_width: usize,
@@ -879,7 +878,6 @@ impl Workbench {
             sidebar_visible: true,
             sidebar_w: layout::SIDEBAR_DEFAULT,
             sidebar_position: preferences::SidebarPosition::Right,
-            reduced_motion: false,
             notify: crate::notifications::NotifyConfig::default(),
             keys: preferences::Keybindings::default(),
             preferences_index: 0,
@@ -924,7 +922,6 @@ impl Workbench {
             git_split_percent: 44,
             git_split_span: (0, 0),
             git_drag: None,
-            history_query: String::new(),
             session_key: String::new(),
             mouse_capture: true,
             composer_width: 76,
@@ -960,7 +957,6 @@ impl Workbench {
         self.sidebar_visible = preferences.sidebar_visible;
         self.mouse_capture = preferences.mouse_capture;
         self.notify = preferences.notify;
-        self.reduced_motion = preferences.reduced_motion;
     }
 
     pub fn preferences(&self) -> preferences::LayoutPreferences {
@@ -970,7 +966,6 @@ impl Workbench {
             sidebar_visible: self.sidebar_visible,
             mouse_capture: self.mouse_capture,
             notify: self.notify,
-            reduced_motion: self.reduced_motion,
         }
     }
 
@@ -1171,13 +1166,19 @@ impl Workbench {
     /// (a skill's `<name>` is a prompt token the agent expands; a command never
     /// reaches the model).
     ///
-    /// Inside each half the rows are ordered by [`palette_rank`], with the
-    /// declaration order kept between rows of one rank: the best answer to what
-    /// the reader is typing is first, and `enter` runs it.
+    /// Inside each half the rows are ordered by [`palette_rank`]: the best
+    /// answer to what the reader is typing is first, and `enter` runs it. Ties
+    /// read alphabetically in both halves, so a filtered list has the same shape
+    /// as the full one — commands because [`COMMANDS`] is declared in name order
+    /// and this sort is stable, skills because a skill has no designed order at
+    /// all: the agent lists them as it discovered them, so two machines with the
+    /// same skills showed them differently and a reader could only find one by
+    /// scanning the whole column.
     pub fn palette_rows(&self, data: &WorkbenchData) -> Vec<PaletteRow> {
         let needle = self.palette_query.trim_start_matches('/').to_lowercase();
         let ranked = |mut rows: Vec<(PaletteMatch, PaletteRow)>| {
-            // Stable, so rows of one rank stay in the order they are declared.
+            // Stable, so rows of one rank stay in the order they are declared
+            // — and `COMMANDS` is declared alphabetically.
             rows.sort_by_key(|(rank, _)| *rank);
             rows.into_iter().map(|(_, row)| row)
         };
@@ -1196,7 +1197,7 @@ impl Workbench {
                 })
             })
             .collect();
-        let skills: Vec<(PaletteMatch, PaletteRow)> = data
+        let mut skills: Vec<(PaletteMatch, PaletteRow)> = data
             .skills
             .iter()
             .filter_map(|skill| {
@@ -1214,7 +1215,18 @@ impl Workbench {
         // The limit is applied after ranking, so the rows it drops are the worst
         // matches rather than whichever ones happened to be installed first.
         let mut rows: Vec<PaletteRow> = ranked(commands).collect();
-        rows.extend(ranked(skills).take(PALETTE_SKILL_LIMIT));
+        // Skills break rank ties by name (see the doc comment): alphabetical
+        // inside each rank, so the column reads as a list of names rather than
+        // as the agent's discovery order.
+        skills.sort_by(|(a_rank, a), (b_rank, b)| {
+            a_rank.cmp(b_rank).then_with(|| a.label().cmp(b.label()))
+        });
+        rows.extend(
+            skills
+                .into_iter()
+                .map(|(_, row)| row)
+                .take(PALETTE_SKILL_LIMIT),
+        );
         rows
     }
 
@@ -1240,29 +1252,6 @@ impl Workbench {
     /// spinners share (see [`SPINNER_TICKS`]).
     pub fn spinner_frame(&self) -> usize {
         self.tick / SPINNER_TICKS
-    }
-
-    /// The frame a *list row's* own spinner is on — `None` when the reader asked
-    /// for less motion.
-    ///
-    /// `None` does not mean "draw no spinner": the row paints a still mark
-    /// instead (`panels::STILL_MARKER`). Nothing advances the tick under reduced
-    /// motion, so handing the painter [`Self::spinner_frame`] there leaves a
-    /// braille frame frozen on screen, which reads as a spinner that has died
-    /// rather than as a run that is still writing.
-    pub fn row_spinner(&self) -> Option<usize> {
-        if self.motion_enabled() {
-            Some(self.spinner_frame())
-        } else {
-            None
-        }
-    }
-
-    /// The activity glyph is the only thing a tick animates, so a reader who
-    /// asked for less motion gets no ticker-driven repaints; streamed text still
-    /// arrives immediately.
-    pub fn motion_enabled(&self) -> bool {
-        !self.reduced_motion
     }
 
     pub fn handle(&mut self, event: WbEvent, data: &WorkbenchData) -> Vec<WbAction> {
@@ -1560,10 +1549,6 @@ impl Workbench {
             Some(preferences::Action::Copy) => return vec![WbAction::CopyLast],
             Some(preferences::Action::Queue) => return vec![WbAction::OpenQueue],
             Some(preferences::Action::Mouse) => return vec![WbAction::ToggleMouse],
-            Some(preferences::Action::ReduceMotion) => {
-                self.reduced_motion = !self.reduced_motion;
-                return vec![WbAction::SetPreferences];
-            }
             // One conversation either way, with the transcript following it: a
             // rail whose highlight moved while the chat stayed put would name a
             // conversation the screen is not showing. The *switch* is deferred
@@ -2038,13 +2023,20 @@ impl Workbench {
             return Vec::new();
         };
         match stop {
-            ChatStop::Row(stop) => {
-                // The transcript is about to change height because of what the
-                // reader pressed. Remember what it is worth now; the next frame
-                // compares (see `anchor_after_row_toggle`).
-                self.row_toggle_anchor = Some(data.messages.len());
-                vec![WbAction::ToggleChatRow(stop.row)]
-            }
+            ChatStop::Row(stop) => match &stop.action {
+                // The control under a reply changes nothing on screen: it is
+                // one press, answered by the driver (which owns the clipboard).
+                crate::components::chat_area::RowAction::Copy { .. } => {
+                    vec![WbAction::CopyMessage(stop.row)]
+                }
+                _ => {
+                    // The transcript is about to change height because of what
+                    // the reader pressed. Remember what it is worth now; the
+                    // next frame compares (see `anchor_after_row_toggle`).
+                    self.row_toggle_anchor = Some(data.messages.len());
+                    vec![WbAction::ToggleChatRow(stop.row)]
+                }
+            },
             ChatStop::Link(index) => {
                 let Some(span) = self.link_spans(data).get(index).cloned() else {
                     return Vec::new();
@@ -2063,10 +2055,34 @@ impl Workbench {
 
     /// The index in [`Self::chat_stops`] that a click names: the row's own stop,
     /// by the rendered line it sits on.
+    ///
+    /// The row's *control* is not a candidate: it answers to
+    /// `chat.button.<row>.copy` and is resolved by [`Self::button_stop_index`],
+    /// so a `chat.row.` id can never land on the chip that shares its row.
     fn row_stop_index(&mut self, row: usize, data: &WorkbenchData) -> Option<usize> {
-        self.chat_stops(data)
-            .iter()
-            .position(|stop| matches!(stop, ChatStop::Row(check) if check.row == row))
+        use crate::components::chat_area::RowAction;
+        self.chat_stops(data).iter().position(|stop| {
+            matches!(
+                stop,
+                ChatStop::Row(check)
+                    if check.row == row
+                        && !matches!(check.action, RowAction::Copy { .. })
+            )
+        })
+    }
+
+    /// The index in [`Self::chat_stops`] of the control on a row: separated
+    /// because the chip shares its rendered row with the rows that open things,
+    /// and a `chat.row.` id must never land on it.
+    fn button_stop_index(&mut self, row: usize, copy: bool, data: &WorkbenchData) -> Option<usize> {
+        use crate::components::chat_area::RowAction;
+        self.chat_stops(data).iter().position(|stop| match stop {
+            ChatStop::Row(check) if check.row == row => match &check.action {
+                RowAction::Copy { .. } => copy,
+                _ => false,
+            },
+            _ => false,
+        })
     }
 
     /// `enter`/`→` on a tree row (the files panel): a directory opens, a file
@@ -2435,8 +2451,8 @@ impl Workbench {
     /// browser comes back to the browser — `esc` walks out one level at a time
     /// and only the last one lands on the chat. Whatever was on screen when the
     /// box opened is what it returns to; a picture that came from the draft
-    /// itself (`/preview`, `ctrl+v` → preview) returns to the chat, because
-    /// there was nothing under it.
+    /// itself (the attachment count on the composer's title) returns to the
+    /// chat, because there was nothing under it.
     pub fn open_preview(&mut self, scope: PreviewScope) {
         self.preview_scope = scope;
         // A step inside the box is still the same visit: it keeps the level the
@@ -2463,12 +2479,7 @@ impl Workbench {
         }
         if matches!(
             overlay,
-            Overlay::Approval
-                | Overlay::Diff
-                | Overlay::History
-                | Overlay::Tree
-                | Overlay::Fork
-                | Overlay::Worktree
+            Overlay::Approval | Overlay::Diff | Overlay::Fork | Overlay::Worktree
         ) {
             return self.handle_workflow_key(overlay, key, data);
         }
@@ -2581,9 +2592,6 @@ impl Workbench {
                         }
                         preferences::PreferenceRow::NotificationBell => {
                             self.notify.bell = !self.notify.bell;
-                        }
-                        preferences::PreferenceRow::Motion => {
-                            self.reduced_motion = !self.reduced_motion;
                         }
                         // A menu, not a toggle: the boxes `/lang` and `/theme`
                         // open, reached from the box the reader is already in.
@@ -2825,8 +2833,6 @@ impl Workbench {
             | Overlay::Diff
             | Overlay::Git
             | Overlay::Files
-            | Overlay::History
-            | Overlay::Tree
             | Overlay::Fork
             | Overlay::Worktree => Vec::new(),
             Overlay::Picker(kind) => match key {
@@ -3119,15 +3125,11 @@ impl Workbench {
         key: &str,
         data: &WorkbenchData,
     ) -> Vec<WbAction> {
-        if matches!(key, "escape" | "q") && !(overlay == Overlay::History && key == "q") {
+        if matches!(key, "escape" | "q") {
             self.overlay = None;
             return vec![WbAction::Redraw];
         }
         let count = match overlay {
-            Overlay::History => {
-                workflows::filtered_sessions(&data.sessions, &self.history_query).len()
-            }
-            Overlay::Tree => data.sessions.len(),
             Overlay::Fork => data.fork_points.len(),
             Overlay::Worktree => data.worktrees.len(),
             Overlay::Diff => data.diff.as_ref().map_or(0, |diff| diff.files.len()),
@@ -3145,20 +3147,14 @@ impl Workbench {
             "down" | "j" if overlay == Overlay::Diff && !self.diff_patch_focus => {
                 self.workflow_index = (self.workflow_index + 1).min(count.saturating_sub(1));
             }
-            "up" | "k"
-                if (key == "up" || overlay != Overlay::History)
-                    && (overlay != Overlay::Diff || self.diff_patch_focus) =>
-            {
+            "up" | "k" if overlay != Overlay::Diff || self.diff_patch_focus => {
                 if detail {
                     self.overlay_scroll = self.overlay_scroll.saturating_sub(1);
                 } else {
                     self.workflow_index = self.workflow_index.saturating_sub(1);
                 }
             }
-            "down" | "j"
-                if (key == "down" || overlay != Overlay::History)
-                    && (overlay != Overlay::Diff || self.diff_patch_focus) =>
-            {
+            "down" | "j" if overlay != Overlay::Diff || self.diff_patch_focus => {
                 if detail {
                     self.overlay_scroll += 1;
                 } else {
@@ -3173,11 +3169,10 @@ impl Workbench {
                 self.diff_patch_focus = false;
                 self.workflow_index = (self.workflow_index + 1).min(count.saturating_sub(1));
             }
-            // `space` types into history's filter, so only the two named page
-            // keys page there; everywhere else it is the same verb. A detail
-            // view (an approval, a patch) scrolls; every list moves its cursor
-            // — the diff is both, so whichever pane has the keys decides.
-            "pageUp" | "pageDown" | "space" if key != "space" || overlay != Overlay::History => {
+            // A detail view (an approval, a patch) scrolls; every list moves
+            // its cursor — the diff is both, so whichever pane has the keys
+            // decides.
+            "pageUp" | "pageDown" | "space" => {
                 let page = self.list_page.max(1);
                 let back = key == "pageUp";
                 // A detail view (an approval, a patch) scrolls; every list moves
@@ -3195,11 +3190,6 @@ impl Workbench {
                 } else {
                     self.workflow_index = (self.workflow_index + page).min(count.saturating_sub(1));
                 }
-            }
-            "backspace" if overlay == Overlay::History => {
-                self.history_query.pop();
-                self.workflow_index = 0;
-                self.overlay_scroll = 0;
             }
             "y" | "Y" if overlay == Overlay::Approval => {
                 self.overlay = None;
@@ -3247,16 +3237,6 @@ impl Workbench {
                         .and_then(|diff| diff.files.get(self.workflow_index))
                         .map(|_| vec![WbAction::SelectDiff(self.workflow_index)])
                         .unwrap_or_default(),
-                    Overlay::History => {
-                        workflows::filtered_sessions(&data.sessions, &self.history_query)
-                            .get(self.workflow_index)
-                            .map(|row| vec![WbAction::SwitchSession(row.id.clone())])
-                            .unwrap_or_default()
-                    }
-                    Overlay::Tree => workflows::tree_sessions(&data.sessions)
-                        .get(self.workflow_index)
-                        .map(|(row, _)| vec![WbAction::SwitchSession(row.id.clone())])
-                        .unwrap_or_default(),
                     Overlay::Fork => data
                         .fork_points
                         .get(self.workflow_index)
@@ -3269,15 +3249,6 @@ impl Workbench {
                         .unwrap_or_default(),
                     _ => vec![WbAction::Redraw],
                 };
-            }
-            other
-                if overlay == Overlay::History
-                    && other.chars().count() == 1
-                    && !other.starts_with("ctrl+") =>
-            {
-                self.history_query.push_str(other);
-                self.workflow_index = 0;
-                self.overlay_scroll = 0;
             }
             _ => {}
         }
@@ -3922,6 +3893,14 @@ impl Workbench {
                 .map(|row| vec![WbAction::RecallQueued(row.run_id.clone())])
                 .unwrap_or_default();
         }
+        // The draft's attachment count: the picture it counts, opened where the
+        // reader can see it. This is the click the `/preview` verb used to
+        // spell — an image waiting to be sent is otherwise a marker and a
+        // number, and the box is the only place it can be looked at before it
+        // goes.
+        if id == "input.attachments" {
+            return vec![WbAction::PreviewAttachment];
+        }
         if id == "input" {
             self.launch_field = LaunchField::Prompt;
             return vec![WbAction::FocusPane(PaneId::Input)];
@@ -3934,7 +3913,14 @@ impl Workbench {
         let row_click = id
             .strip_prefix("chat.row.")
             .and_then(|rest| rest.parse::<usize>().ok());
-        if link_click.is_none() && row_click.is_none() {
+        // The controls under a message: `chat.button.<row>.copy|fork`.
+        let button_click = id.strip_prefix("chat.button.").and_then(|rest| {
+            let (row, chip) = rest.rsplit_once('.')?;
+            let row = row.parse::<usize>().ok()?;
+            let copy = matches!(chip, "copy");
+            Some((row, copy))
+        });
+        if link_click.is_none() && row_click.is_none() && button_click.is_none() {
             self.chat_index = None;
             self.stop_reveal = false;
         }
@@ -3946,6 +3932,18 @@ impl Workbench {
                 .chat_stops(data)
                 .iter()
                 .position(|stop| matches!(stop, ChatStop::Link(span) if *span == index));
+            self.stop_reveal = self.chat_index.is_some();
+            let actions = self.open_stop(data);
+            return if actions.is_empty() {
+                vec![WbAction::Redraw]
+            } else {
+                actions
+            };
+        }
+        // …and the same for a control: the pointer named which of the row's
+        // chips it landed on, so the cursor goes there and the chip runs.
+        if let Some((row, copy)) = button_click {
+            self.chat_index = self.button_stop_index(row, copy, data);
             self.stop_reveal = self.chat_index.is_some();
             let actions = self.open_stop(data);
             return if actions.is_empty() {
@@ -4114,9 +4112,7 @@ impl Workbench {
     pub fn surface_command(&mut self, command: &str, data: &WorkbenchData) -> VerbOutcome {
         let name = command.trim_start_matches('/').trim();
         match name {
-            "approval" | "diff" | "git" | "history" | "tree" | "fork" | "worktree" => {
-                VerbOutcome::Agent
-            }
+            "approval" | "diff" | "git" | "history" | "fork" | "worktree" => VerbOutcome::Agent,
             "queue" => {
                 self.overlay = Some(Overlay::Queue);
                 self.queue_index = self.queue_index.min(data.queue.len().saturating_sub(1));
@@ -4144,11 +4140,6 @@ impl Workbench {
             // `PickerKind::from_command` opens it the way `/model` and `/theme`
             // are opened, so the rows, the filter and the hit regions are one
             // implementation.
-            // `future tui` has no transcript dump of its own: the two real
-            // doors to the whole record are named instead.
-            "transcript" => VerbOutcome::Done {
-                notice: Some(t(self.lang, Key::NoticeTranscript).into()),
-            },
             // `/lang` never lands here: the driver opens the picker for it
             // (`PickerKind::from_command`), the same way `/model` and `/theme`
             // work, so the rows, the filter and the hit regions are one
@@ -4431,15 +4422,14 @@ enum PaletteMatch {
 ///
 /// A description *finds* a row; the name is what the reader is typing, so a name
 /// hit outranks a description hit no matter where in the name it lands. Without
-/// that split `/model` listed `/providers` first (its English description, "List
-/// model providers", contains the word and the verb sits earlier in [`COMMANDS`]),
-/// and `enter` ran a verb the reader had not asked for.
+/// that split a verb whose description merely mentions the word ("Compact
+/// context, optionally with instructions") outranked the one the reader named,
+/// and `enter` ran a verb they had not asked for.
 ///
 /// A query that matches no name at all — every Chinese query, since the verbs
 /// are declared in English — can only reach rows through their descriptions, and
-/// those tiers stay equal: `/model` and `/providers` are then ordered as they are
-/// declared. Ranking cannot tell them apart, because "选择模型" and "列出模型提供商"
-/// both merely mention the word.
+/// those tiers stay equal: rows are then ordered as they are declared. Ranking
+/// cannot tell them apart, because the copy merely mentions the word.
 ///
 /// An empty query matches everything at the best rank, so an opened palette keeps
 /// its own order.
@@ -4536,44 +4526,76 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
     at
 }
 
-/// The command palette's entries: `(command, description)`. Kept here rather
-/// than in the app so the palette, the help overlay and the tests share one
-/// list.
-pub const COMMANDS: [(&str, Key); 34] = [
-    ("/new", Key::CmdNew),
-    ("/stop", Key::CmdStop),
+/// The `/` palette's rows: `(command, description)`, in the order an empty
+/// query lists them — which is alphabetical by name, and asserted to stay that
+/// way (`the_command_column_is_alphabetical`). Kept here rather than in the app
+/// so the palette and the tests share one list.
+///
+/// **A row is here when naming the verb is the only way in.** A verb that
+/// already answers to a key — a chord (`ctrl+g` for the repository), a row in
+/// the preferences box (`ctrl+q` holds the language and the theme), or its own
+/// printable key (`?` for the help table) — is not listed, because the menu is
+/// where a reader looks for what they cannot find anywhere else: an entry with a
+/// second door spends a row of a one-screen list on a name they do not need.
+/// [`TYPED_ONLY`] is where those verbs live. The two lists are the whole
+/// vocabulary, and `every_palette_entry_has_a_handler` walks both.
+///
+/// **The order is a name order, not a rank.** These thirteen are a list a reader
+/// reads *for a name they already have in mind* (`/fork`, `/export`), and an
+/// alphabetical column is the only order that answers "where is it?" without
+/// being memorised — the surface's other ordering rules ("most used first",
+/// "what the next message runs with") describe sets that fit on one line, not
+/// thirteen rows. A consequence worth naming: `enter` on an empty query runs the
+/// first row by name (`/approval`), so the top of this list is a letter and not
+/// a recommendation.
+pub const COMMANDS: [(&str, Key); 13] = [
+    ("/approval", Key::CmdApproval),
+    ("/compact", Key::CmdCompact),
+    ("/copy", Key::CmdCopy),
     ("/delete", Key::CmdDelete),
+    ("/export", Key::CmdExport),
+    ("/fork", Key::CmdFork),
     ("/pin", Key::CmdPin),
     ("/queue", Key::CmdQueue),
-    ("/copy", Key::CmdCopy),
-    ("/paste", Key::CmdPaste),
-    ("/preview", Key::CmdPreview),
     ("/refresh", Key::CmdRefresh),
-    ("/mouse", Key::CmdMouse),
-    ("/git", Key::CmdGit),
-    ("/files", Key::CmdFiles),
-    ("/approval", Key::CmdApproval),
-    ("/history", Key::CmdHistory),
-    ("/tree", Key::CmdTree),
-    ("/fork", Key::CmdFork),
-    ("/worktree", Key::CmdWorktree),
-    ("/mode", Key::CmdMode),
-    ("/sandbox", Key::CmdSandbox),
-    ("/compact", Key::CmdCompact),
-    ("/tools", Key::CmdTools),
-    ("/providers", Key::CmdProviders),
-    ("/sessions", Key::CmdSessions),
-    ("/model", Key::CmdModel),
-    ("/thinking", Key::CmdThinking),
-    ("/lang", Key::CmdLanguage),
+    ("/rename", Key::CmdRename),
     ("/reply-detail", Key::CmdReplyDetail),
-    ("/workspace", Key::CmdWorkspace),
+    ("/tools", Key::CmdTools),
+    ("/worktree", Key::CmdWorktree),
+];
+
+/// The verbs the palette does **not** list, `(command, description)` with the
+/// door each one already has beside it.
+///
+/// They are still *recognized* when typed, which is the whole point of keeping
+/// them: the draft is shared between commands and prompts, so a verb that
+/// dropped out of the vocabulary entirely would be submitted to the model as
+/// text — a reader with `ctrl+g`/`/git` in their fingers must land on the
+/// repository browser, not ask the agent what `/git` means. A row here is also
+/// what keeps a verb somebody can still type from rotting: the handler test
+/// walks this list the same way it walks [`COMMANDS`].
+///
+/// Nothing here is offered by the palette, so the description is read by the
+/// test alone — it is the copy the row would carry if it were listed.
+pub const TYPED_ONLY: [(&str, Key); 16] = [
+    // A chord of their own.
+    ("/new", Key::CmdNew),             // ctrl+n
+    ("/stop", Key::CmdStop),           // ctrl+c
+    ("/paste", Key::CmdPaste),         // ctrl+v (alt+v on Windows)
+    ("/git", Key::CmdGit),             // ctrl+g
+    ("/files", Key::CmdFiles),         // ctrl+f
+    ("/mode", Key::CmdMode),           // ctrl+s
+    ("/sessions", Key::CmdSessions),   // ctrl+r
+    ("/model", Key::CmdModel),         // ctrl+o
+    ("/thinking", Key::CmdThinking),   // ctrl+t
+    ("/workspace", Key::CmdWorkspace), // ctrl+l
+    ("/quit", Key::CmdQuit),           // ctrl+x
+    ("/help", Key::CmdHelp),           // `?`
+    // A row in the preferences box `ctrl+q` opens.
     ("/theme", Key::CmdTheme),
+    ("/lang", Key::CmdLanguage),
+    ("/mouse", Key::CmdMouse),
     ("/preferences", Key::CmdPreferences),
-    ("/export", Key::CmdExport),
-    ("/transcript", Key::CmdTranscript),
-    ("/help", Key::CmdHelp),
-    ("/quit", Key::CmdQuit),
 ];
 
 /// A typed draft that names one of the surface's own verbs.
@@ -4601,16 +4623,17 @@ fn queue_row_index(id: &str) -> Option<usize> {
 
 /// Split a submitted draft into a known command, or `None` when it is a prompt.
 ///
-/// The list is [`COMMANDS`]: the palette's own entries, so a verb the palette
-/// offers can also be typed. A draft that merely *starts* with a slash
-/// (`/etc/hosts is missing`) stays a prompt.
+/// The vocabulary is both lists: [`COMMANDS`] (the palette offers it) and
+/// [`TYPED_ONLY`] (it has a door of its own, and typing it still reaches that
+/// door). A draft that merely *starts* with a slash (`/etc/hosts is missing`)
+/// stays a prompt.
 fn known_command(text: &str) -> Option<TypedCommand> {
     let text = text.trim();
     let mut parts = text.splitn(2, char::is_whitespace);
     let name = parts.next().unwrap_or("");
-    if !COMMANDS
-        .iter()
-        .any(|(command, _)| command.eq_ignore_ascii_case(name))
+    let known = |command: &&str| command.eq_ignore_ascii_case(name);
+    if !COMMANDS.iter().any(|(command, _)| known(command))
+        && !TYPED_ONLY.iter().any(|(command, _)| known(command))
     {
         return None;
     }
@@ -4726,18 +4749,22 @@ mod tests {
     }
 
     #[test]
-    fn workflow_keys_search_history_choose_forks_and_never_deny_on_escape() {
+    fn workflow_keys_choose_forks_and_never_deny_on_escape() {
         let mut data = demo::chat();
-        data.fork_points = vec![state::ForkPoint {
-            id: "entry-1".into(),
-            text: "start".into(),
-        }];
+        data.fork_points = vec![
+            state::ForkPoint {
+                id: "entry-1".into(),
+                role: state::ForkRole::User,
+                text: "start".into(),
+            },
+            state::ForkPoint {
+                id: "entry-2".into(),
+                role: state::ForkRole::Assistant,
+                text: "second".into(),
+            },
+        ];
         let mut wb = workbench();
-        wb.overlay = Some(Overlay::History);
-        wb.handle(WbEvent::Key("q".into()), &data);
-        assert_eq!(wb.history_query, "q");
-        assert_eq!(wb.overlay, Some(Overlay::History));
-        wb.handle(WbEvent::Key("backspace".into()), &data);
+        wb.overlay = Some(Overlay::Fork);
         wb.handle(WbEvent::Key("down".into()), &data);
         assert_eq!(wb.workflow_index, 1);
         wb.handle(WbEvent::Key("escape".into()), &data);
@@ -5295,14 +5322,21 @@ mod tests {
     /// A table test is the only way this does not rot: five entries
     /// (`/usage`, `/skills`, `/workspace`, `/export`, `/transcript`) used to be
     /// listed, selectable, and then answered `Unknown command` by the agent,
-    /// which has no such commands. Adding a sixth entry without a handler now
-    /// fails here instead of in front of the reader.
+    /// which has no such commands. Adding another entry without a handler now
+    /// fails here instead of in front of the reader. (`/transcript` was one of
+    /// the five; it is gone — a verb whose whole answer was "use `/export`"
+    /// spent a palette row on nothing, and both doors it named are advertised
+    /// on their own rows.)
+    ///
+    /// [`TYPED_ONLY`] is walked too: a verb the palette does not offer is still
+    /// a line a reader can type, so it needs the same one handler — the check
+    /// that stops "unlisted" from drifting into "unanswered".
     #[test]
     fn every_palette_entry_has_a_handler() {
         let data = demo::chat();
         let mut workbench = workbench();
         workbench.render(&data, 120, 38);
-        for (command, key) in COMMANDS {
+        for (command, key) in COMMANDS.into_iter().chain(TYPED_ONLY) {
             let description = t(workbench.lang, key);
             let picker = PickerKind::from_command(command).is_some();
             let surface = matches!(
@@ -5318,6 +5352,47 @@ mod tests {
                 handlers, 1,
                 "{command} ({description}) resolves to {handlers} handlers: \
                  picker={picker} surface={surface} app={app}"
+            );
+        }
+    }
+
+    /// The menu lists only the verbs without a door of their own, and the two
+    /// lists never overlap.
+    ///
+    /// A verb in [`TYPED_ONLY`] answers to a chord, a preferences row or `?`;
+    /// listing it as well spent a row of a one-screen menu on a second name.
+    /// The query is checked as well as the unfiltered list, because filtering is
+    /// the other way a row reaches the screen — `model` must not find `/model`
+    /// while `ctrl+o` is what opens that chooser.
+    #[test]
+    fn the_palette_offers_only_the_verbs_with_no_other_door() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let mut listed: Vec<String> = COMMANDS
+            .iter()
+            .map(|(command, _)| (*command).to_string())
+            .collect();
+        let mut offered: Vec<String> = workbench
+            .palette_rows(&data)
+            .iter()
+            .filter(|row| !row.is_skill())
+            .map(|row| row.command())
+            .collect();
+        listed.sort_unstable();
+        offered.sort_unstable();
+        assert_eq!(
+            offered, listed,
+            "the palette offers exactly the listed verbs"
+        );
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        for (hidden, _) in TYPED_ONLY {
+            workbench.palette_query = hidden.to_string();
+            assert!(
+                !workbench
+                    .palette_rows(&data)
+                    .iter()
+                    .any(|row| row.command() == hidden),
+                "{hidden} is still offered by a query that names it"
             );
         }
     }
@@ -5438,7 +5513,7 @@ mod tests {
     /// The verbs that cannot be carried out here answer with what *is* true
     /// instead of leaving the reader at a dead end.
     #[test]
-    fn workspace_and_transcript_explain_themselves() {
+    fn workspace_is_a_picker_and_export_stays_the_agents() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         // `/workspace` is the workspace chooser now: the directory the session
@@ -5464,18 +5539,6 @@ mod tests {
             .collect();
         assert_eq!(current.len(), 1, "{:?}", view.rows);
         workbench.overlay = None;
-        match workbench.surface_command("/transcript", &data) {
-            VerbOutcome::Done {
-                notice: Some(notice),
-            } => {
-                assert!(notice.contains("/export"), "points at the export: {notice}");
-                assert!(
-                    notice.contains("/reply-detail"),
-                    "and at the detail toggle: {notice}"
-                );
-            }
-            other => panic!("/transcript must explain itself: {other:?}"),
-        }
         // The ones that need the agent stay the agent's.
         assert_eq!(
             workbench.surface_command("/export", &data),
@@ -5613,6 +5676,55 @@ mod tests {
         // `esc` gives the key back to the draft.
         workbench.handle(WbEvent::Key("escape".into()), &data);
         assert_eq!(workbench.chat_index, None);
+    }
+
+    /// The controls under a message are pressable — by pointer and by keyboard —
+    /// and each chip on the row answers its own verb.
+    ///
+    /// A message's row carries two of them, so the two regions must not share a
+    /// hit id: the map stores one id per rectangle, and a shared one would make
+    /// a click on `[分支]` run `[复制]` because the copy chip is the row's first
+    /// stop.
+    #[test]
+    fn the_message_control_presses_its_own_verb() {
+        let mut chat = rendered_chat(1);
+        // The band's text width, which is what the transcript was wrapped at:
+        // the rail hidden is the 120-column frame `chat_data` renders for.
+        chat.set_viewport_height(30);
+        let data = chat_data(&mut chat, 1);
+        let controls = chat.control_rows();
+        assert_eq!(
+            controls.len(),
+            1,
+            "the reply's row, and only it: {controls:?}"
+        );
+        let reply_row = controls[0];
+
+        let mut workbench = workbench();
+        workbench.sidebar_visible = false;
+        workbench.render(&data, 120, 38);
+        assert_eq!(
+            click_region(
+                &mut workbench,
+                &data,
+                120,
+                38,
+                &format!("chat.button.{reply_row}.copy")
+            ),
+            vec![WbAction::CopyMessage(reply_row)]
+        );
+
+        // The keyboard walks the same stops: the reply's folded process is the
+        // first one here (a row that opens something, so not pressed), then its
+        // chip.
+        let mut keys = super::tests::workbench();
+        keys.sidebar_visible = false;
+        keys.render(&data, 120, 38);
+        let enter =
+            |workbench: &mut Workbench| workbench.handle(WbEvent::Key("enter".into()), &data);
+        keys.handle(WbEvent::Key("tab".into()), &data);
+        keys.handle(WbEvent::Key("tab".into()), &data);
+        assert_eq!(enter(&mut keys), vec![WbAction::CopyMessage(reply_row)]);
     }
 
     /// A click on a transcript row opens it, the same as `enter` on the cursor —
@@ -6512,6 +6624,60 @@ mod tests {
         );
     }
 
+    /// `/rename <新标题>` is the door to a conversation's own name: the line is
+    /// claimed as the verb (so the name is not sent to the model as a prompt),
+    /// and the bare verb is claimed too — the answer to it is the usage notice,
+    /// which says what the missing half of the line looks like.
+    #[test]
+    fn the_rename_command_hands_the_new_title_to_the_app() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+
+        // The words after the verb are the name, and they travel with it: the
+        // adapter splits the line, so `修 parser` arrives as the argument.
+        let mut typed = data.clone();
+        typed.input.text = "/rename 修 parser".into();
+        typed.input.cursor = typed.input.text.chars().count();
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &typed),
+            vec![
+                WbAction::EditInput {
+                    text: String::new(),
+                    cursor: 0,
+                },
+                WbAction::Command("/rename 修 parser".into()),
+            ]
+        );
+
+        // A bare verb is still the verb, not a prompt: the adapter answers it
+        // with the usage line rather than asking the agent to title the
+        // conversation with nothing.
+        let mut bare = data.clone();
+        bare.input.text = "/rename".into();
+        bare.input.cursor = 7;
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &bare),
+            vec![
+                WbAction::EditInput {
+                    text: String::new(),
+                    cursor: 0,
+                },
+                WbAction::Command("/rename".into()),
+            ]
+        );
+
+        // The palette advertises it — a rename has no chord and no panel, so the
+        // typed spelling is the only way in and the menu is where it is found.
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        let listed: Vec<String> = workbench
+            .palette_rows(&data)
+            .into_iter()
+            .filter(|row| !row.is_skill())
+            .map(|row| row.command())
+            .collect();
+        assert!(listed.contains(&"/rename".to_string()), "{listed:?}");
+    }
+
     #[test]
     fn the_sidebar_tabs_switch_the_panel_by_click() {
         let data = demo::chat();
@@ -6811,8 +6977,12 @@ mod tests {
         // The paste and the clipboard chord land in the draft the same way.
         let actions = workbench.handle(WbEvent::Paste("pasted".into()), &data);
         assert!(matches!(actions.as_slice(), [WbAction::EditEditor(_)]));
+        // The chord this platform shows: the terminal forwards `ctrl+v`, so it
+        // is the app's there; on Windows the console owns it and the map says
+        // `alt+v` (see `default_key`).
+        let clipboard = preferences::Action::PasteImage.default_key().to_string();
         assert_eq!(
-            workbench.handle(WbEvent::Key("ctrl+v".into()), &data),
+            workbench.handle(WbEvent::Key(clipboard), &data),
             vec![WbAction::PasteClipboard]
         );
 
@@ -6922,14 +7092,14 @@ mod tests {
             vec![WbAction::Redraw]
         );
         assert_eq!(workbench.overlay, Some(Overlay::Palette));
-        for key in ["m", "o", "d"] {
+        for key in ["q", "u", "e"] {
             workbench.handle(WbEvent::Key(key.into()), &data);
         }
         let rows = workbench.palette_rows(&data);
-        assert!(rows.iter().any(|row| row.command() == "/model"), "{rows:?}");
+        assert!(rows.iter().any(|row| row.command() == "/queue"), "{rows:?}");
         assert!(
-            rows.iter().all(|row| row.label().contains("mod")
-                || row.description().to_lowercase().contains("mod")),
+            rows.iter().all(|row| row.label().contains("que")
+                || row.description().to_lowercase().contains("que")),
             "only matches are listed: {rows:?}"
         );
         let chosen = workbench.palette_selection(&data).expect("a selection");
@@ -6941,10 +7111,12 @@ mod tests {
     }
 
     /// The queue of prompts sent mid-run and the interface language are both
-    /// commands now (`/queue`, `/lang`): neither is pressed while working, so
-    /// neither takes a letter from something that is. The files panel took one.
+    /// chordless: neither is pressed while working, so neither takes a letter
+    /// from something that is. What separates them is the second door — the
+    /// queue has only its name, the language has the preferences box's first row
+    /// — so the menu lists `/queue` and not `/lang`, and both are still typed.
     #[test]
-    fn the_queue_and_language_are_commands_and_the_files_panel_has_a_key() {
+    fn the_queue_is_a_menu_row_and_the_language_lives_in_the_preferences_box() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         for action in [preferences::Action::Queue, preferences::Action::Language] {
@@ -6953,21 +7125,38 @@ mod tests {
                 "{action:?} still claims a chord"
             );
         }
-        for command in ["/queue", "/lang"] {
-            assert!(
-                workbench
-                    .palette_rows(&data)
-                    .iter()
-                    .any(|row| row.command() == command),
-                "{command} is not in the palette"
-            );
-        }
-        // The files panel is the one that earned a chord.
+        let rows = workbench.palette_rows(&data);
+        assert!(
+            rows.iter().any(|row| row.command() == "/queue"),
+            "/queue has no other door, so the menu offers it: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.command() == "/lang"),
+            "`ctrl+q` lists the language, so the menu does not: {rows:?}"
+        );
+        // …and a typed `/lang` is still the chooser, not a sentence for the
+        // agent: unlisted is not unhandled.
+        let mut typed = demo::chat();
+        let line = "/lang";
+        typed.input.text = line.into();
+        typed.input.cursor = line.len();
+        workbench.handle(WbEvent::Key("enter".into()), &typed);
+        assert_eq!(
+            workbench.overlay,
+            Some(Overlay::Picker(PickerKind::Language))
+        );
+        workbench.overlay = None;
+
+        // The files panel is the one that earned a chord, so it left the menu.
         assert_eq!(
             workbench.handle(WbEvent::Key("ctrl+f".into()), &data),
             vec![WbAction::OpenFiles]
         );
         assert_eq!(workbench.keys.key(preferences::Action::Files), "ctrl+f");
+        assert!(!workbench
+            .palette_rows(&data)
+            .iter()
+            .any(|row| row.command() == "/files"));
         // …and the chords the old scheme used are gone: `alt+q` resolves to
         // nothing instead of opening the queue.
         assert_eq!(workbench.keys.action("alt+q"), None);
@@ -7004,9 +7193,14 @@ mod tests {
         let rows = workbench.render(&data, 120, 38);
         assert!(plain(&rows).contains("对话会话"), "{}", plain(&rows));
 
-        // The files panel is its own box, not a third tab, and it has no chord
-        // in this scheme: `/files` (palette or typed) is its door.
-        assert!(workbench
+        // The files panel is its own box, not a third tab, and `ctrl+f` is its
+        // door — so the menu no longer lists `/files` (a typed `/files` still
+        // opens the same box).
+        assert_eq!(
+            workbench.handle(WbEvent::Key("ctrl+f".into()), &data),
+            vec![WbAction::OpenFiles]
+        );
+        assert!(!workbench
             .palette_rows(&data)
             .iter()
             .any(|row| row.command() == "/files"));
@@ -7112,7 +7306,8 @@ mod tests {
     /// The box `?` opens is a key table, and only that: the palette (`/`,
     /// `ctrl+p`) already lists every verb with the same descriptions, so a
     /// second copy at the end of the help box made a shortcut reference scroll
-    /// through thirty-five commands on the way to nothing it did not say
+    /// through a palette's worth of commands on the way to nothing it did not
+    /// say
     /// already. The palette's own list is the one that stays.
     #[test]
     fn the_help_box_does_not_reprint_the_command_palette() {
@@ -7120,8 +7315,9 @@ mod tests {
         let (mut workbench, _rows) = frame(&data, 120, 60);
         workbench.overlay = Some(Overlay::Help);
         let text = plain(&workbench.render(&data, 120, 60));
-        // A verb the palette names and the help box does not — one with a chord
-        // (`/model`, `/compact`) and one without (`/queue`, `/export`).
+        // A verb the palette names and the help box does not — the list is the
+        // palette's, and the help box holds keys only (`/model` and `/queue` are
+        // both verbs the box would have had to reprint).
         for gone in ["/model", "/compact", "/queue", "/export"] {
             assert!(
                 !text.contains(gone),
@@ -7138,12 +7334,17 @@ mod tests {
         workbench.handle(WbEvent::Key("/".into()), &data);
         let palette = plain(&workbench.render(&data, 120, 60));
         assert!(
-            palette.contains("/model"),
+            palette.contains("/queue"),
             "the palette names it: {palette}"
         );
         assert!(
             palette.contains("/export"),
             "the palette names it: {palette}"
+        );
+        // …and the verbs whose door is a key are the help box's, not the menu's.
+        assert!(
+            !palette.contains("/model"),
+            "the menu does not reprint `ctrl+o`: {palette}"
         );
     }
 
@@ -7833,8 +8034,6 @@ mod tests {
             Overlay::Diff,
             Overlay::Git,
             Overlay::Files,
-            Overlay::History,
-            Overlay::Tree,
             Overlay::Fork,
             Overlay::Worktree,
             Overlay::Preferences,
@@ -8032,22 +8231,98 @@ mod tests {
         assert_eq!(workbench.preview_pan, (-5, -2));
     }
 
-    /// `ctrl+v` asks the adapter to read the clipboard. Previewing the newest
-    /// attachment has no chord — the fifteen ctrl chords go to the actions
-    /// pressed while working — so `/preview` is its door.
+    /// The attachment count on the composer's title is the picture's door: the
+    /// draft's image is a marker and a number until it is sent, so the cells
+    /// that count it open the preview box.
+    ///
+    /// `/preview` used to be the only door, and it was not one: the draft's
+    /// text begins with the `[Image #n]` marker the paste wrote, so a reader who
+    /// typed the verb after pasting sent `[Image #1] /preview` to the agent
+    /// instead of seeing the picture.
     #[test]
-    fn the_clipboard_key_and_the_preview_command_ask_for_their_verbs() {
-        let data = demo::chat();
+    fn a_click_on_the_attachment_count_previews_the_draft_image() {
+        let dir = std::env::temp_dir().join(format!("future-draft-count-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shot = dir.join("shot.png");
+        std::fs::write(&shot, b"\x89PNG\r\n\x1a\nrest of the file").unwrap();
+        let mut data = demo::chat();
+        let mut editor = data.input.editor.clone();
+        editor.paste(&shot.to_string_lossy());
+        data.input = state::InputView::from_editor(editor, String::new());
+        assert_eq!(data.input.editor.image_attachment_count(), 1);
         let (mut workbench, _rows) = frame(&data, 120, 38);
         assert_eq!(
-            workbench.handle(WbEvent::Key("ctrl+v".into()), &data),
+            click_region(&mut workbench, &data, 120, 38, "input.attachments"),
+            vec![WbAction::PreviewAttachment]
+        );
+        // The cells the count is clicked on are the cells that paint it: the
+        // region is worth nothing if it sits beside the words it names.
+        let (rect, _) = workbench
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "input.attachments")
+            .cloned()
+            .expect("the count is a target");
+        let rows = workbench.render(&data, 120, 38);
+        let row = rows
+            .get(usize::from(rect.y))
+            .map(|row| crate::utils::strip_ansi_codes(row))
+            .expect("the title row is painted");
+        let mut cells = String::new();
+        let mut column = 0;
+        for ch in row.chars() {
+            let width = crate::workbench::ansi::width(&ch.to_string());
+            if column >= usize::from(rect.x) && column < usize::from(rect.x + rect.w) {
+                cells.push(ch);
+            }
+            column += width;
+        }
+        assert_eq!(
+            cells,
+            i18n::render(workbench.lang, Key::AttachmentsInDraft, &[&1usize]),
+            "{row:?}"
+        );
+        // A click beside the count is still a click on the box.
+        assert_eq!(workbench.hits().hit(rect.x - 1, rect.y), Some("input"));
+        // With no picture in the draft there is nothing to count and nothing to
+        // aim at: the title is the hint alone.
+        let empty = demo::chat();
+        let (mut workbench, _rows) = frame(&empty, 120, 38);
+        workbench.render(&empty, 120, 38);
+        assert!(!workbench
+            .hits()
+            .regions()
+            .iter()
+            .any(|(_, id)| id == "input.attachments"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The clipboard chord asks the adapter to read the clipboard (`ctrl+v`, or
+    /// `alt+v` on Windows — see `default_key`). Previewing an attached
+    /// image has no chord — the ctrl chords go to the actions pressed
+    /// while working — and its door is the count on the composer's title, not a
+    /// typed verb: `/preview` spent a palette row on a picture the reader can
+    /// see one row above the draft.
+    #[test]
+    fn the_clipboard_key_and_the_attachment_count_ask_for_their_verbs() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let clipboard = preferences::Action::PasteImage.default_key().to_string();
+        assert_eq!(
+            workbench.handle(WbEvent::Key(clipboard), &data),
             vec![WbAction::PasteClipboard]
         );
-        assert!(workbench
+        assert!(!workbench
             .palette_rows(&data)
             .iter()
             .any(|row| row.command() == "/preview"));
-        assert_eq!(workbench.keys.action("alt+v"), None);
+        // `alt+v` is the preview's on no platform: on Windows it is the
+        // clipboard's (the console owns `ctrl+v` there), and elsewhere nobody's.
+        assert_eq!(
+            workbench.keys.action("alt+v"),
+            cfg!(windows).then_some(preferences::Action::PasteImage)
+        );
     }
 
     /// The palette is one list of two kinds of thing: a verb the surface answers
@@ -8092,6 +8367,68 @@ mod tests {
             "{actions:?}"
         );
         assert_eq!(workbench.overlay, None);
+    }
+
+    /// The skill column is alphabetical by name, whatever order the skills
+    /// arrived in.
+    ///
+    /// The agent lists the skills it discovered, and a local read lists app scope
+    /// before the shared one, so the same set came out in different orders — the
+    /// reader had to scan the whole column to find one. The demo keeps its own
+    /// unsorted order on purpose: it is what makes this test able to fail.
+    #[test]
+    fn the_skill_column_is_alphabetical() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        let listed: Vec<String> = workbench
+            .palette_rows(&data)
+            .into_iter()
+            .filter(|row| row.is_skill())
+            .map(|row| row.label().to_string())
+            .collect();
+        let mut alphabetical = listed.clone();
+        alphabetical.sort();
+        assert_eq!(listed, alphabetical, "skills are listed alphabetically");
+        assert_ne!(
+            data.skills
+                .iter()
+                .map(|skill| skill.name.clone())
+                .collect::<Vec<_>>(),
+            listed,
+            "the demo's discovery order is not alphabetical, so this proves the sort"
+        );
+    }
+
+    /// The command column is alphabetical by name, in the list and in what the
+    /// palette paints.
+    ///
+    /// The order is a name order (see [`COMMANDS`]): a reader opens this menu
+    /// holding the verb they want, so an alphabetical column is the only one
+    /// that answers "where is it?" without being memorised. Both halves are
+    /// asserted here — the table itself, so a row inserted at the end fails
+    /// instead of quietly landing out of order, and the painted rows, so the
+    /// ranking's stable sort is what actually reaches the reader.
+    #[test]
+    fn the_command_column_is_alphabetical() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let table: Vec<&str> = COMMANDS.iter().map(|(command, _)| *command).collect();
+        let mut sorted = table.clone();
+        sorted.sort_unstable();
+        assert_eq!(table, sorted, "`COMMANDS` is declared in name order");
+
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        let listed: Vec<String> = workbench
+            .palette_rows(&data)
+            .into_iter()
+            .filter(|row| !row.is_skill())
+            .map(|row| row.label().to_string())
+            .collect();
+        let mut alphabetical = listed.clone();
+        alphabetical.sort();
+        assert_eq!(listed, alphabetical, "commands are listed alphabetically");
+        assert_eq!(listed.len(), COMMANDS.len(), "every verb is on the list");
     }
 
     /// A word after a chooser's verb is that chooser's search line.
@@ -8155,16 +8492,29 @@ mod tests {
             "the verbs lead: {heading}"
         );
         // A verb and a skill on one painted line: the columns really are two.
+        // Both labels are read off the list instead of hard-coded — the verb is
+        // whatever leads it (the alphabetically first one) and the skill is the
+        // alphabetically first skill, not the demo's first row.
+        let rows = workbench.palette_rows(&data);
+        let leading = rows
+            .iter()
+            .find(|row| !row.is_skill())
+            .map(|row| row.label())
+            .expect("a verb leads the list");
+        let leading_skill = rows
+            .iter()
+            .find(|row| row.is_skill())
+            .map(|row| row.label())
+            .expect("a skill follows it");
         let shared = painted
             .lines()
-            .find(|line| line.contains("/new") && line.contains("future-versioning"))
+            .find(|line| line.contains(leading) && line.contains(leading_skill))
             .unwrap_or_else(|| panic!("a verb and a skill share a row:\n{painted}"));
         assert!(
-            shared.find("/new").unwrap() < shared.find("future-versioning").unwrap(),
+            shared.find(leading).unwrap() < shared.find(leading_skill).unwrap(),
             "the skill column is on the right: {shared}"
         );
         // The list underneath is still one list: commands first, skills after.
-        let rows = workbench.palette_rows(&data);
         let commands = rows.iter().filter(|row| !row.is_skill()).count();
         assert_eq!(commands, COMMANDS.len());
         assert!(rows[commands].is_skill());
@@ -8177,6 +8527,17 @@ mod tests {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 80, 38);
         workbench.handle(WbEvent::Key("/".into()), &data);
+        let rows = workbench.palette_rows(&data);
+        let leading = rows
+            .iter()
+            .find(|row| !row.is_skill())
+            .map(|row| row.label())
+            .expect("a verb leads the list");
+        let leading_skill = rows
+            .iter()
+            .find(|row| row.is_skill())
+            .map(|row| row.label())
+            .expect("a skill follows it");
         let painted = plain(&workbench.render(&data, 80, 38));
         assert!(
             !painted
@@ -8187,7 +8548,7 @@ mod tests {
         assert!(
             !painted
                 .lines()
-                .any(|line| line.contains("/new") && line.contains("future-versioning")),
+                .any(|line| line.contains(leading) && line.contains(leading_skill)),
             "one list, one row each:\n{painted}"
         );
     }
@@ -8208,7 +8569,7 @@ mod tests {
         assert!(stepped.is_skill(), "right lands in the skill column");
         assert_eq!(
             stepped.label(),
-            data.skills[1].name,
+            "future-versioning",
             "the row at the same visual line, not the top of the column"
         );
 
@@ -8246,35 +8607,36 @@ mod tests {
         click_region(&mut workbench, &data, 120, 38, &target);
         let selected = workbench.palette_selection(&data).expect("a row");
         assert!(selected.is_skill(), "the click landed in the skill column");
-        assert_eq!(selected.label(), data.skills[0].name);
+        assert_eq!(
+            selected.label(),
+            "future-peer-review",
+            "the first skill row is the alphabetically first one"
+        );
     }
 
     /// A row whose *description* mentions the query only finds its place in the
-    /// list; the row whose *name* is the query comes first, so `enter` runs what
-    /// the reader typed for.
+    /// list; the row whose *name* contains the query comes first, so `enter`
+    /// runs what the reader typed for.
     ///
-    /// `/providers` is the case that regressed: its English description ("List
-    /// model providers") contains `model` and the verb is declared one line above
-    /// `/model`, so an unranked filter put it at the top of the list.
+    /// `tree` is the case: `/refresh`'s English description ("Re-read sessions,
+    /// usage and the file tree") contains it, and an unranked filter put it
+    /// above `/worktree`, whose name is the match.
     #[test]
     fn a_name_match_ranks_above_a_description_match() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         workbench.set_language(LanguagePreference::En);
         workbench.handle(WbEvent::Key("/".into()), &data);
-        for key in ["m", "o", "d", "e", "l"] {
+        for key in ["t", "r", "e", "e"] {
             workbench.handle(WbEvent::Key(key.into()), &data);
         }
         let rows = workbench.palette_rows(&data);
-        assert_eq!(rows[0].command(), "/model", "{rows:?}");
-        let providers = rows
-            .iter()
-            .position(|row| row.command() == "/providers")
-            .expect("a description hit still finds its row");
-        assert!(providers > 0, "the description hit sorts below: {rows:?}");
+        assert_eq!(rows[0].command(), "/worktree", "{rows:?}");
+        // The retired `/tree` row is gone, not merely ranked below.
+        assert!(!rows.iter().any(|row| row.command() == "/tree"), "{rows:?}");
         assert_eq!(
             workbench.palette_selection(&data).map(|row| row.command()),
-            Some("/model".to_string()),
+            Some("/worktree".to_string()),
             "enter runs the verb the reader typed"
         );
     }
@@ -8292,11 +8654,19 @@ mod tests {
             Some(PaletteMatch::Name)
         );
         assert_eq!(
-            palette_rank("/providers", "List model providers", "model"),
+            palette_rank(
+                "/compact",
+                "Compact context, optionally with instructions",
+                "context"
+            ),
             Some(PaletteMatch::Description)
         );
         assert_eq!(
-            palette_rank("/providers", "List model providers", "zzz"),
+            palette_rank(
+                "/compact",
+                "Compact context, optionally with instructions",
+                "zzz"
+            ),
             None
         );
         assert_eq!(
@@ -8313,7 +8683,7 @@ mod tests {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         workbench.handle(WbEvent::Key("/".into()), &data);
-        for key in ["m", "o", "d", "e", "l"] {
+        for key in ["t", "r", "e", "e"] {
             workbench.handle(WbEvent::Key(key.into()), &data);
         }
         let chosen = workbench.palette_selection(&data).expect("a row");
@@ -8693,7 +9063,8 @@ mod tests {
         workbench.handle(WbEvent::Key("escape".into()), &data);
         assert_eq!(workbench.overlay, Some(Overlay::Git));
 
-        // Opened from the chat itself (`/preview`): nothing under the box.
+        // Opened from the chat itself (the composer's attachment count):
+        // nothing under the box.
         workbench.overlay = None;
         workbench.open_preview(PreviewScope::Conversation);
         workbench.handle(WbEvent::Key("escape".into()), &data);
@@ -10640,17 +11011,22 @@ mod tests {
         // whatever this machine's locale resolves `system` to.
         workbench.set_language(LanguagePreference::Zh);
 
-        // The palette advertises it, and a typed `/lang` opens the same box the
-        // palette does.
-        assert!(COMMANDS.iter().any(|(command, _)| *command == "/lang"));
+        // The preferences box is its listed door (`ctrl+q`), so the menu does
+        // not reprint it — and a typed `/lang` opens the same box the row does.
+        assert!(!COMMANDS.iter().any(|(command, _)| *command == "/lang"));
+        assert!(TYPED_ONLY.iter().any(|(command, _)| *command == "/lang"));
         let actions = workbench.handle(WbEvent::Key("/".into()), &data);
         assert_eq!(actions, vec![WbAction::Redraw]);
         for ch in "lang".chars() {
             workbench.handle(WbEvent::Key(ch.to_string()), &data);
         }
-        assert!(workbench
-            .palette_selection(&data)
-            .is_some_and(|row| row.command() == "/lang"));
+        assert!(
+            workbench
+                .palette_selection(&data)
+                .is_none_or(|row| row.command() != "/lang"),
+            "the menu does not offer the box's own row"
+        );
+        workbench.overlay = None;
 
         workbench.open_picker(PickerKind::Language, &data);
         let text = plain(&workbench.render(&data, 120, 38));
@@ -10700,42 +11076,6 @@ mod tests {
         assert_eq!(workbench.scroll.offset, before);
     }
 
-    #[test]
-    fn reduced_motion_survives_sidebar_navigation() {
-        let mut workbench = Workbench::new();
-        let data = demo::chat();
-        workbench.render(&data, 120, 38);
-        // The toggle has no chord in this scheme; the preferences overlay is
-        // its door (`/preferences` opens it, the row is `PreferenceRow::Motion`).
-        workbench.open_preferences();
-        workbench.preferences_index = preferences::PREFERENCE_ROWS
-            .iter()
-            .position(|row| *row == preferences::PreferenceRow::Motion)
-            .expect("the motion row exists");
-        workbench.handle(WbEvent::Key("enter".into()), &data);
-        workbench.overlay = None;
-        assert!(workbench.reduced_motion && !workbench.motion_enabled());
-        workbench.sidebar_visible = false;
-        workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
-        assert!(workbench.sidebar_visible, "ctrl+d showed the rail");
-        assert!(
-            workbench.reduced_motion,
-            "sidebar navigation does not reset accessibility choices"
-        );
-    }
-
-    /// The rail's row spinner reads the same switch the activity glyph obeys:
-    /// under reduced motion it hands the painter no frame at all, so the row
-    /// draws its still mark instead of a braille frame nothing will advance.
-    #[test]
-    fn the_row_spinner_holds_still_under_reduced_motion() {
-        let mut workbench = Workbench::new();
-        workbench.advance_tick();
-        assert_eq!(workbench.row_spinner(), Some(workbench.spinner_frame()));
-        workbench.reduced_motion = true;
-        assert_eq!(workbench.row_spinner(), None);
-    }
-
     /// The picker marks the preference in force, not the bundle it resolved to:
     /// a reader on `system` must not be told they chose Chinese.
     #[test]
@@ -10777,8 +11117,6 @@ mod tests {
         for overlay in [
             Overlay::Help,
             Overlay::Palette,
-            Overlay::History,
-            Overlay::Tree,
             Overlay::Fork,
             Overlay::Worktree,
             Overlay::Git,
@@ -10833,8 +11171,8 @@ mod tests {
 
     /// `down` moves the highlight one *row down the screen*, not one record.
     ///
-    /// A record is one line of data, but the box wraps by width: a real
-    /// session title (title · workspace · id) does not fit on one row, so one
+    /// A record is one line of data, but the box wraps by width: a real fork
+    /// point's text (a whole user message) does not fit on one row, so one
     /// index step moved the marker two rows and the entries looked skipped.
     /// The same shape had two more traps: the worktree list marked the
     /// *current* checkout with the arrow (so it had no visible selection at
@@ -10851,22 +11189,18 @@ mod tests {
                 .map(|(rect, _)| rect.y)
         }
 
-        // A realistic session list: long titles, long worktrees, long ids.
+        // A realistic list: whole user messages, long worktrees, long names.
         let mut data = demo::chat();
-        data.sessions = (0..8)
-            .map(|index| state::SessionRow {
-                id: format!("20261026-{index:06}-ebfc7c89507d4867b57705bd7789cf70"),
-                title: format!("第 {index} 个会话 · 重构整理 TUI 的浮层布局与鼠标命中区域"),
-                workspace: format!("D:/future-os/.worktrees/tui-overlay-layout-{index}"),
-                ..SessionRow::default()
-            })
-            .collect();
         data.fork_points = (0..6)
             .map(|index| state::ForkPoint {
                 id: format!("e{index}"),
-                text: format!(
-                    "第 {index} 条用户消息：把浮层的上下键改成一次一行，并把列表裁成一行"
-                ),
+                // Alternating: the picker lists questions and answers alike.
+                role: if index % 2 == 0 {
+                    state::ForkRole::User
+                } else {
+                    state::ForkRole::Assistant
+                },
+                text: format!("第 {index} 条消息：把浮层的上下键改成一次一行，并把列表裁成一行"),
             })
             .collect();
         data.worktrees = (0..6)
@@ -10887,13 +11221,7 @@ mod tests {
             ..state::DiffView::default()
         });
 
-        for overlay in [
-            Overlay::History,
-            Overlay::Tree,
-            Overlay::Fork,
-            Overlay::Worktree,
-            Overlay::Diff,
-        ] {
+        for overlay in [Overlay::Fork, Overlay::Worktree, Overlay::Diff] {
             let mut wb = workbench();
             wb.overlay = Some(overlay);
             // Files first in the diff, so the marker is the file navigator.
@@ -11123,16 +11451,24 @@ mod tests {
         }
     }
 
-    /// The log's graph continuation rows are painted but not selectable: the
-    /// cursor steps over them, so `enter` always has something to act on and the
-    /// detail pane never goes blank on a row that is only a drawing.
+    /// A row with no object behind it is painted but not selectable, so `enter`
+    /// always has something to act on and the detail pane never goes blank on a
+    /// row that is only a drawing. The log no longer produces one — every row of
+    /// it is a commit — so the rule is exercised with a row of its own, which is
+    /// what keeps a section that adds one back from breaking the cursor.
     #[test]
-    fn the_git_cursor_steps_over_graph_only_rows() {
+    fn the_git_cursor_steps_over_rows_with_no_object() {
         let mut data = demo::chat();
         let mut git = demo::git();
-        // demo::git: commit, graph continuation, commit, … — the second row has
-        // no key.
-        assert!(git.rows[1].key.is_none());
+        let rest = git.rows.split_off(1);
+        git.rows.push(state::GitRow {
+            key: None,
+            columns: Vec::new(),
+            prefix: "│ ".into(),
+            pieces: Vec::new(),
+            kinds: Vec::new(),
+        });
+        git.rows.extend(rest);
         git.selected = 0;
         data.git = Some(git);
 
@@ -11142,7 +11478,7 @@ mod tests {
         assert_eq!(
             wb.handle(WbEvent::Key("down".into()), &data),
             vec![WbAction::SelectGit(2)],
-            "row 1 is the graph continuing"
+            "row 1 is a drawing, not an object"
         );
         assert_eq!(wb.workflow_index, 2);
         assert_eq!(
@@ -11287,12 +11623,14 @@ mod tests {
         refs.rows = vec![
             state::GitRow {
                 key: Some("refs/heads/dev-huichen".into()),
+                columns: Vec::new(),
                 prefix: "● ".into(),
                 pieces: vec!["dev-huichen".into()],
                 kinds: vec![state::GitKind::Ref],
             },
             state::GitRow {
                 key: Some("refs/tags/v1".into()),
+                columns: Vec::new(),
                 prefix: String::new(),
                 pieces: vec!["tag: v1".into()],
                 kinds: vec![state::GitKind::Ref],
@@ -11316,6 +11654,7 @@ mod tests {
         status.selected = 0;
         status.rows = vec![state::GitRow {
             key: Some("tui/src/main.rs".into()),
+            columns: Vec::new(),
             prefix: "M ".into(),
             pieces: vec!["tui/src/main.rs".into()],
             kinds: vec![state::GitKind::Plain],
@@ -11385,8 +11724,8 @@ mod tests {
         let (x, y) = region(&wb, "git.row.1");
         assert_eq!(
             wb.handle(WbEvent::Mouse(press(x, y)), &data),
-            Vec::<WbAction>::new(),
-            "row 1 is the graph continuing"
+            vec![WbAction::SelectGit(1)],
+            "every row of the log carries a commit, so every row takes a click"
         );
         let (x, y) = region(&wb, "git.detail");
         assert_eq!(
@@ -11405,7 +11744,8 @@ mod tests {
         let mut data = demo::chat();
         let mut git = demo::git();
         // Long enough that a pan of eight cells is inside the line, not past it.
-        git.rows[0].pieces[0] =
+        // The subject is the piece after the refs — that is the row's order.
+        git.rows[0].pieces[1] =
             "fix(tui): a subject long enough that its tail needs the arrow key to read".into();
         data.git = Some(git);
         let mut wb = workbench();
@@ -11468,6 +11808,7 @@ mod tests {
         worktrees.selected = 0;
         worktrees.rows = vec![GitRow {
             key: Some("/w/future-os/.worktrees/git-panel-layout".into()),
+            columns: Vec::new(),
             prefix: "● ".into(),
             pieces: vec![
                 "feat/git-panel-layout".into(),
@@ -11507,6 +11848,7 @@ mod tests {
         branches.selected = 0;
         branches.rows = vec![GitRow {
             key: Some("dev-huichen".into()),
+            columns: Vec::new(),
             prefix: "● ".into(),
             pieces: vec!["dev-huichen".into(), "2↑ 0↓".into()],
             kinds: vec![GitKind::Ref, GitKind::Meta],
@@ -11632,18 +11974,11 @@ mod tests {
     #[test]
     fn page_keys_move_any_list_cursor_by_a_page() {
         let mut data = demo::chat();
-        data.sessions = (0..30)
-            .map(|index| state::SessionRow {
-                id: format!("page-{index:03}"),
-                title: format!("第 {index} 个会话 · 标题足够长，长到必须被截断才放得下"),
-                workspace: format!("D:/future-os/.worktrees/page-{index}"),
-                ..SessionRow::default()
-            })
-            .collect();
         data.fork_points = (0..30)
             .map(|index| state::ForkPoint {
                 id: format!("e{index}"),
-                text: format!("第 {index} 条用户消息，同样很长，长到占不下一行"),
+                role: state::ForkRole::User,
+                text: format!("第 {index} 条消息，同样很长，长到占不下一行"),
             })
             .collect();
         data.worktrees = (0..30)
@@ -11655,12 +11990,7 @@ mod tests {
             })
             .collect();
 
-        for overlay in [
-            Overlay::History,
-            Overlay::Tree,
-            Overlay::Fork,
-            Overlay::Worktree,
-        ] {
+        for overlay in [Overlay::Fork, Overlay::Worktree] {
             let mut wb = workbench();
             wb.overlay = Some(overlay);
             wb.render(&data, 100, 30);
@@ -11791,7 +12121,7 @@ mod tests {
         let data = demo::chat();
         let mut wb = workbench();
         wb.overlay = Some(Overlay::Palette);
-        for ch in "model".chars() {
+        for ch in "tree".chars() {
             wb.handle(WbEvent::Key(ch.to_string()), &data);
         }
         wb.render(&data, 120, 38);

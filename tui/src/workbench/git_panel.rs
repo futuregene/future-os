@@ -31,9 +31,11 @@
 //! subject is free text and may contain anything a line can contain, so splitting
 //! on a tab or a `|` would corrupt it.
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 
+use super::ansi;
 use super::i18n::{t, Key, Language};
 use super::state::{GitKind, GitRow, GitSection, GitView};
 
@@ -118,22 +120,44 @@ pub fn rows(cwd: &Path, section: GitSection, filter: Option<&str>) -> Result<Vec
     }
 }
 
-/// `git log --graph`, parsed into rows.
+/// `git log` in topological order, drawn into rows.
 ///
 /// With no filter this is every branch, remote branch and tag as one timeline
 /// — the graph is the panel's point, and a graph of one branch is a straight
 /// line with no branch in it. A filter is one line of work and is read on its
 /// own.
+///
+/// The graph is not git's own. `git log --graph` prints a commit's row and then
+/// the *drawing* of the connections below it as further lines (`|\`, `|/`), so
+/// the pane shows rows with no commit on them and a diagonal wherever two lanes
+/// swap columns — on this repository the first 60 commits print as 102 lines,
+/// 42 of them bare drawing, and the diagonals make two lines of work read as
+/// one. Here every row is a commit, connections are verticals and elbows only,
+/// and a lane is a fixed column for as long as it exists.
 fn commits(cwd: &Path, filter: Option<&str>) -> Result<Vec<GitRow>, String> {
     // `%x1e` / `%x1f` are git's own escapes for RS and US: a subject is free
     // text, so the field separator has to be a byte a subject cannot contain.
-    let pretty = "--pretty=format:%x1e%h%x1f%ad%x1f%an%x1f%D%x1f%s";
+    // `%H`/`%P` (full ids) rather than `%h`/`%p` are what the lanes are matched
+    // on: an abbreviation length can change mid-log, and a lane keyed on one
+    // would stop matching its own parent. `%cd`/`%cn` are the *committer's* date
+    // and name — the commit's own stamp, which is what the columns beside the
+    // graph are for; the author is the detail pane's.
+    let pretty = "--pretty=format:%x1e%h%x1f%H%x1f%P%x1f%cd%x1f%cn%x1f%D%x1f%s";
     let limit = format!("--max-count={COMMIT_LIMIT}");
+    // Topological order, in both reads: a parent never comes before a child,
+    // and a line of work is read as one stretch rather than interleaved with
+    // every other branch's dated commits. That is what lets a lane stay in one
+    // column from the tip of a branch to where it joins — the property the
+    // columns are read by. Date order is still newest-first at the tips, which
+    // is where the reader starts.
     let mut args = vec![
         "log",
-        "--graph",
         "--decorate=short",
-        "--date=short",
+        // Minute precision, no zone: the reader is looking for "when, and by
+        // whom", and a `+0800` in every one of 200 rows is six cells that only
+        // ever repeat what the local clock already says.
+        "--date=format:%Y-%m-%d %H:%M",
+        "--topo-order",
         limit.as_str(),
         pretty,
     ];
@@ -143,12 +167,10 @@ fn commits(cwd: &Path, filter: Option<&str>) -> Result<Vec<GitRow>, String> {
         // refs tab lists, so the log and that tab describe the same repository.
         // `--all` would also pull in `refs/stash` (a stash is a commit tree), and
         // a stash entry sitting in the log as if it were a branch is noise the
-        // refs tab does not have. `--date-order` keeps a parent above its child,
-        // which is what makes the lanes readable when several lines of work are
-        // interleaved. Naming `HEAD` as well would be the obvious way to cover a
-        // detached checkout, but on an unborn branch it is a fatal error — and
-        // that error takes the other branches' commits down with it.
-        None => args.extend_from_slice(&["--branches", "--remotes", "--tags", "--date-order"]),
+        // refs tab does not have. Naming `HEAD` as well would be the obvious way
+        // to cover a detached checkout, but on an unborn branch it is a fatal
+        // error — and that error takes the other branches' commits down with it.
+        None => args.extend_from_slice(&["--branches", "--remotes", "--tags"]),
     }
     // `--` ends revision parsing: a branch name that also names a path (a
     // `release` *file* beside a `release` branch) would otherwise be resolved
@@ -164,53 +186,372 @@ fn commits(cwd: &Path, filter: Option<&str>) -> Result<Vec<GitRow>, String> {
     }
 }
 
-/// Split `git log --graph` into rows: a line carrying [`RECORD`] is a commit
-/// (graph prefix, then the five fields); a line without one is the graph's own
-/// continuation (`|\`, `|/`) and stays a non-selectable row so the drawing keeps
-/// its shape.
-pub fn parse_log(text: &str) -> Vec<GitRow> {
-    use GitKind::{Decoration, Meta, Plain, Sha};
+/// One commit as the log read it: what the lanes are matched on (`id`,
+/// `parents`, full ids) and what the row shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Entry {
+    /// Short id, the row's key and the id the reader copies.
+    short: String,
+    id: String,
+    parents: Vec<String>,
+    /// The committer's date and name, as git formatted them.
+    when: String,
+    who: String,
+    decorations: String,
+    subject: String,
+}
+
+/// Split a log read into entries: one line per commit, [`RECORD`] leading its
+/// fields and [`FIELD`] between them.
+fn parse_entries(text: &str) -> Vec<Entry> {
     text.lines()
-        .map(|line| match line.find(RECORD) {
-            Some(at) => {
-                let prefix = line[..at].to_string();
-                let fields: Vec<&str> = line[at + RECORD.len_utf8()..].split(FIELD).collect();
-                let sha = fields.first().copied().unwrap_or("").to_string();
-                let date = fields.get(1).copied().unwrap_or("");
-                let author = fields.get(2).copied().unwrap_or("");
-                let decorations = fields.get(3).copied().unwrap_or("");
-                let subject = fields.get(4).copied().unwrap_or("");
-                // The subject leads — it is what a reader scans — and the rest
-                // are whole pieces a narrow box drops one at a time. Each one
-                // travels with what it is, so the painter colours a field by
-                // meaning and not by where it happened to land.
-                let mut pieces = Vec::new();
-                let mut kinds = Vec::new();
-                for (piece, kind) in [
-                    (subject, Plain),
-                    (decorations, Decoration),
-                    (sha.as_str(), Sha),
-                    (date, Meta),
-                    (author, Meta),
-                ] {
-                    if !piece.is_empty() {
-                        pieces.push(piece.to_string());
-                        kinds.push(kind);
+        .filter_map(|line| {
+            let at = line.find(RECORD)?;
+            let fields: Vec<&str> = line[at + RECORD.len_utf8()..].split(FIELD).collect();
+            Some(Entry {
+                short: fields.first().copied().unwrap_or("").to_string(),
+                id: fields.get(1).copied().unwrap_or("").to_string(),
+                parents: fields
+                    .get(2)
+                    .map(|parents| parents.split_whitespace().map(str::to_string).collect())
+                    .unwrap_or_default(),
+                when: fields.get(3).copied().unwrap_or("").to_string(),
+                who: fields.get(4).copied().unwrap_or("").to_string(),
+                decorations: fields.get(5).copied().unwrap_or("").to_string(),
+                subject: fields.get(6).copied().unwrap_or("").to_string(),
+            })
+        })
+        .collect()
+}
+
+/// A parent that lies past the page the log asked for. Its lane is kept — a
+/// line running off the bottom says the history continues, which is true — but
+/// it can never be claimed by a commit, so the line is never handed to another
+/// branch.
+const GHOST: usize = usize::MAX;
+
+/// One line of work being drawn: the commit it is waiting for and what opened
+/// it.
+#[derive(Clone, Copy)]
+struct Lane {
+    /// The entry this line waits for, or [`GHOST`] past the page.
+    target: usize,
+    /// The commit and the index of the parent in its list that opened this line,
+    /// when a merge's *extra* parent did. `None` for a line that starts at the
+    /// top of the page or carries a commit's first parent: those are the line
+    /// itself and are never dropped.
+    opened_by: Option<(usize, usize)>,
+    /// Whether a commit has been drawn in this line yet.
+    hosted: bool,
+}
+
+/// How many times the layout may be laid out again after dropping a lane that
+/// carried nothing. Dropping one link can only free a column, so the second pass
+/// is normally the last; the bound is what keeps a pathological history from
+/// looping rather than a budget anything real gets near.
+const PASSES: usize = 4;
+
+/// The graph gutter for each entry, one string per row and every string the
+/// same width so the subjects line up in one column.
+///
+/// The model is tig's: a *lane* is a column waiting for a commit, a commit
+/// claims the leftmost lane waiting for it, its first parent inherits that
+/// lane, and each further parent opens a column to the right. Three decisions
+/// make the drawing readable rather than merely correct:
+///
+/// * **A lane keeps its column.** A new parent takes a free column to the
+///   right of the commit when there is one and only appends when there is not,
+///   so opening a branch never shifts the lanes beside it — a column that
+///   moved would also change colour, since a lane's colour is its column.
+/// * **No diagonals and no orphan rows.** A connection is a vertical, a
+///   horizontal, or an elbow between them (`┐ ┘ ┤ ┬ ┴`), and each one is drawn
+///   on the row of the commit that makes it. Every row carries a commit, `o`
+///   for one that continues its line and `M` for one that joins lines. The
+///   horizontal breaks around a lane that keeps going (`M─│─┐`) rather than
+///   striking through it: a crossing mark would claim the two lines touch,
+///   where the connection merely passes.
+/// * **A lane that carries nothing is not drawn.** When a merge's extra parent
+///   is a commit another lane already reaches — `origin/main` merged into every
+///   feature branch, or a branch merged twice — the lane opened for it runs down
+///   the page with no commit of its own and closes at the commit that other lane
+///   lands on. That link is dropped and the page laid out again: the covered
+///   line keeps its commits, they are simply drawn where they already were.
+fn graph(entries: &[Entry]) -> Vec<String> {
+    let position: HashMap<&str, usize> = entries
+        .iter()
+        .enumerate()
+        .map(|(at, entry)| (entry.id.as_str(), at))
+        .collect();
+    let mut covered: HashSet<(usize, usize)> = HashSet::new();
+    let mut rows = Vec::new();
+    for pass in 1..=PASSES {
+        let (drawn, discovered) = draw(entries, &position, &covered);
+        rows = drawn;
+        let mut fresh: Vec<(usize, usize)> = Vec::new();
+        for edge in discovered {
+            if !covered.contains(&edge) && !fresh.contains(&edge) {
+                fresh.push(edge);
+            }
+        }
+        if fresh.is_empty() || pass == PASSES {
+            break;
+        }
+        covered.extend(fresh);
+    }
+    let width = rows.iter().map(Vec::len).max().unwrap_or(0);
+    rows.into_iter()
+        .map(|mut cells| {
+            cells.resize(width, ' ');
+            cells.into_iter().collect()
+        })
+        .collect()
+}
+
+/// One pass over the log: the rows, and the parent links whose lane turned out
+/// to carry no commit of its own.
+fn draw(
+    entries: &[Entry],
+    position: &HashMap<&str, usize>,
+    covered: &HashSet<(usize, usize)>,
+) -> (Vec<Vec<char>>, Vec<(usize, usize)>) {
+    // Column -> the line it holds, `None` while the column is free.
+    let mut lanes: Vec<Option<Lane>> = Vec::new();
+    let mut rows: Vec<Vec<char>> = Vec::with_capacity(entries.len());
+    let mut empty: Vec<(usize, usize)> = Vec::new();
+    for (at, entry) in entries.iter().enumerate() {
+        // Every lane waiting for this commit: the first is where it is drawn,
+        // the rest are lines of work joining it here.
+        let waiting: Vec<usize> = lanes
+            .iter()
+            .enumerate()
+            .filter(|(_, lane)| lane.is_some_and(|lane| lane.target == at))
+            .map(|(column, _)| column)
+            .collect();
+        let (mine, closed) = match waiting.split_first() {
+            Some((&first, rest)) => (first, rest.to_vec()),
+            None => {
+                // A tip of its own: the leftmost free column, else the end.
+                let free = lanes.iter().position(Option::is_none);
+                let column = match free {
+                    Some(column) => column,
+                    None => {
+                        lanes.push(None);
+                        lanes.len() - 1
+                    }
+                };
+                lanes[column] = Some(Lane {
+                    target: at,
+                    opened_by: None,
+                    hosted: false,
+                });
+                (column, Vec::new())
+            }
+        };
+        // A line closing here that never drew a commit was opened for a parent
+        // another line also reaches: its history is already on the page.
+        for &column in &closed {
+            if let Some(lane) = lanes[column] {
+                if !lane.hosted {
+                    if let Some(edge) = lane.opened_by {
+                        empty.push(edge);
                     }
                 }
-                GitRow {
-                    key: Some(sha),
-                    prefix,
-                    pieces,
-                    kinds,
+            }
+        }
+        // This commit is the line's content.
+        if let Some(lane) = lanes[mine].as_mut() {
+            lane.hosted = true;
+        }
+        let parents: Vec<usize> = entry
+            .parents
+            .iter()
+            .map(|parent| position.get(parent.as_str()).copied().unwrap_or(GHOST))
+            .collect();
+        // The extra parents, each in a column right of this one: the leftmost
+        // one that is free, and — this is what keeps the page narrow — a column
+        // a lane is giving up on *this* row. A branch that ends where the next
+        // one begins hangs off the same cell as the one before it (`●─┤`), which
+        // is how successive short branches stay in one column beside the line
+        // instead of walking right by two every merge. A column already taken
+        // by another lane, or by an earlier parent of this same commit, is
+        // passed over, so two live lines never share one. One whose lane was
+        // found to carry nothing is not opened at all.
+        let mut opened: Vec<(usize, usize, usize)> = Vec::new();
+        for (index, &parent) in parents.iter().enumerate().skip(1) {
+            if covered.contains(&(at, index)) {
+                continue;
+            }
+            let free = (mine + 1..lanes.len()).find(|column| {
+                (lanes[*column].is_none() || closed.contains(column))
+                    && !opened.iter().any(|(taken, _, _)| taken == column)
+            });
+            let column = match free {
+                Some(column) => column,
+                None => {
+                    lanes.push(None);
+                    lanes.len() - 1
+                }
+            };
+            opened.push((column, parent, index));
+        }
+        let rightmost = opened
+            .iter()
+            .map(|(column, _, _)| *column)
+            .chain(closed.iter().copied())
+            .fold(mine, usize::max);
+        // The row runs to the last lane that exists, how far right this commit
+        // reaches too.
+        let width = lanes
+            .iter()
+            .rposition(Option::is_some)
+            .unwrap_or(0)
+            .max(rightmost);
+        let mut cells = vec![' '; 2 * (width + 1)];
+        for column in 0..=width {
+            let up = lanes.get(column).is_some_and(|lane| lane.is_some()) && column != mine;
+            // A column a line gives up on and another takes over in the same row
+            // continues below: the vertical passes through it.
+            let down = if opened.iter().any(|(taken, _, _)| *taken == column) {
+                true
+            } else if closed.contains(&column) {
+                false
+            } else {
+                up
+            };
+            let right = column >= mine && column < rightmost;
+            let left = column > mine && column <= rightmost;
+            cells[2 * column] = if column == mine {
+                // Two glyphs, as tig has them: `M` is a commit that joins lines,
+                // `o` one that only continues its own. The elbow a merge draws is
+                // already on the row, but the letter says it before the eye
+                // follows the line out to a column and back.
+                if parents.len() > 1 {
+                    'M'
+                } else {
+                    'o'
+                }
+            } else {
+                junction(up, down, left, right)
+            };
+            if column >= mine && column < rightmost {
+                cells[2 * column + 1] = '─';
+            }
+        }
+        rows.push(cells);
+        for &column in &closed {
+            lanes[column] = None;
+        }
+        lanes[mine] = parents.first().map(|&target| Lane {
+            target,
+            opened_by: None,
+            hosted: false,
+        });
+        for &(column, target, index) in &opened {
+            if column >= lanes.len() {
+                lanes.resize(column + 1, None);
+            }
+            lanes[column] = Some(Lane {
+                target,
+                opened_by: Some((at, index)),
+                hosted: false,
+            });
+        }
+        while lanes.last().is_some_and(Option::is_none) {
+            lanes.pop();
+        }
+    }
+    (rows, empty)
+}
+
+/// The glyph where a lane meets the row's horizontal: which of the four
+/// directions have a line (`up`, `down`, `left`, `right`), and nothing drawn
+/// outside ones that do.
+///
+/// Every column right of the commit has a line to its *left* (the horizontal
+/// comes from the commit), so `left` is only ever false on the commit's own
+/// column — which is a `●`, not a junction. What is left to decide is whether
+/// the horizontal goes on past the column (`right`) and whether the vertical
+/// runs above or below it.
+fn junction(up: bool, down: bool, left: bool, right: bool) -> char {
+    if !left && !right {
+        return if up || down { '│' } else { ' ' };
+    }
+    match (up, down, right) {
+        // A lane that keeps going is drawn as it is, with the horizontal broken
+        // around it: a crossing mark would claim the two lines touch.
+        (true, true, true) => '│',
+        (true, true, false) => '┤',
+        (true, false, true) => '┴',
+        (true, false, false) => '┘',
+        (false, true, true) => '┬',
+        (false, true, false) => '┐',
+        (false, false, _) => '─',
+    }
+}
+
+/// How wide the date-time column is: `2026-10-30 10:12`, minute precision and no
+/// zone.
+const WHEN_WIDTH: usize = 16;
+
+/// How wide the committer column grows before a long name is clipped. Wide
+/// enough for the names this repository is read by, and short enough that the
+/// graph is still on screen in a box that is not.
+const WHO_LIMIT: usize = 10;
+
+/// The rows of a log read: each entry with its date-time and committer columns,
+/// its graph gutter, and its subject.
+///
+/// The columns are padded to one width for the whole page — a lane's column is
+/// read against the row above it, so the gutter has to start at the same cell in
+/// every row. The id is deliberately not among them: the detail pane beside the
+/// list already prints the whole hash, so repeating eight cells of it in every
+/// row spends the width the subject needs.
+pub fn parse_log(text: &str) -> Vec<GitRow> {
+    use GitKind::{Decoration, Plain};
+    let entries = parse_entries(text);
+    let prefixes = graph(&entries);
+    let who_width = entries
+        .iter()
+        .map(|entry| ansi::width(&entry.who))
+        .max()
+        .unwrap_or(0)
+        .clamp(0, WHO_LIMIT);
+    entries
+        .into_iter()
+        .zip(prefixes)
+        .map(|(entry, prefix)| {
+            // `fit` pads to the width and clips a long name with an ellipsis, so
+            // every column ends on the same cell in every row.
+            let mut columns = Vec::new();
+            if !entry.when.is_empty() {
+                columns.push(ansi::fit(&entry.when, WHEN_WIDTH));
+            }
+            if !entry.who.is_empty() {
+                columns.push(ansi::fit(&entry.who, who_width));
+            }
+            // The refs lead and the subject follows, the way tig reads a log:
+            // `HEAD -> dev-huichen, origin/dev-huichen · Merge branch …` says
+            // which line of work the row belongs to before what the commit did.
+            // A commit with no refs on it starts at the subject, which is then
+            // the first thing in the row.
+            let mut pieces = Vec::new();
+            let mut kinds = Vec::new();
+            for (piece, kind) in [
+                (entry.decorations.as_str(), Decoration),
+                (entry.subject.as_str(), Plain),
+            ] {
+                if !piece.is_empty() {
+                    pieces.push(piece.to_string());
+                    kinds.push(kind);
                 }
             }
-            None => GitRow {
-                key: None,
-                prefix: line.trim_end().to_string(),
-                pieces: Vec::new(),
-                kinds: Vec::new(),
-            },
+            GitRow {
+                key: Some(entry.short),
+                columns,
+                prefix,
+                pieces,
+                kinds,
+            }
         })
         .collect()
 }
@@ -283,6 +624,7 @@ pub fn parse_refs(text: &str) -> Vec<GitRow> {
                 key: Some(full),
                 // `●` marks the branch this checkout is on, the same badge
                 // `/worktree` uses for the worktree the session is in.
+                columns: Vec::new(),
                 prefix: if head == "*" {
                     "● ".to_string()
                 } else {
@@ -371,6 +713,7 @@ pub fn parse_worktrees(text: &str, cwd: &Path) -> Vec<GitRow> {
             || Path::new(&path) == cwd;
         rows.push(GitRow {
             key: Some(path),
+            columns: Vec::new(),
             prefix: if here {
                 "● ".to_string()
             } else {
@@ -437,6 +780,7 @@ pub fn parse_branches(text: &str) -> Vec<GitRow> {
             }
             GitRow {
                 key: Some(name),
+                columns: Vec::new(),
                 prefix: if head == "*" {
                     "● ".to_string()
                 } else {
@@ -457,6 +801,7 @@ fn status(cwd: &Path) -> Result<Vec<GitRow>, String> {
         .into_iter()
         .map(|file| GitRow {
             key: Some(file.path.clone()),
+            columns: Vec::new(),
             prefix: format!("{} ", file.status),
             pieces: vec![file.path],
             kinds: vec![GitKind::Plain],
@@ -503,6 +848,7 @@ pub fn parse_stashes(text: &str) -> Vec<GitRow> {
         }
         rows.push(GitRow {
             key: Some(reference),
+            columns: Vec::new(),
             prefix: format!("#{index} "),
             pieces,
             kinds,
@@ -789,28 +1135,186 @@ mod tests {
         dir
     }
 
-    /// The parse is the contract the painter and the driver share: fields stay
-    /// whole (a subject with a `|` or a tab is still one subject), the graph
-    /// prefix lands in the row's gutter, and a graph-only line stays a row so
-    /// the drawing keeps its shape.
+    /// One line of the read per commit, and the fields stay whole: a subject
+    /// with a `|` or a tab is still one subject. The date-time and committer
+    /// travel beside the graph, in columns of one width; the id does not appear
+    /// at all — the detail pane names the whole commit.
     #[test]
     fn log_lines_split_on_the_record_separator() {
         let rows = parse_log(
-            "* \u{1e}abc1234\u{1f}2026-10-27\u{1f}Ada\u{1f}HEAD -> main, tag: v1\u{1f}fix | the parser\n\
-             |\\\n\
-             * \u{1e}def5678\u{1f}2026-10-26\u{1f}Bob\u{1f}\u{1f}a\ttab and a unit separator\n",
+            "\u{1e}abc1234\u{1f}aaaaaaa\u{1f}\u{1f}2026-10-27 09:15\u{1f}Ada\u{1f}HEAD -> main, tag: v1\u{1f}fix | the parser\n\
+             \u{1e}def5678\u{1f}bbbbbbb\u{1f}aaaaaaa\u{1f}2026-10-26 18:40\u{1f}Bob\u{1f}\u{1f}a\ttab and a unit separator\n",
         );
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].prefix, "* ");
+        assert_eq!(rows.len(), 2, "one row per commit, none for the drawing");
+        assert_eq!(
+            rows[0].prefix, "o ",
+            "a commit that only continues its line"
+        );
         assert_eq!(rows[0].key.as_deref(), Some("abc1234"));
-        assert_eq!(rows[0].pieces[0], "fix | the parser");
-        assert_eq!(rows[0].pieces[1], "HEAD -> main, tag: v1");
-        assert_eq!(rows[1].key, None, "a graph-only line is not selectable");
-        assert_eq!(rows[1].prefix, "|\\");
-        assert_eq!(rows[2].pieces[0], "a\ttab and a unit separator");
+        assert_eq!(
+            rows[0].pieces[0], "HEAD -> main, tag: v1",
+            "the refs say which line of work the row is on, before what it did"
+        );
+        assert_eq!(rows[0].pieces[1], "fix | the parser");
+        assert!(
+            !rows[0].pieces.iter().any(|piece| piece.contains("abc1234")),
+            "the id is the detail pane's: {:?}",
+            rows[0].pieces
+        );
+        assert_eq!(rows[1].pieces[0], "a\ttab and a unit separator");
         // The empty decoration was dropped rather than painted as ` · `.
-        assert!(!rows[2].pieces.iter().any(|piece| piece.is_empty()));
-        assert_eq!(rows[2].pieces.len(), 4, "subject, sha, date and author");
+        assert!(!rows[1].pieces.iter().any(|piece| piece.is_empty()));
+        assert_eq!(rows[1].pieces.len(), 1, "subject alone");
+        // Two cells: the date-time (fixed 16) and the widest committer. Padded
+        // to one width for the page, so the graph starts at one cell every row.
+        assert_eq!(rows[0].columns, vec!["2026-10-27 09:15", "Ada"]);
+        assert_eq!(rows[1].columns, vec!["2026-10-26 18:40", "Bob"]);
+        assert_eq!(
+            rows[0]
+                .columns
+                .iter()
+                .map(|cell| cell.chars().count())
+                .sum::<usize>(),
+            rows[1]
+                .columns
+                .iter()
+                .map(|cell| cell.chars().count())
+                .sum::<usize>()
+        );
+    }
+
+    /// A long committer name is clipped to the column instead of pushing the
+    /// graph off the cell its lane lives in.
+    #[test]
+    fn a_long_committer_name_keeps_the_column() {
+        let rows = parse_log(&log(&[("a", "b"), ("b", "")]));
+        // `log()` writes `Ada`; a real one goes through the same `fit`.
+        let long = parse_log(
+            "\u{1e}c\u{1f}cccc\u{1f}\u{1f}2026-10-27 09:15\u{1f}A committer with a very long name\u{1f}\u{1f}s\n",
+        );
+        assert_eq!(ansi::width(&long[0].columns[1]), WHO_LIMIT);
+        assert!(long[0].columns[1].contains('…'), "{:?}", long[0].columns);
+        assert_eq!(rows[0].columns, vec!["2026-10-27 09:15", "Ada"]);
+    }
+
+    /// A log of `(short, parents)` pairs, in the read's own text form.
+    fn log(commits: &[(&str, &str)]) -> String {
+        commits
+            .iter()
+            .map(|(short, parents)| {
+                format!(
+                    "\u{1e}{short}\u{1f}{short}\u{1f}{parents}\u{1f}2026-10-27 09:15\u{1f}Ada\u{1f}\u{1f}{short}\n"
+                )
+            })
+            .collect()
+    }
+
+    /// The gutter of a log read, one string per commit.
+    fn gutters(commits: &[(&str, &str)]) -> Vec<String> {
+        parse_log(&log(commits))
+            .into_iter()
+            .map(|row| row.prefix)
+            .collect()
+    }
+
+    /// A straight history is one column; a merge opens a column to its right
+    /// and the fork that closes the branch turns back into the commit's own
+    /// column — with verticals, horizontals and elbows, never a diagonal.
+    #[test]
+    fn a_merge_opens_a_column_and_a_fork_closes_it() {
+        assert_eq!(
+            gutters(&[("c", "b"), ("b", "a"), ("a", "")]),
+            vec!["o ", "o ", "o "]
+        );
+        assert_eq!(
+            gutters(&[("m", "x y"), ("x", "b"), ("y", "b"), ("b", "")]),
+            vec!["M─┐ ", "o │ ", "│ o ", "o─┘ "]
+        );
+    }
+
+    /// A second parent takes a free column right of the commit and passes over
+    /// the lanes in between, so the lane it walks past keeps its column — and
+    /// gets a junction, not a gap.
+    #[test]
+    fn a_connection_crosses_a_lane_without_moving_it() {
+        assert_eq!(
+            gutters(&[("m", "x y"), ("x", "p q"), ("y", ""), ("p", ""), ("q", ""),]),
+            vec!["M─┐   ", "M─│─┐ ", "│ o │ ", "o   │ ", "    o "]
+        );
+        // Two lanes joining one commit turn into it side by side.
+        assert_eq!(
+            gutters(&[
+                ("m", "a b c"),
+                ("a", "d"),
+                ("b", "d"),
+                ("c", "d"),
+                ("d", ""),
+            ]),
+            vec!["M─┬─┐ ", "o │ │ ", "│ o │ ", "│ │ o ", "o─┴─┘ "]
+        );
+    }
+
+    /// A branch that starts where the one before it ends hangs off the same
+    /// cell: the merge closes a lane with `┤` and the next branch opens in that
+    /// column, so a run of short branches stays two columns wide instead of
+    /// walking right by two at every merge (tig's shape).
+    #[test]
+    fn a_branch_that_starts_where_another_ends_keeps_the_column() {
+        assert_eq!(
+            gutters(&[
+                ("m2", "b2 d2"),
+                ("b2", "m1"),
+                ("d2", "m1"),
+                ("m1", "b1 d1"),
+                ("b1", "m0"),
+                ("d1", "m0"),
+                ("m0", ""),
+            ]),
+            vec!["M─┐ ", "o │ ", "│ o ", "M─┤ ", "o │ ", "│ o ", "o─┘ "]
+        );
+    }
+
+    /// A merge's extra parent opens a lane of its own — unless that parent is a
+    /// commit another lane already reaches. Then the lane would run down the
+    /// page with no commit of its own and close where the other lane lands, so
+    /// the link is dropped and the page is laid out again: the covered line is
+    /// drawn once, where it already was.
+    #[test]
+    fn a_branch_another_line_already_draws_gets_no_lane() {
+        // `a` merges `c`, which its own first parent already goes through:
+        // `b`'s parent is `c` as well, so `c` is drawn on the line `a` and `b`
+        // share.
+        assert_eq!(
+            gutters(&[("a", "b c"), ("b", "c"), ("c", "")]),
+            vec!["M ", "o ", "o "],
+            "the covered parent is not a lane of its own"
+        );
+        // The same shape with a commit that only that lane carries keeps the
+        // lane: it is real work, not a duplicate of a line already drawn.
+        assert_eq!(
+            gutters(&[("a", "b c"), ("b", "d"), ("c", "d"), ("d", "")]),
+            vec!["M─┐ ", "o │ ", "│ o ", "o─┘ "]
+        );
+    }
+
+    /// A lane that is handed a commit keeps its column, so a branch is one
+    /// colour from its tip to where it joins, and every row is as wide as the
+    /// whole log so the subjects share one column.
+    #[test]
+    fn every_row_is_a_commit_and_every_gutter_is_as_wide() {
+        let commits = [("m", "x y"), ("x", "a"), ("y", "a"), ("a", "b"), ("b", "")];
+        let rows = parse_log(&log(&commits));
+        assert_eq!(rows.len(), commits.len());
+        assert!(rows.iter().all(|row| row.key.is_some()), "{rows:?}");
+        let width = rows[0].prefix.chars().count();
+        assert!(rows.iter().all(|row| row.prefix.chars().count() == width));
+        for row in &rows {
+            assert!(
+                !row.prefix.contains(['/', '\\', '*', '|', '_']),
+                "git's own vocabulary is gone: {:?}",
+                row.prefix
+            );
+        }
     }
 
     #[test]
@@ -854,8 +1358,8 @@ mod tests {
         assert!(filtered
             .rows
             .iter()
-            .filter_map(|row| row.pieces.first())
-            .any(|subject| subject == "merge feature"));
+            .flat_map(|row| row.pieces.iter())
+            .any(|piece| piece == "merge feature"));
 
         // A requested row that is not selectable (the graph's continuation)
         // lands on the next one that is.
@@ -896,6 +1400,22 @@ mod tests {
         assert_eq!(rows[1].prefix, "#1 ");
     }
 
+    #[test]
+    #[ignore]
+    fn dump_real_log() {
+        let dir = std::path::Path::new("/Users/geilige/future-os");
+        let rows = rows(dir, GitSection::Commits, None).unwrap();
+        let width = rows
+            .iter()
+            .map(|r| r.prefix.chars().count())
+            .max()
+            .unwrap_or(0);
+        println!("gutter {width}");
+        for r in rows.iter().take(80) {
+            println!("{}|{}", r.prefix, r.pieces.join(" · "));
+        }
+    }
+
     /// The read the panel performs, against a real repository: all four
     /// sections list something, and each row's detail loads.
     #[test]
@@ -905,11 +1425,41 @@ mod tests {
         assert!(!name.is_empty());
 
         let log = rows(dir.path(), GitSection::Commits, None).unwrap();
+        assert_eq!(
+            log.len(),
+            4,
+            "one row per commit: first, second, feature, merge"
+        );
+        assert!(log.iter().all(|row| row.key.is_some()), "{log:?}");
         let commits: Vec<&GitRow> = log.iter().filter(|row| row.key.is_some()).collect();
-        assert_eq!(commits.len(), 4, "first, second, feature and the merge");
-        assert_eq!(commits[0].pieces[0], "merge feature");
-        // The graph is drawn: the merge commit's line starts with `* `.
-        assert!(commits[0].prefix.contains('*'), "{:?}", commits[0].prefix);
+        assert_eq!(
+            commits[0].pieces[0], "HEAD -> main, tag: v1",
+            "the tagged merge leads with its refs"
+        );
+        assert_eq!(commits[0].pieces[1], "merge feature");
+        // The columns carry the committer's own stamp, minute precision and no
+        // zone, in one width for every row.
+        let columns = commits[0].columns.join("  ");
+        assert!(columns.starts_with("20"), "{columns:?}");
+        assert!(
+            columns.contains("TUI test"),
+            "the committer, not the author: {columns:?}"
+        );
+        assert!(
+            !columns.contains('+') && !columns.contains('Z'),
+            "no zone: {columns:?}"
+        );
+        // The graph is drawn: the merge's row opens a lane beside its own, and
+        // the gutter is one width for every row so the subjects line up.
+        assert!(
+            commits[0].prefix.starts_with("M─"),
+            "{:?}",
+            commits[0].prefix
+        );
+        let width = commits[0].prefix.chars().count();
+        assert!(commits
+            .iter()
+            .all(|row| row.prefix.chars().count() == width));
         let patch = detail(
             dir.path(),
             GitSection::Commits,
@@ -973,12 +1523,12 @@ mod tests {
         let feature = rows(dir.path(), GitSection::Commits, Some("feature")).unwrap();
         assert!(feature
             .iter()
-            .filter_map(|row| row.pieces.first())
-            .any(|subject| subject == "feature commit"));
+            .flat_map(|row| row.pieces.iter())
+            .any(|piece| piece == "feature commit"));
         assert!(!feature
             .iter()
-            .filter_map(|row| row.pieces.first())
-            .any(|subject| subject == "second commit"));
+            .flat_map(|row| row.pieces.iter())
+            .any(|piece| piece == "second commit"));
     }
 
     /// Worktree blocks: the branch leads, the path is the key, and the checkout
@@ -1093,8 +1643,8 @@ mod tests {
         let log = rows(dir.path(), GitSection::Commits, Some("feature")).unwrap();
         assert!(log
             .iter()
-            .filter_map(|row| row.pieces.first())
-            .any(|subject| subject == "feature commit"));
+            .flat_map(|row| row.pieces.iter())
+            .any(|piece| piece == "feature commit"));
     }
 
     #[test]

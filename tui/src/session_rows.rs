@@ -187,6 +187,9 @@ pub fn rows_to_messages(rows: &[Value]) -> Vec<ChatMessage> {
             _ => ChatRole::Tool,
         };
         let id = obj.get("id").and_then(Value::as_str).unwrap_or("");
+        // A row that came from the journal *is* its entry, so its id is the
+        // journal's. A row without one is a shape this build never writes, and
+        // gets a throwaway id.
         let id = if id.is_empty() {
             random_id()
         } else {

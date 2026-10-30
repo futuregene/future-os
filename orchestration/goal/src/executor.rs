@@ -243,6 +243,40 @@ pub fn incomplete_continue_note(streak: u32, max_retries: u32, todo_id: &str) ->
     ))
 }
 
+/// The first line of a run's `.live.jsonl`: which worker runs which todo — and,
+/// since the dispatch stopped being silent about it, the model and thinking
+/// level that run actually uses.
+///
+/// `model` / `thinking_level` / `model_source` are written on EVERY run,
+/// `model_source = "default"` included (when the goal has no supervisor
+/// configuration to inherit). That is deliberate: a reader must be able to treat
+/// a *missing* field as "this log predates the field" and never confuse it with
+/// "no override happened". Adding keys is additive for the readers that already
+/// exist (`scan_worker_sessions`, the dashboard) — they read the keys they know
+/// and ignore the rest, so an older log still parses.
+pub(crate) fn run_header(
+    run_id: &str,
+    session_id: &str,
+    agent_id: Option<&str>,
+    todo_id: &str,
+    goal_id: &str,
+    worker_config: &crate::worker_config::WorkerConfig,
+) -> serde_json::Value {
+    serde_json::json!({
+        "type": "run_header",
+        "idx": 0,
+        "wall_ts": now_epoch(),
+        "run_id": run_id,
+        "session_id": session_id,
+        "agent_id": agent_id,
+        "todo_id": todo_id,
+        "goal_id": goal_id,
+        "model": worker_config.model,
+        "thinking_level": worker_config.thinking_level,
+        "model_source": worker_config.source.as_str(),
+    })
+}
+
 /// Execute one bounded turn for `todo` and return the ledger entry (spend).
 /// `continue_note`: injected at the top of the turn message when the previous
 /// turn ended incomplete (bounded retry).
@@ -259,6 +293,7 @@ pub async fn execute_turn(
     runs_dir: Option<std::path::PathBuf>,
     progress: Option<&TurnProgressTracker>,
     continue_note: Option<&str>,
+    worker_config: &crate::worker_config::WorkerConfig,
 ) -> Result<RunRecord> {
     if !boundary_injected {
         client
@@ -316,16 +351,14 @@ pub async fn execute_turn(
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let header = serde_json::json!({
-            "type": "run_header",
-            "idx": 0,
-            "wall_ts": now_epoch(),
-            "run_id": run_id,
-            "session_id": session_id,
-            "agent_id": agent_id,
-            "todo_id": todo.id,
-            "goal_id": goal.goal_id,
-        });
+        let header = run_header(
+            &run_id,
+            session_id,
+            agent_id,
+            &todo.id,
+            &goal.goal_id,
+            worker_config,
+        );
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -467,6 +500,54 @@ mod validator_tests {
             None
         );
         assert_eq!(validator_tautology("test -n \"$(ls outputs)\""), None);
+    }
+
+    #[test]
+    fn run_header_always_carries_the_worker_configuration() {
+        use super::run_header;
+        use crate::worker_config::{ConfigSource, WorkerConfig};
+        for source in [
+            ConfigSource::Supervisor,
+            ConfigSource::Override,
+            ConfigSource::Default,
+            ConfigSource::Session,
+        ] {
+            let config = WorkerConfig {
+                model: "future/m".to_string(),
+                thinking_level: "medium".to_string(),
+                source,
+            };
+            let header = run_header("run-1", "sess-1", Some("w1"), "todo-1", "g1", &config);
+            assert_eq!(header["model"], "future/m");
+            assert_eq!(header["thinking_level"], "medium");
+            // Present even for `default`: a missing field must keep meaning
+            // "legacy log", never "nothing was overridden".
+            assert_eq!(header["model_source"], source.as_str());
+            // Pre-existing keys are unchanged.
+            assert_eq!(header["type"], "run_header");
+            assert_eq!(header["idx"], 0);
+            assert_eq!(header["run_id"], "run-1");
+            assert_eq!(header["session_id"], "sess-1");
+            assert_eq!(header["agent_id"], "w1");
+            assert_eq!(header["todo_id"], "todo-1");
+            assert_eq!(header["goal_id"], "g1");
+        }
+    }
+
+    #[test]
+    fn a_legacy_run_header_line_still_parses() {
+        // Written before the configuration fields existed: parsing must not
+        // depend on them, and their absence stays distinguishable from an
+        // explicit `default`.
+        let legacy: serde_json::Value = serde_json::from_str(
+            "{\"type\":\"run_header\",\"idx\":0,\"wall_ts\":1,\"run_id\":\"r\",\
+             \"session_id\":\"s\",\"agent_id\":\"a\",\"todo_id\":\"t\",\"goal_id\":\"g\"}",
+        )
+        .expect("legacy header parses");
+        assert_eq!(legacy["type"], "run_header");
+        assert_eq!(legacy["agent_id"], "a");
+        assert!(legacy.get("model").is_none());
+        assert!(legacy.get("model_source").is_none());
     }
 
     #[test]

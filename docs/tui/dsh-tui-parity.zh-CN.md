@@ -269,7 +269,9 @@ alt screen、鼠标模式与帧时钟 `[F:tui/src/workbench/run.rs:92]`；旧内
 `/transcript` —— 以前写在面板里、按下去却回 `Unknown command` `[V]`；现在五条都能
 落地（`[S:workbench-usage-panel.png]`、`[S:workbench-skills-panel.png]`），
 `every_palette_entry_has_a_handler` 挡住下一条走上老路。那曾是相对内联 UI 的
-**回退**，也是改造清单里的 P0-3。
+**回退**，也是改造清单里的 P0-3。五条里只有 `/transcript` 自己没有事情可做：
+它整条答案就是指向 `/export` 与 `/reply-detail`，而这两条本来就各有自己的面板行，
+所以这一条（连同它背后已经没人用的完整渲染）删掉了。
 
 ## 6. 差距矩阵
 

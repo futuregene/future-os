@@ -85,6 +85,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "get_event_content_range",
     "get_run_snapshot",
     "get_fork_messages",
+    "get_fork_entries",
     "get_last_assistant_text",
     "get_journal_stats",
     "get_messages",
@@ -237,6 +238,7 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
         | "get_tool_output"
         | "get_tool_call_args"
         | "get_fork_messages"
+        | "get_fork_entries"
         | "get_messages"
         | "get_session_entries"
         | "get_session_history_entry"

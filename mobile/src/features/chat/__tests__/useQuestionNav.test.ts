@@ -19,9 +19,8 @@ const scrollEvent = (y: number): NativeSyntheticEvent<NativeScrollEvent> =>
     },
   }) as NativeSyntheticEvent<NativeScrollEvent>;
 
-// View order, newest first: answer 2, question 2, answer 1, question 1. Its
-// ladder is [answer-2 (0), question-2 (1), answer-1 (2), question-1 (3)] — the
-// rungs' own view indices, in the order the walk visits them.
+// View order, newest first: answer 2, question 2, answer 1, question 1. The
+// walk's own list is the two prompts, in view space: [1, 3].
 const ITEMS = [
   { id: "answer-2", kind: "message", role: "assistant", text: "…" },
   { id: "question-2", kind: "message", role: "user", text: "…" },
@@ -106,8 +105,8 @@ describe("useQuestionNav", () => {
     // is where the reader already is, and is never an ↑ destination.
     reportRows(0);
     expect(result.current.visible).toBe(true);
-    expect(result.current.previous).toEqual({ kind: "question", question: 1 });
-    // Every newer rung is already on screen, so ↓ has nothing to offer.
+    expect(result.current.previous).toBe(1);
+    // Every newer row is already on screen, so ↓ has nothing to offer.
     expect(result.current.next).toBeNull();
   });
 
@@ -117,14 +116,14 @@ describe("useQuestionNav", () => {
     // started the turn, and ↓ has nothing newer below.
     reportRows(0);
     expect(result.current.visible).toBe(true);
-    expect(result.current.previous).toEqual({ kind: "question", question: 1 });
+    expect(result.current.previous).toBe(1);
     expect(result.current.next).toBeNull();
 
     // Further up, the top edge inside the answer to question-1: ↑ offers the
-    // prompt above the reader and ↓ the question of the turn on screen.
+    // prompt above the reader and ↓ the prompt of the turn on screen.
     reportRows(2);
-    expect(result.current.previous).toEqual({ kind: "question", question: 3 });
-    expect(result.current.next).toEqual({ kind: "question", question: 1 });
+    expect(result.current.previous).toBe(3);
+    expect(result.current.next).toBe(1);
   });
 
   test("a drag as well as an offset marks the reading position", () => {
@@ -166,12 +165,11 @@ describe("useQuestionNav", () => {
       result.current.onScroll(scrollEvent(600));
     });
     // The top edge is at question-2: the answer to question-1 is the next thing
-    // above it in the ladder, and ↑ passes it by — the press is for prompts.
+    // up the transcript, and ↑ passes it by — the press is for prompts. ↓ from
+    // here has nothing *newer* that is a prompt.
     reportRows(1);
-    expect(result.current.previous).toEqual({ kind: "question", question: 3 });
-    // ↓ is the same ladder read the other way: one item down from question-2 is
-    // its own answer, then the next prompt, then that prompt's answer…
-    expect(result.current.next).toEqual({ kind: "replyTail", index: 0 });
+    expect(result.current.previous).toBe(3);
+    expect(result.current.next).toBeNull();
 
     act(() => result.current.goToPrevious());
 
@@ -184,76 +182,22 @@ describe("useQuestionNav", () => {
     });
   });
 
-  test("↓ onto a reply lands on its last output, once it is measured", () => {
+  test("↓ lands the next prompt, skipping the answer between them", () => {
     act(() => result.current.onScroll(scrollEvent(600)));
-    // The top edge is at the oldest question: ↓ walks down the transcript.
+    // The top edge is at the oldest question: ↓ walks up towards newer prompts.
     reportRows(3);
-    expect(result.current.next).toEqual({ kind: "replyTail", index: 2 });
-    act(() => result.current.onReplyTailAnchor("answer-1", 96));
+    expect(result.current.next).toBe(1);
 
     act(() => result.current.goToNext());
 
-    // The row is lifted by the anchor's own offset, so the reply's last output
-    // — not the reasoning rows it opened with — takes the reading edge.
+    // The answer to question-1 sits between the two prompts and is passed in
+    // this one press: the landing is the next prompt's own start.
     expect(list.scrollToIndex).toHaveBeenCalledWith({
-      index: 2,
-      viewPosition: 1,
-      viewOffset: JUMP_VIEW_OFFSET + 96,
-      animated: false,
-    });
-  });
-
-  test("a jump onto an unmeasured reply is re-issued when the row is measured", () => {
-    act(() => result.current.onScroll(scrollEvent(600)));
-    reportRows(3);
-    act(() => result.current.goToNext());
-    // A reply the bubble has not measured yet has no output to aim at: the jump
-    // falls back to the row's own start.
-    expect(list.scrollToIndex).toHaveBeenLastCalledWith({
-      index: 2,
+      index: 1,
       viewPosition: 1,
       viewOffset: JUMP_VIEW_OFFSET,
       animated: false,
     });
-
-    act(() => result.current.onReplyTailAnchor("answer-1", 240));
-
-    // The row landed and was measured: the jump is re-issued against the
-    // anchor rather than waiting out its realign window.
-    expect(list.scrollToIndex).toHaveBeenCalledTimes(2);
-    expect(list.scrollToIndex).toHaveBeenLastCalledWith({
-      index: 2,
-      viewPosition: 1,
-      viewOffset: JUMP_VIEW_OFFSET + 240,
-      animated: false,
-    });
-  });
-
-  test("a measurement for another row does not drag the reader back", () => {
-    act(() => result.current.onScroll(scrollEvent(600)));
-    reportRows(3);
-    act(() => result.current.goToNext());
-    expect(list.scrollToIndex).toHaveBeenCalledTimes(1);
-
-    // A reply elsewhere re-lays out (a late image, a settled slice): that is
-    // not this jump's business, and the reader is not pulled off their landing.
-    act(() => result.current.onReplyTailAnchor("answer-2", 800));
-
-    expect(list.scrollToIndex).toHaveBeenCalledTimes(1);
-  });
-
-  test("a drag ends the window in which a measurement is taken up", () => {
-    act(() => result.current.onScroll(scrollEvent(600)));
-    reportRows(3);
-    act(() => result.current.goToNext());
-    expect(list.scrollToIndex).toHaveBeenCalledTimes(1);
-
-    // The reader took the viewport by hand: their position is theirs again, so
-    // the row's own measurement no longer re-issues anything.
-    act(() => result.current.onScrollBeginDrag());
-    act(() => result.current.onReplyTailAnchor("answer-1", 240));
-
-    expect(list.scrollToIndex).toHaveBeenCalledTimes(1);
   });
 
   test("the press after a landed rung walks on instead of re-aligning it", () => {
@@ -284,21 +228,29 @@ describe("useQuestionNav", () => {
     });
   });
 
-  test("↑ from a landed answer reaches the prompt that produced it", () => {
+  test("↓ then ↑ returns to the prompt the reader came from", () => {
     act(() => result.current.onScroll(scrollEvent(600)));
-    // Down onto the older answer (the rung ↓ offers from the oldest question)…
-    reportRows(3);
-    act(() => result.current.goToNext());
+    // Up the transcript first, one press per prompt…
+    reportRows(0);
+    act(() => result.current.goToPrevious());
+    act(() => result.current.goToPrevious());
     expect(list.scrollToIndex).toHaveBeenLastCalledWith({
-      index: 2,
+      index: 3,
       viewPosition: 1,
       viewOffset: JUMP_VIEW_OFFSET,
       animated: false,
     });
 
-    // …and back up: the prompt that started that turn, not the prompt above it.
+    // …then down and back: the pair is one walk, so ↓ reaches the prompt it came
+    // past and ↑ returns to the one below it.
+    act(() => result.current.goToNext());
+    expect(list.scrollToIndex).toHaveBeenLastCalledWith({
+      index: 1,
+      viewPosition: 1,
+      viewOffset: JUMP_VIEW_OFFSET,
+      animated: false,
+    });
     act(() => result.current.goToPrevious());
-
     expect(list.scrollToIndex).toHaveBeenLastCalledWith({
       index: 3,
       viewPosition: 1,
@@ -307,21 +259,16 @@ describe("useQuestionNav", () => {
     });
   });
 
-  test("↓ from a prompt lands the answer below it, anchor and all", () => {
+  test("↓ from a landed prompt reaches the next prompt, not the answer below", () => {
     act(() => result.current.onScroll(scrollEvent(600)));
-    reportRows(0);
-    act(() => result.current.goToPrevious());
-    act(() => result.current.onReplyTailAnchor("answer-2", 40));
-
+    reportRows(3);
     act(() => result.current.goToNext());
 
-    // The transcript's own newest row is not a special case: it lands by its
-    // *start*, lifted to its last output like any other reply, rather than by
-    // its end at the bottom of the conversation.
+    // One press up from the oldest prompt: the answer between them is passed.
     expect(list.scrollToIndex).toHaveBeenLastCalledWith({
-      index: 0,
+      index: 1,
       viewPosition: 1,
-      viewOffset: JUMP_VIEW_OFFSET + 40,
+      viewOffset: JUMP_VIEW_OFFSET,
       animated: false,
     });
   });
@@ -333,8 +280,8 @@ describe("useQuestionNav", () => {
     act(() => result.current.goToPrevious());
     expect(list.scrollToIndex).toHaveBeenCalledTimes(2);
 
-    // The reader takes the viewport by hand up to the oldest question: the
-    // ladder is exhausted there, whatever the landed rung was.
+    // The reader takes the viewport by hand up to the oldest question: the walk
+    // is exhausted there, whatever the landed row was.
     reportRows(3);
     act(() => result.current.onScrollBeginDrag());
     act(() => result.current.goToPrevious());

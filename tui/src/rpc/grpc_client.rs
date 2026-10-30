@@ -511,14 +511,13 @@ impl GrpcClient {
         Ok(result)
     }
 
-    /// `getForkMessages()` for an explicit session — `{messages: [...]}`.
-    pub async fn get_fork_messages(&self) -> Result<Value, String> {
-        self.call("get_fork_messages", RpcCommand::default()).await
-    }
-
-    pub async fn fork_messages_for(&self, session_id: &str) -> Result<Value, String> {
+    /// `getForkEntries()` for an explicit session — `{entries: [...]}`, every
+    /// persisted question *and* answer a `/fork` can stop after, in transcript
+    /// order. The ones a still-running reply is writing are left out by the
+    /// agent, which is what makes the prompt of the live turn the newest point.
+    pub async fn fork_entries_for(&self, session_id: &str) -> Result<Value, String> {
         self.call(
-            "get_fork_messages",
+            "get_fork_entries",
             RpcCommand {
                 session_id: session_id.to_string(),
                 ..Default::default()
@@ -527,12 +526,22 @@ impl GrpcClient {
         .await
     }
 
+    /// Fork `session_id` so the child ends **with the chosen message**.
+    ///
+    /// `through_entry` is the mode that says exactly that: the parent's entries
+    /// up to and including `entry_id`, and nothing after it. The picker lists
+    /// both kinds of message, so both kinds are points — picking a question
+    /// stops the child at the question (a clean place to ask again), picking an
+    /// answer stops it at the answer. (`through_turn` would extend a question's
+    /// fork to the answer it produced, which is no longer what the reader chose:
+    /// the answer is its own row in the same list.)
     pub async fn fork_from(&self, session_id: &str, entry_id: &str) -> Result<Value, String> {
         self.call(
             "fork",
             RpcCommand {
                 session_id: session_id.to_string(),
                 entry_id: entry_id.to_string(),
+                mode: "through_entry".to_string(),
                 created_by: "tui".to_string(),
                 ..Default::default()
             },
@@ -748,20 +757,42 @@ impl GrpcClient {
     }
 
     /// The tail of a session's display history — page 1 of the backward read.
+    /// The tail of a session's display history — page 1 of the backward read.
+    ///
+    /// `ExchangeStart::Anywhere`: this is the read a switch waits for, and a page
+    /// is bounded by rows and bytes as well as exchanges now. Completing the
+    /// exchange would hand back the whole of a turn with hundreds of rows in it —
+    /// exactly what the row ceiling exists to stop — so the tail page is taken as
+    /// the agent cut it, and the reader scrolls up for the rest.
     pub async fn session_tail_page(&self, session_id: &str) -> Result<SessionEntriesPage, String> {
-        self.session_entries_page(session_id, i64::MAX, HISTORY_TAIL_EXCHANGES)
-            .await
+        self.session_entries_page_from(
+            session_id,
+            i64::MAX,
+            HISTORY_TAIL_EXCHANGES,
+            future_rpc::history::ExchangeStart::Anywhere,
+        )
+        .await
     }
 
     /// The page above an already loaded one: same size, resuming at the
     /// exclusive `before` cursor the previous page returned.
+    ///
+    /// Also `ExchangeStart::Anywhere`: a page is bounded by rows and bytes now,
+    /// and completing an exchange would undo that bound (it fetches the whole
+    /// turn back). A page-up therefore reads what the agent cut, and the next one
+    /// continues above it.
     pub async fn session_older_page(
         &self,
         session_id: &str,
         before: i64,
     ) -> Result<SessionEntriesPage, String> {
-        self.session_entries_page(session_id, before, HISTORY_PAGE_EXCHANGES)
-            .await
+        self.session_entries_page_from(
+            session_id,
+            before,
+            HISTORY_PAGE_EXCHANGES,
+            future_rpc::history::ExchangeStart::Anywhere,
+        )
+        .await
     }
 
     /// One backward page of a session's display history
@@ -782,13 +813,31 @@ impl GrpcClient {
         before: i64,
         limit: i64,
     ) -> Result<SessionEntriesPage, String> {
+        self.session_entries_page_from(
+            session_id,
+            before,
+            limit,
+            future_rpc::history::ExchangeStart::Complete,
+        )
+        .await
+    }
+
+    /// [`Self::session_entries_page`], naming what the page may do to the
+    /// exchange it starts in (see [`SessionEntriesPage`]'s first page).
+    async fn session_entries_page_from(
+        &self,
+        session_id: &str,
+        before: i64,
+        limit: i64,
+        start: future_rpc::history::ExchangeStart,
+    ) -> Result<SessionEntriesPage, String> {
         let cmd = RpcCommand {
             session_id: session_id.to_string(),
             before: Some(before),
             limit: Some(limit),
             ..Default::default()
         };
-        let page = future_rpc::history::read_page(cmd, |command| async move {
+        let page = future_rpc::history::read_page_from(cmd, start, |command| async move {
             let value = self.call("get_session_entries", command).await?;
             serde_json::from_value::<future_rpc::payloads::SessionEntriesPage<Value>>(value)
                 .map_err(|e| format!("invalid history page: {e}"))
@@ -3277,7 +3326,6 @@ pub(crate) mod tests {
                 ("switch_session".into(), "{\"cancelled\":false}".into()),
                 ("fork".into(), "{\"sessionId\":\"s-fork\"}".into()),
                 ("clone".into(), "{\"sessionId\":\"s-clone\"}".into()),
-                ("get_fork_messages".into(), "{\"messages\":[]}".into()),
                 (
                     "list_sessions".into(),
                     "{\"sessions\":[{\"id\":\"s1\",\"cwd\":\"/tmp\",\"updatedAt\":\"2026-01-01\",\"model\":\"m\"}, {\"bad\":true}]}"
@@ -3310,7 +3358,6 @@ pub(crate) mod tests {
         assert_eq!(client.get_current_session_id(), "s-clone");
 
         // Plain calls.
-        client.get_fork_messages().await.unwrap();
         client.set_session_name("name").await.unwrap();
         let sessions = client.list_sessions().await.unwrap();
         assert_eq!(sessions.len(), 1); // the malformed entry is dropped

@@ -47,6 +47,34 @@ pub fn close_cells(columns: usize, lang: Language) -> Option<(u16, u16)> {
     Some(((columns - 1 - chip_w) as u16, chip_w as u16))
 }
 
+/// Where a run at the *end* of a title sits on a `columns`-wide top border
+/// (`╭─ title ───╮`), or `None` when the title is clipped or carries no such
+/// run.
+///
+/// The composer writes the draft's attachment count at the end of its title,
+/// and those cells are the picture's own door: the count is what the reader
+/// clicks to open the image they are about to send. Same rule as
+/// [`close_cells`] — one answer for the painter and the hit map, so a control
+/// that looks live is one.
+///
+/// `lead` is everything the title holds before the run; the run itself is
+/// `tail`.
+pub fn title_tail_cells(columns: usize, lead: &str, tail: &str) -> Option<(u16, u16)> {
+    let inner = columns.checked_sub(2)?;
+    let tail_w = width(tail);
+    if tail_w == 0 {
+        return None;
+    }
+    // `top_rule` clips a label that does not fit its room, and the clip eats
+    // the tail first: a run that was cut off is not a control, so there is no
+    // cell to aim at.
+    if width(&format!(" {lead}{tail} ")) > inner.saturating_sub(1) {
+        return None;
+    }
+    // `╭`, `─`, then the space that separates the corner from the title.
+    Some(((3 + width(lead)) as u16, tail_w as u16))
+}
+
 /// [`box_top`] with any already-painted chip right-aligned on the rule:
 /// `╭─ title ───── chip╮`. The chip occupies the last cells before the right
 /// corner, and one rule cell is kept between it and the title.
@@ -457,6 +485,44 @@ mod tests {
     use crate::workbench::theme::FUTURE_DARK;
 
     const P: Palette = FUTURE_DARK;
+
+    /// The composer's attachment count is a control, so the cells it reports
+    /// have to be the cells the rule paints it on: a region one column off puts
+    /// the click on the hint beside it, and a region wider than the run lets a
+    /// click land on rule cells that look like nothing.
+    #[test]
+    fn the_title_tail_sits_on_the_cells_it_reports() {
+        let lead = "输入 · enter 发送 · ctrl+j 换行";
+        let tail = " · 📎 2 张图片";
+        let columns = 60;
+        let row = box_top(&P, columns, &format!("{lead}{tail}"));
+        let plain = crate::utils::strip_ansi_codes(&row);
+        let (x, w) = title_tail_cells(columns, lead, tail).expect("room on the rule");
+        // The cells `x..x+w` of the painted row, read by display width so a
+        // wide character counts as the two columns it occupies.
+        let mut cells = String::new();
+        let mut column = 0;
+        for ch in plain.chars() {
+            let cw = width(&ch.to_string());
+            if column >= usize::from(x) && column < usize::from(x + w) {
+                cells.push(ch);
+            }
+            column += cw;
+        }
+        assert_eq!(cells, tail, "{plain:?}");
+        assert_eq!(column, columns, "the rule is the box's width");
+    }
+
+    /// A title the box clips drops its tail first, so there is no cell to aim
+    /// at: a control painted nowhere must not be clickable somewhere.
+    #[test]
+    fn a_clipped_title_has_no_tail_to_click() {
+        let lead = "输入 · enter 发送 · ctrl+j 换行";
+        let tail = " · 📎 12 张图片";
+        assert_eq!(title_tail_cells(24, lead, tail), None);
+        assert!(title_tail_cells(120, lead, tail).is_some());
+        assert_eq!(title_tail_cells(120, lead, ""), None);
+    }
 
     /// A draft that fills the box's content width is painted whole, and every
     /// row of the box is exactly `columns` wide.

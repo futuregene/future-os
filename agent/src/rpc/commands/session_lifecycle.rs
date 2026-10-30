@@ -506,23 +506,7 @@ pub(crate) fn cmd_get_fork_messages(state: &AppState, cmd: &RpcCommand, id: &str
                 .iter()
                 .filter(|e| e.entry_type == crate::session::ENTRY_TYPE_USER)
                 .map(|e| {
-                    let content_text = e
-                        .content
-                        .as_ref()
-                        .map(|c| {
-                            if let Some(arr) = c.as_array() {
-                                // First text block only — later text blocks are
-                                // the agent-injected attachment-path list.
-                                arr.iter()
-                                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                                    .next()
-                                    .unwrap_or("")
-                                    .to_string()
-                            } else {
-                                c.as_str().unwrap_or("").to_string()
-                            }
-                        })
-                        .unwrap_or_default();
+                    let content_text = entry_text(e);
                     serde_json::json!({
                         "id": e.id,
                         "role": e.role,
@@ -538,6 +522,105 @@ pub(crate) fn cmd_get_fork_messages(state: &AppState, cmd: &RpcCommand, id: &str
         id,
         "get_fork_messages",
         serde_json::json!({"messages": user_entries}),
+    )
+}
+
+/// The display text of a persisted entry: its first text block.
+///
+/// Later text blocks are the agent-injected attachment-path list, so only the
+/// first one is what the reader typed or the model wrote. A pre-block-array
+/// journal stored the content as a bare string, which is the fallback.
+fn entry_text(entry: &crate::session::SessionEntry) -> String {
+    entry
+        .content
+        .as_ref()
+        .map(|content| {
+            if let Some(blocks) = content.as_array() {
+                blocks
+                    .iter()
+                    .filter_map(|block| block.get("text").and_then(serde_json::Value::as_str))
+                    .next()
+                    .unwrap_or("")
+                    .to_string()
+            } else {
+                content.as_str().unwrap_or("").to_string()
+            }
+        })
+        .unwrap_or_default()
+}
+
+/// Where a fork may end: the entries before this index.
+///
+/// A run owns everything from its `run_started` on. While one is in flight —
+/// its start has no terminal after it — the entries it is still writing are not
+/// fork points: there is no answer to branch *at* yet, and the only point of
+/// that turn a fork can name is the prompt that started it, which sits before
+/// the start.
+fn fork_settled_end(entries: &[crate::session::SessionEntry]) -> usize {
+    let last_started = entries
+        .iter()
+        .rposition(|entry| entry.entry_type == crate::session::ENTRY_TYPE_RUN_STARTED);
+    let last_terminal = entries
+        .iter()
+        .rposition(|entry| entry.entry_type == crate::session::ENTRY_TYPE_RUN_TERMINAL);
+    match (last_started, last_terminal) {
+        (Some(started), terminal) if terminal.is_none_or(|terminal| started > terminal) => started,
+        _ => entries.len(),
+    }
+}
+
+/// Load the session's fork points — every question and every answer it has
+/// persisted, in transcript order, each one a place a `/fork` can stop at.
+///
+/// `get_fork_messages` answers the older question ("which user turns can a fork
+/// start from"), which is what `session forks` and the desktop's fork button
+/// list. This one answers the surface's own picker: choose *any* message — the
+/// reader's or the model's — and the child ends right after it. So assistant
+/// entries are candidates too, and the ones still being written are left out
+/// (see [`fork_settled_end`]).
+///
+/// Entries without text are not listed: a pure tool step, a compaction marker
+/// or an attachment-only prompt has no line to show in the picker and is not a
+/// place a reader means to stop at.
+pub(crate) fn cmd_get_fork_entries(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
+    let entries: Vec<serde_json::Value> = state
+        .session_manager
+        .load(&cmd.session_id)
+        .map(|session| {
+            let end = fork_settled_end(&session.entries);
+            session.entries[..end]
+                .iter()
+                .filter(|entry| {
+                    matches!(
+                        entry.entry_type.as_str(),
+                        crate::session::ENTRY_TYPE_USER | crate::session::ENTRY_TYPE_ASSISTANT
+                    )
+                })
+                .filter_map(|entry| {
+                    let text = entry_text(entry);
+                    if text.trim().is_empty() {
+                        return None;
+                    }
+                    let role = if entry.entry_type == crate::session::ENTRY_TYPE_USER {
+                        "user"
+                    } else {
+                        "assistant"
+                    };
+                    Some(serde_json::json!({
+                        "id": entry.id,
+                        "role": role,
+                        "kind": role,
+                        "blocks": [{"kind": "text", "text": text}],
+                        "createdAtMs": entry.timestamp.timestamp_millis(),
+                    }))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    RpcResponse::ok(
+        id,
+        "get_fork_entries",
+        serde_json::json!({"entries": entries}),
     )
 }
 
@@ -654,7 +737,12 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
     if let Err(e) = new_sess.set_model(&default_model.clone()) {
         tracing::warn!("[new_session] could not sync model to fresh loop: {e}");
     }
-    // Always start new sessions at the app's preferred thinking level.
+    // Start new sessions at the product default thinking level, NOT at some
+    // remembered preference: `DEFAULT_THINKING_LEVEL` is `"default"`, i.e. send
+    // no thinking/effort parameter and let the provider decide. Clients that
+    // want a level (GUI/TUI pickers, `future goal run` when it inherits the
+    // supervisor's configuration) set it explicitly on this command or through
+    // `set_thinking_level` right after.
     new_sess.thinking_level =
         new_sess.normalize_thinking_level(crate::rpc::session::DEFAULT_THINKING_LEVEL);
 

@@ -78,7 +78,7 @@ struct Paging {
 /// ([`super::Workbench::surface_command`]) and this list have to account for
 /// every entry exactly once. That is the check whose absence let five entries
 /// advertise themselves and then answer `Unknown command`.
-pub const APP_COMMANDS: [&str; 20] = [
+pub const APP_COMMANDS: [&str; 17] = [
     "/new",
     "/stop",
     "/reply-detail",
@@ -86,17 +86,14 @@ pub const APP_COMMANDS: [&str; 20] = [
     "/quit",
     "/copy",
     "/paste",
-    "/preview",
     "/refresh",
+    "/rename",
     "/mouse",
     "/compact",
     "/tools",
-    "/providers",
     "/git",
     "/files",
     "/approval",
-    "/history",
-    "/tree",
     "/fork",
     "/worktree",
 ];
@@ -745,6 +742,29 @@ impl Live {
             return false;
         };
         self.sessions.replace(sessions)
+    }
+
+    /// Put a name this client just wrote to the agent on screen: the header's
+    /// title and the rail's row for the conversation.
+    ///
+    /// No read follows the write. `set_session_name` persists the very string it
+    /// was given and the agent echoes nothing back, so a `list_sessions` here
+    /// would buy seconds of frozen loop (6.9 s for 67 conversations, measured
+    /// 2026-10-28) to learn what the request already said. A poll that lands
+    /// later reports the same name, and a name another client set arrives that
+    /// way as well.
+    fn apply_session_name(&mut self, name: &str) {
+        let id = self.state.session_id.clone();
+        self.state.session_name = Some(name.to_string());
+        self.sessions.set_name(&id, name);
+        // A cached conversation carries its own state, and the title above the
+        // transcript is drawn from the *attached* one: coming back to this
+        // conversation from a cached copy must not restore the old title.
+        for (_, cached) in &mut self.cached {
+            if cached.state.session_id == id {
+                cached.state.session_name = Some(name.to_string());
+            }
+        }
     }
 
     /// Ask the agent for the conversation list *without* waiting for the answer,
@@ -1866,6 +1886,7 @@ impl Live {
                 self.draft = InputView::from_editor(*editor, self.draft.placeholder.clone())
             }
             WbAction::CopyLast
+            | WbAction::CopyMessage(_)
             | WbAction::ToggleMouse
             | WbAction::OpenQueue
             | WbAction::OpenApproval
@@ -1878,8 +1899,6 @@ impl Live {
             | WbAction::SelectGit(_)
             | WbAction::GitWorktree(_)
             | WbAction::CopyText(_)
-            | WbAction::OpenHistory
-            | WbAction::OpenTree
             | WbAction::OpenFork
             | WbAction::OpenWorktree => {}
             WbAction::ApprovalDecision { approved, rule } => {
@@ -2188,15 +2207,6 @@ impl Live {
             "compact" => {
                 self.compact(arg).await;
             }
-            "sandbox" => {
-                // `/sandbox <mode>` sets it; a bare `/sandbox` is the menu the
-                // driver opens before this handler ever sees it.
-                if crate::approval_mode::ApprovalMode::from_wire(&arg).is_some() {
-                    self.set_approval(&arg).await;
-                } else {
-                    self.cycle_mode().await;
-                }
-            }
             "history" | "fork" => {}
             "worktree" if !arg.is_empty() => {
                 if arg.strip_prefix("new ").is_some() {
@@ -2256,25 +2266,6 @@ impl Live {
                     }
                 }
             }
-            "providers" => match self.client.list_providers().await {
-                Ok(providers) => {
-                    // An empty list used to paint an empty notice row, which
-                    // reads as "the verb did nothing" rather than "there are no
-                    // providers": an unconfigured agent is a real state.
-                    self.notice = Some(if providers.is_empty() {
-                        t(self.lang, Key::ProvidersEmpty).into()
-                    } else {
-                        providers
-                            .iter()
-                            .map(|provider| format!("{} ({})", provider.id, provider.model_count))
-                            .collect::<Vec<_>>()
-                            .join(" · ")
-                    });
-                }
-                Err(error) => {
-                    self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
-                }
-            },
             // A model named in the command line is a choice like any other, so
             // it takes the launchpad road too when nothing is attached.
             "model" if !arg.is_empty() && self.detached() => self.set_pending_model(&arg),
@@ -2300,6 +2291,28 @@ impl Live {
                 self.refresh_state().await;
                 self.refresh_sessions().await;
             }
+            // The title is the one thing about a conversation the reader names
+            // themselves, so it is written to the agent rather than kept here
+            // (the desktop and the phone rename through the same command, and
+            // the rail's row is then whatever the agent reports).
+            "rename" if self.detached() => {
+                self.notice = Some(t(self.lang, Key::NeedsConversation).into());
+            }
+            "rename" if arg.is_empty() => {
+                self.notice = Some(t(self.lang, Key::RenameUsage).into());
+            }
+            "rename" => match self.client.set_session_name(&arg).await {
+                Ok(()) => {
+                    // The name the request carried is the answer, so it is
+                    // installed rather than read back (see
+                    // [`Self::apply_session_name`]).
+                    self.apply_session_name(&arg);
+                    self.notice = Some(i18n::render(self.lang, Key::NoticeRenamed, &[&arg]));
+                }
+                Err(error) => {
+                    self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
+                }
+            },
             // The whole record, through the agent's own exporter (the same one
             // the desktop uses). The path it wrote is the whole answer, so it
             // goes on the notice row rather than into the transcript.
@@ -2325,21 +2338,20 @@ impl Live {
                 Err(error) => self.notice = Some(format!("Could not export: {error}")),
             },
             // The verbs the *surface* answers (`run.rs` calls it before this
-            // handler): `/usage`, `/skills`, `/workspace`, `/transcript`,
-            // `/help`. They are named here so a caller that bypasses the
-            // surface is not told a command the palette advertises does not
-            // exist — the notice the whole family used to produce. The four
-            // choosers (`/model`, `/thinking`, `/mode`, `/workspace`) come back
+            // handler): `/usage`, `/skills`, `/workspace`, `/help`. They are
+            // named here so a caller that bypasses the surface is not told a
+            // command the palette advertises does not exist — the notice the
+            // whole family used to produce. The four choosers (`/model`,
+            // `/thinking`, `/mode`, `/workspace`) come back
             // to the surface the same way: the picker is not the agent's.
             // The verbs the *driver* answers before this handler ever runs: the
-            // boxes it opens (`/preview`, `/git`, `/files`, `/approval`,
-            // `/tree`), the choosers the surface opens for the reader, and the
-            // names the panels took with them (`/usage`, `/skills`). They are
-            // listed so a caller that bypasses the driver is not told a command
-            // the palette advertises does not exist — the notice the whole
-            // family used to produce.
-            "usage" | "skills" | "workspace" | "transcript" | "help" | "thinking" | "mode"
-            | "preview" | "git" | "files" | "approval" | "tree" | "worktree" => {}
+            // boxes it opens (`/git`, `/files`, `/approval`), the choosers the
+            // surface opens for the reader, and the names the panels took with
+            // them (`/usage`, `/skills`). They are listed so a caller that
+            // bypasses the driver is not told a command the palette advertises
+            // does not exist — the notice the whole family used to produce.
+            "usage" | "skills" | "workspace" | "help" | "thinking" | "mode" | "git" | "files"
+            | "approval" | "worktree" => {}
             other => self.notice = Some(format!("Unknown command /{other}")),
         }
         Outcome::Continue
@@ -3544,27 +3556,39 @@ impl Live {
             .unwrap_or_default()
     }
 
-    pub async fn load_fork_points(&mut self) {
+    /// Load the messages `/fork` can stop after: every question and every
+    /// answer the session has persisted, in transcript order.
+    ///
+    /// The list comes from the agent rather than off the transcript, because
+    /// the agent is what knows which messages are *persisted*: a reply still
+    /// streaming has no entry to fork at yet, so the newest point the picker
+    /// offers is the prompt that started it — exactly the rule the surface
+    /// states. `get_fork_messages` is the other, older question ("which user
+    /// turns a fork can start from"); this one is the picker's.
+    pub async fn load_fork_entries(&mut self) {
         let session_id = self.state.session_id.clone();
-        match self.client.fork_messages_for(&session_id).await {
+        match self.client.fork_entries_for(&session_id).await {
             Ok(value) => {
                 self.fork_points = value
-                    .get("messages")
+                    .get("entries")
                     .and_then(Value::as_array)
                     .into_iter()
                     .flatten()
-                    .filter_map(|message| {
-                        let id = message.get("id")?.as_str()?.to_string();
-                        let text = message
+                    .filter_map(|entry| {
+                        let id = entry.get("id")?.as_str()?.to_string();
+                        let role = match entry.get("role").and_then(Value::as_str) {
+                            Some("assistant") => super::state::ForkRole::Assistant,
+                            _ => super::state::ForkRole::User,
+                        };
+                        let text = entry
                             .get("blocks")
                             .and_then(Value::as_array)
                             .into_iter()
                             .flatten()
                             .find_map(|block| block.get("text").and_then(Value::as_str))
-                            .or_else(|| message.get("content").and_then(Value::as_str))
                             .unwrap_or("")
                             .to_string();
-                        Some(super::state::ForkPoint { id, text })
+                        Some(super::state::ForkPoint { id, role, text })
                     })
                     .collect();
             }
@@ -3572,6 +3596,18 @@ impl Live {
                 self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
             }
         }
+    }
+
+    /// The `[复制]` control under one message: that message's own text, as the
+    /// transcript holds it (markdown source, not the painted ANSI rows).
+    ///
+    /// The same clipboard road `/copy` takes, one message instead of the last
+    /// answer — a prompt can be copied back into the draft, a reply quoted into
+    /// another conversation.
+    pub fn copy_message(&self, row: usize) -> Result<String, String> {
+        self.chat
+            .copyable_text_at(row)
+            .ok_or_else(|| t(self.lang, Key::CopyEmpty).to_string())
     }
 
     pub async fn fork_at(&mut self, entry_id: &str) {
@@ -4237,6 +4273,23 @@ impl SessionList {
 
     fn rev(&self) -> u64 {
         self.rev
+    }
+
+    /// Give one conversation a new name in place.
+    ///
+    /// The listing is the rail's own copy of what the agent holds, and a rename
+    /// is the one write that changes a row without changing its place: the
+    /// version moves so the view is re-filed, and an unknown id (a launchpad, or
+    /// a conversation the list has not caught up with) changes nothing.
+    fn set_name(&mut self, id: &str, name: &str) {
+        let Some(row) = self.rows.iter_mut().find(|row| row.id == id) else {
+            return;
+        };
+        if row.session_name.as_deref() == Some(name) {
+            return;
+        }
+        row.session_name = Some(name.to_string());
+        self.rev = self.rev.wrapping_add(1);
     }
 }
 
@@ -5171,7 +5224,8 @@ impl Live {
     }
 }
 
-/// The words a transcript's process rows are drawn in (see `FoldWords`).
+/// The words a transcript's rows are drawn in (see `FoldWords`): the fold
+/// summaries and the two controls under every message.
 fn fold_words(lang: Language) -> FoldWords {
     FoldWords {
         tool_call: t(lang, Key::ChatFoldToolCall),
@@ -5180,6 +5234,7 @@ fn fold_words(lang: Language) -> FoldWords {
         thoughts: t(lang, Key::ChatFoldThoughts),
         thinking: t(lang, Key::ChatThinkingLabel),
         process: t(lang, Key::ChatProcessLabel),
+        copy: t(lang, Key::ChatCopyChip),
     }
 }
 
@@ -8976,7 +9031,6 @@ mod tests {
                     ("get_state", r#"{"sessionId":"s1","model":"mock"}"#),
                     ("get_session_entries", r#"{"entries":[]}"#),
                     ("export_html", r#"{"path":"/tmp/x.html"}"#),
-                    ("list_providers", r#"{"providers":[]}"#),
                     ("list_sessions", r#"{"sessions":[]}"#),
                     ("list_models", r#"{"models":[]}"#),
                 ]);
@@ -9062,6 +9116,109 @@ mod tests {
                 assert!(
                     !notice.is_empty() && !notice.contains("/tools"),
                     "the notice says the choice is staged, not that it took effect: {notice:?}"
+                );
+            })
+        });
+    }
+
+    /// `/rename <name>` is the one verb that writes a conversation's own title:
+    /// the name leaves for the agent as `set_session_name` on the session on
+    /// screen, and the surface installs it from the answer it already holds —
+    /// the header and the rail's row — instead of re-reading a listing that
+    /// costs seconds (see [`Live::apply_session_name`]).
+    ///
+    /// A bare verb is the usage line, not a rename, and the launchpad has no
+    /// conversation to name: neither may reach the agent.
+    #[test]
+    fn the_rename_verb_writes_the_title_and_installs_it_without_a_listing() {
+        with_big_stack(|| {
+            Box::pin(async {
+                let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+                    ("get_state", r#"{"sessionId":"s1","model":"mock"}"#),
+                    ("get_session_entries", r#"{"entries":[]}"#),
+                    (
+                        "list_sessions",
+                        r#"{"sessions":[{"id":"s1","model":"mock","cwd":"/tmp","firstMessage":"hello","queryCount":1}]}"#,
+                    ),
+                ]);
+                let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock.clone()).await;
+                let (mut live, _events) = Live::attach(&addr, None, false, None)
+                    .await
+                    .expect("attach to the test agent");
+                live.refresh_sessions().await;
+                assert_eq!(live.sessions.len(), 1, "the rail holds the conversation");
+                assert_eq!(
+                    live.title(),
+                    "hello",
+                    "the row is called by its first message"
+                );
+
+                let before = seen.lock().unwrap().len();
+                live.apply(WbAction::Command("/rename 修 parser".into()))
+                    .await;
+
+                let commands = seen.lock().unwrap().clone();
+                // The write is the whole round trip: the name installed below
+                // came from the request, not from a listing read back.
+                assert_eq!(
+                    commands[before..].to_vec(),
+                    vec!["set_session_name".to_string()],
+                    "`/rename` is one write and no re-read: {commands:?}"
+                );
+                let request =
+                    crate::rpc::grpc_client::tests::last_request_of(&mock, "set_session_name");
+                assert_eq!(
+                    request.session_id, "s1",
+                    "the title belongs to the conversation on screen"
+                );
+                assert_eq!(
+                    request.name, "修 parser",
+                    "the words after the verb are the name"
+                );
+                assert_eq!(
+                    live.notice.as_deref(),
+                    Some(
+                        i18n::render(live.language(), Key::NoticeRenamed, &[&"修 parser"]).as_str()
+                    ),
+                    "the notice names the title that took"
+                );
+                assert_eq!(live.title(), "修 parser", "the header names the new title");
+                assert_eq!(
+                    live.sessions
+                        .iter()
+                        .find(|row| row.id == "s1")
+                        .and_then(|row| row.session_name.as_deref()),
+                    Some("修 parser"),
+                    "the rail's row carries the new title without a re-read"
+                );
+
+                // A bare verb says what to type rather than naming a
+                // conversation nothing.
+                live.notice = None;
+                live.apply(WbAction::Command("/rename".into())).await;
+                assert_eq!(
+                    live.notice.as_deref(),
+                    Some(t(live.language(), Key::RenameUsage)),
+                    "a rename needs a name"
+                );
+
+                // The launchpad has no conversation: the verb must not name the
+                // one the reader just left.
+                live.to_launchpad();
+                live.apply(WbAction::Command("/rename 别的".into())).await;
+                assert_eq!(
+                    live.notice.as_deref(),
+                    Some(t(live.language(), Key::NeedsConversation)),
+                    "the launchpad has no conversation to rename"
+                );
+                let after = seen.lock().unwrap().clone();
+                assert_eq!(
+                    after
+                        .iter()
+                        .filter(|command| command.as_str() == "set_session_name")
+                        .count(),
+                    1,
+                    "only the attached conversation was renamed: {after:?}"
                 );
             })
         });
@@ -9212,5 +9369,129 @@ mod tests {
                 }
             })
         });
+    }
+
+    /// The `[复制]` control copies the message the reader pointed at, not the
+    /// last answer `/copy` takes — the markdown the transcript holds, so a reply
+    /// can be quoted elsewhere. The row is resolved to its message, so a copy of
+    /// any other row (a prompt, a call) is the same call.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // FUTURE_HOME is process-global and must stay pinned across awaits.
+    async fn the_copy_control_copies_the_message_under_it() {
+        let _guard = crate::test_env::lock();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_env::EnvVarGuard::set("FUTURE_HOME", home.path());
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            ("get_session_entries", r#"{"entries":[]}"#),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        live.chat.add_message(ChatMessage::new(
+            "u1".into(),
+            ChatRole::User,
+            "写个回归测试",
+        ));
+        live.chat
+            .add_message(ChatMessage::new("a1".into(), ChatRole::Assistant, "好了。"));
+        live.chat.render(80);
+
+        let reply_row = *live
+            .chat
+            .control_rows()
+            .last()
+            .expect("the reply's controls");
+        assert_eq!(live.copy_message(reply_row).as_deref(), Ok("好了。"));
+        // The prompt's own row has no chip, but the call is the same: a row that
+        // covers a message is copied as that message.
+        let prompt_row = (0..reply_row)
+            .find(|row| live.chat.message_at_row(*row) == Some(0))
+            .expect("the prompt's first row");
+        assert_eq!(live.copy_message(prompt_row).as_deref(), Ok("写个回归测试"));
+        // A row that covers no message answers with the empty-clipboard notice
+        // rather than a panic.
+        assert!(live.copy_message(9_999).is_err());
+    }
+
+    /// The `/fork` box lists what the agent says is persisted: questions *and*
+    /// answers, in transcript order, each with the role its row is labelled by.
+    ///
+    /// The list comes from the agent and not off the transcript on purpose — a
+    /// reply still streaming has no entry yet, so the newest point a live turn
+    /// offers is the prompt that started it.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // FUTURE_HOME is process-global and must stay pinned across awaits.
+    async fn the_fork_box_lists_questions_and_answers() {
+        let _guard = crate::test_env::lock();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_env::EnvVarGuard::set("FUTURE_HOME", home.path());
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            (
+                "get_fork_entries",
+                r#"{"entries":[
+                    {"id":"e1","role":"user","blocks":[{"kind":"text","text":"why does it fail?"}],"createdAtMs":1},
+                    {"id":"e2","role":"assistant","blocks":[{"kind":"text","text":"because the loop advanced first"}],"createdAtMs":2}
+                ]}"#,
+            ),
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            ("get_session_entries", r#"{"entries":[]}"#),
+            ("list_sessions", r#"{"sessions":[]}"#),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+
+        live.load_fork_entries().await;
+        let points: Vec<_> = live
+            .fork_points
+            .iter()
+            .map(|point| (point.role, point.text.as_str(), point.id.as_str()))
+            .collect();
+        assert_eq!(
+            points,
+            vec![
+                (
+                    super::super::state::ForkRole::User,
+                    "why does it fail?",
+                    "e1"
+                ),
+                (
+                    super::super::state::ForkRole::Assistant,
+                    "because the loop advanced first",
+                    "e2"
+                ),
+            ]
+        );
+        assert!(live.notice.is_none(), "{:?}", live.notice);
+    }
+
+    /// A chosen point is the message it names: `through_entry`, so the child
+    /// ends there — an answer's fork carries the answer, a question's fork
+    /// stops at the question.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // FUTURE_HOME is process-global and must stay pinned across awaits.
+    async fn the_chosen_fork_point_ends_the_child_with_that_message() {
+        let _guard = crate::test_env::lock();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_env::EnvVarGuard::set("FUTURE_HOME", home.path());
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            ("get_session_entries", r#"{"entries":[]}"#),
+            ("list_sessions", r#"{"sessions":[]}"#),
+            ("fork", r#"{"sessionId":"child-1"}"#),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock.clone()).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+
+        live.fork_at("entry-9").await;
+        let request = crate::rpc::grpc_client::tests::last_request_of(&mock, "fork");
+        assert_eq!(request.entry_id, "entry-9");
+        assert_eq!(request.mode, "through_entry");
+        assert_eq!(request.created_by, "tui");
     }
 }
