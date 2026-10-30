@@ -4581,7 +4581,7 @@ pub const TYPED_ONLY: [(&str, Key); 16] = [
     // A chord of their own.
     ("/new", Key::CmdNew),             // ctrl+n
     ("/stop", Key::CmdStop),           // ctrl+c
-    ("/paste", Key::CmdPaste),         // ctrl+v
+    ("/paste", Key::CmdPaste),         // ctrl+v (alt+v on Windows)
     ("/git", Key::CmdGit),             // ctrl+g
     ("/files", Key::CmdFiles),         // ctrl+f
     ("/mode", Key::CmdMode),           // ctrl+s
@@ -6977,8 +6977,12 @@ mod tests {
         // The paste and the clipboard chord land in the draft the same way.
         let actions = workbench.handle(WbEvent::Paste("pasted".into()), &data);
         assert!(matches!(actions.as_slice(), [WbAction::EditEditor(_)]));
+        // The chord this platform shows: the terminal forwards `ctrl+v`, so it
+        // is the app's there; on Windows the console owns it and the map says
+        // `alt+v` (see `default_key`).
+        let clipboard = preferences::Action::PasteImage.default_key().to_string();
         assert_eq!(
-            workbench.handle(WbEvent::Key("ctrl+v".into()), &data),
+            workbench.handle(WbEvent::Key(clipboard), &data),
             vec![WbAction::PasteClipboard]
         );
 
@@ -8294,8 +8298,9 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// `ctrl+v` asks the adapter to read the clipboard. Previewing an attached
-    /// image has no chord — the fifteen ctrl chords go to the actions pressed
+    /// The clipboard chord asks the adapter to read the clipboard (`ctrl+v`, or
+    /// `alt+v` on Windows — see `default_key`). Previewing an attached
+    /// image has no chord — the ctrl chords go to the actions pressed
     /// while working — and its door is the count on the composer's title, not a
     /// typed verb: `/preview` spent a palette row on a picture the reader can
     /// see one row above the draft.
@@ -8303,15 +8308,21 @@ mod tests {
     fn the_clipboard_key_and_the_attachment_count_ask_for_their_verbs() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
+        let clipboard = preferences::Action::PasteImage.default_key().to_string();
         assert_eq!(
-            workbench.handle(WbEvent::Key("ctrl+v".into()), &data),
+            workbench.handle(WbEvent::Key(clipboard), &data),
             vec![WbAction::PasteClipboard]
         );
         assert!(!workbench
             .palette_rows(&data)
             .iter()
             .any(|row| row.command() == "/preview"));
-        assert_eq!(workbench.keys.action("alt+v"), None);
+        // `alt+v` is the preview's on no platform: on Windows it is the
+        // clipboard's (the console owns `ctrl+v` there), and elsewhere nobody's.
+        assert_eq!(
+            workbench.keys.action("alt+v"),
+            cfg!(windows).then_some(preferences::Action::PasteImage)
+        );
     }
 
     /// The palette is one list of two kinds of thing: a verb the surface answers

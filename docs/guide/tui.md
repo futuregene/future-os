@@ -124,10 +124,15 @@ image is carried as the `[Image #N]` marker the input already understands, so it
 is sent with the prompt the same way a dragged-in file is; a click on that count
 opens the newest attached image (the count is the picture's door — there is no
 chord and no typed verb for it, because a `[Image #N]` marker ahead of the verb
-would turn the line into a prompt). `/paste` is the same verb from the palette —
-it is there
-because Windows Terminal binds `ctrl+v` to its own paste (which cannot carry an
-image), so on that terminal the key never arrives.
+would turn the line into a prompt).
+
+**On Windows the chord is `alt+v`.** Windows Terminal binds `ctrl+v` to its own
+paste, which carries text and can never carry an image, so on that terminal the
+key never reaches the app at all — and an image can only travel when this process
+reads the clipboard itself. `alt+v` is a chord the console does not take; it
+arrives as `ESC v` from either Windows front end. The shortcut editor (`ctrl+q`)
+still rebinds any other free chord, and `/paste` is the same verb from the
+palette for a reader who moved it.
 
 Pictures **in the conversation** are their names, linked to the file — a line of
 text, never a picture drawn inline. A picture that came with a message paints the
@@ -227,16 +232,18 @@ message creates the session with exactly what the chips name, so a chip never
 names something the session will not run under; there is no separate permission
 level, because no other client offers one.
 
-**One prefix: `ctrl`.** No default uses `alt` — on macOS the Option key composes
-a character unless the reader turns on "Use Option as Meta", so an `alt`
+**One prefix: `ctrl`.** No default uses `alt` off Windows — on macOS the Option key
+composes a character unless the reader turns on "Use Option as Meta", so an `alt`
 shortcut is one that silently does nothing on the terminal this surface is
-developed against — and no default is a function key (`F1`–`F12` need `Fn` on a
-laptop and are absent on a compact keyboard).
+developed against; Windows' one exception is the clipboard chord, because the
+console owns the `ctrl` key it would otherwise take (see Pictures) — and no
+default is a function key (`F1`–`F12` need `Fn` on a laptop and are absent on a
+compact keyboard).
 
 The chords are `ctrl+c` stop the run in flight, `ctrl+n` new chat, `ctrl+r`
 sessions, `ctrl+d` the rail, `ctrl+x` quit, `ctrl+p` commands, `ctrl+o` model,
 `ctrl+t` effort (thinking), `ctrl+s` approval mode, `ctrl+l` workspaces,
-`ctrl+f` the files panel, `ctrl+g` the git browser, `ctrl+v` paste, `ctrl+q`
+`ctrl+f` the files panel, `ctrl+g` the git browser, `ctrl+v` (`alt+v` on Windows) paste, `ctrl+q`
 preferences, and `ctrl+1`/`ctrl+2` the rail's two tabs. Everything else is a
 typed verb or a pointer target: `/delete`, `/pin`, `/rename`, `/queue`,
 `/copy`, `/refresh`, `/reply-detail`, and `?` for help — the help overlay
@@ -428,7 +435,7 @@ click on the rail's tab strip are the doors to the same places.
 | `ctrl+g` or `[ctrl+g] git` in the header | The repository browser: 提交 / 引用 / 改动 / 暂存 tabs, a log across every branch with each row's date-time and committer in columns beside a lane-coloured graph, and the selected row's patch. `1`–`4` pick a tab, `tab` switches list/detail, `PgUp`/`PgDn` page the patch, `y` copies the row. The repository is read beside the surface, not in front of it: opening the panel, changing tab or narrowing its filter keeps the rail, a streaming reply and the keyboard live, and the panel paints its previous rows until the new ones arrive |
 | `ctrl+o` | Model picker (`/model`): every model the agent offers, grouped by provider, with the reasoning slider on its first row |
 | `ctrl+f` or `/files` | The **files panel**: this conversation's workspace as a tree, in a box over the frame — the same session scope as `/git`. `↑`/`↓` walk it, `⏎`/`→` open, `⌫`/`←` go up a level, `r` re-reads the directory, `esc` closes. The header's `[ctrl+f] 文件` button is the pointer's door to it, and `[ctrl+g] git` sits beside it |
-| `ctrl+v` | Read the clipboard: an image becomes a draft attachment, text is pasted. `/paste` does the same for terminals that bind the key themselves |
+| `ctrl+v` (`alt+v` on Windows) | Read the clipboard: an image becomes a draft attachment, text is pasted. `/paste` does the same, from anywhere |
 | a click on `· 📎 N images` in the composer's title | Preview the newest image attached to the draft. The count is the only door: the chords go to the actions pressed while working, and a typed verb cannot be it — the draft's text starts with the `[Image #N]` marker the paste wrote, so `/preview` after pasting was sent to the agent as a prompt |
 | `+` / `-` / `0`, arrows, drag, wheel | In the preview box: zoom a picture (up to 6×), pan it, reset; scroll a document |
 | `[` / `]` | In the preview box: previous/next picture in the same folder (the same action as its step buttons) |
@@ -489,7 +496,7 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | History with paging | The newest page on attach, older pages when the top is reached (`get_session_entries`, a bounded backward cursor) |
 | Prompting and streaming | `prompt` with `enqueue_coalescing` — a submission behind a running turn waits in the agent's queue, and the prompts waiting at the turn boundary go out as one message (`start_next_scheduled` joins their texts in queue order); `text_chunk`, `thinking_*`, `tool_*` and `agent_end` drive the transcript |
 | Queue management | `/queue` and the band above the composer both read `get_state.queuedRuns`; cancel and recall use the existing `cancel_queued_run`, with no second client-side queue. A queued submission draws no transcript rows until it goes out; at the boundary the run's card grows by the texts it absorbed (a `merged` ack), and a submission the agent reports as never sent (`cancelled`, `superseded`, `session_deleted`) drops its card |
-| Draft attachments | Reuses `components/input.rs` folded-paste and image-marker machinery; attachments travel with the prompt. `ctrl+v` / `/paste` read the system clipboard through `paste::ClipboardCapture` (osascript on macOS, PowerShell `-STA` on Windows, `wl-paste`/`xclip` on Linux) on a blocking thread, and an image it writes becomes an `[Image #N]` attachment. Nothing leaves the machine |
+| Draft attachments | Reuses `components/input.rs` folded-paste and image-marker machinery; attachments travel with the prompt. `ctrl+v` / `/paste` (`alt+v` on Windows, where Windows Terminal owns `ctrl+v`) read the system clipboard through `paste::ClipboardCapture` (osascript on macOS, PowerShell `-STA` on Windows, `wl-paste`/`xclip` on Linux) on a blocking thread, and an image it writes becomes an `[Image #N]` attachment. Nothing leaves the machine |
 | File panel and preview | `r` re-reads the directory in the panel; a directory is read when it opens (400 entries per level, said out loud when cut). A preview decodes an image to at most 2048 px on its long edge — those pixels are what keeps a zoom sharp — and downsamples the bitmap it transmits to the cells on screen; text is read bounded and cut on a character boundary |
 | Approvals | A parked request opens a full card with tool, kind, risk, action/paths, requested action and sandbox boundary. `y` / `n` allow once or deny; `a` first adds the agent-suggested **this-run** workspace rule, then approves. A rule failure leaves the request pending. Escape closes the card without deciding |
 | Diff review | `d` in the repository browser (`/git`, `ctrl+g`) opens the box — there is no `/diff` verb any more: the 改动 tab is where the same question is asked, so the review is a detail of the browser rather than a second door to it. It lists tracked and untracked changes from the session workspace and shows the selected real git patch. Wide terminals keep a fixed file navigator beside an independently scrolling patch. Narrow terminals switch between files and patch with `tab`; `up`/`down` operate the focused view and left/right choose a file. The arrow follows the cursor immediately, and `·` marks the file whose patch is already loaded while the reload is in flight. `r` refreshes. This is the current uncommitted working tree, not per-turn attribution; patches are preview-bounded |
