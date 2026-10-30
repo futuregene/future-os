@@ -1905,7 +1905,7 @@ fn draw(
         if frame.layout.sidebar.is_none()
             && workbench.image_requests.is_empty()
             && workbench.painted_images.ids.is_empty()
-            && workbench.painted_images.iterm_shown.is_empty()
+            && workbench.painted_images.inline_shown.is_empty()
             && workbench.chat_window > 0
         {
             let top = usize::from(frame.layout.body.y);
@@ -2010,7 +2010,7 @@ fn paint_images(terminal: &mut Terminal, workbench: &mut Workbench, written_rows
     let protocol = crate::terminal_image::get_capabilities().images;
     if protocol == crate::terminal_image::ImageProtocol::None {
         if !workbench.painted_images.ids.is_empty()
-            || !workbench.painted_images.iterm_shown.is_empty()
+            || !workbench.painted_images.inline_shown.is_empty()
         {
             workbench.painted_images.clear();
         }
@@ -2036,39 +2036,58 @@ fn paint_images(terminal: &mut Terminal, workbench: &mut Workbench, written_rows
             out.push_str(&crate::terminal_image::delete_kitty_image(id));
         }
     }
-    let mut iterm_now: Vec<(u64, (u16, u16, u16, u16))> = Vec::new();
+    let mut inline_now: Vec<(u64, (u16, u16, u16, u16))> = Vec::new();
     for placed in &requests {
         let request = placed.request;
         let placement = (request.x, request.y, request.columns, request.rows);
         match protocol {
-            crate::terminal_image::ImageProtocol::Iterm2 => {
-                // iTerm2 images are inline text, not an independently
-                // addressable layer: a frame that rewrites any cell over the
-                // picture erases it, so it is placed again only then (or when
-                // the shown crop or its cells changed).
+            // Both of these paint *into the text grid* instead of into a layer
+            // of their own: a frame that rewrites any cell over the picture
+            // erases it, so it is placed again only then — or when the shown
+            // crop or its cells changed — and never once per frame, because
+            // what would be repeated is the picture itself.
+            crate::terminal_image::ImageProtocol::Iterm2
+            | crate::terminal_image::ImageProtocol::Sixel => {
                 let untouched = !written_rows.iter().any(|row| {
                     let row = *row as u16;
                     row >= request.y && row < request.y.saturating_add(request.rows)
                 });
                 let already = workbench
                     .painted_images
-                    .iterm_shown
+                    .inline_shown
                     .iter()
                     .any(|(source, at)| *source == request.source && *at == placement);
                 if !(untouched && already) {
-                    let (rgb, w, h) = transmit_bitmap(
-                        &placed.pixels,
-                        request.crop,
-                        request.columns as usize,
-                        request.rows as usize,
-                    );
-                    if let Some(sequence) = crate::terminal_image::encode_iterm2_rgb_png(
-                        &rgb,
-                        w as u32,
-                        h as u32,
-                        request.columns as usize,
-                        request.rows as usize,
-                    ) {
+                    let sequence = match protocol {
+                        crate::terminal_image::ImageProtocol::Iterm2 => {
+                            let (rgb, w, h) = transmit_bitmap(
+                                &placed.pixels,
+                                request.crop,
+                                request.columns as usize,
+                                request.rows as usize,
+                            );
+                            crate::terminal_image::encode_iterm2_rgb_png(
+                                &rgb,
+                                w as u32,
+                                h as u32,
+                                request.columns as usize,
+                                request.rows as usize,
+                            )
+                        }
+                        // Sixel, the only other arm that reaches here: the
+                        // terminal draws the bitmap at its own resolution, so it
+                        // is sized by pixels rather than by cells.
+                        _ => {
+                            let (rgb, w, h) = sixel_bitmap(
+                                &placed.pixels,
+                                request.crop,
+                                request.columns as usize,
+                                request.rows as usize,
+                            );
+                            Some(crate::terminal_image::encode_sixel_rgb(&rgb, w, h))
+                        }
+                    };
+                    if let Some(sequence) = sequence {
                         out.push_str(&format!(
                             "\x1b[{};{}H{sequence}",
                             request.y + 1,
@@ -2076,7 +2095,7 @@ fn paint_images(terminal: &mut Terminal, workbench: &mut Workbench, written_rows
                         ));
                     }
                 }
-                iterm_now.push((request.source, placement));
+                inline_now.push((request.source, placement));
             }
             crate::terminal_image::ImageProtocol::Kitty => {
                 match workbench.painted_images.ids.get(&request.source).copied() {
@@ -2122,9 +2141,10 @@ fn paint_images(terminal: &mut Terminal, workbench: &mut Workbench, written_rows
             crate::terminal_image::ImageProtocol::None => {}
         }
     }
-    workbench.painted_images.iterm_shown = iterm_now;
+    workbench.painted_images.inline_shown = inline_now;
     // Put the cursor back where the frame left it; the images do not move it
-    // (`C=1`), but the addressing above did.
+    // (kitty's `C=1`), but the addressing above did — and an in-line picture does
+    // move it, which is the other reason this runs last.
     if let Some((x, y)) = workbench.cursor() {
         out.push_str(&format!("\x1b[{};{}H", y + 1, x + 1));
     }
@@ -2155,8 +2175,7 @@ fn transmit_bitmap(
     columns: usize,
     rows: usize,
 ) -> (Vec<u8>, usize, usize) {
-    let crop_w = crop.2.saturating_sub(crop.0).max(1);
-    let crop_h = crop.3.saturating_sub(crop.1).max(1);
+    let (crop_w, crop_h) = crop_size(crop);
     let budget = (columns.max(1) * TRANSMIT_PX_PER_CELL).min(pixels.width.max(1));
     if crop_w <= budget || rows == 0 || columns == 0 {
         return (crop_rgb(pixels, crop), crop_w, crop_h);
@@ -2165,9 +2184,72 @@ fn transmit_bitmap(
     let target_h = ((crop_h as f64) * (target_w as f64) / (crop_w as f64))
         .round()
         .max(1.0) as usize;
-    let mut window = image::RgbaImage::new(crop_w as u32, crop_h as u32);
-    for y in 0..crop_h {
-        for x in 0..crop_w {
+    let window = crop_window(pixels, crop, crop_w, crop_h);
+    let scaled = image::imageops::resize(
+        &window,
+        target_w as u32,
+        target_h as u32,
+        image::imageops::FilterType::Triangle,
+    );
+    (rgb_bytes(&scaled), target_w, target_h)
+}
+
+/// The bitmap a sixel terminal gets for `crop`: the same window, scaled to the
+/// pixel rectangle the cells it was given can hold.
+///
+/// Kitty and iTerm2 are told the cell rectangle (`c=`,`r=` / `width=`,`height=`)
+/// and scale the bitmap themselves, which is why their transmission is *capped*
+/// rather than sized. Sixel has no such parameter: the terminal paints the
+/// pixels it is handed, one image pixel per screen pixel, from whatever cell the
+/// cursor stands on. The size therefore has to be ours, and this is the one
+/// place in the TUI that assumes how many pixels a cell is —
+/// [`crate::terminal_image::get_cell_dimensions`], nine by eighteen unless a
+/// terminal has reported its own. A profile with a bigger cell shows the picture
+/// a little short of its box; one with a smaller cell shows it over the edge. A
+/// preview either way, and far better than a grid of sixel blocks that has to be
+/// scaled by a factor nobody chose.
+fn sixel_bitmap(
+    pixels: &super::image_view::ImagePixels,
+    crop: (usize, usize, usize, usize),
+    columns: usize,
+    rows: usize,
+) -> (Vec<u8>, usize, usize) {
+    let cells = crate::terminal_image::get_cell_dimensions();
+    let target_w = (columns.max(1) * cells.width_px).max(1);
+    let target_h = (rows.max(1) * cells.height_px).max(1);
+    let (crop_w, crop_h) = crop_size(crop);
+    if (crop_w, crop_h) == (target_w, target_h) {
+        return (crop_rgb(pixels, crop), crop_w, crop_h);
+    }
+    let window = crop_window(pixels, crop, crop_w, crop_h);
+    let scaled = image::imageops::resize(
+        &window,
+        target_w as u32,
+        target_h as u32,
+        image::imageops::FilterType::Triangle,
+    );
+    (rgb_bytes(&scaled), target_w, target_h)
+}
+
+/// A crop's own size, never zero — a rectangle with no area still asks for one
+/// pixel rather than an empty buffer.
+fn crop_size(crop: (usize, usize, usize, usize)) -> (usize, usize) {
+    (
+        crop.2.saturating_sub(crop.0).max(1),
+        crop.3.saturating_sub(crop.1).max(1),
+    )
+}
+
+/// The crop as an image to resample, with anything outside the picture black.
+fn crop_window(
+    pixels: &super::image_view::ImagePixels,
+    crop: (usize, usize, usize, usize),
+    width: usize,
+    height: usize,
+) -> image::RgbaImage {
+    let mut window = image::RgbaImage::new(width as u32, height as u32);
+    for y in 0..height {
+        for x in 0..width {
             let offset = ((crop.1 + y) * pixels.width + crop.0 + x) * 4;
             let pixel = pixels
                 .rgba
@@ -2177,17 +2259,16 @@ fn transmit_bitmap(
             window.put_pixel(x as u32, y as u32, image::Rgba(pixel));
         }
     }
-    let scaled = image::imageops::resize(
-        &window,
-        target_w as u32,
-        target_h as u32,
-        image::imageops::FilterType::Triangle,
-    );
-    let mut rgb = Vec::with_capacity(target_w * target_h * 3);
-    for pixel in scaled.pixels() {
+    window
+}
+
+/// An image's pixels as the row-major RGB the image protocols carry.
+fn rgb_bytes(image: &image::RgbaImage) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity(image.width() as usize * image.height() as usize * 3);
+    for pixel in image.pixels() {
         rgb.extend_from_slice(&pixel.0[..3]);
     }
-    (rgb, target_w, target_h)
+    rgb
 }
 
 /// The RGB bytes of a crop of `pixels`, row-major — what kitty's `f=24` wants.
@@ -2239,10 +2320,11 @@ struct FrameCache {
     rows: Vec<String>,
     width: usize,
     cursor: Option<(u16, u16)>,
-    /// The rows the last call erased and rewrote. iTerm2 images live in the text
-    /// grid rather than in a layer of their own, so a picture is only erased by
-    /// a write to *its own* rows — a streamed reply repainting the tail must not
-    /// cost a re-transmission of a thumbnail further up.
+    /// The rows the last call erased and rewrote. In-line images (iTerm2's, a
+    /// sixel) live in the text grid rather than in a layer of their own, so a
+    /// picture is only erased by a write to *its own* rows — a streamed reply
+    /// repainting the tail must not cost a re-transmission of a thumbnail
+    /// further up.
     written: Vec<usize>,
 }
 
@@ -2717,6 +2799,40 @@ mod tests {
         let (rgb, w, h) = transmit_bitmap(&pixels, (10, 10, 210, 210), 40, 40);
         assert_eq!((w, h), (200, 200));
         assert_eq!(rgb.len(), 200 * 200 * 3);
+    }
+
+    /// A sixel picture is sized in *pixels* — the terminal paints what it is
+    /// given at its own resolution — so the crop is resampled into the pixel
+    /// rectangle its cells can hold, with no cell parameter to lean on.
+    #[test]
+    fn a_sixel_picture_is_sized_to_the_pixels_its_cells_hold() {
+        use crate::terminal_image::{get_cell_dimensions, set_cell_dimensions, CellDimensions};
+        let saved = get_cell_dimensions();
+        set_cell_dimensions(CellDimensions {
+            width_px: 10,
+            height_px: 20,
+        });
+        let mut rgba = Vec::new();
+        for y in 0..40 {
+            for x in 0..40 {
+                rgba.extend_from_slice(&[(x * 6) as u8, (y * 6) as u8, 9, 255]);
+            }
+        }
+        let pixels = super::super::image_view::ImagePixels {
+            width: 40,
+            height: 40,
+            rgba: rgba.into(),
+        };
+        // Five cells at ten pixels across, three cells at twenty tall.
+        let (rgb, w, h) = sixel_bitmap(&pixels, (0, 0, 40, 40), 5, 3);
+        assert_eq!((w, h), (50, 60));
+        assert_eq!(rgb.len(), 50 * 60 * 3);
+        // A window already the size of its box is transmitted as it is: a
+        // zoomed crop is sharp, and resampling it would only blur it.
+        let (rgb, w, h) = sixel_bitmap(&pixels, (0, 0, 40, 40), 4, 2);
+        assert_eq!((w, h), (40, 40));
+        assert_eq!(rgb, crop_rgb(&pixels, (0, 0, 40, 40)));
+        set_cell_dimensions(saved);
     }
 
     #[test]

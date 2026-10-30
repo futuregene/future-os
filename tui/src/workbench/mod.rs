@@ -592,10 +592,11 @@ pub struct PaintedImages {
     pub order: Vec<u64>,
     /// The terminal id each transmitted source got.
     pub ids: std::collections::HashMap<u64, u32>,
-    /// The sources iTerm2 re-transmitted last frame, and where. Its images are
-    /// text, not a layer: a row that was rewritten erased the picture over it,
-    /// so placement is only skipped while the frame left those cells alone.
-    pub iterm_shown: Vec<(u64, (u16, u16, u16, u16))>,
+    /// The sources re-transmitted last frame by an *in-line* protocol (iTerm2,
+    /// sixel), and where. Those images are text, not a layer: a row that was
+    /// rewritten erased the picture over it, so placement is only skipped while
+    /// the frame left those cells alone.
+    pub inline_shown: Vec<(u64, (u16, u16, u16, u16))>,
 }
 
 impl PaintedImages {
@@ -625,7 +626,7 @@ impl PaintedImages {
     pub fn clear(&mut self) {
         self.order.clear();
         self.ids.clear();
-        self.iterm_shown.clear();
+        self.inline_shown.clear();
     }
 }
 
@@ -10717,6 +10718,22 @@ mod tests {
             !workbench.image_requests.is_empty(),
             "iTerm2 is a graphics protocol, not a fallback"
         );
+
+        // Sixel — Windows Terminal's protocol — asks for the same placement;
+        // the driver is what turns it into a DCS image instead of a PNG.
+        caps.install(TerminalCapabilities {
+            images: ImageProtocol::Sixel,
+            true_color: true,
+            ..TerminalCapabilities::default()
+        });
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.overlay = Some(Overlay::FilePreview);
+        let rows = workbench.render(&data, 120, 38);
+        assert!(
+            !workbench.image_requests.is_empty(),
+            "sixel places the bitmap rather than describing it"
+        );
+        assert!(!plain(&rows).contains('▀'), "and never as a mosaic");
 
         // A terminal without the protocol gets the facts and an honest
         // sentence, and still no mosaic.

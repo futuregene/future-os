@@ -151,15 +151,17 @@ when something asks to see them, and kept only while that box is open.
 
 An image is placed by the terminal's *graphics protocol*: a real bitmap at a cell
 (kitty's `a=T` placement, transmitted once per source and only re-placed on later
-frames; iTerm2's inline-image protocol, re-sent only when its cells are rewritten
-or the shown crop changes), not a character mosaic. The preview box (`enter` on an image in 文件, or a
+frames; iTerm2's inline-image protocol and sixel — the one Windows Terminal
+speaks — re-sent only when their cells are rewritten or the shown crop changes),
+not a character mosaic. The preview box (`enter` on an image in 文件, or a
 click on the count the composer's title shows for a draft attachment) puts its controls in the frame's first row —
 `[zoom out] [2x] [zoom in] [fit]` and `[previous] 2/5 [next]`, every one of them
 clickable — and answers `+`/`-` (or the wheel) up to 6×, `[`/`]` for the
 previous/next picture in the same folder, and `0` to fit. A zoomed picture pans
-with the arrow keys or by **dragging it with the mouse**. A terminal with no
-graphics protocol gets the dimensions and a sentence saying so instead of an
-approximation, and a folder holding one picture shows no step buttons at all.
+with the arrow keys or by **dragging it with the mouse**. A terminal with none of
+the three protocols — VS Code's terminal, Alacritty, anything inside tmux — gets
+the dimensions and a sentence saying so instead of an approximation, and a folder
+holding one picture shows no step buttons at all.
 Documents — Markdown rendered, anything else as lines — scroll with `↑`/`↓` and
 `pageUp`/`pageDown` instead. A file it cannot show says why rather than opening
 an empty box. The bytes are read and decoded on a background thread: the box
