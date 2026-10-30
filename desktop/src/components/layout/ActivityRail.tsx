@@ -427,6 +427,32 @@ export function ActivityRail({
   const threadParents = useMemo(() => threadParentIds(visibleThreads), [visibleThreads]);
 
   /**
+   * The active conversation's ancestors, as a value that changes only when the
+   * answer does.
+   *
+   * The chain is a *string*, not the map it was read from. `threadParents` is
+   * rebuilt whenever the thread list is — and the list gets a new array about
+   * once a second while a run streams, because the backend advances the running
+   * conversation's activity stamp and the store patches that row into a new
+   * array. An effect keyed on the map therefore re-ran on every one of those
+   * pushes, and re-opened the fold the reader had just closed: the reported
+   * "click − and it folds, then unfolds by itself". The chain joined is the same
+   * string while the ancestry is the same, so a rebuild that answers the same
+   * question moves nothing. (Thread ids are generated and contain no newline.)
+   */
+  const activeAncestorKey = useMemo(() => {
+    if (!activeThreadId)
+      return "";
+    const ancestors: string[] = [];
+    let parent = threadParents.get(activeThreadId);
+    while (parent && !ancestors.includes(parent)) {
+      ancestors.push(parent);
+      parent = threadParents.get(parent);
+    }
+    return ancestors.join("\n");
+  }, [activeThreadId, threadParents]);
+
+  /**
    * The conversation on screen is never folded away.
    *
    * A fork lands *under* the turn it came from, and the tree starts folded, so
@@ -438,19 +464,13 @@ export function ActivityRail({
    *
    * Only ancestors are opened. Folding a row the reader collapsed by hand is
    * their decision, and this effect does not run again until the selection
-   * moves.
+   * moves — which is why it is keyed on the *chain* above, not on the map it was
+   * read from.
    */
   useEffect(() => {
-    if (!activeThreadId)
+    if (!activeAncestorKey)
       return;
-    const ancestors: string[] = [];
-    let parent = threadParents.get(activeThreadId);
-    while (parent && !ancestors.includes(parent)) {
-      ancestors.push(parent);
-      parent = threadParents.get(parent);
-    }
-    if (ancestors.length === 0)
-      return;
+    const ancestors = activeAncestorKey.split("\n");
     setExpandedThreads((current) => {
       if (ancestors.every(id => current.has(id)))
         return current;
@@ -458,7 +478,7 @@ export function ActivityRail({
       for (const id of ancestors) next.add(id);
       return next;
     });
-  }, [activeThreadId, threadParents]);
+  }, [activeAncestorKey]);
 
   const remoteRows = useMemo(
     () => mergeConversations(
