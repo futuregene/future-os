@@ -50,17 +50,36 @@ fn needs_user_prefix(
 }
 
 /// Where a backward page may begin inside the exchange it lands in.
+///
+/// **The two modes are a deliberate divergence, not an oversight — do not
+/// "unify" them.** One paging call serves clients whose first page means
+/// different things:
+///
+/// * [`ExchangeStart::Complete`] — the host's history read (`host::agent_bridge`)
+///   behind the desktop and mobile apps. A page there is a slice of a
+///   conversation being read front to back, so it begins at the question its
+///   reply answers; completing the exchange costs one small extra fetch.
+/// * [`ExchangeStart::Anywhere`] — the terminal's conversation switch
+///   (`GrpcClient::session_tail_page`). That first page is not a slice to read
+///   but a *tail to look at*: the reader wants the newest rows as fast as the
+///   agent can cut them, and the agent bounds a page by rows and bytes now (150
+///   rows / 2 MB for a first page). Completing the exchange would fetch the whole
+///   turn back — measured at 541 rows, 1.69 MB and 629 ms on this store, which is
+///   exactly the page the ceiling exists to prevent.
+///
+/// Which way the cost lands if someone makes them agree: giving the terminal
+/// `Complete` restores that whole-turn first page and its 629 ms; giving the host
+/// `Anywhere` starts its pages mid-turn, with no question above the reply the
+/// reader lands on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ExchangeStart {
     /// Fetch the exchange's missing prefix too, so the page begins at the
-    /// question its reply answers. The default: a reader scrolling a page at a
-    /// time wants each page to make sense on its own, and the wire pages are
-    /// bounded by exchanges, so this costs nothing.
+    /// question its reply answers. Used by a caller reading a conversation front
+    /// to back.
     Complete,
     /// Accept a page that begins in the middle of an exchange. Used by a
-    /// conversation's *first* page: a page is also bounded by rows and bytes
-    /// now, and a turn with hundreds of rows in it is exactly the case the
-    /// completion would undo (it would fetch the whole turn back).
+    /// conversation's *first* page, which is bounded by rows and bytes and must
+    /// not be grown back to the turn it lands in.
     Anywhere,
 }
 
