@@ -5,6 +5,7 @@ mod broadcaster;
 mod commands;
 mod control_plane;
 pub use control_plane::ControlPlane;
+mod export_html;
 mod prompt_helpers;
 mod protocol;
 pub(crate) mod run_snapshot;
@@ -28,6 +29,7 @@ pub use broadcaster::{
 pub use commands::handle_command_internal;
 #[cfg(test)]
 pub(crate) use commands::test_support::make_app_state as service_test_state;
+pub(crate) use export_html::generate_session_html;
 pub use protocol::{HistoryResetCommand, RpcCommand, RpcResponse, SseEvent};
 /// The level → thinking-budget map is the session's, and the custom-provider
 /// probe has to send exactly what a session would; one definition, re-exported.
@@ -728,67 +730,6 @@ fn get_state_internal(
     Some(payload)
 }
 
-/// Generate HTML representation of a session (matches Go exportSessionToHTML)
-pub(super) fn generate_session_html(
-    session_id: &str,
-    model: &str,
-    cwd: &str,
-    messages: &[crate::types::Message],
-) -> String {
-    let mut html = String::new();
-    let session_id = escape_html(session_id);
-    let model = escape_html(model);
-    let cwd = escape_html(cwd);
-
-    html.push_str("<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">");
-    html.push_str(&format!(
-        "<title>FutureAgent session {}</title>",
-        session_id
-    ));
-    html.push_str("<style>");
-    html.push_str("body{font-family:system-ui;max-width:800px;margin:auto;padding:20px;background:#1a1a2e;color:#e0e0e0}");
-    html.push_str(".user{background:#16213e;padding:10px;margin:5px 0;border-radius:8px}");
-    html.push_str(".assistant{background:#0f3460;padding:10px;margin:5px 0;border-radius:8px}");
-    html.push_str(
-        ".tool{background:#1a1a1a;padding:10px;margin:5px 0;border-radius:8px;font-size:0.9em}",
-    );
-    html.push_str("pre{white-space:pre-wrap;word-wrap:break-word}");
-    html.push_str("</style></head><body>\n");
-    html.push_str(&format!("<h1>FutureAgent Session: {}</h1>\n", session_id));
-    html.push_str(&format!("<p>Model: {} | CWD: {}</p>\n", model, cwd));
-
-    for msg in messages {
-        let cls = match msg.role.as_str() {
-            "assistant" => "assistant",
-            "tool" => "tool",
-            _ => "user",
-        };
-        let content = match &msg.content {
-            Some(serde_json::Value::String(s)) => s.clone(),
-            Some(v) => v.to_string(),
-            None => String::new(),
-        };
-        html.push_str(&format!(
-            "<div class=\"{}\"><strong>{}</strong><pre>{}</pre></div>\n",
-            cls,
-            escape_html(&msg.role),
-            escape_html(&content)
-        ));
-    }
-
-    html.push_str("</body></html>");
-    html
-}
-
-/// Escape HTML special characters
-fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
-
 /// The file path a tool call operates on: the first of `path` / `file_path` /
 /// `filePath` present in its arguments (a JSON object, or a JSON string that
 /// parses to one). Shared by the approval gate and the prompt path rewriter.
@@ -808,37 +749,6 @@ fn argument_path(arguments: &serde_json::Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ─── escape_html ───────────────────────────────────────────────────────
-
-    #[test]
-    fn escape_html_escapes_all_specials() {
-        assert_eq!(
-            escape_html("<script>alert('xss')</script>"),
-            "&lt;script&gt;alert(&apos;xss&apos;)&lt;/script&gt;"
-        );
-    }
-
-    #[test]
-    fn escape_html_escapes_ampersand_first() {
-        assert_eq!(escape_html("a & b"), "a &amp; b");
-    }
-
-    #[test]
-    fn escape_html_escapes_quotes() {
-        assert_eq!(escape_html("\"quoted\""), "&quot;quoted&quot;");
-        assert_eq!(escape_html("'single'"), "&apos;single&apos;");
-    }
-
-    #[test]
-    fn escape_html_empty_string() {
-        assert_eq!(escape_html(""), "");
-    }
-
-    #[test]
-    fn escape_html_no_specials() {
-        assert_eq!(escape_html("hello world"), "hello world");
-    }
 
     // ─── argument_path ─────────────────────────────────────────────────────
 
@@ -882,80 +792,6 @@ mod tests {
     fn argument_path_empty_json_returns_none() {
         let args = serde_json::json!({});
         assert_eq!(argument_path(&args), None);
-    }
-
-    // ─── generate_session_html ─────────────────────────────────────────────
-
-    #[test]
-    fn generate_session_html_contains_title() {
-        let html = generate_session_html("sess-123", "gpt-4o", "/tmp/test", &[]);
-        assert!(html.contains("FutureAgent session sess-123"));
-        assert!(html.contains("gpt-4o"));
-        assert!(html.contains("/tmp/test"));
-    }
-
-    #[test]
-    fn generate_session_html_with_messages() {
-        let messages = vec![
-            crate::types::Message {
-                role: "user".to_string(),
-                content: Some(serde_json::json!("hello")),
-                ..Default::default()
-            },
-            crate::types::Message {
-                role: "assistant".to_string(),
-                content: Some(serde_json::json!("hi there")),
-                ..Default::default()
-            },
-            crate::types::Message {
-                role: "tool".to_string(),
-                content: Some(serde_json::json!("result")),
-                ..Default::default()
-            },
-        ];
-        let html = generate_session_html("s1", "model", "/cwd", &messages);
-        assert!(html.contains("class=\"user\""));
-        assert!(html.contains("class=\"assistant\""));
-        assert!(html.contains("class=\"tool\""));
-        assert!(html.contains("hello"));
-        assert!(html.contains("hi there"));
-    }
-
-    #[test]
-    fn generate_session_html_escapes_content() {
-        let messages = vec![crate::types::Message {
-            role: "user".to_string(),
-            content: Some(serde_json::json!("<script>alert('xss')</script>")),
-            ..Default::default()
-        }];
-        let html = generate_session_html(
-            "</title><script>session</script>",
-            "<img src=x onerror=alert(1)>",
-            "<script>cwd</script>",
-            &messages,
-        );
-        assert!(!html.contains("<script>"));
-        assert!(!html.contains("<img src=x"));
-        assert!(html.contains("&lt;script&gt;"));
-        assert!(!html.contains("<script>alert"));
-    }
-
-    #[test]
-    fn generate_session_html_empty_messages() {
-        let html = generate_session_html("s1", "model", "/cwd", &[]);
-        assert!(html.contains("<body>"));
-        assert!(html.contains("</body>"));
-    }
-
-    #[test]
-    fn generate_session_html_null_content() {
-        let messages = vec![crate::types::Message {
-            role: "assistant".to_string(),
-            content: None,
-            ..Default::default()
-        }];
-        let html = generate_session_html("s1", "model", "/cwd", &messages);
-        assert!(html.contains("assistant"));
     }
 
     // ─── AppState helpers ──────────────────────────────────────────────────
@@ -2123,22 +1959,18 @@ mod tests {
     }
 
     #[test]
-    fn generate_session_html_formats_non_string_content() {
-        let messages = vec![
-            crate::types::Message {
-                role: "user".to_string(),
-                content: Some(serde_json::json!([{"type": "text", "text": "hi"}])),
-                ..Default::default()
-            },
-            crate::types::Message {
-                role: "assistant".to_string(),
-                content: None,
-                ..Default::default()
-            },
-        ];
+    fn generate_session_html_renders_every_text_block() {
+        let messages = vec![crate::types::AgentMessage {
+            role: "user".to_string(),
+            content: vec![
+                crate::types::ContentBlock::text("hi"),
+                crate::types::ContentBlock::text("there"),
+            ],
+            ..Default::default()
+        }];
         let html = generate_session_html("s1", "model", "/cwd", &messages);
-        assert!(html.contains("user"));
-        assert!(html.contains("text"));
+        assert!(html.contains("hi"));
+        assert!(html.contains("there"));
     }
     /// A stored model the registry does not know, with no default to replace it:
     /// hydration keeps the unresolved identity (so the next request fails

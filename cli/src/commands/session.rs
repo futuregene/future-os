@@ -848,8 +848,10 @@ Usage:
   title     Ask the session's model for a title. This spends credits and fails
             without a provider; the language defaults to the desktop app's
             titleLanguage. It only prints the title unless --apply is given.
-  export    Write the session to a standalone HTML file. The agent writes its
-            own temporary copy; --out copies it to a path you choose.
+  export    Write the session to a standalone HTML file: markdown rendered,
+            thinking and tool calls folded, in one file with no external
+            assets. The agent writes its own temporary copy; --out copies it
+            to a path you choose.
 
 Forks and clones are new sessions: a fork keeps the parent's lineage, and
 `--json` prints the child's id as `sessionId`. None of these touches the parent.";
