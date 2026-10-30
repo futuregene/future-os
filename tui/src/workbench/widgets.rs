@@ -16,20 +16,103 @@ pub fn rule(palette: &Palette, columns: usize) -> String {
 
 /// The frame's top border with an optional title inline: `╭─ title ─────╮`.
 pub fn box_top(palette: &Palette, columns: usize, title: &str) -> String {
+    top_rule(palette, columns, title, None)
+}
+
+/// The close chip's label in one language: `[× 关闭]` / `[× Close]`.
+///
+/// Every panel is left with `esc`, and a panel whose only way out is a key is a
+/// panel a reader with a mouse cannot leave: the chip is the pointer's way to
+/// say what `esc` says, and a click on it runs that very handler.
+pub fn close_label(lang: Language) -> String {
+    format!("[× {}]", i18n::t(lang, Key::OverlayClose))
+}
+
+/// Where [`close_label`] sits on a `columns`-wide top border, or `None` when
+/// the box is too narrow to carry it (the corner and the title are worth more
+/// than the button).
+///
+/// The one answer shared by the painter and the hit map: a region that
+/// disagrees with the cells is a button that looks live and is not.
+pub fn close_cells(columns: usize, lang: Language) -> Option<(u16, u16)> {
+    let label = close_label(lang);
+    let chip_w = width(&label);
+    // Room for the two corners, the rule, a title of a few cells and the gap
+    // that keeps the title off the chip.
+    if columns < chip_w + 8 {
+        return None;
+    }
+    // Flush against the right corner: the chip is the last thing on the rule,
+    // the way a title bar's close button is.
+    Some(((columns - 1 - chip_w) as u16, chip_w as u16))
+}
+
+/// [`box_top`] with any already-painted chip right-aligned on the rule:
+/// `╭─ title ───── chip╮`. The chip occupies the last cells before the right
+/// corner, and one rule cell is kept between it and the title.
+///
+/// For a control that is not the panel's close button — the queue band's
+/// `/queue 管理` door is one — so the rule is drawn by one function and every
+/// box's top edge measures the same way.
+pub fn box_top_with_chip(
+    palette: &Palette,
+    columns: usize,
+    title: &str,
+    chip: Option<&str>,
+) -> String {
+    top_rule(palette, columns, title, chip)
+}
+
+/// [`box_top`] with the close chip right-aligned on the rule:
+/// `╭─ title ─────[× 关闭]╮`.
+///
+/// Returns the row and, when the chip was drawn, the cells it occupies as
+/// `(column, width)` — relative to the row's own left edge, so a caller that
+/// indents its rows adds its own offset.
+pub fn box_top_with_close(
+    palette: &Palette,
+    columns: usize,
+    title: &str,
+    lang: Language,
+) -> (String, Option<(u16, u16)>) {
+    let cells = close_cells(columns, lang);
+    let chip = cells.map(|_| palette.strong(palette.iris, &close_label(lang)));
+    let row = top_rule(palette, columns, title, chip.as_deref());
+    (row, cells)
+}
+
+/// Both top borders are this function: `chip` is already painted, and occupies
+/// the last cells of the rule before the right corner.
+fn top_rule(palette: &Palette, columns: usize, title: &str, chip: Option<&str>) -> String {
     if columns < 4 {
         return palette.text(palette.border, &"─".repeat(columns));
     }
     let inner = columns - 2;
-    let rule = "─".repeat(inner);
+    let chip_w = chip.map_or(0, width);
+    // One rule cell is kept between the title and the chip, so the two never
+    // read as one run of text.
+    let gap = usize::from(chip.is_some());
     if title.is_empty() {
-        return palette.text(palette.border, &format!("╭{rule}╮"));
+        // The rule runs from corner to chip; one of its cells is the gap the
+        // chip is set off by.
+        let rest = inner.saturating_sub(chip_w);
+        return fit(
+            &format!(
+                "{}{}{}{}",
+                palette.text(palette.border, "╭"),
+                palette.text(palette.border, &"─".repeat(rest)),
+                chip.unwrap_or_default(),
+                palette.text(palette.border, "╮"),
+            ),
+            columns,
+        );
     }
     // `─ title ` then as much rule as is left; a title too long for the box is
     // clipped rather than allowed to push the corner off the row. The label is
     // *clipped* to its room, never fitted to it: `fit` pads, so a padded label
     // measured as wide as the box and the rule after the title was never drawn.
     let label = format!(" {title} ");
-    let room = inner.saturating_sub(1);
+    let room = inner.saturating_sub(1 + chip_w + gap);
     let label = if width(&label) > room {
         let mut clipped = clip(&label, room.saturating_sub(1));
         clipped.push('…');
@@ -38,13 +121,14 @@ pub fn box_top(palette: &Palette, columns: usize, title: &str) -> String {
         label
     };
     let used = width(&label);
-    let rest = inner.saturating_sub(1 + used);
+    let rest = inner.saturating_sub(1 + used + chip_w);
     fit(
         &format!(
-            "{}{}{}{}",
+            "{}{}{}{}{}",
             palette.text(palette.border, "╭─"),
             palette.dim(&label),
             palette.text(palette.border, &"─".repeat(rest)),
+            chip.unwrap_or_default(),
             palette.text(palette.border, "╮"),
         ),
         columns,
@@ -432,6 +516,61 @@ mod tests {
             assert_eq!(width(&box_row(&P, "读 src/main.rs", columns)), columns);
             assert_eq!(width(&tab_strip(&P, &[], columns)), columns);
             assert_eq!(width(&progress(&P, 0.42, columns, P.accent)), columns);
+        }
+    }
+
+    /// The close chip is drawn where the hit map says it is: a button painted
+    /// one cell off its own region is a button that does nothing when clicked.
+    #[test]
+    fn the_close_chip_sits_where_its_cells_say() {
+        for columns in [40usize, 76, 132] {
+            let (row, cells) = box_top_with_close(&P, columns, "文件 · ~/x", Language::Zh);
+            assert_eq!(width(&row), columns, "columns={columns}");
+            let (x, chip_w) = cells.expect("wide enough for the chip");
+            let plain = crate::utils::strip_ansi_codes(&row);
+            let label = close_label(Language::Zh);
+            // The chip is one run of text, and it ends where the corner begins.
+            let painted_at = plain.find(&label).expect("the chip is painted");
+            assert_eq!(width(&plain[..painted_at]) as u16, x, "{plain:?}");
+            assert_eq!(chip_w as usize, width(&label));
+            assert_eq!(
+                x as usize + chip_w as usize,
+                columns - 1,
+                "the chip does not end on the corner: {plain:?}"
+            );
+            assert!(plain.ends_with(&format!("{label}╮")), "{plain:?}");
+            // The title survives beside it, with a rule cell between the two.
+            assert!(plain.starts_with("╭─ 文件"), "{plain:?}");
+        }
+        // A box too narrow for the chip keeps its title and drops the button.
+        let (row, cells) = box_top_with_close(&P, 12, "输入", Language::Zh);
+        assert!(cells.is_none(), "{row:?}");
+        assert_eq!(width(&row), 12);
+        // An untitled box still ends on its corner with the chip on it.
+        let (row, cells) = box_top_with_close(&P, 40, "", Language::Zh);
+        assert_eq!(width(&row), 40);
+        assert!(cells.is_some(), "{row:?}");
+        assert!(
+            crate::utils::strip_ansi_codes(&row).ends_with("[× 关闭]╮"),
+            "{row:?}"
+        );
+    }
+
+    /// Both languages fit the chip, and the English one is the wider of the two:
+    /// a box sized for `[× 关闭]` must not lose its button when the reader
+    /// switches to English.
+    #[test]
+    fn the_close_chip_is_localised_and_its_cells_follow_the_label() {
+        let zh = close_label(Language::Zh);
+        let en = close_label(Language::En);
+        assert_eq!(zh, "[× 关闭]");
+        assert_eq!(en, "[× Close]");
+        assert_eq!(width(&zh), 8);
+        assert_eq!(width(&en), 9);
+        for lang in [Language::Zh, Language::En] {
+            let (x, w) = close_cells(120, lang).expect("a wide box carries the chip");
+            assert_eq!(w as usize, width(&close_label(lang)));
+            assert_eq!(x as usize + w as usize, 119);
         }
     }
 

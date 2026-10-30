@@ -252,5 +252,6 @@
   "renameWorkspaceLabel": "工作区名称",
   "renameWorkspaceHint": "名称只会改在拥有该目录的电脑上，不会移动任何文件，也不会影响其中的对话。",
   "statusPairingRevoked": "配对已失效",
-  "errorRevoked": "这台电脑与对方的配对已在对方解除，无法再连接。请在这里解除配对，然后重新添加这台电脑。"
+  "errorRevoked": "这台电脑与对方的配对已在对方解除，无法再连接。请在这里解除配对，然后重新添加这台电脑。",
+  "fusionHint": "设置讨论模型、思考等级和 /fusion 开关"
 }

@@ -94,6 +94,8 @@
     "rateLimitedTitle": "模型服务请求受限",
     "serverError": "请稍后重试。",
     "serverErrorTitle": "模型服务暂时不可用",
+    "badRequest": "{{message}}",
+    "badRequestTitle": "模型服务拒绝了本次请求（HTTP 400）",
     "contextLimit": "系统未能通过自动压缩恢复本次回复。请新建对话后重试。",
     "contextLimitTitle": "对话超出上下文长度限制",
     "network": "请检查网络连接后重试。",
@@ -399,6 +401,9 @@
     "stageCount": "{{current}} / {{total}}",
     "progress": "讨论阶段进度",
     "partialNotice": "部分模型未完成讨论",
-    "statusUnavailable": "暂时无法读取讨论状态"
+    "statusUnavailable": "暂时无法读取讨论状态",
+    "disabled": "Fusion 已在设置中关闭",
+    "moderatorRole": "主模型",
+    "participantRole": "参与模型 {{number}}"
   }
 }

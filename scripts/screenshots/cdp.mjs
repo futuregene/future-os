@@ -33,6 +33,13 @@
  *                   colour choice)
  *   --measure FILE  write the geometry collected by `offsets` steps
  *   --baseline FILE compare against an earlier `--measure` run (shows movement)
+ *   --lang TAG      emulate this browser locale (BCP 47, e.g. en-US), so a
+ *                   capture pinned to a language is a page whose system locale
+ *                   really is that language — the app follows the OS locale,
+ *                   not a harness-only switch
+ *   --appearance MODE  emulate the system appearance (`dark` / `light`), which is
+ *                   what a phone reports through `prefers-color-scheme`; the
+ *                   app's own "follow the system" theme then draws dark
  *   --pointer BOOL  draw the pointer indicator on taps/hovers
  *                   (default: on while recording, off for stills)
  *   --annotate BOOL remove every overlay when false (default true)
@@ -89,6 +96,35 @@ const MEASURE_FILE = opt("measure", "");
 const BASELINE_FILE = opt("baseline", "");
 /** `--inject FILE` runs a JS file after the app is ready (variant styling). */
 const INJECT_FILE = opt("inject", "");
+/**
+ * `--lang TAG` emulates a browser locale for this scenario.
+ *
+ * The app's language comes from the OS locale (`expo-localization` reads
+ * `navigator.language` on the web), so a capture that has to be *in* a language
+ * has to change what the page reports, not a harness-only flag. Two CDP calls
+ * do it, and only together: `Emulation.setLocaleOverride` moves `Intl` (date,
+ * time and number formatting), while `navigator.language` follows the user
+ * agent override's `acceptLanguage` — measured on Chrome 156, where the locale
+ * override alone leaves `navigator.language` at the host's `zh-CN`. The UA
+ * string is passed back unchanged, so the page is otherwise the same browser.
+ *
+ * A stored in-app preference still wins over the system locale (as it does on a
+ * phone), so this pins the system, not the reader's choice.
+ */
+const LANG = opt("lang", "");
+/**
+ * `--appearance dark|light` emulates the system appearance for this scenario.
+ *
+ * The phone's dark mode is not an in-app setting: `ThemeProvider` reads
+ * `useColorScheme()` and `resolveScheme("system", …)`, so a phone set to dark is
+ * one whose platform reports `prefers-color-scheme: dark`. A capture that has to
+ * be dark therefore pins the *platform*, not the app's stored preference — the
+ * same judgement `--lang` makes for the locale, and for the same reason: a
+ * stored value would be the harness writing the reader's setting, while this is
+ * the phone the reader is holding. (`?theme=` in `desktop/shot/prefs.ts` pins the
+ * desktop the other way; its window has no platform to ask.)
+ */
+const APPEARANCE = opt("appearance", "");
 /**
  * `--pointer BOOL` draws the pointer indicator that follows taps/hovers.
  *
@@ -685,6 +721,31 @@ await send("Emulation.setDeviceMetricsOverride", {
 });
 if (TOUCH)
   await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+
+// Before navigating, so the very first script the app runs already reads the
+// pinned locale (`src/i18n/index.ts` initializes at import time).
+if (LANG) {
+  const version = await (await fetch(`http://127.0.0.1:${PORT}/json/version`)).json();
+  await send("Emulation.setLocaleOverride", { locale: LANG });
+  await send("Emulation.setUserAgentOverride", {
+    userAgent: version["User-Agent"],
+    acceptLanguage: LANG,
+  });
+  console.log(`cdp: locale ${LANG}`);
+}
+
+// The platform's own appearance, which is what a phone set to dark mode reports
+// and what the app's "follow the system" theme resolves against.
+if (APPEARANCE) {
+  if (APPEARANCE !== "dark" && APPEARANCE !== "light")
+    console.error(`cdp: --appearance takes dark or light, not ${APPEARANCE}`);
+  else {
+    await send("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-color-scheme", value: APPEARANCE }],
+    });
+    console.log(`cdp: appearance ${APPEARANCE}`);
+  }
+}
 
 // Start recording before navigating so the video includes the first paint.
 if (FRAMES_DIR)

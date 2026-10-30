@@ -45,7 +45,7 @@ conversations, to see the rail's window and its `↓ N more` row).
  ──────────────────────────────────────────┬──────────────────────
  conversation (bottom-anchored, ↑ 更早)     │ rail: 最近 工作区
                                             │ ▸ the conversation's name  ~/future-os · 2m
-                                            │
+ queue band (only while prompts wait)      │
  input box (❯ multiline draft, grows)      │  (the rail runs down beside it)
  activity: ⠋ 思考 … · 3s · 2 工具                   42 tok/s · 缓存 96%
  status:   model · effort · approval   ░░ ctx 6.9k/1.0M 0.7% · ≈¥0.01
@@ -56,6 +56,34 @@ The hint row teaches keys whose door is not already on screen: `ctrl+r` is not o
 it, because the header's own `[ctrl+r] 会话` button spells that chord a row
 above, and `ctrl+f`/`ctrl+g` ride on their buttons the same way. Nothing a
 reader needs is taught only in the help box, and nothing is taught twice.
+
+Between the conversation and the input box sits the **queue band**, and only
+while something is in it. A prompt sent while a run is in flight is not sent:
+the agent accepted it and put it behind the running turn, so the band lists it —
+one row per prompt, in the order it was queued — and the transcript stays silent
+about it until it goes out. That is the whole point of the band: a queued prompt
+drawn as a normal user card reads as a message that went out, and `hi` appearing
+mid-reply is exactly what a reader cannot tell apart from a sent message.
+
+The band is a box, like the composer under it: two rules, the interior on the
+panel background the rail uses. Bare dimmed lines on the canvas read as a
+continuation of the transcript, which is what made the first version look pasted
+over the conversation. Its title is the count and when the prompts go out
+(`排队 2 条 · 当前回复结束后一起发送`), and the right end of that rule is the door
+to `/queue`, which cancels (`x`) or recalls (`r` / `enter`) one row at a time;
+clicking a row in the band is the same verb as clicking it in that box — the
+prompt goes back into the draft and leaves the queue. A long queue shows four
+rows and counts the rest, and the band takes its rows from the conversation
+rather than growing the frame — the conversation keeps its own bottom, so the
+newest rows stay on screen above it (see the `↑ 更早` note below).
+
+**At the boundary they go out together.** The composer submits with
+`enqueue_coalescing`: when the running turn ends, the prompts waiting there are
+folded into **one** message, in queue order, and answered together — a burst of
+supplements is a follow-up, not three turns. Until that moment each one is its
+own row (its own `cancel_queued_run`), which is what makes the band a queue a
+reader can manage; the fold happens once, at the boundary, and the transcript
+then shows the message that actually ran, carrying every text.
 
 The rail is a *column*, not a panel that stops one band early: it (and its
 divider) run from under the header down to the footer, so the space beside the
@@ -144,10 +172,16 @@ spinner in its state slot; the rest follow under
 the rail's shape). The two headings are only drawn while there is a split: with
 nothing running the list is simply the list. A row names its workspace by *name*
 (`future-os`), not by path: the rail is 36 columns wide and a clipped path says
-less than the word. **工作区** files the same conversations the way the
-desktop's rail does: 置顶 (the workspaces pinned with `p`), then 工作区 (one
-heading per workspace, its conversations beneath), then 对话会话 (conversations
-that belong to no workspace — the app's own scratch directories). Usage figures
+less than the word. The name is measured on its own row, so a short one hands
+the cells it does not need back to that row's title, and it gets at most a third
+of the row with a space always kept between it and the conversation's name: a
+longer one (`session-supervisor`) is ellipsised rather than allowed to crowd the
+title out, since the title is what the row is for. The `·` and the ages still
+line up down the list. **工作区** files the same conversations the way the
+desktop's rail does: 置顶 (the conversations pinned with `/pin`, lifted out of
+the workspace that would otherwise file them), then 工作区 (one heading per
+workspace, its conversations beneath), then 对话会话 (conversations that belong
+to no workspace — the app's own scratch directories). Usage figures
 live on the status bar, so no panel repeats them; skills are the palette's. The rail
 never *holds* the keyboard — there is no focus to step into or out of — so every
 key that acts on it carries `shift` (`shift+↕` steps, `shift+pageUp/Down` pages,
@@ -203,7 +237,7 @@ sessions, `ctrl+d` the rail, `ctrl+x` quit, `ctrl+p` commands, `ctrl+o` model,
 preferences, and `ctrl+1`/`ctrl+2` the rail's two tabs. Everything else is a
 typed verb or a pointer target: `/delete`, `/pin`, `/queue`, `/copy`, `/mouse`,
 `/preview`, `/refresh`, `/lang`, `/reply-detail`, and `?` for help — the help
-overlay lists only the actions that have a chord, and its command list names the
+overlay lists only the actions that have a chord, and the palette names the
 door for the rest.
 
 The map stops there because the letters do: a terminal sends Backspace, Tab,
@@ -338,8 +372,9 @@ the terminal; notification payloads are sanitized, flattened and bounded.
 draft) help. No default binding is a function key or an `alt+` chord — see
 "One prefix" above for why — and a reader may still *rebind* to either. Help and
 footer hints show the effective bindings, not stale defaults, and the help
-overlay groups them (chats / choices / panels / interface / inline keys /
-commands) instead of printing one flat list. In the shortcut
+overlay groups them (chats / choices / panels / interface / inline keys) instead
+of printing one flat list. The verbs are not in it: the palette is one key away
+and already lists them with their descriptions. In the shortcut
 editor, press Enter and then a chord; conflicts swap owners, `r` restores
 defaults, and Escape cancels capture. Supported chords include Ctrl/Alt plus an
 ASCII letter or digit, F1–F24, Tab, navigation keys and Enter/Escape.
@@ -354,25 +389,27 @@ click on the rail's tab strip are the doors to the same places.
 
 | Key | Action |
 |---|---|
-| `tab` / `shift+tab` | Conversation: step through everything that opens, in reading order — its **links and pictures** and the transcript's own **rows** (a folded reply, a burst of work, a tool call, a `▸ thinking` marker). The stop under the cursor is drawn in reverse video, and the transcript scrolls to it. `enter` opens it: a link goes to the browser / switches conversation / opens the preview box (see below); a **row** opens what it hides — a folded reply replays in place as the rows it stood for, under one header that turns from `▸` into `▾` (the row under it carries the rail on down, in the marker's own column); a burst reveals the calls it stood for; a tool call shows its body (up to 200 rows per call, and the `… N more lines` marker at the cap names the rest as `truncated`) — and an `edit` call's body is the patch it makes: the replaced lines in red, the replacements in green, up to three lines of the unchanged text either side (with a `… N lines` marker where more was trimmed away), `@@ n/m` between the changes of a batch, and the row itself carrying the `+N -M` count before it is even opened; a reasoning marker shows its text — and `enter` again (or a click on the header) folds them away. Every row of an opened fold still opens on its own, and what it opens nests one level in under a rail of its own; the answer stays outside the tree, because it is the reply's output rather than part of its process. The tree keeps its own geometry: the rail runs unbroken through the blank rows inside it (a reasoning block's paragraph gap carries the rail and nothing else), and a call's background band starts after the rail instead of across it. Opening changes only what is below the row pressed — that row, and everything above it, stays on the line it was on. Launchpad: move between the prompt and the parameter chips (`enter` cycles the chip under the cursor; `escape` or typing goes back to the prompt). The rail has its own chord (`ctrl+d`) |
+| `tab` / `shift+tab` | Conversation: step through everything that opens, in reading order — its **links and pictures** and the transcript's own **rows** (a folded reply, a burst of work, a tool call, a `▸ thinking` marker). The stop under the cursor is drawn in reverse video, and the transcript scrolls to it — but only when a press steps off the window's edge: with no cursor yet, or after a scroll took the cursor out of view, the walk starts at the **window's** first stop (the last one going back), not at the conversation's first link, and a press that stays inside the page moves no page. A stop the press steps onto above the window is brought up to its top row, one below it down to its last readable row; the frame that follows the press is the only one that scrolls, so the page can be scrolled away from the highlight afterwards. `enter` opens it: a link goes to the browser / switches conversation / opens the preview box (see below); a **row** opens what it hides — a folded reply replays in place as the rows it stood for, under one header that turns from `▸` into `▾` (the row under it carries the rail on down, in the marker's own column); a burst reveals the calls it stood for; a tool call shows its body (up to 200 rows per call, and the `… N more lines` marker at the cap names the rest as `truncated`) — and an `edit` call's body is the patch it makes: the replaced lines in red, the replacements in green, up to three lines of the unchanged text either side (with a `… N lines` marker where more was trimmed away), `@@ n/m` between the changes of a batch, and the row itself carrying the `+N -M` count before it is even opened; a reasoning marker shows its text — and `enter` again (or a click on the header) folds them away. Every row of an opened fold still opens on its own, and what it opens nests one level in under a rail of its own; the answer stays outside the tree, because it is the reply's output rather than part of its process. The tree keeps its own geometry: the rail runs unbroken through the blank rows inside it (a reasoning block's paragraph gap carries the rail and nothing else), and a call's background band starts after the rail instead of across it. Opening changes only what is below the row pressed — that row, and everything above it, stays on the line it was on. Launchpad: move between the prompt and the parameter chips (`enter` cycles the chip under the cursor; `escape` or typing goes back to the prompt). The rail has its own chord (`ctrl+d`) |
 | `←` `→` | Move the draft cursor. They never switch a tab: that is `shift+←`/`shift+→` or `ctrl+1`/`ctrl+2` |
 | `home` / `end`, `ctrl+a` / `ctrl+e` | Move the draft caret to the start / end. `home` and `end` are line-aware in a multi-line draft; `ctrl+a` and `ctrl+e` are the whole value, which is the shell's own meaning of the two bytes (`end` does the single-line case too) |
 | `↑` `↓` | Scroll the conversation a row at a time, always: the transcript is the one thing these keys belong to, and the draft does not take them (a prompt is edited with `←`/`→`, `home`/`end` and the chords below) |
 | `shift+←` / `shift+→` | Cycle the rail's two tabs (最近 / 工作区), from anywhere: a hidden rail is shown, and its cursor lands on the conversation on screen. Wraps in both directions |
 | `ctrl+1` / `ctrl+2` | Name a tab outright: 最近 / 工作区, in the order the strip paints them (needs a terminal that reports modifiers — `shift+←`/`→` walk the same two tabs everywhere) |
-| `shift+↑` / `shift+↓` | Walk the rail, from anywhere. In 最近 every row is a conversation, so each step switches it — the cursor follows, and the transcript opens the one you stop on (80 ms after the last repeat) rather than each one you pass; a conversation you have already read comes back from memory with no wait at all. In 工作区 the cursor also stops on the workspace headings, and a step that lands on one switches nothing: `enter` folds or unfolds it there. One action, one chord: `ctrl+↑`/`ctrl+↓` is not a step — macOS gives it to Mission Control, so the key never reaches the terminal there |
+| `shift+↑` / `shift+↓` | Walk the rail, from anywhere. In 最近 every row is a conversation, so each step switches it — the cursor follows, and the transcript opens the one you stop on (80 ms after the last repeat) rather than each one you pass, with the agent's read running beside the surface: the rail, a streaming reply and the keyboard stay live while it answers, and a conversation you have already read comes back from memory at once. A click on a row takes the same road — the read runs beside the surface, never in front of it. The two conversations either side of the one you settle on are read ahead in the background, so the next step finds its page already materialized (measured at a reading pace: **18 ms instead of 120 ms** a step). In 工作区 the cursor also stops on the workspace headings, and a step that lands on one switches nothing: `enter` folds or unfolds it there. One action, one chord: `ctrl+↑`/`ctrl+↓` is not a step — macOS gives it to Mission Control, so the key never reaches the terminal there |
 | `shift+pageUp` / `shift+pageDown` | Page the rail's list — the same scroll the wheel over it does. The rail's cursor (the conversation on screen) does not move |
-| `p` | Rails: pin / unpin the workspace the selected conversation belongs to |
+| `p` | A letter in the draft: pinning is `/pin`, with no chord of its own |
 | `/delete` | Delete a conversation: the confirm box names the one that would go — the row under the rail's cursor when the rail is on screen, otherwise the one on screen — and `⏎` is what deletes it (`esc` keeps it). The row that takes its place opens, and deleting the last one leaves the launchpad. The `delete` key is the draft's forward-delete, so it is not a door to this |
-| `/pin` | Pin or unpin the workspace of the row the rail's cursor is on (the 置顶 section of 工作区). No chord: `p` is a letter in the draft |
+| `/pin` | Pin or unpin the conversation under the rail's cursor (the 置顶 section of 工作区; a pinned row is drawn there instead of under its workspace, and 最近 keeps it where it was). No chord: `p` is a letter in the draft. Nothing to pin on the launchpad — the conversation the verb is about is the one the first message creates, and it does not exist yet — so the notice row says so. The verb takes no argument, so a bare `/pin` is the pin and **anything after it is a prompt**: `/pin 这个文件` sent from the draft is a message to the agent, not a pin that swallows the sentence |
 | `ctrl+j` / `ctrl+enter` | Insert a newline. `ctrl+j` is the one every terminal delivers; `ctrl+enter` arrives when the terminal reports modifiers (kitty keyboard protocol, xterm `modifyOtherKeys`, or a Windows Terminal `sendInput` binding), and `shift+enter` needs one of those too. Windows Terminal keeps `alt+enter` for fullscreen and sends plain Enter for `ctrl+enter` unless the reader binds it, e.g. `{"keys": "ctrl+enter", "command": {"action": "sendInput", "input": "\u001b[13;5u"}}` |
 | `ctrl+w`, `alt+d`, `ctrl+u`, `ctrl+k`, `ctrl+y` | Delete a word, kill to line start/end, yank |
 | `ctrl+z` / `ctrl+shift+z` (or `alt+y`) | Undo / redo draft edits |
-| `pageUp` / `pageDown` | Scroll the conversation a screen at a time. The rail pages with `shift+pageUp`/`shift+pageDown`; `esc` returns to the latest output |
-| Conversation that fits | A conversation no taller than the band does not scroll at all — up asks the app for an older page and otherwise leaves the frame alone, because moving it would paint blank rows above the transcript and hide rows the terminal was tall enough to show. `↑ 更早` appears once the oldest loaded row is *above* the band, and the ceiling is that row reaching the top of it |
+| `pageUp` / `pageDown` | Scroll the conversation a screen at a time. The rail pages with `shift+pageUp`/`shift+pageDown`; `esc` returns to the latest output. A conversation opens on its **last three exchanges** and scrolling past the top reads ten more at a time: a long history is not read to open a conversation, it is read as it is scrolled |
+| Conversation that fits | A conversation no taller than the band does not scroll at all — up asks the app for an older page and otherwise leaves the frame alone, because moving it would paint blank rows above the transcript and hide rows the terminal was tall enough to show. `↑ 更早` appears once the oldest loaded row is *above* the band, and the ceiling is that row reaching the top of it. The marker takes the window's **oldest** row, never the newest: a scrolled window used to pay for that extra row by dropping the last message off the bottom, which is the one row a reader following the tail cannot do without |
+
+| Reading above the tail | A reader parked above the newest row keeps their place while the transcript changes height on its own: rows streaming in at the tail, a reply settling into its `▸ 4 tool calls · 2 thoughts` summary, a burst of calls collapsing into one row, a page of older rows arrived above — the band stays on the rows it was showing, and `↓ 新输出` (then `esc`) is how the tail is reached again. The window is a place in the conversation, not a distance from its end; a resize is the one change that rewraps every row, so it is left to keep that distance |
 | `enter` | Send the draft. With an **empty** draft there is nothing to send, so it opens the rail's selected row instead: a workspace heading folds or unfolds, a conversation opens. That is the one key the rail shares with the composer, and the empty draft is what tells the two apart |
-| `/queue` | List queued prompts — the ones sent while a run was in flight; `x` cancels, `r` / `enter` cancels and recalls into the draft (`ctrl+c` stops the active run, not the queue) |
-| `ctrl+g` or `[ctrl+g] git` in the header | The repository browser: 提交 / 引用 / 改动 / 暂存 tabs, a lane-coloured graph log across every branch, and the selected row's patch. `1`–`4` pick a tab, `tab` switches list/detail, `PgUp`/`PgDn` page the patch, `y` copies the row |
+| `/queue` | List queued prompts — the ones sent while a run was in flight, also listed one row at a time in the band above the composer; `x` cancels, `r` / `enter` cancels and recalls into the draft (`ctrl+c` stops the active run, not the queue) |
+| `ctrl+g` or `[ctrl+g] git` in the header | The repository browser: 提交 / 引用 / 改动 / 暂存 tabs, a lane-coloured graph log across every branch, and the selected row's patch. `1`–`4` pick a tab, `tab` switches list/detail, `PgUp`/`PgDn` page the patch, `y` copies the row. The repository is read beside the surface, not in front of it: opening the panel, changing tab or narrowing its filter keeps the rail, a streaming reply and the keyboard live, and the panel paints its previous rows until the new ones arrive |
 | `ctrl+o` | Model picker (`/model`): every model the agent offers, grouped by provider, with the reasoning slider on its first row |
 | `ctrl+f` or `/files` | The **files panel**: this conversation's workspace as a tree, in a box over the frame — the same session scope as `/git`. `↑`/`↓` walk it, `⏎`/`→` open, `⌫`/`←` go up a level, `r` re-reads the directory, `esc` closes. The header's `[ctrl+f] 文件` button is the pointer's door to it, and `[ctrl+g] git` sits beside it |
 | `ctrl+v` | Read the clipboard: an image becomes a draft attachment, text is pasted. `/paste` does the same for terminals that bind the key themselves |
@@ -387,10 +424,10 @@ click on the rail's tab strip are the doors to the same places.
 | `ctrl+s` | Approval mode: opens the four-tier chooser, the desktop composer's own values — 手动审批 / 沙箱保护 / 自动审批 / 完全访问 |
 | `ctrl+l` | Workspaces: opens the workspace chooser — every directory this client has a conversation in, a row that creates one from the path typed into its search line (`/workspace <path>` prefills that line), and a row that is a plain chat instead: no workspace at all, which mints `~/.future/workspaces/chat/<session id>` for the conversation and is filed under 对话会话 |
 | `ctrl+d` | Sidebar: show / hide (it never takes the keyboard, so there is no third state); full-screen on a narrow terminal. The rail's own `›` edge button does the same with one click. The choice is written to `sidebarVisible` and is where the next start begins (a first start begins hidden) |
-| `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run |
+| `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run. From 96 columns the box draws two columns: the surface's verbs on the left, the agent's skills on the right, each under its own heading. `←`/`→` step between them (landing on the neighbouring column's row at the same line); `↑`/`↓`, `tab` and `enter` still walk one list — commands first, then skills. Narrower frames keep the single column with a heading per kind |
 | `ctrl+r`, or `[ctrl+r] 会话` in the header | Session picker (name, workspace and age of each conversation). The header's button is both the pointer's door to it and the place the key is spelled — the hint row leaves this one out, so the chord is not taught twice — and it is the one button a narrow frame keeps |
 | `ctrl+q` or `/preferences` | Preferences, in the order the box lists them: interface language and color theme first (the two rows that repaint the whole surface — the language leads, because every other label there is written in whatever it says), then sidebar position, width and visibility, mouse capture, notifications, reduced motion, the shortcut editor and restore defaults. The key is also printed in the footer hint row, so it is on screen while the reader is wondering |
-| `?` (or the full-width `？`) | Help overlay (effective keys, grouped by area, then the commands; the key requires an empty draft). Rows are listed only where an action has a chord — the verbs with none keep their typed door in the command list at the end of the same box |
+| `?` (or the full-width `？`) | Help overlay (effective keys, grouped by area; the key requires an empty draft). Rows are listed only where an action has a chord — a verb with none is the palette's (`/` or `ctrl+p`), which is named in the same box and prints the list once |
 | `/lang` | Interface language: opens the picker — follow the system, Chinese or English |
 | `/reply-detail` | Process detail (no chord — `ctrl+e` is the draft's end of line): two levels, the desktop's `replyDetail` — **answer only** (a settled reply keeps the answer it ended on, and the reasoning, calls and notes that produced it fold into one summary row above it; a reply that never wrote prose folds onto the slice it stopped at) and **whole process** (every slice keeps its own row, in the order it happened). The terminal opens on **answer only**, the desktop's default, and the level applies to the whole conversation at once — one press re-reads every reply, not the one under the cursor. Neither level shows a tool call's body or a reasoning block's text: a call is one row, a thought a `▸ thinking` marker (or a count in the summary row), and the details open one row at a time with `tab` + `enter` (or a click). A reply folds only once its run has ended (`agent_start` … `agent_end`); while it streams, no work folds at either level — every thought, call and piece of prose keeps its own row, so the transcript only grows or updates in place until `agent_end`, and the level never changes what a running reply looks like. The counts are words in the reader's language — `61 tool calls · 30 thoughts`, or `工具调用 61 次 · 思考 30 次` in Chinese, whose word order and counter (`次`) the templates carry — and so is the bare reasoning marker (`▸ 思考`); the summary row is drawn in the faintest colour the chrome has, one step under body text, so it sits behind the answer it stands above. History loaded from a session folds the same way, so a reopened conversation reads as one answer per reply. A view toggle for the run it is used in, not a preference: every start opens on the folded level |
 | `ctrl+c` | Stop the run in flight — the shell's own meaning of the byte. With nothing running it is a no-op rather than an error |
@@ -411,8 +448,10 @@ click on the rail's tab strip are the doors to the same places.
 | Click a preference or shortcut row | Select it, open the shortcut editor or start key capture |
 | Click an approval action | Apply the same allow-once, allow-rule or deny decision as its key |
 | Click a palette entry | Run that command (the list a pointer cannot press leaves `ctrl+p` to the keyboard alone) |
-| Click a queued prompt | Recall it into the draft, exactly as `enter` does there |
+| Click a queued prompt | Recall it into the draft, exactly as `enter` does there — the band above the composer and the `/queue` box speak the same verb |
+| Click the queue band's header | Open `/queue` (the count is the door to the manager) |
 | Click the page around an overlay | Close it; a click on the box itself is absorbed, never passed to the control behind it |
+| Click the `[× 关闭]` chip | Close the panel — every box paints one at the right end of its top border, and it runs the very handler `esc` does: one level out for the preview (back to the panel the file came from), back to the preferences list from the shortcut editor, and out for everything else. A reader with no keyboard has no other way out, which is why the chip is on all of them, the full-screen `/git` and 文件 panels included |
 
 Mouse reporting is SGR 1006 and starts with the persisted preference (enabled by default). `/mouse` releases and restores it at runtime and saves the choice; the terminal is always restored on exit. Draft text, cursor, folded pastes and image attachments are kept per session across overlays, launchpad visits and session switches (for the lifetime of this TUI process, not persisted to disk).
 
@@ -432,20 +471,21 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 |---|---|
 | Session attach, `--session`, `--continue` | `get_state` + `switch_session` |
 | History with paging | The newest page on attach, older pages when the top is reached (`get_session_entries`, a bounded backward cursor) |
-| Prompting and streaming | `prompt` with the coalescing policy; `text_chunk`, `thinking_*`, `tool_*` and `agent_end` drive the transcript |
-| Queue management | `/queue` reads `get_state.queuedRuns`; cancel and recall use the existing `cancel_queued_run`, with no second client-side queue |
+| Prompting and streaming | `prompt` with `enqueue_coalescing` — a submission behind a running turn waits in the agent's queue, and the prompts waiting at the turn boundary go out as one message (`start_next_scheduled` joins their texts in queue order); `text_chunk`, `thinking_*`, `tool_*` and `agent_end` drive the transcript |
+| Queue management | `/queue` and the band above the composer both read `get_state.queuedRuns`; cancel and recall use the existing `cancel_queued_run`, with no second client-side queue. A queued submission draws no transcript rows until it goes out; at the boundary the run's card grows by the texts it absorbed (a `merged` ack), and a submission the agent reports as never sent (`cancelled`, `superseded`, `session_deleted`) drops its card |
 | Draft attachments | Reuses `components/input.rs` folded-paste and image-marker machinery; attachments travel with the prompt. `ctrl+v` / `/paste` read the system clipboard through `paste::ClipboardCapture` (osascript on macOS, PowerShell `-STA` on Windows, `wl-paste`/`xclip` on Linux) on a blocking thread, and an image it writes becomes an `[Image #N]` attachment. Nothing leaves the machine |
 | File panel and preview | `r` re-reads the directory in the panel; a directory is read when it opens (400 entries per level, said out loud when cut). A preview decodes an image to at most 2048 px on its long edge — those pixels are what keeps a zoom sharp — and downsamples the bitmap it transmits to the cells on screen; text is read bounded and cut on a character boundary |
 | Approvals | A parked request opens a full card with tool, kind, risk, action/paths, requested action and sandbox boundary. `y` / `n` allow once or deny; `a` first adds the agent-suggested **this-run** workspace rule, then approves. A rule failure leaves the request pending. Escape closes the card without deciding |
-| Diff review | `/diff` lists tracked and untracked changes from the session workspace and shows the selected real git patch. Wide terminals keep a fixed file navigator beside an independently scrolling patch. Narrow terminals switch between files and patch with `tab`; `up`/`down` operate the focused view and left/right choose a file. The arrow follows the cursor immediately, and `·` marks the file whose patch is already loaded while the reload is in flight. `r` refreshes. This is the current uncommitted working tree, not per-turn attribution; patches are preview-bounded |
-| Repository browser | `/git` (or `ctrl+g`) is a read-only tig-shaped panel with four tabs: 提交 (`git log --graph` across every branch, tag and remote, 200 commits, decorations), 引用 (local/remote branches and tags with upstream tracking), 改动 (the working tree, same porcelain read as `/diff`) and 暂存 (`git stash list`). The log is drawn as a lane graph — one colour per branch line, the selected commit a band across the list — and the detail beside it paints what it is: hunk headers, added and removed lines, the diffstat's bars, the commit's own header. Each row's detail loads on selection: a commit's stat and patch, a ref's upstream and tip, a file's patch, a stash's diff. `1`–`4` pick a tab, `tab` switches list/detail (a wide box shows both, from 108 columns), `↑`/`↓` walk the rows, `PgUp`/`PgDn` page the **detail** (it is the long pane, so it keeps those keys even while the list holds the cursor), `enter` opens (a ref filters the log to it, a changed file opens in the preview box, a commit moves the keys to its patch), `y` copies the sha/ref/path, `backspace` clears the filter, `r` re-reads. Nothing here stages, commits, checks out or drops a stash, and every query is bounded and killed past its deadline |
+| Diff review | `d` in the repository browser (`/git`, `ctrl+g`) opens the box — there is no `/diff` verb any more: the 改动 tab is where the same question is asked, so the review is a detail of the browser rather than a second door to it. It lists tracked and untracked changes from the session workspace and shows the selected real git patch. Wide terminals keep a fixed file navigator beside an independently scrolling patch. Narrow terminals switch between files and patch with `tab`; `up`/`down` operate the focused view and left/right choose a file. The arrow follows the cursor immediately, and `·` marks the file whose patch is already loaded while the reload is in flight. `r` refreshes. This is the current uncommitted working tree, not per-turn attribution; patches are preview-bounded |
+| Repository browser | `/git` (or `ctrl+g`) is a read-only tig-shaped panel with four tabs: 提交 (`git log --graph` across every branch, tag and remote, 200 commits, decorations), 引用 (local/remote branches and tags with upstream tracking), 改动 (the working tree, the same porcelain read as the diff review) and 暂存 (`git stash list`). The log is drawn as a lane graph — one colour per branch line, the selected commit a band across the list — and the detail beside it paints what it is: hunk headers, added and removed lines, the diffstat's bars, the commit's own header. Each row's detail loads on selection: a commit's stat and patch, a ref's upstream and tip, a file's patch, a stash's diff. `1`–`4` pick a tab, `tab` switches list/detail (a wide box shows both, from 108 columns), `↑`/`↓` walk the rows, `PgUp`/`PgDn` page the **detail** (it is the long pane, so it keeps those keys even while the list holds the cursor), `enter` opens (a ref filters the log to it, a changed file opens in the preview box, a commit moves the keys to its patch), `y` copies the sha/ref/path, `backspace` clears the filter, `r` re-reads. Nothing here stages, commits, checks out or drops a stash, and every query is bounded and killed past its deadline |
 | History search and tree | `/history` filters the current `list_sessions` titles/first-message previews, workspaces and ids; `/tree` uses `parentSessionId`. Enter opens the selected session |
 | Overlay lists | One record is one row: `up`/`down` move the highlight exactly one row, and a long title is shortened in place rather than folded (a wrapped record made one keypress skip two rows). Fields that no longer fit are dropped whole — a workspace cut mid-path would read as a different directory — so a narrow box shows title, then title · workspace, then the id. `pageUp`/`pageDown` move the cursor by one screenful (a detail card scrolls instead, and the diff follows whichever pane has the keys) |
 | `/worktree` rows | `›` is the selection; `●` marks the worktree the session is already in, so choosing one is visible even when the first row is current |
 | Fork | `/fork` lists real user-message points from `get_fork_messages`; enter calls `fork` and opens the child |
 | Worktrees | `/worktree` lists real git worktrees and enter sets the session cwd. `/worktree new <branch>` creates under `.worktrees/` and moves the session. No remove/prune/reset/clean operations |
-| Existing settings | `/mode` (or `/sandbox`) opens the approval-mode chooser, `/thinking` the reasoning chooser, `/compact [instructions]`, `/tools a,b` or `/tools off`, `/providers`; `/skills` and `/model` retain their existing surfaces |
-| Sessions panel | `list_sessions`, newest first: 最近 split into a 活跃 stretch (a run still in flight, spinner in the row's state slot) and 更早, the headings drawn only while both are non-empty. The list is re-read every five seconds while the rail is on screen, because another client's run reaches this surface no other way. 工作区 filed by directory with the pinned ones leading. Pins persist in `settings.json` (`pinnedWorkspaces`) |
+| Existing settings | `/mode` (or `/sandbox`) opens the approval-mode chooser, `/thinking` the reasoning chooser, `/compact [instructions]`, `/tools a,b` or `/tools off`, `/providers`. Every chooser takes the words after its verb as its search line (`/model deepseek` opens the list filtered to it). `/compact`, `/export` and `/tools` name the conversation on screen, so on the launchpad they say so instead of acting on the one the reader left — `/tools` is staged and applied to the session the first message creates |
+| Manual compaction (`/compact`) | The agent acknowledges and summarises on its own worker, so the window in between is the surface's to show: the activity row reads `compacting` with its clock (a compaction makes no tool calls, so the tally is dropped), the composer's title says sending is paused, and `enter` on a prompt leaves the draft where it is instead of sending one the agent would refuse (`session_busy`). `get_state`'s `isCompacting` is the agent's own flag and is what ends the row if the terminal event is missed (an attach into a compaction already running). `compaction_committed` reports the checkpoint's two counts in the notice row (`62203 → 33281 tokens`) and writes the divider into the transcript, so the cut is visible without a reload — the same row a restart builds from the stored checkpoint. `compaction_unchanged` says there was nothing to compact, `compaction_failed` carries the agent's error |
+| Sessions panel | `list_sessions`, newest first: 最近 split into a 活跃 stretch (a run still in flight, spinner in the row's state slot) and 更早, the headings drawn only while both are non-empty. The list is re-read every five seconds while the rail is on screen, because another client's run reaches this surface no other way. 工作区 filed by directory, with the conversations pinned by `/pin` in their own 置顶 block instead of under their workspace (a group left with nothing has no heading). A pin is this client's own choice and persists in `settings.json` (`pinnedSessions`, by session id) |
 | Usage / context / cost | `get_state`'s usage block, refreshed on the same events |
 | `ctrl+n` / `/new`, `ctrl+c` stop, `/refresh` | |
 | Delete a conversation (`/delete`, or `delete` in the rail) | One confirm box, then `delete_session` for the id it named. The successor in the list opens, so the transcript never stays on a conversation that is gone; deleting the last one detaches to the launchpad. A refusal (the agent keeps a session a compaction holds) leaves everything as it was and says so in the notice row |
@@ -455,11 +495,10 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 ## What is not here yet
 
 - **A preview is a preview.** The picture is placed over the cells the box has, at up to 6× the fitted size. For pixel-level work open it in the system image viewer; the TUI decodes locally and sends the picture nowhere.
-- **The command palette** lists the commands the adapter implements. Provider
-  and tool management is intentionally compact (`/providers` and `/tools`);
-  `/skills` remains the installed-skills list in the palette. Approval allow
-  rules are runtime-only; persistent approval-rule file editing remains in the
-  desktop.
+- **The command palette** lists the commands the adapter implements, and the
+  installed skills beside them. Provider and tool management is intentionally
+  compact (`/providers` and `/tools`). Approval allow rules are runtime-only;
+  persistent approval-rule file editing remains in the desktop.
 - Further enhancements: timeline rail, full-screen session manager and
   full-screen draft editor.
 

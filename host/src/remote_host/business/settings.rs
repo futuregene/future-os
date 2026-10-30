@@ -6,6 +6,17 @@ use super::{missing_session, qualified_model_id, reply, reply_unit};
 
 pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
     match cmd.cmd_type.as_str() {
+        "get_fusion_settings" | "update_fusion_settings" => {
+            let result = if cmd.cmd_type == "get_fusion_settings" {
+                crate::fusion::settings().await
+            } else {
+                crate::fusion::update_settings(cmd.fusion_settings.clone()).await
+            };
+            match result {
+                Ok(data) => reply(sink, true, data, None).await,
+                Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+            }
+        }
         "get_desktop_settings" => {
             reply_settings(sink, crate::store::get_app_settings()).await;
         }

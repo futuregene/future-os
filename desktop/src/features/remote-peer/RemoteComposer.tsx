@@ -33,6 +33,7 @@ import {
   sessionReferenceQuery,
 } from "./remoteSessionReference";
 import { RemoteSlashMenu } from "./RemoteSlashMenu";
+import { useRemoteFusionAvailability } from "./useRemoteFusionAvailability";
 
 /** How many files one paste may stage. The rest are reported, not silently dropped. */
 const MAX_PASTED_FILES = 4;
@@ -268,6 +269,7 @@ export function RemoteComposer({
 }) {
   const { t } = useTranslation("remotePeer");
   const { t: fusionT } = useTranslation("agent");
+  const fusionAvailable = useRemoteFusionAvailability(peer);
   const [text, setText] = useState("");
   /**
    * Whether another paired device drives the host, which is what closes every
@@ -597,6 +599,10 @@ export function RemoteComposer({
       setError(fusionT("fusion.unavailable"));
       return;
     }
+    if (task !== null && !fusionAvailable) {
+      setError(fusionT("fusion.disabled"));
+      return;
+    }
     if (task === "") {
       setText("/fusion ");
       return;
@@ -683,7 +689,7 @@ export function RemoteComposer({
   );
 
   const commands = useRemoteCommands({
-    canFusion: peer?.features.includes("fusion_v1") === true,
+    canFusion: fusionAvailable,
     // A compact request is a command to the host too, and a host another device
     // drives refuses it. Left out of the menu rather than drawn disabled: a
     // slash menu is a list of things you can ask for.

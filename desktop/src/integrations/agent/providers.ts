@@ -163,6 +163,43 @@ export async function deleteCustomProvider(id: string) {
   return cacheAgentProviders(await invokeCommand<ProvidersView>("delete_custom_provider", { id }));
 }
 
+/**
+ * One thinking-level detection request, against the provider that is still
+ * being edited — nothing is saved first.
+ *
+ * One level per call: the editor probes the implicit `default` first (which
+ * proves the endpoint, key and model id work at all), then each candidate, and
+ * keeps the ones the endpoint accepts.
+ */
+export interface ThinkingLevelProbeInput {
+  /** Wire protocol: `openai-completions`, `openai-responses` or `anthropic`. */
+  api: string;
+  baseUrl: string;
+  /** The key typed into the form; empty means "use the stored key". */
+  apiKey?: string | null;
+  /** Provider / model id, so the agent can reuse a saved model's wire settings. */
+  providerId?: string;
+  modelId: string;
+  /** The level to test; `default` (or empty) sends no thinking parameter. */
+  level?: string;
+}
+
+export interface ThinkingLevelProbeOutcome {
+  level: string;
+  /** True when the endpoint accepted the request carrying this level. */
+  ok: boolean;
+  /** The provider's own message when it refused the level. */
+  error?: string | null;
+}
+
+/**
+ * Ask the agent whether one thinking level works for the provider in the
+ * editor. `ok: false` is an answer about the level, not a failed call.
+ */
+export function probeThinkingLevel(input: ThinkingLevelProbeInput) {
+  return invokeCommand<ThinkingLevelProbeOutcome>("probe_thinking_level", { input });
+}
+
 export interface FutureLoginStart {
   userCode: string;
   verificationUri: string;

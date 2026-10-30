@@ -97,6 +97,9 @@ message RpcCommand {
   // Optional custom instructions for the compaction summariser.
   string custom_instructions = 60;
 
+  // Versioned Fusion settings patch with expected_revision (update_fusion_settings).
+  string fusion_settings_json = 173;
+
   // ── set_auto_compaction / set_auto_retry ───────────────────────────────
 
   // Toggle flag (true = on, false = off).
@@ -256,6 +259,12 @@ message RpcCommand {
   // A models.json `providers` entry (plus optional auth.json key). Read when
   // type == "upsert_provider" or "delete_provider" (the latter uses only `id`).
   ProviderUpsert provider_config = 171;
+
+  // ── probe_thinking_level ───────────────────────────────────────────────
+  // One ad-hoc provider round trip answering "does this endpoint accept this
+  // thinking level?". Nothing is written: the caller is still editing the
+  // provider. Read when type == "probe_thinking_level".
+  ThinkingLevelProbe thinking_probe = 172;
 
   // ── suggest_skill ──────────────────────────────────────────────────────
   // The user's first-turn text. Read when type == "suggest_skill".
@@ -458,6 +467,31 @@ message ProviderModel {
   // false, the agent keeps the existing model's list on an edit; when true, the
   // list (possibly empty) replaces it.
   optional bool replace_thinking_levels = 12;
+}
+
+// ── ThinkingLevelProbe ───────────────────────────────────────────────────────
+// Detect which thinking levels a provider/model accepts, before the config is
+// saved: the custom-provider editor sends one of these per level and keeps the
+// ones that come back accepted. The payload is the *form's* state, not stored
+// config — only the per-model wire settings the editor cannot express
+// (``compat``, ``headers``) are inherited from an already-saved model with the
+// same provider/model id.
+
+message ThinkingLevelProbe {
+  // Wire protocol: "openai-completions" | "openai-responses" | "anthropic".
+  string api = 1;
+  string base_url = 2;
+  string api_key = 3;
+
+  // Provider id and model id. Both are used to inherit an already-saved
+  // model's per-model wire config; an unsaved provider simply finds none.
+  string provider_id = 4;
+  string model_id = 5;
+
+  // The level to test. Empty (or ``default``) sends no thinking parameter at
+  // all — the calibration call that proves the rest of the configuration
+  // (endpoint, key, model id) works.
+  string level = 6;
 }
 
 // ── ImageContent ───────────────────────────────────────────────────────────

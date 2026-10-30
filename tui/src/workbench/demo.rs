@@ -58,6 +58,7 @@ pub fn data(scenario: Scenario) -> WorkbenchData {
 
 fn base() -> WorkbenchData {
     WorkbenchData {
+        fusion_enabled: Some(true),
         version: "0.11.0".into(),
         connected: true,
         session: SessionMeta::default(),
@@ -86,6 +87,7 @@ fn base() -> WorkbenchData {
                 parent_id: None,
                 streaming: false,
                 created_at_ms: 0,
+                pinned: false,
             },
             SessionRow {
                 id: "s2".into(),
@@ -96,6 +98,7 @@ fn base() -> WorkbenchData {
                 parent_id: None,
                 streaming: false,
                 created_at_ms: 0,
+                pinned: false,
             },
             SessionRow {
                 id: "s3".into(),
@@ -106,6 +109,7 @@ fn base() -> WorkbenchData {
                 parent_id: None,
                 streaming: false,
                 created_at_ms: 0,
+                pinned: false,
             },
             SessionRow {
                 id: "s4".into(),
@@ -116,6 +120,7 @@ fn base() -> WorkbenchData {
                 parent_id: None,
                 streaming: false,
                 created_at_ms: 0,
+                pinned: false,
             },
             SessionRow {
                 id: "s5".into(),
@@ -126,27 +131,25 @@ fn base() -> WorkbenchData {
                 parent_id: None,
                 streaming: false,
                 created_at_ms: 0,
+                pinned: false,
             },
         ],
         workspaces: vec![
             WorkspaceGroup {
                 name: "future-os".into(),
                 path: "/home/dev/future-os".into(),
-                pinned: true,
                 age: "2m".into(),
                 session_ids: vec!["s1".into(), "s2".into()],
             },
             WorkspaceGroup {
                 name: "mobile".into(),
                 path: "/home/dev/future-os/.worktrees/mobile".into(),
-                pinned: false,
                 age: "3h".into(),
                 session_ids: vec!["s3".into()],
             },
             WorkspaceGroup {
                 name: "futureos-wechat-articles".into(),
                 path: "/home/dev/futureos-wechat-articles".into(),
-                pinned: false,
                 age: "2d".into(),
                 session_ids: vec!["s4".into()],
             },
@@ -187,6 +190,7 @@ fn base() -> WorkbenchData {
             ..InputView::default()
         },
         activity: Activity::default(),
+        compacting: false,
         notice: None,
         queue: Vec::new(),
         revision: 0,
@@ -564,11 +568,13 @@ pub fn workspaces() -> WorkbenchData {
             parent_id: None,
             streaming: false,
             created_at_ms: 0,
+            // Two pinned conversations, so the 置顶 block is on screen: the
+            // filing still lists them (the rail lifts them, not the filing).
+            pinned: index < 2,
         });
         data.workspaces.push(WorkspaceGroup {
             name: (*name).to_string(),
             path: format!("/home/dev/{name}"),
-            pinned: index < 2,
             age: format!("{}h", index + 1),
             session_ids: vec![id],
         });
@@ -622,8 +628,8 @@ mod tests {
     fn the_workspace_scenario_is_long_enough_to_scroll() {
         let data = workspaces();
         assert_eq!(data.workspaces.len(), 12);
-        assert!(data.workspaces.iter().any(|group| group.pinned));
-        assert!(data.workspaces.iter().any(|group| !group.pinned));
+        assert!(data.sessions.iter().any(|row| row.pinned));
+        assert!(data.sessions.iter().any(|row| !row.pinned));
         for group in &data.workspaces {
             for id in &group.session_ids {
                 assert!(data.sessions.iter().any(|session| &session.id == id));

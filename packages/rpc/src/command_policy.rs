@@ -78,6 +78,8 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "export_html",
     "fork",
     "generate_session_title",
+    "get_fusion_settings",
+    "update_fusion_settings",
     "get_fusion_status",
     "get_fusion",
     "get_agent_info",
@@ -117,6 +119,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "list_streaming_sessions",
     "new_session",
     "probe_sandbox",
+    "probe_thinking_level",
     "probe_windows_sandbox",
     "prompt",
     "prune_run_events",
@@ -170,7 +173,8 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
             RetryPolicy::SameRequestId,
             ExecutionKind::AsyncAck,
         ),
-        "get_fusion_status"
+        "get_fusion_settings"
+        | "get_fusion_status"
         | "get_agent_info"
         | "get_agent_readiness"
         | "get_commands"
@@ -187,6 +191,9 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
             RetryPolicy::SafeRead,
             ExecutionKind::Immediate,
         ),
+        "update_fusion_settings" => {
+            policy(STORAGE_TIMEOUT, RetryPolicy::Never, ExecutionKind::Bounded)
+        }
         "prompt" => policy(
             PROMPT_ACK_TIMEOUT,
             RetryPolicy::SameRequestId,
@@ -212,6 +219,15 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
         ),
         "sync_skills" => policy(
             Duration::from_secs(600),
+            RetryPolicy::Never,
+            ExecutionKind::Bounded,
+        ),
+        // One provider round trip with a model call inside it: the probe's own
+        // first-frame deadline (30 s) answers first, so this is only the outer
+        // transport bound. Never retried — a retry would spend a second model
+        // call against a level already known to be answered.
+        "probe_thinking_level" => policy(
+            Duration::from_secs(45),
             RetryPolicy::Never,
             ExecutionKind::Bounded,
         ),

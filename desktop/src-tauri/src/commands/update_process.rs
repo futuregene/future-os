@@ -1,5 +1,6 @@
 //! A prepared native helper owns its execution environment before services stop.
 //! EOF before COMMIT cancels; after COMMIT the helper completes independently.
+#[cfg(not(target_os = "windows"))]
 use future_host::console;
 use serde::{Deserialize, Serialize};
 #[cfg(not(target_os = "windows"))]

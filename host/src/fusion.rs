@@ -45,6 +45,21 @@ fn command(kind: &str, session: &str) -> RpcCommand {
     }
 }
 
+pub async fn settings() -> Result<Value, crate::Error> {
+    rpc(command("get_fusion_settings", ""))
+        .await
+        .map_err(|error| crate::Error::Message(error.to_string()))
+}
+
+pub async fn update_settings(patch: Value) -> Result<Value, crate::Error> {
+    rpc(RpcCommand {
+        fusion_settings_json: serde_json::to_string(&patch)?,
+        ..command("update_fusion_settings", "")
+    })
+    .await
+    .map_err(|error| crate::Error::Message(error.to_string()))
+}
+
 async fn serve() -> Result<()> {
     let store = Store::open(&crate::future_home_root())?;
     // Old child requests may outlive a Host crash. Fence their consultation
@@ -209,7 +224,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     );
     let completeness = if analyses.len() == 1 {
         "single"
-    } else if analyses.len() < 3 || review_count < 3 {
+    } else if analyses.len() < config.panel.len() || review_count < config.panel.len() {
         "partial"
     } else {
         "full"
@@ -379,7 +394,7 @@ async fn with_retry(
         )
         .await;
         let (result, next_retry) = match result {
-            Ok(Ok(text)) => match validate_step_output(phase, &text) {
+            Ok(Ok(text)) => match validate_step_output(phase, &text, config.panel.len()) {
                 Ok(()) => (Ok(text), None),
                 Err(error) => (Err(error), Some(RetryReason::InvalidOutput)),
             },
@@ -414,7 +429,7 @@ async fn with_retry(
     }
     Err(error)
 }
-fn validate_step_output(phase: &str, text: &str) -> Result<()> {
+fn validate_step_output(phase: &str, text: &str, participants: usize) -> Result<()> {
     if phase == "issue_mapping" {
         let mapping: Value = parse_json(text)?;
         let issues = mapping["issues"]
@@ -433,7 +448,10 @@ fn validate_step_output(phase: &str, text: &str) -> Result<()> {
                 .context("Missing issue stances")?
             {
                 ensure!(
-                    matches!(stance["participant"].as_str(), Some("P1" | "P2" | "P3")),
+                    stance["participant"].as_str().is_some_and(|id| id
+                        .strip_prefix('P')
+                        .and_then(|id| id.parse::<usize>().ok())
+                        .is_some_and(|n| (1..=participants).contains(&n) && id == format!("P{n}"))),
                     "Unknown participant"
                 );
                 ensure!(
@@ -647,18 +665,24 @@ mod tests {
 
     #[test]
     fn rejects_invalid_moderator_output_before_recording_completion() {
+        let fifth = r#"{"issues":[{"topic":"x","stances":[{"participant":"P5","position":"x"}]}]}"#;
+        assert!(validate_step_output("issue_mapping", fifth, 5).is_ok());
+        assert!(validate_step_output("issue_mapping", fifth, 2).is_err());
+        assert!(validate_step_output("issue_mapping", &fifth.replace("P5", "P05"), 5).is_err());
         assert!(validate_step_output(
             "issue_mapping",
-            r#"{"issues":[{"topic":"x","stances":[{"participant":"P9","position":"x"}]}]}"#
+            r#"{"issues":[{"topic":"x","stances":[{"participant":"P9","position":"x"}]}]}"#,
+            3
         )
         .is_err());
-        assert!(validate_step_output("issue_mapping", r#"{"issues":[]}"#).is_ok());
+        assert!(validate_step_output("issue_mapping", r#"{"issues":[]}"#, 3).is_ok());
         assert!(
-            validate_step_output("synthesizing", r#"{"conclusion":"","rationale":[]}"#).is_err()
+            validate_step_output("synthesizing", r#"{"conclusion":"","rationale":[]}"#, 3).is_err()
         );
         assert!(validate_step_output(
             "synthesizing",
-            r#"{"conclusion":"A","rationale":["facts"]}"#
+            r#"{"conclusion":"A","rationale":["facts"]}"#,
+            3
         )
         .is_ok());
     }

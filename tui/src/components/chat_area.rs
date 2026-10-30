@@ -1454,11 +1454,20 @@ impl ChatArea {
         if self.messages[index].role != ChatRole::User {
             return;
         }
+        let was_queued = self.messages[index].run_state == Some(RunState::Queued);
         self.messages[index].id = run_id.to_string();
         self.messages[index].run_id = Some(run_id.to_string());
         self.messages[index].run_state = Some(run_state);
         self.messages[index].queue_position = queue_position;
-        self.rerender_message(index);
+        // A queued prompt is not in the transcript at all (see
+        // [`Self::waits_in_queue`]), so entering or leaving that state changes
+        // whether the message has rows *and* whether the separator above it
+        // belongs there: rebuild instead of splicing one message's lines.
+        if was_queued || run_state == RunState::Queued {
+            self.rerender();
+        } else {
+            self.rerender_message(index);
+        }
     }
 
     pub fn update_run_state(&mut self, run_id: &str, run_state: RunState) {
@@ -1469,8 +1478,69 @@ impl ChatArea {
         else {
             return;
         };
+        let was_queued = self.messages[index].run_state == Some(RunState::Queued);
         self.messages[index].run_state = Some(run_state);
-        self.rerender_message(index);
+        if was_queued || run_state == RunState::Queued {
+            self.rerender();
+        } else {
+            self.rerender_message(index);
+        }
+    }
+
+    /// Forget the submission bound to `run_id` — a queued prompt that was
+    /// cancelled: no run of its own happened, so it does not belong in the
+    /// transcript.
+    pub fn drop_run(&mut self, run_id: &str) {
+        let before = self.messages.len();
+        self.messages
+            .retain(|message| message.run_id.as_deref() != Some(run_id));
+        if self.messages.len() != before {
+            self.rerender();
+        }
+    }
+
+    /// Fold a submission's text into the card of the run that absorbed it, and
+    /// forget the folded card.
+    ///
+    /// The agent folds the prompts queued directly behind a run at the turn
+    /// boundary (`enqueue_coalescing`): their texts are appended to that run's
+    /// message in queue order, and each of them comes back as a terminal
+    /// `merged` acknowledgement, never as a run of its own. The card ahead is
+    /// therefore the one that has to grow — dropping the folded card alone would
+    /// leave the transcript showing a message shorter than the one the agent was
+    /// asked. Returns whether there was a card of this client's to grow: a fold
+    /// that happened inside another client's submission leaves nothing here to
+    /// change.
+    pub fn fold_run_into_previous(&mut self, folded_run: &str) -> bool {
+        let Some(index) = self
+            .messages
+            .iter()
+            .position(|message| message.run_id.as_deref() == Some(folded_run))
+        else {
+            return false;
+        };
+        let folded = self.messages[index].content.clone();
+        // The agent folds the images too (`payload.images.extend`), so the card
+        // ahead keeps showing them.
+        let pictures = self.messages[index].pictures.clone();
+        // The card ahead is the nearest earlier submission bound to a run, and
+        // not itself folded away: the agent's fold is a run of consecutive
+        // requests, so the one before this card is where the text went.
+        let ahead = (0..index).rev().find(|at| {
+            self.messages[*at].run_id.is_some()
+                && self.messages[*at].run_state != Some(RunState::Merged)
+        });
+        self.messages.remove(index);
+        let grew = ahead.map(|at| {
+            let target = &mut self.messages[at];
+            if !target.content.is_empty() && !folded.is_empty() {
+                target.content.push_str("\n\n");
+            }
+            target.content.push_str(&folded);
+            target.pictures.extend(pictures);
+        });
+        self.rerender();
+        grew.is_some()
     }
 
     /// Current lifecycle state tracked for `run_id` (None when the run is
@@ -1511,7 +1581,7 @@ impl ChatArea {
         {
             self.messages[index].run_state = Some(RunState::Queued);
             self.messages[index].queue_position = Some(queue_position);
-            self.rerender_message(index);
+            self.rerender();
             return;
         }
         self.add_message(ChatMessage {
@@ -2461,6 +2531,29 @@ impl ChatArea {
             .is_some_and(|head| *head != msg_idx)
     }
 
+    /// The submissions still waiting in the agent's queue, in transcript order.
+    ///
+    /// The queue itself is the agent's (`get_state`'s `queuedRuns`); this is
+    /// the subset *this* client submitted, which is the only part it holds a
+    /// card for — see `workbench::live::reconcile_queue`.
+    pub fn queued_run_ids(&self) -> Vec<String> {
+        self.messages
+            .iter()
+            .filter(|message| message.run_state == Some(RunState::Queued))
+            .filter_map(|message| message.run_id.clone())
+            .collect()
+    }
+
+    /// Is `msg_idx` a submission still waiting in the agent's queue? Such a
+    /// prompt has not been sent yet, so it draws no rows here: the frame lists
+    /// it above the composer instead (one row per prompt, `workbench::screen`),
+    /// which is what keeps "queued" from looking like "sent".
+    fn waits_in_queue(&self, msg_idx: usize) -> bool {
+        self.messages
+            .get(msg_idx)
+            .is_some_and(|msg| msg.run_state == Some(RunState::Queued))
+    }
+
     /// Recompute the layout and, when the rendered lines no longer match it,
     /// rebuild the transcript. Returns `true` when the caller must not assume
     /// `msg_idx` rendered on its own.
@@ -2536,7 +2629,7 @@ impl ChatArea {
         let mut rendered_any = false;
         let mut above: Option<usize> = None;
         for i in 0..self.messages.len() {
-            if self.is_folded(i) {
+            if self.is_folded(i) || self.waits_in_queue(i) {
                 let at = self.rendered_lines.len();
                 self.message_line_ranges.push((at, at as i64 - 1));
                 continue;
@@ -2570,6 +2663,12 @@ impl ChatArea {
         // The message's rows live in the run's summary row, and the summary
         // depends on which messages are folded — not on this one's content.
         if self.is_folded(msg_idx) {
+            return;
+        }
+        // A prompt waiting in the queue has no rows at all; the frame shows it
+        // above the composer (the band in `workbench::screen`), so a state
+        // change is what re-renders the transcript, not this splice.
+        if self.waits_in_queue(msg_idx) {
             return;
         }
         if self.last_render_width == -1 || msg_idx >= self.message_line_ranges.len() {
@@ -2615,6 +2714,12 @@ impl ChatArea {
         // A message that folds into the run above it changes that run's summary
         // row, which sits somewhere in the middle of the transcript.
         if self.sync_compact_layout() {
+            return;
+        }
+        // A queued prompt draws no rows (it waits above the composer, not in
+        // the transcript), so there is nothing to append — and the trailing
+        // blank row the append consumes must stay where it is.
+        if self.waits_in_queue(self.messages.len().saturating_sub(1)) {
             return;
         }
         self.rendered_lines.pop();
@@ -2838,6 +2943,13 @@ impl ChatArea {
     const USER_CARD_INSET: usize = 2;
 
     fn render_user_message(&mut self, msg: &ChatMessage) {
+        // A prompt that is still waiting in the agent's queue is not part of the
+        // conversation yet: the frame draws it in the band above the composer
+        // (`workbench::screen::queue_band`), and the transcript must not show a
+        // card that reads like a message already sent.
+        if msg.run_state == Some(RunState::Queued) {
+            return;
+        }
         let bg = self.theme.user_bg;
         // The block is a surface, not a tinted row: one empty row of its own
         // colour above and below the text. Those rows are the card's padding —
@@ -2857,15 +2969,6 @@ impl ChatArea {
             .render_text(&msg.content, self.width.saturating_sub(inset * 2).max(1));
         for line in rendered {
             self.push_user_card_row(&format!("{indent}{line}"), bg);
-        }
-        if msg.run_state == Some(RunState::Queued) {
-            let suffix = match msg.queue_position {
-                Some(q) => format!(" (#{q})"),
-                None => String::new(),
-            };
-            // TS: dim(`queued${suffix}`) — suffix inside the dim.
-            let t = format!("{indent}{}", dim(&format!("queued{suffix}")));
-            self.push_user_card_row(&t, bg);
         }
         if matches!(
             msg.run_state,
@@ -7483,42 +7586,94 @@ mod tests {
         assert!(strip(&card[1]).starts_with("  hi there"));
     }
 
+    /// A prompt still waiting in the agent's queue draws nothing here: it is
+    /// listed above the composer instead (`workbench::screen::queue_band`), so
+    /// the transcript only ever holds turns that were actually sent.
     #[test]
-    fn queued_run_renders_queue_position() {
+    fn a_queued_prompt_takes_no_rows_in_the_transcript() {
         let mut chat = new_chat();
         chat.render(W);
-        chat.upsert_queued_run("run-1", "prompt", 3);
+        chat.add_message(ChatMessage::new("a1".into(), ChatRole::Assistant, "answer"));
+        let sent = chat.render_all(W).len();
+        chat.upsert_queued_run("run-1", "later work", 3);
         let plain = chat
             .render_all(W)
             .iter()
             .map(|l| crate::utils::strip_ansi_codes(l))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(plain.contains("queued"));
-        assert!(plain.contains("(#3)"));
+            .collect::<Vec<_>>();
+        assert_eq!(plain.len(), sent, "a queued prompt added rows: {plain:?}");
+        assert!(!plain.iter().any(|l| l.contains("later work")));
+        assert!(!plain.iter().any(|l| l.contains("queued")));
     }
 
+    /// The queued row is not the only thing that moves: the transcript is
+    /// rebuilt when the run starts, so the submission comes back as a card at
+    /// the point in the conversation where its turn actually began — and the
+    /// separator above it comes with it.
     #[test]
-    fn queued_suffix_is_inside_dim() {
-        // TS: dim(`queued${suffix}`) — the (#n) suffix is inside the dim
-        // span. Parity harness caught the suffix leaking outside.
+    fn a_queued_prompt_appears_once_its_run_starts() {
         let mut chat = new_chat();
         chat.render(W);
-        chat.upsert_queued_run("run-1", "prompt", 3);
-        let line = chat
+        chat.add_message(ChatMessage::new("a1".into(), ChatRole::Assistant, "answer"));
+        chat.add_message(ChatMessage::new("u1".into(), ChatRole::User, "later work"));
+        chat.bind_user_run("u1", "run-1", RunState::Queued, Some(1));
+        let hidden = chat.render_all(W).len();
+        assert!(!chat
             .render_all(W)
             .iter()
-            .find(|l| l.contains("queued"))
-            .unwrap()
-            .clone();
-        assert_eq!(
-            line,
-            format!(
-                "{bg}  \x1b[2mqueued (#3)\x1b[0m{bg}\x1b[0m{bg}{}\x1b[0m",
-                " ".repeat(W - 13),
-                bg = format!("\x1b[48;5;{}m", DARK_THEME.user_bg)
-            )
-        );
+            .any(|line| strip(line).contains("later work")));
+        chat.update_run_state("run-1", RunState::Running);
+        let shown = chat.render_all(W);
+        assert!(shown.iter().any(|line| strip(line).contains("later work")));
+        assert!(shown.len() > hidden);
+    }
+
+    /// The agent folds a burst of queued submissions into the run ahead of
+    /// them (`enqueue_coalescing`), so the card that *ran* has to carry the
+    /// folded text: dropping the absorbed card alone would leave the transcript
+    /// showing a message shorter than the one the agent was asked.
+    #[test]
+    fn a_merged_submission_folds_its_text_into_the_card_ahead() {
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.add_message(ChatMessage::new("u1".into(), ChatRole::User, "first"));
+        chat.bind_user_run("u1", "r-1", RunState::Running, None);
+        chat.add_message(ChatMessage::new("u2".into(), ChatRole::User, "second"));
+        chat.bind_user_run("u2", "r-2", RunState::Queued, Some(1));
+        assert!(chat.fold_run_into_previous("r-2"));
+        assert_eq!(chat.messages.len(), 1, "the folded card is gone");
+        // The agent joins the two with a blank line (`start_next_scheduled`), and
+        // the card shows exactly that: one message, both paragraphs.
+        assert_eq!(chat.messages[0].content, "first\n\nsecond");
+        let plain: Vec<String> = chat.render_all(W).into_iter().map(|l| strip(&l)).collect();
+        assert!(plain.iter().any(|l| l.contains("first")));
+        assert!(plain.iter().any(|l| l.contains("second")));
+        // A fold with no card of ours ahead: the folded submission is dropped
+        // and the caller is told nothing of this client's grew.
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.add_message(ChatMessage::new("u1".into(), ChatRole::User, "only"));
+        chat.bind_user_run("u1", "r-7", RunState::Queued, Some(1));
+        assert!(!chat.fold_run_into_previous("r-8"));
+        assert_eq!(chat.messages.len(), 1, "an unknown run changes nothing");
+    }
+
+    /// `drop_run` is the cancel path: the submission never ran, so its card
+    /// leaves the transcript instead of sitting there as "cancelled".
+    #[test]
+    fn drop_run_removes_the_dropped_submission() {
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.add_message(ChatMessage::new("u1".into(), ChatRole::User, "never sent"));
+        chat.bind_user_run("u1", "run-1", RunState::Queued, Some(1));
+        chat.drop_run("run-1");
+        assert!(chat.messages.is_empty());
+        assert!(!chat
+            .render_all(W)
+            .iter()
+            .any(|line| strip(line).contains("never sent")));
+        // Dropping a run this chat does not hold is a no-op, not a panic.
+        chat.drop_run("run-404");
     }
 
     #[test]
@@ -8155,7 +8310,8 @@ mod tests {
         let plain: Vec<String> = chat.render_all(W).into_iter().map(|l| strip(&l)).collect();
         assert!(plain.iter().any(|l| l.contains("cancelled")));
 
-        // Queued without a position renders a bare "queued" label.
+        // Queued without a position keeps the message's state, and (like every
+        // queued prompt) draws no rows.
         let mut chat = new_chat();
         chat.render(W);
         chat.upsert_queued_run("r9", "later work", 0);

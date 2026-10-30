@@ -15,6 +15,7 @@ import { layout, radius, spacing } from "../../theme/tokens";
 import { createThemedStyles, useTheme } from "../../theme/ThemeContext";
 import { CustomProviderPage } from "./CustomProviderPage";
 import { FollowAccountPage } from "./FollowAccountPage";
+import { FusionSettingsPage } from "./FusionSettingsPage";
 import { ModelsSettingsPage } from "./ModelsSettingsPage";
 import { ProviderKeyPage } from "./ProviderKeyPage";
 import { ProvidersSettingsPage } from "./ProvidersSettingsPage";
@@ -35,7 +36,7 @@ export type SettingsScreenHandle = { goBack(): void };
  * `appearance` first shipped. A test holds the two translations to this list.
  */
 export const TITLED_SETTINGS_PAGES = [
-  "preferences", "models", "skills", "tasks", "language", "appearance", "providers", "followAccount",
+  "preferences", "models", "fusion", "skills", "tasks", "language", "appearance", "providers", "followAccount",
 ] as const;
 
 type TitledSettingsPage = (typeof TITLED_SETTINGS_PAGES)[number];
@@ -57,7 +58,7 @@ type SettingsRoute =
  * what is being configured and no longer which device: the levels below the
  * device home are the only place the two are separated.
  */
-const DEVICE_LEVELS = new Set(["preferences", "models", "skills", "tasks", "providers"]);
+const DEVICE_LEVELS = new Set(["preferences", "models", "fusion", "skills", "tasks", "providers"]);
 
 /** A refused write, as the key of what failed. Held rather than a boolean
  * because the two surfaces fail differently and say so on screen. */
@@ -254,6 +255,8 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
         return <ProviderKeyPage key={page.provider.id} provider={page.provider} onSaved={goBackFromEditor} />;
       case "providerForm":
         return <CustomProviderPage key={page.provider?.id ?? "new"} onDone={goBackFromEditor} provider={page.provider} />;
+      case "fusion":
+        return <FusionSettingsPage />;
       case "models":
         return enabled
           ? <ModelsSettingsPage settings={resource.data} disabled={disabled} onChange={patch => void changeSettings(patch)} />
@@ -386,6 +389,7 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
                   rows that need it are disabled. */}
               <SettingsLink disabled={!remote.desktopOnline} label={t("desktopSettings.preferences")} onPress={() => push({ name: "preferences" })} />
               <SettingsLink disabled={!enabled} label={t("desktopSettings.models")} onPress={() => push({ name: "models" })} />
+              <SettingsLink disabled={!remote.desktopOnline || !remote.capabilities.has("fusion_settings_v1")} label={t("desktopSettings.fusion")} description={!remote.capabilities.has("fusion_settings_v1") ? t("desktopSettings.updateDesktop") : undefined} onPress={() => push({ name: "fusion" })} />
               <SettingsLink disabled={!remote.desktopOnline || !providersSupported} label={t("desktopSettings.providers")} onPress={() => push({ name: "providers" })} />
               <SettingsLink disabled={!remote.desktopOnline || !skillsSupported} label={t("desktopSettings.skills")} onPress={() => push({ name: "skills" })} />
               <SettingsLink disabled={!remote.desktopOnline || !tasksSupported} label={t("desktopSettings.tasks")} onPress={() => push({ name: "tasks" })} />

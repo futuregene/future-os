@@ -343,6 +343,21 @@ pub enum Key {
     ActivityTool,
     ActivityStreaming,
     ActivityTools,
+    /// The activity row while a manual compaction holds the session: the
+    /// summary the agent is writing is the model's work, and it is the one
+    /// thing on screen that says why the prompt will not send.
+    ActivityCompacting,
+    ActivityIdle,
+    StatusNoModel,
+    AgeNow,
+    EffortDefault,
+    EffortOff,
+    EffortMinimal,
+    EffortLow,
+    EffortMedium,
+    EffortHigh,
+    EffortXhigh,
+    EffortMax,
     HintBackToChat,
     HintSidebar,
     HintSessions,
@@ -356,9 +371,9 @@ pub enum Key {
     // ── the overlays ──────────────────────────────────────────────────
     HelpTitle,
     HelpFooter,
-    PalettePanelTitle,
     PaletteTitle,
     PaletteFilter,
+    PaletteFilterSplit,
     PaletteEmpty,
     PaletteCommandsHeading,
     PaletteSkillsHeading,
@@ -383,7 +398,6 @@ pub enum Key {
     // ── the palette's verbs ───────────────────────────────────────────
     CmdNew,
     CmdStop,
-    CmdDiff,
     CmdApproval,
     CmdThinking,
     CmdMode,
@@ -454,8 +468,24 @@ pub enum Key {
     GitNoSelection,
     GitCopied,
     CompactDone,
+    /// The same sentence with the checkpoint's two counts: what `/compact`
+    /// actually did, the way the desktop's divider reports it.
+    CompactDoneTokens,
+    /// Nothing to compact: a checkpoint covers the conversation already.
+    CompactUnchanged,
+    /// The agent's worker reported a compaction that did not finish and named
+    /// no reason.
+    CompactFailed,
+    /// `/compact` was accepted and the worker is summarising.
+    NoticeCompacting,
+    /// The composer's own title while a compaction holds the session — the
+    /// reason a draft will not send, said where the draft is.
+    ComposerCompacting,
     ToolsDone,
     ToolsUsage,
+    ToolsPending,
+    NeedsConversation,
+    ProvidersEmpty,
     WorkflowFailed,
     ForkEmptyId,
     CmdQueue,
@@ -476,6 +506,9 @@ pub enum Key {
     QueueTitle,
     QueueHint,
     QueueEmpty,
+    QueueBandTitle,
+    QueueBandManage,
+    QueueBandMore,
     QueueCancelled,
     QueueRecalled,
     QueueCancelFailed,
@@ -510,6 +543,10 @@ pub enum Key {
     CmdTranscript,
     CmdFusion,
     CmdFusionLog,
+    CmdFusionSettings,
+    FusionDisabled,
+    FusionMainRole,
+    FusionParticipantRole,
     FusionLogTitle,
     FusionPreparing,
     FusionAnalyzing,
@@ -578,6 +615,8 @@ pub enum Key {
     HelpKeyFiles,
     HelpKeyPrevPanel,
     HelpKeyNextPanel,
+    /// The close chip in every overlay's top border: `[× 关闭]`.
+    OverlayClose,
     // ── the preview box and clipboard paste ──────────────────────────
     PreviewZoomIn,
     PreviewZoomOut,
@@ -615,6 +654,7 @@ pub enum Key {
     NoticePinned,
     NoticeUnpinned,
     NoticePinUnavailable,
+    NoticePinNewSession,
     NoticeModeUnknown,
     NoticeOpenLinkFailed,
     // ── the adapter (`live`, `local`, `widgets`) ──────────────────────
@@ -757,6 +797,24 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ActivityTool => ("工具", "Tool"),
         ActivityStreaming => ("生成", "Writing"),
         ActivityTools => (" · {}s · {} 工具", " · {}s · {} tools"),
+        // A compaction is the model summarising the conversation — not a run,
+        // so the row drops the tool tally and keeps the clock.
+        ActivityCompacting => ("压缩上下文 · {}s", "Compacting · {}s"),
+        // The one activity label that used to be a literal: a settled session
+        // says `· idle`, and a Chinese frame has to say 空闲.
+        ActivityIdle => ("空闲", "idle"),
+        StatusNoModel => ("未选择模型", "no model"),
+        // The other ages are numbers and a unit (`8m`, `2d`, `3w`), which
+        // read the same in both languages; only the newest row is a word.
+        AgeNow => ("刚刚", "now"),
+        EffortDefault => ("默认", "Default"),
+        EffortOff => ("关", "Off"),
+        EffortMinimal => ("最少", "Minimal"),
+        EffortLow => ("低", "Low"),
+        EffortMedium => ("中", "Medium"),
+        EffortHigh => ("高", "High"),
+        EffortXhigh => ("很高", "XHigh"),
+        EffortMax => ("最高", "Max"),
         // `esc` walks back one level — a preview to the panel it was opened
         // from, a panel to the chat — so the hint names the walk, not one of
         // its stops.
@@ -787,11 +845,15 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             " 按键与快捷键 · ↑↓ 滚动 · esc 关闭",
             " Keys and shortcuts · ↑↓ scrolls · esc closes",
         ),
-        PalettePanelTitle => (" 命令面板（/）", " Command palette (/)"),
         PaletteTitle => ("命令", "Commands"),
         PaletteFilter => (
             "输入以过滤命令与技能 · tab 补全 · ⏎ 运行",
             "Type to filter commands and skills · tab completes · enter runs",
+        ),
+        // The two-column layout, where `←`/`→` have somewhere to go.
+        PaletteFilterSplit => (
+            "输入以过滤 · ←→ 切换命令/技能 · tab 补全 · ⏎ 运行",
+            "Type to filter · ←→ switches commands/skills · tab completes · enter runs",
         ),
         PaletteEmpty => (" 没有匹配的命令或技能", " No matching command or skill"),
         PaletteCommandsHeading => (" 命令", " Commands"),
@@ -838,7 +900,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
 
         CmdNew => ("新建会话", "New chat"),
         CmdStop => ("停止当前生成", "Stop the current run"),
-        CmdDiff => ("审查工作区改动", "Review working-tree changes"),
         CmdApproval => ("查看完整审批详情", "Inspect the pending approval"),
         CmdHistory => ("搜索历史会话", "Search session history"),
         CmdTree => ("浏览会话父子树", "Browse the session tree"),
@@ -925,15 +986,46 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         GitNoSelection => ("选择一个条目查看详情", "Select an entry to see its detail"),
         GitCopied => ("已复制 {}", "copied {}"),
         CompactDone => ("上下文已压缩", "Context compacted"),
+        CompactDoneTokens => (
+            "上下文已压缩：{} → {} tokens（估算）",
+            "Context compacted: {} → {} tokens (estimated)",
+        ),
+        CompactUnchanged => ("上下文无需压缩", "Nothing to compact"),
+        CompactFailed => ("上下文压缩失败", "Context compaction failed"),
+        NoticeCompacting => (
+            "正在压缩上下文，请稍候…",
+            "Compacting the context — one moment…",
+        ),
+        ComposerCompacting => (
+            "压缩中，暂不能发送",
+            "Compacting — sending paused",
+        ),
         ToolsDone => ("工具设置已更新", "Tool settings updated"),
         ToolsUsage => ("用法：/tools read,shell · /tools off", "Usage: /tools read,shell · /tools off"),
+        // The launchpad has no session to tell, so the choice is staged for the
+        // one the first message creates. The notice says *that*, rather than
+        // the session-scoped "updated" a verb with nowhere to write used to
+        // claim.
+        ToolsPending => (
+            "工具设置将用于这个会话（发出第一条消息后生效）",
+            "Tool settings apply to this conversation (from its first message)",
+        ),
+        // A verb that acts on the conversation on screen, typed with none.
+        NeedsConversation => (
+            "先发一条消息开始一个会话（或 /new 新建）",
+            "Send a message to start a conversation first (or /new)",
+        ),
+        ProvidersEmpty => (
+            "没有配置任何模型提供商",
+            "No model providers are configured",
+        ),
         WorkflowFailed => ("操作失败：{}", "Operation failed: {}"),
         ForkEmptyId => ("fork 未返回会话 id", "Fork returned no session id"),
         CmdQueue => ("查看、取消或取回排队消息", "List, cancel or recall queued prompts"),
         CmdDelete => ("删除这条会话（先确认）", "Delete this conversation (asks first)"),
         CmdPin => (
-            "置顶 / 取消置顶侧栏光标所在会话的工作区",
-            "Pin or unpin the workspace of the row the rail's cursor is on",
+            "置顶 / 取消置顶侧栏光标所在会话",
+            "Pin or unpin the conversation under the rail's cursor",
         ),
         CmdCopy => ("复制最后一条回答", "Copy the last assistant answer"),
         CmdPaste => (
@@ -952,6 +1044,14 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         QueueTitle => ("排队消息", "Queued prompts"),
         QueueHint => ("↑↓ 选择 · x 取消 · r/⏎ 取消并取回草稿 · esc 关闭 · ctrl+c 停止当前运行", "↑↓ choose · x cancels · r/enter recalls to draft · esc closes · ctrl+c stops the active run"),
         QueueEmpty => ("没有排队消息", "No queued prompts"),
+        // The band above the composer: one row per prompt the agent accepted
+        // but has not started. `{}` is the count.
+        QueueBandTitle => (
+            "排队 {} 条 · 当前回复结束后一起发送",
+            "{} queued · sent together when this reply finishes",
+        ),
+        QueueBandManage => ("/queue 管理", "/queue to manage"),
+        QueueBandMore => ("… 还有 {} 条", "… {} more"),
         QueueCancelled => ("已取消排队消息", "Queued prompt cancelled"),
         QueueRecalled => ("已取消排队消息并取回草稿", "Queued prompt cancelled and recalled to draft"),
         QueueCancelFailed => ("无法取消排队消息：{}", "Could not cancel queued run: {}"),
@@ -990,6 +1090,10 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         CmdSkills => ("技能列表", "Installed skills"),
         CmdExport => ("导出会话", "Export the session"),
         CmdFusion => ("启用 Fusion 讨论工具", "Enable the Fusion discussion tool"),
+        CmdFusionSettings => ("Fusion 设置（--enable/--disable、--main、--participant、--thinking）", "Fusion settings (--enable/--disable, --main, --participant, --thinking)"),
+        FusionDisabled => ("Fusion 已在设置中关闭", "Fusion is turned off in settings"),
+        FusionMainRole => ("主模型", "Main model"),
+        FusionParticipantRole => ("参与模型 {}", "Participant {}"),
         CmdFusionLog => ("查看 Fusion 讨论进度", "Inspect Fusion discussion progress"),
         FusionLogTitle => ("Fusion 讨论记录（只读）", "Fusion discussion record (read-only)"),
         FusionPreparing => ("准备讨论", "Preparing discussion"),
@@ -1065,7 +1169,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         HelpKeyReplyDetailSet => ("同上，直接设置", "The same, set directly"),
         HelpKeyPrevSession => ("上一个会话（侧栏随之切换）", "Previous conversation (the chat follows)"),
         HelpKeyNextSession => ("下一个会话（侧栏随之切换）", "Next conversation (the chat follows)"),
-        HelpKeyPin => ("置顶 / 取消置顶该工作区", "Pin / unpin this workspace"),
+        HelpKeyPin => ("置顶 / 取消置顶该会话", "Pin / unpin this conversation"),
         HelpKeyThinking => (
             "思考等级（弹出选择）",
             "Reasoning effort (opens the chooser)",
@@ -1094,6 +1198,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "查看草稿里最新那张图片",
             "View the newest image attached to the draft",
         ),
+        OverlayClose => ("关闭", "Close"),
         PreviewZoomIn => ("放大", "Zoom in"),
         PreviewZoomOut => ("缩小", "Zoom out"),
         PreviewFit => ("适应", "Fit"),
@@ -1163,7 +1268,11 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ),
         NoticePinned => ("已置顶 {} · 在 工作区 页签的 置顶 区", "Pinned {} · it leads the Workspaces tab"),
         NoticeUnpinned => ("已取消置顶 {}", "Unpinned {}"),
-        NoticePinUnavailable => ("这条会话不属于工作区，无法置顶", "This conversation belongs to no workspace"),
+        NoticePinUnavailable => ("这里没有可置顶的会话", "Nothing to pin here"),
+        NoticePinNewSession => (
+            "新会话还没创建，没有可置顶的会话",
+            "The new session has not been created yet, so there is nothing to pin",
+        ),
         DeleteTitle => ("删除会话", "Delete conversation"),
         DeleteBody => (
             "它会连同记录和文件一起删除，无法撤销。",
@@ -1202,6 +1311,27 @@ fn pair(key: Key) -> (&'static str, &'static str) {
 }
 
 /// One piece of chrome in `lang`.
+/// A declared reasoning effort's label, or `None` when the host declared a
+/// token of its own.
+///
+/// The vocabulary is open — a model may accept `turbo` — so the status bar shows
+/// the wire value for anything this table does not name, exactly like the other
+/// clients do (mobile's `thinkingLevelLabel`).
+pub fn effort_label(lang: Language, level: &str) -> Option<&'static str> {
+    let key = match level {
+        "default" => Key::EffortDefault,
+        "off" => Key::EffortOff,
+        "minimal" => Key::EffortMinimal,
+        "low" => Key::EffortLow,
+        "medium" => Key::EffortMedium,
+        "high" => Key::EffortHigh,
+        "xhigh" => Key::EffortXhigh,
+        "max" => Key::EffortMax,
+        _ => return None,
+    };
+    Some(t(lang, key))
+}
+
 pub fn t(lang: Language, key: Key) -> &'static str {
     let (zh, en) = pair(key);
     match lang {
@@ -1400,7 +1530,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 349] = {
+    const ALL_KEYS: [Key; 377] = {
         use Key::*;
         [
             TabTodo,
@@ -1483,6 +1613,18 @@ mod tests {
             ActivityTool,
             ActivityStreaming,
             ActivityTools,
+            ActivityCompacting,
+            ActivityIdle,
+            StatusNoModel,
+            AgeNow,
+            EffortDefault,
+            EffortOff,
+            EffortMinimal,
+            EffortLow,
+            EffortMedium,
+            EffortHigh,
+            EffortXhigh,
+            EffortMax,
             HintBackToChat,
             HintSidebar,
             HintSessions,
@@ -1495,9 +1637,9 @@ mod tests {
             ShortcutStop,
             HelpTitle,
             HelpFooter,
-            PalettePanelTitle,
             PaletteTitle,
             PaletteFilter,
+            PaletteFilterSplit,
             PaletteEmpty,
             PaletteCommandsHeading,
             PaletteSkillsHeading,
@@ -1519,7 +1661,6 @@ mod tests {
             WorkspaceNone,
             CmdNew,
             CmdStop,
-            CmdDiff,
             CmdApproval,
             CmdThinking,
             CmdMode,
@@ -1585,8 +1726,16 @@ mod tests {
             GitNoSelection,
             GitCopied,
             CompactDone,
+            CompactDoneTokens,
+            CompactUnchanged,
+            CompactFailed,
+            NoticeCompacting,
+            ComposerCompacting,
             ToolsDone,
             ToolsUsage,
+            ToolsPending,
+            NeedsConversation,
+            ProvidersEmpty,
             WorkflowFailed,
             ForkEmptyId,
             CmdQueue,
@@ -1600,6 +1749,9 @@ mod tests {
             QueueTitle,
             QueueHint,
             QueueEmpty,
+            QueueBandTitle,
+            QueueBandManage,
+            QueueBandMore,
             QueueCancelled,
             QueueRecalled,
             QueueCancelFailed,
@@ -1631,6 +1783,10 @@ mod tests {
             CmdTranscript,
             CmdFusion,
             CmdFusionLog,
+            CmdFusionSettings,
+            FusionDisabled,
+            FusionMainRole,
+            FusionParticipantRole,
             FusionLogTitle,
             FusionPreparing,
             FusionAnalyzing,
@@ -1699,6 +1855,7 @@ mod tests {
             HelpKeyNextPanel,
             HelpKeyPasteImage,
             HelpKeyPreviewAttachment,
+            OverlayClose,
             PreviewZoomIn,
             PreviewZoomOut,
             PreviewFit,
@@ -1732,6 +1889,7 @@ mod tests {
             NoticePinned,
             NoticeUnpinned,
             NoticePinUnavailable,
+            NoticePinNewSession,
             NoticeOpenLinkFailed,
             DeleteTitle,
             DeleteBody,

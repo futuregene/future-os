@@ -1,3 +1,4 @@
+import type { FusionConfiguration } from "./fusionSettings";
 /** Public, credential-free Fusion read projections shared by desktop/mobile. */
 export interface FusionConclusion {
   fusion_run_id: string;
@@ -34,6 +35,7 @@ export interface FusionDiscussion {
     status: string;
     phase: string;
     completeness: string;
+    configuration?: FusionConfiguration | null;
     input: { question: string; goal: string; background: string; constraints: string[] };
     result?: FusionConclusion | null;
     error?: string | null;
@@ -95,8 +97,14 @@ export function fusionProgress(discussion: FusionDiscussion | null, toolStatus?:
   }
   const created = discussion?.events?.find(event => event.kind === "created")?.data;
   const configured = created && typeof created === "object" && "models" in created && Array.isArray(created.models) ? created.models.filter((value): value is string => typeof value === "string") : DEFAULT_FUSION_MODELS;
-  const models = [...new Set([...configured, ...[...latest.values()].map(step => step.model)])].map(model => {
-    const steps = [...latest.values()].filter(step => step.model === model).sort((a, b) => a.started_at - b.started_at);
+  const config = run?.configuration;
+  const roles = config ? [
+    { id: "moderator", role: "moderator" as const, number: null, model: config.moderator.model },
+    ...config.panel.map((profile, index) => ({ id: `P${index + 1}`, role: "participant" as const, number: index + 1, model: profile.model })),
+  ] : [...new Set([...configured, ...[...latest.values()].map(step => step.model)])].map(model => ({ id: model, role: null, number: null, model }));
+  const models = roles.map(slot => {
+    const model = slot.model;
+    const steps = [...latest.values()].filter(step => step.model === model && (!slot.role || step.participant === slot.id)).sort((a, b) => a.started_at - b.started_at);
     const currentSteps = steps.filter(step => step.phase === phase);
     const current = currentSteps[currentSteps.length - 1];
     let state: FusionModelStatus = "waiting";
@@ -106,7 +114,7 @@ export function fusionProgress(discussion: FusionDiscussion | null, toolStatus?:
     if (current) state = modelStatus(current);
     if (terminal && (state === "thinking" || state === "waiting")) state = status === "cancelled" ? "cancelled" : "interrupted";
     if (terminal && state === "completed" && steps.some(step => ["failed", "timed_out", "output_limited", "cancelled", "interrupted"].includes(modelStatus(step)))) state = "partial";
-    return { model, label: fusionModelLabel(model), status: state };
+    return { ...slot, label: fusionModelLabel(model), status: state };
   });
   return { phase, status, terminal, stageIndex, completedStages, partial: !!run && run.completeness !== "full", models };
 }

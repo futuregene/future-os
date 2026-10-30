@@ -1,3 +1,6 @@
+import type { FusionSettingsPatch } from "@future-os/thread-projection";
+import type { MockEntry } from "./data";
+import { fusionProgressFixture } from "../../../scripts/screenshots/fixtures/fusion-progress";
 /**
  * A browser-side stand-in for the desktop's Tauri (Rust) backend.
  *
@@ -8,8 +11,7 @@
  * asking for a command that is missing here, the console prints
  * `[mock] UNHANDLED COMMAND <name>` — add a handler for it and re-capture.
  */
-import type { MockEntry } from "./data";
-import { fusionProgressFixture } from "../../../scripts/screenshots/fixtures/fusion-progress";
+import { applyFusionSettings, fusionSettingsModels, initialFusionSettings } from "../../../scripts/screenshots/fixtures/fusion-settings";
 import fusionFixture from "../../../scripts/screenshots/fixtures/fusion.json";
 import {
   appSettings,
@@ -30,6 +32,7 @@ import {
   remoteSessions,
   remoteToolArgs,
   remoteWorkspaces,
+  requestedThread,
   reviewFiles,
   runs,
   sessionUsage,
@@ -43,6 +46,7 @@ import {
   workspaceFiles,
   workspaces,
 } from "./data";
+import { emit } from "./event";
 import { replayPage, replayState, sessionEntries, streamRemoteRun } from "./remoteStream";
 
 // The console output doubles as the "what is missing" list while iterating on
@@ -50,6 +54,13 @@ import { replayPage, replayState, sessionEntries, streamRemoteRun } from "./remo
 // eslint-disable-next-line no-console
 const log = (...args: unknown[]) => console.log("[mock]", ...args);
 
+let fusionSettings = initialFusionSettings();
+const settingsModels = () => new URLSearchParams(window.location.search).has("fusionSettings") ? [...models, ...fusionSettingsModels.filter(model => !models.some(entry => entry.id === model.id && entry.provider === model.provider))] : models;
+function saveFusionSettings(patch: FusionSettingsPatch) {
+  fusionSettings = applyFusionSettings(fusionSettings, patch);
+  void emit("app_settings_changed");
+  return fusionSettings;
+}
 let settings: typeof appSettings = { ...appSettings };
 
 /**
@@ -143,6 +154,11 @@ function slow<T>(answer: T): T | Promise<T> {
 }
 const threadList = threads.map(thread => ({ ...thread }));
 const workspaceList = workspaces.map(workspace => ({ ...workspace }));
+/** Staged session-history pages, read back in 64 KiB chunks (see `begin_session_history_transfer`). */
+const historyTransfers = new Map<string, Uint8Array>();
+let historyTransferSeq = 0;
+/** The chunk size `historyTransfer.ts` insists on. */
+const HISTORY_CHUNK_BYTES = 64 * 1024;
 /** How many times each thread's agent state has been read (see the handler). */
 const stateReads = new Map<string, number>();
 
@@ -318,20 +334,9 @@ function peerList(): typeof remotePeers {
 /** Mutable copy so a capture can show a task being toggled or deleted. */
 const taskList = tasks.map(task => ({ ...task }));
 
-const historyTransfers = new Map<string, Uint8Array>();
 const handlers: Record<string, (args: any) => unknown> = {
-  begin_session_history_transfer: (args) => {
-    const entries = entriesForThread(args?.threadId ?? "");
-    const bytes = new TextEncoder().encode(JSON.stringify({ entries, hasMore: false, nextOffset: entries.length }));
-    const id = crypto.randomUUID();
-    historyTransfers.set(id, bytes);
-    return { id, totalBytes: bytes.length, chunkBytes: 64 * 1024 };
-  },
-  read_session_history_transfer: args => Array.from(historyTransfers.get(args?.transferId)?.slice(args?.offset, args?.offset + 64 * 1024) ?? []),
-  release_session_history_transfer: (args) => {
-    historyTransfers.delete(args?.transferId);
-    return null;
-  },
+  get_fusion_settings: () => fusionSettings,
+  update_fusion_settings: args => saveFusionSettings(args.input as FusionSettingsPatch),
   get_fusion: (args) => {
     if (!args?.stepId)
       return fusionProgressFixture(new URLSearchParams(window.location.search).get("fusion"));
@@ -416,7 +421,7 @@ const handlers: Record<string, (args: any) => unknown> = {
     }
     return threadList;
   },
-  get_recent_thread: () => threadList.find(thread => thread.id === "th_review") ?? null,
+  get_recent_thread: () => threadList.find(thread => thread.id === (requestedThread() ?? "th_review")) ?? null,
   mark_thread_opened: () => null,
   pin_thread: (args) => {
     const target = threadList.find(thread => thread.id === args?.input?.threadId);
@@ -463,7 +468,7 @@ const handlers: Record<string, (args: any) => unknown> = {
         ? refreshedSessionUsage
         : sessionUsage;
     return {
-      model: "future/deepseek-v4-pro",
+      model: target.model ?? "future/deepseek-v4-pro",
       thinkingLevel: "medium",
       sessionName: target.title,
       sessionId: target.agentSessionId ?? null,
@@ -481,6 +486,35 @@ const handlers: Record<string, (args: any) => unknown> = {
   attach_remote_stream: () => ({ runId: null }),
 
   // ── Session history ────────────────────────────────────────────────────
+  /**
+   * A history read, staged and then read back in chunks.
+   *
+   * This is the lane `integrations/storage/historyTransfer.ts` uses: the backend
+   * stages the page, the client reads 64 KiB slices of it and composes the JSON
+   * cooperatively. Only the inline command was answered here, so every
+   * conversation in every capture came out as `invalid_history_transfer` and a
+   * retry link — the transcript a screenshot exists to show never rendered at
+   * all. The bytes are UTF-8 JSON, which is what `decodeJsonBytes` expects.
+   */
+  begin_session_history_transfer: (args) => {
+    const entries = entriesForThread(args?.threadId ?? "");
+    const page = { entries, hasMore: false, nextOffset: entries.length };
+    const bytes = new TextEncoder().encode(JSON.stringify(page));
+    const id = `shot_transfer_${++historyTransferSeq}`;
+    historyTransfers.set(id, bytes);
+    return { id, totalBytes: bytes.length, chunkBytes: HISTORY_CHUNK_BYTES };
+  },
+  read_session_history_transfer: (args) => {
+    const bytes = historyTransfers.get(String(args?.transferId ?? ""));
+    if (!bytes)
+      return [];
+    const offset = Math.max(0, Number(args?.offset ?? 0));
+    return Array.from(bytes.subarray(offset, offset + HISTORY_CHUNK_BYTES));
+  },
+  release_session_history_transfer: (args) => {
+    historyTransfers.delete(String(args?.transferId ?? ""));
+    return null;
+  },
   get_session_entries_page: (args) => {
     const entries = entriesForThread(args?.threadId ?? "");
     return { entries, hasMore: false, nextOffset: entries.length };
@@ -521,7 +555,9 @@ const handlers: Record<string, (args: any) => unknown> = {
       : [];
   },
   list_approval_requests: args => (new URLSearchParams(window.location.search).has("fusion") ? [] : args?.threadId === pendingApproval.threadId ? [pendingApproval] : []),
+  list_approval_assessments: () => [],
   list_pending_approval_requests: () => new URLSearchParams(window.location.search).has("fusion") ? [] : [pendingApproval],
+
   decide_approval_request: () => null,
   save_approval_rule: () => null,
   save_approval_rules: () => null,
@@ -635,7 +671,7 @@ const handlers: Record<string, (args: any) => unknown> = {
   prepare_image_preview: args => ({ path: assetUrl(args?.path ?? ""), version: "1" }),
 
   // ── Agent: models, providers, account ──────────────────────────────────
-  list_agent_models: () => models,
+  list_agent_models: () => settingsModels(),
   sync_future_models: () => ({ synced: true, modelCount: models.length, revision: 42 }),
   list_agent_providers: () => providersView,
   upsert_custom_provider: () => providersView,
@@ -643,6 +679,12 @@ const handlers: Record<string, (args: any) => unknown> = {
   update_builtin_provider_key: () => providersView,
   set_builtin_provider_base_url: () => providersView,
   delete_custom_provider: () => providersView,
+  // Thinking-level detection: every level is accepted, so a screenshot scenario
+  // that clicks Detect shows a fully selected row.
+  probe_thinking_level: (args: { input?: { level?: string } }) => ({
+    level: args?.input?.level || "default",
+    ok: true,
+  }),
   set_default_model: () => null,
   get_future_auth_state: () => ({
     status: "authenticated",
@@ -793,6 +835,10 @@ const handlers: Record<string, (args: any) => unknown> = {
       return { sessionId: String(command.sessionId ?? ""), threadId: "th_forest" };
     }
     switch (command.type) {
+      case "get_fusion_settings":
+        return fusionSettings;
+      case "update_fusion_settings":
+        return saveFusionSettings(command.fusionSettings as FusionSettingsPatch);
       case "get_session_entries":
         return {
           entries: sessionEntries(String(command.sessionId)),
@@ -856,7 +902,7 @@ const handlers: Record<string, (args: any) => unknown> = {
             .map(model => ({ ...model, thinkingLevel: model.reasoning === false ? "off" : "high" })),
         });
       case "list_settings_models":
-        return { models };
+        return { models: settingsModels() };
       case "get_desktop_settings":
         return { ...settings };
       case "update_desktop_settings": {

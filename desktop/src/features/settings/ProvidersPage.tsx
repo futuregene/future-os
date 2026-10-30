@@ -10,6 +10,7 @@ import {
   listAgentProviders,
   logoutFutureProvider,
   peekAgentProviders,
+  probeThinkingLevel,
   updateBuiltinProvider,
   upsertCustomProvider,
 } from "../../integrations/agent/providers";
@@ -365,6 +366,7 @@ export function ProvidersPage({
         ]}
         initial={editing}
         onClose={() => setDialogOpen(false)}
+        onProbe={probeThinkingLevel}
         onSubmit={async (input) => {
           const view = await upsertCustomProvider(input);
           setProviders(view);

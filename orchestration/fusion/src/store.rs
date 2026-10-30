@@ -70,6 +70,45 @@ impl Store {
     pub fn root(&self) -> &Path {
         &self.root
     }
+    fn read_settings(db: &Connection) -> Result<crate::Settings> {
+        let raw: Option<String> = db
+            .query_row(
+                "SELECT value FROM fusion_meta WHERE key='settings'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        raw.map(|raw| serde_json::from_str(&raw).map_err(Into::into))
+            .unwrap_or_else(|| Ok(crate::Settings::default()))
+    }
+
+    pub fn settings(&self) -> Result<crate::Settings> {
+        Self::read_settings(&self.connect()?)
+    }
+
+    pub fn update_settings(&self, patch: crate::SettingsPatch) -> Result<crate::Settings> {
+        let mut db = self.connect()?;
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut settings = Self::read_settings(&tx)?;
+        ensure!(
+            patch.expected_revision == settings.revision,
+            "Fusion settings changed elsewhere; reload before saving"
+        );
+        if let Some(enabled) = patch.enabled {
+            settings.enabled = enabled;
+        }
+        if let Some(configuration) = patch.configuration {
+            settings.configuration = configuration;
+        }
+        settings.configuration.validate()?;
+        settings.revision = settings
+            .revision
+            .checked_add(1)
+            .context("Fusion settings revision exhausted")?;
+        tx.execute("INSERT INTO fusion_meta(key,value) VALUES('settings',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [serde_json::to_string(&settings)?])?;
+        tx.commit()?;
+        Ok(settings)
+    }
     fn connect(&self) -> Result<Connection> {
         let db = Connection::open(self.root.join("fusion.db"))?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -151,6 +190,8 @@ impl Store {
             );
             return Ok((old, false));
         }
+        let settings = Self::read_settings(&tx)?;
+        ensure!(settings.enabled, "Fusion is disabled in settings");
         let count: i64 = tx.query_row(
             "SELECT count(*) FROM fusion_runs WHERE parent_session=?1 AND parent_run=?2",
             params![parent.session_id, parent.run_id],
@@ -173,7 +214,7 @@ impl Store {
             status: "preparing".into(),
             phase: "preparing".into(),
             completeness: "full".into(),
-            configuration: Some(crate::Configuration::default()),
+            configuration: Some(settings.configuration),
             result: None,
             error: None,
             created_at: now_ms(),
@@ -458,6 +499,73 @@ fn append(db: &Connection, id: &str, kind: &str, data: Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn settings_are_durable_revisioned_and_frozen_at_admission() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let defaults = store.settings().unwrap();
+        let parent = Parent {
+            database_id: "db".into(),
+            session_id: "s".into(),
+            run_id: "r".into(),
+            tool_call_id: "t".into(),
+        };
+        let input = ConsultationInput {
+            question: "A or B?".into(),
+            goal: "choose".into(),
+            background: "facts".into(),
+            constraints: vec![],
+            options: vec![],
+            evidence: vec![],
+            read_scope: vec![],
+        };
+        let (original, _) = store
+            .prepare(parent.clone(), input.clone(), dir.path())
+            .unwrap();
+        let mut config = defaults.configuration.clone();
+        config.panel = vec![config.moderator.clone(); 5];
+        config.panel[0].thinking_level = "low".into();
+        let changed = store
+            .update_settings(crate::SettingsPatch {
+                expected_revision: 0,
+                enabled: None,
+                configuration: Some(config.clone()),
+            })
+            .unwrap();
+        assert_eq!(
+            Store::open(dir.path()).unwrap().settings().unwrap(),
+            changed
+        );
+        assert!(store
+            .update_settings(crate::SettingsPatch {
+                expected_revision: 0,
+                enabled: Some(false),
+                configuration: None
+            })
+            .is_err());
+        assert!(store.settings().unwrap().enabled);
+        assert_eq!(
+            store.get(&original.id).unwrap().configuration,
+            Some(defaults.configuration)
+        );
+        let mut next_parent = parent.clone();
+        next_parent.tool_call_id = "next".into();
+        let (next, _) = store
+            .prepare(next_parent.clone(), input.clone(), dir.path())
+            .unwrap();
+        assert_eq!(next.configuration, Some(config));
+        store
+            .update_settings(crate::SettingsPatch {
+                expected_revision: changed.revision,
+                enabled: Some(false),
+                configuration: None,
+            })
+            .unwrap();
+        assert!(!store.prepare(parent, input.clone(), dir.path()).unwrap().1);
+        next_parent.tool_call_id = "disabled".into();
+        assert!(store.prepare(next_parent, input, dir.path()).is_err());
+    }
+
     #[test]
     fn claims_are_exclusive_and_terminal_result_cannot_win_cancel() {
         let dir = tempfile::tempdir().unwrap();

@@ -95,6 +95,8 @@
     "authTitle": "Model service authentication failed",
     "rateLimited": "Too many requests — the model service is rate limiting. Please wait a moment and try again.",
     "serverError": "Please try again later.",
+    "badRequest": "{{message}}",
+    "badRequestTitle": "The model service rejected this request (HTTP 400)",
     "contextLimit": "The conversation exceeds the model's context length limit. Start a new conversation or compact the current context, then try again.",
     "network": "Network error — the model service is unreachable. Check your connection and try again.",
     "upstreamDisconnected": "Please wait, then click Continue to resume or try again.",
@@ -398,6 +400,9 @@
     "stageCount": "{{current}} / {{total}}",
     "progress": "Discussion stage progress",
     "partialNotice": "Some models did not complete the discussion",
-    "statusUnavailable": "Discussion status is temporarily unavailable"
+    "statusUnavailable": "Discussion status is temporarily unavailable",
+    "disabled": "Fusion is turned off in settings",
+    "moderatorRole": "Main model",
+    "participantRole": "Participant {{number}}"
   }
 }

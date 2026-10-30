@@ -251,6 +251,26 @@ impl RunClient {
     }
 
     /// `listModels()` — `list_models` → `{models, defaultModel}`.
+    pub async fn fusion_settings(
+        &self,
+        patch: Option<future_fusion::SettingsPatch>,
+    ) -> Result<future_fusion::Settings, String> {
+        let (command, fields) = if let Some(patch) = patch {
+            (
+                "update_fusion_settings",
+                RpcCommand {
+                    fusion_settings_json: serde_json::to_string(&patch)
+                        .map_err(|error| error.to_string())?,
+                    ..Default::default()
+                },
+            )
+        } else {
+            ("get_fusion_settings", RpcCommand::default())
+        };
+        let data = self.execute_command(command, fields, None, 10).await?;
+        serde_json::from_value(data).map_err(|error| error.to_string())
+    }
+
     pub async fn list_models(&self) -> Result<Value, String> {
         self.execute_command("list_models", RpcCommand::default(), None, 5)
             .await
@@ -892,6 +912,9 @@ impl RunClient {
             let status = self
                 .execute_command("get_fusion_status", RpcCommand::default(), None, 10)
                 .await?;
+            if status["enabled"] == false {
+                return Err("Fusion is disabled in settings".into());
+            }
             if status["available"] != true {
                 return Err("Fusion is unavailable: start or upgrade the FutureOS host".into());
             }

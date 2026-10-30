@@ -33,7 +33,63 @@ pub(crate) async fn with_context<F: Future>(context: Option<ContextScope>, futur
 }
 
 pub(crate) fn available() -> bool {
-    Store::existing(&crate::utils::future_home()).is_ok_and(|s| s.host_available())
+    settings_enabled().unwrap_or(false)
+        && Store::existing(&crate::utils::future_home()).is_ok_and(|s| s.host_available())
+}
+
+pub(crate) fn settings_enabled() -> Result<bool> {
+    let home = crate::utils::future_home();
+    if !home.join("fusion/fusion.db").exists() {
+        return Ok(true);
+    }
+    Ok(Store::existing(&home)?.settings()?.enabled)
+}
+
+pub(crate) fn query_settings() -> Result<Value> {
+    Ok(serde_json::to_value(
+        Store::open(&crate::utils::future_home())?.settings()?,
+    )?)
+}
+
+pub(crate) fn update_settings(state: &crate::rpc::AppState, raw: &str) -> Result<Value> {
+    ensure!(raw.len() <= 16 * 1024, "Fusion settings exceed size limit");
+    let mut patch: future_fusion::SettingsPatch = serde_json::from_str(raw)?;
+    if let Some(config) = &mut patch.configuration {
+        config.validate()?;
+        let registry = state.model_registry.read();
+        for profile in config.panel.iter_mut().chain([&mut config.moderator]) {
+            let (model, _) = registry
+                .resolve_for_request(&profile.model)
+                .with_context(|| format!("Fusion model unavailable: {}", profile.model))?;
+            ensure!(
+                model
+                    .allowed_thinking_levels()
+                    .contains(&profile.thinking_level),
+                "Unsupported thinking level for {}: {}",
+                profile.model,
+                profile.thinking_level
+            );
+            ensure!(
+                model.output.iter().any(|kind| kind == "text"),
+                "Fusion requires a text model"
+            );
+            profile.model = format!("{}/{}", model.provider, model.id);
+            if model.max_tokens > 0 {
+                profile.max_output_tokens = profile.max_output_tokens.min(model.max_tokens);
+                profile.retry_max_output_tokens =
+                    profile.retry_max_output_tokens.min(model.max_tokens);
+            }
+        }
+    }
+    let settings = Store::open(&crate::utils::future_home())?.update_settings(patch)?;
+    state
+        .control_plane
+        .global_events_broadcaster()
+        .broadcast(crate::rpc::SseEvent::new(
+            "fusion_settings_changed",
+            json!({"revision":settings.revision}),
+        ));
+    Ok(serde_json::to_value(settings)?)
 }
 
 fn tool(
@@ -325,9 +381,14 @@ impl crate::types::LLMProvider for LimitedProvider {
 
 pub(crate) fn query_status(state: &crate::rpc::AppState) -> Result<Value> {
     let identity = state.session_manager.storage()?.storage_identity()?;
-    Ok(
-        json!({"available":available(),"database_id":format!("{}:{}",identity.database_id,identity.restore_generation),"panel_models":future_fusion::PANEL_MODELS,"moderator_model":future_fusion::MODERATOR_MODEL,"generation_policy_version":future_fusion::GENERATION_POLICY_VERSION}),
-    )
+    let settings = Store::open(&crate::utils::future_home())?.settings()?;
+    Ok(json!({
+        "available": available(), "enabled": settings.enabled,
+        "database_id": format!("{}:{}", identity.database_id, identity.restore_generation),
+        "panel_models": settings.configuration.panel.iter().map(|role| &role.model).collect::<Vec<_>>(),
+        "moderator_model": settings.configuration.moderator.model,
+        "generation_policy_version": future_fusion::GENERATION_POLICY_VERSION,
+    }))
 }
 
 pub(crate) fn query_discussion(

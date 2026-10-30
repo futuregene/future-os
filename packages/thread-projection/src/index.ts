@@ -85,3 +85,5 @@ export { createContentEventLane } from "./contentBody";
 
 export { fusionTask, fusionTranscript, fusionIssues, fusionProgress, fusionModelLabel, FUSION_PHASES } from "./fusion";
 export type { FusionConclusion, FusionDiscussion, FusionStep, FusionReadRequest } from "./fusion";
+export { fusionSettingsIssue, newFusionParticipant } from "./fusionSettings";
+export type { FusionSettings, FusionSettingsPatch, FusionModelConfig, FusionConfiguration } from "./fusionSettings";

@@ -1,3 +1,4 @@
+import { useFusionAvailability } from "../../../remote/useFusionAvailability";
 import { INPUT_MIN_HEIGHT, INPUT_MAX_HEIGHT } from "../composer/composerMetrics";
 import { ArrowDown, CircleAlert, FileText, Paperclip, X } from "lucide-react-native";
 import { Pressable, ScrollView, Text, TextInput, useWindowDimensions, View, type TextInputInstance } from "react-native";
@@ -130,8 +131,9 @@ function ComposerDockView({
     ),
     [remote.sessions, remote.selectedSessionId],
   );
+  const fusionAvailable = useFusionAvailability();
   const slashActions = useMemo<SlashAction[]>(() => {
-    const actions: SlashAction[] = remote.capabilities.has("fusion_v1") ? [{ id: "fusion", label: "/fusion", description: t("chat.fusionDescription"), searchText: "fusion 讨论 多模型 思考", insert: "/fusion " }] : [];
+    const actions: SlashAction[] = fusionAvailable ? [{ id: "fusion", label: "/fusion", description: t("chat.fusionDescription"), searchText: "fusion 讨论 多模型 思考", insert: "/fusion " }] : [];
     if (canReference) {
       // The phone has no `#` key to speak of (it sits on the keyboard's symbol
       // page) while `/` has a button of its own, so the reference would be
@@ -154,7 +156,7 @@ function ComposerDockView({
       });
     }
     return actions;
-  }, [canReference, compactionActionEnabled, remote.capabilities, t]);
+  }, [canReference, compactionActionEnabled, t, fusionAvailable]);
   const handleSlashAction = useCallback((action: SlashAction) => {
     if (action.id === "fusion") setMessage(value => `/fusion ${value.replace(/(^|\s)\/fusion(?=\s|$)\s*/u, "$1").trimStart()}`);
     if (action.id === "compact" && compactionActionEnabled) onCompactContext?.();

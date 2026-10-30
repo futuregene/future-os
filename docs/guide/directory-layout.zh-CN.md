@@ -21,7 +21,7 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 │   ├── images/                # CLI 图片工具输出目录
 │   └── logs/agent.log         # agent 日志（启用日志时）
 ├── fusion/                    # 共享只读讨论控制面
-│   ├── fusion.db              # 运行、阶段、参与者、议题与正文引用
+│   ├── fusion.db              # 设置及版本、运行、阶段、参与者、议题与正文引用
 │   └── snapshots/             # 有界且带哈希的讨论文件快照
 ├── agent-app/                 # 遗留凭据目录（auth.json），向后兼容读取
 ├── channels/

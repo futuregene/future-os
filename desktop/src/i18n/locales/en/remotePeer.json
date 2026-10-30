@@ -252,5 +252,6 @@
   "renameWorkspaceLabel": "Workspace name",
   "renameWorkspaceHint": "The name changes on the computer that owns this folder. Nothing is moved, and the conversations in it are not touched.",
   "statusPairingRevoked": "Pairing revoked",
-  "errorRevoked": "That computer no longer has this pairing — it was unpaired there. Remove the pairing here, then add that computer again."
+  "errorRevoked": "That computer no longer has this pairing — it was unpaired there. Remove the pairing here, then add that computer again.",
+  "fusionHint": "Configure discussion models, thinking levels and /fusion availability"
 }

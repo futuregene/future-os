@@ -202,7 +202,8 @@
       "providers": "Providers",
       "models": "Models",
       "environment": "Environment",
-      "reset": "Reset"
+      "reset": "Reset",
+      "fusion": "Fusion"
     }
   },
   "account": {
@@ -307,6 +308,15 @@
     "modelNamePlaceholder": "Leave blank to use the model ID",
     "removeModel": "Remove model",
     "thinkingLevelsLabel": "Thinking levels",
+    "probe": {
+      "detect": "Detect",
+      "detecting": "Testing {{level}}…",
+      "needBaseUrl": "Fill in the Base URL and the model ID first.",
+      "calibrationFailed": "The default request failed — check the Base URL, API type, key and model ID before trying levels. {{error}}",
+      "failed": "Detection failed: {{error}}",
+      "accepted": "Selected the {{count}} accepted level(s).",
+      "none": "No level was accepted; only Default remains."
+    },
     "modalityLabel": "Modality",
     "modalityText": "Text",
     "modalityImage": "Image",
@@ -393,5 +403,31 @@
     "followCopyName": "Copy account name",
     "followCopied": "Copied",
     "followReadArticle": "Read an article"
+  },
+  "fusion": {
+    "enabled": "Enable Fusion",
+    "enabledHint": "Allow /fusion to start a discussion. Turning this off does not stop discussions already in progress.",
+    "rolesHint": "The main model organizes issues and summarizes. Each role has its own model and thinking level.",
+    "moderator": "Main model",
+    "participants": "Discussion participants",
+    "participantsHint": "Choose 2–5 participants. The same model can fill multiple roles with independent thinking levels.",
+    "participant": "Participant {{number}}",
+    "model": "Model",
+    "thinking": "Thinking level",
+    "chooseModel": "Choose a model",
+    "unavailable": "{{model}} (unavailable)",
+    "addParticipant": "Add participant",
+    "removeParticipant": "Remove {{name}}",
+    "save": "Save model configuration",
+    "saving": "Saving…",
+    "saved": "Saved",
+    "reload": "Reload",
+    "loading": "Loading Fusion settings…",
+    "loadFailed": "Could not load Fusion settings. Please retry.",
+    "conflict": "Settings changed elsewhere. Reload before saving.",
+    "moderatorRequired": "Choose one main model.",
+    "participantCount": "Choose 2–5 participants.",
+    "participantRequired": "Choose a model for every participant.",
+    "thinkingRequired": "Choose a thinking level for every role."
   }
 }

@@ -1,0 +1,246 @@
+{
+  "desktop": {
+    "fusion-settings": {
+      "query": "?fusionSettings=1",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "tapText": "lixin"
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "tapText": "设置"
+        },
+        {
+          "wait": 2000
+        },
+        {
+          "tapText": "Fusion"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => {const main=document.querySelector('select[aria-label=\"主模型 · 思考等级\"]');main.value='high';main.dispatchEvent(new Event('change',{bubbles:true}));const p=document.querySelector('select[aria-label=\"参与模型 1 · 思考等级\"]');p.value='low';p.dispatchEvent(new Event('change',{bubbles:true}));})()"
+        },
+        {
+          "wait": 250
+        },
+        {
+          "eval": "document.querySelector('button[aria-label=\"移除参与模型 3\"]').click()"
+        },
+        {
+          "wait": 250
+        },
+        {
+          "eval": "(() => {if(document.querySelectorAll('fieldset').length!==3)throw new Error('minimum roster mismatch');if(document.querySelector('button[aria-label^=\"移除参与模型\"]'))throw new Error('can remove below two');[...document.querySelectorAll('button')].find(b=>b.textContent==='保存模型配置').click();})()"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => {if(!document.body.innerText.includes('已保存'))throw new Error('save did not finish');if(document.querySelector('select[aria-label=\"主模型 · 思考等级\"]').value!=='high'||document.querySelector('select[aria-label=\"参与模型 1 · 思考等级\"]').value!=='low')throw new Error('same-model thinking collapsed');})()"
+        },
+        {
+          "shot": "d-fusion-settings.png"
+        },
+        {
+          "eval": "[...document.querySelectorAll('button')].find(b=>b.textContent==='添加参与模型').click()"
+        },
+        {
+          "wait": 100
+        },
+        {
+          "eval": "[...document.querySelectorAll('button')].find(b=>b.textContent==='添加参与模型').click()"
+        },
+        {
+          "wait": 100
+        },
+        {
+          "eval": "[...document.querySelectorAll('button')].find(b=>b.textContent==='添加参与模型').click()"
+        },
+        {
+          "wait": 100
+        },
+        {
+          "eval": "(() => {if(document.querySelectorAll('fieldset').length!==6)throw new Error('maximum roster mismatch');if(![...document.querySelectorAll('button')].find(b=>b.textContent==='添加参与模型').disabled)throw new Error('can add beyond five');if(![...document.querySelectorAll('button')].find(b=>b.textContent==='保存模型配置').disabled)throw new Error('empty models can save');document.querySelector('[role=switch][aria-label=\"启用 Fusion\"]').click();})()"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => {if(document.querySelector('[role=switch][aria-label=\"启用 Fusion\"]').getAttribute('aria-checked')!=='false')throw new Error('disable failed');})()"
+        },
+        {
+          "key": "Escape"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "document.querySelector('[contenteditable=true]').focus()"
+        },
+        {
+          "type": "/"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => {if([...document.querySelectorAll('[role=option]')].some(b=>b.textContent.includes('/fusion')))throw new Error('disabled slash still visible');return 'independent thinking; 2–5 bounds; required models; disabled slash hidden';})()"
+        }
+      ]
+    },
+    "remote-fusion-settings": {
+      "query": "?fusionSettings=1",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 1500
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tap": "远程"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tap": "设置"
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "tapText": "Fusion"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => {if(!document.querySelector('select[aria-label=\"主模型 · 模型\"]'))throw new Error('remote settings unavailable');return 'remote settings use the same form';})()"
+        },
+        {
+          "shot": "d-remote-fusion-settings.png"
+        }
+      ]
+    }
+  },
+  "mobile": {
+    "fusion-settings": {
+      "query": "?fusionSettings=1&single=1",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "tap": "稍后再说"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tap": "桌面选择"
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "tap": "管理已配对的桌面…"
+        },
+        {
+          "wait": 2000
+        },
+        {
+          "tap": "桌面端设置"
+        },
+        {
+          "wait": 1800
+        },
+        {
+          "tap": "Fusion"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "eval": "document.querySelector('[role=button][aria-label=\"主模型 · 思考等级\"]').click()"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "[...document.querySelectorAll('[role=radio]')].find(b=>b.textContent==='高').click()"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "document.querySelector('[role=button][aria-label=\"参与模型 1 · 思考等级\"]').click()"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "[...document.querySelectorAll('[role=radio]')].find(b=>b.textContent==='低').click()"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "document.querySelector('[role=button][aria-label=\"移除参与模型 3\"]').click()"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "document.querySelector('[role=button][aria-label=\"保存模型配置\"]').click()"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => {if(!document.body.innerText.includes('已保存'))throw new Error('save failed');if(!document.querySelector('[aria-label=\"主模型 · 思考等级\"]').textContent.includes('高')||!document.querySelector('[aria-label=\"参与模型 1 · 思考等级\"]').textContent.includes('低'))throw new Error('thinking overwritten');if(document.querySelector('[aria-label^=\"移除参与模型\"]'))throw new Error('can remove below two');})()"
+        },
+        {
+          "shot": "m-fusion-settings.png"
+        },
+        {
+          "eval": "document.querySelector('[role=button][aria-label=\"添加参与模型\"]').click()"
+        },
+        {
+          "wait": 100
+        },
+        {
+          "eval": "document.querySelector('[role=button][aria-label=\"添加参与模型\"]').click()"
+        },
+        {
+          "wait": 100
+        },
+        {
+          "eval": "document.querySelector('[role=button][aria-label=\"添加参与模型\"]').click()"
+        },
+        {
+          "wait": 100
+        },
+        {
+          "eval": "(() => {if(document.querySelectorAll('[aria-label$=\" · 模型\"]').length!==6)throw new Error('five roles not shown');if(document.querySelector('[aria-label=\"添加参与模型\"]').getAttribute('aria-disabled')!=='true')throw new Error('can add sixth');if(document.querySelector('[aria-label=\"保存模型配置\"]').getAttribute('aria-disabled')!=='true')throw new Error('can save empty role');document.querySelector('[role=switch][aria-label=\"启用 Fusion\"]').click();})()"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => {if(document.querySelector('[role=switch][aria-label=\"启用 Fusion\"]').checked!==false)throw new Error('disable failed');return 'mobile independent levels, save, counts and switch passed';})()"
+        }
+      ]
+    }
+  }
+}

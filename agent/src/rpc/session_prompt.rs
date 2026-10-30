@@ -336,6 +336,10 @@ impl ServerSession {
         let fusion_enabled = future_fusion::fusion_prompt(prompt.message).is_some();
         if fusion_enabled {
             anyhow::ensure!(
+                crate::fusion::settings_enabled()?,
+                "Fusion is disabled in settings"
+            );
+            anyhow::ensure!(
                 self.created_by != "fusion",
                 "Recursive Fusion is prohibited"
             );
@@ -1072,6 +1076,10 @@ impl ServerSession {
             });
             run_loop.parallel_tools = false;
         } else if fusion_enabled {
+            anyhow::ensure!(
+                crate::fusion::settings_enabled()?,
+                "Fusion is disabled in settings"
+            );
             anyhow::ensure!(crate::fusion::available(), "Fusion host is unavailable");
             let identity = self.session_manager.storage()?.storage_identity()?;
             run_loop

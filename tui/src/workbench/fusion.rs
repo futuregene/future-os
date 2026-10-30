@@ -64,11 +64,44 @@ pub(super) fn progress(data: &Value, lang: Language) -> String {
             latest.insert(key, step);
         }
     }
-    for model in future_fusion::PANEL_MODELS {
+    let config = serde_json::from_value::<future_fusion::Configuration>(
+        data["run"]["configuration"].clone(),
+    )
+    .ok();
+    let roles = if let Some(config) = config {
+        let mut roles = vec![(
+            Some("moderator".to_string()),
+            config.moderator.model,
+            Some(t(lang, Key::FusionMainRole).to_string()),
+        )];
+        roles.extend(config.panel.into_iter().enumerate().map(|(index, model)| {
+            (
+                Some(format!("P{}", index + 1)),
+                model.model,
+                Some(super::i18n::render(
+                    lang,
+                    Key::FusionParticipantRole,
+                    &[&(index + 1).to_string()],
+                )),
+            )
+        }));
+        roles
+    } else {
+        future_fusion::PANEL_MODELS
+            .iter()
+            .map(|model| (None, model.to_string(), None))
+            .collect()
+    };
+    for (participant, model, role) in roles {
         let mut steps = latest
             .values()
             .copied()
-            .filter(|s| s["model"].as_str() == Some(model))
+            .filter(|s| {
+                s["model"].as_str() == Some(model.as_str())
+                    && participant
+                        .as_deref()
+                        .is_none_or(|participant| s["participant"].as_str() == Some(participant))
+            })
             .collect::<Vec<_>>();
         steps.sort_by_key(|s| s["started_at"].as_i64());
         let current = steps
@@ -104,13 +137,14 @@ pub(super) fn progress(data: &Value, lang: Language) -> String {
         {
             key = Key::FusionModelPartial;
         }
-        let name = match model {
+        let name = match model.as_str() {
             "future/deepseek-flash" => "DeepSeek Flash",
             "future/glm-5.3-flash" => "GLM 5.3 Flash",
             "future/qwen3.7-plus" => "Qwen 3.7 Plus",
-            _ => model,
+            _ => &model,
         };
-        text.push_str(&format!("\n{name} · {}", t(lang, key)));
+        let role = role.map(|role| format!("{role} · ")).unwrap_or_default();
+        text.push_str(&format!("\n{role}{name} · {}", t(lang, key)));
     }
     if terminal
         && data["run"]["completeness"]

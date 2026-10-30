@@ -61,9 +61,12 @@ export function FusionActivity({ item, runId, resolveTarget }: {
               const failed = ["failed", "timed_out", "output_limited"].includes(model.status);
               const Icon = model.status === "thinking" ? LoaderCircle : model.status === "completed" ? Check : model.status === "timed_out" ? Clock : failed || model.status === "partial" ? TriangleAlert : Circle;
               return (
-                <div key={model.model} className="flex min-w-0 items-center gap-2">
+                <div key={model.id} className="flex min-w-0 items-center gap-2">
                   <Icon aria-hidden="true" className={`size-3.5 shrink-0 ${model.status === "thinking" ? "animate-spin text-accent" : failed ? "text-danger" : "text-ink-muted"}`} />
-                  <span className="min-w-0 flex-1 wrap-break-word">{model.label}</span>
+                  <span className="min-w-0 flex-1 wrap-break-word">
+                    {model.role ? `${t(model.role === "moderator" ? "fusion.moderatorRole" : "fusion.participantRole", { number: model.number })} · ` : ""}
+                    {model.label}
+                  </span>
                   <span className={`shrink-0 ${failed ? "text-danger" : "text-ink-muted"}`}>{t(`fusion.modelStates.${model.status}`)}</span>
                 </div>
               );

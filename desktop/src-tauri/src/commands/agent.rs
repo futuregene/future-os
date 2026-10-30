@@ -534,3 +534,15 @@ pub async fn get_fusion(
 ) -> Result<serde_json::Value, crate::AppError> {
     future_host::fusion::query_for_run(run_id, tool_call_id, step_id, offset).await
 }
+
+#[tauri::command]
+pub async fn get_fusion_settings() -> Result<serde_json::Value, crate::AppError> {
+    future_host::fusion::settings().await
+}
+
+#[tauri::command]
+pub async fn update_fusion_settings(
+    input: serde_json::Value,
+) -> Result<serde_json::Value, crate::AppError> {
+    future_host::fusion::update_settings(input).await
+}

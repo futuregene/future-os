@@ -1,4 +1,4 @@
-//! The workbench's driver: terminal, event loop, and the keys that are not the
+﻿//! The workbench's driver: terminal, event loop, and the keys that are not the
 //! surface's own.
 //!
 //! `future tui` ends up here. The loop is async (the agent, the terminal input
@@ -69,6 +69,11 @@ struct DriverIo<'a> {
     notifications: &'a mut crate::notifications::NotifyCenter,
     theme_explicit: &'a mut bool,
     update_rx: &'a mut Option<tokio::sync::oneshot::Receiver<Option<String>>>,
+    /// The answers a read started by the surface comes back on (see
+    /// [`show_conversation`] and `workbench::live::Loaded`): handed to `Live` so
+    /// no door waits for the agent or for `git`, and drained by the loop that
+    /// owns the surface.
+    load_rx: tokio::sync::mpsc::UnboundedReceiver<super::live::Loaded>,
 }
 
 /// The layout a stored [`TuiSettings`] stands for, before the first frame.
@@ -171,6 +176,11 @@ pub async fn run(options: Options) -> Result<(), String> {
     terminal.set_mouse_mode(mouse_capture);
 
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<TerminalEvent>();
+    // The reads the surface starts answer here rather than inside the loop (see
+    // `show_conversation` and `workbench::live::Loaded`): the screen paints what
+    // it has and the answers arrive on their own wake-up.
+    let (load_tx, load_rx) = mpsc::unbounded_channel::<super::live::Loaded>();
+    live.set_load_sender(load_tx);
     let data_tx = input_tx.clone();
     let resize_tx = input_tx.clone();
     Terminal::start(
@@ -198,6 +208,7 @@ pub async fn run(options: Options) -> Result<(), String> {
             notifications: &mut notifications,
             theme_explicit: &mut theme_explicit,
             update_rx: &mut update_rx,
+            load_rx,
         },
         &mut workbench,
         &mut live,
@@ -249,6 +260,7 @@ async fn event_loop(
         notifications,
         theme_explicit,
         update_rx,
+        load_rx,
     } = io;
     // The first frame is composed for the size the terminal has *now*. The
     // cached size dates from `Terminal::new()`/`start()`, and a pane a terminal
@@ -270,6 +282,7 @@ async fn event_loop(
     // The rail's list is re-read on its own clock (see `SESSIONS_POLL`), starting
     // now: the first frame paints what the attach already read.
     let mut sessions_poll = Instant::now();
+    let mut fusion_settings_poll = Instant::now();
     // Something is on screen to paint from the first iteration — and after
     // that only when an event or the clock changed what the frame shows. A
     // ticker that repaints an unchanged frame is not free: composing it means
@@ -279,6 +292,9 @@ async fn event_loop(
     // A stepped conversation the reader has not stopped on yet (see
     // [`OPEN_SETTLE`]).
     let mut pending_open: Option<PendingOpen> = None;
+    // When the last step landed, so the next one can tell a tap from a repeat
+    // (see [`STEP_TAP_GAP`]).
+    let mut last_step: Option<Instant> = None;
     let mut painted = FrameCache::default();
 
     loop {
@@ -346,13 +362,11 @@ async fn event_loop(
                     // they have already left. A step from this same burst counts
                     // — the cursor is already on it.
                     if let Some(open) = pending_open.take() {
-                        show_conversation(&open.id, terminal, workbench, live, &frame, &mut clock, &mut painted)
-                            .await?;
+                        show_conversation(&open.id, terminal, workbench, live, &frame, &mut clock, &mut painted)?;
                     } else if let Some(id) =
                         resolve_step(&mut session_steps, workbench, live, &frame)
                     {
-                        show_conversation(&id, terminal, workbench, live, &frame, &mut clock, &mut painted)
-                            .await?;
+                        show_conversation(&id, terminal, workbench, live, &frame, &mut clock, &mut painted)?;
                     }
                     if quit(workbench, live, event, &frame, &mut InputIo { terminal, settings, settings_path, theme_explicit }).await? {
                         return Ok(());
@@ -363,13 +377,19 @@ async fn event_loop(
                     // reader asked for it and it costs nothing to show. One the
                     // client would have to fetch waits for the keys to go quiet
                     // instead: a held `shift+↓` used to open every conversation
-                    // it passed through (see [`OPEN_SETTLE`]).
+                    // it passed through (see [`OPEN_SETTLE`]). A tap is not a
+                    // hold, and it does not pay that window: the read starts now
+                    // and the window becomes time the agent has already spent.
+                    let now = Instant::now();
+                    let tapped = last_step.is_none_or(|last| now.duration_since(last) >= STEP_TAP_GAP);
+                    last_step = Some(now);
                     if live.is_cached(&id) {
                         pending_open = None;
-                        show_conversation(&id, terminal, workbench, live, &frame, &mut clock, &mut painted)
-                            .await?;
+                        show_conversation(&id, terminal, workbench, live, &frame, &mut clock, &mut painted)?;
+                    } else if tapped {
+                        pending_open = Some(PendingOpen::now(id));
                     } else {
-                        pending_open = Some(PendingOpen::stepped(id, Instant::now()));
+                        pending_open = Some(PendingOpen::stepped(id, now));
                     }
                 }
                 paint = true;
@@ -378,10 +398,45 @@ async fn event_loop(
                     open_due.unwrap_or_else(Instant::now),
                 )), if open_due.is_some() => {
                 if let Some(open) = pending_open.take() {
-                    show_conversation(&open.id, terminal, workbench, live, &frame, &mut clock, &mut painted)
-                        .await?;
+                    show_conversation(&open.id, terminal, workbench, live, &frame, &mut clock, &mut painted)?;
                 }
                 paint = true;
+            }
+            Some(loaded) = load_rx.recv() => {
+                // A read the surface started without waiting for it, installed
+                // here so the client's own state and the frame that paints it
+                // move together, and dropped when the reader has moved on (each
+                // arm decides that: see `Live`'s install methods).
+                match loaded {
+                    super::live::Loaded::Switch(switch) => {
+                        if live.install_switch_load(switch) {
+                            let data = live.data(&frame);
+                            workbench.follow_current(&data);
+                            paint = true;
+                        }
+                    }
+                    super::live::Loaded::Older(page) => {
+                        if live.install_older(page) {
+                            paint = true;
+                        }
+                    }
+                    super::live::Loaded::State(state) => {
+                        if live.install_state_refresh(state) {
+                            if live.approval().is_some() && workbench.overlay.is_none() {
+                                workbench.overlay = Some(super::Overlay::Approval);
+                                workbench.overlay_scroll = 0;
+                            }
+                            paint = true;
+                        }
+                    }
+                    super::live::Loaded::Git { rev, view } => {
+                        if live.install_git(rev, view) {
+                            workbench.workflow_index =
+                                live.git().map(|git| git.selected).unwrap_or(0);
+                            paint = true;
+                        }
+                    }
+                }
             }
             Some(event) = agent_events.recv() => {
                 let was = live.activity_kind();
@@ -430,18 +485,17 @@ async fn event_loop(
                 // A `usage` or `agent_end` event means the agent knows more
                 // about what the turn spent than the deltas do: ask it, so the
                 // footer's ctx/cost/cache move at the end of a turn instead of
-                // only when someone presses ctrl+k.
+                // only when someone presses ctrl+k. Both reads are started and
+                // left to the loop's own arm (`Loaded::State`, `Loaded::Older`):
+                // a turn boundary is not worth a frozen keyboard, and the
+                // listing in particular can take seconds on a cold store.
                 if live.take_state_refresh() {
-                    live.refresh_state().await;
-                    if live.approval().is_some() && workbench.overlay.is_none() {
-                        workbench.overlay = Some(super::Overlay::Approval);
-                        workbench.overlay_scroll = 0;
-                    }
+                    live.begin_state_refresh();
                 }
                 // A run that started or stopped changes what the lists show
                 // (a session's age, a title from its first message).
                 if live.activity_kind() != was {
-                    live.refresh_sessions().await;
+                    live.begin_sessions_refresh();
                 }
                 if !completion.is_empty() && live.queue_is_empty() {
                     let event = live.completion_notification();
@@ -480,6 +534,10 @@ async fn event_loop(
                 // awaiting it put the whole surface behind one agent answer,
                 // which at 67 conversations was 6.9 s every five seconds.
                 let changed = live.poll_sessions().unwrap_or(false);
+                let fusion_changed = live.poll_fusion_settings();
+                if fusion_settings_poll.elapsed() >= SESSIONS_POLL && live.begin_fusion_settings_refresh() {
+                    fusion_settings_poll = Instant::now();
+                }
                 if frame.layout.sidebar.is_some()
                     && sessions_poll.elapsed() >= SESSIONS_POLL
                     && live.begin_sessions_refresh()
@@ -503,6 +561,7 @@ async fn event_loop(
                     ages_on_screen(&frame),
                     Instant::now(),
                 ) || changed
+                    || fusion_changed
                     || arrived
                     || connected
                     || preview_arrived;
@@ -556,6 +615,15 @@ const IDLE_REFRESH: Duration = Duration::from_secs(60);
 /// The call is started, never awaited, in the loop (`Live::begin_sessions_refresh`):
 /// its cost is the agent's to decide, and a listing that blocks the surface is
 /// the one bill a clock this frequent cannot pay.
+///
+/// Measured 2026-10-30 on a 147-conversation store (`agent.db` at 1.7 GB), so
+/// this clock is not the agent's own busy signal: **30–50 ms** steady — 0.6–1 %
+/// of one of the two read workers — and **10 s on the first call of an agent
+/// process whose pages have gone cold** (hours idle), which is a one-off: it
+/// warms the same pages the next five seconds re-read. An incremental listing
+/// (a revision token, a TTL memo) was therefore not built: it would trade a
+/// staleness rule for a call that is already free when it matters. The long
+/// tail is the cold read, and that one is the store's size, not the polling.
 const SESSIONS_POLL: Duration = Duration::from_secs(5);
 
 /// How many already-queued agent events one iteration applies before painting.
@@ -590,7 +658,23 @@ const INPUT_BURST_LIMIT: usize = 64;
 /// interval, so a held key keeps deferring, and shorter than the pause a reader
 /// notices, so letting go lands the conversation at once. A conversation the
 /// cache can paint skips the wait entirely — there is nothing to fetch.
+///
+/// What the window defers is the *asking*, not the answering: the two reads go
+/// out in a task ([`show_conversation`]), so the surface keeps painting, reading
+/// the keyboard and streaming while the agent works, and the rows land on the
+/// frame after. Only a burst pays the window; a single step pays it once.
 const OPEN_SETTLE: Duration = Duration::from_millis(80);
+
+/// How far apart two steps have to be to count as taps rather than a hold.
+///
+/// A tap and a repeat look the same to the surface — both are one
+/// `shift+↑/↓` — and only their spacing tells them apart. A held key repeats
+/// every 30–100 ms depending on the reader's keyboard settings, so anything
+/// under two [`OPEN_SETTLE`] windows is read as a hold: the step keeps
+/// deferring, and a burst of ten conversations is asked for once. A tap is
+/// slower than that, and pays no window at all: the read starts the moment the
+/// key is read, and the rows arrive as soon as the agent answers.
+const STEP_TAP_GAP: Duration = Duration::from_millis(160);
 
 /// A conversation the rail's cursor has landed on whose rows are not on screen
 /// yet, and when to open it.
@@ -607,6 +691,15 @@ impl PendingOpen {
         Self {
             id,
             due: now + OPEN_SETTLE,
+        }
+    }
+
+    /// The reader tapped onto `id`: due at once, so the read goes out on this
+    /// pass of the loop instead of a window later.
+    fn now(id: String) -> Self {
+        Self {
+            id,
+            due: Instant::now(),
         }
     }
 }
@@ -657,14 +750,20 @@ fn resolve_step(
         })
 }
 
-/// Open one conversation, painting what the cache can show of it before the
-/// round trip the agent still owes.
+/// Open one conversation, painting what the cache can show of it.
 ///
-/// The mid-switch paint is the payoff of keeping cached rows: the reader sees
-/// the conversation they landed on immediately, and the reconcile that follows
-/// only replaces the rows when that conversation moved on while they were away
-/// (see `Live::finish_switch`).
-async fn show_conversation(
+/// The agent's own half — the state and the tail page — is read in a task
+/// ([`Live::start_step_switch`]), never here: a step must not put the surface
+/// behind an agent answer. The rows the cache holds are painted immediately; a
+/// conversation the client has not shown yet keeps the one on screen until its
+/// page lands, which is the frame after.
+///
+/// Measured against a 146-conversation store (`agent.db` at 1.7 GB): the two
+/// reads behind a step were 75 ms warm — 25 ms of state, 50 ms of page — and
+/// seconds when the store was busy. Waiting for them in this loop froze the
+/// rail, the stream and the keyboard for that long on *every* step, which is
+/// what a held `shift+↑/↓` felt like.
+fn show_conversation(
     id: &str,
     terminal: &mut Terminal,
     workbench: &mut Workbench,
@@ -673,17 +772,40 @@ async fn show_conversation(
     clock: &mut TickClock,
     painted: &mut FrameCache,
 ) -> Result<(), String> {
-    if live.already_showing(id) {
-        return Ok(());
-    }
-    if live.begin_switch(id) {
+    if live.start_step_switch(id) {
         draw(terminal, workbench, live, frame, painted)?;
         clock.painted(workbench.spinner_frame(), Instant::now());
     }
-    live.finish_switch(id).await;
-    let data = live.data(frame);
-    workbench.follow_current(&data);
+    warm_neighbours(workbench, live, frame);
     Ok(())
+}
+
+/// Warm the two conversations the next step can land on.
+///
+/// A step reads a page's worth of history from the agent (measured: 120 ms
+/// median on this store for a conversation the agent has not served recently),
+/// and the rail makes the *next* step's destination predictable: it is the row
+/// above or below the one the reader has just settled on. Reading those two now,
+/// in the background, is what a reader's browsing rhythm can absorb — they are
+/// looking at the conversation that just opened.
+///
+/// Fire and forget: nothing is installed, a lost race costs nothing but the
+/// read, and a conversation the reader never opens costs the agent exactly one
+/// page read that its own cache would have made anyway (see
+/// [`Live::prefetch_page`]). Only a step warms anything — a click is not the
+/// start of a walk.
+fn warm_neighbours(workbench: &Workbench, live: &mut Live, frame: &Frame) {
+    let data = live.data(frame);
+    let mut wanted = Vec::with_capacity(2);
+    for direction in [-1, 1] {
+        if let Some(id) = workbench.session_beside(&data, direction) {
+            wanted.push(id);
+        }
+    }
+    drop(data);
+    for id in wanted {
+        live.prefetch_page(&id);
+    }
 }
 
 /// Apply every agent event that is already queued, stopping at
@@ -852,8 +974,8 @@ async fn quit(
                     };
                 }
                 Some(super::preferences::Action::Refresh) => {
-                    live.refresh_sessions().await;
-                    live.refresh_state().await;
+                    live.begin_sessions_refresh();
+                    live.begin_state_refresh();
                     // The tree is a live view of a directory a build may have
                     // written to since it was read.
                     live.refresh_tree();
@@ -877,38 +999,8 @@ async fn quit(
                     workbench.overlay_scroll = 0;
                     continue;
                 }
-                "/diff" => {
-                    let selected = workbench.workflow_index;
-                    let cwd = live.data(frame).session.cwd;
-                    let previous = live.selected_diff_path(selected);
-                    let result = tokio::task::spawn_blocking(move || {
-                        let mut view = super::state::DiffView::default();
-                        match super::diff_review::load(std::path::Path::new(&cwd), &previous) {
-                            Ok(review) => {
-                                view.selected = review
-                                    .files
-                                    .iter()
-                                    .position(|file| file.path == previous)
-                                    .unwrap_or(0);
-                                view.files = review.files;
-                                view.patch = super::diff_review::bounded_patch(&review.patch);
-                            }
-                            Err(error) => view.error = Some(error),
-                        }
-                        view
-                    })
-                    .await;
-                    match result {
-                        Ok(view) => live.set_diff(view),
-                        Err(error) => live.notice = Some(error.to_string()),
-                    }
-                    workbench.overlay = Some(super::Overlay::Diff);
-                    workbench.workflow_index = selected;
-                    workbench.overlay_scroll = 0;
-                    continue;
-                }
                 "/history" | "/tree" => {
-                    live.refresh_sessions().await;
+                    live.begin_sessions_refresh();
                     workbench.overlay = Some(if command.trim() == "/history" {
                         super::Overlay::History
                     } else {
@@ -933,7 +1025,7 @@ async fn quit(
                         .git()
                         .map(|git| (git.section, git.filter.clone()))
                         .unwrap_or((GitSection::Commits, None));
-                    open_git_panel(live, frame, workbench, section, filter, 0, true).await;
+                    open_git_panel(live, frame, workbench, section, filter, 0, true);
                     continue;
                 }
                 // The files panel: the conversation's own workspace, read afresh
@@ -985,8 +1077,8 @@ async fn quit(
                 // once-in-a-while verb, so the palette (and this line) is its
                 // door. Same three reads the action does.
                 "/refresh" => {
-                    live.refresh_sessions().await;
-                    live.refresh_state().await;
+                    live.begin_sessions_refresh();
+                    live.begin_state_refresh();
                     live.refresh_tree();
                     continue;
                 }
@@ -1007,13 +1099,22 @@ async fn quit(
                 }
                 // Pinning is the rail's verb and the app owns the result: `p`
                 // is a letter in the draft, so `/pin` is the door, and its
-                // action (`SetWorkspacePinned`) has to reach the driver the
-                // same way the chord's did.
+                // action (`SetSessionPinned`) has to reach the driver the same
+                // way the chord's did. The palette's row for the same verb
+                // lands here too, so this arm is what applies and persists a pin
+                // from either door.
                 "/pin" => {
                     let actions = workbench.toggle_pin_selected(&live.data(frame));
                     for action in actions {
-                        if matches!(live.apply(action).await, Outcome::Quit) {
-                            return Ok(true);
+                        match action {
+                            WbAction::SetSessionPinned { id, pinned } => {
+                                apply_pin(live, &id, pinned, settings, settings_path)
+                            }
+                            other => {
+                                if matches!(live.apply(other).await, Outcome::Quit) {
+                                    return Ok(true);
+                                }
+                            }
                         }
                     }
                     continue;
@@ -1053,6 +1154,40 @@ async fn quit(
                 live.notice = notice;
                 continue;
             }
+        }
+        // The working-tree review: `d` in the repository browser, and its own
+        // `r`. It has no palette verb — the 改动 tab of `/git` is where the same
+        // question is asked, so the box is a *detail* of the browser rather than
+        // a second door to it.
+        if matches!(action, WbAction::OpenDiff) {
+            let selected = workbench.workflow_index;
+            let cwd = live.data(frame).session.cwd;
+            let previous = live.selected_diff_path(selected);
+            let result = tokio::task::spawn_blocking(move || {
+                let mut view = super::state::DiffView::default();
+                match super::diff_review::load(std::path::Path::new(&cwd), &previous) {
+                    Ok(review) => {
+                        view.selected = review
+                            .files
+                            .iter()
+                            .position(|file| file.path == previous)
+                            .unwrap_or(0);
+                        view.files = review.files;
+                        view.patch = super::diff_review::bounded_patch(&review.patch);
+                    }
+                    Err(error) => view.error = Some(error),
+                }
+                view
+            })
+            .await;
+            match result {
+                Ok(view) => live.set_diff(view),
+                Err(error) => live.notice = Some(error.to_string()),
+            }
+            workbench.overlay = Some(super::Overlay::Diff);
+            workbench.workflow_index = selected;
+            workbench.overlay_scroll = 0;
+            continue;
         }
         // A committed palette is persisted now, not only at exit: a reader who
         // picks a theme and then loses the terminal keeps the choice.
@@ -1110,13 +1245,11 @@ async fn quit(
                 ));
             }
         }
-        // A pinned workspace is a preference of this client's rail, so the
-        // surface's pin lands in `settings.json` beside the layout — and the
-        // rail's groups are rebuilt from it on the next frame.
-        if let WbAction::SetWorkspacePinned { path, pinned } = &action {
-            live.notice = Some(live.set_workspace_pinned(path, *pinned));
-            settings.pinned_workspaces = Some(live.pinned_workspaces().to_vec());
-            save_settings_notice(settings_path, settings, live);
+        // A pin is a preference of this client's rail, so the surface's pin
+        // lands in `settings.json` beside the layout — and the rail's groups are
+        // rebuilt from it on the next frame.
+        if let WbAction::SetSessionPinned { id, pinned } = &action {
+            apply_pin(live, id, *pinned, settings, settings_path);
             continue;
         }
         // The preview box is the driver's to open: the adapter reads the bytes
@@ -1199,7 +1332,7 @@ async fn quit(
                 .git()
                 .map(|git| (git.section, git.filter.clone()))
                 .unwrap_or((GitSection::Worktrees, None));
-            open_git_panel(live, frame, workbench, section, filter, 0, true).await;
+            open_git_panel(live, frame, workbench, section, filter, 0, true);
             continue;
         }
         // `/git`: the panel's data is the driver's to read (the surface owns no
@@ -1246,7 +1379,7 @@ async fn quit(
                 ),
                 _ => (GitSection::Commits, None, 0, true),
             };
-            open_git_panel(live, frame, workbench, section, filter, want, reset_scroll).await;
+            open_git_panel(live, frame, workbench, section, filter, want, reset_scroll);
             continue;
         }
         if let WbAction::CopyText(text) = &action {
@@ -1312,10 +1445,16 @@ async fn quit(
             Outcome::Quit => return Ok(true),
             Outcome::Continue => {}
         }
+        // A switch that began and has not answered yet still names the
+        // conversation being left on screen, so following "the conversation on
+        // screen" here would put the rail's cursor back where the reader came
+        // from — for a frame, and visibly. The answer's own arm (`switch_rx`)
+        // does the follow when the rows land.
+        let begun = live.take_switch_started();
         // A switch the rail did not make itself (a click on the launchpad's
         // recents, a `ctrl+r` pick) still has to move its cursor: the rail would
         // otherwise highlight a conversation the transcript is not showing.
-        if moved {
+        if moved && !begun {
             let data = live.data(frame);
             workbench.follow_current(&data);
         }
@@ -1368,6 +1507,22 @@ fn save_settings_notice(path: &Path, settings: &TuiSettings, live: &mut Live) {
     if let Err(error) = save_settings(path, settings) {
         settings_error_notice(live, &error);
     }
+}
+
+/// Apply one pin and persist it: a pin is this client's own preference (the
+/// agent has no such flag), so the rail's 置顶 block and `settings.json`
+/// (`pinnedSessions`) move together. Both doors to the verb land here — the
+/// draft's `/pin` and the palette's row for the same verb.
+fn apply_pin(
+    live: &mut Live,
+    id: &str,
+    pinned: bool,
+    settings: &mut TuiSettings,
+    settings_path: &Path,
+) {
+    live.notice = Some(live.set_session_pinned(id, pinned));
+    settings.pinned_sessions = Some(live.pinned_sessions().to_vec());
+    save_settings_notice(settings_path, settings, live);
 }
 
 fn settings_error_notice(live: &mut Live, error: &str) {
@@ -1568,7 +1723,7 @@ fn frame_of(terminal: &Terminal, workbench: &Workbench) -> Frame {
 /// The surface owns no I/O, so the read happens here — one section plus the
 /// selected row's detail, on the blocking pool because a large repository on a
 /// slow disk must not stall the frame that asked for it.
-async fn open_git_panel(
+fn open_git_panel(
     live: &mut Live,
     frame: &Frame,
     workbench: &mut Workbench,
@@ -1588,20 +1743,27 @@ async fn open_git_panel(
         workbench.overlay = Some(super::Overlay::Git);
         return;
     }
-    let lang = live.language();
-    let loaded = tokio::task::spawn_blocking(move || {
-        super::git_panel::read(std::path::Path::new(&cwd), section, filter, want, lang)
-    })
-    .await;
-    match loaded {
-        Ok(view) => {
-            // The surface's cursor follows the view's selection: a section with
-            // a graph-only first line must not open with the arrow on a row that
-            // cannot be entered.
-            workbench.workflow_index = view.selected;
-            live.set_git(Some(view));
-        }
-        Err(error) => live.notice = Some(error.to_string()),
+    // The read runs beside the surface: measured on this repository, opening the
+    // panel costs 132–287 ms for the commit log and its refs, and the loop used
+    // to sit through it on every open, tab switch and filter. The panel paints
+    // its previous rows until the new ones land (`Loaded::Git`).
+    let started = live.begin_git_read(
+        std::path::PathBuf::from(&cwd),
+        section,
+        filter.clone(),
+        want,
+    );
+    if !started {
+        // No driver behind this surface (never in the running app): read it here.
+        let view = super::git_panel::read(
+            std::path::Path::new(&cwd),
+            section,
+            filter,
+            want,
+            live.language(),
+        );
+        workbench.workflow_index = view.selected;
+        live.set_git(Some(view));
     }
     if reset_scroll {
         workbench.overlay_scroll = 0;
