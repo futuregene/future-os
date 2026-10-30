@@ -5166,8 +5166,8 @@ mod tests {
             key: Some("abc1234".into()),
             columns: vec!["2026-10-27 09:15".into(), "Ada".into()],
             prefix: "● ".into(),
-            pieces: vec!["fix(tui): one row".into(), "HEAD -> main, tag: v1".into()],
-            kinds: vec![state::GitKind::Plain, state::GitKind::Decoration],
+            pieces: vec!["HEAD -> main, tag: v1".into(), "fix(tui): one row".into()],
+            kinds: vec![state::GitKind::Decoration, state::GitKind::Plain],
         };
         let selected = git_row_line(&palette, &row, 0, 100, true);
         assert_eq!(width(&selected), 100, "the band fills the pane");
@@ -5180,7 +5180,9 @@ mod tests {
         );
         let marked = plain(&selected);
         assert!(
-            marked.starts_with("› 2026-10-27 09:15  Ada  ● fix(tui): one row"),
+            marked.starts_with(
+                "› 2026-10-27 09:15  Ada  ● HEAD -> main, tag: v1 · fix(tui): one row"
+            ),
             "{marked:?}"
         );
         for (colour, what) in [
@@ -5198,7 +5200,9 @@ mod tests {
             "an unselected row paints no background: {idle:?}"
         );
         assert!(
-            plain(&idle).starts_with("  2026-10-27 09:15  Ada  ● fix(tui): one row"),
+            plain(&idle).starts_with(
+                "  2026-10-27 09:15  Ada  ● HEAD -> main, tag: v1 · fix(tui): one row"
+            ),
             "{idle:?}"
         );
     }
