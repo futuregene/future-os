@@ -766,14 +766,15 @@ pub enum GitKind {
 /// One painted line of the `/git` list.
 ///
 /// `key` is what the row *is* (`abc1234`, `refs/heads/main`, `src/a.rs`,
-/// `stash@{0}`) and what the detail pane loads; a row without one is the log's
-/// graph continuing through a column that has no commit on it — painted, but
-/// never selected, the same way the graph is drawn in a terminal git client.
+/// `stash@{0}`) and what the detail pane loads. A row without one is painted
+/// but never selected — a drawing, not an object — so the cursor can step over
+/// it: no section produces one today (every row of the log carries a commit),
+/// and the rule is what keeps a section that adds one from breaking `enter`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GitRow {
     pub key: Option<String>,
-    /// The gutter before the fields: the graph (`* `, `| * `), a badge (`● `),
-    /// a porcelain status (`M `), a stash number (`#0 `).
+    /// The gutter before the fields: the log's graph (`●─┐ `, `│ ● `), a badge
+    /// (`● `), a porcelain status (`M `), a stash number (`#0 `).
     pub prefix: String,
     /// The row's fields, most important first — a narrow box drops the tail
     /// whole rather than cutting a field in half.

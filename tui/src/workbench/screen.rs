@@ -2702,27 +2702,39 @@ fn lane_colour(palette: &Palette, lane: usize) -> u8 {
 
 /// Paint the log's graph gutter, one colour per lane.
 ///
-/// `git log --graph` puts lane `n` at column `2n` — a glyph and a cell of air —
-/// so a glyph's lane is its column divided by two, and a branch keeps one colour
-/// for as long as it keeps one column. The glyphs are swapped for box-drawing
-/// twins (`●`, `│`, `╱`, `╲`) so a run of verticals reads as one line instead of
-/// a dotted column of `|`. Counting *characters* is counting cells here because
-/// the prefix is git's own graph vocabulary (`* | / \ _` and spaces): the
-/// subject travels after the record separator in `parse_log`, so no free text
-/// ever reaches this string.
+/// A lane is at column `2n` and the cell to its right carries the connection
+/// toward the next lane, so a glyph's lane is its column divided by two: a
+/// branch keeps one colour for as long as it keeps one column. Vertical runs are
+/// `│` and `●` rather than `|` and `*` so a lane reads as one line instead of a
+/// dotted column, and a connection is drawn with verticals, horizontals and
+/// elbows only — a diagonal would say two lanes crossed where they in fact
+/// join.
+///
+/// Counting *characters* is counting cells here because the gutter is this
+/// file's own vocabulary (`● │ ─ ┐ ┘ ├ ┤ ┬ ┴ ┼` and spaces): the subject
+/// travels after the record separator in `parse_log`, so no free text ever
+/// reaches this string.
 fn paint_graph(palette: &Palette, prefix: &str) -> String {
+    // The commit's lane colours its horizontal: one connection, one colour. A
+    // line repainted per segment would read as a different branch at every
+    // elbow it passes.
+    let mine = prefix
+        .chars()
+        .position(|glyph| glyph == '●')
+        .map(|at| at / 2);
     let mut out = String::new();
     for (column, glyph) in prefix.chars().enumerate() {
-        let colour = lane_colour(palette, column / 2);
+        let lane = column / 2;
+        let colour = lane_colour(palette, lane);
         let painted = match glyph {
-            '*' => palette.strong(colour, "●"),
-            '|' => palette.text(colour, "│"),
-            '/' => palette.text(colour, "╱"),
-            '\\' => palette.text(colour, "╲"),
-            // git's horizontal filler: an empty slot where two lanes meet.
-            '_' => palette.text(colour, "─"),
-            // The lane separator and anything git adds later: left as it is, so
-            // an unknown glyph is visible rather than silently dropped.
+            '●' => palette.strong(colour, "●"),
+            '│' => palette.text(colour, "│"),
+            '─' => palette.text(lane_colour(palette, mine.unwrap_or(lane)), "─"),
+            '┐' | '┘' | '├' | '┤' | '┬' | '┴' | '┼' => {
+                palette.text(colour, &glyph.to_string())
+            }
+            // The lane separator and anything a later glyph adds: left as it
+            // is, so an unknown glyph is visible rather than silently dropped.
             other => other.to_string(),
         };
         out.push_str(&painted);
@@ -5067,9 +5079,9 @@ mod tests {
     #[test]
     fn the_graph_paints_one_colour_per_lane() {
         let palette = FUTURE_DARK;
-        let graph = paint_graph(&palette, "| * ");
-        assert_eq!(plain(&graph), "│ ● ", "the glyphs are the drawing ones");
-        assert_eq!(width(&graph), 4, "a repainted gutter is as wide as git's");
+        let graph = paint_graph(&palette, "│ ● ");
+        assert_eq!(plain(&graph), "│ ● ", "the drawing is already cells");
+        assert_eq!(width(&graph), 4, "a lane is a glyph and the air beside it");
         assert_ne!(
             lane_colour(&palette, 0),
             lane_colour(&palette, 1),
@@ -5090,10 +5102,18 @@ mod tests {
             graph.contains("\x1b[1m"),
             "the commit glyph is bold, so a tip stands out from its lane"
         );
-        assert_eq!(
-            plain(&paint_graph(&palette, "|\\ ")),
-            "│╲ ",
-            "a merge's fork is drawn, not typed"
+        // A fork is an elbow and a horizontal, and the horizontal keeps the
+        // commit's own colour: one connection, one colour.
+        assert_eq!(plain(&paint_graph(&palette, "●─┐ ")), "●─┐ ");
+        assert_eq!(plain(&paint_graph(&palette, "●─┼─┘ ")), "●─┼─┘ ");
+        let elbow = paint_graph(&palette, "●─┐ ");
+        assert!(
+            elbow.contains(&format!("\x1b[38;5;{}m─", lane_colour(&palette, 0))),
+            "the horizontal is the commit's lane colour: {elbow:?}"
+        );
+        assert!(
+            elbow.contains(&format!("\x1b[38;5;{}m┐", lane_colour(&palette, 1))),
+            "the lane it opens keeps its own: {elbow:?}"
         );
     }
 
@@ -5106,7 +5126,7 @@ mod tests {
         let palette = FUTURE_DARK;
         let row = GitRow {
             key: Some("abc1234".into()),
-            prefix: "* ".into(),
+            prefix: "● ".into(),
             pieces: vec![
                 "fix(tui): one row".into(),
                 "HEAD -> main, tag: v1".into(),

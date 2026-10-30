@@ -11123,16 +11123,23 @@ mod tests {
         }
     }
 
-    /// The log's graph continuation rows are painted but not selectable: the
-    /// cursor steps over them, so `enter` always has something to act on and the
-    /// detail pane never goes blank on a row that is only a drawing.
+    /// A row with no object behind it is painted but not selectable, so `enter`
+    /// always has something to act on and the detail pane never goes blank on a
+    /// row that is only a drawing. The log no longer produces one — every row of
+    /// it is a commit — so the rule is exercised with a row of its own, which is
+    /// what keeps a section that adds one back from breaking the cursor.
     #[test]
-    fn the_git_cursor_steps_over_graph_only_rows() {
+    fn the_git_cursor_steps_over_rows_with_no_object() {
         let mut data = demo::chat();
         let mut git = demo::git();
-        // demo::git: commit, graph continuation, commit, … — the second row has
-        // no key.
-        assert!(git.rows[1].key.is_none());
+        let rest = git.rows.split_off(1);
+        git.rows.push(state::GitRow {
+            key: None,
+            prefix: "│ ".into(),
+            pieces: Vec::new(),
+            kinds: Vec::new(),
+        });
+        git.rows.extend(rest);
         git.selected = 0;
         data.git = Some(git);
 
@@ -11142,7 +11149,7 @@ mod tests {
         assert_eq!(
             wb.handle(WbEvent::Key("down".into()), &data),
             vec![WbAction::SelectGit(2)],
-            "row 1 is the graph continuing"
+            "row 1 is a drawing, not an object"
         );
         assert_eq!(wb.workflow_index, 2);
         assert_eq!(
@@ -11385,8 +11392,8 @@ mod tests {
         let (x, y) = region(&wb, "git.row.1");
         assert_eq!(
             wb.handle(WbEvent::Mouse(press(x, y)), &data),
-            Vec::<WbAction>::new(),
-            "row 1 is the graph continuing"
+            vec![WbAction::SelectGit(1)],
+            "every row of the log carries a commit, so every row takes a click"
         );
         let (x, y) = region(&wb, "git.detail");
         assert_eq!(
