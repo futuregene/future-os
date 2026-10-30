@@ -81,10 +81,10 @@ describe("keyboard shortcut settings", () => {
   });
 
   it("offers the reading and composer keys beside the ones they extend", () => {
-    // ``⇧⌘O`` beside the paperclip, ``⌘⌥C`` beside the reply's copy button,
-    // ``⌘⌥G`` beside the corner's jump button: a reader who came here after
+    // ``⌥⌘A`` beside the paperclip, ``⌥⌘C`` beside the reply's copy button,
+    // ``⌥⌘G`` beside the corner's jump button: a reader who came here after
     // seeing one of those buttons should be able to find its key.
-    expect(bindingButton("Attach files").textContent).toBe("Ctrl+Shift+O");
+    expect(bindingButton("Attach files").textContent).toBe("Ctrl+Alt+A");
     expect(bindingButton("Copy the last reply").textContent).toBe("Ctrl+Alt+C");
     expect(bindingButton("Jump to the latest message").textContent).toBe("Ctrl+Alt+G");
   });

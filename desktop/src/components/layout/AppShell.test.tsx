@@ -3323,9 +3323,9 @@ describe("app shell keyboard commands", () => {
   it("toggles the sidebar and the context panel", () => {
     const view = mount(<AppShell />);
     expect(view.container.querySelector("[data-child=\"activity-rail\"]")).not.toBeNull();
-    press({ ctrlKey: true, key: "b" });
+    press({ ctrlKey: true, key: "d" });
     expect(view.container.querySelector("[data-child=\"activity-rail\"]")).toBeNull();
-    press({ ctrlKey: true, key: "b" });
+    press({ ctrlKey: true, key: "d" });
     expect(view.container.querySelector("[data-child=\"activity-rail\"]")).not.toBeNull();
 
     const panelExpanded = () => (children.contextPanel as { expanded: boolean }).expanded;
@@ -3348,9 +3348,9 @@ describe("app shell keyboard commands", () => {
     view.unmount();
   });
 
-  it("opens the command palette on mod+k, and closes it again", () => {
+  it("opens the command palette on mod+p, and closes it again", () => {
     const view = mount(<AppShell />);
-    press({ code: "KeyK", ctrlKey: true, key: "k" });
+    press({ code: "KeyP", ctrlKey: true, key: "p" });
     expect(view.container.querySelector("[data-child=\"command-palette\"]")).not.toBeNull();
     expect((children.commandPalette as { open: boolean }).open).toBe(true);
 
@@ -3361,7 +3361,7 @@ describe("app shell keyboard commands", () => {
 
   it("offers the commands whose handlers are live, and the conversations and workspaces", () => {
     const view = mount(<AppShell />);
-    press({ code: "KeyK", ctrlKey: true, key: "k" });
+    press({ code: "KeyP", ctrlKey: true, key: "p" });
     const props = children.commandPalette as {
       commands: Array<{ id: string; label: string }>;
       targets: Array<{ kind: string; title: string }>;
@@ -3392,11 +3392,11 @@ describe("app shell keyboard commands", () => {
   });
 
   it("follows a rebinding of the palette's own key", () => {
-    // The palette is an ordinary command: a user who moves it off ⌘K must find it
-    // on the new key and nowhere else.
+    // The palette is an ordinary command: a user who moves it off its default must
+    // find it on the new key and nowhere else.
     act(() => setCommandBinding("palette.open", "mod+shift+p"));
     const view = mount(<AppShell />);
-    press({ code: "KeyK", ctrlKey: true, key: "k" });
+    press({ code: "KeyP", ctrlKey: true, key: "p" });
     expect(view.container.querySelector("[data-child=\"command-palette\"]")).toBeNull();
 
     press({ code: "KeyP", ctrlKey: true, key: "P", shiftKey: true });
@@ -3425,7 +3425,7 @@ describe("app shell keyboard commands", () => {
     // `⌘⇧,` is in the table like every other command, so the palette lists it and
     // runs it through the registry — no second "open settings" path.
     const view = mount(<AppShell />);
-    press({ code: "KeyK", ctrlKey: true, key: "k" });
+    press({ code: "KeyP", ctrlKey: true, key: "p" });
     const offered = (children.commandPalette as { commands: Array<{ id: string; label: string }> }).commands;
     expect(offered).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "shortcuts.settings", label: "Keyboard shortcut settings" }),

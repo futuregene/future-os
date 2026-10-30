@@ -158,7 +158,7 @@ describe("command palette", () => {
     // The dialog cannot rely on the dispatcher here: while it is open it *is* the
     // overlay the dispatcher stands behind.
     mount();
-    press("k", { ctrlKey: true });
+    press("p", { ctrlKey: true });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
@@ -166,7 +166,7 @@ describe("command palette", () => {
     act(() => setCommandBinding("palette.open", "mod+shift+p"));
     mount();
     // The default is no longer the palette's key …
-    press("k", { ctrlKey: true });
+    press("p", { ctrlKey: true });
     expect(onClose).not.toHaveBeenCalled();
     // … and the new one is.
     press("P", { ctrlKey: true, shiftKey: true });
