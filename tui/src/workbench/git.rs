@@ -19,7 +19,7 @@
 //!   cwd changes; `ctrl+k`, a `usage` event and every redraw in between reuse
 //!   the cached name instead of spawning a process.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// How long a branch read may take before it is killed and reported as "no
@@ -33,6 +33,9 @@ pub const BRANCH_TIMEOUT: Duration = Duration::from_millis(600);
 /// own is a git implementation detail, and the reader wants to know *where* the
 /// checkout is, not that it is not on a branch.
 pub fn branch(cwd: &Path) -> String {
+    if let Some(name) = branch_fast(cwd) {
+        return name;
+    }
     let (code, stdout, _) = run(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]);
     if code != 0 {
         return String::new();
@@ -54,6 +57,62 @@ pub fn branch(cwd: &Path) -> String {
     } else {
         format!("@{sha}")
     }
+}
+
+/// The branch a checkout is on, read out of `.git/HEAD` without spawning
+/// anything, or `None` when the answer needs the real `git`.
+///
+/// A branch name is one line of one file: `<gitdir>/HEAD` holds
+/// `ref: refs/heads/<name>` for as long as a branch is checked out. Reading it
+/// costs a handful of `stat`s and one small `open` — which on Windows is the
+/// difference between a process spawn (55–99 ms measured here: loader, image
+/// checks, the real-time scanner, then `git` itself) and nothing at all.
+///
+/// Everything else is `None` and the caller falls back to
+/// `git rev-parse --abbrev-ref HEAD`, because this is a *shortcut*, not a
+/// second implementation of git's naming rules:
+///
+/// * a **detached** HEAD is spelled with `core.abbrev`, whose length depends on
+///   the object count — only `git` may choose it;
+/// * a symref outside `refs/heads/` (a tag, a remote-tracking ref) is named by
+///   git's own abbreviation, not by stripping a prefix;
+/// * **no repository** above `cwd`, an unreadable `HEAD`, a `gitdir:` pointing
+///   nowhere — all left to git, which also honours `GIT_DIR` and friends.
+pub fn branch_fast(cwd: &Path) -> Option<String> {
+    let head = std::fs::read_to_string(git_dir(cwd)?.join("HEAD")).ok()?;
+    let target = head.trim().strip_prefix("ref:")?.trim();
+    let name = target.strip_prefix("refs/heads/")?;
+    if name.is_empty() {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// The `.git` directory that governs `cwd`: the nearest one up the tree, with a
+/// `gitdir: <path>` indirection followed — a linked worktree and a submodule
+/// keep their `HEAD` in the main repository rather than in the checkout.
+fn git_dir(cwd: &Path) -> Option<PathBuf> {
+    for dir in cwd.ancestors() {
+        let dot = dir.join(".git");
+        match std::fs::metadata(&dot) {
+            Ok(meta) if meta.is_dir() => return Some(dot),
+            Ok(meta) if meta.is_file() => {
+                let text = std::fs::read_to_string(&dot).ok()?;
+                let path = text.trim().strip_prefix("gitdir:")?.trim();
+                if path.is_empty() {
+                    return None;
+                }
+                let path = Path::new(path);
+                return Some(if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    dir.join(path)
+                });
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// `git -C <cwd> <args…>`, bounded by [`BRANCH_TIMEOUT`]. A failure to spawn or
@@ -174,5 +233,69 @@ mod tests {
         assert!(!name.contains('\n'), "a branch name is one line: {name:?}");
         let outside = tempfile::tempdir().expect("a temp dir");
         assert_eq!(branch(outside.path()), "");
+    }
+
+    /// A checkout on a branch is named by one line of `.git/HEAD`, with no
+    /// process spawned: this is the answer a workspace switch needs, and it is
+    /// the whole reason `branch` can be instant on Windows.
+    #[test]
+    fn a_checked_out_branch_is_read_from_head_without_running_git() {
+        let repo = tempfile::tempdir().expect("a temp dir");
+        let git = repo.path().join(".git");
+        std::fs::create_dir_all(&git).expect("a git dir");
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/dev-huichen\n").expect("head");
+
+        assert_eq!(branch_fast(repo.path()).as_deref(), Some("dev-huichen"));
+        assert_eq!(branch(repo.path()), "dev-huichen", "and through branch()");
+        // A subdirectory of the checkout names the same branch: the walk up is
+        // what makes a session cwd anywhere in the tree work.
+        let nested = repo.path().join("tui/src");
+        std::fs::create_dir_all(&nested).expect("a nested dir");
+        assert_eq!(branch_fast(&nested).as_deref(), Some("dev-huichen"));
+    }
+
+    /// A linked worktree (and a submodule) keeps `.git` as a *file* holding
+    /// `gitdir: <path>`; the branch is still one read, in that directory.
+    #[test]
+    fn a_gitdir_indirection_is_followed() {
+        let holder = tempfile::tempdir().expect("a temp dir");
+        let real = holder.path().join("main/.git/worktrees/checkout");
+        std::fs::create_dir_all(&real).expect("a worktree gitdir");
+        std::fs::write(real.join("HEAD"), "ref: refs/heads/fix/headers\n").expect("head");
+        let checkout = holder.path().join("checkout");
+        std::fs::create_dir_all(&checkout).expect("a checkout");
+        std::fs::write(
+            checkout.join(".git"),
+            format!("gitdir: {}\n", real.display()),
+        )
+        .expect("a .git file");
+
+        assert_eq!(branch_fast(&checkout).as_deref(), Some("fix/headers"));
+    }
+
+    /// The three shapes the shortcut must refuse: a detached HEAD (its short
+    /// sha is git's choice), a symref outside `refs/heads/`, and no repository
+    /// at all. Each falls through to `git rev-parse`, which knows the rules.
+    #[test]
+    fn the_shortcut_refuses_what_only_git_may_name() {
+        let repo = tempfile::tempdir().expect("a temp dir");
+        let git = repo.path().join(".git");
+        std::fs::create_dir_all(&git).expect("a git dir");
+
+        std::fs::write(
+            git.join("HEAD"),
+            "9e4a47d2a5b1f0c3d6e8a2b4c6d8e0f1a3b5c7d9\n",
+        )
+        .expect("a detached head");
+        assert_eq!(branch_fast(repo.path()), None, "detached: git names it");
+
+        std::fs::write(git.join("HEAD"), "ref: refs/remotes/origin/main\n").expect("a symref");
+        assert_eq!(branch_fast(repo.path()), None, "not a local branch");
+
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/\n").expect("an empty name");
+        assert_eq!(branch_fast(repo.path()), None, "no name to show");
+
+        let plain = tempfile::tempdir().expect("a temp dir");
+        assert_eq!(branch_fast(plain.path()), None, "not a repository");
     }
 }
