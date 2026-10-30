@@ -2863,18 +2863,12 @@ fn git_row_line(
     selected: bool,
 ) -> String {
     let columns = columns.max(1);
-    // The gutter in the row is padded to the widest lane in the page, so a row
-    // whose work is done after two lanes does not start its subject where a row
-    // that forks into six does: the padding is cut here and only the one cell
-    // that separates the last lane from the row's fields is kept. The *width*
-    // used for the columns' room is the padded one, though — that is the same
-    // number in every row, and a rule that read the trimmed width would show the
-    // columns on some rows and not others.
-    let pitch = ansi::width(&row.prefix);
-    let trimmed = row.prefix.trim_end();
-    let graph = paint_graph(palette, trimmed);
-    let gap = if trimmed.is_empty() { "" } else { " " };
-    let side = log_columns(palette, &row.columns, pitch, columns);
+    // The gutter is padded to the widest lane in the page, so whatever follows
+    // it — the refs, then the subject — starts in the same cell on every row.
+    // Each lane already owns two cells (a glyph and the air beside it), so the
+    // padding ends in the one cell that separates the drawing from the fields.
+    let graph = paint_graph(palette, &row.prefix);
+    let side = log_columns(palette, &row.columns, ansi::width(&row.prefix), columns);
     let full = if row.key.is_none() {
         // The graph continuing through a column: painted in the gutter, never
         // selectable, so it gets no arrow.
@@ -2891,7 +2885,7 @@ fn git_row_line(
             .map(|piece| piece.replace('\n', " ↵ "))
             .unwrap_or_default();
         let mut line = format!(
-            "{marker}{side}{graph}{gap}{}",
+            "{marker}{side}{graph}{}",
             paint_kind(palette, row.kind(0), &lead, selected)
         );
         for (index, piece) in row.pieces.iter().enumerate().skip(1) {
@@ -5250,26 +5244,29 @@ mod tests {
         assert!(wide.starts_with("  2026-10-27 09:15 Ada ● "), "{wide:?}");
     }
 
-    /// A row is not padded out to the page's widest graph: the gutter ends at
-    /// the row's own last lane and one cell of air separates it from the row's
-    /// fields, so a commit that finished after two lanes does not carry the
-    /// empty columns of a six-lane fork. The lanes themselves still start in one
-    /// cell — that is the padding that has to stay.
+    /// The refs column is one cell in every row: the gutter is kept at the page's
+    /// widest drawing, so a commit whose own lanes end early still starts its
+    /// refs — and its subject — where the row above it does.
     #[test]
-    fn the_graph_is_cut_at_its_last_lane() {
+    fn the_row_starts_its_refs_in_one_cell() {
         let palette = FUTURE_DARK;
-        let row = GitRow {
+        let row = |prefix: &str| GitRow {
             key: Some("abc1234".into()),
             columns: Vec::new(),
-            prefix: "● │ │       ".into(),
+            prefix: prefix.into(),
             pieces: vec!["origin/main · Merge branch 'x'".into()],
             kinds: vec![state::GitKind::Plain],
         };
-        let painted = plain(&git_row_line(&palette, &row, 0, 60, false));
-        assert!(
-            painted.starts_with("  ● │ │ origin/main"),
-            "one space, not the padded gutter: {painted:?}"
+        let wide = plain(&git_row_line(&palette, &row("● │ │       "), 0, 60, false));
+        let narrow = plain(&git_row_line(&palette, &row("●           "), 0, 60, false));
+        // Columns, not bytes: the box glyphs are three bytes wide and one cell.
+        let start = |line: &str| ansi::width(line.split("origin/main").next().unwrap());
+        assert_eq!(
+            start(&wide),
+            start(&narrow),
+            "two rows, two drawings, one refs column: {wide:?} / {narrow:?}"
         );
+        assert_eq!(start(&wide), 14, "marker, gutter and one cell of air");
     }
 
     /// The band has to exist in every palette: it is a member of the one ordered

@@ -31,7 +31,7 @@
 //! subject is free text and may contain anything a line can contain, so splitting
 //! on a tab or a `|` would corrupt it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 
@@ -230,12 +230,33 @@ fn parse_entries(text: &str) -> Vec<Entry> {
 /// branch.
 const GHOST: usize = usize::MAX;
 
+/// One line of work being drawn: the commit it is waiting for and what opened
+/// it.
+#[derive(Clone, Copy)]
+struct Lane {
+    /// The entry this line waits for, or [`GHOST`] past the page.
+    target: usize,
+    /// The commit and the index of the parent in its list that opened this line,
+    /// when a merge's *extra* parent did. `None` for a line that starts at the
+    /// top of the page or carries a commit's first parent: those are the line
+    /// itself and are never dropped.
+    opened_by: Option<(usize, usize)>,
+    /// Whether a commit has been drawn in this line yet.
+    hosted: bool,
+}
+
+/// How many times the layout may be laid out again after dropping a lane that
+/// carried nothing. Dropping one link can only free a column, so the second pass
+/// is normally the last; the bound is what keeps a pathological history from
+/// looping rather than a budget anything real gets near.
+const PASSES: usize = 4;
+
 /// The graph gutter for each entry, one string per row and every string the
 /// same width so the subjects line up in one column.
 ///
 /// The model is tig's: a *lane* is a column waiting for a commit, a commit
 /// claims the leftmost lane waiting for it, its first parent inherits that
-/// lane, and each further parent opens a column to the right. Two decisions
+/// lane, and each further parent opens a column to the right. Three decisions
 /// make the drawing readable rather than merely correct:
 ///
 /// * **A lane keeps its column.** A new parent takes a free column to the
@@ -245,23 +266,61 @@ const GHOST: usize = usize::MAX;
 /// * **No diagonals and no orphan rows.** A connection is a vertical, a
 ///   horizontal, or an elbow between them (`┐ ┘ ├ ┤ ┬ ┴ ┼`), and each one is
 ///   drawn on the row of the commit that makes it. Every row carries a commit.
+/// * **A lane that carries nothing is not drawn.** When a merge's extra parent
+///   is a commit another lane already reaches — `origin/main` merged into every
+///   feature branch, or a branch merged twice — the lane opened for it runs down
+///   the page with no commit of its own and closes at the commit that other lane
+///   lands on. That link is dropped and the page laid out again: the covered
+///   line keeps its commits, they are simply drawn where they already were.
 fn graph(entries: &[Entry]) -> Vec<String> {
     let position: HashMap<&str, usize> = entries
         .iter()
         .enumerate()
         .map(|(at, entry)| (entry.id.as_str(), at))
         .collect();
-    // Column -> the entry it is waiting for (an index into `entries`), `None`
-    // while the column is free.
-    let mut lanes: Vec<Option<usize>> = Vec::new();
+    let mut covered: HashSet<(usize, usize)> = HashSet::new();
+    let mut rows = Vec::new();
+    for pass in 1..=PASSES {
+        let (drawn, discovered) = draw(entries, &position, &covered);
+        rows = drawn;
+        let mut fresh: Vec<(usize, usize)> = Vec::new();
+        for edge in discovered {
+            if !covered.contains(&edge) && !fresh.contains(&edge) {
+                fresh.push(edge);
+            }
+        }
+        if fresh.is_empty() || pass == PASSES {
+            break;
+        }
+        covered.extend(fresh);
+    }
+    let width = rows.iter().map(Vec::len).max().unwrap_or(0);
+    rows.into_iter()
+        .map(|mut cells| {
+            cells.resize(width, ' ');
+            cells.into_iter().collect()
+        })
+        .collect()
+}
+
+/// One pass over the log: the rows, and the parent links whose lane turned out
+/// to carry no commit of its own.
+fn draw(
+    entries: &[Entry],
+    position: &HashMap<&str, usize>,
+    covered: &HashSet<(usize, usize)>,
+) -> (Vec<Vec<char>>, Vec<(usize, usize)>) {
+    // Column -> the line it holds, `None` while the column is free.
+    let mut lanes: Vec<Option<Lane>> = Vec::new();
     let mut rows: Vec<Vec<char>> = Vec::with_capacity(entries.len());
+    let mut empty: Vec<(usize, usize)> = Vec::new();
     for (at, entry) in entries.iter().enumerate() {
         // Every lane waiting for this commit: the first is where it is drawn,
         // the rest are lines of work joining it here.
         let waiting: Vec<usize> = lanes
             .iter()
             .enumerate()
-            .filter(|(_, lane)| **lane == Some(at))
+            .filter(|(_, lane)| lane.is_some_and(|lane| lane.target == at))
             .map(|(column, _)| column)
             .collect();
         let (mine, closed) = match waiting.split_first() {
@@ -276,10 +335,29 @@ fn graph(entries: &[Entry]) -> Vec<String> {
                         lanes.len() - 1
                     }
                 };
-                lanes[column] = Some(at);
+                lanes[column] = Some(Lane {
+                    target: at,
+                    opened_by: None,
+                    hosted: false,
+                });
                 (column, Vec::new())
             }
         };
+        // A line closing here that never drew a commit was opened for a parent
+        // another line also reaches: its history is already on the page.
+        for &column in &closed {
+            if let Some(lane) = lanes[column] {
+                if !lane.hosted {
+                    if let Some(edge) = lane.opened_by {
+                        empty.push(edge);
+                    }
+                }
+            }
+        }
+        // This commit is the line's content.
+        if let Some(lane) = lanes[mine].as_mut() {
+            lane.hosted = true;
+        }
         let parents: Vec<usize> = entry
             .parents
             .iter()
@@ -287,11 +365,15 @@ fn graph(entries: &[Entry]) -> Vec<String> {
             .collect();
         // The extra parents, each in a free column right of this one: a column
         // already taken (by another lane, or by an earlier parent of this same
-        // commit) is passed over, so two lines never share a column.
-        let mut opened: Vec<(usize, usize)> = Vec::new();
-        for &parent in parents.iter().skip(1) {
+        // commit) is passed over, so two lines never share a column. One whose
+        // lane was found to carry nothing is not opened at all.
+        let mut opened: Vec<(usize, usize, usize)> = Vec::new();
+        for (index, &parent) in parents.iter().enumerate().skip(1) {
+            if covered.contains(&(at, index)) {
+                continue;
+            }
             let free = (mine + 1..lanes.len()).find(|column| {
-                lanes[*column].is_none() && !opened.iter().any(|(taken, _)| taken == column)
+                lanes[*column].is_none() && !opened.iter().any(|(taken, _, _)| taken == column)
             });
             let column = match free {
                 Some(column) => column,
@@ -300,11 +382,11 @@ fn graph(entries: &[Entry]) -> Vec<String> {
                     lanes.len() - 1
                 }
             };
-            opened.push((column, parent));
+            opened.push((column, parent, index));
         }
         let rightmost = opened
             .iter()
-            .map(|(column, _)| *column)
+            .map(|(column, _, _)| *column)
             .chain(closed.iter().copied())
             .fold(mine, usize::max);
         // The row runs to the last lane that exists, how far right this commit
@@ -316,10 +398,10 @@ fn graph(entries: &[Entry]) -> Vec<String> {
             .max(rightmost);
         let mut cells = vec![' '; 2 * (width + 1)];
         for column in 0..=width {
-            let up = lanes.get(column).is_some_and(Option::is_some) && column != mine;
+            let up = lanes.get(column).is_some_and(|lane| lane.is_some()) && column != mine;
             let down = if closed.contains(&column) {
                 false
-            } else if opened.iter().any(|(taken, _)| *taken == column) {
+            } else if opened.iter().any(|(taken, _, _)| *taken == column) {
                 true
             } else {
                 up
@@ -339,24 +421,26 @@ fn graph(entries: &[Entry]) -> Vec<String> {
         for &column in &closed {
             lanes[column] = None;
         }
-        lanes[mine] = parents.first().copied();
-        for &(column, parent) in &opened {
+        lanes[mine] = parents.first().map(|&target| Lane {
+            target,
+            opened_by: None,
+            hosted: false,
+        });
+        for &(column, target, index) in &opened {
             if column >= lanes.len() {
                 lanes.resize(column + 1, None);
             }
-            lanes[column] = Some(parent);
+            lanes[column] = Some(Lane {
+                target,
+                opened_by: Some((at, index)),
+                hosted: false,
+            });
         }
-        while lanes.last() == Some(&None) {
+        while lanes.last().is_some_and(Option::is_none) {
             lanes.pop();
         }
     }
-    let width = rows.iter().map(Vec::len).max().unwrap_or(0);
-    rows.into_iter()
-        .map(|mut cells| {
-            cells.resize(width, ' ');
-            cells.into_iter().collect()
-        })
-        .collect()
+    (rows, empty)
 }
 
 /// The glyph where a lane meets the row's horizontal: which of the four
@@ -1137,6 +1221,29 @@ mod tests {
                 ("d", ""),
             ]),
             vec!["●─┬─┐ ", "● │ │ ", "│ ● │ ", "│ │ ● ", "●─┴─┘ "]
+        );
+    }
+
+    /// A merge's extra parent opens a lane of its own — unless that parent is a
+    /// commit another lane already reaches. Then the lane would run down the
+    /// page with no commit of its own and close where the other lane lands, so
+    /// the link is dropped and the page is laid out again: the covered line is
+    /// drawn once, where it already was.
+    #[test]
+    fn a_branch_another_line_already_draws_gets_no_lane() {
+        // `a` merges `c`, which its own first parent already goes through:
+        // `b`'s parent is `c` as well, so `c` is drawn on the line `a` and `b`
+        // share.
+        assert_eq!(
+            gutters(&[("a", "b c"), ("b", "c"), ("c", "")]),
+            vec!["● ", "● ", "● "],
+            "the covered parent is not a lane of its own"
+        );
+        // The same shape with a commit that only that lane carries keeps the
+        // lane: it is real work, not a duplicate of a line already drawn.
+        assert_eq!(
+            gutters(&[("a", "b c"), ("b", "d"), ("c", "d"), ("d", "")]),
+            vec!["●─┐ ", "● │ ", "│ ● ", "●─┘ "]
         );
     }
 
