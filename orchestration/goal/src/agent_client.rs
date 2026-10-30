@@ -289,6 +289,47 @@ impl AgentClient {
         Ok(())
     }
 
+    /// The session's current `(model, thinking_level)` from `get_state`.
+    ///
+    /// Two callers rely on this. A dispatch reads the SUPERVISOR session's
+    /// configuration so a worker can inherit it (the supervisor is where the
+    /// operator's choice for this work actually lives). Every dispatch then
+    /// reads its own worker session back, so the run header records the values
+    /// that took effect instead of what the caller meant to set.
+    ///
+    /// Best-effort by design: a session the agent cannot load (deleted, never
+    /// persisted) yields `Ok(None)` rather than failing the dispatch — an
+    /// unreadable supervisor must degrade to "agent default", not to "no
+    /// worker".
+    pub async fn session_settings(&mut self, session_id: &str) -> Result<Option<(String, String)>> {
+        if session_id.trim().is_empty() {
+            return Ok(None);
+        }
+        let state = match self
+            .call("get_state", session_id, RpcCommand::default())
+            .await
+        {
+            Ok(state) => state,
+            // A missing session is not a dispatch failure (see the doc comment).
+            Err(_) => return Ok(None),
+        };
+        if state.is_null() {
+            return Ok(None);
+        }
+        let model = state
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let thinking = state
+            .get("thinkingLevel")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if model.is_empty() && thinking.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some((model.to_string(), thinking.to_string())))
+    }
+
     /// Enqueue one bounded turn. Returns the canonical run_id.
     ///
     /// Idempotency: the caller owns `client_request_id`; re-sending the same

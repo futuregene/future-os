@@ -737,7 +737,12 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
     if let Err(e) = new_sess.set_model(&default_model.clone()) {
         tracing::warn!("[new_session] could not sync model to fresh loop: {e}");
     }
-    // Always start new sessions at the app's preferred thinking level.
+    // Start new sessions at the product default thinking level, NOT at some
+    // remembered preference: `DEFAULT_THINKING_LEVEL` is `"default"`, i.e. send
+    // no thinking/effort parameter and let the provider decide. Clients that
+    // want a level (GUI/TUI pickers, `future goal run` when it inherits the
+    // supervisor's configuration) set it explicitly on this command or through
+    // `set_thinking_level` right after.
     new_sess.thinking_level =
         new_sess.normalize_thinking_level(crate::rpc::session::DEFAULT_THINKING_LEVEL);
 
