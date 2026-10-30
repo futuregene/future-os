@@ -89,16 +89,29 @@ pub enum ExchangeStart {
 /// fetched too (`ExchangeStart::Complete`), since renderers need the user and
 /// tool declarations to interpret it. A page that is allowed to begin anywhere
 /// (`ExchangeStart::Anywhere`) is returned as the agent cut it.
-pub async fn read_page<Entry, F, Fut>(
+///
+/// Not an `async fn`, and that is the point: the only thing it adds to
+/// [`read_page_from`] is a constant, and an `async fn` would pay for that
+/// constant with a second state machine. That is not free in the one caller
+/// that matters — the desktop's history read is the deepest `await` chain in the
+/// host (`remote_host::business` → `history::execute` → the page read → the
+/// agent call), and it runs on a worker thread with the platform's default stack.
+/// Measured on the `remote::commands::bridge_tests` group, which reaches it: the
+/// redundant nesting cost **78 KiB** of the 2 MiB a worker gets in a debug build
+/// (1970 KiB against 1892 KiB when the wrapper is transparent), which is what
+/// took `Rust Windows test / host-remote` over the edge (MSVC debug frames are
+/// wider than arm64 ones). Keep this a plain `fn`: there is nothing to await on
+/// this side of the call.
+pub fn read_page<Entry, F, Fut>(
     command: RpcCommand,
     execute: F,
-) -> Result<SessionEntriesPage<Entry>, String>
+) -> impl Future<Output = Result<SessionEntriesPage<Entry>, String>>
 where
     Entry: HistoryEntry,
     F: FnMut(RpcCommand) -> Fut,
     Fut: Future<Output = Result<SessionEntriesPage<Entry>, String>>,
 {
-    read_page_from(command, ExchangeStart::Complete, execute).await
+    read_page_from(command, ExchangeStart::Complete, execute)
 }
 
 /// [`read_page`], naming what a page may do to the exchange it starts in.
