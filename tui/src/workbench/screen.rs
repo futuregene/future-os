@@ -2698,7 +2698,7 @@ fn lane_colour(palette: &Palette, lane: usize) -> u8 {
 /// join.
 ///
 /// Counting *characters* is counting cells here because the gutter is this
-/// file's own vocabulary (`● │ ─ ┐ ┘ ┤ ┬ ┴` and spaces): the subject
+/// file's own vocabulary (`o M ● │ ─ ┐ ┘ ┤ ┬ ┴` and spaces): the subject
 /// travels after the record separator in `parse_log`, so no free text ever
 /// reaches this string.
 fn paint_graph(palette: &Palette, prefix: &str) -> String {
@@ -2707,13 +2707,18 @@ fn paint_graph(palette: &Palette, prefix: &str) -> String {
     // elbow it passes.
     let mine = prefix
         .chars()
-        .position(|glyph| glyph == '●')
+        .position(|glyph| glyph == 'o' || glyph == 'M')
         .map(|at| at / 2);
     let mut out = String::new();
     for (column, glyph) in prefix.chars().enumerate() {
         let lane = column / 2;
         let colour = lane_colour(palette, lane);
         let painted = match glyph {
+            // A commit, and a commit that joins lines: tig's two, in the lane's
+            // own colour so a branch keeps one colour from tip to junction.
+            'o' | 'M' => palette.strong(colour, &glyph.to_string()),
+            // The badge other sections put in the gutter ("this is the one you
+            // are on"), which is not a graph node.
             '●' => palette.strong(colour, "●"),
             '│' => palette.text(colour, "│"),
             '─' => palette.text(lane_colour(palette, mine.unwrap_or(lane)), "─"),
