@@ -1,4 +1,4 @@
-﻿//! The workbench's driver: terminal, event loop, and the keys that are not the
+//! The workbench's driver: terminal, event loop, and the keys that are not the
 //! surface's own.
 //!
 //! `future tui` ends up here. The loop is async (the agent, the terminal input
@@ -1884,6 +1884,20 @@ fn draw(
         usize::from(frame.width),
         workbench.cursor(),
         painted,
+        // A scroll moves whole terminal rows, so the transcript may only be
+        // scrolled when those rows are its own: a rail shares them, and a picture
+        // is anchored to the rows the scroll would move.
+        if frame.layout.sidebar.is_none()
+            && workbench.image_requests.is_empty()
+            && workbench.painted_images.ids.is_empty()
+            && workbench.painted_images.iterm_shown.is_empty()
+            && workbench.chat_window > 0
+        {
+            let top = usize::from(frame.layout.body.y);
+            Some((top, top + workbench.chat_window - 1))
+        } else {
+            None
+        },
     );
     if !bytes.is_empty() {
         terminal.write(&bytes);
@@ -2200,7 +2214,7 @@ fn crop_rgb(
 #[cfg(test)]
 fn frame_bytes(rows: &[String], cursor: Option<(u16, u16)>) -> String {
     let mut cache = FrameCache::default();
-    frame_bytes_since(rows, 0, cursor, &mut cache)
+    frame_bytes_since(rows, 0, cursor, &mut cache, None)
 }
 
 /// The rows and cursor the terminal was last written, so a frame can send the
@@ -2221,26 +2235,51 @@ struct FrameCache {
 ///
 /// A width or height change is a full repaint: the frame's geometry moved, and
 /// a row that happens to compare equal at a different width still occupies
-/// different cells. Otherwise only changed rows are addressed. Each written row
-/// is still absolute and erased first, preserving the no-scroll contract.
+/// different cells. Otherwise a frame that is exactly the one on screen scrolled
+/// up inside `scroll`'s band is sent as one region scroll plus the band's new
+/// bottom rows ([`scroll_of`]); everything else is addressed row by row.
+///
+/// `scroll` is the rows a transcript occupies, offered only when they are the
+/// transcript's own (a terminal scroll moves whole rows, so a rail painted beside
+/// it would be scrolled too) and when no in-line picture is on screen.
 fn frame_bytes_since(
     rows: &[String],
     width: usize,
     cursor: Option<(u16, u16)>,
     cache: &mut FrameCache,
+    scroll: Option<(usize, usize)>,
 ) -> String {
     let full = cache.width != width || cache.rows.len() != rows.len();
     let mut frame = String::new();
     frame.push_str("\x1b[?25l");
     let mut written: Vec<usize> = Vec::new();
-    for (index, row) in rows.iter().enumerate() {
-        if !full && cache.rows.get(index) == Some(row) {
-            continue;
+    let changed: Vec<usize> = if full {
+        (0..rows.len()).collect()
+    } else {
+        (0..rows.len())
+            .filter(|index| cache.rows.get(*index) != rows.get(*index))
+            .collect()
+    };
+    let scroll = scroll_of(&cache.rows, rows, !full, scroll, changed.len());
+    if let Some((top, bottom, n)) = scroll {
+        // The region is the transcript's rows and nothing outside it changed
+        // (both are checked before we get here), so one scroll sequence replaces
+        // rewriting every row in it.
+        frame.push_str(&format!("\x1b[{};{}r\x1b[{n}S", top + 1, bottom + 1));
+        for (index, row) in rows.iter().enumerate().skip(bottom + 1 - n).take(n) {
+            written.push(index);
+            frame.push_str(&format!("\x1b[0m\x1b[{};1H", index + 1));
+            frame.push_str("\x1b[K");
+            frame.push_str(row);
         }
-        written.push(index);
-        frame.push_str(&format!("\x1b[0m\x1b[{};1H", index + 1));
-        frame.push_str("\x1b[K");
-        frame.push_str(row);
+        frame.push_str("\x1b[r");
+    } else {
+        for index in changed {
+            written.push(index);
+            frame.push_str(&format!("\x1b[0m\x1b[{};1H", index + 1));
+            frame.push_str("\x1b[K");
+            frame.push_str(&rows[index]);
+        }
     }
     if written.is_empty() && cursor == cache.cursor {
         cache.written.clear();
@@ -2255,6 +2294,44 @@ fn frame_bytes_since(
     cache.width = width;
     cache.cursor = cursor;
     frame
+}
+
+/// The band and distance of a transcript scroll, when this frame is exactly one.
+///
+/// Three things must hold, and each is an equality rather than a resemblance: the
+/// geometry is unchanged, every row *outside* the band is identical, and inside
+/// the band row `i` is row `i + n` shifted up for every row above the `n` that
+/// came in at the bottom. Anything else — a reply that grew in the middle, a
+/// different conversation, a rail, an overlay — answers `None` and the row diff
+/// takes over, which is what keeps a "smarter" repaint from painting the wrong
+/// screen.
+///
+/// It also has to pay: the scroll costs three sequences and `n` rows, and it is
+/// only taken when the row diff would have written more rows than that.
+fn scroll_of(
+    shown: &[String],
+    rows: &[String],
+    same_geometry: bool,
+    band: Option<(usize, usize)>,
+    changed: usize,
+) -> Option<(usize, usize, usize)> {
+    let (top, bottom) = band?;
+    if !same_geometry || shown.len() != rows.len() || top > bottom || bottom >= rows.len() {
+        return None;
+    }
+    if (0..rows.len()).any(|index| (index < top || index > bottom) && rows[index] != shown[index]) {
+        return None;
+    }
+    let height = bottom - top + 1;
+    if height < 2 {
+        return None;
+    }
+    for n in 1..height {
+        if (0..height - n).all(|index| rows[top + index] == shown[top + index + n]) {
+            return (1 + n < changed).then_some((top, bottom, n));
+        }
+    }
+    None
 }
 
 fn persist_preferences(
@@ -2836,10 +2913,10 @@ mod tests {
     fn a_repaint_sends_only_rows_that_changed() {
         let first = vec!["one".to_string(), "two".to_string(), "three".to_string()];
         let mut cache = FrameCache::default();
-        let full = frame_bytes_since(&first, 20, Some((3, 1)), &mut cache);
+        let full = frame_bytes_since(&first, 20, Some((3, 1)), &mut cache, None);
         assert!(full.contains("\x1b[1;1H") && full.contains("\x1b[2;1H"));
 
-        let same = frame_bytes_since(&first, 20, Some((3, 1)), &mut cache);
+        let same = frame_bytes_since(&first, 20, Some((3, 1)), &mut cache, None);
         assert!(
             same.is_empty(),
             "an unchanged frame writes nothing: {same:?}"
@@ -2847,15 +2924,150 @@ mod tests {
 
         let mut changed = first.clone();
         changed[1] = "TWO".into();
-        let patch = frame_bytes_since(&changed, 20, Some((3, 1)), &mut cache);
+        let patch = frame_bytes_since(&changed, 20, Some((3, 1)), &mut cache, None);
         assert!(patch.contains("\x1b[2;1H") && patch.contains("TWO"));
         assert!(!patch.contains("\x1b[1;1H") && !patch.contains("\x1b[3;1H"));
 
-        let resized = frame_bytes_since(&changed, 21, Some((3, 1)), &mut cache);
+        let resized = frame_bytes_since(&changed, 21, Some((3, 1)), &mut cache, None);
         assert!(
             resized.contains("\x1b[1;1H") && resized.contains("\x1b[3;1H"),
             "a width change repaints every row"
         );
+    }
+
+    /// A transcript scroll is one region scroll plus the lines that came in, not
+    /// a rewrite of every row in the band.
+    #[test]
+    fn a_one_row_scroll_is_one_sequence_and_one_new_line() {
+        let shown = scroll_frame(0);
+        let next = scroll_frame(1);
+        let mut cache = FrameCache::default();
+        let first = frame_bytes_since(&shown, 180, None, &mut cache, Some((2, 37)));
+        assert!(first.contains("line 0 "), "a first frame is a full paint");
+
+        let bytes = frame_bytes_since(&next, 180, None, &mut cache, Some((2, 37)));
+        assert!(
+            bytes.contains("\x1b[3;38r\x1b[1S"),
+            "one region scroll of one line: {bytes:?}"
+        );
+        assert!(
+            bytes.contains("line 36 "),
+            "the line that came in is written: {bytes:?}"
+        );
+        assert!(
+            !bytes.contains("line 3 ") && !bytes.contains("line 20 "),
+            "the rows above are moved, not repainted: {bytes:?}"
+        );
+        assert!(
+            bytes.ends_with("\x1b[r") || bytes.contains("\x1b[r"),
+            "{bytes:?}"
+        );
+
+        // What a terminal shows after those bytes: the band scrolled up by one
+        // (row 2 becomes the old row 3, and so on), the last band row replaced by
+        // the line that arrived.
+        let mut grid = shown.clone();
+        grid[2..=36].clone_from_slice(&shown[3..=37]);
+        grid[37] = next[37].clone();
+        assert_eq!(grid, next, "the scroll plus the new line is the frame");
+    }
+
+    /// Ten lines at once is one `CSI 10 S`, then ten rows — not ten scrolls.
+    #[test]
+    fn a_ten_row_scroll_is_one_sequence() {
+        let shown = scroll_frame(0);
+        let next = scroll_frame(10);
+        let mut cache = FrameCache::default();
+        frame_bytes_since(&shown, 180, None, &mut cache, Some((2, 37)));
+        let bytes = frame_bytes_since(&next, 180, None, &mut cache, Some((2, 37)));
+        assert!(bytes.contains("\x1b[10S"), "{bytes:?}");
+        assert_eq!(bytes.matches('S').count(), 1, "one scroll: {bytes:?}");
+    }
+
+    /// Anything that is not exactly a scroll is repainted row by row: a row that
+    /// changed in place, a frame that grew in the middle, a rail beside the
+    /// transcript, a picture, and a change outside the band.
+    #[test]
+    fn only_an_exact_scroll_is_sent_as_a_scroll() {
+        let shown = scroll_frame(0);
+        let painted = || {
+            let mut cache = FrameCache::default();
+            frame_bytes_since(&shown, 180, None, &mut cache, Some((2, 37)));
+            cache
+        };
+
+        // A row edited in place.
+        let mut cache = painted();
+        let mut edited = shown.clone();
+        edited[10] = "\x1b[38;5;252medited\x1b[0m".into();
+        let bytes = frame_bytes_since(&edited, 180, None, &mut cache, Some((2, 37)));
+        assert!(
+            !bytes.contains('S'),
+            "a row edit is not a scroll: {bytes:?}"
+        );
+
+        // A frame that grew in the middle of the band.
+        let mut cache = painted();
+        let mut grown = shown.clone();
+        grown[5] = "\x1b[38;5;252mgrown\x1b[0m".into();
+        let bytes = frame_bytes_since(&grown, 180, None, &mut cache, Some((2, 37)));
+        assert!(!bytes.contains('S'), "{bytes:?}");
+
+        // A change outside the band (the header) disqualifies it, even when the
+        // band itself shifted: the terminal scrolls whole rows and would take the
+        // header with it.
+        let mut cache = painted();
+        let mut header_moved = scroll_frame(1);
+        header_moved[0] = "\x1b[38;5;252manother header\x1b[0m".into();
+        let bytes = frame_bytes_since(&header_moved, 180, None, &mut cache, Some((2, 37)));
+        assert!(!bytes.contains('S'), "{bytes:?}");
+
+        // No band offered (a rail shares the rows, or a picture is up).
+        let mut cache = painted();
+        let bytes = frame_bytes_since(&scroll_frame(1), 180, None, &mut cache, None);
+        assert!(!bytes.contains('S'), "{bytes:?}");
+
+        // A height change is a full repaint whatever the band says.
+        let mut cache = painted();
+        let taller = scroll_frame_rows(0, 41);
+        let bytes = frame_bytes_since(&taller, 180, None, &mut cache, Some((2, 37)));
+        assert!(bytes.contains("\x1b[1;1H") && bytes.contains("\x1b[41;1H"));
+    }
+
+    /// An unchanged frame is never "scrolled": that would move the screen for a
+    /// frame that has nothing to move.
+    #[test]
+    fn an_unchanged_frame_is_never_scrolled() {
+        let shown = scroll_frame(0);
+        let mut cache = FrameCache::default();
+        frame_bytes_since(&shown, 180, None, &mut cache, Some((2, 37)));
+        let bytes = frame_bytes_since(&shown, 180, None, &mut cache, Some((2, 37)));
+        assert!(bytes.is_empty(), "{bytes:?}");
+    }
+
+    /// A frame 40 rows tall: two header rows, a 36-row transcript band
+    /// (`2..=37`) and a two-row composer. Row `first + n` is "line n", so a frame
+    /// built from `first` is the one before it scrolled up by one.
+    fn scroll_frame(first: usize) -> Vec<String> {
+        scroll_frame_rows(first, 40)
+    }
+
+    fn scroll_frame_rows(first: usize, height: usize) -> Vec<String> {
+        let band = height.saturating_sub(4);
+        let mut rows: Vec<String> = (0..2).map(|i| format!("header {i}")).collect();
+        rows.extend((0..band).map(|i| {
+            let text = format!(
+                "  line {} of the transcript, wrapped to the frame's width",
+                first + i
+            );
+            let padding = 180usize.saturating_sub(text.chars().count());
+            format!(
+                "\x1b[38;5;252m{text}\x1b[0m\x1b[38;5;252m{}\x1b[0m",
+                " ".repeat(padding)
+            )
+        }));
+        rows.extend((0..2).map(|i| format!("composer {i}")));
+        rows
     }
 
     /// The workspaces the reader folded shut survive a restart through the same
