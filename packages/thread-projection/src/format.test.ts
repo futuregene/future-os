@@ -107,6 +107,23 @@ describe("classifyAgentError", () => {
     });
   });
 
+  it("carries the provider's own wording for a rejected (HTTP 400) request", () => {
+    // Retrying cannot fix a request the provider refused, so the detail is the
+    // only actionable part — it must reach the user, with the diagnostic tail
+    // and JSON envelope stripped off around it.
+    expect(classifyAgentError(
+      'LLM API request failed (HTTP 400): {"error":{"message":"Invalid model: gemini-9-pro"}} Request: 2 messages, 16 KB.',
+    )).toEqual({
+      key: "agent:failure.badRequest",
+      params: { message: "Invalid model: gemini-9-pro" },
+    });
+  });
+
+  it("keeps a context-limit 400 on the compaction guidance", () => {
+    expect(classifyAgentError("[CTX_LIMIT] Request exceeds the model's maximum context length (HTTP 400)."))
+      .toEqual({ key: "agent:failure.contextLimit" });
+  });
+
   it("leaves an unmapped reason code to the generic run failure", () => {
     expect(classifyAgentError("[NOT_A_CODE] something").key).toBe("agent:failure.run");
   });
