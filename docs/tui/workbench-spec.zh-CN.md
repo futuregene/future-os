@@ -192,7 +192,7 @@ TUI 不使用 logo 或图标。聊天页眉只有一行文字品牌 `FUTURE OS`�
 
 默认键里没有 `alt`——macOS 上 Option 默认是组字而不是 `ESC` + 字母——字母在冲突之后也不够用，
 所以剩下的动作**没有键**：审批模式（`/mode`）、工作区（`/workspace`）、复制（`/copy`）、
-鼠标捕获（`/mouse`）、偏好（`/preferences`）、草稿里最新的附件（`/preview`）、文件面板（`/files`）、
+鼠标捕获（`/mouse`）、偏好（`/preferences`）、草稿里最新的附件（点输入框标题上的计数）、文件面板（`/files`）、
 侧栏两个页签（点页签，或 `shift+←` / `shift+→`）。帮助浮层在这些行
 的键列印 `—`。不够用的原因就是这些冲突：`ctrl+h`/`i`/`j`/`m` 会被终端发成退格、Tab、`\n` 和回车；
 `ctrl+a`/`ctrl+b` 是 `screen` 和 `tmux` 的前缀；`ctrl+z` 是挂起；

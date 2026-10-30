@@ -121,8 +121,11 @@ way `/git` is.
 `ctrl+v` reads the clipboard: an image becomes a **draft attachment** (the box's
 title counts it, `· 📎 2 images`), and text is pasted into the draft. A pasted
 image is carried as the `[Image #N]` marker the input already understands, so it
-is sent with the prompt the same way a dragged-in file is; `/preview` opens the
-newest attached image. `/paste` is the same verb from the palette — it is there
+is sent with the prompt the same way a dragged-in file is; a click on that count
+opens the newest attached image (the count is the picture's door — there is no
+chord and no typed verb for it, because a `[Image #N]` marker ahead of the verb
+would turn the line into a prompt). `/paste` is the same verb from the palette —
+it is there
 because Windows Terminal binds `ctrl+v` to its own paste (which cannot carry an
 image), so on that terminal the key never arrives.
 
@@ -144,8 +147,8 @@ when something asks to see them, and kept only while that box is open.
 An image is placed by the terminal's *graphics protocol*: a real bitmap at a cell
 (kitty's `a=T` placement, transmitted once per source and only re-placed on later
 frames; iTerm2's inline-image protocol, re-sent only when its cells are rewritten
-or the shown crop changes), not a character mosaic. The preview box (`enter` on an image in 文件, or
-`/preview` for an attachment) puts its controls in the frame's first row —
+or the shown crop changes), not a character mosaic. The preview box (`enter` on an image in 文件, or a
+click on the count the composer's title shows for a draft attachment) puts its controls in the frame's first row —
 `[zoom out] [2x] [zoom in] [fit]` and `[previous] 2/5 [next]`, every one of them
 clickable — and answers `+`/`-` (or the wheel) up to 6×, `[`/`]` for the
 previous/next picture in the same folder, and `0` to fit. A zoomed picture pans
@@ -236,7 +239,7 @@ sessions, `ctrl+d` the rail, `ctrl+x` quit, `ctrl+p` commands, `ctrl+o` model,
 `ctrl+f` the files panel, `ctrl+g` the git browser, `ctrl+v` paste, `ctrl+q`
 preferences, and `ctrl+1`/`ctrl+2` the rail's two tabs. Everything else is a
 typed verb or a pointer target: `/delete`, `/pin`, `/queue`, `/copy`,
-`/preview`, `/refresh`, `/reply-detail`, and `?` for help — the help overlay
+`/refresh`, `/reply-detail`, and `?` for help — the help overlay
 lists only the actions that have a chord, and the palette names the door for
 the rest.
 
@@ -425,7 +428,7 @@ click on the rail's tab strip are the doors to the same places.
 | `ctrl+o` | Model picker (`/model`): every model the agent offers, grouped by provider, with the reasoning slider on its first row |
 | `ctrl+f` or `/files` | The **files panel**: this conversation's workspace as a tree, in a box over the frame — the same session scope as `/git`. `↑`/`↓` walk it, `⏎`/`→` open, `⌫`/`←` go up a level, `r` re-reads the directory, `esc` closes. The header's `[ctrl+f] 文件` button is the pointer's door to it, and `[ctrl+g] git` sits beside it |
 | `ctrl+v` | Read the clipboard: an image becomes a draft attachment, text is pasted. `/paste` does the same for terminals that bind the key themselves |
-| `/preview` | Preview the newest image attached to the draft (no chord: the chords go to the actions pressed while working) |
+| a click on `· 📎 N images` in the composer's title | Preview the newest image attached to the draft. The count is the only door: the chords go to the actions pressed while working, and a typed verb cannot be it — the draft's text starts with the `[Image #N]` marker the paste wrote, so `/preview` after pasting was sent to the agent as a prompt |
 | `+` / `-` / `0`, arrows, drag, wheel | In the preview box: zoom a picture (up to 6×), pan it, reset; scroll a document |
 | `[` / `]` | In the preview box: previous/next picture in the same folder (the same action as its step buttons) |
 | `esc` (in the preview box) | Back one level, not out of the tree: a file opened from the files panel or the `/git` browser returns to that panel, and only its own `esc` reaches the chat. A picture opened from the draft had nothing under it, so it closes onto the chat |
