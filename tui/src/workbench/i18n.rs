@@ -540,7 +540,6 @@ pub enum Key {
     CmdSkills,
     CmdTodo,
     CmdExport,
-    CmdTranscript,
     CmdHelp,
     CmdQuit,
     CmdPreferences,
@@ -622,7 +621,6 @@ pub enum Key {
     HelpKeyDrag,
     HelpKeyQuit,
     // ── the notice row ────────────────────────────────────────────────
-    NoticeTranscript,
     NoticePinned,
     NoticeUnpinned,
     NoticePinUnavailable,
@@ -1061,7 +1059,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ),
         CmdSkills => ("技能列表", "Installed skills"),
         CmdExport => ("导出会话", "Export the session"),
-        CmdTranscript => ("完整记录", "The whole record"),
         CmdHelp => ("帮助与快捷键", "Help and shortcuts"),
         CmdQuit => ("退出 workbench", "Leave the workbench"),
         CmdPreferences => ("布局、外观、通知、可访问性和快捷键", "Layout, appearance, notifications, accessibility and shortcuts"),
@@ -1207,10 +1204,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         HelpKeyDrag => ("侧栏分隔条调宽", "Widen the sidebar at its divider"),
         HelpKeyQuit => ("退出", "Quit"),
 
-        NoticeTranscript => (
-            "完整记录：/export 导出整份会话（HTML） · /reply-detail 在聊天里看完整过程",
-            "The whole record: /export writes the session as HTML · /reply-detail shows the full process in the chat",
-        ),
         NoticePinned => ("已置顶 {} · 在 工作区 页签的 置顶 区", "Pinned {} · it leads the Workspaces tab"),
         NoticeUnpinned => ("已取消置顶 {}", "Unpinned {}"),
         NoticePinUnavailable => ("这里没有可置顶的会话", "Nothing to pin here"),
@@ -1475,7 +1468,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 350] = {
+    const ALL_KEYS: [Key; 348] = {
         use Key::*;
         [
             TabTodo,
@@ -1725,7 +1718,6 @@ mod tests {
             CmdSkills,
             CmdTodo,
             CmdExport,
-            CmdTranscript,
             CmdHelp,
             CmdQuit,
             CmdPreferences,
@@ -1803,7 +1795,6 @@ mod tests {
             HelpKeyClick,
             HelpKeyDrag,
             HelpKeyQuit,
-            NoticeTranscript,
             NoticePinned,
             NoticeUnpinned,
             NoticePinUnavailable,

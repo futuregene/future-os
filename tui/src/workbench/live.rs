@@ -2325,11 +2325,11 @@ impl Live {
                 Err(error) => self.notice = Some(format!("Could not export: {error}")),
             },
             // The verbs the *surface* answers (`run.rs` calls it before this
-            // handler): `/usage`, `/skills`, `/workspace`, `/transcript`,
-            // `/help`. They are named here so a caller that bypasses the
-            // surface is not told a command the palette advertises does not
-            // exist — the notice the whole family used to produce. The four
-            // choosers (`/model`, `/thinking`, `/mode`, `/workspace`) come back
+            // handler): `/usage`, `/skills`, `/workspace`, `/help`. They are
+            // named here so a caller that bypasses the surface is not told a
+            // command the palette advertises does not exist — the notice the
+            // whole family used to produce. The four choosers (`/model`,
+            // `/thinking`, `/mode`, `/workspace`) come back
             // to the surface the same way: the picker is not the agent's.
             // The verbs the *driver* answers before this handler ever runs: the
             // boxes it opens (`/preview`, `/git`, `/files`, `/approval`,
@@ -2338,8 +2338,8 @@ impl Live {
             // listed so a caller that bypasses the driver is not told a command
             // the palette advertises does not exist — the notice the whole
             // family used to produce.
-            "usage" | "skills" | "workspace" | "transcript" | "help" | "thinking" | "mode"
-            | "preview" | "git" | "files" | "approval" | "tree" | "worktree" => {}
+            "usage" | "skills" | "workspace" | "help" | "thinking" | "mode" | "preview" | "git"
+            | "files" | "approval" | "tree" | "worktree" => {}
             other => self.notice = Some(format!("Unknown command /{other}")),
         }
         Outcome::Continue

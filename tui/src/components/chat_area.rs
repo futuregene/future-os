@@ -2077,40 +2077,6 @@ impl ChatArea {
         self.last_render_width = -1;
     }
 
-    /// Render every slice with the work opened — what `/transcript` copies into
-    /// its pager. The reading level, the open rows and the compact view are
-    /// screen preferences; a transcript is a record, so it shows the reasoning
-    /// and the notes the screen keeps folded. Tool call bodies are still
-    /// `/export`'s: a record of twenty `cargo test` runs is
-    /// their rows, not twenty logs. The screen's own layout is restored before
-    /// returning.
-    pub fn render_all_detailed(&mut self, width: usize) -> Vec<String> {
-        let detail = self.reply_detail;
-        let compact = self.compact_activity;
-        let revealed = std::mem::take(&mut self.revealed);
-        self.reply_detail = ReplyDetail::Detailed;
-        self.compact_activity = false;
-        let ids: Vec<String> = self.messages.iter().map(|msg| msg.id.clone()).collect();
-        for id in ids {
-            self.revealed.insert(
-                id,
-                OpenRows {
-                    process: true,
-                    burst: true,
-                    tool: false,
-                    thinking: true,
-                },
-            );
-        }
-        self.rerender();
-        let lines = self.render_all(width);
-        self.reply_detail = detail;
-        self.compact_activity = compact;
-        self.revealed = revealed;
-        self.rerender();
-        lines
-    }
-
     /// Render ALL lines (bypass viewport) — seeds terminal scrollback.
     pub fn render_all(&mut self, width: usize) -> Vec<String> {
         self.render_all_shared(width).as_ref().to_vec()
@@ -6270,35 +6236,6 @@ mod tests {
         assert_eq!(compact_lines(&mut chat), vec!["hello", "hi"]);
     }
 
-    /// `/transcript` shows every slice whatever the screen folds away, and the
-    /// screen's own layout is intact when it returns.
-    #[test]
-    fn the_transcript_view_ignores_the_reading_levels() {
-        let mut chat = new_chat();
-        chat.render(W);
-        chat.set_compact_activity(true);
-        set_messages(&mut chat, settled_turn_messages());
-        let screen_view = chat.render_all(W);
-
-        let full = chat.render_all_detailed(W);
-        assert!(
-            full.len() > screen_view.len(),
-            "the transcript keeps the work"
-        );
-        let text = full.join("\n");
-        assert!(text.contains("weighing the options"), "{text}");
-        // (The call row styles the name and the path separately, so the
-        // assertion is on the target rather than the whole row.)
-        assert!(text.contains("parser.rs"), "{text}");
-
-        assert_eq!(
-            chat.render_all(W),
-            screen_view,
-            "the screen view is restored"
-        );
-        assert!(chat.compact_activity(), "and so is the compact view");
-    }
-
     /// The level a transcript opens at is the folded one — the state
     /// `/reply-detail` produces at its default — so a fresh terminal and a
     /// restarted one look the same. There
@@ -8587,7 +8524,7 @@ mod tests {
         );
         // A copy read as text is the same transcript: there is no slot to drop.
         let copy: Vec<String> = chat
-            .render_all_detailed(W)
+            .render_all(W)
             .iter()
             .map(|row| strip_ansi_codes(row))
             .collect();
