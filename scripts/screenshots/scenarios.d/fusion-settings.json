@@ -125,10 +125,73 @@
           "wait": 500
         },
         {
-          "eval": "(() => {if(!document.querySelector('select[aria-label=\"主模型 · 模型\"]'))throw new Error('remote settings unavailable');return 'remote settings use the same form';})()"
+          "eval": "(() => {if(!document.querySelector('button[aria-label=\"主模型 · 模型\"]'))throw new Error('remote settings unavailable');return 'remote settings use the same form';})()"
         },
         {
           "shot": "d-remote-fusion-settings.png"
+        }
+      ]
+    },
+    "fusion-model-picker": {
+      "query": "?fusionSettings=1",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "tapText": "lixin"
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "tapText": "设置"
+        },
+        {
+          "wait": 2000
+        },
+        {
+          "tapText": "Fusion"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => {const trigger=document.querySelector('button[aria-label=\"主模型 · 模型\"]');if(!trigger.textContent.includes('FutureOS/DeepSeek Flash'))throw new Error('wrong model display');const label=document.querySelector('label[for=\"'+trigger.id+'\"]');const gap=trigger.getBoundingClientRect().top-label.getBoundingClientRect().bottom;if(Math.abs(gap-6)>1)throw new Error('unexpected label gap: '+gap);})()"
+        },
+        {
+          "shot": "d-fusion-model-field.png"
+        },
+        {
+          "tap": "主模型 · 模型"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "(() => {const panel=[...document.querySelectorAll('.shadow-panel')].find(el=>getComputedStyle(el).position==='fixed');if(!panel)throw new Error('missing shared menu');const rect=panel.getBoundingClientRect();if(rect.top<0||rect.bottom>innerHeight)throw new Error('menu outside viewport');if(!panel.querySelector('svg'))throw new Error('missing selected mark');})()"
+        },
+        {
+          "shot": "d-fusion-model-popup.png"
+        },
+        {
+          "eval": "[...document.querySelectorAll('.shadow-panel button')].find(b=>b.textContent==='FutureOS/GLM 5.3 Flash').click()"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "(() => {const trigger=document.querySelector('button[aria-label=\"主模型 · 模型\"]');if(!trigger.textContent.includes('FutureOS/GLM 5.3 Flash')||trigger.getAttribute('aria-expanded')!=='false')throw new Error('selection failed');trigger.click();})()"
+        },
+        {
+          "key": "Escape"
+        },
+        {
+          "wait": 150
+        },
+        {
+          "eval": "(() => {if(!document.querySelector('[role=dialog]'))throw new Error('Escape closed settings');if(document.querySelector('button[aria-label=\"主模型 · 模型\"]').getAttribute('aria-expanded')!=='false')throw new Error('Escape did not close picker');return 'field spacing, provider/model labels, selection and Escape passed';})()"
         }
       ]
     }
