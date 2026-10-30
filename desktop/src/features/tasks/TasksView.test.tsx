@@ -404,7 +404,7 @@ describe("tasksView", () => {
     expect(text).toContain("Model");
     expect(text).toContain("future/gpt-5");
     expect(text).toContain("Thinking");
-    expect(text).toContain("High");
+    expect(text).toContain("high");
     expect(text).toContain("Working directory");
     expect(text).toContain("/tmp/repo");
   });
@@ -416,8 +416,8 @@ describe("tasksView", () => {
     expect(text).toContain("Default model");
     // An unset level means the implicit `default` the agent applies — the row
     // names that level, and never a stale "medium".
-    expect(text).toContain("Default");
-    expect(text).not.toContain("Medium");
+    expect(text).toContain("default");
+    expect(text).not.toContain("medium");
   });
 
   it("says a chat task runs in its own workspace rather than an empty directory row", async () => {

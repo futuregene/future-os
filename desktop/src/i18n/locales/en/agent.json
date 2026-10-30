@@ -179,16 +179,6 @@
     "allModelsDisabled": "Models are loaded but all disabled. Enable one in Settings.",
     "thinkingLevel": "Thinking level",
     "thinkingUnsupported": "This model offers no thinking-level choices.",
-    "thinkingLevelLabels": {
-      "default": "Default",
-      "off": "Off",
-      "minimal": "Minimal",
-      "low": "Low",
-      "medium": "Medium",
-      "high": "High",
-      "xhigh": "XHigh",
-      "max": "Max"
-    },
     "send": "Send",
     "stop": "Stop",
     "noFiles": "No matching files.",

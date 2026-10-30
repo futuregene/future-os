@@ -3,7 +3,7 @@ import { ChevronDown } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
-import { modelThinkingLevels, resolveThinkingLevel } from "../../integrations/agent/agentClient";
+import { modelThinkingLevels, resolveThinkingLevel, thinkingLevelName } from "../../integrations/agent/agentClient";
 import { remoteAgentModelOptions, remoteModelReference } from "./remotePeerClient";
 
 /**
@@ -144,7 +144,7 @@ export function RemoteConversationSettings({
               title={t("thinkingLevelLabel")}
               type="button"
             >
-              <span className="truncate">{t(`thinkingLevel.${activeThinkingLevel}`, { defaultValue: activeThinkingLevel })}</span>
+              <span className="truncate">{thinkingLevelName(activeThinkingLevel)}</span>
               <ChevronDown className="size-3 shrink-0" />
             </button>
           )}
@@ -158,7 +158,7 @@ export function RemoteConversationSettings({
                 void settings.setThinkingLevel(level);
               }}
             >
-              <span className="min-w-0 flex-1 truncate font-medium text-ink">{t(`thinkingLevel.${level}`, { defaultValue: level })}</span>
+              <span className="min-w-0 flex-1 truncate font-medium text-ink">{thinkingLevelName(level)}</span>
             </SelectMenuItem>
           ))}
         </SelectMenu>
