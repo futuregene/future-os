@@ -27,6 +27,7 @@ import { useRemote } from "../remote/RemoteContext";
 import { layout, radius, spacing } from "../theme/tokens";
 import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 import { VERSION } from "../version.generated";
+import { openPrivacyPolicy } from "../config/legal";
 import { LanguageSettings } from "../i18n/LanguageSettings";
 
 function pairingErrorMessage(error: unknown, t: TFunction): string {
@@ -86,7 +87,7 @@ export function PairingScreen({ onPaired, onBack }: {
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const dimensions = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const remote = useRemote();
@@ -300,7 +301,18 @@ export function PairingScreen({ onPaired, onBack }: {
               </Pressable>
             )}
             <LanguageSettings />
-            <Text style={styles.version}>{t("common.version", { version: VERSION })}</Text>
+            <View style={styles.footerMeta}>
+              <Text style={styles.versionInline}>{t("common.version", { version: VERSION })}</Text>
+              <Text style={styles.footerMetaDot}>·</Text>
+              <Pressable
+                accessibilityRole="link"
+                accessibilityLabel={t("common.privacyPolicy")}
+                onPress={() => void openPrivacyPolicy(i18n.language)}
+                hitSlop={8}
+              >
+                <Text style={styles.privacyLink}>{t("common.privacyPolicy")}</Text>
+              </Pressable>
+            </View>
           </View>
 
           </ScrollView>
@@ -433,12 +445,21 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   },
   compactManualLabel: { color: theme.colors.inkSoft, fontSize: theme.font(13), fontWeight: "600" },
   footer: { marginTop: "auto", paddingTop: spacing.lg, gap: spacing.sm },
-  version: {
-    color: theme.colors.inkMuted,
-    fontSize: theme.font(12),
-    textAlign: "center",
+  footerMeta: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.xs,
     paddingTop: spacing.lg,
     paddingBottom: spacing.sm,
+  },
+  versionInline: { color: theme.colors.inkMuted, fontSize: theme.font(12) },
+  footerMetaDot: { color: theme.colors.inkMuted, fontSize: theme.font(12) },
+  privacyLink: {
+    color: theme.colors.inkSoft,
+    fontSize: theme.font(12),
+    fontWeight: "600",
+    textDecorationLine: "underline",
   },
   toast: {
     position: "absolute",
