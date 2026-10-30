@@ -5695,20 +5695,20 @@ mod tests {
     fn the_message_controls_press_their_own_verbs() {
         let mut chat = rendered_chat(1);
         // The band's text width, which is what the transcript was wrapped at:
-        // the rail hidden is the 120-column frame `chat_data` renders for, and a
-        // right-aligned chip only lands in the band when the two agree.
+        // the rail hidden is the 120-column frame `chat_data` renders for.
         chat.set_viewport_height(30);
         let data = chat_data(&mut chat, 1);
         let controls = chat.control_rows();
-        assert_eq!(controls.len(), 2, "the prompt and the reply: {controls:?}");
-        let prompt_row = controls[0];
-        let reply_row = controls[1];
-        assert_ne!(prompt_row, reply_row);
+        assert_eq!(
+            controls.len(),
+            1,
+            "the reply's row, and only it: {controls:?}"
+        );
+        let reply_row = controls[0];
 
         let mut workbench = workbench();
         workbench.sidebar_visible = false;
         workbench.render(&data, 120, 38);
-        eprintln!("CONTROLS {controls:?}");
         let region = |workbench: &Workbench, id: &str| {
             workbench
                 .hits()
@@ -5718,12 +5718,6 @@ mod tests {
                 .map(|(rect, _)| *rect)
                 .unwrap_or_else(|| panic!("no region {id}"))
         };
-        eprintln!("CONTROLS {controls:?}");
-        for (rect, id) in workbench.hits().regions() {
-            if id.starts_with("chat.") {
-                eprintln!("REGION {id} {rect:?}");
-            }
-        }
         let copy = region(&workbench, &format!("chat.button.{reply_row}.copy"));
         let fork = region(&workbench, &format!("chat.button.{reply_row}.fork"));
         assert_eq!(copy.y, fork.y, "one row, two chips");
@@ -5749,28 +5743,15 @@ mod tests {
             ),
             vec![WbAction::CopyMessage(reply_row)]
         );
-        assert_eq!(
-            click_region(
-                &mut workbench,
-                &data,
-                120,
-                38,
-                &format!("chat.button.{prompt_row}.copy")
-            ),
-            vec![WbAction::CopyMessage(prompt_row)]
-        );
 
-        // The keyboard walks the same stops: `tab` reaches the prompt's chip
-        // first (it is the first row) and `enter` presses it.
+        // The keyboard walks the same stops: the reply's folded process is the
+        // first one here (a row that opens something, so not pressed), then its
+        // two chips.
         let mut keys = super::tests::workbench();
         keys.sidebar_visible = false;
         keys.render(&data, 120, 38);
         let enter =
             |workbench: &mut Workbench| workbench.handle(WbEvent::Key("enter".into()), &data);
-        keys.handle(WbEvent::Key("tab".into()), &data);
-        assert_eq!(enter(&mut keys), vec![WbAction::CopyMessage(prompt_row)]);
-        // …then the reply's folded process (a row that opens something, so not
-        // pressed here), and then its two chips.
         keys.handle(WbEvent::Key("tab".into()), &data);
         keys.handle(WbEvent::Key("tab".into()), &data);
         assert_eq!(enter(&mut keys), vec![WbAction::CopyMessage(reply_row)]);

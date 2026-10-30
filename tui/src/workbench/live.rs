@@ -9420,8 +9420,9 @@ mod tests {
     }
 
     /// The `[复制]` control copies the message the reader pointed at, not the
-    /// last answer `/copy` takes — the markdown the transcript holds, so a prompt
-    /// can go back into the draft and a reply can be quoted elsewhere.
+    /// last answer `/copy` takes — the markdown the transcript holds, so a reply
+    /// can be quoted elsewhere. The row is resolved to its message, so a copy of
+    /// any other row (a prompt, a call) is the same call.
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // FUTURE_HOME is process-global and must stay pinned across awaits.
     async fn the_copy_control_copies_the_message_under_it() {
@@ -9451,11 +9452,11 @@ mod tests {
             .last()
             .expect("the reply's controls");
         assert_eq!(live.copy_message(reply_row).as_deref(), Ok("好了。"));
-        let prompt_row = *live
-            .chat
-            .control_rows()
-            .first()
-            .expect("the prompt's control");
+        // The prompt's own row has no chip, but the call is the same: a row that
+        // covers a message is copied as that message.
+        let prompt_row = (0..reply_row)
+            .find(|row| live.chat.message_at_row(*row) == Some(0))
+            .expect("the prompt's first row");
         assert_eq!(live.copy_message(prompt_row).as_deref(), Ok("写个回归测试"));
         // A row that covers no message answers with the empty-clipboard notice
         // rather than a panic.
@@ -9514,6 +9515,9 @@ mod tests {
         live.fork_message(reply_row).await;
         let request = crate::rpc::grpc_client::tests::last_request_of(&mock, "fork");
         assert_eq!(request.entry_id, "entry-9");
+        // `through_turn`, not the agent's default `through_entry`: the child has
+        // to carry the answer the reader branched on, not stop at the question.
+        assert_eq!(request.mode, "through_turn");
     }
 
     /// The announcement the agent makes when it persists a prompt is what makes
