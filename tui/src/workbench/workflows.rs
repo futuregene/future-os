@@ -24,51 +24,6 @@ pub fn filtered_sessions<'a>(sessions: &'a [SessionRow], query: &str) -> Vec<&'a
         .collect()
 }
 
-/// Stable parent-before-child order. Unknown/missing parents are roots; a
-/// malformed parent cycle cannot hide a session or recurse forever.
-pub fn tree_sessions(sessions: &[SessionRow]) -> Vec<(&SessionRow, usize)> {
-    fn visit<'a>(
-        id: &str,
-        sessions: &'a [SessionRow],
-        seen: &mut Vec<String>,
-        depth: usize,
-        out: &mut Vec<(&'a SessionRow, usize)>,
-    ) {
-        if seen.iter().any(|known| known == id) {
-            return;
-        }
-        seen.push(id.to_string());
-        for row in sessions
-            .iter()
-            .filter(|row| row.parent_id.as_deref() == Some(id))
-        {
-            if seen.iter().any(|known| known == &row.id) {
-                continue;
-            }
-            seen.push(row.id.clone());
-            out.push((row, depth));
-            visit(&row.id, sessions, seen, depth + 1, out);
-        }
-    }
-    let mut out = Vec::new();
-    let mut seen = Vec::new();
-    for row in sessions.iter().filter(|row| {
-        row.parent_id
-            .as_deref()
-            .is_none_or(|parent| !sessions.iter().any(|candidate| candidate.id == parent))
-    }) {
-        out.push((row, 0));
-        visit(&row.id, sessions, &mut seen, 1, &mut out);
-    }
-    for row in sessions {
-        if !seen.iter().any(|id| id == &row.id) {
-            out.push((row, 0));
-            visit(&row.id, sessions, &mut seen, 1, &mut out);
-        }
-    }
-    out
-}
-
 fn pretty(value: Option<&Value>) -> String {
     value
         .filter(|value| !value.is_null())
@@ -362,14 +317,6 @@ pub fn wrapped_indexed(lines: &[String], width: usize) -> Vec<(usize, String)> {
 mod tests {
     use super::*;
 
-    fn row(id: &str, parent: Option<&str>) -> SessionRow {
-        SessionRow {
-            id: id.into(),
-            parent_id: parent.map(str::to_string),
-            ..SessionRow::default()
-        }
-    }
-
     /// The session list is a *table*: the workspace and age of every row start
     /// in the same cell, whatever the title's length (and whatever its width in
     /// cells — a CJK title is two cells per character).
@@ -467,24 +414,6 @@ mod tests {
         assert_eq!(filtered_sessions(&rows, "abc").len(), 1);
         assert_eq!(filtered_sessions(&rows, "PARSER").len(), 1);
         assert_eq!(filtered_sessions(&rows, "articles").len(), 1);
-    }
-
-    #[test]
-    fn tree_orders_children_and_survives_cycles() {
-        let rows = vec![
-            row("child", Some("root")),
-            row("root", None),
-            row("a", Some("b")),
-            row("b", Some("a")),
-        ];
-        let tree = tree_sessions(&rows);
-        assert_eq!(
-            tree.iter()
-                .map(|(row, _)| row.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["root", "child", "a", "b"]
-        );
-        assert_eq!(tree[1].1, 1);
     }
 
     #[test]

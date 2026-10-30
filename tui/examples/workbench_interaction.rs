@@ -247,18 +247,6 @@ pub fn highlight(path: &str, text: &str) -> Vec<Line> {
             },
             |wb, _| wb.overlay = Some(Overlay::History),
         ),
-        "tree" => (
-            {
-                let mut data = chat();
-                data.sessions = (0..8).map(session).collect();
-                let root = data.sessions[0].id.clone();
-                for (index, row) in data.sessions.iter_mut().enumerate() {
-                    row.parent_id = (index % 2 == 1).then(|| root.clone());
-                }
-                data
-            },
-            |wb, _| wb.overlay = Some(Overlay::Tree),
-        ),
         "fork" => (
             {
                 let mut data = chat();

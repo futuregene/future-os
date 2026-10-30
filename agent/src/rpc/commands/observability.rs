@@ -404,7 +404,9 @@ pub(crate) fn handle_export_html(
     let session_id = sess.session_id();
     let model = sess.model.clone();
     let cwd = sess.cwd.clone();
-    let messages = sess.get_messages();
+    // The session's own block history, not the LLM projection: thinking, a
+    // tool call and its result keep the places the export folds them into.
+    let messages = sess.messages.read().clone();
     drop(sess);
 
     // Generate HTML

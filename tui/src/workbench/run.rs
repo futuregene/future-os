@@ -985,13 +985,9 @@ async fn quit(
                     workbench.overlay_scroll = 0;
                     continue;
                 }
-                "/history" | "/tree" => {
+                "/history" => {
                     live.begin_sessions_refresh();
-                    workbench.overlay = Some(if command.trim() == "/history" {
-                        super::Overlay::History
-                    } else {
-                        super::Overlay::Tree
-                    });
+                    workbench.overlay = Some(super::Overlay::History);
                     workbench.workflow_index = 0;
                     workbench.overlay_scroll = 0;
                     continue;

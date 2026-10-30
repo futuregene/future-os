@@ -320,7 +320,6 @@ pub(crate) fn compose(
             overlay @ (Overlay::Approval
             | Overlay::Diff
             | Overlay::History
-            | Overlay::Tree
             | Overlay::Fork
             | Overlay::Worktree),
         ) => {
@@ -1325,7 +1324,6 @@ fn workflow_box(
         Overlay::Approval => (Key::ApprovalTitle, Key::ApprovalHint),
         Overlay::Diff => (Key::DiffTitle, Key::DiffHint),
         Overlay::History => (Key::HistoryTitle, Key::HistoryHint),
-        Overlay::Tree => (Key::TreeTitle, Key::TreeHint),
         Overlay::Fork => (Key::ForkTitle, Key::ForkHint),
         Overlay::Worktree => (Key::WorktreeTitle, Key::WorktreeHint),
         _ => unreachable!(),
@@ -1374,19 +1372,6 @@ fn workflow_box(
                 )
             }
         }
-        Overlay::Tree => workflows::tree_sessions(&data.sessions)
-            .iter()
-            .enumerate()
-            .map(|(index, (row, depth))| {
-                let indent = "  ".repeat(*depth);
-                workflows::record_line(
-                    index == workbench.workflow_index,
-                    &indent,
-                    &[&row.title, &row.id],
-                    columns.saturating_sub(4),
-                )
-            })
-            .collect(),
         Overlay::Fork => {
             if data.fork_points.is_empty() {
                 vec![t(workbench.lang, Key::ForkEmpty).into()]
@@ -1441,7 +1426,7 @@ fn workflow_box(
     // overlays are prose and keep wrapping.
     let body = if matches!(
         overlay,
-        Overlay::History | Overlay::Tree | Overlay::Fork | Overlay::Worktree
+        Overlay::History | Overlay::Fork | Overlay::Worktree
     ) {
         body.into_iter()
             .map(|line| fit(&line, columns.saturating_sub(4)))
@@ -1470,7 +1455,7 @@ fn workflow_box(
     {
         if matches!(
             overlay,
-            Overlay::History | Overlay::Tree | Overlay::Fork | Overlay::Worktree
+            Overlay::History | Overlay::Fork | Overlay::Worktree
         ) {
             workbench.hit_map().push(
                 Rect::new(
