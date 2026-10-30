@@ -238,8 +238,8 @@ sessions, `ctrl+d` the rail, `ctrl+x` quit, `ctrl+p` commands, `ctrl+o` model,
 `ctrl+t` effort (thinking), `ctrl+s` approval mode, `ctrl+l` workspaces,
 `ctrl+f` the files panel, `ctrl+g` the git browser, `ctrl+v` paste, `ctrl+q`
 preferences, and `ctrl+1`/`ctrl+2` the rail's two tabs. Everything else is a
-typed verb or a pointer target: `/delete`, `/pin`, `/queue`, `/copy`,
-`/refresh`, `/reply-detail`, and `?` for help — the help overlay
+typed verb or a pointer target: `/delete`, `/pin`, `/rename`, `/queue`,
+`/copy`, `/refresh`, `/reply-detail`, and `?` for help — the help overlay
 lists only the actions that have a chord, and the palette names the door for
 the rest.
 
@@ -415,6 +415,7 @@ click on the rail's tab strip are the doors to the same places.
 | `p` | A letter in the draft: pinning is `/pin`, with no chord of its own |
 | `/delete` | Delete a conversation: the confirm box names the one that would go — the row under the rail's cursor when the rail is on screen, otherwise the one on screen — and `⏎` is what deletes it (`esc` keeps it). The row that takes its place opens, and deleting the last one leaves the launchpad. The `delete` key is the draft's forward-delete, so it is not a door to this |
 | `/pin` | Pin or unpin the conversation under the rail's cursor (the 置顶 section of 工作区; a pinned row is drawn there instead of under its workspace, and 最近 keeps it where it was). No chord: `p` is a letter in the draft. Nothing to pin on the launchpad — the conversation the verb is about is the one the first message creates, and it does not exist yet — so the notice row says so. The verb takes no argument, so a bare `/pin` is the pin and **anything after it is a prompt**: `/pin 这个文件` sent from the draft is a message to the agent, not a pin that swallows the sentence |
+| `/rename 新标题` | Rename the conversation on screen. The words after the verb are the whole name (`/rename 修 parser`), and it is written to the agent's own `set_session_name` — the title the desktop and the phone edit, in `session_info` beside the conversation — so every client reads the same one. The header and the rail's row take the new name from the request itself rather than a re-read, which is why a rename costs one round trip. A bare `/rename` answers with the usage line: the name is what is being changed, so there is nothing to guess. No chord — `/` is the door |
 | `ctrl+j` / `ctrl+enter` | Insert a newline. `ctrl+j` is the one every terminal delivers; `ctrl+enter` arrives when the terminal reports modifiers (kitty keyboard protocol, xterm `modifyOtherKeys`, or a Windows Terminal `sendInput` binding), and `shift+enter` needs one of those too. Windows Terminal keeps `alt+enter` for fullscreen and sends plain Enter for `ctrl+enter` unless the reader binds it, e.g. `{"keys": "ctrl+enter", "command": {"action": "sendInput", "input": "\u001b[13;5u"}}` |
 | `ctrl+w`, `alt+d`, `ctrl+u`, `ctrl+k`, `ctrl+y` | Delete a word, kill to line start/end, yank |
 | `ctrl+z` / `ctrl+shift+z` (or `alt+y`) | Undo / redo draft edits |

@@ -489,6 +489,9 @@ pub enum Key {
     CmdMouse,
     CmdDelete,
     CmdPin,
+    CmdRename,
+    RenameUsage,
+    NoticeRenamed,
     DeleteTitle,
     DeleteBody,
     DeleteWhere,
@@ -978,6 +981,12 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "置顶 / 取消置顶侧栏光标所在会话",
             "Pin or unpin the conversation under the rail's cursor",
         ),
+        CmdRename => ("重命名这条会话", "Rename this conversation"),
+        // A rename needs a name, and the composer is where a name is typed: a
+        // bare verb says what the line looks like instead of asking the agent
+        // to title a conversation with nothing.
+        RenameUsage => ("用法：/rename 新标题", "Usage: /rename new title"),
+        NoticeRenamed => ("已重命名为 {}", "Renamed to {}"),
         CmdCopy => ("复制最后一条回答", "Copy the last assistant answer"),
         CmdPaste => (
             "粘贴剪贴板（图片会变成附件）",
@@ -1445,7 +1454,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 341] = {
+    const ALL_KEYS: [Key; 344] = {
         use Key::*;
         [
             TabTodo,
@@ -1650,6 +1659,9 @@ mod tests {
             CmdQueue,
             CmdDelete,
             CmdPin,
+            CmdRename,
+            RenameUsage,
+            NoticeRenamed,
             CmdCopy,
             CmdPaste,
             CmdRefresh,

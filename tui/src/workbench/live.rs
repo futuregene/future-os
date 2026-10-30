@@ -78,7 +78,7 @@ struct Paging {
 /// ([`super::Workbench::surface_command`]) and this list have to account for
 /// every entry exactly once. That is the check whose absence let five entries
 /// advertise themselves and then answer `Unknown command`.
-pub const APP_COMMANDS: [&str; 17] = [
+pub const APP_COMMANDS: [&str; 18] = [
     "/new",
     "/stop",
     "/reply-detail",
@@ -87,6 +87,7 @@ pub const APP_COMMANDS: [&str; 17] = [
     "/copy",
     "/paste",
     "/refresh",
+    "/rename",
     "/mouse",
     "/compact",
     "/tools",
@@ -742,6 +743,29 @@ impl Live {
             return false;
         };
         self.sessions.replace(sessions)
+    }
+
+    /// Put a name this client just wrote to the agent on screen: the header's
+    /// title and the rail's row for the conversation.
+    ///
+    /// No read follows the write. `set_session_name` persists the very string it
+    /// was given and the agent echoes nothing back, so a `list_sessions` here
+    /// would buy seconds of frozen loop (6.9 s for 67 conversations, measured
+    /// 2026-10-28) to learn what the request already said. A poll that lands
+    /// later reports the same name, and a name another client set arrives that
+    /// way as well.
+    fn apply_session_name(&mut self, name: &str) {
+        let id = self.state.session_id.clone();
+        self.state.session_name = Some(name.to_string());
+        self.sessions.set_name(&id, name);
+        // A cached conversation carries its own state, and the title above the
+        // transcript is drawn from the *attached* one: coming back to this
+        // conversation from a cached copy must not restore the old title.
+        for (_, cached) in &mut self.cached {
+            if cached.state.session_id == id {
+                cached.state.session_name = Some(name.to_string());
+            }
+        }
     }
 
     /// Ask the agent for the conversation list *without* waiting for the answer,
@@ -2269,6 +2293,28 @@ impl Live {
                 self.refresh_state().await;
                 self.refresh_sessions().await;
             }
+            // The title is the one thing about a conversation the reader names
+            // themselves, so it is written to the agent rather than kept here
+            // (the desktop and the phone rename through the same command, and
+            // the rail's row is then whatever the agent reports).
+            "rename" if self.detached() => {
+                self.notice = Some(t(self.lang, Key::NeedsConversation).into());
+            }
+            "rename" if arg.is_empty() => {
+                self.notice = Some(t(self.lang, Key::RenameUsage).into());
+            }
+            "rename" => match self.client.set_session_name(&arg).await {
+                Ok(()) => {
+                    // The name the request carried is the answer, so it is
+                    // installed rather than read back (see
+                    // [`Self::apply_session_name`]).
+                    self.apply_session_name(&arg);
+                    self.notice = Some(i18n::render(self.lang, Key::NoticeRenamed, &[&arg]));
+                }
+                Err(error) => {
+                    self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
+                }
+            },
             // The whole record, through the agent's own exporter (the same one
             // the desktop uses). The path it wrote is the whole answer, so it
             // goes on the notice row rather than into the transcript.
@@ -4205,6 +4251,23 @@ impl SessionList {
 
     fn rev(&self) -> u64 {
         self.rev
+    }
+
+    /// Give one conversation a new name in place.
+    ///
+    /// The listing is the rail's own copy of what the agent holds, and a rename
+    /// is the one write that changes a row without changing its place: the
+    /// version moves so the view is re-filed, and an unknown id (a launchpad, or
+    /// a conversation the list has not caught up with) changes nothing.
+    fn set_name(&mut self, id: &str, name: &str) {
+        let Some(row) = self.rows.iter_mut().find(|row| row.id == id) else {
+            return;
+        };
+        if row.session_name.as_deref() == Some(name) {
+            return;
+        }
+        row.session_name = Some(name.to_string());
+        self.rev = self.rev.wrapping_add(1);
     }
 }
 
@@ -9029,6 +9092,109 @@ mod tests {
                 assert!(
                     !notice.is_empty() && !notice.contains("/tools"),
                     "the notice says the choice is staged, not that it took effect: {notice:?}"
+                );
+            })
+        });
+    }
+
+    /// `/rename <name>` is the one verb that writes a conversation's own title:
+    /// the name leaves for the agent as `set_session_name` on the session on
+    /// screen, and the surface installs it from the answer it already holds —
+    /// the header and the rail's row — instead of re-reading a listing that
+    /// costs seconds (see [`Live::apply_session_name`]).
+    ///
+    /// A bare verb is the usage line, not a rename, and the launchpad has no
+    /// conversation to name: neither may reach the agent.
+    #[test]
+    fn the_rename_verb_writes_the_title_and_installs_it_without_a_listing() {
+        with_big_stack(|| {
+            Box::pin(async {
+                let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+                    ("get_state", r#"{"sessionId":"s1","model":"mock"}"#),
+                    ("get_session_entries", r#"{"entries":[]}"#),
+                    (
+                        "list_sessions",
+                        r#"{"sessions":[{"id":"s1","model":"mock","cwd":"/tmp","firstMessage":"hello","queryCount":1}]}"#,
+                    ),
+                ]);
+                let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock.clone()).await;
+                let (mut live, _events) = Live::attach(&addr, None, false, None)
+                    .await
+                    .expect("attach to the test agent");
+                live.refresh_sessions().await;
+                assert_eq!(live.sessions.len(), 1, "the rail holds the conversation");
+                assert_eq!(
+                    live.title(),
+                    "hello",
+                    "the row is called by its first message"
+                );
+
+                let before = seen.lock().unwrap().len();
+                live.apply(WbAction::Command("/rename 修 parser".into()))
+                    .await;
+
+                let commands = seen.lock().unwrap().clone();
+                // The write is the whole round trip: the name installed below
+                // came from the request, not from a listing read back.
+                assert_eq!(
+                    commands[before..].to_vec(),
+                    vec!["set_session_name".to_string()],
+                    "`/rename` is one write and no re-read: {commands:?}"
+                );
+                let request =
+                    crate::rpc::grpc_client::tests::last_request_of(&mock, "set_session_name");
+                assert_eq!(
+                    request.session_id, "s1",
+                    "the title belongs to the conversation on screen"
+                );
+                assert_eq!(
+                    request.name, "修 parser",
+                    "the words after the verb are the name"
+                );
+                assert_eq!(
+                    live.notice.as_deref(),
+                    Some(
+                        i18n::render(live.language(), Key::NoticeRenamed, &[&"修 parser"]).as_str()
+                    ),
+                    "the notice names the title that took"
+                );
+                assert_eq!(live.title(), "修 parser", "the header names the new title");
+                assert_eq!(
+                    live.sessions
+                        .iter()
+                        .find(|row| row.id == "s1")
+                        .and_then(|row| row.session_name.as_deref()),
+                    Some("修 parser"),
+                    "the rail's row carries the new title without a re-read"
+                );
+
+                // A bare verb says what to type rather than naming a
+                // conversation nothing.
+                live.notice = None;
+                live.apply(WbAction::Command("/rename".into())).await;
+                assert_eq!(
+                    live.notice.as_deref(),
+                    Some(t(live.language(), Key::RenameUsage)),
+                    "a rename needs a name"
+                );
+
+                // The launchpad has no conversation: the verb must not name the
+                // one the reader just left.
+                live.to_launchpad();
+                live.apply(WbAction::Command("/rename 别的".into())).await;
+                assert_eq!(
+                    live.notice.as_deref(),
+                    Some(t(live.language(), Key::NeedsConversation)),
+                    "the launchpad has no conversation to rename"
+                );
+                let after = seen.lock().unwrap().clone();
+                assert_eq!(
+                    after
+                        .iter()
+                        .filter(|command| command.as_str() == "set_session_name")
+                        .count(),
+                    1,
+                    "only the attached conversation was renamed: {after:?}"
                 );
             })
         });
