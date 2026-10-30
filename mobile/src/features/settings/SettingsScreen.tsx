@@ -11,6 +11,7 @@ import { PeerIconChip } from "../../remote/PeerIconChip";
 import { useRemoteControls } from "../../remote/RemoteContext";
 import type { DesktopSettings, RemoteBuiltinProvider, RemoteCustomProvider } from "../../remote/types";
 import { VERSION } from "../../version.generated";
+import { openPrivacyPolicy } from "../../config/legal";
 import { layout, radius, spacing } from "../../theme/tokens";
 import { createThemedStyles, useTheme } from "../../theme/ThemeContext";
 import { CustomProviderPage } from "./CustomProviderPage";
@@ -112,7 +113,7 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
   const settingsStyles = useSettingsStyles();
   const styles = useStyles();
   const { colors } = useTheme();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const insets = useSafeAreaInsets();
   const remote = useRemoteControls();
   const [routes, setRoutes] = useState<SettingsRoute[]>([{ name: "home" }]);
@@ -353,7 +354,18 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
           ? <Text accessibilityRole="alert" style={settingsStyles.error}>{t("notifications.saveFailed")}</Text>
           : null}
       </SettingsSection>
-      <Text style={styles.version}>{t("common.version", { version: VERSION })}</Text>
+      <View style={styles.versionRow}>
+        <Text style={styles.version}>{t("common.version", { version: VERSION })}</Text>
+        <Text style={styles.version}>·</Text>
+        <Pressable
+          accessibilityRole="link"
+          accessibilityLabel={t("common.privacyPolicy")}
+          onPress={() => void openPrivacyPolicy(i18n.language)}
+          hitSlop={8}
+        >
+          <Text style={styles.privacyLink}>{t("common.privacyPolicy")}</Text>
+        </Pressable>
+      </View>
     </ScrollView>;
   }
 
@@ -480,7 +492,20 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   pressed: { backgroundColor: theme.colors.surfaceSubtle },
   deviceScope: { flexDirection: "row", alignItems: "flex-start", gap: spacing.md, marginHorizontal: layout.gutter, padding: spacing.md, borderRadius: radius.lg, backgroundColor: theme.colors.accentSoft },
   deviceName: { color: theme.colors.inkStrong, fontSize: theme.font(14), fontWeight: "600", marginBottom: spacing.xs },
-  version: { ...createSettingsStyles(theme).description, textAlign: "center" },
+  version: { ...createSettingsStyles(theme).description, textAlign: "center", paddingBottom: 0 },
+  versionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.xs,
+    paddingHorizontal: layout.gutter,
+  },
+  privacyLink: {
+    color: theme.colors.inkSoft,
+    fontSize: theme.font(12),
+    fontWeight: "600",
+    textDecorationLine: "underline",
+  },
   notice: { color: theme.colors.inkMuted, padding: layout.gutter, fontSize: theme.font(13) },
   standby: {
     marginHorizontal: layout.gutter,

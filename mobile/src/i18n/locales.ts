@@ -891,6 +891,7 @@ export const resources = {
         showFullTitle: "Show full title",
         hideFullTitle: "Hide full title",
         version: "Version {{version}}",
+        privacyPolicy: "Privacy Policy",
       },
       thinking: {
         default: "Default",
@@ -1849,6 +1850,7 @@ export const resources = {
         showFullTitle: "查看完整标题",
         hideFullTitle: "收起完整标题",
         version: "版本 {{version}}",
+        privacyPolicy: "隐私政策",
       },
       thinking: {
         default: "默认",
