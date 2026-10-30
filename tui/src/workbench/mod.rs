@@ -4525,15 +4525,15 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 /// [`TYPED_ONLY`] is where those verbs live. The two lists are the whole
 /// vocabulary, and `every_palette_entry_has_a_handler` walks both.
 ///
-/// **The order is a name order, not a rank.** These thirteen are a list a reader
+/// **The order is a name order, not a rank.** These fourteen are a list a reader
 /// reads *for a name they already have in mind* (`/fork`, `/export`), and an
 /// alphabetical column is the only order that answers "where is it?" without
 /// being memorised — the surface's other ordering rules ("most used first",
 /// "what the next message runs with") describe sets that fit on one line, not
-/// thirteen rows. A consequence worth naming: `enter` on an empty query runs the
+/// fourteen rows. A consequence worth naming: `enter` on an empty query runs the
 /// first row by name (`/approval`), so the top of this list is a letter and not
 /// a recommendation.
-pub const COMMANDS: [(&str, Key); 13] = [
+pub const COMMANDS: [(&str, Key); 14] = [
     ("/approval", Key::CmdApproval),
     ("/compact", Key::CmdCompact),
     ("/copy", Key::CmdCopy),
@@ -4544,6 +4544,7 @@ pub const COMMANDS: [(&str, Key); 13] = [
     ("/pin", Key::CmdPin),
     ("/queue", Key::CmdQueue),
     ("/refresh", Key::CmdRefresh),
+    ("/rename", Key::CmdRename),
     ("/reply-detail", Key::CmdReplyDetail),
     ("/tools", Key::CmdTools),
     ("/worktree", Key::CmdWorktree),
@@ -6554,6 +6555,60 @@ mod tests {
                 .any(|action| matches!(action, WbAction::Notice(_))),
             "an empty rail says there is nothing to pin: {actions:?}"
         );
+    }
+
+    /// `/rename <新标题>` is the door to a conversation's own name: the line is
+    /// claimed as the verb (so the name is not sent to the model as a prompt),
+    /// and the bare verb is claimed too — the answer to it is the usage notice,
+    /// which says what the missing half of the line looks like.
+    #[test]
+    fn the_rename_command_hands_the_new_title_to_the_app() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+
+        // The words after the verb are the name, and they travel with it: the
+        // adapter splits the line, so `修 parser` arrives as the argument.
+        let mut typed = data.clone();
+        typed.input.text = "/rename 修 parser".into();
+        typed.input.cursor = typed.input.text.chars().count();
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &typed),
+            vec![
+                WbAction::EditInput {
+                    text: String::new(),
+                    cursor: 0,
+                },
+                WbAction::Command("/rename 修 parser".into()),
+            ]
+        );
+
+        // A bare verb is still the verb, not a prompt: the adapter answers it
+        // with the usage line rather than asking the agent to title the
+        // conversation with nothing.
+        let mut bare = data.clone();
+        bare.input.text = "/rename".into();
+        bare.input.cursor = 7;
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &bare),
+            vec![
+                WbAction::EditInput {
+                    text: String::new(),
+                    cursor: 0,
+                },
+                WbAction::Command("/rename".into()),
+            ]
+        );
+
+        // The palette advertises it — a rename has no chord and no panel, so the
+        // typed spelling is the only way in and the menu is where it is found.
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        let listed: Vec<String> = workbench
+            .palette_rows(&data)
+            .into_iter()
+            .filter(|row| !row.is_skill())
+            .map(|row| row.command())
+            .collect();
+        assert!(listed.contains(&"/rename".to_string()), "{listed:?}");
     }
 
     #[test]
