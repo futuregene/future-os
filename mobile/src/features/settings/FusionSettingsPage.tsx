@@ -14,7 +14,7 @@ import { layout, radius, spacing } from "../../theme/tokens";
 import { ResourceStatus, SettingsSection, SettingsSwitch, useSettingsStyles } from "./SettingsPrimitives";
 import { useDesktopResource } from "./useDesktopResource";
 
-function Editor({ snapshot, models, reload }: { snapshot: FusionSettings; models: RemoteModel[]; reload(): void }) {
+function Editor({ snapshot, models, providerNames, reload }: { snapshot: FusionSettings; models: RemoteModel[]; providerNames: Record<string, string>; reload(): void }) {
   const remote = useRemoteControls();
   const { t } = useTranslation();
   const styles = useStyles();
@@ -50,17 +50,18 @@ function Editor({ snapshot, models, reload }: { snapshot: FusionSettings; models
     setDraft(index < 0 ? { ...draft, moderator: value } : { ...draft, panel: draft.panel.map((entry, i) => i === index ? value : entry) });
   }
   function open(index: number, field: "model" | "thinking") { Keyboard.dismiss(); setQuery(""); setPicker({ index, field }); }
+  const displayName = (model: RemoteModel) => `${providerNames[model.provider ?? ""] ?? model.provider ?? ""}/${model.label || model.id}`;
   function row(value: FusionModelConfig, index: number) {
     const selected = models.find(model => modelReference(model) === value.model);
     return <View key={index} style={styles.modelCard}>
       <View style={styles.heading}><Text style={settingsStyles.label}>{role(index)}</Text>{index >= 0 && draft.panel.length > 2 ? <Pressable accessibilityRole="button" accessibilityLabel={t("desktopSettings.fusionRemoveParticipant", { name: role(index) })} disabled={locked} style={styles.remove} onPress={() => setDraft({ ...draft, panel: draft.panel.filter((_, i) => i !== index) })}><Trash2 size={18} color={colors.inkMuted} /></Pressable> : null}</View>
-      <Pressable accessibilityRole="button" accessibilityLabel={`${role(index)} · ${t("desktopSettings.fusionModel")}`} disabled={locked} style={styles.choice} onPress={() => open(index, "model")}><Text style={styles.choiceText}>{selected ? `${selected.label || selected.id} · ${selected.provider ?? ""}` : value.model || t("desktopSettings.fusionChooseModel")}</Text><ChevronDown size={16} color={colors.inkMuted} /></Pressable>
+      <Pressable accessibilityRole="button" accessibilityLabel={`${role(index)} · ${t("desktopSettings.fusionModel")}`} disabled={locked} style={styles.choice} onPress={() => open(index, "model")}><Text style={styles.choiceText}>{selected ? displayName(selected) : value.model || t("desktopSettings.fusionChooseModel")}</Text><ChevronDown size={16} color={colors.inkMuted} /></Pressable>
       <Pressable accessibilityRole="button" accessibilityLabel={`${role(index)} · ${t("desktopSettings.fusionThinking")}`} disabled={locked || !selected} style={styles.choice} onPress={() => open(index, "thinking")}><Text style={styles.choiceText}>{t("desktopSettings.fusionThinking")} · {thinkingLevelLabel(t, value.thinking_level)}</Text><ChevronDown size={16} color={colors.inkMuted} /></Pressable>
     </View>;
   }
   const picked = picker ? profile(picker.index) : null;
   const pickedModel = picked ? models.find(model => modelReference(model) === picked.model) : undefined;
-  const choices = picker?.field === "thinking" ? modelThinkingLevels(pickedModel).map(level => ({ id: level, label: thinkingLevelLabel(t, level) })) : models.filter(model => `${model.label} ${model.id} ${model.provider}`.toLowerCase().includes(query.toLowerCase())).map(model => ({ id: modelReference(model), label: `${model.label || model.id} · ${model.provider ?? ""}` }));
+  const choices = picker?.field === "thinking" ? modelThinkingLevels(pickedModel).map(level => ({ id: level, label: thinkingLevelLabel(t, level) })) : models.filter(model => `${displayName(model)} ${model.id} ${model.provider}`.toLowerCase().includes(query.toLowerCase())).map(model => ({ id: modelReference(model), label: displayName(model) }));
   return <>
     <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
       <SettingsSwitch label={t("desktopSettings.fusionEnabled")} description={t("desktopSettings.fusionEnabledHint")} disabled={locked} value={saved.enabled} onChange={enabled => void persist(undefined, enabled)} />
@@ -97,7 +98,9 @@ export function FusionSettingsPage() {
   const enabled = remote.desktopReadable && remote.capabilities.has("fusion_settings_v1");
   const settings = useDesktopResource(remote.getFusionSettings, remote.desktopSettingsRevision, enabled);
   const models = useDesktopResource(remote.listSettingsModels, remote.desktopSettingsRevision, enabled);
-  return settings.data && models.data ? <Editor snapshot={settings.data} models={models.data} reload={() => { void settings.reload(); void models.reload(); }} /> : <View><ResourceStatus loading={settings.loading || models.loading} failed={settings.failed || models.failed} onReload={() => { void settings.reload(); void models.reload(); }} /></View>;
+  const providers = useDesktopResource(remote.listProviders, remote.desktopSettingsRevision, enabled);
+  const providerNames = Object.fromEntries([...(providers.data?.builtin ?? []), ...(providers.data?.custom ?? [])].map(provider => [provider.id, provider.name]));
+  return settings.data && models.data ? <Editor snapshot={settings.data} models={models.data} providerNames={providerNames} reload={() => { void settings.reload(); void models.reload(); }} /> : <View><ResourceStatus loading={settings.loading || models.loading} failed={settings.failed || models.failed} onReload={() => { void settings.reload(); void models.reload(); }} /></View>;
 }
 const useStyles = createThemedStyles(theme => StyleSheet.create({
   modelCard: { padding: spacing.md, gap: spacing.sm, borderRadius: radius.lg, borderWidth: 1, borderColor: theme.colors.line },
