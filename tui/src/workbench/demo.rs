@@ -12,8 +12,8 @@
 use crate::workbench::ansi::style;
 use crate::workbench::i18n::{t, Key};
 use crate::workbench::state::{
-    Activity, ActivityKind, GitKind, GitRow, GitSection, GitView, InputView, ModelChoice,
-    SessionMeta, SessionRow, SkillRow, UsageData, WorkbenchData, WorkspaceGroup,
+    Activity, ActivityKind, GitSection, GitView, InputView, ModelChoice, SessionMeta, SessionRow,
+    SkillRow, UsageData, WorkbenchData, WorkspaceGroup,
 };
 use crate::workbench::theme::FUTURE_DARK;
 
@@ -214,67 +214,63 @@ fn base() -> WorkbenchData {
 /// refs that log sits on, one edited file and one stash, with the first merge
 /// commit selected. Deterministic like every other demo value — a screenshot of
 /// this panel must not depend on whose checkout is rendered.
+///
+/// The log is written as the read's own text and parsed by the read's own
+/// parser, so the frame carries the graph the panel would draw for this history
+/// rather than a hand-drawn copy of it that could drift from the renderer.
 pub fn git() -> GitView {
-    let commits = vec![
-        row(
-            Some("9e4a47d2a"),
-            "*   ",
-            &[
-                ("feat(tui): a git panel for the workbench", GitKind::Plain),
-                (
-                    "HEAD -> dev-huichen, origin/dev-huichen",
-                    GitKind::Decoration,
-                ),
-                ("9e4a47d2a", GitKind::Sha),
-                ("2026-10-27", GitKind::Meta),
-                ("huichen", GitKind::Meta),
-            ],
+    // `<short> <parents> <decorations> <date> <subject>`, newest first; the
+    // separators are the same US/RS pair the read splits on.
+    const MATRIX: &[(&str, &str, &str, &str, &str)] = &[
+        (
+            "9e4a47d2a",
+            "4c1b8f0e3 7cefc9cea",
+            "HEAD -> dev-huichen, origin/dev-huichen",
+            "2026-10-27",
+            "feat(tui): a git panel for the workbench",
         ),
-        row(None, "|\\", &[]),
-        row(
-            Some("4c1b8f0e3"),
-            "| * ",
-            &[
-                ("fix(mobile): stop folding code blocks", GitKind::Plain),
-                ("fix/mobile-code-block", GitKind::Decoration),
-                ("4c1b8f0e3", GitKind::Sha),
-                ("2026-10-27", GitKind::Meta),
-                ("huichen", GitKind::Meta),
-            ],
+        (
+            "4c1b8f0e3",
+            "ae142f75a",
+            "fix/mobile-code-block",
+            "2026-10-27",
+            "fix(mobile): stop folding code blocks",
         ),
-        row(
-            Some("7cefc9cea"),
-            "| * ",
-            &[
-                ("docs: goal control plane notes", GitKind::Plain),
-                ("tag: v0.11.0", GitKind::Decoration),
-                ("7cefc9cea", GitKind::Sha),
-                ("2026-10-25", GitKind::Meta),
-                ("huichen", GitKind::Meta),
-            ],
+        (
+            "7cefc9cea",
+            "ae142f75a",
+            "tag: v0.11.0",
+            "2026-10-25",
+            "docs: goal control plane notes",
         ),
-        row(None, "|/", &[]),
-        row(
-            Some("ae142f75a"),
-            "* ",
-            &[
-                ("fix(tui): one row per record", GitKind::Plain),
-                ("ae142f75a", GitKind::Sha),
-                ("2026-10-26", GitKind::Meta),
-                ("huichen", GitKind::Meta),
-            ],
+        (
+            "ae142f75a",
+            "56ec934f6",
+            "",
+            "2026-10-26",
+            "fix(tui): one row per record",
         ),
-        row(
-            Some("56ec934f6"),
-            "* ",
-            &[
-                ("chore(deps): bump the rust toolchain", GitKind::Plain),
-                ("56ec934f6", GitKind::Sha),
-                ("2026-10-24", GitKind::Meta),
-                ("huichen", GitKind::Meta),
-            ],
+        (
+            "56ec934f6",
+            "",
+            "",
+            "2026-10-24",
+            "chore(deps): bump the rust toolchain",
         ),
     ];
+    let text: String = MATRIX
+        .iter()
+        .map(|(short, parents, decoration, date, subject)| {
+            // RS leads the record, US between the fields: the pair the read
+            // splits on, written rather than escaped by `format!` because it is
+            // the log's own vocabulary.
+            format!(
+                "\u{1e}{short}\u{1f}{short}\u{1f}{parents}\u{1f}{date}\u{1f}\
+huichen\u{1f}{decoration}\u{1f}{subject}\n"
+            )
+        })
+        .collect();
+    let commits = super::git_panel::parse_log(&text);
     let detail = "commit 9e4a47d2a\nAuthor: huichen <huichen@example.invalid>\nDate:   2026-10-27\n\n    fix(mobile): stop folding code blocks — a long line pans instead\n\n mobile/src/components/markdown.tsx | 24 ++++++++++++++----------\n 1 file changed, 14 insertions(+), 10 deletions(-)\n\ndiff --git a/mobile/src/components/markdown.tsx b/mobile/src/components/markdown.tsx\n@@ -118,9 +118,13 @@ export function CodeBlock({ text }: Props) {\n-  return <Text numberOfLines={0}>{text}</Text>;\n+  // A code block pans; it never folds.\n+  return (\n+    <ScrollView horizontal>\n+      <Text>{text}</Text>\n+    </ScrollView>\n+  );"
         .lines()
         .map(str::to_string)
@@ -287,25 +283,6 @@ pub fn git() -> GitView {
         detail,
         filter: None,
         error: None,
-    }
-}
-
-/// One painted `/git` row: the gutter, then the fields that fit, each with what
-/// it is so the frame paints it the way the real read would.
-fn row(key: Option<&str>, prefix: &str, pieces: &[(&str, GitKind)]) -> GitRow {
-    let pieces: Vec<(&str, GitKind)> = pieces
-        .iter()
-        .copied()
-        .filter(|(piece, _)| !piece.is_empty())
-        .collect();
-    GitRow {
-        key: key.map(str::to_string),
-        prefix: prefix.to_string(),
-        pieces: pieces
-            .iter()
-            .map(|(piece, _)| (*piece).to_string())
-            .collect(),
-        kinds: pieces.iter().map(|(_, kind)| *kind).collect(),
     }
 }
 
