@@ -633,7 +633,7 @@ describe("useThreadMessages page guards", () => {
     // Pinned to the exact copy rather than `toBeTruthy()`, so a mangled key or a
     // wrong branch cannot pass. Under the `>` mutant these are `undefined`, which is
     // why this line is the mutant's kill site.
-    expect(assistant?.terminationNotice).toBe("Please try again later.");
+    expect(assistant?.terminationNotice).toBe("Please try again later. (boom)");
     expect(assistant?.terminationTitle).toBe("Model service error");
   });
 
@@ -655,7 +655,7 @@ describe("useThreadMessages page guards", () => {
     storage.listRuns.mockResolvedValue([failedRun(RUN_WINDOW_AT)]);
     await mount();
 
-    expect(current.messages.find(message => message.role === "assistant")?.terminationNotice).toBe("Please try again later.");
+    expect(current.messages.find(message => message.role === "assistant")?.terminationNotice).toBe("Please try again later. (boom)");
   });
 
   it("folds a still-running run into the page it was reloaded with", async () => {

@@ -72,9 +72,22 @@ const HEARTBEAT_MS: u64 = 10_000;
 const HEARTBEAT_MS: u64 = 50;
 /// How long `call` waits for the event stream to deliver its first frame.
 const CALL_CONNECT_WAIT_MS: u64 = 5_000;
-/// User exchanges per backward history page. Matches the desktop's remote
-/// history page: small enough that a page is far below the wire cap even with
-/// whole (unbounded) tool outputs in it, large enough to fill a screen or two.
+/// Exchanges in a conversation's *first* page — the read a switch waits for.
+///
+/// Three, not ten: what a reader needs the moment a conversation opens is its
+/// tail, and the rest is a scroll away. Measured on a 147-conversation store, a
+/// first read costs **33.7 ms median instead of 49.3 ms**, and on the
+/// conversations where it bites at all it ships 62 rows instead of 193 (26
+/// instead of 66, 82 instead of 124). It does *not* help a conversation whose
+/// history is one or two huge turns — there three exchanges already is the
+/// whole transcript, and the page is bounded by the entries in it, not by their
+/// number (541 rows, 310 ms either way); that one needs a page bounded by rows.
+const HISTORY_TAIL_EXCHANGES: i64 = 3;
+
+/// User exchanges per page *above* the tail, and the size every page used to be.
+///
+/// A page-up is deliberate and a reader wants a screenful for it, so it still
+/// asks for ten while the first page asks for three.
 const HISTORY_PAGE_EXCHANGES: i64 = 10;
 
 /// `String(Date.now())` — millisecond epoch, used as the request correlation id.
@@ -736,7 +749,7 @@ impl GrpcClient {
 
     /// The tail of a session's display history — page 1 of the backward read.
     pub async fn session_tail_page(&self, session_id: &str) -> Result<SessionEntriesPage, String> {
-        self.session_entries_page(session_id, i64::MAX, HISTORY_PAGE_EXCHANGES)
+        self.session_entries_page(session_id, i64::MAX, HISTORY_TAIL_EXCHANGES)
             .await
     }
 
@@ -3146,17 +3159,21 @@ pub(crate) mod tests {
             "the page addresses its own session"
         );
         assert_eq!(cmd.before, Some(i64::MAX));
-        assert_eq!(cmd.limit, Some(10));
+        assert_eq!(
+            cmd.limit,
+            Some(3),
+            "the first page is the conversation's tail, not ten exchanges of it"
+        );
         assert_eq!(cmd.offset, None, "the forward cursor must not be sent");
         assert_eq!(tail.entries.len(), 1);
         assert!(tail.has_more);
         assert_eq!(tail.next_offset, 42);
 
-        // The next page resumes at the cursor, at the same size.
+        // The next page resumes at the cursor, at the paging size.
         client.session_older_page("sess-1", 42).await.unwrap();
         let cmd = last_request(&requests, "get_session_entries");
         assert_eq!(cmd.before, Some(42));
-        assert_eq!(cmd.limit, Some(10));
+        assert_eq!(cmd.limit, Some(10), "a deliberate page-up asks for ten");
         client.disconnect();
     }
 
