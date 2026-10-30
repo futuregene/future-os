@@ -314,9 +314,10 @@ impl Action {
     /// something surprising. Leaving is `ctrl+x`, which no other terminal
     /// program teaches, so it is never pressed by reflex.
     ///
-    /// An action that has no chord keeps a typed door (`/copy`, `/preferences`,
-    /// `/preview`, `/lang`, `/refresh`…) and a visible control instead: `""` is
-    /// that "no default", and [`Keybindings::action`] never resolves it.
+    /// An action that has no chord keeps a visible control (`/copy`,
+    /// `/preferences`, the draft's attachment count, `/lang`, `/refresh`…) and
+    /// may be bound by the reader instead: `""` is that "no default", and
+    /// [`Keybindings::action`] never resolves it.
     ///
     /// The chords go to what is pressed *while working*: stopping the run under
     /// them, the commands, the sessions, the three answers that decide what runs

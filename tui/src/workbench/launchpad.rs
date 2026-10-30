@@ -209,8 +209,10 @@ pub fn render(
     // attachment that is invisible until the prompt is sent is one the reader
     // cannot check.
     let images = data.input.editor.image_attachment_count();
-    if images > 0 {
-        title.push_str(&i18n::render(lang, Key::AttachmentsInDraft, &[&images]));
+    let attachments = (images > 0).then(|| i18n::render(lang, Key::AttachmentsInDraft, &[&images]));
+    let lead = title.clone();
+    if let Some(attachments) = &attachments {
+        title.push_str(attachments);
     }
     let (box_rows, cursor_column, cursor_row) =
         widgets::input_lines(palette, content_width, &data.input, &title);
@@ -227,6 +229,19 @@ pub fn render(
         w: content_width as u16,
         id: "input".to_string(),
     });
+    // The count in the box's title is the picture's door, the composer's own
+    // rule (`screen::composer`): the draft's images are markers and a number
+    // until they are sent, and this is where the reader can look at one.
+    if let Some(attachments) = &attachments {
+        if let Some((x, w)) = widgets::title_tail_cells(content_width, &lead, attachments) {
+            regions.push(Region {
+                row: box_top_row,
+                x: (left as u16).saturating_add(x),
+                w,
+                id: "input.attachments".to_string(),
+            });
+        }
+    }
 
     // ── parameter chips ───────────────────────────────────────────────
     if rows >= lines.len() + 2 {

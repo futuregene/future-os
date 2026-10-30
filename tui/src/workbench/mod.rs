@@ -2421,8 +2421,8 @@ impl Workbench {
     /// browser comes back to the browser — `esc` walks out one level at a time
     /// and only the last one lands on the chat. Whatever was on screen when the
     /// box opened is what it returns to; a picture that came from the draft
-    /// itself (`/preview`, `ctrl+v` → preview) returns to the chat, because
-    /// there was nothing under it.
+    /// itself (the attachment count on the composer's title) returns to the
+    /// chat, because there was nothing under it.
     pub fn open_preview(&mut self, scope: PreviewScope) {
         self.preview_scope = scope;
         // A step inside the box is still the same visit: it keeps the level the
@@ -3905,6 +3905,14 @@ impl Workbench {
                 .map(|row| vec![WbAction::RecallQueued(row.run_id.clone())])
                 .unwrap_or_default();
         }
+        // The draft's attachment count: the picture it counts, opened where the
+        // reader can see it. This is the click the `/preview` verb used to
+        // spell — an image waiting to be sent is otherwise a marker and a
+        // number, and the box is the only place it can be looked at before it
+        // goes.
+        if id == "input.attachments" {
+            return vec![WbAction::PreviewAttachment];
+        }
         if id == "input" {
             self.launch_field = LaunchField::Prompt;
             return vec![WbAction::FocusPane(PaneId::Input)];
@@ -4528,15 +4536,15 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 /// [`TYPED_ONLY`] is where those verbs live. The two lists are the whole
 /// vocabulary, and `every_palette_entry_has_a_handler` walks both.
 ///
-/// **The order is a name order, not a rank.** These sixteen are a list a reader
+/// **The order is a name order, not a rank.** These fifteen are a list a reader
 /// reads *for a name they already have in mind* (`/fork`, `/export`), and an
 /// alphabetical column is the only order that answers "where is it?" without
 /// being memorised — the surface's other ordering rules ("most used first",
 /// "what the next message runs with") describe sets that fit on one line, not
-/// sixteen rows. A consequence worth naming: `enter` on an empty query runs the
+/// fifteen rows. A consequence worth naming: `enter` on an empty query runs the
 /// first row by name (`/approval`), so the top of this list is a letter and not
 /// a recommendation.
-pub const COMMANDS: [(&str, Key); 16] = [
+pub const COMMANDS: [(&str, Key); 15] = [
     ("/approval", Key::CmdApproval),
     ("/compact", Key::CmdCompact),
     ("/copy", Key::CmdCopy),
@@ -4545,7 +4553,6 @@ pub const COMMANDS: [(&str, Key); 16] = [
     ("/fork", Key::CmdFork),
     ("/history", Key::CmdHistory),
     ("/pin", Key::CmdPin),
-    ("/preview", Key::CmdPreview),
     ("/providers", Key::CmdProviders),
     ("/queue", Key::CmdQueue),
     ("/refresh", Key::CmdRefresh),
@@ -8116,18 +8123,87 @@ mod tests {
         assert_eq!(workbench.preview_pan, (-5, -2));
     }
 
-    /// `ctrl+v` asks the adapter to read the clipboard. Previewing the newest
-    /// attachment has no chord — the fifteen ctrl chords go to the actions
-    /// pressed while working — so `/preview` is its door.
+    /// The attachment count on the composer's title is the picture's door: the
+    /// draft's image is a marker and a number until it is sent, so the cells
+    /// that count it open the preview box.
+    ///
+    /// `/preview` used to be the only door, and it was not one: the draft's
+    /// text begins with the `[Image #n]` marker the paste wrote, so a reader who
+    /// typed the verb after pasting sent `[Image #1] /preview` to the agent
+    /// instead of seeing the picture.
     #[test]
-    fn the_clipboard_key_and_the_preview_command_ask_for_their_verbs() {
+    fn a_click_on_the_attachment_count_previews_the_draft_image() {
+        let dir = std::env::temp_dir().join(format!("future-draft-count-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shot = dir.join("shot.png");
+        std::fs::write(&shot, b"\x89PNG\r\n\x1a\nrest of the file").unwrap();
+        let mut data = demo::chat();
+        let mut editor = data.input.editor.clone();
+        editor.paste(&shot.to_string_lossy());
+        data.input = state::InputView::from_editor(editor, String::new());
+        assert_eq!(data.input.editor.image_attachment_count(), 1);
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        assert_eq!(
+            click_region(&mut workbench, &data, 120, 38, "input.attachments"),
+            vec![WbAction::PreviewAttachment]
+        );
+        // The cells the count is clicked on are the cells that paint it: the
+        // region is worth nothing if it sits beside the words it names.
+        let (rect, _) = workbench
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "input.attachments")
+            .cloned()
+            .expect("the count is a target");
+        let rows = workbench.render(&data, 120, 38);
+        let row = rows
+            .get(usize::from(rect.y))
+            .map(|row| crate::utils::strip_ansi_codes(row))
+            .expect("the title row is painted");
+        let mut cells = String::new();
+        let mut column = 0;
+        for ch in row.chars() {
+            let width = crate::workbench::ansi::width(&ch.to_string());
+            if column >= usize::from(rect.x) && column < usize::from(rect.x + rect.w) {
+                cells.push(ch);
+            }
+            column += width;
+        }
+        assert_eq!(
+            cells,
+            i18n::render(workbench.lang, Key::AttachmentsInDraft, &[&1usize]),
+            "{row:?}"
+        );
+        // A click beside the count is still a click on the box.
+        assert_eq!(workbench.hits().hit(rect.x - 1, rect.y), Some("input"));
+        // With no picture in the draft there is nothing to count and nothing to
+        // aim at: the title is the hint alone.
+        let empty = demo::chat();
+        let (mut workbench, _rows) = frame(&empty, 120, 38);
+        workbench.render(&empty, 120, 38);
+        assert!(!workbench
+            .hits()
+            .regions()
+            .iter()
+            .any(|(_, id)| id == "input.attachments"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `ctrl+v` asks the adapter to read the clipboard. Previewing an attached
+    /// image has no chord — the fifteen ctrl chords go to the actions pressed
+    /// while working — and its door is the count on the composer's title, not a
+    /// typed verb: `/preview` spent a palette row on a picture the reader can
+    /// see one row above the draft.
+    #[test]
+    fn the_clipboard_key_and_the_attachment_count_ask_for_their_verbs() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         assert_eq!(
             workbench.handle(WbEvent::Key("ctrl+v".into()), &data),
             vec![WbAction::PasteClipboard]
         );
-        assert!(workbench
+        assert!(!workbench
             .palette_rows(&data)
             .iter()
             .any(|row| row.command() == "/preview"));
@@ -8876,7 +8952,8 @@ mod tests {
         workbench.handle(WbEvent::Key("escape".into()), &data);
         assert_eq!(workbench.overlay, Some(Overlay::Git));
 
-        // Opened from the chat itself (`/preview`): nothing under the box.
+        // Opened from the chat itself (the composer's attachment count):
+        // nothing under the box.
         workbench.overlay = None;
         workbench.open_preview(PreviewScope::Conversation);
         workbench.handle(WbEvent::Key("escape".into()), &data);

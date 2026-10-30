@@ -180,16 +180,18 @@ pub(crate) fn compose(
         // checkpoint lands), and a box that looks ready would take the draft as
         // a send that silently did nothing.
         let images = data.input.editor.image_attachment_count();
+        let hint = t(workbench.lang, Key::InputHintChat);
+        // The count is the picture's door, so the painter keeps the two halves
+        // apart: the hit map needs the cells the count covers, and the hint is
+        // what says where they start.
+        let attachments = (images > 0 && !data.compacting)
+            .then(|| i18n::render(workbench.lang, Key::AttachmentsInDraft, &[&images]));
         let title = if data.compacting {
             t(workbench.lang, Key::ComposerCompacting).to_string()
-        } else if images == 0 {
-            t(workbench.lang, Key::InputHintChat).to_string()
+        } else if let Some(attachments) = &attachments {
+            format!("{hint}{attachments}")
         } else {
-            format!(
-                "{}{}",
-                t(workbench.lang, Key::InputHintChat),
-                i18n::render(workbench.lang, Key::AttachmentsInDraft, &[&images])
-            )
+            hint.to_string()
         };
         let (input_lines, cursor_column, cursor_row) = widgets::input_box(
             &palette,
@@ -212,6 +214,25 @@ pub(crate) fn compose(
             frame.input.h.saturating_add(composer_extra),
         );
         workbench.hit_map().push(input_rect, "input");
+        // The attachment count on the box's title is the picture's own door: a
+        // draft's image is invisible until it is sent (`[Image #n]` is a
+        // marker, not the picture), so the cells that count it open the
+        // preview box — the click the `/preview` verb used to spell.
+        if let Some(attachments) = &attachments {
+            if let Some((x, w)) =
+                widgets::title_tail_cells(frame.input.w as usize, hint, attachments)
+            {
+                workbench.hit_map().push(
+                    Rect::new(
+                        frame.input.x.saturating_add(x),
+                        frame.input.y.saturating_sub(composer_extra),
+                        w,
+                        1,
+                    ),
+                    "input.attachments",
+                );
+            }
+        }
         paint(&mut rows, input_rect, input_lines);
         if workbench.overlay.is_none() {
             // The box is drawn at `frame.input.x`; the cursor has to be offset

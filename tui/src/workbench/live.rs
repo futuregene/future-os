@@ -78,7 +78,7 @@ struct Paging {
 /// ([`super::Workbench::surface_command`]) and this list have to account for
 /// every entry exactly once. That is the check whose absence let five entries
 /// advertise themselves and then answer `Unknown command`.
-pub const APP_COMMANDS: [&str; 20] = [
+pub const APP_COMMANDS: [&str; 19] = [
     "/new",
     "/stop",
     "/reply-detail",
@@ -86,7 +86,6 @@ pub const APP_COMMANDS: [&str; 20] = [
     "/quit",
     "/copy",
     "/paste",
-    "/preview",
     "/refresh",
     "/mouse",
     "/compact",
@@ -2332,14 +2331,14 @@ impl Live {
             // `/thinking`, `/mode`, `/workspace`) come back
             // to the surface the same way: the picker is not the agent's.
             // The verbs the *driver* answers before this handler ever runs: the
-            // boxes it opens (`/preview`, `/git`, `/files`, `/approval`,
+            // boxes it opens (`/git`, `/files`, `/approval`,
             // `/tree`), the choosers the surface opens for the reader, and the
             // names the panels took with them (`/usage`, `/skills`). They are
             // listed so a caller that bypasses the driver is not told a command
             // the palette advertises does not exist — the notice the whole
             // family used to produce.
-            "usage" | "skills" | "workspace" | "help" | "thinking" | "mode" | "preview" | "git"
-            | "files" | "approval" | "tree" | "worktree" => {}
+            "usage" | "skills" | "workspace" | "help" | "thinking" | "mode" | "git" | "files"
+            | "approval" | "tree" | "worktree" => {}
             other => self.notice = Some(format!("Unknown command /{other}")),
         }
         Outcome::Continue
