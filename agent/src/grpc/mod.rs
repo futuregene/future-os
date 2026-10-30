@@ -451,6 +451,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                     clear_api_key: config.clear_api_key,
                 }
             }),
+            thinking_probe: cmd.thinking_probe.map(Into::into),
             suggest_query: cmd.suggest_query,
             skill_id: cmd.skill_id,
             skill_version: cmd.skill_version,

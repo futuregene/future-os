@@ -794,6 +794,20 @@ fn default_answer(
         })),
         "list_models" => ok(crate::test_support::provider_responses::models()),
         "list_providers" => ok(crate::test_support::provider_responses::providers()),
+        // The custom-provider editor's level detection: report the level the
+        // caller asked about as accepted, so a round-trip test can assert both
+        // the payload the GUI sent and the verdict it renders.
+        "probe_thinking_level" => {
+            let level = cmd
+                .thinking_probe
+                .as_ref()
+                .map(|probe| probe.level.clone())
+                .unwrap_or_default();
+            ok(json!({
+                "level": if level.trim().is_empty() { "default".to_string() } else { level.trim().to_string() },
+                "ok": true,
+            }))
+        }
         "get_messages" => ok(json!({
             "messages": [
                 { "role": "user", "content": "hi" },

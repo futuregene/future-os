@@ -1006,3 +1006,79 @@ fn declared_thinking_levels_survive_the_typed_wire_payload() {
     assert_eq!(row.thinking_levels, ["default", "off", "low", "high"]);
     assert_eq!(row.default_thinking_level.as_deref(), Some("default"));
 }
+
+// ─── probe_thinking_level ──────────────────────────────────────────────────
+
+fn probe_spec(base_url: &str, level: &str) -> crate::llm::probe::ThinkingLevelProbeSpec {
+    crate::llm::probe::ThinkingLevelProbeSpec {
+        api: "openai-completions".to_string(),
+        base_url: base_url.to_string(),
+        api_key: "sk-test".to_string(),
+        provider_id: "acme".to_string(),
+        model_id: "qwen".to_string(),
+        level: level.to_string(),
+    }
+}
+
+/// An address nothing listens on, so the probe fails at connect without any
+/// server: the point here is the command's contract, not the wire shape (that
+/// lives in `llm::probe`'s own tests).
+fn closed_endpoint() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    format!("http://{addr}")
+}
+
+#[test]
+fn probe_thinking_level_rejects_a_missing_or_incomplete_payload() {
+    let state = make_app_state();
+
+    let resp = parse_response(&handle_command_internal(
+        &state,
+        make_cmd("probe_thinking_level"),
+    ));
+    assert_eq!(resp["success"], false);
+    assert!(resp["error"].as_str().unwrap().contains("thinking_probe"));
+
+    let mut cmd = make_cmd("probe_thinking_level");
+    let mut spec = probe_spec("", "high");
+    spec.model_id = "  ".to_string();
+    cmd.thinking_probe = Some(spec);
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], false);
+    assert!(resp["error"].as_str().unwrap().contains("base_url"));
+}
+
+/// A level the endpoint does not accept is an answer, not a command failure:
+/// the caller keeps the levels that came back accepted.
+#[test]
+fn probe_thinking_level_reports_a_verdict_instead_of_failing_the_command() {
+    let _home = TestHome::new();
+    let state = make_app_state();
+
+    let mut cmd = make_cmd("probe_thinking_level");
+    cmd.thinking_probe = Some(probe_spec(&closed_endpoint(), "high"));
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true, "{resp}");
+    assert_eq!(resp["data"]["level"], "high");
+    assert_eq!(resp["data"]["ok"], false);
+    assert!(
+        !resp["data"]["error"].as_str().unwrap().is_empty(),
+        "the provider's failure is what the GUI shows: {resp}"
+    );
+}
+
+/// The empty level is the calibration call and is reported as `default`, so the
+/// GUI can tell "the endpoint is misconfigured" from "this level is refused".
+#[test]
+fn probe_thinking_level_normalizes_the_empty_level_to_default() {
+    let _home = TestHome::new();
+    let state = make_app_state();
+
+    let mut cmd = make_cmd("probe_thinking_level");
+    cmd.thinking_probe = Some(probe_spec(&closed_endpoint(), ""));
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true, "{resp}");
+    assert_eq!(resp["data"]["level"], "default");
+}

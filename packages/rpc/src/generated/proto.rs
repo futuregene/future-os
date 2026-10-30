@@ -185,6 +185,12 @@ pub struct RpcCommand {
     /// type == "upsert_provider" or "delete_provider" (the latter uses only `id`).
     #[prost(message, optional, tag = "171")]
     pub provider_config: ::core::option::Option<ProviderUpsert>,
+    /// ── probe_thinking_level ───────────────────────────────────────────────
+    /// One ad-hoc provider round trip answering "does this endpoint accept this
+    /// thinking level?". Nothing is written: the caller is still editing the
+    /// provider. Read when type == "probe_thinking_level".
+    #[prost(message, optional, tag = "172")]
+    pub thinking_probe: ::core::option::Option<ThinkingLevelProbe>,
     /// ── suggest_skill ──────────────────────────────────────────────────────
     /// The user's first-turn text. Read when type == "suggest_skill".
     #[prost(string, tag = "180")]
@@ -395,6 +401,27 @@ pub struct ProviderModel {
     /// list (possibly empty) replaces it.
     #[prost(bool, optional, tag = "12")]
     pub replace_thinking_levels: ::core::option::Option<bool>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ThinkingLevelProbe {
+    /// Wire protocol: "openai-completions" | "openai-responses" | "anthropic".
+    #[prost(string, tag = "1")]
+    pub api: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub base_url: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub api_key: ::prost::alloc::string::String,
+    /// Provider id and model id. Both are used to inherit an already-saved
+    /// model's per-model wire config; an unsaved provider simply finds none.
+    #[prost(string, tag = "4")]
+    pub provider_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub model_id: ::prost::alloc::string::String,
+    /// The level to test. Empty (or ``default``) sends no thinking parameter at
+    /// all — the calibration call that proves the rest of the configuration
+    /// (endpoint, key, model id) works.
+    #[prost(string, tag = "6")]
+    pub level: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ImageContent {

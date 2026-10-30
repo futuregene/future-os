@@ -27,11 +27,13 @@ use crate::auth_store::FUTURE_PROVIDER_ID;
 use crate::config_io;
 
 mod catalog;
+mod probe;
 #[cfg(test)]
 mod tests;
 mod validate;
 mod write;
 
+pub use probe::{probe_thinking_level, ThinkingLevelProbeInput, ThinkingLevelProbeOutcome};
 pub use write::{
     delete_custom_provider, set_builtin_provider_base_url, update_builtin_provider,
     update_builtin_provider_key, upsert_custom_provider,
