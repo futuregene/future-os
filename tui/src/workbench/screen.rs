@@ -2809,6 +2809,10 @@ const MIN_SUBJECT: usize = 12;
 /// so a narrow box loses the committer first and the date-time last. Each cell is
 /// already padded to its column's width, so dropping one from the right cannot
 /// move what is left.
+///
+/// One space between columns, not two: the cells are already padded, and a
+/// second space only pushes the graph — and with it every lane — away from the
+/// name it belongs to.
 fn log_columns(palette: &Palette, columns: &[String], graph_width: usize, pane: usize) -> String {
     let mut kept = columns;
     loop {
@@ -2816,7 +2820,8 @@ fn log_columns(palette: &Palette, columns: &[String], graph_width: usize, pane: 
             return String::new();
         }
         let width: usize = kept.iter().map(|cell| ansi::width(cell)).sum();
-        let needed = width + 2 * kept.len() + graph_width + MIN_SUBJECT;
+        // One separator between the cells and one before the graph.
+        let needed = width + kept.len() + graph_width + MIN_SUBJECT;
         if needed <= pane {
             break;
         }
@@ -2825,11 +2830,11 @@ fn log_columns(palette: &Palette, columns: &[String], graph_width: usize, pane: 
     let mut text = String::new();
     for (index, cell) in kept.iter().enumerate() {
         if index > 0 {
-            text.push_str("  ");
+            text.push(' ');
         }
         text.push_str(cell);
     }
-    text.push_str("  ");
+    text.push(' ');
     palette.dim(&text)
 }
 
@@ -2852,8 +2857,18 @@ fn git_row_line(
     selected: bool,
 ) -> String {
     let columns = columns.max(1);
-    let graph = paint_graph(palette, &row.prefix);
-    let side = log_columns(palette, &row.columns, ansi::width(&graph), columns);
+    // The gutter in the row is padded to the widest lane in the page, so a row
+    // whose work is done after two lanes does not start its subject where a row
+    // that forks into six does: the padding is cut here and only the one cell
+    // that separates the last lane from the row's fields is kept. The *width*
+    // used for the columns' room is the padded one, though — that is the same
+    // number in every row, and a rule that read the trimmed width would show the
+    // columns on some rows and not others.
+    let pitch = ansi::width(&row.prefix);
+    let trimmed = row.prefix.trim_end();
+    let graph = paint_graph(palette, trimmed);
+    let gap = if trimmed.is_empty() { "" } else { " " };
+    let side = log_columns(palette, &row.columns, pitch, columns);
     let full = if row.key.is_none() {
         // The graph continuing through a column: painted in the gutter, never
         // selectable, so it gets no arrow.
@@ -2870,7 +2885,7 @@ fn git_row_line(
             .map(|piece| piece.replace('\n', " ↵ "))
             .unwrap_or_default();
         let mut line = format!(
-            "{marker}{side}{graph}{}",
+            "{marker}{side}{graph}{gap}{}",
             paint_kind(palette, row.kind(0), &lead, selected)
         );
         for (index, piece) in row.pieces.iter().enumerate().skip(1) {
@@ -5174,9 +5189,8 @@ mod tests {
         );
         let marked = plain(&selected);
         assert!(
-            marked.starts_with(
-                "› 2026-10-27 09:15  Ada  ● HEAD -> main, tag: v1 · fix(tui): one row"
-            ),
+            marked
+                .starts_with("› 2026-10-27 09:15 Ada ● HEAD -> main, tag: v1 · fix(tui): one row"),
             "{marked:?}"
         );
         for (colour, what) in [
@@ -5194,9 +5208,8 @@ mod tests {
             "an unselected row paints no background: {idle:?}"
         );
         assert!(
-            plain(&idle).starts_with(
-                "  2026-10-27 09:15  Ada  ● HEAD -> main, tag: v1 · fix(tui): one row"
-            ),
+            plain(&idle)
+                .starts_with("  2026-10-27 09:15 Ada ● HEAD -> main, tag: v1 · fix(tui): one row"),
             "{idle:?}"
         );
     }
@@ -5225,13 +5238,32 @@ mod tests {
         // One step wider and the committer comes back only if it also leaves
         // room for the subject; in between, the date-time stands alone.
         let middle = plain(&git_row_line(&palette, &row, 0, 34, false));
-        assert!(
-            middle.starts_with("  2026-10-27 09:15  ● fix"),
-            "{middle:?}"
-        );
+        assert!(middle.starts_with("  2026-10-27 09:15 ● fix"), "{middle:?}");
         assert!(!middle.contains("Ada"), "{middle:?}");
         let wide = plain(&git_row_line(&palette, &row, 0, 80, false));
-        assert!(wide.starts_with("  2026-10-27 09:15  Ada  ● "), "{wide:?}");
+        assert!(wide.starts_with("  2026-10-27 09:15 Ada ● "), "{wide:?}");
+    }
+
+    /// A row is not padded out to the page's widest graph: the gutter ends at
+    /// the row's own last lane and one cell of air separates it from the row's
+    /// fields, so a commit that finished after two lanes does not carry the
+    /// empty columns of a six-lane fork. The lanes themselves still start in one
+    /// cell — that is the padding that has to stay.
+    #[test]
+    fn the_graph_is_cut_at_its_last_lane() {
+        let palette = FUTURE_DARK;
+        let row = GitRow {
+            key: Some("abc1234".into()),
+            columns: Vec::new(),
+            prefix: "● │ │       ".into(),
+            pieces: vec!["origin/main · Merge branch 'x'".into()],
+            kinds: vec![state::GitKind::Plain],
+        };
+        let painted = plain(&git_row_line(&palette, &row, 0, 60, false));
+        assert!(
+            painted.starts_with("  ● │ │ origin/main"),
+            "one space, not the padded gutter: {painted:?}"
+        );
     }
 
     /// The band has to exist in every palette: it is a member of the one ordered
