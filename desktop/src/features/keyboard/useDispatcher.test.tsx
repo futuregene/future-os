@@ -121,18 +121,17 @@ describe("shortcut dispatcher", () => {
       view.render(<Panel />);
     });
 
-    // Outside the terminal the app answers Ctrl+B.
-    press(document.body, { ctrlKey: true, key: "b" });
+    // Outside the terminal the app answers Ctrl+D.
+    press(document.body, { ctrlKey: true, key: "d" });
     expect(onPanel).toHaveBeenCalledTimes(1);
 
-    // Inside it, `Ctrl+B` is readline's "back one character" and must reach the
-    // shell untouched.
+    // Inside it, `Ctrl+D` is EOF and must reach the shell untouched.
     const terminal = document.createElement("div");
     terminal.dataset.component = "terminal";
     const surface = document.createElement("textarea");
     terminal.append(surface);
     document.body.append(terminal);
-    const inside = press(surface, { ctrlKey: true, key: "b" });
+    const inside = press(surface, { ctrlKey: true, key: "d" });
     expect(onPanel).toHaveBeenCalledTimes(1);
     expect(inside.defaultPrevented).toBe(false);
     terminal.remove();

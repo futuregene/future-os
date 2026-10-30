@@ -1,7 +1,7 @@
 /**
  * The command palette: one box that runs a command or opens a conversation.
  *
- * Open with `mod+k` (the `palette.open` command, rebindable like any other). It
+ * Open with `mod+p` (the `palette.open` command, rebindable like any other). It
  * is a modal, so the global dispatcher stands down behind it
  * (`components/ui/overlayStack` + `lib/keyboardOwners` both see it) and the arrow
  * keys and `↩` here belong to the list rather than to the transcript.
