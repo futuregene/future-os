@@ -56,6 +56,13 @@ fn main() {
     let mut failures = 0;
     let mut total_regions = 0;
     let mut total_clicks = 0;
+    // A page whose fixture was removed with its feature must fail *here*, not
+    // halfway down the list: the panic used to abort the run after fifteen
+    // pages had passed, so every page behind it — including the ones a change
+    // touched — silently stopped being audited.
+    for name in PAGES {
+        let _ = fixture(name);
+    }
     for name in PAGES {
         if let Some(wanted) = only.as_deref() {
             if wanted != *name {
@@ -114,7 +121,6 @@ const PAGES: &[&str] = &[
     "diff",
     "diff-clean",
     "diff-error",
-    "tree",
     "fork",
     "worktree",
     "preferences",
@@ -291,7 +297,9 @@ pub fn highlight(path: &str, text: &str) -> Vec<Line> {
         "picker-language" => (chat(), |wb, data| {
             wb.open_picker(PickerKind::Language, data);
         }),
-        other => panic!("no fixture for {other}"),
+        other => panic!(
+            "{other} is listed in PAGES but has no fixture: drop the page, or give it an arm here"
+        ),
     }
 }
 

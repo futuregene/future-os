@@ -299,7 +299,6 @@ pub enum WbAction {
     /// Put this text on the clipboard (`y` in the `/git` panel copies the
     /// selected commit's sha, a ref's name or a file's path).
     CopyText(String),
-    OpenTree,
     OpenFork,
     OpenWorktree,
     ApprovalDecision {

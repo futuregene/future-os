@@ -1921,7 +1921,6 @@ impl Live {
             | WbAction::SelectGit(_)
             | WbAction::GitWorktree(_)
             | WbAction::CopyText(_)
-            | WbAction::OpenTree
             | WbAction::OpenFork
             | WbAction::OpenWorktree => {}
             WbAction::ApprovalDecision { approved, rule } => {
