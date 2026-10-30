@@ -22,7 +22,7 @@ import { usePendingApprovalCounts } from "../../components/layout/hooks/usePendi
 import { useWindowWidth } from "../../components/layout/hooks/useWindowWidth";
 import { Badge } from "../../components/ui/Badge";
 import { IconButton } from "../../components/ui/IconButton";
-import { modelKey, modelThinkingLevels } from "../../integrations/agent/agentClient";
+import { modelKey, modelThinkingLevels, thinkingLevelName } from "../../integrations/agent/agentClient";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
 import { cn } from "../../lib/cn";
 import { emitFutureEvent } from "../../lib/futureEvents";
@@ -864,7 +864,7 @@ export function VibeStage({
             ? [{
                 id: "thinking",
                 label: t("menu.thinking"),
-                value: t(`agent:composer.thinkingLevelLabels.${focusedSettings.thinkingLevel}`, { defaultValue: focusedSettings.thinkingLevel }),
+                value: thinkingLevelName(focusedSettings.thinkingLevel),
                 onRun: () => {},
                 onAdjust: (delta: -1 | 1) => {
                   const levels = modelThinkingLevels(focusedSettings.modelId, view.modelOptions);

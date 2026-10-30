@@ -700,8 +700,8 @@ it("offers the thinking levels, and reports a choice", async () => {
   const settings = state({ thinkingLevel: "off" });
   const view = await mountPicker(settings);
 
-  expect(view.thinkingLabel()).toContain("Off");
-  await view.choose("Thinking level (on that computer)", "High");
+  expect(view.thinkingLabel()).toContain("off");
+  await view.choose("Thinking level (on that computer)", "high");
   expect(settings.setThinkingLevel).toHaveBeenCalledWith("high");
   await view.unmount();
 });
@@ -717,9 +717,9 @@ it("shows exactly the host-declared levels, arbitrary values included", async ()
   const settings = state({ models, model: "openai/gpt-5", thinkingLevel: "max" });
   const view = await mountPicker(settings);
 
-  expect(view.thinkingLabel()).toContain("Max");
+  expect(view.thinkingLabel()).toContain("max");
   await view.open("Thinking level (on that computer)");
-  expect(view.menuItems().map(node => node.textContent)).toEqual(["Default", "Off", "Max"]);
+  expect(view.menuItems().map(node => node.textContent)).toEqual(["default", "off", "max"]);
   await act(async () => view.menuItems()[1]!.click());
   expect(settings.setThinkingLevel).toHaveBeenCalledWith("off");
   await view.unmount();
@@ -736,7 +736,7 @@ it("disables the thinking picker when the model offers a single level", async ()
   const view = await mountPicker(state({ models, model: "openai/gpt-5", thinkingLevel: "default" }));
 
   expect(view.thinking().disabled).toBe(true);
-  expect(view.thinkingLabel()).toContain("Default");
+  expect(view.thinkingLabel()).toContain("default");
   await view.unmount();
 });
 

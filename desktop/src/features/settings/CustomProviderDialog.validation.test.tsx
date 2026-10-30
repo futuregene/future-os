@@ -482,7 +482,7 @@ describe("customProviderDialog model validation", () => {
     clickImageCheckbox(container, 0);
     // The thinking-level multi-select: add Max to the new row's defaults.
     const max = [...container.querySelectorAll<HTMLButtonElement>("button[aria-pressed]")]
-      .find(button => button.textContent === "Max")!;
+      .find(button => button.textContent === "max")!;
     act(() => max.click());
 
     await act(async () => {
