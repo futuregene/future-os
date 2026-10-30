@@ -265,8 +265,9 @@ const PASSES: usize = 4;
 ///   moved would also change colour, since a lane's colour is its column.
 /// * **No diagonals and no orphan rows.** A connection is a vertical, a
 ///   horizontal, or an elbow between them (`┐ ┘ ┤ ┬ ┴`), and each one is drawn
-///   on the row of the commit that makes it. Every row carries a commit. The
-///   horizontal breaks around a lane that keeps going (`●─│─┐`) rather than
+///   on the row of the commit that makes it. Every row carries a commit, `o`
+///   for one that continues its line and `M` for one that joins lines. The
+///   horizontal breaks around a lane that keeps going (`M─│─┐`) rather than
 ///   striking through it: a crossing mark would claim the two lines touch,
 ///   where the connection merely passes.
 /// * **A lane that carries nothing is not drawn.** When a merge's extra parent
@@ -420,7 +421,15 @@ fn draw(
             let right = column >= mine && column < rightmost;
             let left = column > mine && column <= rightmost;
             cells[2 * column] = if column == mine {
-                '●'
+                // Two glyphs, as tig has them: `M` is a commit that joins lines,
+                // `o` one that only continues its own. The elbow a merge draws is
+                // already on the row, but the letter says it before the eye
+                // follows the line out to a column and back.
+                if parents.len() > 1 {
+                    'M'
+                } else {
+                    'o'
+                }
             } else {
                 junction(up, down, left, right)
             };
@@ -1137,7 +1146,10 @@ mod tests {
              \u{1e}def5678\u{1f}bbbbbbb\u{1f}aaaaaaa\u{1f}2026-10-26 18:40\u{1f}Bob\u{1f}\u{1f}a\ttab and a unit separator\n",
         );
         assert_eq!(rows.len(), 2, "one row per commit, none for the drawing");
-        assert_eq!(rows[0].prefix, "● ");
+        assert_eq!(
+            rows[0].prefix, "o ",
+            "a commit that only continues its line"
+        );
         assert_eq!(rows[0].key.as_deref(), Some("abc1234"));
         assert_eq!(
             rows[0].pieces[0], "HEAD -> main, tag: v1",
@@ -1212,11 +1224,11 @@ mod tests {
     fn a_merge_opens_a_column_and_a_fork_closes_it() {
         assert_eq!(
             gutters(&[("c", "b"), ("b", "a"), ("a", "")]),
-            vec!["● ", "● ", "● "]
+            vec!["o ", "o ", "o "]
         );
         assert_eq!(
             gutters(&[("m", "x y"), ("x", "b"), ("y", "b"), ("b", "")]),
-            vec!["●─┐ ", "● │ ", "│ ● ", "●─┘ "]
+            vec!["M─┐ ", "o │ ", "│ o ", "o─┘ "]
         );
     }
 
@@ -1227,7 +1239,7 @@ mod tests {
     fn a_connection_crosses_a_lane_without_moving_it() {
         assert_eq!(
             gutters(&[("m", "x y"), ("x", "p q"), ("y", ""), ("p", ""), ("q", ""),]),
-            vec!["●─┐   ", "●─│─┐ ", "│ ● │ ", "●   │ ", "    ● "]
+            vec!["M─┐   ", "M─│─┐ ", "│ o │ ", "o   │ ", "    o "]
         );
         // Two lanes joining one commit turn into it side by side.
         assert_eq!(
@@ -1238,7 +1250,7 @@ mod tests {
                 ("c", "d"),
                 ("d", ""),
             ]),
-            vec!["●─┬─┐ ", "● │ │ ", "│ ● │ ", "│ │ ● ", "●─┴─┘ "]
+            vec!["M─┬─┐ ", "o │ │ ", "│ o │ ", "│ │ o ", "o─┴─┘ "]
         );
     }
 
@@ -1258,7 +1270,7 @@ mod tests {
                 ("d1", "m0"),
                 ("m0", ""),
             ]),
-            vec!["●─┐ ", "● │ ", "│ ● ", "●─┤ ", "● │ ", "│ ● ", "●─┘ "]
+            vec!["M─┐ ", "o │ ", "│ o ", "M─┤ ", "o │ ", "│ o ", "o─┘ "]
         );
     }
 
@@ -1274,14 +1286,14 @@ mod tests {
         // share.
         assert_eq!(
             gutters(&[("a", "b c"), ("b", "c"), ("c", "")]),
-            vec!["● ", "● ", "● "],
+            vec!["M ", "o ", "o "],
             "the covered parent is not a lane of its own"
         );
         // The same shape with a commit that only that lane carries keeps the
         // lane: it is real work, not a duplicate of a line already drawn.
         assert_eq!(
             gutters(&[("a", "b c"), ("b", "d"), ("c", "d"), ("d", "")]),
-            vec!["●─┐ ", "● │ ", "│ ● ", "●─┘ "]
+            vec!["M─┐ ", "o │ ", "│ o ", "o─┘ "]
         );
     }
 
@@ -1440,7 +1452,7 @@ mod tests {
         // The graph is drawn: the merge's row opens a lane beside its own, and
         // the gutter is one width for every row so the subjects line up.
         assert!(
-            commits[0].prefix.starts_with("●─"),
+            commits[0].prefix.starts_with("M─"),
             "{:?}",
             commits[0].prefix
         );
