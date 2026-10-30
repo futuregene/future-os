@@ -109,6 +109,22 @@ describe("classifyAgentError", () => {
     expect(buildAgentFailureTitle(raw)).not.toContain("agent:failure.");
   });
 
+  it("names the endpoint and the transport failure that ended a run", () => {
+    // The exact message a custom endpoint produced: reqwest's transport chain,
+    // no HTTP status, so nothing above this point classifies it.
+    const raw = "error sending request for url (https://hpc-api.westlake.edu.cn/v1/chat/completions): client error (Connect): tls handshake eof";
+    expect(classifyAgentError(raw)).toEqual({
+      key: "agent:failure.network",
+      params: { message: "hpc-api.westlake.edu.cn: tls handshake eof" },
+    });
+    // The visible notice carries that detail instead of bare retry advice.
+    expect(friendlyAgentError(raw)).toContain("hpc-api.westlake.edu.cn: tls handshake eof");
+  });
+
+  it("shows an unknown failure's own wording instead of bare retry advice", () => {
+    expect(friendlyAgentError("context cache unreadable: cache v3")).toContain("context cache unreadable: cache v3");
+  });
+
   it("handles empty input", () => {
     expect(classifyAgentError("")).toEqual({ key: "agent:failure.unknown" });
     expect(classifyAgentError("   ")).toEqual({ key: "agent:failure.unknown" });

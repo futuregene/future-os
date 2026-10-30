@@ -4,7 +4,7 @@ import { ArrowUp, ChevronDown, Loader2, Paperclip, ShieldCheck, ShieldKeyhole, S
 import { useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../../components/ui/SelectMenu";
-import { localizedModelDescription, modelKey, modelLabel, modelOption, modelThinkingLevels, resolveThinkingLevel } from "../../../integrations/agent/agentClient";
+import { localizedModelDescription, modelKey, modelLabel, modelOption, modelThinkingLevels, resolveThinkingLevel, thinkingLevelName } from "../../../integrations/agent/agentClient";
 import { automaticApprovalAvailable, effectiveApprovalTier } from "../../../integrations/agent/automaticApproval";
 import { requestModelCatalogRefresh } from "../../../integrations/agent/modelCatalogRefresh";
 import { useProviderNames } from "../../../integrations/agent/useProviderNames";
@@ -86,8 +86,6 @@ export function ComposerControls({ disabled, modelId, modelOptions, modelsEmptyR
   const thinkingRing = modelThinkingLevels(activeModelId, modelOptions);
   const supportsThinking = thinkingRing.length > 1;
   const activeThinkingLevel = resolveThinkingLevel(thinkingLevel, activeModelId, modelOptions);
-  // Localized thinking-level label; unknown levels fall back to the raw value.
-  const thinkingLevelLabel = (level: string) => t(`composer.thinkingLevelLabels.${level}`, { defaultValue: level });
   /**
    * Whether a tier can be picked here — the same rule the menu's rows use, so a
    * keyboard step can never land on a row the menu would refuse to offer.
@@ -295,7 +293,7 @@ export function ComposerControls({ disabled, modelId, modelOptions, modelsEmptyR
                 disabled={!supportsThinking}
                 title={supportsThinking ? t("composer.thinkingLevel") : t("composer.thinkingUnsupported")}
               >
-                <span className="truncate">{thinkingLevelLabel(activeThinkingLevel)}</span>
+                <span className="truncate">{thinkingLevelName(activeThinkingLevel)}</span>
                 <ChevronDown className="size-3 shrink-0" />
               </button>
             )}
@@ -309,7 +307,7 @@ export function ComposerControls({ disabled, modelId, modelOptions, modelsEmptyR
                   setThinkingMenuOpen(false);
                 }}
               >
-                <span className="min-w-0 flex-1 truncate font-medium text-ink">{thinkingLevelLabel(level)}</span>
+                <span className="min-w-0 flex-1 truncate font-medium text-ink">{thinkingLevelName(level)}</span>
               </SelectMenuItem>
             ))}
           </SelectMenu>

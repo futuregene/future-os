@@ -34,7 +34,7 @@ it("disables the picker for a single-level model, and enables it once the agent 
     const button = container.querySelector<HTMLButtonElement>("button[aria-label=\"Thinking level\"]")!;
     expect(button).not.toBeNull();
     expect(button.disabled).toBe(true);
-    expect(button.textContent).toContain("Default");
+    expect(button.textContent).toContain("default");
     expect(button.title).toContain("no thinking-level choices");
     act(() => button.click());
     expect(onThinkingLevelChange).not.toHaveBeenCalled();
@@ -42,9 +42,9 @@ it("disables the picker for a single-level model, and enables it once the agent 
     model.thinkingLevels = ["default", "off", "low", "high"];
     await render();
     expect(button.disabled).toBe(false);
-    expect(button.textContent).toContain("High");
+    expect(button.textContent).toContain("high");
     act(() => button.click());
-    const low = [...document.querySelectorAll<HTMLButtonElement>("button")].find(item => item.textContent?.includes("Low"));
+    const low = [...document.querySelectorAll<HTMLButtonElement>("button")].find(item => item.textContent?.includes("low"));
     expect(low).toBeTruthy();
     act(() => low!.click());
     expect(onThinkingLevelChange).toHaveBeenCalledWith("low");
