@@ -567,7 +567,7 @@ export const resources = {
         runTitle: "Model service error",
         unknown: "The run failed. Please try again later.",
         insufficientCredit:
-          "Insufficient account balance, so this run could not finish. Please top up at https://future-os.cn/platform/#recharge and try again — if you are on a team account, ask your admin to recharge.",
+          "Insufficient account credit, so this run could not finish. Please contact your administrator to add credit, then try again.",
         auth: "Check your model provider settings and try again.",
         authTitle: "Model service authentication failed",
         serverErrorTitle: "Model service is temporarily unavailable",
@@ -1555,7 +1555,7 @@ export const resources = {
         runTitle: "模型服务异常",
         unknown: "运行失败，请稍后重试。",
         insufficientCredit:
-          "账户余额不足，本次对话未能完成。请前往 https://future-os.cn/platform/#recharge 充值后重试；如果您使用的是团队账户，请联系管理员充值。",
+          "账户额度不足，本次对话未能完成。请联系管理员补充额度后重试。",
         auth: "请检查模型提供商配置后重试。",
         authTitle: "模型服务验证失败",
         serverErrorTitle: "模型服务暂时不可用",
