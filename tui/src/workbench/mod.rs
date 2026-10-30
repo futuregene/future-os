@@ -1169,15 +1169,17 @@ impl Workbench {
     ///
     /// Inside each half the rows are ordered by [`palette_rank`]: the best
     /// answer to what the reader is typing is first, and `enter` runs it. Ties
-    /// break differently in the two halves — commands keep the order they are
-    /// declared in, skills are alphabetical by name, because a skill has no
-    /// designed order at all: the agent lists them as it discovered them, so two
-    /// machines with the same skills showed them differently and a reader could
-    /// only find one by scanning the whole column.
+    /// read alphabetically in both halves, so a filtered list has the same shape
+    /// as the full one — commands because [`COMMANDS`] is declared in name order
+    /// and this sort is stable, skills because a skill has no designed order at
+    /// all: the agent lists them as it discovered them, so two machines with the
+    /// same skills showed them differently and a reader could only find one by
+    /// scanning the whole column.
     pub fn palette_rows(&self, data: &WorkbenchData) -> Vec<PaletteRow> {
         let needle = self.palette_query.trim_start_matches('/').to_lowercase();
         let ranked = |mut rows: Vec<(PaletteMatch, PaletteRow)>| {
-            // Stable, so rows of one rank stay in the order they are declared.
+            // Stable, so rows of one rank stay in the order they are declared
+            // — and `COMMANDS` is declared alphabetically.
             rows.sort_by_key(|(rank, _)| *rank);
             rows.into_iter().map(|(_, row)| row)
         };
@@ -4513,8 +4515,9 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 }
 
 /// The `/` palette's rows: `(command, description)`, in the order an empty
-/// query lists them. Kept here rather than in the app so the palette and the
-/// tests share one list.
+/// query lists them — which is alphabetical by name, and asserted to stay that
+/// way (`the_command_column_is_alphabetical`). Kept here rather than in the app
+/// so the palette and the tests share one list.
 ///
 /// **A row is here when naming the verb is the only way in.** A verb that
 /// already answers to a key — a chord (`ctrl+g` for the repository), a row in
@@ -4525,28 +4528,31 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 /// [`TYPED_ONLY`] is where those verbs live. The two lists are the whole
 /// vocabulary, and `every_palette_entry_has_a_handler` walks both.
 ///
-/// The order is the rank order for an empty query, so it is read as "what a
-/// reader opens this menu for": the prompts queued behind a run first, then the
-/// reading verbs, then the two that name a conversation under the rail's
-/// cursor — `/pin` and `/delete`, the pair with no chord, one of which is the
-/// only destructive verb on the surface.
+/// **The order is a name order, not a rank.** These sixteen are a list a reader
+/// reads *for a name they already have in mind* (`/fork`, `/export`), and an
+/// alphabetical column is the only order that answers "where is it?" without
+/// being memorised — the surface's other ordering rules ("most used first",
+/// "what the next message runs with") describe sets that fit on one line, not
+/// sixteen rows. A consequence worth naming: `enter` on an empty query runs the
+/// first row by name (`/approval`), so the top of this list is a letter and not
+/// a recommendation.
 pub const COMMANDS: [(&str, Key); 16] = [
-    ("/queue", Key::CmdQueue),
-    ("/copy", Key::CmdCopy),
-    ("/preview", Key::CmdPreview),
-    ("/refresh", Key::CmdRefresh),
     ("/approval", Key::CmdApproval),
-    ("/history", Key::CmdHistory),
-    ("/tree", Key::CmdTree),
-    ("/fork", Key::CmdFork),
-    ("/worktree", Key::CmdWorktree),
     ("/compact", Key::CmdCompact),
-    ("/tools", Key::CmdTools),
-    ("/providers", Key::CmdProviders),
-    ("/reply-detail", Key::CmdReplyDetail),
-    ("/export", Key::CmdExport),
-    ("/pin", Key::CmdPin),
+    ("/copy", Key::CmdCopy),
     ("/delete", Key::CmdDelete),
+    ("/export", Key::CmdExport),
+    ("/fork", Key::CmdFork),
+    ("/history", Key::CmdHistory),
+    ("/pin", Key::CmdPin),
+    ("/preview", Key::CmdPreview),
+    ("/providers", Key::CmdProviders),
+    ("/queue", Key::CmdQueue),
+    ("/refresh", Key::CmdRefresh),
+    ("/reply-detail", Key::CmdReplyDetail),
+    ("/tools", Key::CmdTools),
+    ("/tree", Key::CmdTree),
+    ("/worktree", Key::CmdWorktree),
 ];
 
 /// The verbs the palette does **not** list, `(command, description)` with the
@@ -8203,6 +8209,37 @@ mod tests {
         );
     }
 
+    /// The command column is alphabetical by name, in the list and in what the
+    /// palette paints.
+    ///
+    /// The order is a name order (see [`COMMANDS`]): a reader opens this menu
+    /// holding the verb they want, so an alphabetical column is the only one
+    /// that answers "where is it?" without being memorised. Both halves are
+    /// asserted here — the table itself, so a row inserted at the end fails
+    /// instead of quietly landing out of order, and the painted rows, so the
+    /// ranking's stable sort is what actually reaches the reader.
+    #[test]
+    fn the_command_column_is_alphabetical() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let table: Vec<&str> = COMMANDS.iter().map(|(command, _)| *command).collect();
+        let mut sorted = table.clone();
+        sorted.sort_unstable();
+        assert_eq!(table, sorted, "`COMMANDS` is declared in name order");
+
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        let listed: Vec<String> = workbench
+            .palette_rows(&data)
+            .into_iter()
+            .filter(|row| !row.is_skill())
+            .map(|row| row.label().to_string())
+            .collect();
+        let mut alphabetical = listed.clone();
+        alphabetical.sort();
+        assert_eq!(listed, alphabetical, "commands are listed alphabetically");
+        assert_eq!(listed.len(), COMMANDS.len(), "every verb is on the list");
+    }
+
     /// A word after a chooser's verb is that chooser's search line.
     ///
     /// `/model deepseek` used to open the whole list with the argument dropped:
@@ -8264,17 +8301,29 @@ mod tests {
             "the verbs lead: {heading}"
         );
         // A verb and a skill on one painted line: the columns really are two.
-        // The skill is the alphabetically first one, not the demo's first row.
+        // Both labels are read off the list instead of hard-coded — the verb is
+        // whatever leads it (the alphabetically first one) and the skill is the
+        // alphabetically first skill, not the demo's first row.
+        let rows = workbench.palette_rows(&data);
+        let leading = rows
+            .iter()
+            .find(|row| !row.is_skill())
+            .map(|row| row.label())
+            .expect("a verb leads the list");
+        let leading_skill = rows
+            .iter()
+            .find(|row| row.is_skill())
+            .map(|row| row.label())
+            .expect("a skill follows it");
         let shared = painted
             .lines()
-            .find(|line| line.contains("/queue") && line.contains("future-peer-review"))
+            .find(|line| line.contains(leading) && line.contains(leading_skill))
             .unwrap_or_else(|| panic!("a verb and a skill share a row:\n{painted}"));
         assert!(
-            shared.find("/queue").unwrap() < shared.find("future-peer-review").unwrap(),
+            shared.find(leading).unwrap() < shared.find(leading_skill).unwrap(),
             "the skill column is on the right: {shared}"
         );
         // The list underneath is still one list: commands first, skills after.
-        let rows = workbench.palette_rows(&data);
         let commands = rows.iter().filter(|row| !row.is_skill()).count();
         assert_eq!(commands, COMMANDS.len());
         assert!(rows[commands].is_skill());
@@ -8287,6 +8336,17 @@ mod tests {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 80, 38);
         workbench.handle(WbEvent::Key("/".into()), &data);
+        let rows = workbench.palette_rows(&data);
+        let leading = rows
+            .iter()
+            .find(|row| !row.is_skill())
+            .map(|row| row.label())
+            .expect("a verb leads the list");
+        let leading_skill = rows
+            .iter()
+            .find(|row| row.is_skill())
+            .map(|row| row.label())
+            .expect("a skill follows it");
         let painted = plain(&workbench.render(&data, 80, 38));
         assert!(
             !painted
@@ -8297,7 +8357,7 @@ mod tests {
         assert!(
             !painted
                 .lines()
-                .any(|line| line.contains("/queue") && line.contains("future-peer-review")),
+                .any(|line| line.contains(leading) && line.contains(leading_skill)),
             "one list, one row each:\n{painted}"
         );
     }

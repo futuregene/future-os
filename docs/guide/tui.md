@@ -246,12 +246,13 @@ box (`ctrl+q` holds the language and the theme) or its own printable key (`?`)
 — is not listed: the menu is where a reader looks for what they cannot find
 anywhere else, and a second name for something already on the screen only
 pushes a verb that has no other door below the fold. So the palette offers
-sixteen verbs (`/queue` … `/pin`, `/delete`) and not `/new`, `/stop`,
-`/paste`, `/git`, `/files`, `/mode`, `/sessions`, `/model`, `/thinking`,
-`/workspace`, `/quit`, `/help`, `/theme`, `/lang`, `/mouse`, `/preferences` or
-the older `/sandbox`. Unlisted is not unhandled: every one of them still works
-when typed, so a reader with an old spelling in their fingers reaches the verb
-instead of sending `/theme` to the agent as a prompt.
+sixteen verbs — listed alphabetically, from `/approval` to `/worktree`, because a
+reader opens the menu holding the name of the verb they want — and not `/new`,
+`/stop`, `/paste`, `/git`, `/files`, `/mode`, `/sessions`, `/model`,
+`/thinking`, `/workspace`, `/quit`, `/help`, `/theme`, `/lang`, `/mouse`,
+`/preferences` or the older `/sandbox`. Unlisted is not unhandled: every one of
+them still works when typed, so a reader with an old spelling in their fingers
+reaches the verb instead of sending `/theme` to the agent as a prompt.
 
 The map stops there because the letters do: a terminal sends Backspace, Tab,
 `\n` and Enter for `ctrl+h`/`i`/`j`/`m`; `ctrl+a` and `ctrl+b` are the default
