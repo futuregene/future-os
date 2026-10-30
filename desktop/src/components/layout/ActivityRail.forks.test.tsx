@@ -112,6 +112,43 @@ describe("activity rail forks", () => {
     expect(list.textContent).not.toContain("Hidden fork");
   });
 
+  /**
+   * A fold the reader closed stays closed while the list around it updates.
+   *
+   * The list gets a new `threads` array about once a second while a run streams
+   * (the store patches the running row's activity stamp into a fresh array), and
+   * the rule "open what hides the active conversation" used to be keyed on the
+   * parent map rebuilt from that array — so it re-ran on every push and re-opened
+   * the row the reader had just folded, right under the pointer: "click − and it
+   * collapses, then expands by itself".
+   */
+  it("keeps a fold the reader closed while the list updates", async () => {
+    const threads = [
+      conversation("parent", "Original conversation"),
+      conversation("fork", "Forked conversation", "parent"),
+    ];
+    const { container, root } = await render(props(threads, "fork"));
+
+    const list = container.querySelector("[data-activity-rail-content]")!;
+    expect(list.textContent).toContain("Forked conversation");
+
+    // The row's own `−`, not a section heading's: the two are one click apart
+    // in this fixture and fold different things.
+    const toggle = [...list.querySelectorAll("button")]
+      .find(button => button.getAttribute("aria-label")?.includes("child conversations"))!;
+    act(() => toggle.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(list.textContent).not.toContain("Forked conversation");
+
+    // The same list, rebuilt the way an activity push rebuilds it: a new array
+    // with the running row's stamp advanced.
+    const updated = threads.map(thread => ({ ...thread, lastMessageAt: 1 }));
+    act(() => root.render(<ActivityRail {...props(updated, "fork")} />));
+    await flushAsync();
+
+    expect(list.textContent).toContain("Original conversation");
+    expect(list.textContent).not.toContain("Forked conversation");
+  });
+
   it("opens the whole chain for a fork of a fork", async () => {
     const { container } = await render(props([
       conversation("root", "Root conversation"),
