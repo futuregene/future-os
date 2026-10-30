@@ -316,13 +316,7 @@ pub(crate) fn compose(
             paint_overlay(&mut rows, &palette, lines, columns);
             workbench.set_cursor(None);
         }
-        Some(
-            overlay @ (Overlay::Approval
-            | Overlay::Diff
-            | Overlay::History
-            | Overlay::Fork
-            | Overlay::Worktree),
-        ) => {
+        Some(overlay @ (Overlay::Approval | Overlay::Diff | Overlay::Fork | Overlay::Worktree)) => {
             let lines = workflow_box(workbench, data, &palette, w, h, overlay);
             paint_overlay(&mut rows, &palette, lines, columns);
             workbench.set_cursor(None);
@@ -1343,7 +1337,6 @@ fn workflow_box(
     let (title_key, hint_key) = match overlay {
         Overlay::Approval => (Key::ApprovalTitle, Key::ApprovalHint),
         Overlay::Diff => (Key::DiffTitle, Key::DiffHint),
-        Overlay::History => (Key::HistoryTitle, Key::HistoryHint),
         Overlay::Fork => (Key::ForkTitle, Key::ForkHint),
         Overlay::Worktree => (Key::WorktreeTitle, Key::WorktreeHint),
         _ => unreachable!(),
@@ -1362,13 +1355,6 @@ fn workflow_box(
             columns,
         ));
     }
-    if overlay == Overlay::History {
-        rows.push(widgets::box_row(
-            palette,
-            &format!("> {}", workbench.history_query),
-            columns,
-        ));
-    }
     let header = rows.len();
     let available = (h as usize).saturating_sub(header + 1);
     workbench.set_list_page(available);
@@ -1377,21 +1363,6 @@ fn workflow_box(
         return indent(rows, left, w as usize);
     }
     let body = match overlay {
-        Overlay::History => {
-            let sessions = workflows::filtered_sessions(&data.sessions, &workbench.history_query);
-            if sessions.is_empty() {
-                vec![t(workbench.lang, Key::HistoryEmpty).into()]
-            } else {
-                // One table for the whole list, so the workspace and age
-                // columns line up down the rows instead of starting wherever
-                // each title ended (`#` read as ragged text before this).
-                workflows::session_table(
-                    &sessions,
-                    workbench.workflow_index,
-                    columns.saturating_sub(4),
-                )
-            }
-        }
         Overlay::Fork => {
             if data.fork_points.is_empty() {
                 vec![t(workbench.lang, Key::ForkEmpty).into()]
@@ -1444,10 +1415,7 @@ fn workflow_box(
     // and a long title would otherwise fold into two rows — the marker then
     // jumps two rows per press and the entries seem to skip. The detail
     // overlays are prose and keep wrapping.
-    let body = if matches!(
-        overlay,
-        Overlay::History | Overlay::Fork | Overlay::Worktree
-    ) {
+    let body = if matches!(overlay, Overlay::Fork | Overlay::Worktree) {
         body.into_iter()
             .map(|line| fit(&line, columns.saturating_sub(4)))
             .collect()
@@ -1473,10 +1441,7 @@ fn workflow_box(
     .into_iter()
     .enumerate()
     {
-        if matches!(
-            overlay,
-            Overlay::History | Overlay::Fork | Overlay::Worktree
-        ) {
+        if matches!(overlay, Overlay::Fork | Overlay::Worktree) {
             workbench.hit_map().push(
                 Rect::new(
                     (left + 1) as u16,

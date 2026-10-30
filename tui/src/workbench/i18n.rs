@@ -401,7 +401,6 @@ pub enum Key {
     CmdApproval,
     CmdThinking,
     CmdMode,
-    CmdHistory,
     CmdFork,
     CmdWorktree,
     CmdCompact,
@@ -424,9 +423,6 @@ pub enum Key {
     ApprovalNoRule,
     ApprovalRuleFailed,
     ApprovalRuleAdded,
-    HistoryTitle,
-    HistoryHint,
-    HistoryEmpty,
     ForkTitle,
     ForkHint,
     ForkEmpty,
@@ -873,7 +869,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         CmdNew => ("新建会话", "New chat"),
         CmdStop => ("停止当前生成", "Stop the current run"),
         CmdApproval => ("查看完整审批详情", "Inspect the pending approval"),
-        CmdHistory => ("搜索历史会话", "Search session history"),
         CmdFork => ("从用户消息节点创建分支会话", "Fork from a user-message point"),
         CmdWorktree => ("列出、进入或新建 git worktree", "List, enter or create a git worktree"),
         CmdThinking => ("选择思考等级", "Choose the reasoning effort"),
@@ -901,9 +896,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ApprovalNoRule => ("此审批没有可用的工作区允许规则", "This approval has no workspace allow rule"),
         ApprovalRuleFailed => ("无法添加允许规则，审批仍未决定：{}", "Could not add the allow rule; approval is still pending: {}"),
         ApprovalRuleAdded => ("已添加本次运行规则并批准请求", "This-run rule added and request approved"),
-        HistoryTitle => ("历史搜索", "History search"),
-        HistoryHint => ("输入筛选标题、首条消息、目录或 id · ↑↓ 选择 · ⏎ 打开 · esc 关闭", "Filter title, first message, directory or id · ↑↓ choose · enter opens · esc closes"),
-        HistoryEmpty => ("没有匹配的会话", "No matching sessions"),
         ForkTitle => ("选择 fork 节点", "Choose a fork point"),
         ForkHint => ("↑↓ 选择真实用户消息 · ⏎ 创建并打开分支会话 · esc 取消", "↑↓ choose a real user message · enter creates and opens a fork · esc cancels"),
         ForkEmpty => ("没有可 fork 的用户消息", "No user-message fork points"),
@@ -1467,7 +1459,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 348] = {
+    const ALL_KEYS: [Key; 344] = {
         use Key::*;
         [
             TabTodo,
@@ -1601,7 +1593,6 @@ mod tests {
             CmdApproval,
             CmdThinking,
             CmdMode,
-            CmdHistory,
             CmdFork,
             CmdWorktree,
             CmdCompact,
@@ -1624,9 +1615,6 @@ mod tests {
             ApprovalNoRule,
             ApprovalRuleFailed,
             ApprovalRuleAdded,
-            HistoryTitle,
-            HistoryHint,
-            HistoryEmpty,
             ForkTitle,
             ForkHint,
             ForkEmpty,
