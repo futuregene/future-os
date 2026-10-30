@@ -69,7 +69,7 @@ describe("shortcut store", () => {
     expect(store.resolvedBindingText("chat.new")).toBe("mod+n");
     expect(store.resolvedBindingText("panel.left")).toBe("ctrl+alt+KeyL");
     store.resetAllCommandBindings();
-    expect(store.resolvedBindingText("panel.left")).toBe("mod+b");
+    expect(store.resolvedBindingText("panel.left")).toBe("mod+d");
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
   });
 
@@ -105,7 +105,7 @@ describe("shortcut store", () => {
     }));
     const store = await freshStore();
     expect(store.resolvedBindingText("chat.new")).toBe("mod+n");
-    expect(store.resolvedBindingText("panel.left")).toBe("mod+b");
+    expect(store.resolvedBindingText("panel.left")).toBe("mod+d");
     // Nothing was written back: the unreadable document is simply not consulted.
     expect(store.shortcutOverrides()).toEqual({});
   });
