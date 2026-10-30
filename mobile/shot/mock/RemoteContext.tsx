@@ -136,6 +136,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       : demoDesktops).map(
     (desktop, index) => (parserDemo && index === 0 ? { ...desktop, name: parserDesktopName } : desktop),
   );
+  const [modelId, setModelId] = useState(parserDemo ? "future/deepseek-flash" : "future/deepseek-v4-pro");
+  const [thinkingLevel, setThinkingLevel] = useState("medium");
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [draft, setDraft] = useState(false);
   const [desktopId, setDesktopId] = useState(pairedDesktops[0]?.desktopId ?? "");
@@ -403,8 +405,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     compacting: scriptedCompaction ? baseTimeline.compacting === true : new URLSearchParams(window.location.search).get("compacting") === "1",
 
     // Composer settings
-    modelId: parserDemo ? "future/deepseek-flash" : "future/deepseek-v4-pro",
-    thinkingLevel: "medium",
+    modelId,
+    thinkingLevel,
+    setModel: async (value: string) => setModelId(value),
+    setThinkingLevel: async (value: string) => setThinkingLevel(value),
     // The amount in the top bar, refreshed by every state read in the app.
     sessionUsage: usageOverride ?? (selectedSessionId === "sess_chat_pvalue" ? demoUnpricedSessionUsage : demoSessionUsage),
     approvalTier: "off",

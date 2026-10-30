@@ -1,192 +1,32 @@
-import { Check, X } from "lucide-react-native";
-import { useEffect } from "react";
-import {
-  Keyboard,
-  Modal,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
 import type { TFunction } from "i18next";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { SelectionSheet } from "../../../components/SelectionSheet";
 import { thinkingLevelLabel } from "../../../i18n/thinkingLevelLabel";
-import { useRemote } from "../../../remote/RemoteContext";
+import type { useRemote } from "../../../remote/RemoteContext";
 import { modelReference, modelThinkingLevels, resolveModelThinkingLevel } from "../../../remote/types";
-import { layout, radius, spacing } from "../../../theme/tokens";
-import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
 
 type Remote = ReturnType<typeof useRemote>;
 
-export function ModelSelectorSheet({
-  selector,
-  setSelector,
-  remote,
-  t,
-}: {
+/** Chat adapter for the same sheet used by Fusion's independent role settings. */
+export function ModelSelectorSheet({ selector, setSelector, remote, t }: {
   selector: "model" | "thinking" | null;
   setSelector: (value: "model" | "thinking" | null) => void;
   remote: Remote;
   t: TFunction;
 }) {
-  const styles = useStyles();
-  const { colors } = useTheme();
-  const insets = useSafeAreaInsets();
-  // The levels this conversation's model offers, in the host's own order and
-  // wording: a current host declares them (always starting with "default"), an
-  // older one falls back to the legacy six. The host clamps anything outside the
-  // list, so the sheet does not offer a level the run would silently snap away
-  // from — and a value with no label yet is shown as its raw wire token.
   const selectedModel = remote.models.find(model => modelReference(model) === remote.modelId);
   const thinkingLevels = modelThinkingLevels(selectedModel);
-  // A stored level this model no longer offers is shown as the model's own
-  // starting level: leaving it unhighlighted would claim the conversation runs at
-  // an effort the host clamps away.
   const thinkingLevel = resolveModelThinkingLevel(remote.thinkingLevel, selectedModel);
-  // The composer keeps the IME up when the sheet opens (the picker is opened
-  // from the composer toolbar, not from a dismiss-first panel), and a RN Modal
-  // is its own window, so a bottom-anchored sheet would sit behind the
-  // keyboard: the lower model rows become untappable. Dismiss it so the whole
-  // list is reachable, the same way the usage/files panels do.
-  const open = selector !== null;
-  useEffect(() => {
-    if (open) Keyboard.dismiss();
-  }, [open]);
-  return (
-    <Modal
-      animationType="slide"
-      onRequestClose={() => setSelector(null)}
-      transparent
-      visible={selector !== null}
-    >
-        <View style={[styles.selectorOverlay, {
-          paddingBottom: insets.bottom + layout.gutter,
-          paddingLeft: insets.left + layout.gutter,
-          paddingRight: insets.right + layout.gutter,
-        }]}>
-          <Pressable
-            accessible={false}
-            onPress={() => setSelector(null)}
-            style={StyleSheet.absoluteFill}
-          />
-            <View accessibilityViewIsModal style={styles.selectorMenu}>
-              <View style={styles.selectorHeader}>
-                <Text accessibilityRole="header" style={styles.selectorTitle}>
-                  {t(selector === "model" ? "chat.model" : "chat.thinkingLevel")}
-                </Text>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={t("common.close")}
-                  onPress={() => setSelector(null)}
-                  style={({ pressed }) => [styles.closeButton, pressed && styles.selectorOptionPressed]}
-                >
-                  <X color={colors.inkSoft} size={20} />
-                </Pressable>
-              </View>
-              <ScrollView bounces={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.options}>
-                {selector === "model" && remote.models.length === 0 && (
-                  <Text style={styles.selectorOptionLabel}>{t("connection.noModels")}</Text>
-                )}
-                {selector === "model" && remote.models.map(model => {
-                      const selected = modelReference(model) === remote.modelId;
-                      return (
-                        <Pressable
-                          key={`${model.provider ?? ""}/${model.id}`}
-                          accessibilityRole="radio"
-                          accessibilityState={{ checked: selected }}
-                          onPress={() => {
-                            setSelector(null);
-                            void remote.setModel(modelReference(model));
-                          }}
-                          style={({ pressed }) => [
-                            styles.selectorOption,
-                            selected && styles.selectorOptionSelected,
-                            pressed && styles.selectorOptionPressed,
-                          ]}
-                        >
-                          <View style={styles.selectorOptionCopy}>
-                            <Text style={styles.selectorOptionLabel}>
-                              {model.label || model.id}
-                            </Text>
-                            {model.provider ? (
-                              <Text numberOfLines={1} style={styles.selectorOptionMeta}>
-                                {model.provider}
-                              </Text>
-                            ) : null}
-                          </View>
-                          {selected ? <Check color={colors.accent} size={18} /> : null}
-                        </Pressable>
-                      );
-                    })}
-                {selector === "thinking" && thinkingLevels.map(level => {
-                      const selected = level === thinkingLevel;
-                      return (
-                        <Pressable
-                          key={level}
-                          accessibilityRole="radio"
-                          accessibilityState={{ checked: selected }}
-                          onPress={() => {
-                            setSelector(null);
-                            void remote.setThinkingLevel(level);
-                          }}
-                          style={({ pressed }) => [
-                            styles.selectorOption,
-                            selected && styles.selectorOptionSelected,
-                            pressed && styles.selectorOptionPressed,
-                          ]}
-                        >
-                          <Text style={styles.selectorOptionLabel}>{thinkingLevelLabel(t, level)}</Text>
-                          {selected ? <Check color={colors.accent} size={18} /> : null}
-                        </Pressable>
-                      );
-                    })}
-              </ScrollView>
-            </View>
-        </View>
-    </Modal>
-  );
+  return <SelectionSheet
+    visible={selector !== null}
+    title={t(selector === "model" ? "chat.model" : "chat.thinkingLevel")}
+    closeLabel={t("common.close")}
+    emptyLabel={t("connection.noModels")}
+    options={selector === "model" ? remote.models.map(model => ({ value: modelReference(model), label: model.label || model.id, description: model.provider })) : thinkingLevels.map(level => ({ value: level, label: thinkingLevelLabel(t, level) }))}
+    selectedValue={selector === "model" ? remote.modelId : thinkingLevel ?? null}
+    onClose={() => setSelector(null)}
+    onSelect={value => {
+      if (selector === "model") void remote.setModel(value);
+      else if (selector === "thinking") void remote.setThinkingLevel(value);
+    }}
+  />;
 }
-
-const useStyles = createThemedStyles(theme => StyleSheet.create({
-  selectorOverlay: {
-    flex: 1,
-    justifyContent: "flex-end",
-    padding: layout.gutter,
-    backgroundColor: theme.colors.overlay,
-  },
-  selectorMenu: {
-    width: "100%",
-    maxWidth: layout.formMaxWidth,
-    alignSelf: "center",
-    maxHeight: "85%",
-    overflow: "hidden",
-    padding: spacing.sm,
-    borderRadius: radius.xl,
-    backgroundColor: theme.colors.surface,
-  },
-  selectorHeader: { flexDirection: "row", alignItems: "center", paddingLeft: spacing.md, marginBottom: spacing.sm },
-  closeButton: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center", borderRadius: radius.pill },
-  options: { gap: spacing.xs, paddingBottom: spacing.sm },
-  selectorTitle: {
-    flex: 1,
-    paddingVertical: spacing.sm,
-    color: theme.colors.inkStrong,
-    fontSize: theme.font(18),
-    fontWeight: "700",
-  },
-  selectorOption: {
-    minHeight: 56,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: radius.md,
-  },
-  selectorOptionSelected: { backgroundColor: theme.colors.accentSoft },
-  selectorOptionPressed: { opacity: 0.72 },
-  selectorOptionCopy: { minWidth: 0, flex: 1 },
-  selectorOptionLabel: { flexShrink: 1, color: theme.colors.ink, fontSize: theme.font(15), fontWeight: "600" },
-  selectorOptionMeta: { marginTop: 2, color: theme.colors.inkMuted, fontSize: theme.font(12) },
-}));
