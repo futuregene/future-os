@@ -131,29 +131,6 @@ fn surfaces() -> Vec<Surface> {
     });
 
     let mut data = demo::chat();
-    data.sessions = (0..10)
-        .map(|index| SessionRow {
-            id: format!("T{index:02}-session-identifier-that-is-quite-long-indeed"),
-            title: format!("T{index:02} 一个会被迫换行的中文会话标题，长度足以撑满整行"),
-            workspace: format!("D:/future-os/.worktrees/tree-branch-{index}"),
-            parent_id: (index > 0 && index < 5)
-                .then(|| "T00-session-identifier-that-is-quite-long-indeed".to_string()),
-            ..SessionRow::default()
-        })
-        .collect();
-    out.push(Surface {
-        name: "tree",
-        data,
-        open: Box::new(|wb, _| wb.overlay = Some(Overlay::Tree)),
-        id: |index| format!("workflow.row.{index}"),
-        token: |index| format!("T{index:02} "),
-        marker: true,
-        selection: Selection::Workflow,
-        down: "down",
-        count: 10,
-    });
-
-    let mut data = demo::chat();
     data.fork_points = (0..9)
         .map(|index| ForkPoint {
             id: format!("e{index}"),

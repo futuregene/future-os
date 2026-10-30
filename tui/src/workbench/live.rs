@@ -78,7 +78,7 @@ struct Paging {
 /// ([`super::Workbench::surface_command`]) and this list have to account for
 /// every entry exactly once. That is the check whose absence let five entries
 /// advertise themselves and then answer `Unknown command`.
-pub const APP_COMMANDS: [&str; 18] = [
+pub const APP_COMMANDS: [&str; 17] = [
     "/new",
     "/stop",
     "/reply-detail",
@@ -94,7 +94,6 @@ pub const APP_COMMANDS: [&str; 18] = [
     "/files",
     "/approval",
     "/history",
-    "/tree",
     "/fork",
     "/worktree",
 ];
@@ -2186,15 +2185,6 @@ impl Live {
             "compact" => {
                 self.compact(arg).await;
             }
-            "sandbox" => {
-                // `/sandbox <mode>` sets it; a bare `/sandbox` is the menu the
-                // driver opens before this handler ever sees it.
-                if crate::approval_mode::ApprovalMode::from_wire(&arg).is_some() {
-                    self.set_approval(&arg).await;
-                } else {
-                    self.cycle_mode().await;
-                }
-            }
             "history" | "fork" => {}
             "worktree" if !arg.is_empty() => {
                 if arg.strip_prefix("new ").is_some() {
@@ -2311,14 +2301,13 @@ impl Live {
             // `/thinking`, `/mode`, `/workspace`) come back
             // to the surface the same way: the picker is not the agent's.
             // The verbs the *driver* answers before this handler ever runs: the
-            // boxes it opens (`/git`, `/files`, `/approval`,
-            // `/tree`), the choosers the surface opens for the reader, and the
-            // names the panels took with them (`/usage`, `/skills`). They are
-            // listed so a caller that bypasses the driver is not told a command
-            // the palette advertises does not exist — the notice the whole
-            // family used to produce.
+            // boxes it opens (`/git`, `/files`, `/approval`), the choosers the
+            // surface opens for the reader, and the names the panels took with
+            // them (`/usage`, `/skills`). They are listed so a caller that
+            // bypasses the driver is not told a command the palette advertises
+            // does not exist — the notice the whole family used to produce.
             "usage" | "skills" | "workspace" | "help" | "thinking" | "mode" | "git" | "files"
-            | "approval" | "tree" | "worktree" => {}
+            | "approval" | "worktree" => {}
             other => self.notice = Some(format!("Unknown command /{other}")),
         }
         Outcome::Continue

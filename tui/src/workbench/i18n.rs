@@ -402,10 +402,8 @@ pub enum Key {
     CmdThinking,
     CmdMode,
     CmdHistory,
-    CmdTree,
     CmdFork,
     CmdWorktree,
-    CmdSandbox,
     CmdCompact,
     CmdTools,
     DiffTitle,
@@ -429,8 +427,6 @@ pub enum Key {
     HistoryTitle,
     HistoryHint,
     HistoryEmpty,
-    TreeTitle,
-    TreeHint,
     ForkTitle,
     ForkHint,
     ForkEmpty,
@@ -869,13 +865,8 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         CmdStop => ("停止当前生成", "Stop the current run"),
         CmdApproval => ("查看完整审批详情", "Inspect the pending approval"),
         CmdHistory => ("搜索历史会话", "Search session history"),
-        CmdTree => ("浏览会话父子树", "Browse the session tree"),
         CmdFork => ("从用户消息节点创建分支会话", "Fork from a user-message point"),
         CmdWorktree => ("列出、进入或新建 git worktree", "List, enter or create a git worktree"),
-        CmdSandbox => (
-            "审批模式的旧写法（等同于上面的选择器）",
-            "The older spelling of the approval mode (same chooser)",
-        ),
         CmdThinking => ("选择思考等级", "Choose the reasoning effort"),
         CmdMode => (
             "选择审批模式：手动 / 沙箱 / 自动 / 完全访问",
@@ -904,8 +895,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         HistoryTitle => ("历史搜索", "History search"),
         HistoryHint => ("输入筛选标题、首条消息、目录或 id · ↑↓ 选择 · ⏎ 打开 · esc 关闭", "Filter title, first message, directory or id · ↑↓ choose · enter opens · esc closes"),
         HistoryEmpty => ("没有匹配的会话", "No matching sessions"),
-        TreeTitle => ("会话树", "Session tree"),
-        TreeHint => ("↑↓ 选择 · ⏎ 打开 · esc 关闭", "↑↓ choose · enter opens · esc closes"),
         ForkTitle => ("选择 fork 节点", "Choose a fork point"),
         ForkHint => ("↑↓ 选择真实用户消息 · ⏎ 创建并打开分支会话 · esc 取消", "↑↓ choose a real user message · enter creates and opens a fork · esc cancels"),
         ForkEmpty => ("没有可 fork 的用户消息", "No user-message fork points"),
@@ -1456,7 +1445,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 345] = {
+    const ALL_KEYS: [Key; 341] = {
         use Key::*;
         [
             TabTodo,
@@ -1591,10 +1580,8 @@ mod tests {
             CmdThinking,
             CmdMode,
             CmdHistory,
-            CmdTree,
             CmdFork,
             CmdWorktree,
-            CmdSandbox,
             CmdCompact,
             CmdTools,
             DiffTitle,
@@ -1618,8 +1605,6 @@ mod tests {
             HistoryTitle,
             HistoryHint,
             HistoryEmpty,
-            TreeTitle,
-            TreeHint,
             ForkTitle,
             ForkHint,
             ForkEmpty,

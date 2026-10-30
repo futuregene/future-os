@@ -138,7 +138,6 @@ pub enum Overlay {
     /// the agent, while a tree belongs to the session on screen.
     Files,
     History,
-    Tree,
     Fork,
     Worktree,
     /// The confirm box in front of a delete. The one destructive verb on the
@@ -2452,7 +2451,6 @@ impl Workbench {
             Overlay::Approval
                 | Overlay::Diff
                 | Overlay::History
-                | Overlay::Tree
                 | Overlay::Fork
                 | Overlay::Worktree
         ) {
@@ -2809,7 +2807,6 @@ impl Workbench {
             | Overlay::Git
             | Overlay::Files
             | Overlay::History
-            | Overlay::Tree
             | Overlay::Fork
             | Overlay::Worktree => Vec::new(),
             Overlay::Picker(kind) => match key {
@@ -3110,7 +3107,6 @@ impl Workbench {
             Overlay::History => {
                 workflows::filtered_sessions(&data.sessions, &self.history_query).len()
             }
-            Overlay::Tree => data.sessions.len(),
             Overlay::Fork => data.fork_points.len(),
             Overlay::Worktree => data.worktrees.len(),
             Overlay::Diff => data.diff.as_ref().map_or(0, |diff| diff.files.len()),
@@ -3236,10 +3232,6 @@ impl Workbench {
                             .map(|row| vec![WbAction::SwitchSession(row.id.clone())])
                             .unwrap_or_default()
                     }
-                    Overlay::Tree => workflows::tree_sessions(&data.sessions)
-                        .get(self.workflow_index)
-                        .map(|(row, _)| vec![WbAction::SwitchSession(row.id.clone())])
-                        .unwrap_or_default(),
                     Overlay::Fork => data
                         .fork_points
                         .get(self.workflow_index)
@@ -4105,9 +4097,7 @@ impl Workbench {
     pub fn surface_command(&mut self, command: &str, data: &WorkbenchData) -> VerbOutcome {
         let name = command.trim_start_matches('/').trim();
         match name {
-            "approval" | "diff" | "git" | "history" | "tree" | "fork" | "worktree" => {
-                VerbOutcome::Agent
-            }
+            "approval" | "diff" | "git" | "history" | "fork" | "worktree" => VerbOutcome::Agent,
             "queue" => {
                 self.overlay = Some(Overlay::Queue);
                 self.queue_index = self.queue_index.min(data.queue.len().saturating_sub(1));
@@ -4535,15 +4525,15 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 /// [`TYPED_ONLY`] is where those verbs live. The two lists are the whole
 /// vocabulary, and `every_palette_entry_has_a_handler` walks both.
 ///
-/// **The order is a name order, not a rank.** These fourteen are a list a reader
+/// **The order is a name order, not a rank.** These thirteen are a list a reader
 /// reads *for a name they already have in mind* (`/fork`, `/export`), and an
 /// alphabetical column is the only order that answers "where is it?" without
 /// being memorised — the surface's other ordering rules ("most used first",
 /// "what the next message runs with") describe sets that fit on one line, not
-/// fourteen rows. A consequence worth naming: `enter` on an empty query runs the
+/// thirteen rows. A consequence worth naming: `enter` on an empty query runs the
 /// first row by name (`/approval`), so the top of this list is a letter and not
 /// a recommendation.
-pub const COMMANDS: [(&str, Key); 14] = [
+pub const COMMANDS: [(&str, Key); 13] = [
     ("/approval", Key::CmdApproval),
     ("/compact", Key::CmdCompact),
     ("/copy", Key::CmdCopy),
@@ -4556,7 +4546,6 @@ pub const COMMANDS: [(&str, Key); 14] = [
     ("/refresh", Key::CmdRefresh),
     ("/reply-detail", Key::CmdReplyDetail),
     ("/tools", Key::CmdTools),
-    ("/tree", Key::CmdTree),
     ("/worktree", Key::CmdWorktree),
 ];
 
@@ -4573,7 +4562,7 @@ pub const COMMANDS: [(&str, Key); 14] = [
 ///
 /// Nothing here is offered by the palette, so the description is read by the
 /// test alone — it is the copy the row would carry if it were listed.
-pub const TYPED_ONLY: [(&str, Key); 17] = [
+pub const TYPED_ONLY: [(&str, Key); 16] = [
     // A chord of their own.
     ("/new", Key::CmdNew),             // ctrl+n
     ("/stop", Key::CmdStop),           // ctrl+c
@@ -4592,10 +4581,6 @@ pub const TYPED_ONLY: [(&str, Key); 17] = [
     ("/lang", Key::CmdLanguage),
     ("/mouse", Key::CmdMouse),
     ("/preferences", Key::CmdPreferences),
-    // Names for the approval chooser itself: `/sandbox` is the spelling it wore
-    // before the menu existed (`PickerKind::aliases`), and the chooser's own
-    // door is `ctrl+s`.
-    ("/sandbox", Key::CmdSandbox),
 ];
 
 /// A typed draft that names one of the surface's own verbs.
@@ -7195,7 +7180,8 @@ mod tests {
     /// The box `?` opens is a key table, and only that: the palette (`/`,
     /// `ctrl+p`) already lists every verb with the same descriptions, so a
     /// second copy at the end of the help box made a shortcut reference scroll
-    /// through thirty-five commands on the way to nothing it did not say
+    /// through a palette's worth of commands on the way to nothing it did not
+    /// say
     /// already. The palette's own list is the one that stays.
     #[test]
     fn the_help_box_does_not_reprint_the_command_palette() {
@@ -7923,7 +7909,6 @@ mod tests {
             Overlay::Git,
             Overlay::Files,
             Overlay::History,
-            Overlay::Tree,
             Overlay::Fork,
             Overlay::Worktree,
             Overlay::Preferences,
@@ -8498,12 +8483,12 @@ mod tests {
     }
 
     /// A row whose *description* mentions the query only finds its place in the
-    /// list; the row whose *name* is the query comes first, so `enter` runs what
-    /// the reader typed for.
+    /// list; the row whose *name* contains the query comes first, so `enter`
+    /// runs what the reader typed for.
     ///
-    /// `/refresh` is the case: its English description ("Re-read sessions, usage
-    /// and the file tree") contains `tree` and the verb is declared above
-    /// `/tree`, so an unranked filter put it at the top of the list.
+    /// `tree` is the case: `/refresh`'s English description ("Re-read sessions,
+    /// usage and the file tree") contains it, and an unranked filter put it
+    /// above `/worktree`, whose name is the match.
     #[test]
     fn a_name_match_ranks_above_a_description_match() {
         let data = demo::chat();
@@ -8514,24 +8499,12 @@ mod tests {
             workbench.handle(WbEvent::Key(key.into()), &data);
         }
         let rows = workbench.palette_rows(&data);
-        assert_eq!(rows[0].command(), "/tree", "{rows:?}");
-        // A mid-name hit (`/worktree`) still ranks above a description one.
-        let worktree = rows
-            .iter()
-            .position(|row| row.command() == "/worktree")
-            .expect("a name hit still finds its row");
-        assert!(worktree > 0, "the mid-name hit sorts below: {rows:?}");
-        let refresh = rows
-            .iter()
-            .position(|row| row.command() == "/refresh")
-            .expect("a description hit still finds its row");
-        assert!(
-            refresh > worktree,
-            "the description hit sorts below the name hit: {rows:?}"
-        );
+        assert_eq!(rows[0].command(), "/worktree", "{rows:?}");
+        // The retired `/tree` row is gone, not merely ranked below.
+        assert!(!rows.iter().any(|row| row.command() == "/tree"), "{rows:?}");
         assert_eq!(
             workbench.palette_selection(&data).map(|row| row.command()),
-            Some("/tree".to_string()),
+            Some("/worktree".to_string()),
             "enter runs the verb the reader typed"
         );
     }
@@ -11013,7 +10986,6 @@ mod tests {
             Overlay::Help,
             Overlay::Palette,
             Overlay::History,
-            Overlay::Tree,
             Overlay::Fork,
             Overlay::Worktree,
             Overlay::Git,
@@ -11124,7 +11096,6 @@ mod tests {
 
         for overlay in [
             Overlay::History,
-            Overlay::Tree,
             Overlay::Fork,
             Overlay::Worktree,
             Overlay::Diff,
@@ -11904,12 +11875,7 @@ mod tests {
             })
             .collect();
 
-        for overlay in [
-            Overlay::History,
-            Overlay::Tree,
-            Overlay::Fork,
-            Overlay::Worktree,
-        ] {
+        for overlay in [Overlay::History, Overlay::Fork, Overlay::Worktree] {
             let mut wb = workbench();
             wb.overlay = Some(overlay);
             wb.render(&data, 100, 30);

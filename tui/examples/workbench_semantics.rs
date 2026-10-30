@@ -26,7 +26,6 @@ fn main() {
             history_row_after_scroll,
         ),
         ("history filter and click agree", history_after_filter),
-        ("tree click opens the node it drew", tree_row),
         ("fork click forks the message it drew", fork_row),
         ("worktree click selects the path it drew", worktree_row),
         ("queue click recalls the prompt it drew", queue_row),
@@ -219,23 +218,6 @@ fn history_after_filter() -> Result<(), String> {
     match wb.handle(WbEvent::Mouse(press(x, y)), &data).as_slice() {
         [WbAction::SwitchSession(id)] if id == "gamma" => Ok(()),
         other => Err(format!("filtered row 1 opened {other:?}, expected gamma")),
-    }
-}
-
-fn tree_row() -> Result<(), String> {
-    let mut data = sessions(6);
-    let root = data.sessions[0].id.clone();
-    for (index, row) in data.sessions.iter_mut().enumerate() {
-        row.parent_id = (index > 0).then(|| root.clone());
-    }
-    let mut wb = wb();
-    wb.overlay = Some(Overlay::Tree);
-    wb.render(&data, 100, 30);
-    let row = region(&wb, "workflow.row.2")?;
-    let (x, y) = centre(row);
-    match wb.handle(WbEvent::Mouse(press(x, y)), &data).as_slice() {
-        [WbAction::SwitchSession(_)] => Ok(()),
-        other => Err(format!("tree row 2 opened {other:?}")),
     }
 }
 
@@ -622,7 +604,6 @@ fn escape_closes() -> Result<(), String> {
         Overlay::Help,
         Overlay::Palette,
         Overlay::History,
-        Overlay::Tree,
         Overlay::Fork,
         Overlay::Worktree,
         Overlay::Diff,
