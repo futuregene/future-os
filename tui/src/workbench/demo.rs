@@ -219,42 +219,42 @@ fn base() -> WorkbenchData {
 /// parser, so the frame carries the graph the panel would draw for this history
 /// rather than a hand-drawn copy of it that could drift from the renderer.
 pub fn git() -> GitView {
-    // `<short> <parents> <decorations> <date> <subject>`, newest first; the
-    // separators are the same US/RS pair the read splits on.
+    // `<short> <parents> <decorations> <date-time> <subject>`, newest first;
+    // the separators are the same US/RS pair the read splits on.
     const MATRIX: &[(&str, &str, &str, &str, &str)] = &[
         (
             "9e4a47d2a",
             "4c1b8f0e3 7cefc9cea",
             "HEAD -> dev-huichen, origin/dev-huichen",
-            "2026-10-27",
+            "2026-10-27 10:12",
             "feat(tui): a git panel for the workbench",
         ),
         (
             "4c1b8f0e3",
             "ae142f75a",
             "fix/mobile-code-block",
-            "2026-10-27",
+            "2026-10-27 10:08",
             "fix(mobile): stop folding code blocks",
         ),
         (
             "7cefc9cea",
             "ae142f75a",
             "tag: v0.11.0",
-            "2026-10-25",
+            "2026-10-25 18:40",
             "docs: goal control plane notes",
         ),
         (
             "ae142f75a",
             "56ec934f6",
             "",
-            "2026-10-26",
+            "2026-10-26 09:31",
             "fix(tui): one row per record",
         ),
         (
             "56ec934f6",
             "",
             "",
-            "2026-10-24",
+            "2026-10-24 21:05",
             "chore(deps): bump the rust toolchain",
         ),
     ];

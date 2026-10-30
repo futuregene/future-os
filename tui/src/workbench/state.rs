@@ -773,6 +773,13 @@ pub enum GitKind {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GitRow {
     pub key: Option<String>,
+    /// The columns left of the gutter, one padded cell each: a commit's
+    /// date-time and then its committer, in fixed widths so the graph lines up
+    /// under them (the id is not here — the detail pane beside the list already
+    /// names the whole commit). The painter draws them joined by two spaces and
+    /// drops them from the right as the pane narrows, so a column is shown whole
+    /// or not at all.
+    pub columns: Vec<String>,
     /// The gutter before the fields: the log's graph (`●─┐ `, `│ ● `), a badge
     /// (`● `), a porcelain status (`M `), a stash number (`#0 `).
     pub prefix: String,
@@ -912,6 +919,7 @@ mod tests {
     fn the_git_cursor_skips_rows_that_are_only_drawing() {
         let row = |key: Option<&str>| GitRow {
             key: key.map(str::to_string),
+            columns: Vec::new(),
             prefix: String::new(),
             pieces: Vec::new(),
             kinds: Vec::new(),

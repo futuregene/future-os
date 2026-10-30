@@ -11135,6 +11135,7 @@ mod tests {
         let rest = git.rows.split_off(1);
         git.rows.push(state::GitRow {
             key: None,
+            columns: Vec::new(),
             prefix: "│ ".into(),
             pieces: Vec::new(),
             kinds: Vec::new(),
@@ -11294,12 +11295,14 @@ mod tests {
         refs.rows = vec![
             state::GitRow {
                 key: Some("refs/heads/dev-huichen".into()),
+                columns: Vec::new(),
                 prefix: "● ".into(),
                 pieces: vec!["dev-huichen".into()],
                 kinds: vec![state::GitKind::Ref],
             },
             state::GitRow {
                 key: Some("refs/tags/v1".into()),
+                columns: Vec::new(),
                 prefix: String::new(),
                 pieces: vec!["tag: v1".into()],
                 kinds: vec![state::GitKind::Ref],
@@ -11323,6 +11326,7 @@ mod tests {
         status.selected = 0;
         status.rows = vec![state::GitRow {
             key: Some("tui/src/main.rs".into()),
+            columns: Vec::new(),
             prefix: "M ".into(),
             pieces: vec!["tui/src/main.rs".into()],
             kinds: vec![state::GitKind::Plain],
@@ -11475,6 +11479,7 @@ mod tests {
         worktrees.selected = 0;
         worktrees.rows = vec![GitRow {
             key: Some("/w/future-os/.worktrees/git-panel-layout".into()),
+            columns: Vec::new(),
             prefix: "● ".into(),
             pieces: vec![
                 "feat/git-panel-layout".into(),
@@ -11514,6 +11519,7 @@ mod tests {
         branches.selected = 0;
         branches.rows = vec![GitRow {
             key: Some("dev-huichen".into()),
+            columns: Vec::new(),
             prefix: "● ".into(),
             pieces: vec!["dev-huichen".into(), "2↑ 0↓".into()],
             kinds: vec![GitKind::Ref, GitKind::Meta],

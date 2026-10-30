@@ -35,6 +35,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
+use super::ansi;
 use super::i18n::{t, Key, Language};
 use super::state::{GitKind, GitRow, GitSection, GitView};
 
@@ -138,8 +139,10 @@ fn commits(cwd: &Path, filter: Option<&str>) -> Result<Vec<GitRow>, String> {
     // text, so the field separator has to be a byte a subject cannot contain.
     // `%H`/`%P` (full ids) rather than `%h`/`%p` are what the lanes are matched
     // on: an abbreviation length can change mid-log, and a lane keyed on one
-    // would stop matching its own parent.
-    let pretty = "--pretty=format:%x1e%h%x1f%H%x1f%P%x1f%ad%x1f%an%x1f%D%x1f%s";
+    // would stop matching its own parent. `%cd`/`%cn` are the *committer's* date
+    // and name — the commit's own stamp, which is what the columns beside the
+    // graph are for; the author is the detail pane's.
+    let pretty = "--pretty=format:%x1e%h%x1f%H%x1f%P%x1f%cd%x1f%cn%x1f%D%x1f%s";
     let limit = format!("--max-count={COMMIT_LIMIT}");
     // Topological order, in both reads: a parent never comes before a child,
     // and a line of work is read as one stretch rather than interleaved with
@@ -150,7 +153,10 @@ fn commits(cwd: &Path, filter: Option<&str>) -> Result<Vec<GitRow>, String> {
     let mut args = vec![
         "log",
         "--decorate=short",
-        "--date=short",
+        // Minute precision, no zone: the reader is looking for "when, and by
+        // whom", and a `+0800` in every one of 200 rows is six cells that only
+        // ever repeat what the local clock already says.
+        "--date=format:%Y-%m-%d %H:%M",
         "--topo-order",
         limit.as_str(),
         pretty,
@@ -188,8 +194,9 @@ struct Entry {
     short: String,
     id: String,
     parents: Vec<String>,
-    date: String,
-    author: String,
+    /// The committer's date and name, as git formatted them.
+    when: String,
+    who: String,
     decorations: String,
     subject: String,
 }
@@ -208,8 +215,8 @@ fn parse_entries(text: &str) -> Vec<Entry> {
                     .get(2)
                     .map(|parents| parents.split_whitespace().map(str::to_string).collect())
                     .unwrap_or_default(),
-                date: fields.get(3).copied().unwrap_or("").to_string(),
-                author: fields.get(4).copied().unwrap_or("").to_string(),
+                when: fields.get(3).copied().unwrap_or("").to_string(),
+                who: fields.get(4).copied().unwrap_or("").to_string(),
                 decorations: fields.get(5).copied().unwrap_or("").to_string(),
                 subject: fields.get(6).copied().unwrap_or("").to_string(),
             })
@@ -371,28 +378,53 @@ fn junction(up: bool, down: bool, left: bool, right: bool) -> char {
     }
 }
 
-/// The rows of a log read: each entry with its graph gutter, the entire log
-/// sharing one gutter width.
+/// How wide the date-time column is: `2026-10-30 10:12`, minute precision and no
+/// zone.
+const WHEN_WIDTH: usize = 16;
+
+/// How wide the committer column grows before a long name is clipped. Wide
+/// enough for the names this repository is read by, and short enough that the
+/// graph is still on screen in a box that is not.
+const WHO_LIMIT: usize = 10;
+
+/// The rows of a log read: each entry with its date-time and committer columns,
+/// its graph gutter, and its subject.
+///
+/// The columns are padded to one width for the whole page — a lane's column is
+/// read against the row above it, so the gutter has to start at the same cell in
+/// every row. The id is deliberately not among them: the detail pane beside the
+/// list already prints the whole hash, so repeating eight cells of it in every
+/// row spends the width the subject needs.
 pub fn parse_log(text: &str) -> Vec<GitRow> {
-    use GitKind::{Decoration, Meta, Plain, Sha};
+    use GitKind::{Decoration, Plain};
     let entries = parse_entries(text);
     let prefixes = graph(&entries);
+    let who_width = entries
+        .iter()
+        .map(|entry| ansi::width(&entry.who))
+        .max()
+        .unwrap_or(0)
+        .clamp(0, WHO_LIMIT);
     entries
         .into_iter()
         .zip(prefixes)
         .map(|(entry, prefix)| {
-            // The subject leads — it is what a reader scans — and the rest are
-            // whole pieces a narrow box drops one at a time. Each one travels
-            // with what it is, so the painter colours a field by meaning and not
-            // by where it happened to land.
+            // `fit` pads to the width and clips a long name with an ellipsis, so
+            // every column ends on the same cell in every row.
+            let mut columns = Vec::new();
+            if !entry.when.is_empty() {
+                columns.push(ansi::fit(&entry.when, WHEN_WIDTH));
+            }
+            if !entry.who.is_empty() {
+                columns.push(ansi::fit(&entry.who, who_width));
+            }
+            // The subject leads — it is what a reader scans — and the
+            // decorations follow, whole pieces a narrow box drops one at a time.
             let mut pieces = Vec::new();
             let mut kinds = Vec::new();
             for (piece, kind) in [
                 (entry.subject.as_str(), Plain),
                 (entry.decorations.as_str(), Decoration),
-                (entry.short.as_str(), Sha),
-                (entry.date.as_str(), Meta),
-                (entry.author.as_str(), Meta),
             ] {
                 if !piece.is_empty() {
                     pieces.push(piece.to_string());
@@ -401,6 +433,7 @@ pub fn parse_log(text: &str) -> Vec<GitRow> {
             }
             GitRow {
                 key: Some(entry.short),
+                columns,
                 prefix,
                 pieces,
                 kinds,
@@ -477,6 +510,7 @@ pub fn parse_refs(text: &str) -> Vec<GitRow> {
                 key: Some(full),
                 // `●` marks the branch this checkout is on, the same badge
                 // `/worktree` uses for the worktree the session is in.
+                columns: Vec::new(),
                 prefix: if head == "*" {
                     "● ".to_string()
                 } else {
@@ -565,6 +599,7 @@ pub fn parse_worktrees(text: &str, cwd: &Path) -> Vec<GitRow> {
             || Path::new(&path) == cwd;
         rows.push(GitRow {
             key: Some(path),
+            columns: Vec::new(),
             prefix: if here {
                 "● ".to_string()
             } else {
@@ -631,6 +666,7 @@ pub fn parse_branches(text: &str) -> Vec<GitRow> {
             }
             GitRow {
                 key: Some(name),
+                columns: Vec::new(),
                 prefix: if head == "*" {
                     "● ".to_string()
                 } else {
@@ -651,6 +687,7 @@ fn status(cwd: &Path) -> Result<Vec<GitRow>, String> {
         .into_iter()
         .map(|file| GitRow {
             key: Some(file.path.clone()),
+            columns: Vec::new(),
             prefix: format!("{} ", file.status),
             pieces: vec![file.path],
             kinds: vec![GitKind::Plain],
@@ -697,6 +734,7 @@ pub fn parse_stashes(text: &str) -> Vec<GitRow> {
         }
         rows.push(GitRow {
             key: Some(reference),
+            columns: Vec::new(),
             prefix: format!("#{index} "),
             pieces,
             kinds,
@@ -984,22 +1022,59 @@ mod tests {
     }
 
     /// One line of the read per commit, and the fields stay whole: a subject
-    /// with a `|` or a tab is still one subject.
+    /// with a `|` or a tab is still one subject. The date-time and committer
+    /// travel beside the graph, in columns of one width; the id does not appear
+    /// at all — the detail pane names the whole commit.
     #[test]
     fn log_lines_split_on_the_record_separator() {
         let rows = parse_log(
-            "\u{1e}abc1234\u{1f}aaaaaaa\u{1f}\u{1f}2026-10-27\u{1f}Ada\u{1f}HEAD -> main, tag: v1\u{1f}fix | the parser\n\
-             \u{1e}def5678\u{1f}bbbbbbb\u{1f}aaaaaaa\u{1f}2026-10-26\u{1f}Bob\u{1f}\u{1f}a\ttab and a unit separator\n",
+            "\u{1e}abc1234\u{1f}aaaaaaa\u{1f}\u{1f}2026-10-27 09:15\u{1f}Ada\u{1f}HEAD -> main, tag: v1\u{1f}fix | the parser\n\
+             \u{1e}def5678\u{1f}bbbbbbb\u{1f}aaaaaaa\u{1f}2026-10-26 18:40\u{1f}Bob\u{1f}\u{1f}a\ttab and a unit separator\n",
         );
         assert_eq!(rows.len(), 2, "one row per commit, none for the drawing");
         assert_eq!(rows[0].prefix, "● ");
         assert_eq!(rows[0].key.as_deref(), Some("abc1234"));
         assert_eq!(rows[0].pieces[0], "fix | the parser");
         assert_eq!(rows[0].pieces[1], "HEAD -> main, tag: v1");
+        assert!(
+            !rows[0].pieces.iter().any(|piece| piece.contains("abc1234")),
+            "the id is the detail pane's: {:?}",
+            rows[0].pieces
+        );
         assert_eq!(rows[1].pieces[0], "a\ttab and a unit separator");
         // The empty decoration was dropped rather than painted as ` · `.
         assert!(!rows[1].pieces.iter().any(|piece| piece.is_empty()));
-        assert_eq!(rows[1].pieces.len(), 4, "subject, sha, date and author");
+        assert_eq!(rows[1].pieces.len(), 1, "subject alone");
+        // Two cells: the date-time (fixed 16) and the widest committer. Padded
+        // to one width for the page, so the graph starts at one cell every row.
+        assert_eq!(rows[0].columns, vec!["2026-10-27 09:15", "Ada"]);
+        assert_eq!(rows[1].columns, vec!["2026-10-26 18:40", "Bob"]);
+        assert_eq!(
+            rows[0]
+                .columns
+                .iter()
+                .map(|cell| cell.chars().count())
+                .sum::<usize>(),
+            rows[1]
+                .columns
+                .iter()
+                .map(|cell| cell.chars().count())
+                .sum::<usize>()
+        );
+    }
+
+    /// A long committer name is clipped to the column instead of pushing the
+    /// graph off the cell its lane lives in.
+    #[test]
+    fn a_long_committer_name_keeps_the_column() {
+        let rows = parse_log(&log(&[("a", "b"), ("b", "")]));
+        // `log()` writes `Ada`; a real one goes through the same `fit`.
+        let long = parse_log(
+            "\u{1e}c\u{1f}cccc\u{1f}\u{1f}2026-10-27 09:15\u{1f}A committer with a very long name\u{1f}\u{1f}s\n",
+        );
+        assert_eq!(ansi::width(&long[0].columns[1]), WHO_LIMIT);
+        assert!(long[0].columns[1].contains('…'), "{:?}", long[0].columns);
+        assert_eq!(rows[0].columns, vec!["2026-10-27 09:15", "Ada"]);
     }
 
     /// A log of `(short, parents)` pairs, in the read's own text form.
@@ -1008,7 +1083,7 @@ mod tests {
             .iter()
             .map(|(short, parents)| {
                 format!(
-                    "\u{1e}{short}\u{1f}{short}\u{1f}{parents}\u{1f}2026-10-27\u{1f}Ada\u{1f}\u{1f}{short}\n"
+                    "\u{1e}{short}\u{1f}{short}\u{1f}{parents}\u{1f}2026-10-27 09:15\u{1f}Ada\u{1f}\u{1f}{short}\n"
                 )
             })
             .collect()
@@ -1179,6 +1254,18 @@ mod tests {
         assert!(log.iter().all(|row| row.key.is_some()), "{log:?}");
         let commits: Vec<&GitRow> = log.iter().filter(|row| row.key.is_some()).collect();
         assert_eq!(commits[0].pieces[0], "merge feature");
+        // The columns carry the committer's own stamp, minute precision and no
+        // zone, in one width for every row.
+        let columns = commits[0].columns.join("  ");
+        assert!(columns.starts_with("20"), "{columns:?}");
+        assert!(
+            columns.contains("TUI test"),
+            "the committer, not the author: {columns:?}"
+        );
+        assert!(
+            !columns.contains('+') && !columns.contains('Z'),
+            "no zone: {columns:?}"
+        );
         // The graph is drawn: the merge's row opens a lane beside its own, and
         // the gutter is one width for every row so the subjects line up.
         assert!(
