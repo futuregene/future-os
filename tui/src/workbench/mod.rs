@@ -4512,43 +4512,79 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
     at
 }
 
-/// The command palette's entries: `(command, description)`. Kept here rather
-/// than in the app so the palette, the help overlay and the tests share one
-/// list.
-pub const COMMANDS: [(&str, Key); 33] = [
-    ("/new", Key::CmdNew),
-    ("/stop", Key::CmdStop),
-    ("/delete", Key::CmdDelete),
-    ("/pin", Key::CmdPin),
+/// The `/` palette's rows: `(command, description)`, in the order an empty
+/// query lists them. Kept here rather than in the app so the palette and the
+/// tests share one list.
+///
+/// **A row is here when naming the verb is the only way in.** A verb that
+/// already answers to a key — a chord (`ctrl+g` for the repository), a row in
+/// the preferences box (`ctrl+q` holds the language and the theme), or its own
+/// printable key (`?` for the help table) — is not listed, because the menu is
+/// where a reader looks for what they cannot find anywhere else: an entry with a
+/// second door spends a row of a one-screen list on a name they do not need.
+/// [`TYPED_ONLY`] is where those verbs live. The two lists are the whole
+/// vocabulary, and `every_palette_entry_has_a_handler` walks both.
+///
+/// The order is the rank order for an empty query, so it is read as "what a
+/// reader opens this menu for": the prompts queued behind a run first, then the
+/// reading verbs, then the two that name a conversation under the rail's
+/// cursor — `/pin` and `/delete`, the pair with no chord, one of which is the
+/// only destructive verb on the surface.
+pub const COMMANDS: [(&str, Key); 16] = [
     ("/queue", Key::CmdQueue),
     ("/copy", Key::CmdCopy),
-    ("/paste", Key::CmdPaste),
     ("/preview", Key::CmdPreview),
     ("/refresh", Key::CmdRefresh),
-    ("/mouse", Key::CmdMouse),
-    ("/git", Key::CmdGit),
-    ("/files", Key::CmdFiles),
     ("/approval", Key::CmdApproval),
     ("/history", Key::CmdHistory),
     ("/tree", Key::CmdTree),
     ("/fork", Key::CmdFork),
     ("/worktree", Key::CmdWorktree),
-    ("/mode", Key::CmdMode),
-    ("/sandbox", Key::CmdSandbox),
     ("/compact", Key::CmdCompact),
     ("/tools", Key::CmdTools),
     ("/providers", Key::CmdProviders),
-    ("/sessions", Key::CmdSessions),
-    ("/model", Key::CmdModel),
-    ("/thinking", Key::CmdThinking),
-    ("/lang", Key::CmdLanguage),
     ("/reply-detail", Key::CmdReplyDetail),
-    ("/workspace", Key::CmdWorkspace),
-    ("/theme", Key::CmdTheme),
-    ("/preferences", Key::CmdPreferences),
     ("/export", Key::CmdExport),
-    ("/help", Key::CmdHelp),
-    ("/quit", Key::CmdQuit),
+    ("/pin", Key::CmdPin),
+    ("/delete", Key::CmdDelete),
+];
+
+/// The verbs the palette does **not** list, `(command, description)` with the
+/// door each one already has beside it.
+///
+/// They are still *recognized* when typed, which is the whole point of keeping
+/// them: the draft is shared between commands and prompts, so a verb that
+/// dropped out of the vocabulary entirely would be submitted to the model as
+/// text — a reader with `ctrl+g`/`/git` in their fingers must land on the
+/// repository browser, not ask the agent what `/git` means. A row here is also
+/// what keeps a verb somebody can still type from rotting: the handler test
+/// walks this list the same way it walks [`COMMANDS`].
+///
+/// Nothing here is offered by the palette, so the description is read by the
+/// test alone — it is the copy the row would carry if it were listed.
+pub const TYPED_ONLY: [(&str, Key); 17] = [
+    // A chord of their own.
+    ("/new", Key::CmdNew),             // ctrl+n
+    ("/stop", Key::CmdStop),           // ctrl+c
+    ("/paste", Key::CmdPaste),         // ctrl+v
+    ("/git", Key::CmdGit),             // ctrl+g
+    ("/files", Key::CmdFiles),         // ctrl+f
+    ("/mode", Key::CmdMode),           // ctrl+s
+    ("/sessions", Key::CmdSessions),   // ctrl+r
+    ("/model", Key::CmdModel),         // ctrl+o
+    ("/thinking", Key::CmdThinking),   // ctrl+t
+    ("/workspace", Key::CmdWorkspace), // ctrl+l
+    ("/quit", Key::CmdQuit),           // ctrl+x
+    ("/help", Key::CmdHelp),           // `?`
+    // A row in the preferences box `ctrl+q` opens.
+    ("/theme", Key::CmdTheme),
+    ("/lang", Key::CmdLanguage),
+    ("/mouse", Key::CmdMouse),
+    ("/preferences", Key::CmdPreferences),
+    // Names for the approval chooser itself: `/sandbox` is the spelling it wore
+    // before the menu existed (`PickerKind::aliases`), and the chooser's own
+    // door is `ctrl+s`.
+    ("/sandbox", Key::CmdSandbox),
 ];
 
 /// A typed draft that names one of the surface's own verbs.
@@ -4576,16 +4612,17 @@ fn queue_row_index(id: &str) -> Option<usize> {
 
 /// Split a submitted draft into a known command, or `None` when it is a prompt.
 ///
-/// The list is [`COMMANDS`]: the palette's own entries, so a verb the palette
-/// offers can also be typed. A draft that merely *starts* with a slash
-/// (`/etc/hosts is missing`) stays a prompt.
+/// The vocabulary is both lists: [`COMMANDS`] (the palette offers it) and
+/// [`TYPED_ONLY`] (it has a door of its own, and typing it still reaches that
+/// door). A draft that merely *starts* with a slash (`/etc/hosts is missing`)
+/// stays a prompt.
 fn known_command(text: &str) -> Option<TypedCommand> {
     let text = text.trim();
     let mut parts = text.splitn(2, char::is_whitespace);
     let name = parts.next().unwrap_or("");
-    if !COMMANDS
-        .iter()
-        .any(|(command, _)| command.eq_ignore_ascii_case(name))
+    let known = |command: &&str| command.eq_ignore_ascii_case(name);
+    if !COMMANDS.iter().any(|(command, _)| known(command))
+        && !TYPED_ONLY.iter().any(|(command, _)| known(command))
     {
         return None;
     }
@@ -5275,12 +5312,16 @@ mod tests {
     /// the five; it is gone — a verb whose whole answer was "use `/export`"
     /// spent a palette row on nothing, and both doors it named are advertised
     /// on their own rows.)
+    ///
+    /// [`TYPED_ONLY`] is walked too: a verb the palette does not offer is still
+    /// a line a reader can type, so it needs the same one handler — the check
+    /// that stops "unlisted" from drifting into "unanswered".
     #[test]
     fn every_palette_entry_has_a_handler() {
         let data = demo::chat();
         let mut workbench = workbench();
         workbench.render(&data, 120, 38);
-        for (command, key) in COMMANDS {
+        for (command, key) in COMMANDS.into_iter().chain(TYPED_ONLY) {
             let description = t(workbench.lang, key);
             let picker = PickerKind::from_command(command).is_some();
             let surface = matches!(
@@ -5296,6 +5337,47 @@ mod tests {
                 handlers, 1,
                 "{command} ({description}) resolves to {handlers} handlers: \
                  picker={picker} surface={surface} app={app}"
+            );
+        }
+    }
+
+    /// The menu lists only the verbs without a door of their own, and the two
+    /// lists never overlap.
+    ///
+    /// A verb in [`TYPED_ONLY`] answers to a chord, a preferences row or `?`;
+    /// listing it as well spent a row of a one-screen menu on a second name.
+    /// The query is checked as well as the unfiltered list, because filtering is
+    /// the other way a row reaches the screen — `model` must not find `/model`
+    /// while `ctrl+o` is what opens that chooser.
+    #[test]
+    fn the_palette_offers_only_the_verbs_with_no_other_door() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let mut listed: Vec<String> = COMMANDS
+            .iter()
+            .map(|(command, _)| (*command).to_string())
+            .collect();
+        let mut offered: Vec<String> = workbench
+            .palette_rows(&data)
+            .iter()
+            .filter(|row| !row.is_skill())
+            .map(|row| row.command())
+            .collect();
+        listed.sort_unstable();
+        offered.sort_unstable();
+        assert_eq!(
+            offered, listed,
+            "the palette offers exactly the listed verbs"
+        );
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        for (hidden, _) in TYPED_ONLY {
+            workbench.palette_query = hidden.to_string();
+            assert!(
+                !workbench
+                    .palette_rows(&data)
+                    .iter()
+                    .any(|row| row.command() == hidden),
+                "{hidden} is still offered by a query that names it"
             );
         }
     }
@@ -6888,14 +6970,14 @@ mod tests {
             vec![WbAction::Redraw]
         );
         assert_eq!(workbench.overlay, Some(Overlay::Palette));
-        for key in ["m", "o", "d"] {
+        for key in ["q", "u", "e"] {
             workbench.handle(WbEvent::Key(key.into()), &data);
         }
         let rows = workbench.palette_rows(&data);
-        assert!(rows.iter().any(|row| row.command() == "/model"), "{rows:?}");
+        assert!(rows.iter().any(|row| row.command() == "/queue"), "{rows:?}");
         assert!(
-            rows.iter().all(|row| row.label().contains("mod")
-                || row.description().to_lowercase().contains("mod")),
+            rows.iter().all(|row| row.label().contains("que")
+                || row.description().to_lowercase().contains("que")),
             "only matches are listed: {rows:?}"
         );
         let chosen = workbench.palette_selection(&data).expect("a selection");
@@ -6907,10 +6989,12 @@ mod tests {
     }
 
     /// The queue of prompts sent mid-run and the interface language are both
-    /// commands now (`/queue`, `/lang`): neither is pressed while working, so
-    /// neither takes a letter from something that is. The files panel took one.
+    /// chordless: neither is pressed while working, so neither takes a letter
+    /// from something that is. What separates them is the second door — the
+    /// queue has only its name, the language has the preferences box's first row
+    /// — so the menu lists `/queue` and not `/lang`, and both are still typed.
     #[test]
-    fn the_queue_and_language_are_commands_and_the_files_panel_has_a_key() {
+    fn the_queue_is_a_menu_row_and_the_language_lives_in_the_preferences_box() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         for action in [preferences::Action::Queue, preferences::Action::Language] {
@@ -6919,21 +7003,38 @@ mod tests {
                 "{action:?} still claims a chord"
             );
         }
-        for command in ["/queue", "/lang"] {
-            assert!(
-                workbench
-                    .palette_rows(&data)
-                    .iter()
-                    .any(|row| row.command() == command),
-                "{command} is not in the palette"
-            );
-        }
-        // The files panel is the one that earned a chord.
+        let rows = workbench.palette_rows(&data);
+        assert!(
+            rows.iter().any(|row| row.command() == "/queue"),
+            "/queue has no other door, so the menu offers it: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.command() == "/lang"),
+            "`ctrl+q` lists the language, so the menu does not: {rows:?}"
+        );
+        // …and a typed `/lang` is still the chooser, not a sentence for the
+        // agent: unlisted is not unhandled.
+        let mut typed = demo::chat();
+        let line = "/lang";
+        typed.input.text = line.into();
+        typed.input.cursor = line.len();
+        workbench.handle(WbEvent::Key("enter".into()), &typed);
+        assert_eq!(
+            workbench.overlay,
+            Some(Overlay::Picker(PickerKind::Language))
+        );
+        workbench.overlay = None;
+
+        // The files panel is the one that earned a chord, so it left the menu.
         assert_eq!(
             workbench.handle(WbEvent::Key("ctrl+f".into()), &data),
             vec![WbAction::OpenFiles]
         );
         assert_eq!(workbench.keys.key(preferences::Action::Files), "ctrl+f");
+        assert!(!workbench
+            .palette_rows(&data)
+            .iter()
+            .any(|row| row.command() == "/files"));
         // …and the chords the old scheme used are gone: `alt+q` resolves to
         // nothing instead of opening the queue.
         assert_eq!(workbench.keys.action("alt+q"), None);
@@ -6970,9 +7071,14 @@ mod tests {
         let rows = workbench.render(&data, 120, 38);
         assert!(plain(&rows).contains("对话会话"), "{}", plain(&rows));
 
-        // The files panel is its own box, not a third tab, and it has no chord
-        // in this scheme: `/files` (palette or typed) is its door.
-        assert!(workbench
+        // The files panel is its own box, not a third tab, and `ctrl+f` is its
+        // door — so the menu no longer lists `/files` (a typed `/files` still
+        // opens the same box).
+        assert_eq!(
+            workbench.handle(WbEvent::Key("ctrl+f".into()), &data),
+            vec![WbAction::OpenFiles]
+        );
+        assert!(!workbench
             .palette_rows(&data)
             .iter()
             .any(|row| row.command() == "/files"));
@@ -7086,8 +7192,9 @@ mod tests {
         let (mut workbench, _rows) = frame(&data, 120, 60);
         workbench.overlay = Some(Overlay::Help);
         let text = plain(&workbench.render(&data, 120, 60));
-        // A verb the palette names and the help box does not — one with a chord
-        // (`/model`, `/compact`) and one without (`/queue`, `/export`).
+        // A verb the palette names and the help box does not — the list is the
+        // palette's, and the help box holds keys only (`/model` and `/queue` are
+        // both verbs the box would have had to reprint).
         for gone in ["/model", "/compact", "/queue", "/export"] {
             assert!(
                 !text.contains(gone),
@@ -7104,12 +7211,17 @@ mod tests {
         workbench.handle(WbEvent::Key("/".into()), &data);
         let palette = plain(&workbench.render(&data, 120, 60));
         assert!(
-            palette.contains("/model"),
+            palette.contains("/queue"),
             "the palette names it: {palette}"
         );
         assert!(
             palette.contains("/export"),
             "the palette names it: {palette}"
+        );
+        // …and the verbs whose door is a key are the help box's, not the menu's.
+        assert!(
+            !palette.contains("/model"),
+            "the menu does not reprint `ctrl+o`: {palette}"
         );
     }
 
@@ -8155,10 +8267,10 @@ mod tests {
         // The skill is the alphabetically first one, not the demo's first row.
         let shared = painted
             .lines()
-            .find(|line| line.contains("/new") && line.contains("future-peer-review"))
+            .find(|line| line.contains("/queue") && line.contains("future-peer-review"))
             .unwrap_or_else(|| panic!("a verb and a skill share a row:\n{painted}"));
         assert!(
-            shared.find("/new").unwrap() < shared.find("future-peer-review").unwrap(),
+            shared.find("/queue").unwrap() < shared.find("future-peer-review").unwrap(),
             "the skill column is on the right: {shared}"
         );
         // The list underneath is still one list: commands first, skills after.
@@ -8185,7 +8297,7 @@ mod tests {
         assert!(
             !painted
                 .lines()
-                .any(|line| line.contains("/new") && line.contains("future-peer-review")),
+                .any(|line| line.contains("/queue") && line.contains("future-peer-review")),
             "one list, one row each:\n{painted}"
         );
     }
@@ -8255,28 +8367,37 @@ mod tests {
     /// list; the row whose *name* is the query comes first, so `enter` runs what
     /// the reader typed for.
     ///
-    /// `/providers` is the case that regressed: its English description ("List
-    /// model providers") contains `model` and the verb is declared one line above
-    /// `/model`, so an unranked filter put it at the top of the list.
+    /// `/refresh` is the case: its English description ("Re-read sessions, usage
+    /// and the file tree") contains `tree` and the verb is declared above
+    /// `/tree`, so an unranked filter put it at the top of the list.
     #[test]
     fn a_name_match_ranks_above_a_description_match() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         workbench.set_language(LanguagePreference::En);
         workbench.handle(WbEvent::Key("/".into()), &data);
-        for key in ["m", "o", "d", "e", "l"] {
+        for key in ["t", "r", "e", "e"] {
             workbench.handle(WbEvent::Key(key.into()), &data);
         }
         let rows = workbench.palette_rows(&data);
-        assert_eq!(rows[0].command(), "/model", "{rows:?}");
-        let providers = rows
+        assert_eq!(rows[0].command(), "/tree", "{rows:?}");
+        // A mid-name hit (`/worktree`) still ranks above a description one.
+        let worktree = rows
             .iter()
-            .position(|row| row.command() == "/providers")
+            .position(|row| row.command() == "/worktree")
+            .expect("a name hit still finds its row");
+        assert!(worktree > 0, "the mid-name hit sorts below: {rows:?}");
+        let refresh = rows
+            .iter()
+            .position(|row| row.command() == "/refresh")
             .expect("a description hit still finds its row");
-        assert!(providers > 0, "the description hit sorts below: {rows:?}");
+        assert!(
+            refresh > worktree,
+            "the description hit sorts below the name hit: {rows:?}"
+        );
         assert_eq!(
             workbench.palette_selection(&data).map(|row| row.command()),
-            Some("/model".to_string()),
+            Some("/tree".to_string()),
             "enter runs the verb the reader typed"
         );
     }
@@ -8315,7 +8436,7 @@ mod tests {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         workbench.handle(WbEvent::Key("/".into()), &data);
-        for key in ["m", "o", "d", "e", "l"] {
+        for key in ["t", "r", "e", "e"] {
             workbench.handle(WbEvent::Key(key.into()), &data);
         }
         let chosen = workbench.palette_selection(&data).expect("a row");
@@ -10642,17 +10763,22 @@ mod tests {
         // whatever this machine's locale resolves `system` to.
         workbench.set_language(LanguagePreference::Zh);
 
-        // The palette advertises it, and a typed `/lang` opens the same box the
-        // palette does.
-        assert!(COMMANDS.iter().any(|(command, _)| *command == "/lang"));
+        // The preferences box is its listed door (`ctrl+q`), so the menu does
+        // not reprint it — and a typed `/lang` opens the same box the row does.
+        assert!(!COMMANDS.iter().any(|(command, _)| *command == "/lang"));
+        assert!(TYPED_ONLY.iter().any(|(command, _)| *command == "/lang"));
         let actions = workbench.handle(WbEvent::Key("/".into()), &data);
         assert_eq!(actions, vec![WbAction::Redraw]);
         for ch in "lang".chars() {
             workbench.handle(WbEvent::Key(ch.to_string()), &data);
         }
-        assert!(workbench
-            .palette_selection(&data)
-            .is_some_and(|row| row.command() == "/lang"));
+        assert!(
+            workbench
+                .palette_selection(&data)
+                .is_none_or(|row| row.command() != "/lang"),
+            "the menu does not offer the box's own row"
+        );
+        workbench.overlay = None;
 
         workbench.open_picker(PickerKind::Language, &data);
         let text = plain(&workbench.render(&data, 120, 38));
@@ -11771,7 +11897,7 @@ mod tests {
         let data = demo::chat();
         let mut wb = workbench();
         wb.overlay = Some(Overlay::Palette);
-        for ch in "model".chars() {
+        for ch in "tree".chars() {
             wb.handle(WbEvent::Key(ch.to_string()), &data);
         }
         wb.render(&data, 120, 38);
