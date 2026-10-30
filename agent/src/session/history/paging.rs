@@ -9,6 +9,18 @@ use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+/// The most one page may weigh once it is encoded: the bytes a client has to
+/// receive and decode, which is what a switch actually pays for.
+///
+/// **A single entry is atomic, and that is the ceiling this bound cannot move.**
+/// An entry larger than this is *not* cut by it or by the row ceiling: it is
+/// transported as UTF-8 fragments the client reassembles
+/// ([`ENTRY_FRAGMENT_BYTE_BUDGET`], `HistoryEntryFragment`), so a page can still
+/// hold one entry bigger than the budget — measured: a 1.6 MB tool result, i.e.
+/// a 1.68 MB page, in a 147-conversation store. That is known and deliberate:
+/// splitting an entry would break both the display projection and the fragment
+/// checksum that make a paged read lossless. The price is paid once, by the
+/// reader who opens that entry — do not try to cap it again.
 pub(super) const HISTORY_PAGE_BYTE_BUDGET: usize = 2 * 1024 * 1024;
 
 /// How many rows a conversation's *first* page may carry.
