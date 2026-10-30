@@ -527,12 +527,23 @@ impl GrpcClient {
         .await
     }
 
+    /// Fork `session_id` so the child ends with the **whole turn** that starts at
+    /// `entry_id` — the prompt, its tool calls and the reply they produced.
+    ///
+    /// The mode is what makes that so, and leaving it off was a bug: the agent
+    /// reads an empty mode as `through_entry`, which copies the selected entry
+    /// and stops there — so a fork taken from a reply arrived in the child with
+    /// the question and no answer, and the reader had to read the parent to see
+    /// what they had branched. `through_turn` is what the desktop's own fork
+    /// sends (`host::agent_commands::fork_command`), and it cuts at the entry
+    /// before the next prompt, so the child ends where the turn did.
     pub async fn fork_from(&self, session_id: &str, entry_id: &str) -> Result<Value, String> {
         self.call(
             "fork",
             RpcCommand {
                 session_id: session_id.to_string(),
                 entry_id: entry_id.to_string(),
+                mode: "through_turn".to_string(),
                 created_by: "tui".to_string(),
                 ..Default::default()
             },

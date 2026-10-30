@@ -3022,52 +3022,44 @@ impl ChatArea {
             .push((offset, action, start, end));
     }
 
-    /// The row of controls under a message: `[复制]`, and on a reply `[分支]`.
+    /// The row of controls under a **reply**: `[复制]` and `[分支]`.
     ///
-    /// Every client carries these under its messages — the desktop puts the
-    /// user's copy in the bubble's footer and the reply's copy beside its fork
-    /// control — but the terminal cannot copy the desktop's *reveal*: a control
-    /// painted only while the pointer rests on a message does not exist on a
-    /// keyboard surface. So the row is always there, one row per message, and
-    /// it is the message's last one: `tab` reaches it after everything the
-    /// message says, and after its pictures' captions.
+    /// A reply ends in this row, one blank line below its own text, because the
+    /// desktop draws the same pair in the message's footer — revealed on hover,
+    /// which a terminal cannot do, so the row is permanent and `tab` walks onto
+    /// it. The blank line is what keeps the chips from reading as the answer's
+    /// last paragraph.
     ///
     /// Two rules decide whether a chip is drawn at all:
     ///
     /// * **Copy** needs text. A reply that only called tools has nothing to
     ///   copy, and a button that copies nothing is a button that lies.
-    /// * **Fork** belongs to a *settled* reply — it branches at the user
-    ///   message that produced the reply, which is the desktop's own meaning of
-    ///   its fork button (`Live::fork_message`). While the reply is still
-    ///   arriving there is nothing to branch on yet, so the chip waits.
+    /// * **Fork** belongs to a *settled* reply — it branches at the turn that
+    ///   produced the reply, which is the desktop's own meaning of its fork
+    ///   button (`Live::fork_message`). While the reply is still arriving there
+    ///   is nothing to branch on yet, so the row waits.
     ///
-    /// Nothing is drawn for a welcome banner, for a prompt still waiting in the
-    /// agent's queue (it has no rows at all, see [`Self::render_user_message`]),
-    /// or for a row inside an opened fold — the tree is the fold's body, not a
-    /// message the reader acts on.
+    /// A **user** message gets nothing: the reader can retype their own prompt
+    /// or select it with the mouse, and the desktop's copy chip under a bubble
+    /// was the one thing here that read as part of what they typed. Nothing is
+    /// drawn for a welcome banner, for a prompt still waiting in the agent's
+    /// queue (it has no rows at all, see [`Self::render_user_message`]), for a
+    /// tool call or a compaction divider (the reply's work, not a message of
+    /// its own), or for a row inside an opened fold.
     fn push_message_controls(&mut self, msg_idx: usize, msg: &ChatMessage, origin: usize) {
-        if msg.welcome || msg.pending || msg.run_state == Some(RunState::Queued) || self.nested {
+        if msg.role != ChatRole::Assistant
+            || msg.welcome
+            || msg.pending
+            || msg.run_state == Some(RunState::Queued)
+            || self.nested
+        {
             return;
         }
-        // Only the two roles a reader writes or reads get controls: a tool
-        // call's row and a compaction divider are the reply's *work*, not
-        // messages of their own, and a copy chip under every call would double
-        // the height of a folded run.
-        let (wants_copy, wants_fork) = match msg.role {
-            ChatRole::User => (true, false),
-            ChatRole::Assistant => (true, true),
-            ChatRole::Tool | ChatRole::System => return,
-        };
         let mut chips: Vec<(&'static str, RowAction)> = Vec::new();
-        if wants_copy && !msg.content.trim().is_empty() {
+        if !msg.content.trim().is_empty() {
             chips.push((self.fold_words.copy, RowAction::Copy { msg: msg_idx }));
         }
-        if wants_fork {
-            chips.push((self.fold_words.fork, RowAction::Fork { msg: msg_idx }));
-        }
-        if chips.is_empty() {
-            return;
-        }
+        chips.push((self.fold_words.fork, RowAction::Fork { msg: msg_idx }));
         // `[复制]`: the brackets are this surface's spelling for something
         // pressable — a panel's `[× 关闭]`, the header's `[ctrl+r] 会话`.
         let labels: Vec<String> = chips.iter().map(|(word, _)| format!("[{word}]")).collect();
@@ -3083,14 +3075,15 @@ impl ChatArea {
         if total + 1 > self.width {
             return;
         }
-        // The user's controls sit under the right edge of their own bubble, the
-        // way the desktop's do; a reply's sit under its own first column.
-        let lead = match msg.role {
-            ChatRole::User => self.width.saturating_sub(total + 1),
-            _ => 1,
-        };
-        let mut text = " ".repeat(lead);
-        let mut column = lead;
+        // The blank line the reader asked for between the answer and its
+        // controls — the row itself, not padding: the transcript is a list of
+        // rows, and this is the one that makes the gap.
+        self.rendered_lines.push(RenderedLine {
+            text: String::new(),
+            dim: true,
+        });
+        let mut text = " ".to_string();
+        let mut column = 1;
         let mut spans: Vec<(usize, usize, RowAction)> = Vec::new();
         for (position, (label, (_, action))) in labels.iter().zip(chips.iter()).enumerate() {
             if position > 0 {
@@ -5289,16 +5282,17 @@ mod tests {
         assert_matches_fresh_render(&mut chat);
     }
 
-    /// Every message the reader wrote or read ends in its controls; a call's row
-    /// and a compaction divider end in nothing.
+    /// A reply ends in its controls, one line below its own text; a prompt ends
+    /// in nothing, and neither does a call.
     ///
-    /// This is the desktop's pair of footer controls (`MessageBlock`'s copy
-    /// button and its fork button beside it), made permanent: a terminal has no
-    /// hover to reveal them under, so the row is always there — one row per
-    /// message, the last one, where `tab` reaches it after the message's own
-    /// rows.
+    /// The pair is the desktop's message footer — its copy button, and the fork
+    /// button beside it — made permanent: a terminal has no hover to reveal
+    /// them under, so the row is always there, after a blank line that keeps the
+    /// chips from reading as the answer's last paragraph. A prompt gets none:
+    /// the reader can retype or select what they wrote, and the chip under a
+    /// bubble read as part of the bubble.
     #[test]
-    fn the_controls_row_follows_each_message() {
+    fn the_controls_row_follows_a_reply() {
         let mut chat = detailed_chat();
         chat.render(W);
         set_messages(
@@ -5314,26 +5308,24 @@ mod tests {
             .map(|line| strip(line))
             .collect();
         let controls = chat.control_rows();
-        assert_eq!(controls.len(), 2, "one per message, none for the call");
-        // The prompt's sits under the right edge of her own card, outside its
-        // surface; the reply's sits at its own first column.
-        assert_eq!(rows[controls[0]].trim(), "[copy]", "{rows:?}");
+        assert_eq!(controls.len(), 1, "the reply's, and nothing else: {rows:?}");
+        let at = controls[0];
+        assert_eq!(rows[at].trim(), "[copy] [fork]", "{rows:?}");
         assert!(
-            rows[controls[0]].starts_with("     "),
-            "the prompt's control is right-aligned: {:?}",
-            rows[controls[0]]
-        );
-        assert_eq!(rows[controls[1]].trim(), "[copy] [fork]", "{rows:?}");
-        assert!(
-            rows[controls[1]].starts_with(" [copy]"),
+            rows[at].starts_with(" [copy]"),
             "a reply's controls lead at its first column: {:?}",
-            rows[controls[1]]
+            rows[at]
         );
-        // Nothing else in the transcript carries one.
+        assert_eq!(
+            rows[at - 1].trim(),
+            "",
+            "one blank line between the answer and its chips: {rows:?}"
+        );
+        // Nothing else in the transcript carries one — least of all the prompt.
         assert!(rows
             .iter()
             .enumerate()
-            .all(|(index, row)| controls.contains(&index) || !row.contains("[copy]")));
+            .all(|(index, row)| index == at || !row.contains("[copy]")));
     }
 
     /// The two controls are two stops on one row, each over its own label — what
@@ -5386,12 +5378,15 @@ mod tests {
             vec![ChatMessage::new("u".into(), ChatRole::User, "go"), reply],
         );
         let rows = chat.control_rows();
-        assert_eq!(rows.len(), 1, "only the settled prompt has a row: {rows:?}");
-        // …and it appears under the reply the moment it settles.
+        assert!(
+            rows.is_empty(),
+            "nothing to press while it streams: {rows:?}"
+        );
+        // …and the row appears under the reply the moment it settles.
         chat.messages[1].pending = false;
         chat.mark_message_dirty(1);
         chat.render(W);
-        assert_eq!(chat.control_rows().len(), 2);
+        assert_eq!(chat.control_rows().len(), 1);
     }
 
     /// A prompt learns the journal entry it was written to, which is what the
@@ -7974,15 +7969,11 @@ mod tests {
         let lines = chat.render_all(W);
         let bg = format!("\x1b[48;5;{}m", DARK_THEME.user_bg);
         // Card padding row, the text row, and the padding row under it — then
-        // the message's control row and the transcript's trailing spacer.
+        // the transcript's trailing spacer. A prompt gets no controls (see
+        // `the_controls_row_follows_a_reply`).
         let (card, tail) = lines.split_at(3);
-        assert_eq!(tail.len(), 2, "{lines:?}");
-        assert_eq!(
-            chat.control_rows(),
-            vec![3],
-            "the controls sit under the card, not inside it"
-        );
-        assert!(!tail[0].starts_with(&bg), "…outside the surface: {tail:?}");
+        assert_eq!(tail.len(), 1, "{lines:?}");
+        assert!(chat.control_rows().is_empty(), "a prompt has no chips");
         for line in card {
             assert!(line.starts_with(&bg), "every block row carries the surface");
         }
