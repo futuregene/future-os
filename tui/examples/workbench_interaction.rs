@@ -28,8 +28,7 @@ use future_tui::workbench::layout::Rect;
 use future_tui::workbench::mouse::{MouseEvent, MouseKind};
 use future_tui::workbench::picker::PickerKind;
 use future_tui::workbench::state::{
-    ApprovalView, DiffView, ForkPoint, PanelId, QueuedPrompt, SessionRow, WorkbenchData,
-    WorktreeView,
+    ApprovalView, DiffView, ForkPoint, PanelId, QueuedPrompt, WorkbenchData, WorktreeView,
 };
 use future_tui::workbench::{Overlay, WbAction, WbEvent, Workbench};
 
@@ -115,8 +114,6 @@ const PAGES: &[&str] = &[
     "diff",
     "diff-clean",
     "diff-error",
-    "history",
-    "history-long",
     "tree",
     "fork",
     "worktree",
@@ -238,15 +235,6 @@ pub fn highlight(path: &str, text: &str) -> Vec<Line> {
             },
             |wb, _| wb.overlay = Some(Overlay::Diff),
         ),
-        "history" | "history-long" => (
-            {
-                let mut data = chat();
-                let count = if name == "history-long" { 24 } else { 6 };
-                data.sessions = (0..count).map(session).collect();
-                data
-            },
-            |wb, _| wb.overlay = Some(Overlay::History),
-        ),
         "fork" => (
             {
                 let mut data = chat();
@@ -345,15 +333,6 @@ fn diff() -> DiffView {
             .collect::<Vec<_>>()
             .join("\n"),
         error: None,
-    }
-}
-
-fn session(index: usize) -> SessionRow {
-    SessionRow {
-        id: format!("sess-{index:03}"),
-        title: format!("session {index} with a title long enough to be cut"),
-        workspace: format!("D:/future-os/.worktrees/branch-{index}"),
-        ..SessionRow::default()
     }
 }
 

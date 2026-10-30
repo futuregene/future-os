@@ -110,27 +110,6 @@ fn surfaces() -> Vec<Surface> {
     let mut out = Vec::new();
 
     let mut data = demo::chat();
-    data.sessions = (0..12)
-        .map(|index| SessionRow {
-            id: format!("20261026-{index:06}-ebfc7c89507d4867b57705bd7789cf70"),
-            title: format!("H{index:02} 重构整理 TUI 的浮层布局，顺便把鼠标命中区域也一起收拾"),
-            workspace: format!("D:/future-os/.worktrees/a-fairly-long-branch-name-{index}"),
-            ..SessionRow::default()
-        })
-        .collect();
-    out.push(Surface {
-        name: "history",
-        data,
-        open: Box::new(|wb, _| wb.overlay = Some(Overlay::History)),
-        id: |index| format!("workflow.row.{index}"),
-        token: |index| format!("H{index:02} "),
-        marker: true,
-        selection: Selection::Workflow,
-        down: "down",
-        count: 12,
-    });
-
-    let mut data = demo::chat();
     data.fork_points = (0..9)
         .map(|index| ForkPoint {
             id: format!("e{index}"),

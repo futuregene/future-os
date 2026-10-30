@@ -3,26 +3,7 @@
 use serde_json::Value;
 
 use super::i18n::{t, Key, Language};
-use super::state::{ApprovalView, SessionRow, WorkbenchData};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HistoryMode {
-    Search,
-    Tree,
-}
-
-pub fn filtered_sessions<'a>(sessions: &'a [SessionRow], query: &str) -> Vec<&'a SessionRow> {
-    let needle = query.trim().to_lowercase();
-    sessions
-        .iter()
-        .filter(|row| {
-            needle.is_empty()
-                || [row.id.as_str(), row.title.as_str(), row.workspace.as_str()]
-                    .iter()
-                    .any(|text| text.to_lowercase().contains(&needle))
-        })
-        .collect()
-}
+use super::state::{ApprovalView, WorkbenchData};
 
 fn pretty(value: Option<&Value>) -> String {
     value
@@ -214,62 +195,6 @@ pub fn record_line(marker_on: bool, prefix: &str, pieces: &[&str], width: usize)
     line
 }
 
-/// A list of conversations as a **table**: the title, the workspace it belongs
-/// to and its age, each in a column of its own.
-///
-/// [`record_line`] appends a value only while it fits, which is right for a
-/// diff's metadata (where a cut value stays readable) and wrong for a list of
-/// conversations: every row's workspace started wherever its title happened to
-/// end, so the column a reader scans down was ragged — `#`'s session list read
-/// as misaligned text rather than as a list. Here the two right-hand columns are
-/// measured across the *whole* list and every row is padded into them.
-///
-/// Widths are the list's own, so a list of short titles gives the title more
-/// room. The workspace column takes at most a third of the row: its name is a
-/// hint about where a conversation lives, and the title is what the reader
-/// came to read.
-pub fn session_table(rows: &[&SessionRow], selected: usize, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    let marker = 2usize;
-    let age_width = rows
-        .iter()
-        .map(|row| crate::workbench::ansi::width(&row.age))
-        .max()
-        .unwrap_or(0);
-    let workspace_width = rows
-        .iter()
-        .map(|row| crate::workbench::ansi::width(&row.workspace))
-        .max()
-        .unwrap_or(0)
-        .min((width / 3).max(4));
-    // The title gets what the two right-hand columns and their separators leave,
-    // and at least a few cells of its own.
-    let title_width = width
-        .saturating_sub(marker + age_width + workspace_width + 2)
-        .max(4);
-    rows.iter()
-        .enumerate()
-        .map(|(index, row)| {
-            let lead = if index == selected { "› " } else { "  " };
-            let title = crate::workbench::ansi::clip(&row.title.replace('\n', " ↵ "), title_width);
-            let title_pad =
-                " ".repeat(title_width.saturating_sub(crate::workbench::ansi::width(&title)));
-            // Right-aligned, so the last cell of every workspace name and every
-            // age is the same cell.
-            let workspace = crate::workbench::ansi::clip(&row.workspace, workspace_width);
-            let workspace_pad = " "
-                .repeat(workspace_width.saturating_sub(crate::workbench::ansi::width(&workspace)));
-            let age_pad =
-                " ".repeat(age_width.saturating_sub(crate::workbench::ansi::width(&row.age)));
-            let line = format!(
-                "{lead}{title}{title_pad} {workspace_pad}{workspace} {age_pad}{}",
-                row.age
-            );
-            crate::workbench::ansi::fit(&line, width)
-        })
-        .collect()
-}
-
 /// Soft-wrap by display cells and clamp the horizontal window to a byte
 /// boundary. Long JSON and diff lines stay readable instead of being clipped.
 pub fn wrapped(lines: &[String], width: usize, scroll: usize, height: usize) -> Vec<String> {
@@ -317,49 +242,6 @@ pub fn wrapped_indexed(lines: &[String], width: usize) -> Vec<(usize, String)> {
 mod tests {
     use super::*;
 
-    /// The session list is a *table*: the workspace and age of every row start
-    /// in the same cell, whatever the title's length (and whatever its width in
-    /// cells — a CJK title is two cells per character).
-    #[test]
-    fn a_session_table_lines_its_columns_up() {
-        use crate::workbench::ansi::width;
-        let owned: Vec<SessionRow> = [
-            ("修复 dev 分支 CI", "future-os", "5m"),
-            ("short", "serious_works", "3h"),
-            ("a much longer title than the others", "future-os", "1w"),
-            ("对话", "", "now"),
-        ]
-        .iter()
-        .map(|(title, workspace, age)| SessionRow {
-            id: title.to_string(),
-            title: title.to_string(),
-            workspace: workspace.to_string(),
-            age: age.to_string(),
-            ..SessionRow::default()
-        })
-        .collect();
-        let rows: Vec<&SessionRow> = owned.iter().collect();
-        let lines = session_table(&rows, 1, 60);
-        assert_eq!(lines.len(), rows.len());
-        for line in &lines {
-            assert_eq!(width(line), 60, "every row is the box's width: {line:?}");
-        }
-        // The age ends flush with the row's right edge on every line, which is
-        // what makes the column line up (byte offsets inside a CJK title are
-        // not cells, so the tail is measured rather than indexed).
-        for (line, row) in lines.iter().zip(rows.iter()) {
-            let at = line.find(row.age.as_str()).expect("the age is painted");
-            assert_eq!(
-                width(&line[at..]),
-                width(&row.age),
-                "the age is not flush: {line:?}"
-            );
-        }
-        // And the marker sits on the selected row only.
-        assert!(lines[1].starts_with("› "), "{:?}", lines[1]);
-        assert!(!lines[0].starts_with("› "), "{:?}", lines[0]);
-    }
-
     #[test]
     fn a_record_is_one_row_and_drops_whole_pieces_before_shortening_one() {
         use crate::workbench::ansi::width;
@@ -393,27 +275,6 @@ mod tests {
         // A prefix (a fork number, a tree indent, a badge) is kept.
         let numbered = record_line(true, "12. ", &["short text"], 40);
         assert_eq!(numbered, "\u{203a} 12. short text");
-    }
-
-    #[test]
-    fn history_search_covers_title_workspace_and_id_case_insensitively() {
-        let rows = vec![
-            SessionRow {
-                id: "ABC".into(),
-                title: "Fix parser".into(),
-                workspace: "repo".into(),
-                ..SessionRow::default()
-            },
-            SessionRow {
-                id: "x".into(),
-                title: "Other".into(),
-                workspace: "articles".into(),
-                ..SessionRow::default()
-            },
-        ];
-        assert_eq!(filtered_sessions(&rows, "abc").len(), 1);
-        assert_eq!(filtered_sessions(&rows, "PARSER").len(), 1);
-        assert_eq!(filtered_sessions(&rows, "articles").len(), 1);
     }
 
     #[test]

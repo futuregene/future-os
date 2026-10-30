@@ -986,13 +986,6 @@ async fn quit(
                     workbench.overlay_scroll = 0;
                     continue;
                 }
-                "/history" => {
-                    live.begin_sessions_refresh();
-                    workbench.overlay = Some(super::Overlay::History);
-                    workbench.workflow_index = 0;
-                    workbench.overlay_scroll = 0;
-                    continue;
-                }
                 "/fork" => {
                     live.load_fork_points().await;
                     workbench.overlay = Some(super::Overlay::Fork);

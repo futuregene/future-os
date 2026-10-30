@@ -105,7 +105,7 @@ fn main() {
                 });
                 workbench.overlay = Some(Overlay::Diff);
             }
-            "history" | "fork" | "worktree" => {
+            "fork" | "worktree" => {
                 if name == "fork" {
                     data.fork_points = vec![
                         ForkPoint {
@@ -135,7 +135,6 @@ fn main() {
                     ];
                 }
                 workbench.overlay = Some(match name {
-                    "history" => Overlay::History,
                     "fork" => Overlay::Fork,
                     _ => Overlay::Worktree,
                 });

@@ -137,7 +137,6 @@ pub enum Overlay {
     /// preview. Its own surface — the rail lists conversations, which belong to
     /// the agent, while a tree belongs to the session on screen.
     Files,
-    History,
     Fork,
     Worktree,
     /// The confirm box in front of a delete. The one destructive verb on the
@@ -300,7 +299,6 @@ pub enum WbAction {
     /// Put this text on the clipboard (`y` in the `/git` panel copies the
     /// selected commit's sha, a ref's name or a file's path).
     CopyText(String),
-    OpenHistory,
     OpenTree,
     OpenFork,
     OpenWorktree,
@@ -790,7 +788,6 @@ pub struct Workbench {
     /// A divider drag in progress: the cell the pointer went down on and the
     /// list width at that moment.
     pub(crate) git_drag: Option<GitSplitDrag>,
-    pub history_query: String,
     session_key: String,
     pub mouse_capture: bool,
     pub(crate) composer_width: usize,
@@ -929,7 +926,6 @@ impl Workbench {
             git_split_percent: 44,
             git_split_span: (0, 0),
             git_drag: None,
-            history_query: String::new(),
             session_key: String::new(),
             mouse_capture: true,
             composer_width: 76,
@@ -2492,11 +2488,7 @@ impl Workbench {
         }
         if matches!(
             overlay,
-            Overlay::Approval
-                | Overlay::Diff
-                | Overlay::History
-                | Overlay::Fork
-                | Overlay::Worktree
+            Overlay::Approval | Overlay::Diff | Overlay::Fork | Overlay::Worktree
         ) {
             return self.handle_workflow_key(overlay, key, data);
         }
@@ -2850,7 +2842,6 @@ impl Workbench {
             | Overlay::Diff
             | Overlay::Git
             | Overlay::Files
-            | Overlay::History
             | Overlay::Fork
             | Overlay::Worktree => Vec::new(),
             Overlay::Picker(kind) => match key {
@@ -3143,14 +3134,11 @@ impl Workbench {
         key: &str,
         data: &WorkbenchData,
     ) -> Vec<WbAction> {
-        if matches!(key, "escape" | "q") && !(overlay == Overlay::History && key == "q") {
+        if matches!(key, "escape" | "q") {
             self.overlay = None;
             return vec![WbAction::Redraw];
         }
         let count = match overlay {
-            Overlay::History => {
-                workflows::filtered_sessions(&data.sessions, &self.history_query).len()
-            }
             Overlay::Fork => data.fork_points.len(),
             Overlay::Worktree => data.worktrees.len(),
             Overlay::Diff => data.diff.as_ref().map_or(0, |diff| diff.files.len()),
@@ -3168,20 +3156,14 @@ impl Workbench {
             "down" | "j" if overlay == Overlay::Diff && !self.diff_patch_focus => {
                 self.workflow_index = (self.workflow_index + 1).min(count.saturating_sub(1));
             }
-            "up" | "k"
-                if (key == "up" || overlay != Overlay::History)
-                    && (overlay != Overlay::Diff || self.diff_patch_focus) =>
-            {
+            "up" | "k" if overlay != Overlay::Diff || self.diff_patch_focus => {
                 if detail {
                     self.overlay_scroll = self.overlay_scroll.saturating_sub(1);
                 } else {
                     self.workflow_index = self.workflow_index.saturating_sub(1);
                 }
             }
-            "down" | "j"
-                if (key == "down" || overlay != Overlay::History)
-                    && (overlay != Overlay::Diff || self.diff_patch_focus) =>
-            {
+            "down" | "j" if overlay != Overlay::Diff || self.diff_patch_focus => {
                 if detail {
                     self.overlay_scroll += 1;
                 } else {
@@ -3196,11 +3178,10 @@ impl Workbench {
                 self.diff_patch_focus = false;
                 self.workflow_index = (self.workflow_index + 1).min(count.saturating_sub(1));
             }
-            // `space` types into history's filter, so only the two named page
-            // keys page there; everywhere else it is the same verb. A detail
-            // view (an approval, a patch) scrolls; every list moves its cursor
-            // — the diff is both, so whichever pane has the keys decides.
-            "pageUp" | "pageDown" | "space" if key != "space" || overlay != Overlay::History => {
+            // A detail view (an approval, a patch) scrolls; every list moves
+            // its cursor — the diff is both, so whichever pane has the keys
+            // decides.
+            "pageUp" | "pageDown" | "space" => {
                 let page = self.list_page.max(1);
                 let back = key == "pageUp";
                 // A detail view (an approval, a patch) scrolls; every list moves
@@ -3218,11 +3199,6 @@ impl Workbench {
                 } else {
                     self.workflow_index = (self.workflow_index + page).min(count.saturating_sub(1));
                 }
-            }
-            "backspace" if overlay == Overlay::History => {
-                self.history_query.pop();
-                self.workflow_index = 0;
-                self.overlay_scroll = 0;
             }
             "y" | "Y" if overlay == Overlay::Approval => {
                 self.overlay = None;
@@ -3270,12 +3246,6 @@ impl Workbench {
                         .and_then(|diff| diff.files.get(self.workflow_index))
                         .map(|_| vec![WbAction::SelectDiff(self.workflow_index)])
                         .unwrap_or_default(),
-                    Overlay::History => {
-                        workflows::filtered_sessions(&data.sessions, &self.history_query)
-                            .get(self.workflow_index)
-                            .map(|row| vec![WbAction::SwitchSession(row.id.clone())])
-                            .unwrap_or_default()
-                    }
                     Overlay::Fork => data
                         .fork_points
                         .get(self.workflow_index)
@@ -3288,15 +3258,6 @@ impl Workbench {
                         .unwrap_or_default(),
                     _ => vec![WbAction::Redraw],
                 };
-            }
-            other
-                if overlay == Overlay::History
-                    && other.chars().count() == 1
-                    && !other.starts_with("ctrl+") =>
-            {
-                self.history_query.push_str(other);
-                self.workflow_index = 0;
-                self.overlay_scroll = 0;
             }
             _ => {}
         }
@@ -4588,22 +4549,21 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 /// [`TYPED_ONLY`] is where those verbs live. The two lists are the whole
 /// vocabulary, and `every_palette_entry_has_a_handler` walks both.
 ///
-/// **The order is a name order, not a rank.** These fourteen are a list a reader
+/// **The order is a name order, not a rank.** These thirteen are a list a reader
 /// reads *for a name they already have in mind* (`/fork`, `/export`), and an
 /// alphabetical column is the only order that answers "where is it?" without
 /// being memorised — the surface's other ordering rules ("most used first",
 /// "what the next message runs with") describe sets that fit on one line, not
-/// fourteen rows. A consequence worth naming: `enter` on an empty query runs the
+/// thirteen rows. A consequence worth naming: `enter` on an empty query runs the
 /// first row by name (`/approval`), so the top of this list is a letter and not
 /// a recommendation.
-pub const COMMANDS: [(&str, Key); 14] = [
+pub const COMMANDS: [(&str, Key); 13] = [
     ("/approval", Key::CmdApproval),
     ("/compact", Key::CmdCompact),
     ("/copy", Key::CmdCopy),
     ("/delete", Key::CmdDelete),
     ("/export", Key::CmdExport),
     ("/fork", Key::CmdFork),
-    ("/history", Key::CmdHistory),
     ("/pin", Key::CmdPin),
     ("/queue", Key::CmdQueue),
     ("/refresh", Key::CmdRefresh),
@@ -4798,18 +4758,20 @@ mod tests {
     }
 
     #[test]
-    fn workflow_keys_search_history_choose_forks_and_never_deny_on_escape() {
+    fn workflow_keys_choose_forks_and_never_deny_on_escape() {
         let mut data = demo::chat();
-        data.fork_points = vec![state::ForkPoint {
-            id: "entry-1".into(),
-            text: "start".into(),
-        }];
+        data.fork_points = vec![
+            state::ForkPoint {
+                id: "entry-1".into(),
+                text: "start".into(),
+            },
+            state::ForkPoint {
+                id: "entry-2".into(),
+                text: "second".into(),
+            },
+        ];
         let mut wb = workbench();
-        wb.overlay = Some(Overlay::History);
-        wb.handle(WbEvent::Key("q".into()), &data);
-        assert_eq!(wb.history_query, "q");
-        assert_eq!(wb.overlay, Some(Overlay::History));
-        wb.handle(WbEvent::Key("backspace".into()), &data);
+        wb.overlay = Some(Overlay::Fork);
         wb.handle(WbEvent::Key("down".into()), &data);
         assert_eq!(wb.workflow_index, 1);
         wb.handle(WbEvent::Key("escape".into()), &data);
@@ -8120,7 +8082,6 @@ mod tests {
             Overlay::Diff,
             Overlay::Git,
             Overlay::Files,
-            Overlay::History,
             Overlay::Fork,
             Overlay::Worktree,
             Overlay::Preferences,
@@ -11197,7 +11158,6 @@ mod tests {
         for overlay in [
             Overlay::Help,
             Overlay::Palette,
-            Overlay::History,
             Overlay::Fork,
             Overlay::Worktree,
             Overlay::Git,
@@ -11252,8 +11212,8 @@ mod tests {
 
     /// `down` moves the highlight one *row down the screen*, not one record.
     ///
-    /// A record is one line of data, but the box wraps by width: a real
-    /// session title (title · workspace · id) does not fit on one row, so one
+    /// A record is one line of data, but the box wraps by width: a real fork
+    /// point's text (a whole user message) does not fit on one row, so one
     /// index step moved the marker two rows and the entries looked skipped.
     /// The same shape had two more traps: the worktree list marked the
     /// *current* checkout with the arrow (so it had no visible selection at
@@ -11270,16 +11230,8 @@ mod tests {
                 .map(|(rect, _)| rect.y)
         }
 
-        // A realistic session list: long titles, long worktrees, long ids.
+        // A realistic list: whole user messages, long worktrees, long names.
         let mut data = demo::chat();
-        data.sessions = (0..8)
-            .map(|index| state::SessionRow {
-                id: format!("20261026-{index:06}-ebfc7c89507d4867b57705bd7789cf70"),
-                title: format!("第 {index} 个会话 · 重构整理 TUI 的浮层布局与鼠标命中区域"),
-                workspace: format!("D:/future-os/.worktrees/tui-overlay-layout-{index}"),
-                ..SessionRow::default()
-            })
-            .collect();
         data.fork_points = (0..6)
             .map(|index| state::ForkPoint {
                 id: format!("e{index}"),
@@ -11306,12 +11258,7 @@ mod tests {
             ..state::DiffView::default()
         });
 
-        for overlay in [
-            Overlay::History,
-            Overlay::Fork,
-            Overlay::Worktree,
-            Overlay::Diff,
-        ] {
+        for overlay in [Overlay::Fork, Overlay::Worktree, Overlay::Diff] {
             let mut wb = workbench();
             wb.overlay = Some(overlay);
             // Files first in the diff, so the marker is the file navigator.
@@ -12064,14 +12011,6 @@ mod tests {
     #[test]
     fn page_keys_move_any_list_cursor_by_a_page() {
         let mut data = demo::chat();
-        data.sessions = (0..30)
-            .map(|index| state::SessionRow {
-                id: format!("page-{index:03}"),
-                title: format!("第 {index} 个会话 · 标题足够长，长到必须被截断才放得下"),
-                workspace: format!("D:/future-os/.worktrees/page-{index}"),
-                ..SessionRow::default()
-            })
-            .collect();
         data.fork_points = (0..30)
             .map(|index| state::ForkPoint {
                 id: format!("e{index}"),
@@ -12087,7 +12026,7 @@ mod tests {
             })
             .collect();
 
-        for overlay in [Overlay::History, Overlay::Fork, Overlay::Worktree] {
+        for overlay in [Overlay::Fork, Overlay::Worktree] {
             let mut wb = workbench();
             wb.overlay = Some(overlay);
             wb.render(&data, 100, 30);
