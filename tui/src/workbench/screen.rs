@@ -1596,7 +1596,7 @@ fn sidebar_rows(
     let lang = workbench.lang;
     let panel = workbench.panel;
     let folded = workbench.rail.clone();
-    let frame = workbench.row_spinner();
+    let frame = workbench.spinner_frame();
     let body = panels::render_with(
         panel,
         data,
@@ -1639,11 +1639,7 @@ fn activity_row(
 ) -> Vec<String> {
     let activity = &data.activity;
     let spinner = if activity.is_busy() {
-        let glyph = if workbench.motion_enabled() {
-            format!("{} ", widgets::spinner(workbench.spinner_frame()))
-        } else {
-            "… ".into()
-        };
+        let glyph = format!("{} ", widgets::spinner(workbench.spinner_frame()));
         palette.text(palette.amber, &glyph)
     } else {
         palette.dim("· ")
@@ -3112,7 +3108,7 @@ fn files_box(
                 .files_index
                 .min(data.tree.rows().len().saturating_sub(1)),
         };
-        let frame = workbench.row_spinner();
+        let frame = workbench.spinner_frame();
         panels::render_with(
             PanelId::Files,
             data,
@@ -3234,7 +3230,6 @@ fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
             PreferenceRow::Mouse => enabled(workbench.mouse_capture, lang).to_string(),
             PreferenceRow::Notifications => enabled(workbench.notify.enabled, lang).to_string(),
             PreferenceRow::NotificationBell => enabled(workbench.notify.bell, lang).to_string(),
-            PreferenceRow::Motion => enabled(workbench.reduced_motion, lang).to_string(),
             // The two menus show what is in force: the language *preference*
             // (so a reader on `system` is not told they chose Chinese) and the
             // palette id the surface is actually painting.
@@ -3251,8 +3246,7 @@ fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
             | PreferenceRow::SidebarVisible
             | PreferenceRow::Mouse
             | PreferenceRow::Notifications
-            | PreferenceRow::NotificationBell
-            | PreferenceRow::Motion => format!("‹ {value} ›"),
+            | PreferenceRow::NotificationBell => format!("‹ {value} ›"),
             PreferenceRow::Language | PreferenceRow::Theme => format!("{value} ›"),
             PreferenceRow::Shortcuts | PreferenceRow::Reset => value,
         };
@@ -4302,7 +4296,7 @@ fn panel_box(
         selected: workbench.sidebar_index,
     };
     let folded = workbench.rail.clone();
-    let frame = workbench.row_spinner();
+    let frame = workbench.spinner_frame();
     let body = panels::render_with(
         panel,
         data,

@@ -549,7 +549,6 @@ pub enum Key {
     PrefMouse,
     PrefNotifications,
     PrefNotificationBell,
-    PrefMotion,
     PrefSidebarVisible,
     PrefTheme,
     PrefEnabled,
@@ -1071,7 +1070,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         PrefMouse => ("启动与运行时使用鼠标", "Mouse capture"),
         PrefNotifications => ("完成时通知", "Completion notifications"),
         PrefNotificationBell => ("通知包含提示音", "Notification bell"),
-        PrefMotion => ("减少动态", "Reduce motion"),
         PrefSidebarVisible => ("显示侧栏", "Show sidebar"),
         PrefTheme => ("配色主题", "Color theme"),
         PrefEnabled => ("开启", "On"),
@@ -1477,7 +1475,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 351] = {
+    const ALL_KEYS: [Key; 350] = {
         use Key::*;
         [
             TabTodo,
@@ -1736,7 +1734,6 @@ mod tests {
             PrefMouse,
             PrefNotifications,
             PrefNotificationBell,
-            PrefMotion,
             PrefSidebarVisible,
             PrefTheme,
             PrefEnabled,

@@ -660,7 +660,6 @@ pub struct Workbench {
     pub sidebar_visible: bool,
     pub sidebar_w: u16,
     pub sidebar_position: preferences::SidebarPosition,
-    pub reduced_motion: bool,
     pub notify: crate::notifications::NotifyConfig,
     pub keys: preferences::Keybindings,
     pub preferences_index: usize,
@@ -879,7 +878,6 @@ impl Workbench {
             sidebar_visible: true,
             sidebar_w: layout::SIDEBAR_DEFAULT,
             sidebar_position: preferences::SidebarPosition::Right,
-            reduced_motion: false,
             notify: crate::notifications::NotifyConfig::default(),
             keys: preferences::Keybindings::default(),
             preferences_index: 0,
@@ -960,7 +958,6 @@ impl Workbench {
         self.sidebar_visible = preferences.sidebar_visible;
         self.mouse_capture = preferences.mouse_capture;
         self.notify = preferences.notify;
-        self.reduced_motion = preferences.reduced_motion;
     }
 
     pub fn preferences(&self) -> preferences::LayoutPreferences {
@@ -970,7 +967,6 @@ impl Workbench {
             sidebar_visible: self.sidebar_visible,
             mouse_capture: self.mouse_capture,
             notify: self.notify,
-            reduced_motion: self.reduced_motion,
         }
     }
 
@@ -1240,29 +1236,6 @@ impl Workbench {
     /// spinners share (see [`SPINNER_TICKS`]).
     pub fn spinner_frame(&self) -> usize {
         self.tick / SPINNER_TICKS
-    }
-
-    /// The frame a *list row's* own spinner is on — `None` when the reader asked
-    /// for less motion.
-    ///
-    /// `None` does not mean "draw no spinner": the row paints a still mark
-    /// instead (`panels::STILL_MARKER`). Nothing advances the tick under reduced
-    /// motion, so handing the painter [`Self::spinner_frame`] there leaves a
-    /// braille frame frozen on screen, which reads as a spinner that has died
-    /// rather than as a run that is still writing.
-    pub fn row_spinner(&self) -> Option<usize> {
-        if self.motion_enabled() {
-            Some(self.spinner_frame())
-        } else {
-            None
-        }
-    }
-
-    /// The activity glyph is the only thing a tick animates, so a reader who
-    /// asked for less motion gets no ticker-driven repaints; streamed text still
-    /// arrives immediately.
-    pub fn motion_enabled(&self) -> bool {
-        !self.reduced_motion
     }
 
     pub fn handle(&mut self, event: WbEvent, data: &WorkbenchData) -> Vec<WbAction> {
@@ -1560,10 +1533,6 @@ impl Workbench {
             Some(preferences::Action::Copy) => return vec![WbAction::CopyLast],
             Some(preferences::Action::Queue) => return vec![WbAction::OpenQueue],
             Some(preferences::Action::Mouse) => return vec![WbAction::ToggleMouse],
-            Some(preferences::Action::ReduceMotion) => {
-                self.reduced_motion = !self.reduced_motion;
-                return vec![WbAction::SetPreferences];
-            }
             // One conversation either way, with the transcript following it: a
             // rail whose highlight moved while the chat stayed put would name a
             // conversation the screen is not showing. The *switch* is deferred
@@ -2581,9 +2550,6 @@ impl Workbench {
                         }
                         preferences::PreferenceRow::NotificationBell => {
                             self.notify.bell = !self.notify.bell;
-                        }
-                        preferences::PreferenceRow::Motion => {
-                            self.reduced_motion = !self.reduced_motion;
                         }
                         // A menu, not a toggle: the boxes `/lang` and `/theme`
                         // open, reached from the box the reader is already in.
@@ -10698,42 +10664,6 @@ mod tests {
             )
             .is_empty());
         assert_eq!(workbench.scroll.offset, before);
-    }
-
-    #[test]
-    fn reduced_motion_survives_sidebar_navigation() {
-        let mut workbench = Workbench::new();
-        let data = demo::chat();
-        workbench.render(&data, 120, 38);
-        // The toggle has no chord in this scheme; the preferences overlay is
-        // its door (`/preferences` opens it, the row is `PreferenceRow::Motion`).
-        workbench.open_preferences();
-        workbench.preferences_index = preferences::PREFERENCE_ROWS
-            .iter()
-            .position(|row| *row == preferences::PreferenceRow::Motion)
-            .expect("the motion row exists");
-        workbench.handle(WbEvent::Key("enter".into()), &data);
-        workbench.overlay = None;
-        assert!(workbench.reduced_motion && !workbench.motion_enabled());
-        workbench.sidebar_visible = false;
-        workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
-        assert!(workbench.sidebar_visible, "ctrl+d showed the rail");
-        assert!(
-            workbench.reduced_motion,
-            "sidebar navigation does not reset accessibility choices"
-        );
-    }
-
-    /// The rail's row spinner reads the same switch the activity glyph obeys:
-    /// under reduced motion it hands the painter no frame at all, so the row
-    /// draws its still mark instead of a braille frame nothing will advance.
-    #[test]
-    fn the_row_spinner_holds_still_under_reduced_motion() {
-        let mut workbench = Workbench::new();
-        workbench.advance_tick();
-        assert_eq!(workbench.row_spinner(), Some(workbench.spinner_frame()));
-        workbench.reduced_motion = true;
-        assert_eq!(workbench.row_spinner(), None);
     }
 
     /// The picker marks the preference in force, not the bundle it resolved to:

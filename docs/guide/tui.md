@@ -323,14 +323,14 @@ the list of chats with a click.
 `Ctrl+Q` or `/preferences` opens the preference panel, and the panel is the
 list of everything this terminal client remembers: move the sidebar left or
 right, adjust its 30–60-column width, show or hide it, control mouse capture and
-completion notifications, enable reduced motion, pick the interface language and
+completion notifications, pick the interface language and
 the color theme, and rebind global shortcuts. Rows that step through a few values
 change in place; the two that are menus — the language and the palette — open the
 same pickers `/lang` and `/theme` do and close back onto the panel, on the row
 that opened them. The panel keeps the selected row and help visible on short
 terminals. Choices persist immediately in `~/.future/tui/settings.json` as
 `sidebarPosition`, `sidebarWidth`, `sidebarVisible`, `mouseCapture`, `notify`,
-`reducedMotion`, `language` and `themeId`; incremental shortcut overrides live
+`language` and `themeId`; incremental shortcut overrides live
 beside it in `keybindings.json`. A width the reader dragged is written back as it
 was — the file's range is the divider's own 30–60, so the next start opens the
 rail exactly as wide as it was left.
@@ -350,9 +350,7 @@ desktop's palette family (`ayu`, `catppuccin`, `everforest`, `gruvbox`,
 and solarized). Choosing one persists `themeId` and recolors both surfaces. With
 no stored choice, the terminal's `COLORFGBG`
 hint selects its light/dark palette (unknown hints use dark). `NO_COLOR`
-disables styling by variable presence, including an empty value. **Reduced
-motion** (the preferences overlay's 动态 row) stops the spinner and its elapsed
-counter from animating, while streamed content still arrives immediately. These bindings, plus copy,
+disables styling by variable presence, including an empty value. These bindings, plus copy,
 queue and mouse, are contextual global actions and can be rebound; overlays
 keep their local keys so a global shortcut never submits an approval or edits
 history search accidentally.
@@ -419,14 +417,13 @@ click on the rail's tab strip are the doors to the same places.
 | `esc` (in the preview box) | Back one level, not out of the tree: a file opened from the files panel or the `/git` browser returns to that panel, and only its own `esc` reaches the chat. A picture opened from the draft had nothing under it, so it closes onto the chat |
 | `/copy` | Copy the last assistant answer as clean content, without terminal chrome |
 | `/mouse` | Toggle and persist mouse capture off/on for native terminal selection |
-| 偏好设置 → 动态 | Toggle reduced motion (persisted; no chord) |
 | `ctrl+t` | Thinking effort: opens the six-level chooser (`/thinking`); on the launchpad the level is staged for the session the first message creates |
 | `ctrl+s` | Approval mode: opens the four-tier chooser, the desktop composer's own values — 手动审批 / 沙箱保护 / 自动审批 / 完全访问 |
 | `ctrl+l` | Workspaces: opens the workspace chooser — every directory this client has a conversation in, a row that creates one from the path typed into its search line (`/workspace <path>` prefills that line), and a row that is a plain chat instead: no workspace at all, which mints `~/.future/workspaces/chat/<session id>` for the conversation and is filed under 对话会话 |
 | `ctrl+d` | Sidebar: show / hide (it never takes the keyboard, so there is no third state); full-screen on a narrow terminal. The rail's own `›` edge button does the same with one click. The choice is written to `sidebarVisible` and is where the next start begins (a first start begins hidden) |
 | `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run. From 96 columns the box draws two columns: the surface's verbs on the left, the agent's skills on the right, each under its own heading. `←`/`→` step between them (landing on the neighbouring column's row at the same line); `↑`/`↓`, `tab` and `enter` still walk one list — commands first, then skills. Narrower frames keep the single column with a heading per kind |
 | `ctrl+r`, or `[ctrl+r] 会话` in the header | Session picker (name, workspace and age of each conversation). The header's button is both the pointer's door to it and the place the key is spelled — the hint row leaves this one out, so the chord is not taught twice — and it is the one button a narrow frame keeps |
-| `ctrl+q` or `/preferences` | Preferences, in the order the box lists them: interface language and color theme first (the two rows that repaint the whole surface — the language leads, because every other label there is written in whatever it says), then sidebar position, width and visibility, mouse capture, notifications, reduced motion, the shortcut editor and restore defaults. The key is also printed in the footer hint row, so it is on screen while the reader is wondering |
+| `ctrl+q` or `/preferences` | Preferences, in the order the box lists them: interface language and color theme first (the two rows that repaint the whole surface — the language leads, because every other label there is written in whatever it says), then sidebar position, width and visibility, mouse capture, notifications, the shortcut editor and restore defaults. The key is also printed in the footer hint row, so it is on screen while the reader is wondering |
 | `?` (or the full-width `？`) | Help overlay (effective keys, grouped by area; the key requires an empty draft). Rows are listed only where an action has a chord — a verb with none is the palette's (`/` or `ctrl+p`), which is named in the same box and prints the list once |
 | `/lang` | Interface language: opens the picker — follow the system, Chinese or English |
 | `/reply-detail` | Process detail (no chord — `ctrl+e` is the draft's end of line): two levels, the desktop's `replyDetail` — **answer only** (a settled reply keeps the answer it ended on, and the reasoning, calls and notes that produced it fold into one summary row above it; a reply that never wrote prose folds onto the slice it stopped at) and **whole process** (every slice keeps its own row, in the order it happened). The terminal opens on **answer only**, the desktop's default, and the level applies to the whole conversation at once — one press re-reads every reply, not the one under the cursor. Neither level shows a tool call's body or a reasoning block's text: a call is one row, a thought a `▸ thinking` marker (or a count in the summary row), and the details open one row at a time with `tab` + `enter` (or a click). A reply folds only once its run has ended (`agent_start` … `agent_end`); while it streams, no work folds at either level — every thought, call and piece of prose keeps its own row, so the transcript only grows or updates in place until `agent_end`, and the level never changes what a running reply looks like. The counts are words in the reader's language — `61 tool calls · 30 thoughts`, or `工具调用 61 次 · 思考 30 次` in Chinese, whose word order and counter (`次`) the templates carry — and so is the bare reasoning marker (`▸ 思考`); the summary row is drawn in the faintest colour the chrome has, one step under body text, so it sits behind the answer it stands above. History loaded from a session folds the same way, so a reopened conversation reads as one answer per reply. A view toggle for the run it is used in, not a preference: every start opens on the folded level |
@@ -457,7 +454,7 @@ Mouse reporting is SGR 1006 and starts with the persisted preference (enabled by
 
 The conversation follows new output by default. Scrolling up detaches from the tail; further output leaves the reading position unchanged and shows a new-output badge. Scroll back to the bottom or press `esc` to follow again.
 
-The driver only repaints dirty frames: there is no idle 120ms repaint timer. Streaming and spinner updates coalesce at 80ms, input and resize repaint immediately, and transcript rendering is cached by width/content revision. Within a frame only changed rows are written (a width or height change is a full repaint), so streamed tokens do not retransmit the screen. Reduced-motion does not schedule animation repaints; actual stream and state changes still repaint.
+The driver only repaints dirty frames: there is no idle 120ms repaint timer. Streaming and spinner updates coalesce at 80ms, input and resize repaint immediately, and transcript rendering is cached by width/content revision. Within a frame only changed rows are written (a width or height change is a full repaint), so streamed tokens do not retransmit the screen. Actual stream and state changes still repaint.
 
 ## What is wired to the agent
 

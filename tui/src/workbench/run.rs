@@ -98,7 +98,6 @@ fn layout_preferences(
         sidebar_visible: settings.sidebar_visible.unwrap_or(false),
         mouse_capture,
         notify: settings.notify.unwrap_or_default(),
-        reduced_motion: settings.reduced_motion.unwrap_or(false),
     }
 }
 
@@ -519,7 +518,7 @@ async fn event_loop(
                 let activity_moving =
                     live.activity_animating() && frame.layout.activity.is_some();
                 let rail_moving = live.sessions_streaming() && frame.layout.sidebar.is_some();
-                let animating = workbench.motion_enabled() && (activity_moving || rail_moving);
+                let animating = activity_moving || rail_moving;
                 if animating {
                     workbench.advance_tick();
                 }
@@ -946,13 +945,6 @@ async fn quit(
                 Some(super::preferences::Action::Queue) => {
                     live.refresh_state().await;
                     let _ = workbench.surface_command("/queue", &live.data(frame));
-                    return Ok(false);
-                }
-                Some(super::preferences::Action::ReduceMotion) => {
-                    let _ = workbench.handle(WbEvent::Key(key.clone()), &live.data(frame));
-                    if let Err(error) = persist_preferences(workbench, settings, settings_path) {
-                        settings_error_notice(live, &error);
-                    }
                     return Ok(false);
                 }
                 Some(super::preferences::Action::Stop) => {
@@ -2291,7 +2283,6 @@ fn persist_preferences(
     settings.sidebar_visible = Some(preferences.sidebar_visible);
     settings.mouse_capture = Some(preferences.mouse_capture);
     settings.notify = Some(preferences.notify);
-    settings.reduced_motion = Some(preferences.reduced_motion);
     // Which workspaces the reader folded shut survives a restart; the search text
     // does not (see `TuiSettings::folded_workspaces`).
     settings.folded_workspaces = Some(workbench.folded_workspaces());

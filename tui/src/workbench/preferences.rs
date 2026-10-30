@@ -46,7 +46,6 @@ pub struct LayoutPreferences {
     pub sidebar_visible: bool,
     pub mouse_capture: bool,
     pub notify: crate::notifications::NotifyConfig,
-    pub reduced_motion: bool,
 }
 
 impl Default for LayoutPreferences {
@@ -59,7 +58,6 @@ impl Default for LayoutPreferences {
             sidebar_visible: false,
             mouse_capture: true,
             notify: crate::notifications::NotifyConfig::default(),
-            reduced_motion: false,
         }
     }
 }
@@ -79,7 +77,6 @@ pub enum Action {
     Copy,
     Queue,
     Mouse,
-    ReduceMotion,
     Model,
     Thinking,
     Approval,
@@ -138,7 +135,7 @@ impl Group {
 /// Every action, in the order the help overlay lists them: grouped, and inside
 /// a group from most to least used. `ACTIONS` is the one authority — the help
 /// table, the shortcut editor and the event dispatch all walk it.
-pub const ACTIONS: [Action; 30] = [
+pub const ACTIONS: [Action; 29] = [
     // Sessions
     Action::PrevSession,
     Action::NextSession,
@@ -171,7 +168,6 @@ pub const ACTIONS: [Action; 30] = [
     Action::PasteImage,
     Action::PreviewAttachment,
     Action::Mouse,
-    Action::ReduceMotion,
     Action::Quit,
 ];
 
@@ -192,7 +188,6 @@ impl Action {
             Self::Copy => "copy",
             Self::Queue => "queue",
             Self::Mouse => "mouse",
-            Self::ReduceMotion => "reduceMotion",
             Self::PrevSession => "previousSession",
             Self::NextSession => "nextSession",
             Self::DeleteSession => "deleteSession",
@@ -247,7 +242,6 @@ impl Action {
             | Self::PasteImage
             | Self::PreviewAttachment
             | Self::Mouse
-            | Self::ReduceMotion
             | Self::Quit => Group::Interface,
         }
     }
@@ -267,7 +261,6 @@ impl Action {
             Self::Copy => Key::CmdCopy,
             Self::Queue => Key::CmdQueue,
             Self::Mouse => Key::CmdMouse,
-            Self::ReduceMotion => Key::PrefMotion,
             Self::PrevSession => Key::HelpKeyPrevSession,
             Self::NextSession => Key::HelpKeyNextSession,
             Self::Thinking => Key::HelpKeyThinking,
@@ -391,7 +384,6 @@ impl Action {
             Self::Language => "",
             Self::Refresh => "",
             Self::Mouse => "",
-            Self::ReduceMotion => "",
             Self::PreviewAttachment => "",
             // The queue is the list of prompts sent while a run was in flight —
             // a diagnostic the status bar already counts, not something pressed
@@ -578,14 +570,13 @@ pub enum PreferenceRow {
     Mouse,
     Notifications,
     NotificationBell,
-    Motion,
     Language,
     Theme,
     Shortcuts,
     Reset,
 }
 
-pub const PREFERENCE_ROWS: [PreferenceRow; 11] = [
+pub const PREFERENCE_ROWS: [PreferenceRow; 10] = [
     PreferenceRow::Language,
     PreferenceRow::Theme,
     PreferenceRow::Position,
@@ -594,7 +585,6 @@ pub const PREFERENCE_ROWS: [PreferenceRow; 11] = [
     PreferenceRow::Mouse,
     PreferenceRow::Notifications,
     PreferenceRow::NotificationBell,
-    PreferenceRow::Motion,
     PreferenceRow::Shortcuts,
     PreferenceRow::Reset,
 ];
@@ -621,7 +611,6 @@ pub fn preference_label(row: PreferenceRow, lang: Language) -> &'static str {
             PreferenceRow::Mouse => Key::PrefMouse,
             PreferenceRow::Notifications => Key::PrefNotifications,
             PreferenceRow::NotificationBell => Key::PrefNotificationBell,
-            PreferenceRow::Motion => Key::PrefMotion,
             // The language row reuses the command's wording (`界面语言` names the
             // setting, not the act of switching it); the theme's command reads
             // `切换主题` — a verb — so the row has its own noun.
@@ -744,7 +733,7 @@ mod tests {
         }
         // The doors stay last: `restore defaults` is the row a reader reaches
         // for once, and it is the one that cannot be undone by pressing again.
-        assert_eq!(PREFERENCE_ROWS[10], PreferenceRow::Reset);
+        assert_eq!(PREFERENCE_ROWS[9], PreferenceRow::Reset);
     }
 
     /// No function key is a default. `F1`–`F12` sit behind an `Fn` modifier on a
