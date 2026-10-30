@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 use crate::session::{Manager, Session};
 use future_rpc::proto::RpcCommand;
 
@@ -438,11 +438,13 @@ async fn a_multi_row_page_never_takes_the_oversized_entry_cut() {
     session
         .entries
         .push(SessionEntry::new_user("user", json!("question")));
-    // Four ~1 MiB bodies: the raw accounting exceeds the 8 MiB budget well
-    // before the materializer's own budget can be crossed.
-    for _ in 0..6 {
+    // Four rows of an eighth of the read budget: the raw accounting stops well
+    // inside its ceiling, so the materializer's cut arm cannot be the one that
+    // ends the page.
+    let body = HISTORY_PAGE_READ_BUDGET / 8;
+    for _ in 0..4 {
         session.entries.push(SessionEntry::new_assistant(
-            json!("x".repeat(1024 * 1024)),
+            json!("x".repeat(body)),
             Vec::new(),
         ));
     }
@@ -485,11 +487,10 @@ async fn a_multi_row_page_never_takes_the_oversized_entry_cut() {
 fn a_page_of_bodyless_rows_can_be_cut_at_the_materializer_budget() {
     use rusqlite::Connection;
 
-    // Both budgets are 8 MiB. Eight 1_048_570-byte rows are accepted by the page
-    // reader (8 * 1_048_570 = 8_388_560 <= 8_388_608) and then cross the
-    // materializer's check on the eighth row, because it also counts the
-    // separators and the page envelope.
-    const PAYLOAD: usize = 1_048_570;
+    // Both budgets are the page ceiling. Eight rows of an eighth of it are
+    // accepted by the page reader and then cross the materializer's check on the
+    // eighth row, because it also counts the separators and the page envelope.
+    const PAYLOAD: usize = HISTORY_PAGE_BYTE_BUDGET / 8 - 6;
     let db = Connection::open_in_memory().unwrap();
     db.execute_batch(
         "CREATE TABLE history_display(session_id TEXT, ordinal INTEGER, \

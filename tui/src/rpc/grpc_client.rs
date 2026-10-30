@@ -748,20 +748,42 @@ impl GrpcClient {
     }
 
     /// The tail of a session's display history — page 1 of the backward read.
+    /// The tail of a session's display history — page 1 of the backward read.
+    ///
+    /// `ExchangeStart::Anywhere`: this is the read a switch waits for, and a page
+    /// is bounded by rows and bytes as well as exchanges now. Completing the
+    /// exchange would hand back the whole of a turn with hundreds of rows in it —
+    /// exactly what the row ceiling exists to stop — so the tail page is taken as
+    /// the agent cut it, and the reader scrolls up for the rest.
     pub async fn session_tail_page(&self, session_id: &str) -> Result<SessionEntriesPage, String> {
-        self.session_entries_page(session_id, i64::MAX, HISTORY_TAIL_EXCHANGES)
-            .await
+        self.session_entries_page_from(
+            session_id,
+            i64::MAX,
+            HISTORY_TAIL_EXCHANGES,
+            future_rpc::history::ExchangeStart::Anywhere,
+        )
+        .await
     }
 
     /// The page above an already loaded one: same size, resuming at the
     /// exclusive `before` cursor the previous page returned.
+    ///
+    /// Also `ExchangeStart::Anywhere`: a page is bounded by rows and bytes now,
+    /// and completing an exchange would undo that bound (it fetches the whole
+    /// turn back). A page-up therefore reads what the agent cut, and the next one
+    /// continues above it.
     pub async fn session_older_page(
         &self,
         session_id: &str,
         before: i64,
     ) -> Result<SessionEntriesPage, String> {
-        self.session_entries_page(session_id, before, HISTORY_PAGE_EXCHANGES)
-            .await
+        self.session_entries_page_from(
+            session_id,
+            before,
+            HISTORY_PAGE_EXCHANGES,
+            future_rpc::history::ExchangeStart::Anywhere,
+        )
+        .await
     }
 
     /// One backward page of a session's display history
@@ -782,13 +804,31 @@ impl GrpcClient {
         before: i64,
         limit: i64,
     ) -> Result<SessionEntriesPage, String> {
+        self.session_entries_page_from(
+            session_id,
+            before,
+            limit,
+            future_rpc::history::ExchangeStart::Complete,
+        )
+        .await
+    }
+
+    /// [`Self::session_entries_page`], naming what the page may do to the
+    /// exchange it starts in (see [`SessionEntriesPage`]'s first page).
+    async fn session_entries_page_from(
+        &self,
+        session_id: &str,
+        before: i64,
+        limit: i64,
+        start: future_rpc::history::ExchangeStart,
+    ) -> Result<SessionEntriesPage, String> {
         let cmd = RpcCommand {
             session_id: session_id.to_string(),
             before: Some(before),
             limit: Some(limit),
             ..Default::default()
         };
-        let page = future_rpc::history::read_page(cmd, |command| async move {
+        let page = future_rpc::history::read_page_from(cmd, start, |command| async move {
             let value = self.call("get_session_entries", command).await?;
             serde_json::from_value::<future_rpc::payloads::SessionEntriesPage<Value>>(value)
                 .map_err(|e| format!("invalid history page: {e}"))
