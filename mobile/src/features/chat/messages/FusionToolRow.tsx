@@ -47,12 +47,13 @@ export function FusionToolRow({ tool, resolveTarget }: { tool: TimelineToolRow; 
     {open ? <View style={styles.fusionProgress}>
       <View style={styles.fusionStageHeading}>
         <Text style={styles.fusionPhase}>{t(progress.terminal ? `chat.fusionStates.${progress.status}` : `chat.fusionPhases.${progress.phase}`)}</Text>
-        <Text style={styles.fusionStatus}>{t("chat.fusionStageCount", { current: progress.status === "completed" ? 4 : Math.max(1, progress.stageIndex + 1), total: 4 })}</Text>
+        <Text style={styles.fusionStatus}>{t("chat.fusionStageCount", { current: progress.status === "completed" ? 4 : Math.max(0, progress.stageIndex + 1), total: 4 })}</Text>
       </View>
       <View style={styles.fusionStageBar} accessibilityRole="progressbar" accessibilityLabel={t("chat.fusionProgress")} aria-valuemin={0} aria-valuemax={4} aria-valuenow={progress.completedStages} aria-valuetext={t(`chat.fusionPhases.${progress.phase}`)}>
-        {FUSION_PHASES.map((phase, index) => <View key={phase} style={[styles.fusionStageSegment, { backgroundColor: index < progress.completedStages ? colors.accent : index === progress.stageIndex ? progress.terminal ? colors.danger : colors.accent : colors.line }]} />)}
+        {FUSION_PHASES.map((phase, index) => <View key={phase} style={[styles.fusionStageSegment, { backgroundColor: progress.stages[index] === "completed" || progress.stages[index] === "thinking" ? colors.accent : progress.stages[index] === "failed" ? colors.danger : colors.line }]} />)}
       </View>
-      {progress.terminal && progress.partial ? <Text style={styles.fusionStatus}>{t("chat.fusionPartialNotice")}</Text> : null}
+      {progress.terminal && progress.partial && progress.notices.length === 0 ? <Text style={styles.fusionStatus}>{t("chat.fusionPartialNotice")}</Text> : null}
+      {progress.notices.length ? <Text accessibilityRole="text" style={styles.fusionStatus}>{progress.notices.map(notice => t(`chat.fusionNotices.${notice}`)).join(" ")}</Text> : null}
       {progress.models.map(model => {
         const failed = ["failed", "timed_out", "output_limited"].includes(model.status);
         const Icon = model.status === "thinking" ? LoaderCircle : model.status === "completed" ? Check : model.status === "timed_out" ? Clock : failed || model.status === "partial" ? TriangleAlert : Circle;

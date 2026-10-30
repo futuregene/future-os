@@ -69,4 +69,22 @@ describe("Fusion progress", () => {
     expect(fusionProgress(discussion(steps, "reviewing", "cancelled")).models.find(model => model.model === qwen)?.status).toBe("cancelled");
     expect(fusionProgress(discussion(steps, "reviewing", "running"), "failed").models.find(model => model.model === qwen)?.status).toBe("interrupted");
   });
+  it("uses durable coverage for skipped phases and does not invent a conclusion", () => {
+    const value = discussion([step("analyzing", glm, "P2", "skipped", 1)], "synthesizing", "failed", "none");
+    value.run!.report = { version: 1, strategy: "single_advisor", completed_phases: ["analyzing"], skipped_phases: ["issue_mapping", "reviewing"], analysis_participants: ["P1"], review_participants: [], degradations: [{ code: "moderator_failed", phase: "synthesizing", kind: "timeout" }], available_results: [{ step_id: "s", phase: "analyzing", participant: "P1", model: deepseek, text: "public evidence", truncated: false }] };
+    const progress = fusionProgress(value);
+    expect(progress.stages).toEqual(["completed", "skipped", "skipped", "failed"]);
+    expect(progress.completedStages).toBe(1);
+    expect(progress.models.find(model => model.model === glm)?.status).toBe("skipped");
+    expect(progress.notices).toEqual(["noConclusion", "moderatorFailed", "materialsRetained"]);
+  });
+  it("uses typed failures over ambiguous timeout wording and retains a failed first round", () => {
+    const limited = step("reviewing", glm, "P2", "failed", 2, 0, "upstream timeout");
+    limited.failure_kind = "budget_reserved";
+    expect(fusionProgress(discussion([limited])).models.find(model => model.model === glm)?.status).toBe("skipped");
+    const failed = step("analyzing", glm, "P2", "failed", 1);
+    failed.failure_kind = "timeout";
+    expect(fusionProgress(discussion([failed])).models.find(model => model.model === glm)?.status).toBe("timed_out");
+  });
+
 });

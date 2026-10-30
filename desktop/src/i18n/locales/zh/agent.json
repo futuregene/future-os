@@ -360,7 +360,8 @@
       "analyzing": "独立思考",
       "issue_mapping": "整理议题",
       "reviewing": "交叉讨论",
-      "synthesizing": "总结"
+      "synthesizing": "总结",
+      "preflight": "检查主模型"
     },
     "states": {
       "preparing": "准备讨论",
@@ -396,7 +397,8 @@
       "output_limited": "达到输出上限",
       "cancelled": "已停止",
       "interrupted": "已中断",
-      "partial": "部分完成"
+      "partial": "部分完成",
+      "skipped": "已跳过"
     },
     "stageCount": "{{current}} / {{total}}",
     "progress": "讨论阶段进度",
@@ -404,6 +406,17 @@
     "statusUnavailable": "暂时无法读取讨论状态",
     "disabled": "Fusion 已在设置中关闭",
     "moderatorRole": "主模型",
-    "participantRole": "参与模型 {{number}}"
+    "participantRole": "参与模型 {{number}}",
+    "notices": {
+      "noConclusion": "本次未产出综合结论。",
+      "moderatorFailed": "主模型不可用，未自动更换模型。",
+      "noParticipants": "没有有效的参与模型结果，已停止讨论。",
+      "providerUnavailable": "提供商暂不可用，已停止受影响的请求。",
+      "singleParticipant": "仅保留单模型意见，已跳过交叉讨论。",
+      "reducedParticipation": "部分模型未完成，已基于有效结果继续。",
+      "budgetReserved": "已跳过后续讨论，为总结保留时间。",
+      "directReview": "议题整理未完成，已直接比较原始分析。",
+      "materialsRetained": "已有分析与降级原因已保留，可用于复盘。"
+    }
   }
 }

@@ -49,13 +49,14 @@ export function FusionActivity({ item, runId, resolveTarget }: {
           <div className="space-y-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span>{t(progress.terminal ? `fusion.states.${progress.status}` : `fusion.phases.${progress.phase}`)}</span>
-              <span className="text-xs text-ink-muted">{t("fusion.stageCount", { current: progress.status === "completed" ? 4 : Math.max(1, progress.stageIndex + 1), total: 4 })}</span>
+              <span className="text-xs text-ink-muted">{t("fusion.stageCount", { current: progress.status === "completed" ? 4 : Math.max(0, progress.stageIndex + 1), total: 4 })}</span>
             </div>
             <div className="flex gap-1" role="progressbar" aria-label={t("fusion.progress")} aria-valuemin={0} aria-valuemax={4} aria-valuenow={progress.completedStages} aria-valuetext={t(`fusion.phases.${progress.phase}`)}>
-              {FUSION_PHASES.map((phase, index) => <span key={phase} title={t(`fusion.phases.${phase}`)} className={`h-1 flex-1 rounded-full ${index < progress.completedStages ? "bg-accent" : index === progress.stageIndex ? progress.terminal ? "bg-danger" : "animate-pulse bg-accent" : "bg-line"}`} />)}
+              {FUSION_PHASES.map((phase, index) => <span key={phase} title={t(`fusion.phases.${phase}`)} className={`h-1 flex-1 rounded-full ${progress.stages[index] === "completed" ? "bg-accent" : progress.stages[index] === "thinking" ? "animate-pulse bg-accent" : progress.stages[index] === "failed" ? "bg-danger" : "bg-line"}`} />)}
             </div>
-            {progress.terminal && progress.partial && <p className="text-xs text-ink-muted">{t("fusion.partialNotice")}</p>}
+            {progress.terminal && progress.partial && progress.notices.length === 0 && <p className="text-xs text-ink-muted">{t("fusion.partialNotice")}</p>}
           </div>
+          {progress.notices.length > 0 && <p className="text-xs text-ink-muted" role="status">{progress.notices.map(notice => t(`fusion.notices.${notice}`)).join(" ")}</p>}
           <div className="space-y-2" aria-live="polite">
             {progress.models.map((model) => {
               const failed = ["failed", "timed_out", "output_limited"].includes(model.status);
