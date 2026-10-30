@@ -2698,7 +2698,7 @@ fn lane_colour(palette: &Palette, lane: usize) -> u8 {
 /// join.
 ///
 /// Counting *characters* is counting cells here because the gutter is this
-/// file's own vocabulary (`● │ ─ ┐ ┘ ├ ┤ ┬ ┴ ┼` and spaces): the subject
+/// file's own vocabulary (`● │ ─ ┐ ┘ ┤ ┬ ┴` and spaces): the subject
 /// travels after the record separator in `parse_log`, so no free text ever
 /// reaches this string.
 fn paint_graph(palette: &Palette, prefix: &str) -> String {
@@ -2717,9 +2717,7 @@ fn paint_graph(palette: &Palette, prefix: &str) -> String {
             '●' => palette.strong(colour, "●"),
             '│' => palette.text(colour, "│"),
             '─' => palette.text(lane_colour(palette, mine.unwrap_or(lane)), "─"),
-            '┐' | '┘' | '├' | '┤' | '┬' | '┴' | '┼' => {
-                palette.text(colour, &glyph.to_string())
-            }
+            '┐' | '┘' | '┤' | '┬' | '┴' => palette.text(colour, &glyph.to_string()),
             // The lane separator and anything a later glyph adds: left as it
             // is, so an unknown glyph is visible rather than silently dropped.
             other => other.to_string(),
@@ -5137,7 +5135,8 @@ mod tests {
         // A fork is an elbow and a horizontal, and the horizontal keeps the
         // commit's own colour: one connection, one colour.
         assert_eq!(plain(&paint_graph(&palette, "●─┐ ")), "●─┐ ");
-        assert_eq!(plain(&paint_graph(&palette, "●─┼─┘ ")), "●─┼─┘ ");
+        assert_eq!(plain(&paint_graph(&palette, "●─│─┘ ")), "●─│─┘ ");
+        assert_eq!(plain(&paint_graph(&palette, "●─┤ ")), "●─┤ ");
         let elbow = paint_graph(&palette, "●─┐ ");
         assert!(
             elbow.contains(&format!("\x1b[38;5;{}m─", lane_colour(&palette, 0))),
