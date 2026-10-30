@@ -94,6 +94,8 @@
     "rateLimitedTitle": "模型服务请求受限",
     "serverError": "请稍后重试。",
     "serverErrorTitle": "模型服务暂时不可用",
+    "badRequest": "{{message}}",
+    "badRequestTitle": "模型服务拒绝了本次请求（HTTP 400）",
     "contextLimit": "系统未能通过自动压缩恢复本次回复。请新建对话后重试。",
     "contextLimitTitle": "对话超出上下文长度限制",
     "network": "请检查网络连接后重试。",
