@@ -2802,15 +2802,52 @@ fn pane_window(text: &str, offset: usize, columns: usize) -> String {
     )
 }
 
-/// One line of the `/git` list: the marker, the graph in its lanes, then the
-/// row's fields each in the colour its kind earns. The selected row is a band
-/// across the whole pane, so the eye finds it without reading the marker — and
-/// the band keeps every field's own colour (a reset inside the row is re-opened
-/// on the band, not left to the panel's background).
+/// How much of a pane the subject must keep before the log's date-time and
+/// committer columns are worth painting. A title cut to a few cells is not a
+/// title, and those columns say what the detail pane beside the list already
+/// says in full.
+const MIN_SUBJECT: usize = 12;
+
+/// The log's columns, cut from the right until the row can hold them *and*
+/// [`MIN_SUBJECT`] cells of subject — a column is painted whole or not at all,
+/// so a narrow box loses the committer first and the date-time last. Each cell is
+/// already padded to its column's width, so dropping one from the right cannot
+/// move what is left.
+fn log_columns(palette: &Palette, columns: &[String], graph_width: usize, pane: usize) -> String {
+    let mut kept = columns;
+    loop {
+        if kept.is_empty() {
+            return String::new();
+        }
+        let width: usize = kept.iter().map(|cell| ansi::width(cell)).sum();
+        let needed = width + 2 * kept.len() + graph_width + MIN_SUBJECT;
+        if needed <= pane {
+            break;
+        }
+        kept = &kept[..kept.len() - 1];
+    }
+    let mut text = String::new();
+    for (index, cell) in kept.iter().enumerate() {
+        if index > 0 {
+            text.push_str("  ");
+        }
+        text.push_str(cell);
+    }
+    text.push_str("  ");
+    palette.dim(&text)
+}
+
+/// One line of the `/git` list: the marker, the date-time and committer
+/// columns, the graph in its lanes, then the row's fields each in the colour its
+/// kind earns. The selected row is a band across the whole pane, so the eye
+/// finds it without reading the marker — and the band keeps every field's own
+/// colour (a reset inside the row is re-opened on the band, not left to the
+/// panel's background).
 ///
 /// The row is composed whole and then panned to `offset`: nothing is dropped
 /// for being too wide, so `→` reaches the tail of a subject that runs past the
-/// divider instead of finding it cut off.
+/// divider instead of finding it cut off — except the columns, which are dropped
+/// whole when the pane cannot hold them *and* a readable subject.
 fn git_row_line(
     palette: &Palette,
     row: &GitRow,
@@ -2820,10 +2857,11 @@ fn git_row_line(
 ) -> String {
     let columns = columns.max(1);
     let graph = paint_graph(palette, &row.prefix);
+    let side = log_columns(palette, &row.columns, ansi::width(&graph), columns);
     let full = if row.key.is_none() {
         // The graph continuing through a column: painted in the gutter, never
         // selectable, so it gets no arrow.
-        format!("  {graph}")
+        format!("  {side}{graph}")
     } else {
         let marker = if selected {
             palette.strong(palette.accent, "› ")
@@ -2836,7 +2874,7 @@ fn git_row_line(
             .map(|piece| piece.replace('\n', " ↵ "))
             .unwrap_or_default();
         let mut line = format!(
-            "{marker}{graph}{}",
+            "{marker}{side}{graph}{}",
             paint_kind(palette, row.kind(0), &lead, selected)
         );
         for (index, piece) in row.pieces.iter().enumerate().skip(1) {
@@ -5126,21 +5164,10 @@ mod tests {
         let palette = FUTURE_DARK;
         let row = GitRow {
             key: Some("abc1234".into()),
+            columns: vec!["2026-10-27 09:15".into(), "Ada".into()],
             prefix: "● ".into(),
-            pieces: vec![
-                "fix(tui): one row".into(),
-                "HEAD -> main, tag: v1".into(),
-                "abc1234".into(),
-                "2026-10-27".into(),
-                "Ada".into(),
-            ],
-            kinds: vec![
-                state::GitKind::Plain,
-                state::GitKind::Decoration,
-                state::GitKind::Sha,
-                state::GitKind::Meta,
-                state::GitKind::Meta,
-            ],
+            pieces: vec!["fix(tui): one row".into(), "HEAD -> main, tag: v1".into()],
+            kinds: vec![state::GitKind::Plain, state::GitKind::Decoration],
         };
         let selected = git_row_line(&palette, &row, 0, 100, true);
         assert_eq!(width(&selected), 100, "the band fills the pane");
@@ -5152,11 +5179,13 @@ mod tests {
             "the selection is a background, not just an arrow: {selected:?}"
         );
         let marked = plain(&selected);
-        assert!(marked.starts_with("› ● fix(tui): one row"), "{marked:?}");
+        assert!(
+            marked.starts_with("› 2026-10-27 09:15  Ada  ● fix(tui): one row"),
+            "{marked:?}"
+        );
         for (colour, what) in [
-            (palette.amber, "the sha"),
             (palette.green, "the decorations"),
-            (palette.muted, "the date"),
+            (palette.muted, "the date-time and committer columns"),
         ] {
             assert!(
                 selected.contains(&format!("\x1b[38;5;{colour}m")),
@@ -5169,9 +5198,42 @@ mod tests {
             "an unselected row paints no background: {idle:?}"
         );
         assert!(
-            plain(&idle).starts_with("  ● fix(tui): one row"),
+            plain(&idle).starts_with("  2026-10-27 09:15  Ada  ● fix(tui): one row"),
             "{idle:?}"
         );
+    }
+
+    /// The columns are dropped whole when the pane cannot hold them *and* a
+    /// readable subject: a title cut to eight cells is not a title, and the
+    /// detail pane beside the list says the same thing in full. They come back
+    /// as one unit, never half of one.
+    #[test]
+    fn a_narrow_pane_drops_the_columns_and_keeps_the_subject() {
+        let palette = FUTURE_DARK;
+        let row = GitRow {
+            key: Some("abc1234".into()),
+            columns: vec!["2026-10-27 09:15".into(), "Ada".into()],
+            prefix: "● ".into(),
+            pieces: vec!["fix(tui): one row per record".into()],
+            kinds: vec![state::GitKind::Plain],
+        };
+        let narrow = plain(&git_row_line(&palette, &row, 0, 30, false));
+        assert_eq!(width(&narrow), 30, "the pane is filled: {narrow:?}");
+        assert!(
+            narrow.starts_with("  ● fix(tui): one row"),
+            "the subject starts where the columns were: {narrow:?}"
+        );
+        assert!(!narrow.contains("2026"), "{narrow:?}");
+        // One step wider and the committer comes back only if it also leaves
+        // room for the subject; in between, the date-time stands alone.
+        let middle = plain(&git_row_line(&palette, &row, 0, 34, false));
+        assert!(
+            middle.starts_with("  2026-10-27 09:15  ● fix"),
+            "{middle:?}"
+        );
+        assert!(!middle.contains("Ada"), "{middle:?}");
+        let wide = plain(&git_row_line(&palette, &row, 0, 80, false));
+        assert!(wide.starts_with("  2026-10-27 09:15  Ada  ● "), "{wide:?}");
     }
 
     /// The band has to exist in every palette: it is a member of the one ordered
