@@ -31,6 +31,8 @@ interface SelectMenuProps {
   align?: "left" | "right";
   /** Float outside a scrolling field, with viewport-aware placement. */
   portal?: boolean;
+  /** Minimum floating-panel width when portalled. */
+  minPanelWidth?: number;
 }
 
 /**
@@ -39,7 +41,7 @@ interface SelectMenuProps {
  * trigger and the panel so clicking the trigger never self-dismisses. Open state
  * is controlled by the caller so sibling menus can coordinate (close on open).
  */
-export function SelectMenu({ open, onDismiss, trigger, children, className, panelClassName, align = "right", portal = false }: SelectMenuProps) {
+export function SelectMenu({ open, onDismiss, trigger, children, className, panelClassName, align = "right", portal = false, minPanelWidth = 224 }: SelectMenuProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<CSSProperties>();
   const layerRef = useDismissableLayer<HTMLDivElement>({ enabled: open, onDismiss, additionalRef: panelRef });
@@ -59,7 +61,7 @@ export function SelectMenu({ open, onDismiss, trigger, children, className, pane
       const desired = Math.min(panel.scrollHeight, window.innerHeight * 0.4);
       const down = below >= desired || below >= above;
       const maxHeight = Math.max(0, Math.min(desired, down ? below : above));
-      const width = Math.min(window.innerWidth - 16, Math.max(anchor.width, 224));
+      const width = Math.min(window.innerWidth - 16, Math.max(anchor.width, minPanelWidth));
       const left = Math.max(8, Math.min(align === "left" ? anchor.left : anchor.right - width, window.innerWidth - width - 8));
       setPosition({ position: "fixed", top: down ? anchor.bottom + 4 : anchor.top - maxHeight - 4, left, width, maxHeight, zIndex: 60 });
     };
@@ -75,7 +77,7 @@ export function SelectMenu({ open, onDismiss, trigger, children, className, pane
       window.removeEventListener("resize", update);
       document.removeEventListener("scroll", dismissOnScroll, true);
     };
-  }, [open, portal, align, layerRef, onDismiss]);
+  }, [open, portal, align, minPanelWidth, layerRef, onDismiss]);
   const panel = open
     ? (
         <MenuPanel

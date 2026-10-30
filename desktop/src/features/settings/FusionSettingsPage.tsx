@@ -7,7 +7,6 @@ import { ChevronDown, Plus, Trash2 } from "lucide-react";
 import { useCallback, useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
-import { Select } from "../../components/ui/Select";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
 import { localizedModelDescription, modelKey, modelThinkingLevels } from "../../integrations/agent/agentClient";
 import { listAgentProviders } from "../../integrations/agent/providers";
@@ -28,6 +27,7 @@ interface Source {
   providers: () => Promise<ProvidersView>;
 }
 const LOCAL: Source = { load: getFusionSettings, save: updateFusionSettings, models: localModels, providers: listAgentProviders };
+const FIELD_TRIGGER_CLASSNAME = "flex h-9 w-full min-w-0 items-center gap-2 rounded-md border border-line-soft bg-surface pl-3 pr-2.5 text-left text-sm text-ink outline-none transition-colors focus:border-focus focus:ring-2 focus:ring-focus disabled:cursor-not-allowed disabled:opacity-50";
 
 function ModelRow({ title, value, models, providerNames, disabled, onChange, onRemove }: {
   title: string;
@@ -40,11 +40,12 @@ function ModelRow({ title, value, models, providerNames, disabled, onChange, onR
 }) {
   const { t } = useTranslation("settings");
   const { t: agentT, i18n } = useTranslation("agent");
-  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [menu, setMenu] = useState<"model" | "thinking" | null>(null);
   const modelId = useId();
   const thinkingId = useId();
   const selected = models.find(model => modelKey(model) === value.model);
   const levels = modelThinkingLevels(value.model, models);
+  const thinkingLabel = (level: string) => agentT(`composer.thinkingLevelLabels.${level}`, { defaultValue: level });
   const displayName = (model: AgentModelOption) => `${providerNames[model.provider] ?? model.provider}/${model.label || model.id}`;
   return (
     <fieldset className="rounded-lg border border-line-soft px-3 pb-3 pt-2">
@@ -53,8 +54,8 @@ function ModelRow({ title, value, models, providerNames, disabled, onChange, onR
         <div className="flex min-w-0 flex-1 flex-col gap-1.5">
           <label htmlFor={modelId} className="text-xs leading-4 text-ink-muted">{t("fusion.model")}</label>
           <SelectMenu
-            open={modelMenuOpen}
-            onDismiss={() => setModelMenuOpen(false)}
+            open={menu === "model"}
+            onDismiss={() => setMenu(null)}
             portal
             align="left"
             panelClassName="max-h-[40vh] overflow-y-auto"
@@ -62,11 +63,11 @@ function ModelRow({ title, value, models, providerNames, disabled, onChange, onR
               <button
                 id={modelId}
                 aria-label={`${title} · ${t("fusion.model")}`}
-                aria-expanded={modelMenuOpen}
+                aria-expanded={menu === "model"}
                 aria-haspopup="true"
                 disabled={disabled}
-                className="flex h-9 w-full min-w-0 items-center gap-2 rounded-md border border-line-soft bg-surface pl-3 pr-2.5 text-left text-sm text-ink outline-none transition-colors focus:border-focus focus:ring-2 focus:ring-focus disabled:cursor-not-allowed disabled:opacity-50"
-                onClick={() => setModelMenuOpen(open => !open)}
+                className={FIELD_TRIGGER_CLASSNAME}
+                onClick={() => setMenu(current => current === "model" ? null : "model")}
                 type="button"
               >
                 <span className="min-w-0 flex-1 truncate">{selected ? displayName(selected) : value.model ? t("fusion.unavailable", { model: value.model }) : t("fusion.chooseModel")}</span>
@@ -84,10 +85,13 @@ function ModelRow({ title, value, models, providerNames, disabled, onChange, onR
                 onSelect={() => {
                   const nextLevels = modelThinkingLevels(modelKey(model), models);
                   onChange({ ...newFusionParticipant(), model: modelKey(model), thinking_level: nextLevels.includes(value.thinking_level) ? value.thinking_level : nextLevels[0] ?? "default" });
-                  setModelMenuOpen(false);
+                  setMenu(null);
                 }}
               >
-                <span className="min-w-0 flex-1 truncate font-medium leading-tight text-ink">{displayName(model)}</span>
+                <span className="min-w-0 flex-1 space-y-0.5">
+                  <span className="block truncate font-medium leading-tight text-ink">{model.label || model.id}</span>
+                  <span className="block truncate text-xs leading-tight text-ink-muted">{providerNames[model.provider] ?? model.provider}</span>
+                </span>
               </SelectMenuItem>
             ))}
             {models.length === 0 ? <div className="px-3 py-2 text-sm text-ink-muted">{agentT("composer.startAgentForModels")}</div> : null}
@@ -95,10 +99,42 @@ function ModelRow({ title, value, models, providerNames, disabled, onChange, onR
         </div>
         <div className="flex w-32 flex-col gap-1.5">
           <label htmlFor={thinkingId} className="text-xs leading-4 text-ink-muted">{t("fusion.thinking")}</label>
-          <Select id={thinkingId} aria-label={`${title} · ${t("fusion.thinking")}`} disabled={disabled || !selected} value={value.thinking_level} onChange={event => onChange({ ...value, thinking_level: event.target.value })}>
-            {!levels.includes(value.thinking_level) ? <option value={value.thinking_level}>{value.thinking_level}</option> : null}
-            {levels.map(level => <option key={level} value={level}>{agentT(`composer.thinkingLevelLabels.${level}`, { defaultValue: level })}</option>)}
-          </Select>
+          <SelectMenu
+            open={menu === "thinking"}
+            onDismiss={() => setMenu(null)}
+            portal
+            minPanelWidth={160}
+            panelClassName="max-h-[40vh] overflow-y-auto"
+            trigger={(
+              <button
+                id={thinkingId}
+                aria-label={`${title} · ${t("fusion.thinking")}`}
+                aria-expanded={menu === "thinking"}
+                aria-haspopup="true"
+                disabled={disabled || !selected}
+                className={FIELD_TRIGGER_CLASSNAME}
+                onClick={() => setMenu(current => current === "thinking" ? null : "thinking")}
+                type="button"
+              >
+                <span className="min-w-0 flex-1 truncate">{thinkingLabel(value.thinking_level)}</span>
+                <ChevronDown className="size-4 shrink-0 text-ink-muted" />
+              </button>
+            )}
+          >
+            {levels.map(level => (
+              <SelectMenuItem
+                key={level}
+                selected={level === value.thinking_level}
+                disabled={disabled || !selected}
+                onSelect={() => {
+                  onChange({ ...value, thinking_level: level });
+                  setMenu(null);
+                }}
+              >
+                <span className="min-w-0 flex-1 truncate font-medium text-ink">{thinkingLabel(level)}</span>
+              </SelectMenuItem>
+            ))}
+          </SelectMenu>
         </div>
         {onRemove ? <Button variant="ghost" disabled={disabled} onClick={onRemove} aria-label={t("fusion.removeParticipant", { name: title })}><Trash2 className="size-4" /></Button> : null}
       </div>

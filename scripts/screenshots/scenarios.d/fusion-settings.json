@@ -26,7 +26,25 @@
           "wait": 500
         },
         {
-          "eval": "(() => {const main=document.querySelector('select[aria-label=\"主模型 · 思考等级\"]');main.value='high';main.dispatchEvent(new Event('change',{bubbles:true}));const p=document.querySelector('select[aria-label=\"参与模型 1 · 思考等级\"]');p.value='low';p.dispatchEvent(new Event('change',{bubbles:true}));})()"
+          "tap": "主模型 · 思考等级"
+        },
+        {
+          "wait": 100
+        },
+        {
+          "eval": "[...document.querySelectorAll('.shadow-panel button')].find(b=>b.textContent==='高').click()"
+        },
+        {
+          "wait": 100
+        },
+        {
+          "tap": "参与模型 1 · 思考等级"
+        },
+        {
+          "wait": 100
+        },
+        {
+          "eval": "[...document.querySelectorAll('.shadow-panel button')].find(b=>b.textContent==='低').click()"
         },
         {
           "wait": 250
@@ -44,7 +62,7 @@
           "wait": 500
         },
         {
-          "eval": "(() => {if(!document.body.innerText.includes('已保存'))throw new Error('save did not finish');if(document.querySelector('select[aria-label=\"主模型 · 思考等级\"]').value!=='high'||document.querySelector('select[aria-label=\"参与模型 1 · 思考等级\"]').value!=='low')throw new Error('same-model thinking collapsed');})()"
+          "eval": "(() => {if(!document.body.innerText.includes('已保存'))throw new Error('save did not finish');if(document.querySelector('button[aria-label=\"主模型 · 思考等级\"]').textContent!=='高'||document.querySelector('button[aria-label=\"参与模型 1 · 思考等级\"]').textContent!=='低')throw new Error('same-model thinking collapsed');})()"
         },
         {
           "shot": "d-fusion-settings.png"
@@ -170,13 +188,13 @@
           "wait": 200
         },
         {
-          "eval": "(() => {const panel=[...document.querySelectorAll('.shadow-panel')].find(el=>getComputedStyle(el).position==='fixed');if(!panel)throw new Error('missing shared menu');const rect=panel.getBoundingClientRect();if(rect.top<0||rect.bottom>innerHeight)throw new Error('menu outside viewport');if(!panel.querySelector('svg'))throw new Error('missing selected mark');})()"
+          "eval": "(() => {const panel=[...document.querySelectorAll('.shadow-panel')].find(el=>getComputedStyle(el).position==='fixed');if(!panel)throw new Error('missing shared menu');const rect=panel.getBoundingClientRect();if(rect.top<0||rect.bottom>innerHeight)throw new Error('menu outside viewport');const row=panel.querySelector('button > span');if(row.children.length!==2||row.children[0].getBoundingClientRect().bottom>row.children[1].getBoundingClientRect().top)throw new Error('model and provider are not separate lines');if(row.children[1].textContent!=='FutureOS')throw new Error('missing provider name');if(!panel.querySelector('svg'))throw new Error('missing selected mark');})()"
         },
         {
           "shot": "d-fusion-model-popup.png"
         },
         {
-          "eval": "[...document.querySelectorAll('.shadow-panel button')].find(b=>b.textContent==='FutureOS/GLM 5.3 Flash').click()"
+          "eval": "[...document.querySelectorAll('.shadow-panel button')].find(b=>b.querySelector('span > span')?.textContent==='GLM 5.3 Flash').click()"
         },
         {
           "wait": 200
@@ -192,6 +210,39 @@
         },
         {
           "eval": "(() => {if(!document.querySelector('[role=dialog]'))throw new Error('Escape closed settings');if(document.querySelector('button[aria-label=\"主模型 · 模型\"]').getAttribute('aria-expanded')!=='false')throw new Error('Escape did not close picker');return 'field spacing, provider/model labels, selection and Escape passed';})()"
+        },
+        {
+          "tap": "主模型 · 思考等级"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "(() => {if(document.querySelector('select[aria-label=\"主模型 · 思考等级\"]'))throw new Error('native thinking select remains');const panel=[...document.querySelectorAll('.shadow-panel')].find(el=>getComputedStyle(el).position==='fixed');if(!panel||!panel.querySelector('svg'))throw new Error('missing custom thinking menu or selected check');})()"
+        },
+        {
+          "shot": "d-fusion-thinking-popup.png"
+        },
+        {
+          "eval": "[...document.querySelectorAll('.shadow-panel button')].find(b=>b.textContent==='高').click()"
+        },
+        {
+          "wait": 100
+        },
+        {
+          "eval": "(() => {const trigger=document.querySelector('button[aria-label=\"主模型 · 思考等级\"]');if(trigger.textContent!=='高'||trigger.getAttribute('aria-expanded')!=='false')throw new Error('thinking selection failed');trigger.click();})()"
+        },
+        {
+          "tap": "主模型 · 模型"
+        },
+        {
+          "wait": 100
+        },
+        {
+          "eval": "(() => {if(document.querySelector('button[aria-label=\"主模型 · 思考等级\"]').getAttribute('aria-expanded')!=='false')throw new Error('both menus open');return 'two-line model rows, custom thinking, selection and coordinated menus passed';})()"
+        },
+        {
+          "key": "Escape"
         }
       ]
     }
