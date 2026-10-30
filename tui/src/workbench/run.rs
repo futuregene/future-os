@@ -770,7 +770,36 @@ fn show_conversation(
         draw(terminal, workbench, live, frame, painted)?;
         clock.painted(workbench.spinner_frame(), Instant::now());
     }
+    warm_neighbours(workbench, live, frame);
     Ok(())
+}
+
+/// Warm the two conversations the next step can land on.
+///
+/// A step reads a page's worth of history from the agent (measured: 120 ms
+/// median on this store for a conversation the agent has not served recently),
+/// and the rail makes the *next* step's destination predictable: it is the row
+/// above or below the one the reader has just settled on. Reading those two now,
+/// in the background, is what a reader's browsing rhythm can absorb — they are
+/// looking at the conversation that just opened.
+///
+/// Fire and forget: nothing is installed, a lost race costs nothing but the
+/// read, and a conversation the reader never opens costs the agent exactly one
+/// page read that its own cache would have made anyway (see
+/// [`Live::prefetch_page`]). Only a step warms anything — a click is not the
+/// start of a walk.
+fn warm_neighbours(workbench: &Workbench, live: &mut Live, frame: &Frame) {
+    let data = live.data(frame);
+    let mut wanted = Vec::with_capacity(2);
+    for direction in [-1, 1] {
+        if let Some(id) = workbench.session_beside(&data, direction) {
+            wanted.push(id);
+        }
+    }
+    drop(data);
+    for id in wanted {
+        live.prefetch_page(&id);
+    }
 }
 
 /// Apply every agent event that is already queued, stopping at
