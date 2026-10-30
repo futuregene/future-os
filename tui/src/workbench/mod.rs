@@ -1167,9 +1167,13 @@ impl Workbench {
     /// (a skill's `<name>` is a prompt token the agent expands; a command never
     /// reaches the model).
     ///
-    /// Inside each half the rows are ordered by [`palette_rank`], with the
-    /// declaration order kept between rows of one rank: the best answer to what
-    /// the reader is typing is first, and `enter` runs it.
+    /// Inside each half the rows are ordered by [`palette_rank`]: the best
+    /// answer to what the reader is typing is first, and `enter` runs it. Ties
+    /// break differently in the two halves — commands keep the order they are
+    /// declared in, skills are alphabetical by name, because a skill has no
+    /// designed order at all: the agent lists them as it discovered them, so two
+    /// machines with the same skills showed them differently and a reader could
+    /// only find one by scanning the whole column.
     pub fn palette_rows(&self, data: &WorkbenchData) -> Vec<PaletteRow> {
         let needle = self.palette_query.trim_start_matches('/').to_lowercase();
         let ranked = |mut rows: Vec<(PaletteMatch, PaletteRow)>| {
@@ -1192,7 +1196,7 @@ impl Workbench {
                 })
             })
             .collect();
-        let skills: Vec<(PaletteMatch, PaletteRow)> = data
+        let mut skills: Vec<(PaletteMatch, PaletteRow)> = data
             .skills
             .iter()
             .filter_map(|skill| {
@@ -1210,7 +1214,18 @@ impl Workbench {
         // The limit is applied after ranking, so the rows it drops are the worst
         // matches rather than whichever ones happened to be installed first.
         let mut rows: Vec<PaletteRow> = ranked(commands).collect();
-        rows.extend(ranked(skills).take(PALETTE_SKILL_LIMIT));
+        // Skills break rank ties by name (see the doc comment): alphabetical
+        // inside each rank, so the column reads as a list of names rather than
+        // as the agent's discovery order.
+        skills.sort_by(|(a_rank, a), (b_rank, b)| {
+            a_rank.cmp(b_rank).then_with(|| a.label().cmp(b.label()))
+        });
+        rows.extend(
+            skills
+                .into_iter()
+                .map(|(_, row)| row)
+                .take(PALETTE_SKILL_LIMIT),
+        );
         rows
     }
 
@@ -8045,6 +8060,37 @@ mod tests {
         assert_eq!(workbench.overlay, None);
     }
 
+    /// The skill column is alphabetical by name, whatever order the skills
+    /// arrived in.
+    ///
+    /// The agent lists the skills it discovered, and a local read lists app scope
+    /// before the shared one, so the same set came out in different orders — the
+    /// reader had to scan the whole column to find one. The demo keeps its own
+    /// unsorted order on purpose: it is what makes this test able to fail.
+    #[test]
+    fn the_skill_column_is_alphabetical() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        let listed: Vec<String> = workbench
+            .palette_rows(&data)
+            .into_iter()
+            .filter(|row| row.is_skill())
+            .map(|row| row.label().to_string())
+            .collect();
+        let mut alphabetical = listed.clone();
+        alphabetical.sort();
+        assert_eq!(listed, alphabetical, "skills are listed alphabetically");
+        assert_ne!(
+            data.skills
+                .iter()
+                .map(|skill| skill.name.clone())
+                .collect::<Vec<_>>(),
+            listed,
+            "the demo's discovery order is not alphabetical, so this proves the sort"
+        );
+    }
+
     /// A word after a chooser's verb is that chooser's search line.
     ///
     /// `/model deepseek` used to open the whole list with the argument dropped:
@@ -8106,12 +8152,13 @@ mod tests {
             "the verbs lead: {heading}"
         );
         // A verb and a skill on one painted line: the columns really are two.
+        // The skill is the alphabetically first one, not the demo's first row.
         let shared = painted
             .lines()
-            .find(|line| line.contains("/new") && line.contains("future-versioning"))
+            .find(|line| line.contains("/new") && line.contains("future-peer-review"))
             .unwrap_or_else(|| panic!("a verb and a skill share a row:\n{painted}"));
         assert!(
-            shared.find("/new").unwrap() < shared.find("future-versioning").unwrap(),
+            shared.find("/new").unwrap() < shared.find("future-peer-review").unwrap(),
             "the skill column is on the right: {shared}"
         );
         // The list underneath is still one list: commands first, skills after.
@@ -8138,7 +8185,7 @@ mod tests {
         assert!(
             !painted
                 .lines()
-                .any(|line| line.contains("/new") && line.contains("future-versioning")),
+                .any(|line| line.contains("/new") && line.contains("future-peer-review")),
             "one list, one row each:\n{painted}"
         );
     }
@@ -8159,7 +8206,7 @@ mod tests {
         assert!(stepped.is_skill(), "right lands in the skill column");
         assert_eq!(
             stepped.label(),
-            data.skills[1].name,
+            "future-versioning",
             "the row at the same visual line, not the top of the column"
         );
 
@@ -8197,7 +8244,11 @@ mod tests {
         click_region(&mut workbench, &data, 120, 38, &target);
         let selected = workbench.palette_selection(&data).expect("a row");
         assert!(selected.is_skill(), "the click landed in the skill column");
-        assert_eq!(selected.label(), data.skills[0].name);
+        assert_eq!(
+            selected.label(),
+            "future-peer-review",
+            "the first skill row is the alphabetically first one"
+        );
     }
 
     /// A row whose *description* mentions the query only finds its place in the
