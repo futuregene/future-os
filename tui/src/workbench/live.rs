@@ -9499,10 +9499,15 @@ mod tests {
         // A prompt the agent has not announced has no entry: the chip refuses
         // instead of forking somewhere the reader did not point at.
         live.fork_message(reply_row).await;
-        assert!(
-            live.notice.clone().unwrap_or_default().contains("会话记录"),
-            "{:?}",
-            live.notice
+        // The refusal is a sentence in the interface language, and that language
+        // comes from the reader's locale (`Live::attach` with no settings). So
+        // assert the key's rendering *in the language this run resolved*, not a
+        // literal: CI runs in English and a Chinese desktop in Chinese, and a
+        // literal would be right in exactly one of them.
+        assert_eq!(
+            live.notice.as_deref(),
+            Some(t(live.language(), Key::ForkNeedsPersisted)),
+            "the chip says why it cannot fork, rather than forking somewhere else"
         );
         assert!(
             !seen.lock().unwrap().iter().any(|command| command == "fork"),
