@@ -1,5 +1,5 @@
-//! Terminal image protocol support (Kitty, iTerm2). 1:1 port of
-//! `tui/src/terminal-image.ts`.
+//! Terminal image protocol support (Kitty, iTerm2, sixel). 1:1 port of
+//! `tui/src/terminal-image.ts`, plus the sixel encoder Windows Terminal needs.
 //!
 //! Module-level state (capabilities cache, cell dimensions) mirrors the TS
 //! module globals; both live behind mutexes for test safety.
@@ -7,11 +7,13 @@
 use std::env;
 use std::sync::Mutex;
 
-/// `ImageProtocol` from TS — `"kitty" | "iterm2" | null`.
+/// `ImageProtocol` from TS — `"kitty" | "iterm2" | null` — plus `Sixel`, which
+/// Windows Terminal speaks and neither of the two TS protocols covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageProtocol {
     Kitty,
     Iterm2,
+    Sixel,
     None,
 }
 
@@ -138,6 +140,21 @@ pub fn detect_capabilities() -> TerminalCapabilities {
     if term_program == "alacritty" {
         return TerminalCapabilities {
             images: ImageProtocol::None,
+            true_color: true,
+            hyperlinks: true,
+        };
+    }
+
+    // Windows Terminal is the default terminal on Windows, and it speaks
+    // *sixel* — not kitty's `a=T` placement, not iTerm2's `File=` — so a picture
+    // there is carried by [`encode_sixel_rgb`] instead. `WT_SESSION` is the only
+    // variable it sets (`TERM_PROGRAM` is left alone), and it is inherited by
+    // every child process, which is why this check sits after the terminals that
+    // do identify themselves: VS Code opened from a Windows Terminal shell
+    // carries `WT_SESSION` into its own terminal, where a sixel is not drawn.
+    if env_nonempty("WT_SESSION") {
+        return TerminalCapabilities {
+            images: ImageProtocol::Sixel,
             true_color: true,
             hyperlinks: true,
         };
@@ -463,6 +480,189 @@ pub fn encode_iterm2_rgb_png(
             inline: Some(true),
         },
     ))
+}
+
+// ─── Sixel ────────────────────────────────────────────────────────────────
+
+/// Sixel carries its colours *in the image* (`#<register>;2;r;g;b`) instead of
+/// addressing the terminal's palette, so the palette is ours to choose: a 6×6×6
+/// cube of the channel levels xterm uses, then forty greys — 256 registers,
+/// which is what every sixel terminal is required to accept.
+///
+/// The cube is a compromise, not a measurement. A photograph quantised to it
+/// bands a little in smooth sky; an adaptive palette (a median cut over the
+/// picture's own colours) would spend the registers where the picture needs them
+/// and would have to hold the picture twice — once to measure, once to emit. For
+/// a preview that is read at a glance, the flat table is the better trade.
+const SIXEL_CUBE_SIDE: usize = 6;
+const SIXEL_CUBE_COLORS: usize = SIXEL_CUBE_SIDE * SIXEL_CUBE_SIDE * SIXEL_CUBE_SIDE;
+const SIXEL_GREYS: usize = 40;
+
+/// A run of one repeated sixel character is worth `!<count><char>` from four
+/// on (`!!!!` is six bytes, `!4!` is four): solid areas are most of a picture,
+/// and the payload is what crosses the pty.
+const SIXEL_REPEAT_MIN: usize = 4;
+
+/// The RGB a register holds, in the layout [`nearest_sixel_color`] indexes.
+///
+/// The cube's levels are exact fifths of the range (0, 51, … 255), so a cube
+/// colour survives the protocol's whole-percent units untouched; the greys are
+/// evenly spread instead, which is what keeps near-black readable.
+fn sixel_color(register: u8) -> [u8; 3] {
+    let register = register as usize;
+    if register < SIXEL_CUBE_COLORS {
+        let level = |n: usize| (n * 255 / (SIXEL_CUBE_SIDE - 1)) as u8;
+        [
+            level(register / (SIXEL_CUBE_SIDE * SIXEL_CUBE_SIDE)),
+            level(register / SIXEL_CUBE_SIDE % SIXEL_CUBE_SIDE),
+            level(register % SIXEL_CUBE_SIDE),
+        ]
+    } else {
+        let step = (register - SIXEL_CUBE_COLORS).min(SIXEL_GREYS - 1);
+        let grey = (step * 255 / (SIXEL_GREYS - 1)) as u8;
+        [grey, grey, grey]
+    }
+}
+
+/// Squared distance between a register's colour and a pixel.
+fn sixel_distance(color: [u8; 3], pixel: [u8; 3]) -> u32 {
+    let channel = |a: u8, b: u8| {
+        let delta = i32::from(a) - i32::from(b);
+        (delta * delta) as u32
+    };
+    channel(color[0], pixel[0]) + channel(color[1], pixel[1]) + channel(color[2], pixel[2])
+}
+
+/// The register closest to a pixel: the cube's nearest corner, or the grey of
+/// the pixel's own luma when that is nearer.
+///
+/// The grey arm matters more than its forty registers suggest: a photograph's
+/// shadows, its text, and every screenshot's UI chrome are near-neutral, and a
+/// cube only approximates those on the diagonal of three independent roundings.
+fn nearest_sixel_color(pixel: [u8; 3]) -> u8 {
+    let corner = |value: u8| (usize::from(value) * (SIXEL_CUBE_SIDE - 1) + 127) / 255;
+    let cube = corner(pixel[0]) * SIXEL_CUBE_SIDE * SIXEL_CUBE_SIDE
+        + corner(pixel[1]) * SIXEL_CUBE_SIDE
+        + corner(pixel[2]);
+    let cube_error = sixel_distance(sixel_color(cube as u8), pixel);
+
+    // Rec. 601 luma — what a grey of this pixel looks like next to it.
+    let luma =
+        (u32::from(pixel[0]) * 299 + u32::from(pixel[1]) * 587 + u32::from(pixel[2]) * 114) / 1000;
+    let step = (luma as usize * (SIXEL_GREYS - 1) + 127) / 255;
+    let grey = SIXEL_CUBE_COLORS + step;
+    let grey_error = sixel_distance(sixel_color(grey as u8), pixel);
+
+    if grey_error < cube_error {
+        grey as u8
+    } else {
+        cube as u8
+    }
+}
+
+/// A colour channel as the protocol's whole percent.
+fn sixel_percent(value: u8) -> usize {
+    (usize::from(value) * 100 + 127) / 255
+}
+
+/// Encode an RGB bitmap as a sixel image: `ESC P 0;1;0 q`, the palette the
+/// picture actually used, then one run-encoded row per colour per six-row band.
+///
+/// Sixel has no cell rectangle and no placement id — the terminal paints the
+/// picture at its own pixel size, from wherever the cursor stands — so the
+/// caller is what sizes it to the cells it has (see
+/// `workbench::run::sixel_bitmap`). Everything here is the wire format.
+///
+/// `0;1;0` is default aspect, *transparent* background, pixel grid: the picture
+/// covers its own rectangle, and a cell the bitmap did not reach keeps the
+/// frame's background instead of a black box over it.
+pub fn encode_sixel_rgb(rgb: &[u8], width: usize, height: usize) -> String {
+    use std::fmt::Write as _;
+
+    if width == 0 || height == 0 || rgb.len() < width * height * 3 {
+        return String::new();
+    }
+    let pixels = width * height;
+    let mut indices: Vec<u8> = Vec::with_capacity(pixels);
+    let mut used = [false; 256];
+    for pixel in rgb.as_chunks::<3>().0.iter().take(pixels) {
+        let register = nearest_sixel_color([pixel[0], pixel[1], pixel[2]]);
+        used[usize::from(register)] = true;
+        indices.push(register);
+    }
+
+    let mut out = String::with_capacity(pixels / 2);
+    out.push_str("\x1bP0;1;0q");
+    for (register, present) in used.iter().enumerate() {
+        if !present {
+            continue;
+        }
+        let [r, g, b] = sixel_color(register as u8);
+        let _ = write!(
+            out,
+            "#{register};2;{};{};{}",
+            sixel_percent(r),
+            sixel_percent(g),
+            sixel_percent(b)
+        );
+    }
+
+    // One band is six pixel rows tall, and the sixel character for a column is
+    // a six-bit column through them: bit 0 is the band's top row. Every colour
+    // is then sent as its own pass over the whole width, which is why the mask
+    // is a per-column accumulator rather than something the pixel loop can
+    // stream straight out.
+    let mut band: Vec<Option<Vec<u8>>> = vec![None; 256];
+    for top in (0..height).step_by(6) {
+        for y in top..(top + 6).min(height) {
+            let bit = 1u8 << (y - top);
+            let row = &indices[y * width..(y + 1) * width];
+            for (x, register) in row.iter().enumerate() {
+                let mask = band[usize::from(*register)].get_or_insert_with(|| vec![0u8; width]);
+                mask[x] |= bit;
+            }
+        }
+        for (register, mask) in band.iter_mut().enumerate() {
+            let Some(mask) = mask.take() else {
+                continue;
+            };
+            let _ = write!(out, "#{register}");
+            push_sixel_run(&mut out, &mask);
+            // `$` is the band's carriage return: a colour change does *not* move
+            // the sixel position back, so without this every plane of the band
+            // would begin where the last one ended and the picture would smear
+            // to the right by a band's width per colour.
+            out.push('$');
+        }
+        out.push('-');
+    }
+    out.push_str("\x1b\\");
+    out
+}
+
+/// Append one colour's row of a band, with runs folded into `!<count><char>`.
+///
+/// A mask's six bits are the band's six rows and nothing else: the character
+/// itself is `?` (0x3F) plus the mask, which is why the accumulator is a bit
+/// value rather than bytes of the wire format.
+fn push_sixel_run(out: &mut String, row: &[u8]) {
+    use std::fmt::Write as _;
+    let mut index = 0;
+    while index < row.len() {
+        let mut run = 1;
+        while index + run < row.len() && row[index + run] == row[index] {
+            run += 1;
+        }
+        let ch = (row[index] + b'?') as char;
+        if run >= SIXEL_REPEAT_MIN {
+            let _ = write!(out, "!{run}{ch}");
+        } else {
+            for _ in 0..run {
+                out.push(ch);
+            }
+        }
+        index += run;
+    }
 }
 
 pub fn calculate_image_rows(
@@ -816,6 +1016,7 @@ mod tests {
             "GHOSTTY_RESOURCES_DIR",
             "WEZTERM_PANE",
             "ITERM_SESSION_ID",
+            "WT_SESSION",
         ];
         let saved: Vec<(&str, Option<std::ffi::OsString>)> =
             keys.iter().map(|k| (*k, env::var_os(k))).collect();
@@ -894,6 +1095,41 @@ mod tests {
         });
     }
 
+    /// Windows Terminal — the default terminal on Windows, and the one a reader
+    /// there will have — speaks sixel and neither of the two protocols above.
+    #[test]
+    fn detects_windows_terminal_as_sixel() {
+        with_env(
+            &[("WT_SESSION", "61b2ddcf-92cd-4797-ad91-d930e1193591")],
+            || {
+                let caps = detect_capabilities();
+                assert_eq!(caps.images, ImageProtocol::Sixel);
+                assert!(caps.true_color);
+                assert!(caps.hyperlinks);
+            },
+        );
+    }
+
+    /// `WT_SESSION` is inherited, not set by the terminal it names: VS Code
+    /// opened from a Windows Terminal shell carries it into a terminal that
+    /// draws no sixel at all, so the terminal that identifies itself wins.
+    #[test]
+    fn a_vscode_terminal_inside_windows_terminal_is_still_vscode() {
+        with_env(&[("TERM_PROGRAM", "vscode"), ("WT_SESSION", "x")], || {
+            assert_eq!(detect_capabilities().images, ImageProtocol::None);
+        });
+    }
+
+    /// tmux on Windows Terminal is the same tmux as anywhere else: the program
+    /// writes its escape sequences into tmux's grid, not into a screen that can
+    /// paint a bitmap.
+    #[test]
+    fn tmux_inside_a_windows_terminal_has_no_pictures() {
+        with_env(&[("TERM", "tmux-256color"), ("WT_SESSION", "x")], || {
+            assert_eq!(detect_capabilities().images, ImageProtocol::None);
+        });
+    }
+
     #[test]
     fn tmux_disables_images_and_hyperlinks() {
         with_env(&[("TERM", "tmux-256color")], || {
@@ -956,6 +1192,7 @@ mod tests {
         env::remove_var("GHOSTTY_RESOURCES_DIR");
         env::remove_var("WEZTERM_PANE");
         env::remove_var("ITERM_SESSION_ID");
+        env::remove_var("WT_SESSION");
         held.forget();
         let caps = get_capabilities();
         assert_eq!(caps.images, ImageProtocol::None);
@@ -1116,6 +1353,181 @@ mod tests {
                 "\x1b]1337;File=inline=0;width=80;height=auto;name={name_b64};preserveAspectRatio=0:QUJD\x07"
             )
         );
+    }
+
+    // ─── Sixel ──────────────────────────────────────────────────────────
+
+    /// What a terminal would draw, read back out of [`encode_sixel_rgb`]'s own
+    /// string: one register index per pixel.
+    ///
+    /// The encoder is only ever seen by a terminal, so the test that it is
+    /// *right* has to be a reader of the wire format rather than an assertion
+    /// about how the string was built.
+    fn decode_sixel(sequence: &str, width: usize, height: usize) -> Vec<u8> {
+        let body = sequence
+            .strip_prefix("\x1bP0;1;0q")
+            .and_then(|rest| rest.strip_suffix("\x1b\\"))
+            .expect("a sixel image is a DCS string");
+        let bytes = body.as_bytes();
+        let mut grid = vec![0u8; width * height];
+        let mut band = 0usize;
+        let mut x = 0usize;
+        let mut current = 0u8;
+        let mut index = 0usize;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'#' => {
+                    index += 1;
+                    let start = index;
+                    while index < bytes.len() && bytes[index].is_ascii_digit() {
+                        index += 1;
+                    }
+                    let register: u8 = body[start..index].parse().expect("a register number");
+                    if bytes.get(index) == Some(&b';') {
+                        // `#n;2;r;g;b` — a definition, which draws nothing.
+                        while index < bytes.len()
+                            && (bytes[index].is_ascii_digit() || bytes[index] == b';')
+                        {
+                            index += 1;
+                        }
+                    } else {
+                        current = register;
+                    }
+                }
+                b'!' => {
+                    index += 1;
+                    let start = index;
+                    while index < bytes.len() && bytes[index].is_ascii_digit() {
+                        index += 1;
+                    }
+                    let count: usize = body[start..index].parse().expect("a repeat count");
+                    let ch = bytes[index];
+                    index += 1;
+                    for _ in 0..count {
+                        sixel_pixel(&mut grid, width, height, x, band, current, ch);
+                        x += 1;
+                    }
+                }
+                b'$' => {
+                    // Back to the left edge of this band: one colour's plane is
+                    // done, the next starts over the same rows.
+                    x = 0;
+                    index += 1;
+                }
+                b'-' => {
+                    band += 1;
+                    x = 0;
+                    index += 1;
+                }
+                ch => {
+                    sixel_pixel(&mut grid, width, height, x, band, current, ch);
+                    x += 1;
+                    index += 1;
+                }
+            }
+        }
+        grid
+    }
+
+    fn sixel_pixel(
+        grid: &mut [u8],
+        width: usize,
+        height: usize,
+        x: usize,
+        band: usize,
+        register: u8,
+        ch: u8,
+    ) {
+        let mask = ch - b'?';
+        for bit in 0..6 {
+            if mask & (1 << bit) == 0 {
+                continue;
+            }
+            let y = band * 6 + bit;
+            if y < height && x < width {
+                grid[y * width + x] = register;
+            }
+        }
+    }
+
+    #[test]
+    fn the_sixel_palette_is_a_cube_then_a_grey_ramp() {
+        // The cube's corners are exact fifths of the range, so the protocol's
+        // whole-percent units lose nothing.
+        assert_eq!(sixel_color(0), [0, 0, 0]);
+        assert_eq!(sixel_color(1), [0, 0, 51]);
+        assert_eq!(sixel_color(SIXEL_CUBE_COLORS as u8 - 1), [255, 255, 255]);
+        // …and the greys run from black to white behind it.
+        assert_eq!(sixel_color(SIXEL_CUBE_COLORS as u8), [0, 0, 0]);
+        assert_eq!(sixel_color(255), [255, 255, 255]);
+    }
+
+    #[test]
+    fn a_pixel_takes_the_register_nearest_to_it() {
+        assert_eq!(nearest_sixel_color([255, 0, 0]), 180);
+        assert_eq!(nearest_sixel_color([0, 255, 0]), 30);
+        assert_eq!(nearest_sixel_color([0, 0, 255]), 5);
+        assert_eq!(nearest_sixel_color([255, 255, 255]), 215);
+        // Near-neutral pixels belong to the grey ramp: three independent
+        // roundings land the cube off the diagonal.
+        assert!(
+            nearest_sixel_color([130, 130, 130]) >= SIXEL_CUBE_COLORS as u8,
+            "a grey goes to the ramp"
+        );
+        // A saturated colour belongs to the cube.
+        assert!(nearest_sixel_color([200, 30, 30]) < SIXEL_CUBE_COLORS as u8);
+    }
+
+    /// Every pixel of a picture survives the encoder, and a reader of the
+    /// string finds the colourful part of it where it was drawn: geometry is
+    /// six rows to a band and one character per column.
+    #[test]
+    fn a_picture_round_trips_through_the_sixel_encoder() {
+        let (width, height) = (7usize, 13usize);
+        let mut rgb = Vec::new();
+        for y in 0..height {
+            for x in 0..width {
+                rgb.extend_from_slice(&[(x * 30) as u8, (y * 12) as u8, 200 - (x * 20) as u8]);
+            }
+        }
+        let sequence = encode_sixel_rgb(&rgb, width, height);
+        assert!(sequence.starts_with("\x1bP0;1;0q"), "{sequence:?}");
+        assert!(sequence.ends_with("\x1b\\"), "{sequence:?}");
+        // Three bands for thirteen rows, each closed off.
+        assert_eq!(sequence.matches('-').count(), 3, "{sequence:?}");
+        let grid = decode_sixel(&sequence, width, height);
+        for index in 0..width * height {
+            let pixel = [rgb[index * 3], rgb[index * 3 + 1], rgb[index * 3 + 2]];
+            assert_eq!(
+                grid[index],
+                nearest_sixel_color(pixel),
+                "pixel {index} ({pixel:?}) moved or changed colour"
+            );
+        }
+    }
+
+    /// A flat area is one run, not one character per column: a preview of a
+    /// document is mostly one colour, and the payload is what crosses the pty.
+    #[test]
+    fn a_flat_picture_is_one_compressed_run() {
+        let green = [0u8, 255, 0];
+        let mut rgb = Vec::new();
+        for _ in 0..(64 * 6) {
+            rgb.extend_from_slice(&green);
+        }
+        let sequence = encode_sixel_rgb(&rgb, 64, 6);
+        // The band's whole row is the same character: six bits set for six rows
+        // of the same colour.
+        assert!(sequence.contains("!64~"), "{sequence:?}");
+        let grid = decode_sixel(&sequence, 64, 6);
+        assert!(grid.iter().all(|register| *register == 30), "{grid:?}");
+    }
+
+    #[test]
+    fn a_picture_that_is_not_there_encodes_to_nothing() {
+        assert_eq!(encode_sixel_rgb(&[], 0, 0), "");
+        assert_eq!(encode_sixel_rgb(&[1, 2, 3], 4, 4), "");
+        assert_eq!(encode_sixel_rgb(&[1, 2, 3], 0, 4), "");
     }
 
     #[test]
