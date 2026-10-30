@@ -117,6 +117,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "list_streaming_sessions",
     "new_session",
     "probe_sandbox",
+    "probe_thinking_level",
     "probe_windows_sandbox",
     "prompt",
     "prune_run_events",
@@ -212,6 +213,15 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
         ),
         "sync_skills" => policy(
             Duration::from_secs(600),
+            RetryPolicy::Never,
+            ExecutionKind::Bounded,
+        ),
+        // One provider round trip with a model call inside it: the probe's own
+        // first-frame deadline (30 s) answers first, so this is only the outer
+        // transport bound. Never retried — a retry would spend a second model
+        // call against a level already known to be answered.
+        "probe_thinking_level" => policy(
+            Duration::from_secs(45),
             RetryPolicy::Never,
             ExecutionKind::Bounded,
         ),

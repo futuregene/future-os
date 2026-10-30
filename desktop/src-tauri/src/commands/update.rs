@@ -6,6 +6,7 @@
 //! `assets` map used for manual downloads; Tauri ignores those additional
 //! fields and selects only the current entry under `platforms`.
 
+#[cfg(not(target_os = "windows"))]
 use future_host::console;
 use serde::Serialize;
 use serde_json::Value;

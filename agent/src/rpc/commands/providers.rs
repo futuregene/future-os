@@ -530,6 +530,60 @@ pub(crate) fn cmd_upsert_provider(state: &AppState, id: &str, cmd: &RpcCommand) 
     )
 }
 
+/// One ad-hoc probe of a thinking level against the provider the caller is
+/// editing (see [`crate::llm::probe`]). Sessionless: it writes nothing and
+/// touches no conversation.
+pub(crate) fn cmd_probe_thinking_level(state: &AppState, id: &str, cmd: &RpcCommand) -> String {
+    let Some(spec) = cmd.thinking_probe.as_ref() else {
+        return RpcResponse::build_fail(
+            id,
+            "probe_thinking_level",
+            "missing thinking_probe payload",
+        );
+    };
+    if spec.api.trim().is_empty()
+        || spec.base_url.trim().is_empty()
+        || spec.model_id.trim().is_empty()
+    {
+        return RpcResponse::build_fail(
+            id,
+            "probe_thinking_level",
+            "thinking_probe needs api, base_url and model_id",
+        );
+    }
+    // Inherit an already-saved model's wire settings when the editor is editing
+    // one: `compat`/`headers` cannot be expressed in the GUI, a save keeps them,
+    // and a probe without them would test a different request than the one the
+    // agent makes right after the save.
+    let inherited = {
+        let provider = spec.provider_id.trim();
+        let model_id = spec.model_id.trim();
+        if provider.is_empty() {
+            None
+        } else {
+            state
+                .model_registry
+                .read()
+                .resolve(&format!("{provider}/{model_id}"))
+        }
+    };
+    let model = crate::llm::probe::probe_model(spec, inherited.as_ref());
+    // An empty key means "the key this provider already has": the editor's key
+    // field is blank when the user is keeping the stored one, and the agent —
+    // not the client — owns auth.json.
+    let api_key = if spec.api_key.trim().is_empty() {
+        crate::AuthStore::load()
+            .get(spec.provider_id.trim())
+            .unwrap_or_default()
+    } else {
+        spec.api_key.trim().to_string()
+    };
+    let result = crate::llm::probe::probe_thinking_level(&model, &api_key, &spec.level);
+    // A level the endpoint refuses is an *answer* about the level, not a failed
+    // command: the caller keeps the ones that came back accepted.
+    RpcResponse::ok(id, "probe_thinking_level", serde_json::json!(result))
+}
+
 /// Remove a provider's models.json entry AND auth.json entry, then refresh
 /// live state (see dispatch comment).
 pub(crate) fn cmd_delete_provider(state: &AppState, id: &str, cmd: &RpcCommand) -> String {

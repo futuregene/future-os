@@ -1061,6 +1061,7 @@ mod gui {
                 update_builtin_provider,
                 set_builtin_provider_base_url,
                 delete_custom_provider,
+                probe_thinking_level,
                 start_future_login,
                 poll_future_login,
                 logout_future_provider,

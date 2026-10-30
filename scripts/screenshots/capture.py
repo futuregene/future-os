@@ -819,7 +819,11 @@ def run_scenario(platform: str, name: str, spec: dict, out_dir: Path, cd_endpoin
         shutil.rmtree(frames_dir, ignore_errors=True)
         frames_dir.mkdir(parents=True, exist_ok=True)
 
-    url = spec.get("url", config["url"])
+    # `query` is appended to the platform's own `url`, so a scenario that only
+    # needs a different fixture (`?parser=1`) follows whatever port the harness
+    # is serving on. A full `url` still wins, for a scenario that lands on a
+    # different app or a page outside it.
+    url = spec.get("url") or (config["url"] + spec.get("query", ""))
     command = [
         "node", str(SCRIPTS / "cdp.mjs"),
         "--port", str(cd_endpoint),
@@ -842,6 +846,16 @@ def run_scenario(platform: str, name: str, spec: dict, out_dir: Path, cd_endpoin
         command += ["--baseline", str(baseline)]
     if not config.get("touch", True):
         command += ["--touch", "false"]
+    # A scenario can pin the browser locale (`"lang": "en-US"`): the app takes
+    # its language from the system locale, so a capture that has to be in one
+    # language pins the locale instead of a harness-only switch.
+    if spec.get("lang"):
+        command += ["--lang", str(spec["lang"])]
+    # `"appearance": "dark"` pins the *platform* appearance (`prefers-color-scheme`),
+    # which is what a phone set to dark mode reports and what the app's "follow the
+    # system" theme resolves against — not the app's stored preference.
+    if spec.get("appearance"):
+        command += ["--appearance", str(spec["appearance"])]
     print(f"── {platform}/{name}{shot_suffix}")
     # `text=True` with no encoding decodes with the locale's, which on a Windows
     # console is a legacy code page: the step runner prints whatever the page said
@@ -1437,11 +1451,12 @@ def _wait_for_addr(process: subprocess.Popen, timeout: float) -> str:
 # and the language, and a hard-coded column that lands one cell off selects the
 # neighbouring panel — a wrong picture that still looks plausible.
 #
-# A scenario listed in `TUI_SCENARIO_LONG` also asks the demo agent for a longer
-# conversation (`FUTURE_DEMO_LONG`): the scripted tutorial is a six-row exchange,
-# and a transcript shorter than the band has nothing to scroll — `↑` on it asks
-# for older rows instead of moving (see `Workbench::scroll`), so the `scrolled`
-# shot would otherwise be the plain chat frame.
+# A scenario listed in `TUI_SCENARIO_AGENT_ENV` also changes what the demo agent
+# pretends to have: `scrolled` asks for a longer conversation
+# (`FUTURE_DEMO_LONG`), because the scripted tutorial is a six-row exchange and a
+# transcript shorter than the band has nothing to scroll — `↑` on it asks for
+# older rows instead of moving (see `Workbench::scroll`); `queue` asks for queued
+# runs (`FUTURE_DEMO_QUEUE`), which `get_state` otherwise does not report.
 TUI_SCENARIO_KEYS: dict[str, str] = {
     "chat": "",
     "help": "?",
@@ -1476,7 +1491,7 @@ TUI_SCENARIO_KEYS: dict[str, str] = {
     "full-panel": "\x02",
     # A click that hands the keys back to the conversation, then three wheel-ups:
     # the frame is the chat scrolled up, with the `↑ 更早` badge. Needs the long
-    # conversation (see `TUI_SCENARIO_LONG`).
+    # conversation (see `TUI_SCENARIO_AGENT_ENV`).
     "scrolled": "\x1b[<0;20;20M\x1b[<0;20;20m" + "\x1b[<64;20;20M" * 3,
     # `ctrl+g` opens the repository browser on the session's workspace. The
     # panel reads the real repository the workbench runs in, so this frame is a
@@ -1497,10 +1512,95 @@ TUI_SCENARIO_KEYS: dict[str, str] = {
     # clock and a frame is painted per batch; a machine much slower than this one
     # may land one delta later, which is a different picture by one line.
     "streaming": "解释一下这个 off-by-one，要具体一点\r",
+    # The same live turn, with two prompts queued behind it (`FUTURE_DEMO_QUEUE`):
+    # the composer's queue band, the transcript that does not contain them, and
+    # the activity row still spinning — the frame a reader sees when they send
+    # something mid-reply.
+    "queue": "解释一下这个 off-by-one，要具体一点\r",
+    # A draft with four lines in it, typed and not sent (`ctrl+j` is the newline):
+    # the composer grows, the transcript stays, and the frame is of a reader
+    # halfway through writing. `TUI_SCENARIO_FOLD` then opens the work above.
+    "composing": (
+        "推送之前还有两件事：\n"
+        "1. `parse_list` 和 `parse_args` 补同样的回归测试。\n"
+        "2. 跑整套测试，不只是 parser 这个 crate。\n"
+        "第二条 commit 的 diff 贴到回复里。"
+    ),
 }
-# Scenarios that need the demo agent's longer conversation, and the value to give
-# `FUTURE_DEMO_LONG`. See `TUI_SCENARIO_KEYS` above.
-TUI_SCENARIO_LONG: dict[str, str] = {"scrolled": "1"}
+# Scenarios that change what the demo agent pretends to have, and the environment
+# that makes it. `scrolled` needs the longer conversation (`FUTURE_DEMO_LONG`) —
+# a transcript shorter than the band has nothing to scroll — and `queue` needs
+# the queued runs `get_state` otherwise does not report. See `TUI_SCENARIO_KEYS`.
+TUI_SCENARIO_AGENT_ENV: dict[str, dict[str, str]] = {
+    "scrolled": {"FUTURE_DEMO_LONG": "1"},
+    "queue": {"FUTURE_DEMO_QUEUE": "1"},
+    # `composing` is the frame of a reader mid-write with prompts waiting: the
+    # composer's draft, the queue band above it, and the last turn's opened
+    # process above that. `idle` is the state the band belongs to but the run does
+    # not — the reply has finished, the queued prompts have not been sent yet, so
+    # the transcript keeps its *settled* shape (folds, and a tree when opened)
+    # instead of the flat running one.
+    "composing": {"FUTURE_DEMO_QUEUE": "idle"},
+}
+
+# Scenarios that end by opening the folded process of a turn — the row that reads
+# `▸ 2 tool calls · 1 thought`, which a click (or `enter` on the cursor) expands
+# into the calls, their arguments and the reasoning between them. A frame of a
+# transcript only ever shows them shut: the fold is the reader's decision, so the
+# capture has to make it.
+#
+# What such a row says, in both languages (`▸ 2 tool calls · 1 thought` /
+# `▸ 工具调用 2 次 · 1 条思考`). Matched as a substring of the row the click is
+# resolved from, so the marker, the count and the thought count can all change
+# without breaking the step.
+# The two shapes the conversation rail draws: its flat *Recent* list and the
+# workspace view that files each conversation under a heading. `TabRecent` /
+# `TabWorkspaces` are the captions a click would land on.
+TUI_RECENT_TABS: tuple[str, ...] = ("Recent", "最近")
+TUI_WORKSPACES_TABS: tuple[str, ...] = ("Workspaces", "工作区")
+
+TUI_SCENARIO_STEPS: dict[str, tuple[tuple[str, object], ...]] = {
+    # Open the last turn's process and the thought inside it, then switch the rail
+    # from its flat *Recent* list to the workspace view.
+    #
+    # All by keyboard, and the count is exact because the payload is: `tab` walks
+    # the transcript's own stops in reading order — the two fold rows here — so
+    # two `tab`s land on the last turn's, `enter` opens it, the next `tab` walks
+    # into its first thought and `enter` opens that. `shift+right` is the Next
+    # panel key (`preferences.rs`: `PanelNext`), which is the rail's two shapes.
+    #
+    # A pointer would be the reader's own gesture, but a click on a transcript row
+    # does not arrive: measured here, `\x1b[<0;col;rowM`/`m` on a `▸ … tool calls`
+    # row leaves the fold shut, while the same bytes on a rail tab or the divider
+    # work — so the capture uses the keys the surface also answers to.
+    "composing": (
+        ("keys", b"\t\t\r\t\r"),
+        ("keys", b"\x1b[1;2C"),
+    ),
+}
+
+# Seconds between the steps *after* the first one. The default capture budget is
+# six seconds, and a chain that waited `settle` (2.5 s) between three steps would
+# run its last one after the pty had already been closed — measured: the thought
+# row stayed shut and the frame looked like the click had done nothing. The first
+# step keeps the full settle: the surface has to be up before anything is typed.
+TUI_STEP_GAP = 1.0
+
+# The one scenario whose keystrokes are *prose* rather than a verb: `streaming`
+# submits a prompt, so the words are the reader's and have to be in the language
+# the frame is pinned to — a Chinese question in an English frame (or the other
+# way round) is the mismatch this payload exists to avoid. Everything else in
+# `TUI_SCENARIO_KEYS` is a verb, a key or a query word, and reads the same in
+# both languages.
+TUI_SCENARIO_KEYS_EN: dict[str, str] = {
+    "streaming": "Explain this off-by-one in detail, and where else it hides\r",
+    "composing": (
+        "Two things before you push:\n"
+        "1. The same regression test for `parse_list` and `parse_args`.\n"
+        "2. Run the whole suite, not just the parser crate.\n"
+        "And paste the diff of the second commit in the reply."
+    ),
+}
 
 
 # Each entry lists the label in every language the surface ships: the capture
@@ -1613,11 +1713,21 @@ def _tui_drag_divider(dx: int, cols: int, rows: int, settle: float):
     return (settle, action)
 
 
-def _tui_steps(scenario: str, cols: int, rows: int, settle: float = 2.5):
-    """The input script for a scenario, or a clear error for an unknown one."""
+def _tui_steps(scenario: str, cols: int, rows: int, settle: float = 2.5, lang: str = "zh"):
+    """The input script for a scenario, or a clear error for an unknown one.
+
+    `lang` only reaches the scenarios that submit prose (see
+    `TUI_SCENARIO_KEYS_EN`); every other keystroke is a verb or a key, and the
+    same bytes work in both languages.
+    """
     if scenario in TUI_SCENARIO_KEYS:
         keys = TUI_SCENARIO_KEYS[scenario]
-        return [(settle, keys.encode())] if keys else []
+        if lang.startswith("en"):
+            keys = TUI_SCENARIO_KEYS_EN.get(scenario, keys)
+        steps = [(settle, keys.encode())] if keys else []
+        for _, payload in TUI_SCENARIO_STEPS.get(scenario, ()):
+            steps.append((TUI_STEP_GAP, payload))
+        return steps
     if scenario in TUI_SCENARIO_TABS:
         return [_tui_click_tab(TUI_SCENARIO_TABS[scenario], cols, rows, settle)]
     if scenario in TUI_SCENARIO_DRAGS:
@@ -1653,7 +1763,7 @@ def tui(args: argparse.Namespace) -> int:
     home = work / "home"
     home.mkdir()
     agent = None
-    steps = _tui_steps(args.scenario, args.cols, args.rows)
+    steps = _tui_steps(args.scenario, args.cols, args.rows, lang=args.lang)
     try:
         if args.addr:
             # Attaching to an agent that is already running (the "real session"
@@ -1662,12 +1772,13 @@ def tui(args: argparse.Namespace) -> int:
             addr = args.addr
             env = None
         else:
-            agent_env = None
-            if args.scenario in TUI_SCENARIO_LONG:
-                agent_env = {
-                    **os.environ,
-                    "FUTURE_DEMO_LONG": TUI_SCENARIO_LONG[args.scenario],
-                }
+            # One flag pins the whole frame: the chrome's language (`--lang`,
+            # written into the TUI's settings below) and the scripted data's
+            # (`FUTURE_DEMO_LANG`, which the demo agent reads) have to agree, or
+            # the picture is English around a Chinese session list.
+            agent_env = {**os.environ, "FUTURE_DEMO_LANG": args.lang}
+            # …and the scenario's own scripted state, on top of it.
+            agent_env.update(TUI_SCENARIO_AGENT_ENV.get(args.scenario, {}))
             agent = subprocess.Popen(
                 [str(agent_bin), "--port", "0"],
                 stdout=subprocess.PIPE,
@@ -1688,9 +1799,24 @@ def tui(args: argparse.Namespace) -> int:
             # `docs/tui/assets/` are of a reader who has it open — so whether a
             # frame carries the rail stays the scenario's choice instead of
             # following a product default that can change under it.
+            #
+            # Its width is usually left to the surface (`SIDEBAR_DEFAULT`), and
+            # `--sidebar-width` is for the frames where the default is the
+            # problem: the rail reserves a third of its own width for the
+            # workspace name, so at 36 columns an English session title has
+            # about nineteen cells before the ellipsis and most of them end in
+            # `…`, while the same list in Chinese fits. Pinning it keeps the
+            # layout a decision of the capture instead of the reader's terminal.
+            pinned = {"language": args.lang, "sidebarVisible": True}
+            if args.sidebar_width is not None:
+                pinned["sidebarWidth"] = args.sidebar_width
+            if args.sidebar_position is not None:
+                pinned["sidebarPosition"] = args.sidebar_position
+            if args.theme is not None:
+                pinned["themeId"] = args.theme
             (home / "tui").mkdir(parents=True, exist_ok=True)
             (home / "tui" / "settings.json").write_text(
-                json.dumps({"language": args.lang, "sidebarVisible": True}),
+                json.dumps(pinned),
                 encoding="utf-8",
             )
         argv = [str(tui_bin), "tui", "--offline", "--grpc-addr", addr]
@@ -1772,6 +1898,31 @@ def _self_test() -> int:
     check("no phantom find", _find_word_column(cells, "不存在"), None)
     # A word starting mid-slot is still found; a partial match is not a match.
     check("chat tab", _find_word_column(cells, "待办")[1], 2)
+
+    # One flag pins the whole frame. `--lang en` has to reach the *keystrokes* as
+    # well as the chrome and the scripted data: `streaming` submits a prompt, and
+    # an English frame that asks its question in Chinese is the mismatch the
+    # language pin exists to avoid. Every other scenario is a verb or a key, so
+    # the bytes must stay the same in both languages.
+    #
+    # The second check is the one with teeth: comparing the English prompt to the
+    # English table alone would still pass if `--lang` stopped reaching this
+    # function, because the table is what the expected value comes from.
+    en_prompt = _tui_steps("streaming", 40, 2, settle=0.0, lang="en")[0][1]
+    zh_prompt = _tui_steps("streaming", 40, 2, settle=0.0)[0][1]
+    check("en prompt comes from the en table", en_prompt, TUI_SCENARIO_KEYS_EN["streaming"].encode())
+    check("en prompt is not the zh one", en_prompt == zh_prompt, False)
+    check(
+        "verbs are language-free",
+        _tui_steps("help", 40, 2, settle=0.0, lang="en")[0][1],
+        TUI_SCENARIO_KEYS["help"].encode(),
+    )
+    # A scenario that chains steps is a chain of delays inside one capture budget:
+    # waiting `settle` between all of them put the last one after the pty had
+    # closed, and the frame then looked like the click had done nothing.
+    chain = _tui_steps("composing", 40, 2, settle=2.5, lang="en")
+    check("composing is a chain of three", len(chain), 3)
+    check("composing fits the capture budget", sum(step[0] for step in chain) < 6.0, True)
 
     if problems:
         for problem in problems:
@@ -1997,7 +2148,25 @@ def main() -> int:
         "--lang",
         default="zh",
         choices=("system", "zh", "en"),
-        help="interface language the capture pins (default zh, the documented screenshots)",
+        help="interface language the capture pins, chrome and scripted data alike "
+        "(default zh, the documented screenshots)",
+    )
+    tui_parser.add_argument(
+        "--sidebar-width",
+        type=int,
+        default=None,
+        help="columns the sidebar is pinned to (default: the surface's own default)",
+    )
+    tui_parser.add_argument(
+        "--sidebar-position",
+        default=None,
+        choices=("left", "right"),
+        help="which side the rail is pinned to (default: the surface's own = right)",
+    )
+    tui_parser.add_argument(
+        "--theme",
+        default=None,
+        help="palette id to pin (e.g. dracula, tokyo-night, gruvbox; default: the surface's own)",
     )
     tui_parser.add_argument("--release", action="store_true", help="look in target/release instead of target/debug")
     tui_parser.add_argument("--keep-stream", default=None,

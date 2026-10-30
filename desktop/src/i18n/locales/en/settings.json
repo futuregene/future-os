@@ -307,6 +307,15 @@
     "modelNamePlaceholder": "Leave blank to use the model ID",
     "removeModel": "Remove model",
     "thinkingLevelsLabel": "Thinking levels",
+    "probe": {
+      "detect": "Detect",
+      "detecting": "Testing {{level}}…",
+      "needBaseUrl": "Fill in the Base URL and the model ID first.",
+      "calibrationFailed": "The default request failed — check the Base URL, API type, key and model ID before trying levels. {{error}}",
+      "failed": "Detection failed: {{error}}",
+      "accepted": "Selected the {{count}} accepted level(s).",
+      "none": "No level was accepted; only Default remains."
+    },
     "modalityLabel": "Modality",
     "modalityText": "Text",
     "modalityImage": "Image",

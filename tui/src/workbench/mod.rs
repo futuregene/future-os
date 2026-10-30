@@ -399,10 +399,10 @@ pub enum WbAction {
     SetLanguage(LanguagePreference),
     /// A layout preference changed; the driver persists the whole surface state.
     SetPreferences,
-    /// The reader pinned (or unpinned) a workspace in the rail; the app records
-    /// it and rebuilds the groups.
-    SetWorkspacePinned {
-        path: String,
+    /// The reader pinned (or unpinned) a conversation in the rail; the app
+    /// records it and re-files the 工作区 tab.
+    SetSessionPinned {
+        id: String,
         pinned: bool,
     },
     /// Persist the effective shortcut map after a rebind or reset.
@@ -558,6 +558,13 @@ const ZOOM_FIT: &str = "preview.fit";
 const PREV_IMAGE: &str = "preview.prev";
 const NEXT_IMAGE: &str = "preview.next";
 
+/// The close chip every overlay paints in its top border.
+///
+/// One id for all of them: the chip means "leave this panel" whatever the panel
+/// is, and what that answer *is* stays the panel's own business — a click on it
+/// runs exactly the handler `esc` runs (see [`Workbench::close_overlay`]).
+pub(crate) const OVERLAY_CLOSE: &str = "overlay.close";
+
 /// Columns one `←` / `→` pans a `/git` pane.
 ///
 /// Neither pane wraps, and eight cells a press crosses a date or a graph lane
@@ -707,9 +714,30 @@ pub struct Workbench {
     /// conversation grows, and a stored stop would then point at a row that has
     /// moved. Out-of-range is clamped at the point of use.
     chat_index: Option<usize>,
+    /// Whether the cursor above *moved* since the last frame, and so wants the
+    /// transcript brought to it once.
+    ///
+    /// A frame cannot tell a cursor that just arrived from one the reader left
+    /// behind, and chasing the second undoes the wheel: the page came back to
+    /// the row it had scrolled away from (see [`screen::conversation`]). So the
+    /// move is announced where it happens and spent on the frame that shows it.
+    stop_reveal: bool,
     /// The width the transcript was last wrapped at. Part of the span cache's
     /// key, because a resize rewraps every row while no message changes.
     chat_inner: usize,
+    /// The rows the last frame painted, and the frame size they were painted
+    /// in.
+    ///
+    /// A transcript's height changes for reasons that have nothing to do with
+    /// the reader — a run streaming a row at a time, a reply settling and
+    /// folding its work into one summary row, a burst of calls collapsing, a
+    /// page of older rows prepended. `chat_scroll` is a distance from the tail,
+    /// so every one of those would drag the window with it (see
+    /// [`Self::hold_rows_across_height_change`]): the rows are kept to compare
+    /// against, and the size to leave resizes alone (a rewrap is a different row
+    /// set, not a longer one).
+    chat_rows: Option<std::sync::Arc<[String]>>,
+    chat_frame: (u16, u16),
     /// How many rows the conversation band had in the last frame it painted.
     ///
     /// Only the renderer knows this — the draft grows the composer and takes
@@ -880,7 +908,10 @@ impl Workbench {
             scroll: scroll::ScrollState::default(),
             links: links::Cache::default(),
             chat_index: None,
+            stop_reveal: false,
             chat_inner: 0,
+            chat_rows: None,
+            chat_frame: (0, 0),
             chat_window: 0,
             queue_index: 0,
             workflow_index: 0,
@@ -992,20 +1023,80 @@ impl Workbench {
     /// what is below it change.
     ///
     /// One frame only: the anchor is taken when the action is produced and
-    /// spent on the frame that shows its result.
-    fn anchor_after_row_toggle(&mut self, total: usize) {
+    /// spent on the frame that shows its result. Answers whether it held.
+    fn anchor_after_row_toggle(&mut self, total: usize) -> bool {
         let Some(before) = self.row_toggle_anchor.take() else {
-            return;
+            return false;
         };
         let delta = total as isize - before as isize;
         if delta == 0 {
-            return;
+            return false;
         }
         let offset = (self.chat_scroll as isize + delta).max(0) as usize;
         self.chat_scroll = offset;
         // The follow state is the same number seen from the other end: a
         // reader holding a row is reading, not following the tail.
         self.scroll.set_offset(offset);
+        true
+    }
+
+    /// Hold the reader's rows across a transcript that changed height on its
+    /// own.
+    ///
+    /// The offset is a distance from the tail, so a row that arrives or leaves
+    /// *anywhere* below the window moves every painted row with it. A run still
+    /// streaming does it a row at a time — the reader's page slides up under a
+    /// hand that is not touching the wheel — and one that folds its work away
+    /// (a reply settling into `▸ 61 tool calls`, a burst collapsing) drops the
+    /// page back down, which is the "it keeps coming back to that block" a
+    /// reader scrolling through an opened row sees. Neither is the reader
+    /// moving: the window is a place in the conversation, not a distance from
+    /// its end.
+    ///
+    /// Where the rows changed decides who moves. A change *below* the window's
+    /// first row leaves that row on its index, so the offset moves by the same
+    /// amount and the painted rows stay. A change *at or above* it — the page
+    /// of older rows `↑ 更早` prepends — carries the reader's rows with it: the
+    /// offset stays and the rows are where they were, with the new rows above
+    /// them. A resize is neither: it rewraps every row, and the offset is left
+    /// alone to mean the same distance from the tail.
+    fn hold_rows_across_height_change(&mut self, previous: &[String], current: &[String]) {
+        // A reader on the tail is following it: output arriving is exactly
+        // what they want to see, and there is nothing to hold.
+        if self.scroll.following() {
+            return;
+        }
+        let delta = current.len() as isize - previous.len() as isize;
+        if delta == 0 {
+            return;
+        }
+        // No frame has measured the band yet: there is no window to hold.
+        if self.chat_window == 0 {
+            return;
+        }
+        // The first painted row this frame is the one the last frame painted,
+        // so the window's first row is that far from the end.
+        let start = previous
+            .len()
+            .saturating_sub(self.chat_scroll)
+            .saturating_sub(self.chat_window);
+        // Where the transcript first differs: rows above it keep their index.
+        let shared = previous.len().min(current.len());
+        let mut changed = 0;
+        while changed < shared && previous[changed] == current[changed] {
+            changed += 1;
+        }
+        // Older rows prepended: every row the reader sees moved *down* by
+        // `delta`, and staying still is what holds them (see above).
+        let prepended =
+            changed == 0 && delta > 0 && previous.iter().eq(current[delta as usize..].iter());
+        let shift = if prepended || changed < start {
+            delta
+        } else {
+            0
+        };
+        let offset = (self.chat_scroll as isize + delta - shift).max(0) as usize;
+        self.set_chat_scroll(offset);
     }
 
     /// Render one frame: exactly `h` rows, each exactly `w` display columns.
@@ -1015,10 +1106,21 @@ impl Workbench {
             self.scroll.reset();
             // The cursor belonged to the conversation that just left the screen.
             self.chat_index = None;
+            // The rows of the conversation that left are not this one's: a
+            // row count compared across them would move the new one's page.
+            self.chat_rows = None;
             self.links.clear();
         }
         self.scroll.observe(data.revision);
-        self.anchor_after_row_toggle(data.messages.len());
+        let held = self.anchor_after_row_toggle(data.messages.len());
+        let previous = self
+            .chat_rows
+            .replace(std::sync::Arc::clone(&data.messages));
+        let resized = self.chat_frame != (w, h);
+        self.chat_frame = (w, h);
+        if let Some(previous) = previous.filter(|_| !held && !resized) {
+            self.hold_rows_across_height_change(&previous, &data.messages);
+        }
         self.mouse_capture = data.mouse_capture;
         // The menu is a reading of the draft, and a frame is the moment the
         // draft is as fresh as it will get in this iteration: a paste inserts a
@@ -1842,18 +1944,61 @@ impl Workbench {
     /// inside a long transcript: running off the last stop and having nothing
     /// happen reads as "this conversation has nothing to open", when the first
     /// one is one more press away.
+    ///
+    /// The walk starts from the window, not from the transcript: a reader who
+    /// scrolled up into history and pressed `tab` used to land on the first link
+    /// of a conversation that may begin two thousand rows above them. So with no
+    /// cursor yet — or with one the reader scrolled away from — the first press
+    /// puts the cursor on the stop at the window's own edge, and only a press
+    /// that steps off that edge leaves the window (see [`Self::stop_reveal`] for
+    /// the frame that follows it).
     fn step_stop(&mut self, delta: isize, data: &WorkbenchData) -> Vec<WbAction> {
-        let count = self.chat_stops(data).len();
-        if count == 0 {
+        // The walk needs the rows, not just the stops: what makes a stop
+        // reachable is where it is painted, and the window is about rows.
+        let link_rows: Vec<usize> = self.link_spans(data).iter().map(|span| span.row).collect();
+        let stops = self.chat_stops(data);
+        if stops.is_empty() {
             self.chat_index = None;
             return vec![WbAction::Redraw];
         }
+        let rows: Vec<usize> = stops
+            .iter()
+            .map(|stop| match stop {
+                ChatStop::Link(index) => link_rows[*index],
+                ChatStop::Row(stop) => stop.row,
+            })
+            .collect();
+        let count = stops.len();
+        let (start, end) = self.chat_shown_rows(data.messages.len());
+        let on_screen = |row: usize| row >= start && row < end;
+        // A reveal still waiting for its frame means the window is simply behind
+        // the cursor the last press placed: that cursor is the reader's, and the
+        // next press steps from it rather than starting the walk over.
+        let owned = |row: usize| self.stop_reveal || on_screen(row);
         let next = match self.chat_index {
-            None if delta < 0 => count - 1,
-            None => 0,
-            Some(index) => (index as isize + delta).rem_euclid(count as isize) as usize,
+            Some(index) if rows.get(index).is_some_and(|row| owned(*row)) => {
+                (index as isize + delta).rem_euclid(count as isize) as usize
+            }
+            // No cursor, or one the keys took away: the walk starts again at
+            // the window's own edge — the first stop on screen going forward,
+            // the last one going back. A window that holds no stop at all takes
+            // the nearest one outside it, so a reader paging through prose lands
+            // on the link just past the edge rather than at the far end of the
+            // conversation; the frame that paints it scrolls to it.
+            _ if delta < 0 => rows
+                .iter()
+                .rposition(|row| *row < end)
+                .or_else(|| rows.iter().position(|row| *row >= end))
+                .unwrap_or(count - 1),
+            _ => rows
+                .iter()
+                .position(|row| on_screen(*row))
+                .or_else(|| rows.iter().position(|row| *row >= start))
+                .unwrap_or(count - 1),
         };
         self.chat_index = Some(next);
+        // The transcript follows a cursor that moved; see `stop_reveal`.
+        self.stop_reveal = true;
         vec![WbAction::Redraw]
     }
 
@@ -1940,29 +2085,38 @@ impl Workbench {
         vec![WbAction::Redraw]
     }
 
-    /// The workspace the conversation under the cursor belongs to.
-    fn selected_workspace<'a>(
-        &'a self,
-        data: &'a WorkbenchData,
-    ) -> Option<&'a state::WorkspaceGroup> {
+    /// The conversation under the rail's cursor.
+    ///
+    /// A pin names a conversation, not the directory it ran in: pinning the
+    /// workspace took every conversation in that directory along with it, which
+    /// is not what "keep this one where I can find it" means.
+    fn selected_session<'a>(&'a self, data: &'a WorkbenchData) -> Option<&'a state::SessionRow> {
         let rows = self.panel_rows(data);
-        let session = rows.get(self.sidebar_index)?.session()?;
-        let id = &data.sessions.get(session)?.id;
-        data.workspaces
-            .iter()
-            .find(|workspace| workspace.session_ids.contains(id))
+        let index = rows.get(self.sidebar_index)?.session()?;
+        data.sessions.get(index)
     }
 
-    /// Pin or unpin the workspace the cursor's conversation belongs to.
+    /// Pin or unpin the conversation under the rail's cursor.
     ///
     /// `pub(crate)` because the *driver* applies it: the verb is `/pin` (draft
     /// and palette), and a command reaches the surface through
     /// `surface_command`, which answers a notice rather than an action list.
+    ///
+    /// There is nothing to pin on the launchpad: the conversation the verb is
+    /// about is the one the first message creates, and it does not exist yet —
+    /// so a pin there would name a row the reader never chose (the rail's
+    /// cursor may sit on any old conversation) and, worse, look like it pinned
+    /// the new session.
     pub(crate) fn toggle_pin_selected(&mut self, data: &WorkbenchData) -> Vec<WbAction> {
-        match self.selected_workspace(data) {
-            Some(workspace) => vec![WbAction::SetWorkspacePinned {
-                path: workspace.path.clone(),
-                pinned: !workspace.pinned,
+        if data.on_launchpad() {
+            return vec![WbAction::Notice(
+                t(self.lang, Key::NoticePinNewSession).to_string(),
+            )];
+        }
+        match self.selected_session(data) {
+            Some(session) => vec![WbAction::SetSessionPinned {
+                id: session.id.clone(),
+                pinned: !session.pinned,
             }],
             None => vec![WbAction::Notice(
                 t(self.lang, Key::NoticePinUnavailable).to_string(),
@@ -2586,6 +2740,30 @@ impl Workbench {
                     self.palette_index = self.palette_index.saturating_sub(1);
                     vec![WbAction::Redraw]
                 }
+                // The columns are a second way to *see* one list, so a
+                // horizontal step only moves the highlight into the other
+                // column — the row at the same visual line, clamped to what the
+                // neighbour has. On a narrow frame (one column) they do nothing:
+                // there is nothing to step to.
+                "left" | "right" => {
+                    let rows = self.palette_rows(data);
+                    let commands = rows.iter().take_while(|row| !row.is_skill()).count();
+                    let current = self.palette_index.min(rows.len().saturating_sub(1));
+                    if commands > 0 && commands < rows.len() {
+                        self.palette_index = if key == "left" {
+                            if current < commands {
+                                current
+                            } else {
+                                (current - commands).min(commands - 1)
+                            }
+                        } else if current < commands {
+                            (commands + current).min(rows.len() - 1)
+                        } else {
+                            current
+                        };
+                    }
+                    vec![WbAction::Redraw]
+                }
                 "down" => {
                     let count = self.palette_rows(data).len();
                     if self.palette_index + 1 < count {
@@ -2834,6 +3012,12 @@ impl Workbench {
                 None => Vec::new(),
             },
             "r" => vec![WbAction::GitRefresh],
+            // The working tree has a box of its own — files on one side, the
+            // selected patch on the other — and the repository browser is its
+            // door now: `/diff` was a second name for what the 改动 tab already
+            // holds. `d` is the diff review, anywhere in the panel (the box
+            // says what it shows, so it does not depend on the tab).
+            "d" => vec![WbAction::OpenDiff],
             "backspace" if git.filter.is_some() => {
                 self.overlay_scroll = 0;
                 vec![WbAction::GitFilter(None)]
@@ -3018,10 +3202,10 @@ impl Workbench {
                 }];
             }
             "r" if matches!(overlay, Overlay::Diff | Overlay::Worktree) => {
-                return vec![WbAction::Command(match overlay {
-                    Overlay::Diff => "/diff".into(),
-                    _ => "/worktree".into(),
-                })];
+                return vec![match overlay {
+                    Overlay::Diff => WbAction::OpenDiff,
+                    _ => WbAction::Command("/worktree".into()),
+                }];
             }
             "enter" => {
                 if overlay != Overlay::Diff {
@@ -3250,6 +3434,13 @@ impl Workbench {
         }
         match event.kind {
             mouse::MouseKind::WheelUp | mouse::MouseKind::WheelDown => {
+                // A wheel turn is the reader aiming somewhere else, the same as
+                // `↑`/`↓` — and those drop the `tab` cursor (`handle_key` clears
+                // it for every key but its own), because a highlight left on a
+                // row the scroll took off the screen is not a cursor the reader
+                // can act on.
+                self.chat_index = None;
+                self.stop_reveal = false;
                 let delta = if event.kind == mouse::MouseKind::WheelUp {
                     -3
                 } else {
@@ -3318,6 +3509,24 @@ impl Workbench {
             }
             mouse::MouseKind::Move => Vec::new(),
         }
+    }
+
+    /// Leave an overlay the way `esc` does — the chip in its top border.
+    ///
+    /// The chip is the pointer's spelling of that key, never a second verb: the
+    /// preview steps back to the panel it was opened from rather than to the
+    /// chat, the shortcut editor goes back to the preferences list, and the
+    /// other panels close. A button that did something else would put two
+    /// answers to "close" on one screen.
+    fn close_overlay(&mut self, overlay: Overlay, data: &WorkbenchData) -> Vec<WbAction> {
+        if overlay == Overlay::FilePreview {
+            // The preview owns `esc` itself (`preview_key`), so it is the one
+            // overlay `handle_overlay_key` does not close.
+            return self
+                .preview_key("escape", data)
+                .unwrap_or_else(|| vec![WbAction::Redraw]);
+        }
+        self.handle_overlay_key(overlay, "escape", data)
     }
 
     /// The `enter` on a picker row, expressed with a pointer: the click moves
@@ -3428,6 +3637,9 @@ impl Workbench {
             return vec![WbAction::Redraw];
         };
         match id.as_str() {
+            // The chip every panel paints in its top border: the pointer's way
+            // out, which is the same answer `esc` gives.
+            OVERLAY_CLOSE => self.close_overlay(overlay, data),
             // The box's own padding, its title rule, its hints: part of the
             // overlay, so a click there is absorbed rather than dismissing it.
             "overlay.surface" => Vec::new(),
@@ -3473,13 +3685,10 @@ impl Workbench {
                 vec![WbAction::Redraw]
             }
             _ => {
-                if let Some(index) = id
-                    .strip_prefix("queue.row.")
-                    .and_then(|v| v.parse::<usize>().ok())
-                {
-                    // A queued prompt is a real verb (`recall`, the same one
-                    // `enter` runs); under the overlay the page's own click
-                    // handler is never reached, so it has to be repeated here.
+                // A queued prompt is a real verb (`recall`, the same one
+                // `enter` runs); under the overlay the page's own click
+                // handler is never reached, so it has to be repeated here.
+                if let Some(index) = queue_row_index(&id) {
                     self.queue_index = index;
                     return data
                         .queue
@@ -3632,6 +3841,8 @@ impl Workbench {
                         }
                         self.apply_picker(kind, data)
                     }
+                    // The chip in the box's top border: out, holding nothing.
+                    Some(OVERLAY_CLOSE) => self.dismiss_picker(kind),
                     // The box itself (its search line, its hints, its padding) is
                     // not a choice and not a dismissal.
                     Some("picker.body") => Vec::new(),
@@ -3672,10 +3883,10 @@ impl Workbench {
             self.chat_scroll = 0;
             return vec![WbAction::Redraw];
         }
-        if let Some(index) = id
-            .strip_prefix("queue.row.")
-            .and_then(|v| v.parse::<usize>().ok())
-        {
+        // A queued prompt, wherever it is drawn: the band above the composer
+        // (`queue.band.N`) and the manage box (`queue.row.N`) name the same
+        // verb — press one row to take that prompt back into the draft.
+        if let Some(index) = queue_row_index(id) {
             self.queue_index = index;
             return data
                 .queue
@@ -3697,6 +3908,7 @@ impl Workbench {
             .and_then(|rest| rest.parse::<usize>().ok());
         if link_click.is_none() && row_click.is_none() {
             self.chat_index = None;
+            self.stop_reveal = false;
         }
         // A link in the conversation. A click both puts the cursor on it and
         // opens it — the pointer has already named its target, so a second
@@ -3706,6 +3918,7 @@ impl Workbench {
                 .chat_stops(data)
                 .iter()
                 .position(|stop| matches!(stop, ChatStop::Link(span) if *span == index));
+            self.stop_reveal = self.chat_index.is_some();
             let actions = self.open_stop(data);
             return if actions.is_empty() {
                 vec![WbAction::Redraw]
@@ -3718,6 +3931,7 @@ impl Workbench {
         // reasoning block's text.
         if let Some(row) = row_click {
             self.chat_index = self.row_stop_index(row, data);
+            self.stop_reveal = self.chat_index.is_some();
             let actions = self.open_stop(data);
             return if actions.is_empty() {
                 vec![WbAction::Redraw]
@@ -3754,6 +3968,13 @@ impl Workbench {
         }
         if id == "header.sessions" {
             return self.open_picker(PickerKind::Sessions, data);
+        }
+        if id == "queue.open" {
+            // The band above the composer names the queue; its header opens the
+            // box that manages it (the same box `/queue` opens), so a reader who
+            // can see "2 queued" is one click from cancelling or recalling
+            // either of them.
+            return vec![WbAction::OpenQueue];
         }
         if id == "header.files" {
             return vec![WbAction::OpenFiles];
@@ -3989,7 +4210,43 @@ impl Workbench {
 
     pub(crate) fn set_chat_scroll(&mut self, scroll: usize) {
         self.chat_scroll = scroll;
-        self.scroll.offset = scroll;
+        // The follow state is the same number seen from the other end: a window
+        // parked above the tail is not following it, so output that arrives
+        // later must not reset the offset and yank it back down (see
+        // [`scroll::ScrollState::set_offset`]).
+        self.scroll.set_offset(scroll);
+    }
+
+    /// The transcript rows the reader can actually read right now.
+    ///
+    /// `chat_scroll` counts rows up from the tail, the window is `chat_window`
+    /// rows tall (measured by the renderer, because the composer takes rows from
+    /// the band as the draft grows), and the bottom row belongs to the `earlier`
+    /// badge once the window is off the tail. `tab` has to anchor on the rows the
+    /// painter works from, so it reads the same three numbers here that
+    /// `screen::conversation` does.
+    fn chat_shown_rows(&self, total: usize) -> (usize, usize) {
+        // No frame has measured a band yet (a key pressed before the first
+        // paint): the whole transcript is the only window there is.
+        if self.chat_window == 0 {
+            return (0, total);
+        }
+        let offset = self.chat_scroll.min(total.saturating_sub(self.chat_window));
+        let end = total.saturating_sub(offset);
+        let start = end.saturating_sub(self.chat_window);
+        let end = if start > 0 {
+            end.saturating_sub(1)
+        } else {
+            end
+        };
+        (start, end)
+    }
+
+    /// Spend the cursor's move, if it made one: the frame that follows brings
+    /// the stop it stands on into view (see [`screen::conversation`]), and the
+    /// frames after it leave the reader's own scrolling alone.
+    pub(crate) fn take_stop_reveal(&mut self) -> bool {
+        std::mem::take(&mut self.stop_reveal)
     }
 
     pub(crate) fn chat_scroll_offset(&self) -> usize {
@@ -4018,6 +4275,16 @@ impl Workbench {
         if text.is_empty() {
             return Vec::new();
         }
+        // A compaction holds the session: the agent answers a prompt with
+        // `session_busy` until its checkpoint lands, so the draft stays exactly
+        // where the reader can see it and the notice says why. Anything that is
+        // not a prompt (`/compact`'s own second press, a picker's verb) is
+        // still the reader's to run.
+        if data.compacting && known_command(&text).is_none() {
+            return vec![WbAction::Notice(
+                t(self.lang, Key::ComposerCompacting).to_string(),
+            )];
+        }
         if let Some(task) = future_fusion::fusion_prompt(&text) {
             return if task.is_empty() {
                 vec![WbAction::EditInput {
@@ -4032,29 +4299,40 @@ impl Workbench {
         // used to be sent to the agent as text, which is why no picker ever
         // opened from the input box. Only the surface's own verbs are claimed —
         // `/something else` (a skill, a path) still reaches the agent, and a
-        // verb with arguments keeps them (`/model <id>`).
+        // verb with arguments keeps them (`/model <id>`), and a verb that takes
+        // none claims only the bare word — `/pin explain this` is a sentence,
+        // not a pin.
         if let Some(command) = known_command(&text) {
+            // `/pin` names a rail action on one conversation and has no
+            // argument to give the words to, so a line that follows it with any
+            // is the reader's prompt. Claiming the verb there answered the pin
+            // and dropped what came after it, which is how a draft meant for the
+            // agent ended up toggling the rail instead of starting a session.
+            if command.name.eq_ignore_ascii_case("/pin") && !command.arg.is_empty() {
+                return vec![WbAction::Submit(text)];
+            }
             let mut actions = vec![WbAction::EditInput {
                 text: String::new(),
                 cursor: 0,
             }];
             match PickerKind::from_command(&command.name) {
-                // The workspace chooser takes its argument as the search line:
-                // `/workspace ../other` is a request for *that* directory, and a
-                // command that opened an empty list (its highlight on the
-                // current row) looked like a no-op.
-                Some(PickerKind::Workspace) => {
-                    actions.extend(self.open_picker(PickerKind::Workspace, data));
+                // The words after the verb are the picker's search line — for
+                // every picker, not only the workspace chooser's path
+                // (`/workspace ../other`). `/model deepseek` used to open the
+                // full list with the argument dropped on the floor: the picker
+                // intercepted the line before the adapter's own `set_model`
+                // could see it, so the id the reader typed was never applied.
+                Some(kind) => {
+                    actions.extend(self.open_picker(kind, data));
                     for ch in command.arg.chars() {
                         self.picker.push(ch, data);
                     }
                 }
-                Some(kind) if command.arg.is_empty() => {
-                    actions.extend(self.open_picker(kind, data))
-                }
                 // `/pin` is the one verb that has to hand the app an action
                 // rather than a notice, so it is answered here — the palette's
-                // row takes the driver's own arm for the same verb.
+                // row takes the driver's own arm for the same verb. Only the
+                // bare word arrives: a line with words after it was answered as
+                // a prompt above, since a pin has nowhere to put them.
                 _ if command.name == "/pin" => actions.extend(self.toggle_pin_selected(data)),
                 _ => actions.push(WbAction::Command(command.raw)),
             }
@@ -4243,7 +4521,11 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 /// The command palette's entries: `(command, description)`. Kept here rather
 /// than in the app so the palette, the help overlay and the tests share one
 /// list.
+<<<<<<< HEAD
 pub const COMMANDS: [(&str, Key); 37] = [
+=======
+pub const COMMANDS: [(&str, Key); 34] = [
+>>>>>>> origin/main
     ("/new", Key::CmdNew),
     ("/stop", Key::CmdStop),
     ("/delete", Key::CmdDelete),
@@ -4254,7 +4536,6 @@ pub const COMMANDS: [(&str, Key); 37] = [
     ("/preview", Key::CmdPreview),
     ("/refresh", Key::CmdRefresh),
     ("/mouse", Key::CmdMouse),
-    ("/diff", Key::CmdDiff),
     ("/git", Key::CmdGit),
     ("/files", Key::CmdFiles),
     ("/approval", Key::CmdApproval),
@@ -4293,6 +4574,19 @@ struct TypedCommand {
     raw: String,
 }
 
+/// A row's index in the agent's queue, from a hit id.
+///
+/// Two controls answer a press this way: the band above the composer
+/// (`queue.band.N`) and the manage box `/queue` opens (`queue.row.N`). They are
+/// separate ids because they are separate surfaces — one id for both would make
+/// a hit map hold two regions that name the same control, and the box's click
+/// would land on the band's row underneath it.
+fn queue_row_index(id: &str) -> Option<usize> {
+    id.strip_prefix("queue.row.")
+        .or_else(|| id.strip_prefix("queue.band."))
+        .and_then(|index| index.parse::<usize>().ok())
+}
+
 /// Split a submitted draft into a known command, or `None` when it is a prompt.
 ///
 /// The list is [`COMMANDS`]: the palette's own entries, so a verb the palette
@@ -4323,8 +4617,10 @@ const FULL_WIDTH_QUESTION: &str = "？"; // i18n: a key spelling, not copy — n
 /// The help overlay's key table.
 /// The keys that are *not* configurable actions, for the help overlay: they are
 /// spelled inside the composer (`/`, `?`, `@`, `#`), or they are the pointer, or
-/// they belong to the focused rail (`p`, `delete`). Everything with a `preferences::Action`
-/// is listed from that table instead, so a rebind is shown rebind.
+/// they are the two rail verbs that have no chord of their own (`/pin`,
+/// `/delete` — a letter in the draft is a letter). Everything with a
+/// `preferences::Action` is listed from that table instead, so a rebind is shown
+/// rebind.
 pub const HELP_KEYS: [(&str, Key); 12] = [
     ("tab", Key::HelpKeyFocus),
     ("↑ ↓", Key::HelpKeyScroll),
@@ -4727,11 +5023,14 @@ mod tests {
                 .find(|n| text.contains(&format!("line {n} ")))
                 .unwrap_or_else(|| panic!("no transcript row painted: {text}"))
         };
+        // The marker takes the oldest row of the window, so the tail's first
+        // *message* row is one further in than the window's own height.
         assert_eq!(
             first_painted(&mut wb),
-            total - band,
+            total - band + 1,
             "the tail fills the band"
         );
+        let mut previous = first_painted(&mut wb);
         for step in 1..=total - band {
             assert!(
                 wb.handle(WbEvent::Key("up".into()), &data)
@@ -4739,11 +5038,19 @@ mod tests {
                     .any(|action| matches!(action, WbAction::Scroll(-1))),
                 "press {step} scrolled"
             );
-            assert_eq!(
-                first_painted(&mut wb),
-                total - band - step,
-                "press {step} moved the transcript one row"
-            );
+            let now = first_painted(&mut wb);
+            if wb.chat_scroll_offset() < total - band {
+                assert_eq!(
+                    now + 1,
+                    previous,
+                    "press {step} moved the transcript one row"
+                );
+            } else {
+                // The ceiling: nothing is above the window any more, so the
+                // marker retires and the oldest row takes its place on top.
+                assert_eq!(now, 0, "the oldest row is on top at the ceiling");
+            }
+            previous = now;
         }
         assert_eq!(
             wb.chat_scroll_offset(),
@@ -5793,8 +6100,14 @@ mod tests {
         let data = demo::workspaces();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         workbench.panel = PanelId::Workspaces;
-        workbench.sidebar_index = 0;
-        workbench.step_session(1, &data);
+        // The first heading the tab draws — the pinned block leads it, and a
+        // pin's group is not even headed.
+        let at = workbench
+            .panel_rows(&data)
+            .iter()
+            .position(|row| matches!(row, panels::Row::Workspace(_)))
+            .expect("the tab lists workspaces");
+        workbench.sidebar_index = at;
         let heading = match workbench.panel_rows(&data)[workbench.sidebar_index] {
             panels::Row::Workspace(index) => data.workspaces[index].path.clone(),
             other => panic!("the cursor is on a workspace heading: {other:?}"),
@@ -5820,12 +6133,40 @@ mod tests {
         let open = panels::rows(PanelId::Workspaces, &data).len();
         let mut workbench = workbench();
         workbench.panel = PanelId::Workspaces;
-        workbench.set_folded_workspaces([data.workspaces[0].path.clone()]);
+        // A group with something left to fold: the pinned block leads the tab,
+        // and a pin's own workspace has no heading at all.
+        let folded = data
+            .workspaces
+            .iter()
+            .find(|group| {
+                group
+                    .session_ids
+                    .iter()
+                    .any(|id| data.sessions.iter().any(|row| &row.id == id && !row.pinned))
+            })
+            .cloned()
+            .expect("a workspace with an unpinned conversation");
+        let inside = folded
+            .session_ids
+            .iter()
+            .find(|id| {
+                data.sessions
+                    .iter()
+                    .any(|row| &row.id == *id && !row.pinned)
+            })
+            .cloned()
+            .expect("the conversation is in the list");
+        let at = data
+            .sessions
+            .iter()
+            .position(|row| row.id == inside)
+            .expect("the conversation is in the list");
+        workbench.set_folded_workspaces([folded.path.clone()]);
         let rows = workbench.panel_rows(&data);
         assert!(rows.len() < open, "{rows:?}");
         assert!(
-            !rows.iter().any(|row| row.session() == Some(0)),
-            "the first workspace's conversation is folded away: {rows:?}"
+            !rows.iter().any(|row| row.session() == Some(at)),
+            "the workspace's conversation is folded away: {rows:?}"
         );
     }
     /// The arrows are the transcript's and the caret's, never the rail's: `↑`/`↓`
@@ -5995,11 +6336,14 @@ mod tests {
         assert!(workbench.step_session(5, &data).is_empty());
         assert_eq!(workbench.sidebar_index, 3);
     }
-    /// `/pin` pins the workspace the cursor's conversation belongs to — the
-    /// rail's cursor, so `shift+↑/↓` picks which one — and `p` stays a letter in
-    /// the draft.
+    /// `/pin` pins the conversation under the rail's cursor — the rail's cursor,
+    /// so `shift+↑/↓` picks which one — and `p` stays a letter in the draft.
+    ///
+    /// A pin names one conversation, not the directory it ran in: the old verb
+    /// pinned the *workspace*, which took every conversation in that directory
+    /// with it.
     #[test]
-    fn the_pin_command_pins_the_cursor_workspace_and_p_stays_a_letter() {
+    fn the_pin_command_pins_the_cursor_conversation_and_p_stays_a_letter() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         // Not a chord: a letter in the draft, as always.
@@ -6011,10 +6355,10 @@ mod tests {
 
         workbench.sidebar_visible = true;
         workbench.sidebar_index = 0;
-        let workspace = &data.workspaces[0];
-        assert!(workspace.pinned);
+        let first = data.sessions[0].id.clone();
+        assert!(!data.sessions[0].pinned, "the fixture pins nothing");
         // Typed in the draft: the command clears the line and hands the app the
-        // pin, which is what the rail's old `p` did.
+        // pin of the row the cursor is on.
         let mut typed = data.clone();
         typed.input.text = "/pin".into();
         typed.input.cursor = 4;
@@ -6025,46 +6369,73 @@ mod tests {
                     text: String::new(),
                     cursor: 0,
                 },
-                WbAction::SetWorkspacePinned {
-                    path: workspace.path.clone(),
+                WbAction::SetSessionPinned {
+                    id: first.clone(),
+                    pinned: true,
+                },
+            ]
+        );
+
+        // The same verb on a pinned row is the unpin: the action carries the
+        // row's own state rather than a fixed `true`.
+        let mut pinned = data.clone();
+        pinned.sessions[0].pinned = true;
+        let mut unpin = pinned.clone();
+        unpin.input.text = "/pin".into();
+        unpin.input.cursor = 4;
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &unpin),
+            vec![
+                WbAction::EditInput {
+                    text: String::new(),
+                    cursor: 0,
+                },
+                WbAction::SetSessionPinned {
+                    id: first,
                     pinned: false,
                 },
             ]
         );
 
-        // The palette's row names the verb too, so the driver answers it there.
+        // The palette's row names the verb too, and it is answered by the same
+        // function, so a palette commit reaches the driver's arm.
         assert!(COMMANDS.iter().any(|(command, _)| *command == "/pin"));
 
-        // A conversation that belongs to no workspace says why it cannot be
-        // pinned instead of pinning something else.
-        let chat = demo::chat();
-        let chat_id = chat
-            .sessions
-            .iter()
-            .find(|row| {
-                !chat
-                    .workspaces
-                    .iter()
-                    .any(|w| w.session_ids.contains(&row.id))
-            })
-            .map(|row| row.id.clone())
-            .expect("the fixture has a conversation outside every workspace");
-        let mut loose = chat.clone();
-        loose.sessions.sort_by_key(|row| row.id != chat_id);
-        let (mut workbench, _rows) = frame(&loose, 120, 38);
+        // Nothing to pin on the launchpad: the conversation the verb is about
+        // is the one the first message creates, and it does not exist yet — the
+        // rail's cursor there is on some old conversation, so answering the pin
+        // would have looked like it pinned the new session.
+        let home = demo::launchpad();
+        assert!(home.on_launchpad());
+        let (mut workbench, _rows) = frame(&home, 120, 38);
         workbench.sidebar_visible = true;
-        workbench.panel = PanelId::Recent;
         workbench.sidebar_index = 0;
+        let mut typed = home.clone();
+        typed.input.text = "/pin".into();
+        typed.input.cursor = 4;
+        let actions = workbench.handle(WbEvent::Key("enter".into()), &typed);
         assert_eq!(
-            workbench
-                .panel_rows(&loose)
-                .first()
-                .and_then(|row| row.session())
-                .map(|index| loose.sessions[index].id.clone()),
-            Some(chat_id),
-            "the loose conversation leads the list"
+            actions,
+            vec![
+                WbAction::EditInput {
+                    text: String::new(),
+                    cursor: 0,
+                },
+                WbAction::Notice(t(workbench.lang, Key::NoticePinNewSession).to_string()),
+            ],
+            "the launchpad has no session to pin"
         );
-        let mut typed = loose.clone();
+
+        // A rail with no conversation under the cursor says so instead of
+        // pinning something else.
+        let mut empty = demo::chat();
+        empty.sessions.clear();
+        empty.workspaces.clear();
+        empty.chats.clear();
+        let (mut workbench, _rows) = frame(&empty, 120, 38);
+        workbench.sidebar_visible = true;
+        workbench.sidebar_index = 0;
+        let mut typed = empty.clone();
         typed.input.text = "/pin".into();
         typed.input.cursor = 4;
         let actions = workbench.handle(WbEvent::Key("enter".into()), &typed);
@@ -6072,7 +6443,7 @@ mod tests {
             actions
                 .iter()
                 .any(|action| matches!(action, WbAction::Notice(_))),
-            "a conversation outside every workspace says so: {actions:?}"
+            "an empty rail says there is nothing to pin: {actions:?}"
         );
     }
 
@@ -6645,9 +7016,8 @@ mod tests {
         assert_eq!(workbench.overlay, None);
     }
     /// The help table and the shortcut editor read the same map the keys do: the
-    /// table lists only rows that *have* a chord (an action with none keeps its
-    /// typed door in the command list below), the editor lists every action, and
-    /// the two tabs' number chords are rows of their own now.
+    /// table lists only rows that *have* a chord, the editor lists every action,
+    /// and the two tabs' number chords are rows of their own now.
     #[test]
     fn the_help_table_lists_chords_not_chordless_actions() {
         let data = demo::chat();
@@ -6659,9 +7029,9 @@ mod tests {
             text.contains("ctrl+1") && text.contains("ctrl+2"),
             "the tab chords are in the table: {text}"
         );
-        // A chordless action is not a row: a key table lists keys, and the
-        // verbs with none are spelled in the command list at the end of the
-        // same box.
+        // A chordless action is not a row: a key table lists keys. Its typed
+        // door is in the palette, one key away — which is why the box does not
+        // reprint the palette's list under the table either.
         for chordless in ["界面语言", "刷新会话和用量"] {
             assert!(
                 !text.contains(chordless),
@@ -6672,6 +7042,44 @@ mod tests {
         for gone in ["ctrl+3", "ctrl+4"] {
             assert!(!text.contains(gone), "the help table still lists {gone}");
         }
+    }
+
+    /// The box `?` opens is a key table, and only that: the palette (`/`,
+    /// `ctrl+p`) already lists every verb with the same descriptions, so a
+    /// second copy at the end of the help box made a shortcut reference scroll
+    /// through thirty-five commands on the way to nothing it did not say
+    /// already. The palette's own list is the one that stays.
+    #[test]
+    fn the_help_box_does_not_reprint_the_command_palette() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 60);
+        workbench.overlay = Some(Overlay::Help);
+        let text = plain(&workbench.render(&data, 120, 60));
+        // A verb the palette names and the help box does not — one with a chord
+        // (`/model`, `/compact`) and one without (`/queue`, `/export`).
+        for gone in ["/model", "/compact", "/queue", "/export"] {
+            assert!(
+                !text.contains(gone),
+                "the help box still lists {gone}: {text}"
+            );
+        }
+        // The inline keys are not a command list and stay: they are how the
+        // reader learns the palette's own door.
+        for kept in ["/pin", "/delete"] {
+            assert!(text.contains(kept), "the inline table lost {kept}: {text}");
+        }
+        // The palette itself is unchanged — it is where the list lives now.
+        workbench.overlay = None;
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        let palette = plain(&workbench.render(&data, 120, 60));
+        assert!(
+            palette.contains("/model"),
+            "the palette names it: {palette}"
+        );
+        assert!(
+            palette.contains("/export"),
+            "the palette names it: {palette}"
+        );
     }
 
     /// The chat list's door on the header: the cells it paints, the click that
@@ -6951,6 +7359,154 @@ mod tests {
         assert!(workbench.preview_scroll > 5, "wheel down moves the text");
     }
 
+    /// A preview box is the screen less its two-row margin, whatever the
+    /// document holds.
+    ///
+    /// The body used to stop where the *text* stopped, so a short file or the
+    /// last page of a long one ended the box early: the bottom half of the
+    /// screen was the conversation underneath, with the box's own hint standing
+    /// on the line it stopped at. Both cases are here because they failed for
+    /// different reasons — a file shorter than the box, and an offset past the
+    /// end of a file longer than it.
+    #[test]
+    fn a_preview_box_fills_its_rectangle_whether_or_not_the_text_does() {
+        fn bottom_row(rows: &[String]) -> usize {
+            rows.iter()
+                .position(|row| crate::utils::strip_ansi_codes(row).contains('╰'))
+                .expect("the box closes")
+        }
+        let (w, h) = (100u16, 30u16);
+        // The box takes all but a two-row margin: 28 rows from row 1, so its
+        // bottom border belongs on row 28 and nothing of it may fall short.
+        let last_box_row = 1 + (h as usize - 2) - 1;
+
+        let mut data = demo::chat();
+        data.preview = Some(state::PreviewView::Text {
+            path: "notes.txt".into(),
+            lines: (0..3)
+                .map(|n| super::syntax::Line::plain(format!("line {n}")))
+                .collect::<Vec<_>>()
+                .into(),
+            truncated: false,
+        });
+        let (mut workbench, _rows) = frame(&data, w, h);
+        workbench.overlay = Some(Overlay::FilePreview);
+        let short = workbench.render(&data, w, h);
+        assert_eq!(
+            bottom_row(&short),
+            last_box_row,
+            "a three-line file still fills the box:\n{}",
+            plain(&short)
+        );
+
+        // The same file, long enough to scroll, opened at the very bottom.
+        data.preview = Some(state::PreviewView::Text {
+            path: "long.txt".into(),
+            lines: (0..200)
+                .map(|n| super::syntax::Line::plain(format!("line {n}")))
+                .collect::<Vec<_>>()
+                .into(),
+            truncated: false,
+        });
+        workbench.preview_scroll = 10_000;
+        let end = workbench.render(&data, w, h);
+        assert_eq!(
+            bottom_row(&end),
+            last_box_row,
+            "the last page fills the box too:\n{}",
+            plain(&end)
+        );
+
+        // And the document that is rendered rather than parsed: markdown's own
+        // line count is the renderer's business, so the box may not trust it
+        // to fill the body either.
+        data.preview = Some(state::PreviewView::Markdown {
+            path: "notes.md".into(),
+            text: (0..120)
+                .map(|n| format!("## heading {n}\n\nbody {n}\n\n"))
+                .collect::<String>()
+                .into(),
+        });
+        workbench.preview_scroll = 10_000;
+        let markdown = workbench.render(&data, w, h);
+        assert_eq!(
+            bottom_row(&markdown),
+            last_box_row,
+            "the last page of markdown fills the box:\n{}",
+            plain(&markdown)
+        );
+        // And the margin around the box is the surface's, not the page's: a
+        // preview leaves no row of the conversation beside its own.
+        for y in [0, last_box_row + 1] {
+            assert!(
+                crate::utils::strip_ansi_codes(&markdown[y])
+                    .trim()
+                    .is_empty(),
+                "row {y} is the margin and holds no page text: {:?}",
+                crate::utils::strip_ansi_codes(&markdown[y])
+            );
+        }
+    }
+
+    /// Scrolling stops at the last full page, and the offset follows.
+    ///
+    /// Past the end the box used to draw an ever-shorter body — the text climbed
+    /// its own band while the page under it showed through — and the offset
+    /// stayed where the reader had pushed it, so the first `pageUp` afterwards
+    /// moved nothing. The painter pins both: the window is a full page, and the
+    /// number the keys read is the one that page starts at.
+    #[test]
+    fn a_document_stops_scrolling_at_its_last_full_page() {
+        let mut data = demo::chat();
+        data.preview = Some(state::PreviewView::Text {
+            path: "long.txt".into(),
+            lines: (0..200)
+                .map(|n| super::syntax::Line::plain(format!("line {n}")))
+                .collect::<Vec<_>>()
+                .into(),
+            truncated: false,
+        });
+        let (mut workbench, _rows) = frame(&data, 100, 30);
+        workbench.overlay = Some(Overlay::FilePreview);
+        workbench.preview_scroll = 10_000;
+        workbench.render(&data, 100, 30);
+        let at_end = workbench.preview_scroll;
+        let page = workbench.list_page;
+        // The last page starts `page` rows before the end of the file, which is
+        // the offset that keeps the window full.
+        assert_eq!(at_end, 200 - page, "the window stops at a full page");
+
+        // One `pageUp` from there moves, rather than burning the overshoot the
+        // old clamp left in the state.
+        workbench.handle(WbEvent::Key("pageUp".into()), &data);
+        assert_eq!(workbench.preview_scroll, at_end - page);
+    }
+
+    /// A floating box's margin is the page's, not its own.
+    ///
+    /// The rows above a centred box used to be painted as full-width panel
+    /// rows — a lighter rectangle over the page, with nothing in it, while the
+    /// rows below the same box were the page's own. A menu floats *over* the
+    /// page; only the preview (which owns the frame) paints its margin.
+    #[test]
+    fn an_overlay_leaves_the_page_above_its_box_alone() {
+        let data = demo::chat();
+        let (mut workbench, page) = frame(&data, 100, 30);
+        workbench.overlay = Some(Overlay::Picker(PickerKind::Theme));
+        let with_box = workbench.render(&data, 100, 30);
+        let top = with_box
+            .iter()
+            .position(|row| crate::utils::strip_ansi_codes(row).contains('╭'))
+            .expect("the box is painted");
+        assert!(top > 0, "a floating box has a margin above it");
+        for y in 0..top {
+            assert_eq!(
+                with_box[y], page[y],
+                "row {y} above the box is the page's row, escape for escape"
+            );
+        }
+    }
+
     /// The box's own controls: the buttons are the pointer's spelling of keys
     /// the box already answers, and the folder's pictures step with `[` / `]`.
     #[test]
@@ -7183,6 +7739,183 @@ mod tests {
         }
     }
 
+    /// Every panel is left with the mouse.
+    ///
+    /// `esc` is the only way out of most of these boxes, which is no way out at
+    /// all for a reader with a pointer: the chip in the top border is the
+    /// pointer's spelling of that key, so a click on it must leave the panel
+    /// exactly as `esc` does — and it must be *drawn* where the hit map says it
+    /// is, or the button is a decoration.
+    #[test]
+    fn every_panel_paints_a_close_chip_that_leaves_it() {
+        // The overlays whose box needs data before it paints at all; the rest
+        // draw their empty state, which still carries the border.
+        fn data_for(overlay: Overlay) -> WorkbenchData {
+            let mut data = demo::chat();
+            match overlay {
+                Overlay::Git => data.git = Some(demo::git()),
+                Overlay::FilePreview => data.preview = Some(demo::preview_image()),
+                _ => {}
+            }
+            data
+        }
+        let cases = [
+            Overlay::Help,
+            Overlay::Palette,
+            Overlay::PanelFull,
+            Overlay::Queue,
+            Overlay::Approval,
+            Overlay::Diff,
+            Overlay::Git,
+            Overlay::Files,
+            Overlay::History,
+            Overlay::Tree,
+            Overlay::Fork,
+            Overlay::Worktree,
+            Overlay::Preferences,
+            Overlay::Keybindings,
+            Overlay::DeleteSession,
+            Overlay::FilePreview,
+            Overlay::Picker(PickerKind::Language),
+        ];
+        for overlay in cases {
+            let data = data_for(overlay);
+            let mut workbench = workbench();
+            workbench.overlay = Some(overlay);
+            if overlay == Overlay::DeleteSession {
+                workbench.delete_target = Some(DeleteTarget {
+                    id: "s2".into(),
+                    title: "workbench 布局草图".into(),
+                    workspace: "future-os".into(),
+                });
+            }
+            let rows = workbench.render(&data, 120, 38);
+            // Painted: the chip's label is on the row the region names, and on
+            // the cells the region covers.
+            let (rect, _) = workbench
+                .hits()
+                .regions()
+                .iter()
+                .find(|(_, id)| id == OVERLAY_CLOSE)
+                .cloned()
+                .unwrap_or_else(|| panic!("{overlay:?} paints no close chip"));
+            let painted = crate::utils::strip_ansi_codes(&rows[rect.y as usize]);
+            let label = widgets::close_label(workbench.lang);
+            let byte = painted
+                .find(&label)
+                .unwrap_or_else(|| panic!("{overlay:?} paints no {label}: {painted:?}"));
+            assert_eq!(
+                ansi::width(&painted[..byte]) as u16,
+                rect.x,
+                "{overlay:?}: the region is not where the chip is painted"
+            );
+            assert_eq!(rect.w as usize, ansi::width(&label), "{overlay:?}");
+            // Clicked: the panel goes, holding nothing.
+            let actions = click_region(&mut workbench, &data, 120, 38, OVERLAY_CLOSE);
+            assert_eq!(actions, vec![WbAction::Redraw], "{overlay:?}");
+            match overlay {
+                // Two panels are one level deep: the shortcut editor is opened
+                // from the preferences list, and the preview from the panel the
+                // file came from. `esc` walks back, and so does the chip.
+                Overlay::Keybindings => assert_eq!(workbench.overlay, Some(Overlay::Preferences)),
+                _ => assert_eq!(workbench.overlay, None, "{overlay:?} stayed open"),
+            }
+        }
+    }
+
+    /// The chip on the full-height panels — `/git` and 文件 — is on the frame's
+    /// first row, flush against the right corner, and the rest of that row is
+    /// still the panel's own surface rather than a second button.
+    #[test]
+    fn the_full_height_panels_keep_their_chip_off_the_title() {
+        for overlay in [Overlay::Git, Overlay::Files] {
+            let mut data = demo::chat();
+            if overlay == Overlay::Git {
+                data.git = Some(demo::git());
+            }
+            let mut workbench = workbench();
+            workbench.overlay = Some(overlay);
+            let rows = workbench.render(&data, 120, 38);
+            let (rect, _) = workbench
+                .hits()
+                .regions()
+                .iter()
+                .find(|(_, id)| id == OVERLAY_CLOSE)
+                .cloned()
+                .unwrap_or_else(|| panic!("{overlay:?} paints no close chip"));
+            assert_eq!(rect.y, 0, "{overlay:?}: the chip is not on the top border");
+            let label = widgets::close_label(workbench.lang);
+            assert_eq!(rect.w as usize, ansi::width(&label), "{overlay:?}");
+            // The box's own right corner closes the border right after it.
+            let painted = crate::utils::strip_ansi_codes(&rows[0]);
+            assert!(
+                painted.trim_end().ends_with(&format!("{label}╮")),
+                "{overlay:?}: the chip is not against the corner: {painted:?}"
+            );
+            // Beside the chip the panel's own surface answers, not a button…
+            assert_eq!(
+                workbench.hits().hit(rect.x - 2, 0),
+                Some("overlay.surface"),
+                "{overlay:?}"
+            );
+            // …and a press on the chip leaves the panel, the way `esc` does.
+            let press = mouse::MouseEvent {
+                kind: mouse::MouseKind::Press,
+                x: rect.x + 1,
+                y: 0,
+                shift: false,
+                alt: false,
+                ctrl: false,
+            };
+            assert_eq!(
+                workbench.handle(WbEvent::Mouse(press), &data),
+                vec![WbAction::Redraw]
+            );
+            assert_eq!(workbench.overlay, None, "{overlay:?} stayed open");
+        }
+    }
+
+    /// The chip speaks the interface language, and its cells follow the label:
+    /// `[× 关闭]` is one cell narrower than `[× Close]`.
+    #[test]
+    fn the_close_chip_follows_the_interface_language() {
+        let mut data = demo::chat();
+        data.preview = Some(demo::preview_image());
+        let mut workbench = workbench();
+        workbench.overlay = Some(Overlay::FilePreview);
+        // The preview is a centred box, so the chip's row is whatever the hit
+        // map says it is rather than the frame's first row.
+        let chip = |workbench: &Workbench, rows: &[String]| -> (String, String) {
+            let (rect, _) = workbench
+                .hits()
+                .regions()
+                .iter()
+                .find(|(_, id)| id == OVERLAY_CLOSE)
+                .cloned()
+                .expect("the chip is a target");
+            // The box's own corner closes the row right after the chip.
+            assert!(
+                crate::utils::strip_ansi_codes(&rows[rect.y as usize])
+                    .trim_end()
+                    .ends_with("╮"),
+                "the chip is not on the border"
+            );
+            (
+                crate::utils::strip_ansi_codes(&rows[rect.y as usize]),
+                format!("{}x{}", rect.w, rect.h),
+            )
+        };
+        let zh = workbench.render(&data, 120, 38);
+        let (row, cells) = chip(&workbench, &zh);
+        assert!(row.contains("[× 关闭]"), "{row:?}");
+        assert_eq!(cells, format!("{}x1", ansi::width("[× 关闭]")));
+        workbench.set_language(LanguagePreference::En);
+        let en = workbench.render(&data, 120, 38);
+        let (row, cells) = chip(&workbench, &en);
+        assert!(row.contains("[× Close]"), "{row:?}");
+        assert_eq!(cells, format!("{}x1", ansi::width("[× Close]")));
+    }
+
     /// Dragging the picture pans it: the pointer's counterpart of the arrows.
     #[test]
     fn dragging_the_picture_pans_it() {
@@ -7294,6 +8027,161 @@ mod tests {
             "{actions:?}"
         );
         assert_eq!(workbench.overlay, None);
+    }
+
+    /// A word after a chooser's verb is that chooser's search line.
+    ///
+    /// `/model deepseek` used to open the whole list with the argument dropped:
+    /// the picker claimed the line before the adapter's `set_model` could see
+    /// it, so the id the reader typed was never applied and nothing said so.
+    #[test]
+    fn a_word_after_a_chooser_filters_it() {
+        let data = demo::chat();
+        let mut data = data;
+        let line = "/model deepseek";
+        data.input.text = line.into();
+        data.input.cursor = line.len();
+        let mut workbench = workbench();
+        let actions = workbench.handle(WbEvent::Key("enter".into()), &data);
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, WbAction::Redraw)),
+            "the picker paints: {actions:?}"
+        );
+        assert_eq!(workbench.overlay, Some(Overlay::Picker(PickerKind::Model)));
+        assert_eq!(
+            workbench.picker.query, "deepseek",
+            "the argument filters it"
+        );
+        // The workspace chooser keeps its own contract: a path becomes the
+        // search line, so `enter` on the one row creates that workspace.
+        workbench.overlay = None;
+        let line = "/workspace ../other";
+        let mut data = demo::chat();
+        data.input.text = line.into();
+        data.input.cursor = line.len();
+        workbench.handle(WbEvent::Key("enter".into()), &data);
+        assert_eq!(
+            workbench.overlay,
+            Some(Overlay::Picker(PickerKind::Workspace))
+        );
+        assert_eq!(workbench.picker.query, "../other");
+    }
+
+    /// A frame with room for both lists puts them side by side: the verbs on
+    /// the left, the skills the agent expands on the right, each under its own
+    /// heading on the same line.
+    ///
+    /// The one list they came from is unchanged — this is a second way to see
+    /// it, so `↑`/`↓` still walk commands and then skills.
+    #[test]
+    fn a_wide_palette_lists_verbs_and_skills_in_two_columns() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        let painted = plain(&workbench.render(&data, 120, 38));
+        let heading = painted
+            .lines()
+            .find(|line| line.contains("命令") && line.contains("技能（"))
+            .unwrap_or_else(|| panic!("one line carries both headings:\n{painted}"));
+        assert!(
+            heading.find("命令").unwrap() < heading.find("技能").unwrap(),
+            "the verbs lead: {heading}"
+        );
+        // A verb and a skill on one painted line: the columns really are two.
+        let shared = painted
+            .lines()
+            .find(|line| line.contains("/new") && line.contains("future-versioning"))
+            .unwrap_or_else(|| panic!("a verb and a skill share a row:\n{painted}"));
+        assert!(
+            shared.find("/new").unwrap() < shared.find("future-versioning").unwrap(),
+            "the skill column is on the right: {shared}"
+        );
+        // The list underneath is still one list: commands first, skills after.
+        let rows = workbench.palette_rows(&data);
+        let commands = rows.iter().filter(|row| !row.is_skill()).count();
+        assert_eq!(commands, COMMANDS.len());
+        assert!(rows[commands].is_skill());
+    }
+
+    /// A narrow frame keeps the single column: two 30-cell columns would hold a
+    /// truncated label and no description at all, which is worse than one list.
+    #[test]
+    fn a_narrow_palette_keeps_one_column() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 80, 38);
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        let painted = plain(&workbench.render(&data, 80, 38));
+        assert!(
+            !painted
+                .lines()
+                .any(|line| line.contains("命令") && line.contains("技能（")),
+            "the headings are not side by side on a narrow frame:\n{painted}"
+        );
+        assert!(
+            !painted
+                .lines()
+                .any(|line| line.contains("/new") && line.contains("future-versioning")),
+            "one list, one row each:\n{painted}"
+        );
+    }
+
+    /// `→` steps into the skill column and `←` steps back, landing on the row at
+    /// the same visual line rather than starting over.
+    #[test]
+    fn the_arrow_keys_step_between_the_palette_columns() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        let first = workbench.palette_selection(&data).expect("a row");
+        assert!(!first.is_skill(), "the palette opens on the verbs");
+
+        workbench.handle(WbEvent::Key("right".into()), &data);
+        let stepped = workbench.palette_selection(&data).expect("a row");
+        assert!(stepped.is_skill(), "right lands in the skill column");
+        assert_eq!(
+            stepped.label(),
+            data.skills[1].name,
+            "the row at the same visual line, not the top of the column"
+        );
+
+        workbench.handle(WbEvent::Key("left".into()), &data);
+        let back = workbench.palette_selection(&data).expect("a row");
+        assert!(!back.is_skill());
+        assert_eq!(back.label(), first.label(), "back on the row it left");
+    }
+
+    /// A click on the right column selects that skill: the hit regions follow
+    /// the columns the rows were painted in, not one full-width band.
+    #[test]
+    fn a_click_on_the_skill_column_selects_that_row() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        workbench.render(&data, 120, 38);
+        let commands = workbench
+            .palette_rows(&data)
+            .iter()
+            .filter(|row| !row.is_skill())
+            .count();
+        let target = format!("palette.row.{commands}");
+        let (rect, _) = workbench
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| *id == target)
+            .cloned()
+            .unwrap_or_else(|| panic!("the first skill row has a target"));
+        assert!(
+            rect.x > 60,
+            "the skill column starts right of the verbs: {rect:?}"
+        );
+        click_region(&mut workbench, &data, 120, 38, &target);
+        let selected = workbench.palette_selection(&data).expect("a row");
+        assert!(selected.is_skill(), "the click landed in the skill column");
+        assert_eq!(selected.label(), data.skills[0].name);
     }
 
     /// A row whose *description* mentions the query only finds its place in the
@@ -7678,8 +8566,9 @@ mod tests {
         let text = plain(&workbench.render(&data, 120, 38));
         assert!(text.contains("帮助"), "{text}");
         // The table is the ACTIONS map, minus the actions with no chord: a key
-        // table lists keys, and those verbs keep their typed door in the
-        // command list below (they are listed as `/queue`, `/lang`, …).
+        // table lists keys, and a chordless verb's door is the palette (`/` or
+        // `ctrl+p`), spelled in the inline table above rather than reprinted
+        // here as a second copy of that list.
         assert!(text.contains("ctrl+s"), "{text}");
         assert!(text.contains("ctrl+g"), "{text}");
         assert!(
@@ -8006,6 +8895,116 @@ mod tests {
         );
     }
 
+    /// A conversation as the app builds one: the real transcript renderer, the
+    /// real fold rows, the rows a session paints.
+    fn rendered_chat(turns: usize) -> crate::components::chat_area::ChatArea {
+        use crate::components::chat_area::{ChatArea, ChatMessage, ChatRole, ToolStatus};
+        let mut chat = ChatArea::new(layout::chat_inner(120), None);
+        for turn in 0..turns {
+            chat.add_message(ChatMessage::new(
+                format!("u{turn}"),
+                ChatRole::User,
+                &format!("第 {turn} 轮：这一层重试为什么不直接拿掉？"),
+            ));
+            let mut call = ChatMessage::new(
+                format!("t{turn}"),
+                ChatRole::Tool,
+                &format!("test result: ok. {} passed\nsecond line of output", turn),
+            );
+            call.name = Some("shell".into());
+            call.tool = Some(format!("call{turn}"));
+            call.tool_args = Some(
+                serde_json::json!({ "command": format!("cargo test -p parser --turn {turn}") })
+                    .to_string(),
+            );
+            call.tool_status = Some(ToolStatus::Complete);
+            chat.add_message(call);
+            chat.add_message(ChatMessage::new(
+                format!("a{turn}"),
+                ChatRole::Assistant,
+                &format!("第 {turn} 轮：上游会在 45 秒静默断开，这一层把它挡在界面之外。"),
+            ));
+        }
+        chat
+    }
+
+    /// The workbench's view of a live transcript, rebuilt the way `Live::data`
+    /// does it after the app has changed something.
+    fn chat_data(
+        chat: &mut crate::components::chat_area::ChatArea,
+        revision: u64,
+    ) -> WorkbenchData {
+        let mut data = demo::chat();
+        data.messages = chat.render_all_shared(layout::chat_inner(120));
+        data.row_stops = chat.row_stops();
+        data.revision = revision;
+        data
+    }
+
+    /// Opening a row and then rolling down goes *down*.
+    ///
+    /// A click that opens a `▸ 4 tool calls` row leaves the cursor standing on
+    /// it, and the rows it unfolded arrive with the next frame: the window has
+    /// to stay where the reader put it (the anchor) and then keep travelling
+    /// towards the tail with the wheel. It used to come back to the opened row
+    /// instead, which is the jump this pins.
+    #[test]
+    fn rolling_down_past_a_row_the_reader_opened_keeps_going_down() {
+        let mut chat = rendered_chat(8);
+        let mut data = chat_data(&mut chat, 1);
+        let mut workbench = workbench();
+        workbench.render(&data, 120, 28);
+        // Walk up into the transcript, a paint per turn like the driver does.
+        for _ in 0..8 {
+            roll(&mut workbench, &data, mouse::MouseKind::WheelUp, 40, 12);
+            workbench.render(&data, 120, 28);
+        }
+        let opened_at = workbench.chat_scroll;
+        assert!(opened_at > 0, "the wheel walked up the transcript");
+
+        // The pointer opens the first row on screen, exactly as a click does.
+        let target = workbench
+            .hits()
+            .regions()
+            .iter()
+            .filter(|(_, id)| id.starts_with("chat.row."))
+            .map(|(_, id)| id.clone())
+            .next()
+            .expect("a transcript row on screen");
+        let actions = click_region(&mut workbench, &data, 120, 28, &target);
+        let mut opened = false;
+        for action in actions {
+            if let WbAction::ToggleChatRow(row) = action {
+                chat.toggle_row(row);
+                opened = true;
+            }
+        }
+        assert!(opened, "the click asked for the row to open");
+        // The rows it unfolded arrive with the next frame (see `Live::data`).
+        data = chat_data(&mut chat, 2);
+        workbench.render(&data, 120, 28);
+        let after_open = workbench.chat_scroll;
+        assert!(
+            after_open > opened_at,
+            "opening a row above the tail keeps the reader's rows: {after_open} after {opened_at}"
+        );
+
+        // Now roll the other way: every turn moves the window towards the tail
+        // and the frame leaves it there.
+        let mut last = workbench.chat_scroll;
+        for turn in 0..24 {
+            roll(&mut workbench, &data, mouse::MouseKind::WheelDown, 40, 12);
+            workbench.render(&data, 120, 28);
+            assert!(
+                workbench.chat_scroll <= last,
+                "turn {turn} came back up: {} after {last}",
+                workbench.chat_scroll
+            );
+            last = workbench.chat_scroll;
+        }
+        assert_eq!(workbench.chat_scroll, 0, "the wheel reached the tail");
+    }
+
     /// End the burst in progress, the way a reader who stops, aims and rolls
     /// again does it.
     fn pause_between_bursts(workbench: &mut Workbench) {
@@ -8082,6 +9081,370 @@ mod tests {
             "the new burst scrolled the rail under the pointer"
         );
     }
+    /// The wheel is the reader aiming somewhere else, the same as `↑`/`↓`: the
+    /// transcript keeps going the way the hand rolls it.
+    ///
+    /// A stop the cursor once stood on used to be chased back into view on
+    /// *every* frame — the frame cannot tell a cursor that moved from one that
+    /// stayed — so a reader who opened a `▸ 3 tool calls` row near the top and
+    /// then rolled down watched the page jump back up to that row instead of
+    /// towards the tail.
+    #[test]
+    fn the_wheel_does_not_chase_a_row_the_cursor_once_stood_on() {
+        use crate::components::chat_area::{RowAction, RowStop};
+        let mut data = scrollable_chat(80);
+        data.row_stops = vec![RowStop {
+            row: 4,
+            start: 0,
+            end: 9,
+            action: RowAction::Process { msg: 1 },
+            expanded: false,
+        }];
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        // Roll up to the row and click it: the pointer names the row, which
+        // leaves the cursor standing on it (`chat.row.4`).
+        for _ in 0..20 {
+            roll(&mut workbench, &data, mouse::MouseKind::WheelUp, 40, 15);
+        }
+        workbench.render(&data, 120, 38);
+        assert!(
+            workbench.chat_scroll > 20,
+            "the wheel walked up the transcript"
+        );
+        click_region(&mut workbench, &data, 120, 38, "chat.row.4");
+        assert_eq!(workbench.chat_index, Some(0), "the click left a cursor");
+
+        // Now roll the other way. Each turn moves the band towards the tail and
+        // the frame leaves it there: `chat_scroll` is rows up from the tail, so
+        // it only falls. A chase shows up as a rise.
+        let mut last = workbench.chat_scroll;
+        for turn in 0..20 {
+            roll(&mut workbench, &data, mouse::MouseKind::WheelDown, 40, 15);
+            workbench.render(&data, 120, 38);
+            assert!(
+                workbench.chat_scroll <= last,
+                "turn {turn} scrolled back up: {} after {last}",
+                workbench.chat_scroll
+            );
+            last = workbench.chat_scroll;
+        }
+        assert_eq!(workbench.chat_scroll, 0, "the wheel reached the tail");
+    }
+
+    /// Output that arrives at the tail does not drag the page to a row the
+    /// cursor was left standing on either.
+    ///
+    /// Following the tail is the reader's decision (`ScrollState::observe`), and
+    /// a highlight nobody moved is not a reason to revise it: a long enough
+    /// append used to push the cursor row above the window and the frame then
+    /// pulled the whole transcript back up to it.
+    /// The conversation band's rows as the frame painted them, with the two
+    /// badges (`↑ 更早`, `↓ 新输出`) left out: they describe where the window is,
+    /// and are not part of what the reader is reading.
+    fn band_rows(frame: &str) -> Vec<String> {
+        let lines: Vec<&str> = frame.lines().collect();
+        let rule = lines
+            .iter()
+            .position(|line| line.starts_with('─'))
+            .expect("the header rule");
+        lines[rule + 1..]
+            .iter()
+            .take_while(|line| !line.starts_with('╭'))
+            .filter(|line| !line.contains("更早") && !line.contains("新输出"))
+            // The rail's own column is beside the transcript, not part of it.
+            .map(|line| line.split('│').next().unwrap_or("").trim_end().to_string())
+            .filter(|line| !line.is_empty())
+            .collect()
+    }
+
+    /// The rows two frames painted in the same place. The band's last row is
+    /// left out of the comparison: output that arrives below puts the `↓ 新输出`
+    /// badge there, which is the point rather than a move.
+    fn assert_page_held(before: &[String], after: &[String], what: &str) {
+        let kept = before.len().min(after.len()).saturating_sub(1);
+        assert!(
+            kept >= 10,
+            "too few rows to compare ({what}): {before:?} vs {after:?}"
+        );
+        assert_eq!(after[..kept], before[..kept], "{what}");
+    }
+
+    /// A transcript whose height changes under a reader who is *reading* keeps
+    /// that reader's rows where they are.
+    ///
+    /// `chat_scroll` is a distance from the tail, so a row that arrives or
+    /// leaves anywhere below the window drags the whole page with it: a run
+    /// still streaming slides the rows up under the pointer, and a reply whose
+    /// work folds into one summary row (or a burst of calls collapsing) drops
+    /// the page back down onto the rows above — which is the "it comes back to
+    /// that block" a reader scrolling through an opened `▸ 4 tool calls` row
+    /// sees. The window is a place in the conversation, not a distance from its
+    /// end.
+    #[test]
+    fn a_transcript_that_changes_height_leaves_the_readers_rows_alone() {
+        let data = scrollable_chat(120);
+        let (mut workbench, _rows) = frame(&data, 120, 24);
+        workbench.set_chat_scroll(70);
+        let before = band_rows(&plain(&workbench.render(&data, 120, 24)));
+        // `line 36`, not `line 35`: the `↑ 更早` marker takes the window's oldest
+        // row (the newest one is what must never be dropped), so a scrolled
+        // window starts one row closer to the tail than its offset alone says.
+        assert!(
+            before[0].contains("line 36"),
+            "the band starts there: {before:?}"
+        );
+
+        // New output arrives at the tail: eight rows nobody asked to see yet.
+        let mut grown: Vec<String> = data.messages.to_vec();
+        grown.extend((120..128).map(|n| format!("line {n}")));
+        let mut grown_data = data.clone();
+        grown_data.messages = grown.into();
+        grown_data.revision += 1;
+        let after = band_rows(&plain(&workbench.render(&grown_data, 120, 24)));
+        assert_page_held(&before, &after, "the appended rows slid the page");
+
+        // …and a reply below settles: its work folds into one summary row, so
+        // the transcript is eight rows shorter.
+        let mut shrunk: Vec<String> = data.messages.iter().take(112).cloned().collect();
+        shrunk.push("▸ 8 tool calls · 2 thoughts".into());
+        let mut shrunk_data = data.clone();
+        shrunk_data.messages = shrunk.into();
+        shrunk_data.revision += 1;
+        let after = band_rows(&plain(&workbench.render(&shrunk_data, 120, 24)));
+        assert_page_held(&before, &after, "the fold dropped the page");
+    }
+
+    /// A page of older rows arriving above the window (`↑ 更早`) is the one
+    /// change that happens *above* the reader: the rows they are reading keep
+    /// their place on screen, with the new ones above them.
+    #[test]
+    fn a_page_of_older_rows_prepended_keeps_the_readers_rows() {
+        let data = scrollable_chat(80);
+        let (mut workbench, _rows) = frame(&data, 120, 24);
+        // Parked above the ceiling, so the `↑ 更早` marker is up in *both*
+        // frames: the marker takes the window's oldest row, and a comparison
+        // that turned it on between the two frames would move the page by that
+        // row and say the prepend did it.
+        workbench.set_chat_scroll(80 - workbench.chat_window - 4);
+        let before = band_rows(&plain(&workbench.render(&data, 120, 24)));
+        assert!(before[0].contains("line 5"), "{before:?}");
+
+        let mut prepended: Vec<String> = (0..10).map(|n| format!("old {n}")).collect();
+        prepended.extend(data.messages.iter().cloned());
+        let mut older = data.clone();
+        older.messages = prepended.into();
+        older.revision += 1;
+        let after = band_rows(&plain(&workbench.render(&older, 120, 24)));
+        assert_page_held(&before, &after, "the older page moved the reader");
+    }
+
+    #[test]
+    fn streaming_output_does_not_chase_a_cursor_left_behind() {
+        use crate::components::chat_area::{RowAction, RowStop};
+        let mut data = scrollable_chat(80);
+        data.row_stops = vec![RowStop {
+            row: 70,
+            start: 0,
+            end: 9,
+            action: RowAction::Process { msg: 1 },
+            expanded: false,
+        }];
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        click_region(&mut workbench, &data, 120, 38, "chat.row.70");
+        assert_eq!(workbench.chat_index, Some(0), "the click left a cursor");
+        // The frame the click produced, as the driver paints it.
+        workbench.render(&data, 120, 38);
+        assert_eq!(workbench.chat_scroll, 0, "and the tail stayed the tail");
+
+        // Enough new rows to push the cursor's row off the top of the band.
+        let mut grown: Vec<String> = data.messages.to_vec();
+        grown.extend((80..120).map(|n| format!("line {n}")));
+        data.messages = grown.into();
+        data.revision += 1;
+        workbench.render(&data, 120, 38);
+        assert_eq!(
+            workbench.chat_scroll, 0,
+            "the tail kept following its own output"
+        );
+    }
+
+    /// `tab` still brings a stop it walked to into view: the reveal is the
+    /// cursor's, not the frame's.
+    #[test]
+    fn tab_reveals_the_stop_it_walked_to() {
+        use crate::components::chat_area::{RowAction, RowStop};
+        let mut data = scrollable_chat(80);
+        data.row_stops = vec![RowStop {
+            row: 4,
+            start: 0,
+            end: 9,
+            action: RowAction::Process { msg: 1 },
+            expanded: false,
+        }];
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        assert_eq!(workbench.chat_scroll, 0, "the tail is where a frame starts");
+
+        // The one stop in the conversation is far above the band: the frame the
+        // key produced has to bring it into view, or the highlight lands where
+        // nobody can see it.
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        let rows = workbench.render(&data, 120, 38);
+        let painted: Vec<String> = rows
+            .iter()
+            .map(|row| crate::utils::strip_ansi_codes(row))
+            .collect();
+        assert!(
+            painted.iter().any(|row| row.contains("line 4")),
+            "the cursor's row is on screen: {painted:?}"
+        );
+        // And the frame after it belongs to the reader again: the offset it
+        // settled on stays put instead of being chased again.
+        let settled = workbench.chat_scroll;
+        workbench.render(&data, 120, 38);
+        assert_eq!(workbench.chat_scroll, settled);
+    }
+
+    /// A conversation taller than the band, with a link every `every` rows — so
+    /// a window can be parked where there are stops above it, on it and below
+    /// it, which is the only place the `tab` walk's anchoring shows.
+    fn linked_chat(rows: usize, every: usize) -> WorkbenchData {
+        let mut data = demo::chat();
+        data.messages = (0..rows)
+            .map(|n| {
+                if n % every == 0 {
+                    let href = format!("https://e.example/{n}");
+                    format!("row {n}: {}", md_link(&href, &format!("link {n}")))
+                } else {
+                    format!("row {n}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .into();
+        data.row_stops.clear();
+        data
+    }
+
+    /// `tab` belongs to the window the reader is looking at: with the transcript
+    /// scrolled into history, the first press puts the cursor on the stop *on
+    /// screen*, not on the conversation's first link two thousand rows above —
+    /// which is where the page used to jump.
+    #[test]
+    fn tab_starts_from_the_window_the_reader_scrolled_to() {
+        let data = linked_chat(60, 20);
+        let (mut workbench, _rows) = frame(&data, 120, 24);
+        // Park the window so it holds the middle link only.
+        let offset = data.messages.len() - 30;
+        workbench.set_chat_scroll(offset);
+        let rows = workbench.render(&data, 120, 24);
+        let text = plain(&rows);
+        assert!(text.contains("link 20"), "the window holds it: {text}");
+        assert!(
+            !text.contains("link 0"),
+            "the first link is above it: {text}"
+        );
+        assert!(
+            !text.contains("link 40"),
+            "the last one is below it: {text}"
+        );
+        // The first press lands on the stop the window shows…
+        assert_eq!(
+            workbench.handle(WbEvent::Key("tab".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.chat_index, Some(1), "the window's first stop");
+        // …and leaves the page where the reader put it: a stop already on
+        // screen is not a reason to move anything.
+        workbench.render(&data, 120, 24);
+        assert_eq!(workbench.chat_scroll, offset);
+    }
+
+    /// The press that steps off the window's edge takes the page with it: a stop
+    /// below the window is revealed on the last readable row, and one above it
+    /// on the first — a highlight nobody can see is not a cursor.
+    #[test]
+    fn tab_reveals_the_stop_it_steps_onto_outside_the_window() {
+        let data = linked_chat(60, 20);
+        let (mut workbench, _rows) = frame(&data, 120, 24);
+        let band = workbench.chat_window;
+        workbench.set_chat_scroll(data.messages.len() - 30);
+        workbench.render(&data, 120, 24);
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        assert_eq!(workbench.chat_index, Some(1));
+        // Down to the link below the window: the page follows it to the bottom.
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        assert_eq!(workbench.chat_index, Some(2));
+        let rows = workbench.render(&data, 120, 24);
+        let text = plain(&rows);
+        assert!(text.contains("link 40"), "the cursor is on screen: {text}");
+        assert_eq!(
+            workbench.chat_scroll,
+            data.messages.len() - (40 + 2),
+            "the revealed row is the last one the window can read"
+        );
+        // Back up to the link above the window: the page follows it to the top,
+        // which is where that stop was anyway — it must not drop a screen
+        // further and bury the rows just above it.
+        workbench.handle(WbEvent::Key("shift+tab".into()), &data);
+        assert_eq!(workbench.chat_index, Some(1));
+        workbench.handle(WbEvent::Key("shift+tab".into()), &data);
+        assert_eq!(workbench.chat_index, Some(0));
+        let rows = workbench.render(&data, 120, 24);
+        let text = plain(&rows);
+        assert!(text.contains("link 0"), "the cursor is on screen: {text}");
+        assert_eq!(
+            workbench.chat_scroll,
+            data.messages.len() - band,
+            "the revealed row is the window's first one"
+        );
+    }
+
+    /// A scroll moves the aim as well as the page: the key path drops the cursor
+    /// it scrolled away from, and the next `tab` starts from the window again
+    /// rather than from a stop nobody can see.
+    #[test]
+    fn tab_starts_from_the_window_after_a_scroll_took_the_cursor_away() {
+        let data = linked_chat(60, 20);
+        let (mut workbench, _rows) = frame(&data, 120, 24);
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        assert_eq!(workbench.chat_index, Some(2), "the tail window's only stop");
+        workbench.render(&data, 120, 24);
+        // A page up takes the window above the link the cursor stood on.
+        workbench.handle(WbEvent::Key("pageUp".into()), &data);
+        assert_eq!(workbench.chat_index, None);
+        // …and the press after it anchors on the window the reader is on now.
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        let (start, end) = workbench.chat_shown_rows(data.messages.len());
+        let rows = [0, 20, 40];
+        let expected = rows
+            .iter()
+            .position(|row| *row >= start && *row < end)
+            .or_else(|| rows.iter().position(|row| *row >= start))
+            .unwrap_or(rows.len() - 1);
+        assert_eq!(workbench.chat_index, Some(expected));
+    }
+
+    /// The frame that followed the press is the only one: a reader who parks the
+    /// window somewhere else afterwards keeps it there.
+    #[test]
+    fn the_revealed_cursor_does_not_drag_the_window_back() {
+        let data = linked_chat(60, 20);
+        let (mut workbench, _rows) = frame(&data, 120, 24);
+        let band = workbench.chat_window;
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        assert_eq!(workbench.chat_index, Some(2));
+        workbench.render(&data, 120, 24);
+        let parked = data.messages.len() - 12;
+        workbench.set_chat_scroll(parked);
+        let rows = workbench.render(&data, 120, 24);
+        let text = plain(&rows);
+        assert!(!text.contains("link 40"), "the window stayed up: {text}");
+        assert_eq!(
+            workbench.chat_scroll,
+            parked.min(data.messages.len() - band),
+            "the highlight did not pull the page back"
+        );
+    }
+
     /// The rail names the keys it answers, whether or not the reader is
     /// "in" it: every one of them is behind `shift`, so the row is how that is
     /// learned without a manual.
@@ -8225,6 +9588,7 @@ mod tests {
             parent_id: None,
             streaming: false,
             created_at_ms: 0,
+            pinned: false,
         });
         let (mut workbench, _rows) = frame(&data, 120, 38);
         workbench.panel = PanelId::Recent;
@@ -8260,6 +9624,34 @@ mod tests {
         workbench.handle(WbEvent::Key("enter".into()), data)
     }
 
+    /// While a compaction holds the session, `enter` on a prompt leaves the
+    /// draft and says why: the agent refuses a prompt with `session_busy` until
+    /// its checkpoint lands, so sending one would be a card that never runs.
+    /// A slash verb is still the reader's — `/compact` itself, a picker.
+    #[test]
+    fn enter_cannot_send_a_prompt_while_a_compaction_holds_the_session() {
+        let mut data = demo::chat();
+        data.compacting = true;
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let actions = submit_draft(&mut workbench, &mut data, "hello");
+        assert_eq!(
+            actions,
+            vec![WbAction::Notice(
+                t(workbench.lang, Key::ComposerCompacting).to_string()
+            )],
+            "the draft stays, and nothing is submitted"
+        );
+        assert_eq!(data.input.text, "hello");
+
+        // The same box, with no compaction: the prompt goes out.
+        let mut data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        assert_eq!(
+            submit_draft(&mut workbench, &mut data, "hello"),
+            vec![WbAction::Submit("hello".into())]
+        );
+    }
+
     #[test]
     fn typing_a_menu_command_opens_it_instead_of_prompting_the_agent() {
         let mut data = demo::chat();
@@ -8288,25 +9680,22 @@ mod tests {
             submit_draft(&mut workbench, &mut data, command);
             assert_eq!(workbench.overlay, Some(Overlay::Picker(kind)), "{command}");
         }
-        // A markdown-ish prompt that starts with a slash is still a prompt, and
-        // a verb with an argument keeps going to the agent.
+        // A markdown-ish prompt that starts with a slash is still a prompt.
         let mut data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         assert_eq!(
             submit_draft(&mut workbench, &mut data, "/etc/hosts 里少了一行"),
             vec![WbAction::Submit("/etc/hosts 里少了一行".into())]
         );
-        assert_eq!(
-            submit_draft(&mut workbench, &mut data, "/model Qwen"),
-            vec![
-                WbAction::EditInput {
-                    text: String::new(),
-                    cursor: 0
-                },
-                WbAction::Command("/model Qwen".into()),
-            ]
-        );
-        assert_eq!(workbench.overlay, None);
+        // A word after a chooser's verb is that chooser's search line, not a
+        // detached argument: the picker claims the line, so `/model Qwen` opens
+        // the model list filtered to it instead of half-applying an id nobody
+        // reads.
+        let mut data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        submit_draft(&mut workbench, &mut data, "/model Qwen");
+        assert_eq!(workbench.overlay, Some(Overlay::Picker(PickerKind::Model)));
+        assert_eq!(workbench.picker.query, "Qwen");
     }
 
     #[test]
@@ -8991,11 +10380,20 @@ mod tests {
         for ch in "mobile".chars() {
             workbench.handle(WbEvent::Key(ch.to_string()), &data);
         }
-        let text = plain(&workbench.render(&data, 120, 38));
+        let rows = workbench.render(&data, 120, 38);
+        let text = plain(&rows);
         assert!(text.contains("mobile 恢复会话"), "{text}");
+        // The check is on the box, not the frame: the header above it names the
+        // conversation the picker was opened from, which is the same title the
+        // filtered row wears.
+        let box_top = rows
+            .iter()
+            .position(|row| crate::utils::strip_ansi_codes(row).contains('╭'))
+            .expect("the picker is painted");
+        let listed = plain(&rows[box_top..]);
         assert!(
-            !text.contains("修复 parser 的 off-by-one"),
-            "filtered out: {text}"
+            !listed.contains("修复 parser 的 off-by-one"),
+            "filtered out: {listed}"
         );
         assert_eq!(
             workbench.handle(WbEvent::Key("enter".into()), &data),
@@ -9460,6 +10858,31 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The working-tree review has one door now: `d` in the repository browser.
+    ///
+    /// It used to be `/diff` as well, which was a second name for what the 改动
+    /// tab already holds — and the palette then advertised two ways into the
+    /// same worktree. The box itself is unchanged: same loader, same `r`.
+    #[test]
+    fn the_git_panel_opens_the_diff_review_on_d() {
+        let mut data = demo::chat();
+        data.git = Some(demo::git());
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.overlay = Some(Overlay::Git);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("d".into()), &data),
+            vec![WbAction::OpenDiff]
+        );
+        // …and the palette no longer offers the verb, so a reader cannot learn a
+        // second name for it.
+        assert!(!workbench
+            .palette_rows(&data)
+            .iter()
+            .any(|row| row.command() == "/diff"));
+        let keys: Vec<&str> = COMMANDS.iter().map(|(command, _)| *command).collect();
+        assert!(!keys.contains(&"/diff"), "{keys:?}");
     }
 
     /// An empty section is still a panel. The 改动 and 储藏 tabs of a clean
@@ -10303,7 +11726,7 @@ mod tests {
         let data = demo::chat();
         let mut wb = workbench();
         wb.overlay = Some(Overlay::Palette);
-        for ch in "diff".chars() {
+        for ch in "model".chars() {
             wb.handle(WbEvent::Key(ch.to_string()), &data);
         }
         wb.render(&data, 120, 38);
@@ -10313,6 +11736,169 @@ mod tests {
             vec![WbAction::Command(expected)]
         );
         assert_eq!(wb.overlay, None);
+    }
+
+    /// The queue band: a submission the agent has queued is listed *above the
+    /// composer*, one row per prompt — not in the transcript, where it used to
+    /// look exactly like a message already sent.
+    #[test]
+    fn the_queue_band_lists_queued_prompts_above_the_composer() {
+        use crate::workbench::i18n::{render, Key};
+        let mut data = demo::chat();
+        data.queue = vec![
+            state::QueuedPrompt {
+                run_id: "q1".into(),
+                text: "修一下 diff 面板的滚动".into(),
+            },
+            state::QueuedPrompt {
+                run_id: "q2".into(),
+                text: "然后跑一遍 clippy".into(),
+            },
+        ];
+        let (mut wb, rows) = frame(&data, 120, 38);
+        let text = plain(&rows);
+        let title = render(Language::Zh, Key::QueueBandTitle, &[&2]);
+        let first = wb
+            .render(&data, 120, 38)
+            .iter()
+            .map(|row| crate::utils::strip_ansi_codes(row))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(first.contains(&title), "no band header in:\n{first}");
+        assert!(first.contains("修一下 diff 面板的滚动"));
+        assert!(first.contains("然后跑一遍 clippy"));
+        // The band sits directly above the composer, not somewhere in the middle
+        // of the frame: the row above the box's top rule is its last prompt row.
+        let lines: Vec<&str> = text.lines().collect();
+        let header = lines.iter().position(|l| l.contains(&title)).unwrap();
+        let box_top = lines
+            .iter()
+            .position(|l| l.contains(t(Language::Zh, Key::InputHintChat)))
+            .expect("the composer's title rule");
+        // Title rule, the two prompts, the band's bottom rule — then the
+        // composer's own top rule: the band is a box of its own, not lines laid
+        // over the conversation, and it takes its rows from the conversation
+        // rather than covering them.
+        assert_eq!(header + 4, box_top, "{text}");
+        assert!(lines[header + 1].contains("1."));
+        assert!(lines[header + 2].contains("2."));
+        assert!(lines[header + 3].trim_start().starts_with('╰'));
+    }
+
+    /// An empty queue has no band: the conversation keeps those rows.
+    #[test]
+    fn no_queue_means_no_band() {
+        let data = demo::chat();
+        let (wb, _rows) = frame(&data, 120, 38);
+        assert!(!wb
+            .hits()
+            .regions()
+            .iter()
+            .any(|(_, id)| id.starts_with("queue.")));
+    }
+
+    /// The band takes its rows from the conversation instead of covering it, so
+    /// the newest rows are still readable: paging to the bottom with a queue
+    /// waiting puts the last message on the row above the band, not under it.
+    #[test]
+    fn the_queue_band_leaves_the_tail_of_the_conversation_readable() {
+        let mut data = scrollable_chat(100);
+        let mut wb = workbench();
+        fn plain_rows(wb: &mut Workbench, data: &WorkbenchData) -> Vec<String> {
+            wb.render(data, 120, 38)
+                .iter()
+                .map(|row| crate::utils::strip_ansi_codes(row))
+                .collect()
+        }
+        // Without a queue the tail sits on the last row above the composer.
+        let before = plain_rows(&mut wb, &data);
+        let tail_row = before
+            .iter()
+            .rposition(|row| row.contains("line 99"))
+            .expect("the newest row is painted at the tail");
+        assert!(!before[tail_row].trim().is_empty());
+
+        data.queue = vec![state::QueuedPrompt {
+            run_id: "q1".into(),
+            text: "顺手把 clippy 警告清掉".into(),
+        }];
+        let after = plain_rows(&mut wb, &data);
+        let band_top = after
+            .iter()
+            .position(|row| row.trim_start().starts_with('╭') && row.contains("排队"))
+            .expect("the band's title rule");
+        // The newest row is still painted, and it is *above* the band — the box
+        // is drawn where the conversation's own rows were reserved, not over
+        // them.
+        let tail_row = after
+            .iter()
+            .rposition(|row| row.contains("line 99"))
+            .expect("the band did not bury the newest row");
+        assert!(tail_row < band_top, "{after:#?}");
+
+        // Scrolled up and paged back down: the same row comes back, because the
+        // scroll ceiling is measured on the band that is left over.
+        wb.handle(WbEvent::Key("pageUp".into()), &data);
+        assert!(!plain_rows(&mut wb, &data)
+            .iter()
+            .any(|row| row.contains("line 99")));
+        for _ in 0..20 {
+            wb.handle(WbEvent::Key("pageDown".into()), &data);
+        }
+        let back = plain_rows(&mut wb, &data);
+        assert!(
+            back.iter().any(|row| row.contains("line 99")),
+            "paging to the bottom must reach the newest row with a queue waiting"
+        );
+    }
+
+    /// A queue longer than the band's four rows counts the rest instead of
+    /// growing the band over the conversation.
+    #[test]
+    fn a_long_queue_folds_its_tail_into_a_count_row() {
+        use crate::workbench::i18n::{render, Key};
+        let mut data = demo::chat();
+        data.queue = (0..6)
+            .map(|index| state::QueuedPrompt {
+                run_id: format!("run-{index}"),
+                text: format!("第 {index} 条"),
+            })
+            .collect();
+        let (_wb, rows) = frame(&data, 120, 38);
+        let text = plain(&rows);
+        assert!(text.contains("第 3 条"));
+        assert!(
+            !text.contains("第 4 条"),
+            "the band grew past four rows:\n{text}"
+        );
+        assert!(text.contains(&render(Language::Zh, Key::QueueBandMore, &[&2])));
+    }
+
+    /// The header names the count and answers a click by opening the manager;
+    /// each prompt row answers one by recalling that prompt into the draft.
+    #[test]
+    fn the_queue_band_opens_the_manager_and_recalls_a_row() {
+        let mut data = demo::chat();
+        data.queue = vec![
+            state::QueuedPrompt {
+                run_id: "q1".into(),
+                text: "first".into(),
+            },
+            state::QueuedPrompt {
+                run_id: "q2".into(),
+                text: "second".into(),
+            },
+        ];
+        let mut wb = workbench();
+        assert_eq!(
+            click_region(&mut wb, &data, 120, 38, "queue.open"),
+            vec![WbAction::OpenQueue]
+        );
+        let mut wb = workbench();
+        assert_eq!(
+            click_region(&mut wb, &data, 120, 38, "queue.band.1"),
+            vec![WbAction::RecallQueued("q2".into())]
+        );
     }
 
     /// A queued prompt is a verb under the overlay too: the page's own click

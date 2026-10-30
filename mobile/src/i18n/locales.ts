@@ -627,6 +627,8 @@ export const resources = {
         rateLimited:
           "Too many requests — the model service is rate limiting. Please wait a moment and try again.",
         serverError: "Please try again later.",
+        badRequest: "{{message}}",
+        badRequestTitle: "The model service rejected this request (HTTP 400)",
         contextLimit:
           "The conversation exceeds the model's context length limit. Start a new conversation or compact the current context, then try again.",
         network:
@@ -1665,6 +1667,8 @@ export const resources = {
         serverErrorTitle: "模型服务暂时不可用",
         rateLimited: "请求过于频繁，模型服务已触发限流。请稍等片刻后重试。",
         serverError: "请稍后重试。",
+        badRequest: "{{message}}",
+        badRequestTitle: "模型服务拒绝了本次请求（HTTP 400）",
         contextLimit: "系统未能通过自动压缩恢复本次回复。请新建对话后重试。",
         network: "网络连接异常，无法访问模型服务。请检查网络连接后重试。",
         upstreamDisconnected: "请稍后点击“继续”接着处理，或重试。",

@@ -112,6 +112,13 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         return providers::cmd_delete_provider(state, id, &cmd);
     }
 
+    // One ad-hoc provider round trip for the custom-provider editor's
+    // thinking-level detection. Sessionless: it touches no stored config and
+    // no conversation, only the provider/model the caller is editing.
+    if cmd_type == "probe_thinking_level" {
+        return providers::cmd_probe_thinking_level(state, id, &cmd);
+    }
+
     // Dedicated post-login initialization: synchronously fetch the Future
     // provider's models (warming the cache), then rebuild the registry against
     // that warm cache so the very next `list_models` returns a complete list.

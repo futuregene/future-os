@@ -9,14 +9,13 @@
 </p>
 
 <p align="center">
-  <img src="docs/desktop-screenshot.png" alt="FutureOS 桌面应用——新对话、模型、技能与工作区，一窗集成" width="800">
+  <img src="docs/desktop-screenshot.zh-CN.png" alt="FutureOS 桌面应用——左边是会话，中间是对话，右边是当前工作区的文件" width="900">
 </p>
 
 <p align="center">
   <a href="#快速开始">快速开始</a> •
   <a href="#特性">特性</a> •
   <a href="#配置模型">模型</a> •
-  <a href="#常用斜杠命令tui">命令</a> •
   <a href="#故障排查">故障排查</a>
 </p>
 
@@ -32,7 +31,7 @@
 
 ## 为什么是 FutureOS
 
-- **选择执行边界。** 为 Agent 工具配置文件访问审批与 OS 沙箱。桌面默认是不受限（`off`）；处理不可信内容前，请切换为手动或沙箱模式。默认值和限制见[安全模型](SECURITY.md)与[沙箱指南](docs/wiki/zh/Sandbox.md)。
+- **选择执行边界。** 为 Agent 工具配置文件访问审批与 OS 沙箱，四档可选：`off`、`manual`、`sandbox`，以及 **`auto`**——开着沙箱，由模型复核那些本来会来问你的请求。桌面默认是不受限（`off`）；处理不可信内容前，切到手动、沙箱或 `auto`。默认值和限制见[安全模型](SECURITY.md)与[沙箱指南](docs/wiki/zh/Sandbox.md)。
 - **一个后端，所有界面。** 同一个 gRPC Agent 驱动终端界面、桌面应用、移动端、CLI 和 IM 机器人——同一份会话、同一份记忆、同一套技能，无论你身在何处。
 - **长任务靠工程，不靠提示词。** 内置 goal 控制面为 24 小时以上的任务提供持久化目标、事件溯源状态与验证门控——晚上布置一个调研任务，早上在手机上验收结果。
 
@@ -40,8 +39,9 @@
 
 | 类别 | 说明 |
 |---|---|
-| **多端统一** | 终端界面 (TUI)、桌面应用 (GUI)、移动端 App（Android · iOS）、命令行 (CLI)、IM 机器人——一个 Agent，无处不在。桌面后端还可**以主机模式运行在服务器上**（`future host`，无需窗口或 WebView，可跑在 SSH 会话里），手机与桌面之间的通道是**端到端加密**的——Noise 握手 + ChaCha20-Poly1305 记录，中继只看到密文（[主机模式](docs/guide/desktop-host.zh-CN.md)、[远程](docs/wiki/zh/Remote.md)） |
-| **自建中继** | `future relay init` 与 `future relay serve` 自己运行远程控制背后的中继，整条路径上不需要 FutureOS 账号。线路协议、配对与端到端加密不变，官方中继与自建中继可以并行使用（[指南](docs/guide/self-hosted-relay.zh-CN.md)） |
+| **哪里都能跑，哪里都能接** | Agent 是一个二进制，能跑在活儿所在的任何地方——**嵌入式板子、手机、工位上的桌面机、GPU 服务器、集群**；而接它的界面同样是全的：终端界面、桌面应用、移动端（Android · iOS）、命令行与 IM 机器人——共享同一份会话、同一份记忆、同一套技能。配对多少台机器都行——手机够得着其中每一台；手机与主机之间的通道是**端到端加密**的（Noise 握手 + ChaCha20-Poly1305 记录），中继还可以**自建**（`future relay init` / `future relay serve`），所以中继上只会经过密文（[主机模式](docs/guide/desktop-host.zh-CN.md)、[远程](docs/wiki/zh/Remote.md)、[自建中继](docs/guide/self-hosted-relay.zh-CN.md)） |
+| **终端界面 (TUI)** | 终端里的全屏工作台，不是聊天记录：会话列表（「最近」合并列表或按工作区分组的树，可折叠）、把一轮回复的过程折成 `▸ 工具调用 3 次 · 思考 2 次` 并能展开成树的正文、侧边面板（待办、用量、技能、文件、git）、命令面板、鼠标选取、可拖拽的栏宽、六套配色、回复进行中输入时用的排队带（[指南](docs/guide/tui.md)） |
+| **一部手机，多台桌面** | 移动端可以同时配对多台桌面：把它们合并成**一条最近列表**，每行标出所在的机器，用选择面板切换机器，还能在桌面上继续干活的同时从手机接管某条会话（[远程](docs/wiki/zh/Remote.md)） |
 | **可配置工具安全** | read, write, edit, shell——审批规则与分级（`off` / `manual` / `sandbox`，以及 `auto` = 沙箱 + 由模型复核本会询问的请求，需登录 FutureOS）；支持 macOS Seatbelt、Linux 系统 Bubblewrap、Windows 受限令牌写保护。各平台可用性与保护范围不同（[指南](docs/wiki/zh/Sandbox.md)） |
 | **模型灵活** | **自带 API Key（BYOK）**：[内置目录](docs/wiki/zh/Models.md)覆盖主流 Provider，任何 OpenAI 或 Anthropic 兼容端点都可通过 `models.json` 接入。也可以登录 **FutureOS 托管 Provider**（`future auth login`），由平台直接配好 Key 与模型列表。两者可同时使用，并自行限定选择器里出现的模型（[配置](#配置模型)） |
 | **Goal 工程** | 持久化目标/todos/门禁/监控，支撑 24+ 小时长程任务连续执行——确定性 should-run 内核、事件溯源状态、硬校验（证据下限/验收契约/verify 闸门）、租约活性自愈、多 agent（[指南](docs/architecture/goal-control-plane.zh-CN.md)） |
@@ -49,6 +49,13 @@
 | **强大的预设技能** | 内置 15+ 技能开箱即用，覆盖日常 Agent 场景——图片读取与生成、PDF/Word 解析、网页搜索、浏览器控制、幻灯片与软件安装，以及 `/future-goal` 长程目标编排器（[builtin](https://github.com/futuregene/future-skills/tree/main/builtin)） |
 | **可分支会话** | 像仓库一样为对话开分支——fork、clone、树形导航，JSONL 存储 |
 | **Rust 核心** | Agent、IM 渠道桥、goal 控制面、CLI 与 TUI 均用 Rust 编写——高性能、内存安全 |
+
+<p align="center">
+  <img src="docs/mobile-recent.zh-CN.png" alt="FutureOS 移动端——把配对的每台桌面的会话合并成一条最近列表，每行标出它所在的机器" width="272">
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="docs/mobile-devices.zh-CN.png" alt="FutureOS 移动端——桌面选择面板：实验室笔记本、办公室台式机、家里工作站、服务器、云端构建机" width="272">
+</p>
+<p align="center"><sub><b>一部手机，多台桌面</b>——所有配对机器上的对话，都在这一条列表里。</sub></p>
 
 ## 快速开始
 
@@ -68,25 +75,18 @@ curl -fsSL https://dl.future-os.cn/install.sh | bash
 iex (irm https://dl.future-os.cn/install.ps1)
 ```
 
+**Android** —— 手机端在下载页，配对到你已经运行的桌面即可使用：
+
+<https://future-os.cn/download>
+
+**iOS** 下载页上暂时还没有——需要自己从源码编译，App 就在本仓库的 `mobile/` 里。
+
 各平台（桌面应用、工具链、GUI 打包）的分步安装步骤见
 **[构建与安装](docs/guide/build-and-install.zh-CN.md)** 文档。
 
-安装脚本最后会自动执行 `future init`。
-
-两个脚本都会在安装前用发布清单里的 SHA-256 核对下载到的产物，用
-`FUTUREOS_VERSION` 固定某个版本时也一样（读取该版本自己的 `latest.json`）。
-核对不上的产物——清单缺失、平台没有 `sha256`，或主机既无 `shasum` 也无
-`sha256sum`——会被拒绝安装，而不是未经校验就装上。只有
-`FUTUREOS_SKIP_VERIFY=1`（Windows 为 `$env:FUTUREOS_SKIP_VERIFY = '1'`）会关掉该校验，
-那意味着镜像给什么就装什么。
-
 ### 配置模型
 
-Agent 至少需要配置一个模型提供商才能回复。交互式配置同时支持 FutureOS 和自定义 Provider：
-
-```bash
-future config
-```
+Agent 至少需要配置一个模型提供商才能回复。
 
 **FutureOS 托管模型** —— 设备码登录会自动配好 key 和模型列表：
 
@@ -148,112 +148,31 @@ future auth login
 
 </details>
 
-### 安装技能（可选）
-
-技能是按需安装的能力包，agent 会从 `~/.future/agent/skills/` 加载。浏览技能目录并安装需要的技能——只需要网络连接，不要求 agent 在运行：
-
-```bash
-future skills list             # 浏览技能目录
-future skills install <name>   # 安装指定技能
-future skills install          # 不带名字：安装全部内置技能
-```
-
-跳过这一步 agent 也能正常回答——技能只是提供现成的工作流。卸载、升级等用法见 [CLI 参考](docs/wiki/zh/CLI.md)。
-
 ### 启动主机，再启动终端
 
-终端与 CLI 客户端都是轻量 gRPC 客户端，默认使用**每用户本地 IPC**（macOS/Linux 为 Unix socket，Windows 为仅当前用户可访问的命名管道）。Unix 优先使用 `FUTURE_AGENT_SOCKET`；否则端点始终位于实例的 FutureOS home 之下：默认 `~/.future/run/agent.sock`，`FUTURE_HOME=DIR` 指定的实例使用 `<FUTURE_HOME>/run/agent.sock`——见[多实例运行](docs/guide/directory-layout.zh-CN.md#多实例运行future_home)。若 FutureOS home 位于无法承载 Unix socket 的文件系统（如 NFS），请将 `FUTURE_HOME` 指向本地文件系统上的目录。
-
-**Agent 由它的宿主负责，不由终端负责。** 先启动一个宿主——两者都会持有并维持 Agent：
+**Agent 由它的宿主负责，不由终端负责。** 先启动宿主，然后可以同时开任意多个终端连它：
 
 ```bash
 future host       # 把本机作为 FutureOS 主机：本地运行、定时任务，以及已配对的远程桌面
-future agent      # 只启动 Agent 服务（日志打到 stdout，Ctrl-C 停止）
+future tui        # 终端界面——连接上面那个宿主
 ```
-
-`future host` **不需要先登录**：没有账号时它用你自己的模型 provider 提供全部本地能力，只有已配对的远程桌面会保持关闭——在另一个终端执行 `future auth login` 后它无需重启就会接管并开始提供远程桌面；`--relay URL` 则完全绕开 Future 平台。桌面 GUI 与主机模式先尝试连接兼容的外部 Agent；默认端点上没有服务且其实例锁空闲时，它们在自己的进程内运行完整 Agent；不兼容或锁被占用/不可用时直接报错，不会另起第二个 Agent。
-
-退出内置 Agent 的 Desktop 会停止所有客户端的任务，包括 CLI/TUI 对话；连接外部 Agent 时只取消本 Desktop 提交的运行，外部服务保持存活。详见 [Desktop Agent 生命周期与恢复](docs/guide/desktop-agent.zh-CN.md)。
-
-然后用同一个 `future` 命令启动终端界面：
-
-```bash
-future tui        # 终端界面
-```
-
-TUI **只连接**正在提供服务的 Agent，自己从不启动或重启 Agent。没有可达的 Agent 时它会说明这一点并给出该执行的命令（`future host`、桌面应用或 `future agent`）；若它连上的 Agent 之后消失，它只会继续重连并显示该状态，而不会另起一个。因此**可以同时开任意多个终端**连接同一个宿主——关掉其中一个不会影响 Agent 和其它终端。
-
-正式发布的构建会在 TUI 启动后于后台检查一次更新：发现新版本时仅在本地提示
-并给出官方安装脚本链接，不会自动安装。release 构建检查 release 通道，
-test/nightly 构建检查 nightly；本地/源码构建跳过检查。网络失败静默忽略；
-`future tui --offline` 关闭该检查，非交互命令从不执行检查。
-
-> **远程 / 开发模式：**给 `future agent` 传入 `--grpc-addr 127.0.0.1:50051` 可显式启用 TCP；客户端设置 `FUTURE_AGENT_GRPC_ADDR=127.0.0.1:50051`。TCP 非默认，不要暴露到不可信网络。
 
 <p align="center">
-  <img src="docs/tui-screenshot.png" alt="FutureOS 终端界面——内置技能加载，/help 命令面板" width="720">
+  <img src="docs/tui-screenshot.zh-CN.png" alt="FutureOS 终端界面——按工作区分组的会话列表，一轮回复的过程展开成树，正文里有代码块与表格" width="820">
 </p>
 
-> `future <cmd>` 是所有 Rust 组件的统一入口：`future agent`、`future tui`、
-> `future channel`、`future goal`。每个都运行与同名独立二进制完全相同的代码
-> （`future-*` 二进制仍是构建目标，可用 `cargo build -p future-tui` 等构建，
-> 但已不再默认安装）。
->
-> 若连接失败，检查 Agent 发现、兼容性和实例所有权——见 [故障排查](#故障排查)。
+### 远程接入
 
-### 常用斜杠命令（TUI）
+手机或另一台桌面可以驱动这台机器上的 Agent。配对是唯一需要账号的一步，而且只在官方中继上需要：
 
-| 命令 | 说明 |
-|---|---|
-| `/help` | 显示所有命令和快捷键 |
-| `/model [name]` | 选择 / 切换模型 |
-| `/new` | 新建会话 |
-| `/sessions` | 浏览和切换会话 |
-| `/tree` | 会话树（含 fork/clone 层级） |
-| `/fork` | 从指定消息分叉 |
-| `/clone` | 克隆当前会话 |
-| `/name <name>` | 设置会话名称 |
-| `/scoped-models` | 配置模型启用/禁用列表 |
-| `/compact` | 压缩对话上下文 |
-| `/status` | 会话状态、token 用量、费用 |
-| `/stop` | 中断当前生成 |
-| `/cancel <run-id>` | 取消排队中的运行 |
-| `/cwd <dir>` | 切换工作目录 |
-| `/approve <request-id>` | 批准待执行的工具调用 |
-| `/reject <request-id>` | 拒绝待执行的工具调用 |
-| `/reload` | 重新加载技能与上下文文件 |
-| `/skills` | 浏览、安装与管理技能 |
-| `/providers` | 配置 provider 与模型 |
-| `/theme [id]` | 切换配色主题 |
+```bash
+future auth login           # 用来配对设备的 FutureOS 账号
+future remote devices add   # 打印邀请，供手机或另一台桌面输入
+```
 
-在 TUI 中运行 `/help` 查看完整列表（40+ 命令）。
+手机与主机之间的通道是**端到端加密**的（Noise 握手 + ChaCha20-Poly1305 记录），中继上只经过密文。没有账号时宿主照常提供全部本地能力，只是已配对的远程桌面保持关闭——这次登录也可以稍后再做。
 
-### 键盘快捷键（TUI）
-
-| 按键 | 功能 |
-|---|---|
-| `ctrl+c` | 停止当前运行（没有 run 在跑时什么都不做） |
-| `ctrl+x` | 退出 |
-| `ctrl+n` | 新会话 |
-| `ctrl+r` | 会话列表 |
-| `ctrl+d` | 侧栏：显示 / 聚焦 / 隐藏 |
-| `ctrl+p` | 命令面板 |
-| `ctrl+o` | 模型选择器 |
-| `ctrl+t` | 思考强度 |
-| `ctrl+s` | 审批模式 |
-| `ctrl+l` | 工作区 |
-| `ctrl+f` | 文件面板 |
-| `ctrl+g` | git 浏览 |
-| `ctrl+e` | 过程展示：只留回答 / 全部过程 |
-| `ctrl+v` | 粘贴剪贴板（图片或文本） |
-| `ctrl+q` | 偏好设置（内含快捷键编辑） |
-| `?` | 帮助：当前实际生效的按键 |
-| `enter` | 发送——运行期间排到当前 run 之后 |
-| `ctrl+j` | 草稿换行 |
-| `page up` / `page down` | 滚动对话 |
-| `escape` | 关闭浮层；回到最新输出 |
-
-全部都能在 `/preferences` 里改键，`?` 显示的永远是实际生效的那一套。
+**自建中继。** `--relay URL` 可以把 Future 平台整条路径拿掉：没有账号，协议、配对与加密都不变（[自建中继](docs/guide/self-hosted-relay.zh-CN.md)）。把宿主跑在服务器上就是同一条命令走 SSH，无需窗口或 WebView（[主机模式](docs/guide/desktop-host.zh-CN.md)）；配对设备能做什么见[远程](docs/wiki/zh/Remote.md)。
 
 ## 故障排查
 
@@ -261,7 +180,7 @@ test/nightly 构建检查 nightly；本地/源码构建跳过检查。网络失�
 |---|---|
 | TUI 提示没有 Agent 提供服务并退出 | 先启动 Agent 的宿主——`future host`（或桌面应用、`future agent`）。TUI 只连接，从不自己启动。 |
 | 客户端报连接 / gRPC 错误退出 | 运行 `future doctor`，检查 Agent 启动、版本、实例锁错误以及用户、数据根和 IPC 环境是否一致；更换服务前先看 [Desktop Agent 指南](docs/guide/desktop-agent.zh-CN.md)。仅在显式 TCP 模式下检查配置的地址/端口。 |
-| Agent 回复鉴权 / "no model" 错误 | 还没配置模型。运行 `future config`——见 [配置模型](#配置模型)。 |
+| Agent 回复鉴权 / "no model" 错误 | 还没配置模型——见 [配置模型](#配置模型)。 |
 | 构建 / 安装问题 | 见 [构建与安装](docs/guide/build-and-install.zh-CN.md)（平台工具链、链接器、GUI 打包）。 |
 
 ## 社区

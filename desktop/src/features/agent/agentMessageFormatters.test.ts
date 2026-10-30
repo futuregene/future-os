@@ -1,6 +1,6 @@
 import { classifyAgentError } from "@future-os/thread-projection";
 import { describe, expect, it } from "vitest";
-import { isCompletedWithoutReply, responseTerminationError } from "./agentMessageFormatters";
+import { buildAgentFailureTitle, friendlyAgentError, isCompletedWithoutReply, responseTerminationError } from "./agentMessageFormatters";
 
 describe("response outcomes", () => {
   it.each([
@@ -98,8 +98,15 @@ describe("classifyAgentError", () => {
 
   it("strips the request-size diagnostic tail when no JSON message field exists", () => {
     const result = classifyAgentError("API request failed (HTTP 400): code=bad_request, message=\"odd\". Request: 2 messages, 16 KB.");
-    expect(result.key).toBe("agent:failure.run");
+    expect(result.key).toBe("agent:failure.badRequest");
     expect(result.params?.message).toBe("API request failed (HTTP 400): code=bad_request, message=\"odd\".");
+  });
+
+  it("shows a rejected request's provider message instead of retry advice", () => {
+    const raw = "LLM API request failed (HTTP 400): {\"error\":{\"message\":\"Invalid model: gemini-9-pro\"}}";
+    expect(friendlyAgentError(raw)).toContain("Invalid model: gemini-9-pro");
+    // A key with no locale entry would render as the key itself.
+    expect(buildAgentFailureTitle(raw)).not.toContain("agent:failure.");
   });
 
   it("handles empty input", () => {

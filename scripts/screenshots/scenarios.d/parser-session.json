@@ -1,0 +1,74 @@
+{
+  "desktop": {
+    "parser-zh": {
+      "note": "The expression-parser session in Chinese, as a normal three-column desktop window in the app's own dark appearance: the session rail on the left, the transcript in the middle, the workspace's files on the right (the Context panel, opened from its own header button, on its Files tab, with `src` expanded). `?theme=dark` pins the appearance the way `?lang=` pins the words — the shipped default palette (`futureos`) in dark, not a variant. The window is a 16-inch laptop's default 1728×1117 at 2×. The transcript stands at the first turn — `上一个问题` lands the reader's previous question just under the header — so the frame carries the question, the folded process and the whole diagnosis (heading, inline code, highlighted rust block, three-row table, closing line) above the composer, with the second turn starting at the fold and continuing below it.",
+      "url": "http://localhost:5299/shot/?thread=th_parser&lang=zh&theme=dark",
+      "width": 1728,
+      "height": 1117,
+      "steps": [
+        {
+          "wait": 1500
+        },
+        {
+          "tap": "展开上下文面板"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "tap": "src"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "tap": "上一个问题"
+        },
+        {
+          "wait": 800
+        },
+        {
+          "eval": "(() => { const text = document.body.innerText; if (text.includes('invalid_history_transfer')) throw new Error(\"the transcript did not load: the history read failed\"); if (!document.documentElement.classList.contains('dark')) throw new Error(\"the frame is not in the dark appearance\"); if (!text.includes('诊断')) throw new Error(\"the Chinese diagnosis is not in the transcript\"); if (text.includes('Diagnosis')) throw new Error(\"the Chinese frame carries the English transcript\"); if (!text.includes('表达式解析器里的 off-by-one')) throw new Error(\"the session list does not name the session in Chinese\"); if (text.includes('Off-by-One in the Expression Parser')) throw new Error(\"the session list carries the English title in the Chinese frame\"); if (text.includes('Files') || text.includes('Expand context panel') || text.includes('Previous question')) throw new Error(\"the Chinese frame carries an English control\"); if (!text.includes('UnexpectedEof')) throw new Error(\"the diagnosis table is missing\"); const aside = [...document.querySelectorAll('aside')].find(a => (a.innerText || '').includes('文件')); if (!aside) throw new Error(\"the right-hand context panel is not open on its Files tab\"); const panel = aside.innerText; for (const name of ['parser.rs', 'args.rs', 'lexer.rs', 'Cargo.toml', 'AGENTS.md']) { if (!panel.includes(name)) throw new Error(\"the files panel does not list \" + name); } const col = [...document.querySelectorAll('div')].find(d => (d.className || '').includes('floating-scrollbar h-full')); if (!col) throw new Error(\"no conversation column\"); const composer = document.querySelector('[contenteditable=\"true\"]'); if (!composer) throw new Error(\"no composer\"); const fold = composer.getBoundingClientRect().top; const ps = [...col.querySelectorAll('p')]; const first = ps[0]; if (!(first.textContent || '').includes('1+2+')) throw new Error(\"the frame does not start at the first question\"); const firstTop = first.getBoundingClientRect().top; if (firstTop > col.getBoundingClientRect().top + 80) throw new Error(\"the first question is not at the top of the transcript: \" + Math.round(firstTop)); const closing = ps.find(p => (p.textContent || '').includes('同一个错误')); if (!closing) throw new Error(\"the diagnosis' closing line is not in the transcript\"); const head = col.querySelector('h3'); const pre = col.querySelector('pre'); const table = col.querySelector('table'); if (!head || !pre || !table) throw new Error(\"the diagnosis is not drawn (heading, code block, table)\"); const below = [head, pre, table, closing].map(e => Math.round(e.getBoundingClientRect().bottom)); if (below.some(b => b > fold - 4)) throw new Error(\"the first turn runs under the composer: blocks end at \" + below.join(', ') + ', the composer starts at ' + Math.round(fold)); if (!text.includes('别处还有同样的写法吗')) throw new Error(\"the second turn does not appear at the fold\"); return 'ok: panel 384px, first turn ends ' + Math.round(fold - Math.max(...below)) + 'px above the composer, second turn below'; })()"
+        },
+        {
+          "shot": "desktop-zh.png"
+        }
+      ]
+    },
+    "parser-en": {
+      "note": "The same session in English — the same bug, the same calls, the same table and the same two commits, written in the language of the frame, in the same dark window. `?lang=en` pins both halves (the interface via shot/prefs.ts and the fixture's own session list and transcript) and `?theme=dark` pins the appearance; the taps are the same three controls as the Chinese scenario, by their English names, and the file tree is the repository's own names and is the same in both.",
+      "url": "http://localhost:5299/shot/?thread=th_parser&lang=en&theme=dark",
+      "width": 1728,
+      "height": 1117,
+      "steps": [
+        {
+          "wait": 1500
+        },
+        {
+          "tap": "Expand context panel"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "tap": "src"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "tap": "Previous question"
+        },
+        {
+          "wait": 800
+        },
+        {
+          "eval": "(() => { const text = document.body.innerText; if (text.includes('invalid_history_transfer')) throw new Error(\"the transcript did not load: the history read failed\"); if (!document.documentElement.classList.contains('dark')) throw new Error(\"the frame is not in the dark appearance\"); if (!text.includes('Diagnosis')) throw new Error(\"the English diagnosis is not in the transcript\"); if (text.includes('诊断')) throw new Error(\"the English frame carries the Chinese transcript\"); if (!text.includes('Off-by-One in the Expression Parser')) throw new Error(\"the session list does not name the session in English\"); if (text.includes('表达式解析器里的 off-by-one')) throw new Error(\"the session list carries the Chinese title in the English frame\"); if (text.includes('文件') || text.includes('展开上下文面板') || text.includes('上一个问题') || text.includes('显示隐藏文件')) throw new Error(\"the English frame carries a Chinese control\"); if (!text.includes('UnexpectedEof')) throw new Error(\"the diagnosis table is missing\"); const aside = [...document.querySelectorAll('aside')].find(a => (a.innerText || '').includes('Files')); if (!aside) throw new Error(\"the right-hand context panel is not open on its Files tab\"); const panel = aside.innerText; for (const name of ['parser.rs', 'args.rs', 'lexer.rs', 'Cargo.toml', 'AGENTS.md']) { if (!panel.includes(name)) throw new Error(\"the files panel does not list \" + name); } const col = [...document.querySelectorAll('div')].find(d => (d.className || '').includes('floating-scrollbar h-full')); if (!col) throw new Error(\"no conversation column\"); const composer = document.querySelector('[contenteditable=\"true\"]'); if (!composer) throw new Error(\"no composer\"); const fold = composer.getBoundingClientRect().top; const ps = [...col.querySelectorAll('p')]; const first = ps[0]; if (!(first.textContent || '').includes('1+2+')) throw new Error(\"the frame does not start at the first question\"); const firstTop = first.getBoundingClientRect().top; if (firstTop > col.getBoundingClientRect().top + 80) throw new Error(\"the first question is not at the top of the transcript: \" + Math.round(firstTop)); const closing = ps.find(p => (p.textContent || '').includes('same mistake')); if (!closing) throw new Error(\"the diagnosis' closing line is not in the transcript\"); const head = col.querySelector('h3'); const pre = col.querySelector('pre'); const table = col.querySelector('table'); if (!head || !pre || !table) throw new Error(\"the diagnosis is not drawn (heading, code block, table)\"); const below = [head, pre, table, closing].map(e => Math.round(e.getBoundingClientRect().bottom)); if (below.some(b => b > fold - 4)) throw new Error(\"the first turn runs under the composer: blocks end at \" + below.join(', ') + ', the composer starts at ' + Math.round(fold)); if (!text.includes('Does the same shape appear')) throw new Error(\"the second turn does not appear at the fold\"); return 'ok: panel 384px, first turn ends ' + Math.round(fold - Math.max(...below)) + 'px above the composer, second turn below'; })()"
+        },
+        {
+          "shot": "desktop-en.png"
+        }
+      ]
+    }
+  }
+}

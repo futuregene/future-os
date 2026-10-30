@@ -29,11 +29,20 @@
 #
 # Scenarios: chat help palette todo usage skills sessions launchpad scrolled
 #            palette-filter full-panel drag light command-usage command-skills
-#            rail-search git
+#            rail-search git queue
+# (`queue` is the chat with two prompts waiting behind a live turn — the queue
+# band above the composer.)
 # (the table lives in scripts/screenshots/capture.py; an unknown name is an
 # error rather than a silently different frame. `git` is the one scenario that
 # reads the checkout, so it needs `FUTURE_DEMO_CWD=$PWD` for the scripted
 # session to have a repository.)
+#
+# `SHOT_LANG=en` captures the frame in English: the interface *and* the scripted
+# session (its list, its transcript), which the demo agent carries in both
+# languages. Default `zh`, the language every committed asset was shot in.
+# `SHOT_SIDEBAR_WIDTH=<cols>` pins the rail wider than the surface's own default,
+# `SHOT_SIDEBAR_POSITION=<left|right>` puts it on a side, and `SHOT_THEME=<id>`
+# picks a palette — an English frame usually wants the first of those.
 # Exit codes: 2 = usage or missing binary, 1 = capture failure.
 set -euo pipefail
 
@@ -103,7 +112,18 @@ fi
   exit 2
 }
 
-ARGS=(tui "$OUT" --cols "$COLS" --rows "$ROWS" --scenario "$SCENARIO" --bin "$TUI")
+ARGS=(tui "$OUT" --cols "$COLS" --rows "$ROWS" --scenario "$SCENARIO" --bin "$TUI" --lang "${SHOT_LANG:-zh}")
+# Only when asked for: unset leaves the rail at the surface's own width, which is
+# the layout every committed frame was captured with.
+if [ -n "${SHOT_SIDEBAR_WIDTH:-}" ]; then
+  ARGS+=(--sidebar-width "$SHOT_SIDEBAR_WIDTH")
+fi
+if [ -n "${SHOT_SIDEBAR_POSITION:-}" ]; then
+  ARGS+=(--sidebar-position "$SHOT_SIDEBAR_POSITION")
+fi
+if [ -n "${SHOT_THEME:-}" ]; then
+  ARGS+=(--theme "$SHOT_THEME")
+fi
 if [ "$LIVE" = 1 ]; then
   ARGS+=(--addr "$FUTURE_AGENT_GRPC_ADDR")
   if [ -n "${SESSION_ID:-}" ]; then

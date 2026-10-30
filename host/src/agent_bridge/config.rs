@@ -15,7 +15,7 @@
 use crate::Error as AppError;
 use future_rpc::proto::{AuthUpdate, RpcCommand};
 
-use super::client::{base_command, connect_agent};
+use super::client::{base_command, connect_agent, RpcResponseExt};
 
 /// Read the Agent-owned, secret-redacted provider snapshot. This deliberately
 /// does not inspect Desktop's filesystem, so a custom Agent endpoint or HOME
@@ -184,6 +184,37 @@ pub async fn upsert_provider(config: future_rpc::proto::ProviderUpsert) -> Resul
         "upsert_provider",
     )
     .await
+}
+
+/// Ask the Agent one thinking-level question about a provider the GUI is still
+/// editing: does this endpoint accept this level?
+///
+/// A level the provider refuses is a successful call carrying `ok: false` — the
+/// caller keeps the levels that were accepted. Only an unreachable Agent or a
+/// malformed request is an error here.
+pub async fn probe_thinking_level(
+    probe: future_rpc::proto::ThinkingLevelProbe,
+) -> Result<crate::agent_providers::ThinkingLevelProbeOutcome, AppError> {
+    let mut client = connect_agent().await.map_err(|error| {
+        AppError::Message(format!(
+            "Future Agent is unavailable; the thinking level was not detected: {error}"
+        ))
+    })?;
+    let response = client
+        .execute_command(RpcCommand {
+            thinking_probe: Some(probe),
+            ..base_command("probe_thinking_level", String::new())
+        })
+        .await
+        .map_err(|status| {
+            AppError::Message(format!(
+                "Thinking-level detection did not complete: {status}"
+            ))
+        })?
+        .into_inner()
+        .ok_or_rpc_error("Future Agent could not probe the thinking level.")?;
+    serde_json::from_value(future_rpc::decode::response_data(&response))
+        .map_err(|error| format!("Invalid thinking-level probe response: {error}").into())
 }
 
 /// Remove a provider's `models.json` entry AND its `auth.json` entry.
