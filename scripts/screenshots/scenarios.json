@@ -3301,6 +3301,202 @@
       "mobile": true
     },
     "scenarios": {
+      "fleet-zh": {
+        "note": "The home screen's recency page with five paired desktops merged into one list (`?fleet=1`, `mobile/shot/mock/fleet.ts`): fourteen settled conversations, ordered by the reply time each machine reported rather than by machine — no run state, so no approval alert on a row and no active stretch. Every row opens on the desktop it lives on; the machine is named by its glyph, and the picker above the list is where the five names are.",
+        "query": "?fleet=1",
+        "lang": "zh-CN",
+        "appearance": "dark",
+        "ready": "/全部桌面/.test(document.body.innerText)",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  // The home screen's recency page, merged: one row per conversation across five\n  // paired desktops, ordered by the clock each machine reported. The order is the\n  // assertion — a merged list that ranked by machine, or dropped a machine, is\n  // not the page this scenario is about.\n  const rows = [...document.querySelectorAll('[data-testid^=recent-row]')];\n  const expected = [\"recent-row:earlier:desktop_cloud::sess_fleet_coverage\", \"recent-row:earlier:desktop_office::sess_fleet_pr_diff\", \"recent-row:earlier:desktop_lab::sess_fleet_recency\", \"recent-row:earlier:desktop_home::sess_fleet_weekly\", \"recent-row:earlier:desktop_rack::sess_fleet_split_log\", \"recent-row:earlier:desktop_cloud::sess_fleet_nightly\", \"recent-row:earlier:desktop_office::sess_fleet_review\", \"recent-row:earlier:desktop_lab::sess_fleet_rail\", \"recent-row:earlier:desktop_home::sess_fleet_samples\", \"recent-row:earlier:desktop_rack::sess_fleet_prune\", \"recent-row:earlier:desktop_cloud::sess_fleet_canary\", \"recent-row:earlier:desktop_office::sess_fleet_outline\", \"recent-row:earlier:desktop_lab::sess_fleet_keymap\", \"recent-row:earlier:desktop_home::sess_fleet_minutes\"];\n  const got = rows.map(el => el.getAttribute('data-testid'));\n  if (JSON.stringify(got) !== JSON.stringify(expected))\n    throw new Error('the merged order is wrong: ' + JSON.stringify({ got: got.slice(0, 6), want: expected.slice(0, 6), count: got.length }));\n  // Every machine contributes rows, and each row carries its own machine's glyph.\n  const sources = new Set(rows\n    .map(row => [...row.querySelectorAll('[aria-label^=desktop_]')].map(el => el.getAttribute('aria-label'))[0])\n    .filter(Boolean));\n  const missing = [\"desktop_lab\", \"desktop_office\", \"desktop_home\", \"desktop_rack\", \"desktop_cloud\"].filter(id => !sources.has(id));\n  if (missing.length) throw new Error('a paired machine is missing from the list: ' + JSON.stringify(missing));\n  // Every conversation here is settled, so the page draws one stretch and its caption\n  // counts all fourteen. An active stretch would mean a row carries a run state.\n  if (document.querySelector('[data-testid=\"recent-section:sessions.activeSection\"]'))\n    throw new Error('an active stretch is drawn: a row carries a run state');\n  const earlier = document.querySelector('[data-testid=\"recent-section:sessions.earlierSection\"]');\n  if (!earlier || !(earlier.textContent || '').includes('14'))\n    throw new Error('the earlier stretch is wrong: ' + (earlier ? earlier.textContent : 'missing'));\n  // No approval or warning glyph on any row. The alert is what a blocked run draws\n  // (`CircleAlert` in `colors.warning`, a `lucide-circle-alert` svg stroked #fbbf24 in\n  // the dark palette), and a picture of \"every machine in one list\" must not read as\n  // a page full of errors.\n  const alerts = [...document.querySelectorAll('[data-testid^=recent-row] svg')]\n    .filter(svg => /circle-alert/.test(svg.getAttribute('class') || '')\n      || /#fbbf24/i.test(svg.getAttribute('stroke') || ''));\n  if (alerts.length)\n    throw new Error('a row carries an approval alert: ' + alerts.map(svg => svg.getAttribute('class')).join(', '));\n  const text = document.body.innerText;\n  const missingText = [\"更早\", \"全部桌面\"]\n    .filter(needle => !text.toLowerCase().includes(needle.toLowerCase()));\n  if (missingText.length) throw new Error('the frame is missing: ' + JSON.stringify(missingText));\n  const theirs = [\"All desktops\", \"Active\", \"Earlier\", \"活跃\"]\n    .filter(needle => text.toLowerCase().includes(needle.toLowerCase()));\n  if (theirs.length) throw new Error('another language reached this frame: ' + JSON.stringify(theirs));\n  // The appearance is part of the frame: a phone set to dark draws the dark palette, and\n  // this scenario pins it, so the capture is the state it says it is.\n  if (!window.matchMedia('(prefers-color-scheme: dark)').matches)\n    throw new Error('the pinned appearance is not dark');\n  const painted = (start) => { let el = start; while (el && getComputedStyle(el).backgroundColor === 'rgba(0, 0, 0, 0)') el = el.parentElement; return el ? getComputedStyle(el).backgroundColor : null; };\n  const canvas = painted(rows[0]);\n  if (canvas !== 'rgb(21, 30, 46)' && canvas !== 'rgb(11, 18, 32)')\n    throw new Error('the frame is not painted on the dark palette: ' + canvas);\n  const title = [...rows[0].querySelectorAll('*')].find(el => el.children.length === 0 && (el.textContent || '').trim().length > 3);\n  if (!title || getComputedStyle(title).color !== 'rgb(230, 236, 246)')\n    throw new Error('the frame is not inked with the dark text colour: ' + (title ? getComputedStyle(title).color : 'no title'));\n  return 'five desktops, fourteen conversations, one stretch, no alerts';\n})()"
+          },
+          {
+            "shot": "home-devices-zh.png"
+          }
+        ]
+      },
+      "fleet-en": {
+        "note": "The home screen's recency page with five paired desktops merged into one list (`?fleet=1`, `mobile/shot/mock/fleet.ts`): fourteen settled conversations, ordered by the reply time each machine reported rather than by machine — no run state, so no approval alert on a row and no active stretch. Every row opens on the desktop it lives on; the machine is named by its glyph, and the picker above the list is where the five names are.",
+        "query": "?fleet=1",
+        "lang": "en-US",
+        "appearance": "dark",
+        "ready": "/All desktops/.test(document.body.innerText)",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  // The home screen's recency page, merged: one row per conversation across five\n  // paired desktops, ordered by the clock each machine reported. The order is the\n  // assertion — a merged list that ranked by machine, or dropped a machine, is\n  // not the page this scenario is about.\n  const rows = [...document.querySelectorAll('[data-testid^=recent-row]')];\n  const expected = [\"recent-row:earlier:desktop_cloud::sess_fleet_coverage\", \"recent-row:earlier:desktop_office::sess_fleet_pr_diff\", \"recent-row:earlier:desktop_lab::sess_fleet_recency\", \"recent-row:earlier:desktop_home::sess_fleet_weekly\", \"recent-row:earlier:desktop_rack::sess_fleet_split_log\", \"recent-row:earlier:desktop_cloud::sess_fleet_nightly\", \"recent-row:earlier:desktop_office::sess_fleet_review\", \"recent-row:earlier:desktop_lab::sess_fleet_rail\", \"recent-row:earlier:desktop_home::sess_fleet_samples\", \"recent-row:earlier:desktop_rack::sess_fleet_prune\", \"recent-row:earlier:desktop_cloud::sess_fleet_canary\", \"recent-row:earlier:desktop_office::sess_fleet_outline\", \"recent-row:earlier:desktop_lab::sess_fleet_keymap\", \"recent-row:earlier:desktop_home::sess_fleet_minutes\"];\n  const got = rows.map(el => el.getAttribute('data-testid'));\n  if (JSON.stringify(got) !== JSON.stringify(expected))\n    throw new Error('the merged order is wrong: ' + JSON.stringify({ got: got.slice(0, 6), want: expected.slice(0, 6), count: got.length }));\n  // Every machine contributes rows, and each row carries its own machine's glyph.\n  const sources = new Set(rows\n    .map(row => [...row.querySelectorAll('[aria-label^=desktop_]')].map(el => el.getAttribute('aria-label'))[0])\n    .filter(Boolean));\n  const missing = [\"desktop_lab\", \"desktop_office\", \"desktop_home\", \"desktop_rack\", \"desktop_cloud\"].filter(id => !sources.has(id));\n  if (missing.length) throw new Error('a paired machine is missing from the list: ' + JSON.stringify(missing));\n  // Every conversation here is settled, so the page draws one stretch and its caption\n  // counts all fourteen. An active stretch would mean a row carries a run state.\n  if (document.querySelector('[data-testid=\"recent-section:sessions.activeSection\"]'))\n    throw new Error('an active stretch is drawn: a row carries a run state');\n  const earlier = document.querySelector('[data-testid=\"recent-section:sessions.earlierSection\"]');\n  if (!earlier || !(earlier.textContent || '').includes('14'))\n    throw new Error('the earlier stretch is wrong: ' + (earlier ? earlier.textContent : 'missing'));\n  // No approval or warning glyph on any row. The alert is what a blocked run draws\n  // (`CircleAlert` in `colors.warning`, a `lucide-circle-alert` svg stroked #fbbf24 in\n  // the dark palette), and a picture of \"every machine in one list\" must not read as\n  // a page full of errors.\n  const alerts = [...document.querySelectorAll('[data-testid^=recent-row] svg')]\n    .filter(svg => /circle-alert/.test(svg.getAttribute('class') || '')\n      || /#fbbf24/i.test(svg.getAttribute('stroke') || ''));\n  if (alerts.length)\n    throw new Error('a row carries an approval alert: ' + alerts.map(svg => svg.getAttribute('class')).join(', '));\n  const text = document.body.innerText;\n  const missingText = [\"Earlier\", \"All desktops\"]\n    .filter(needle => !text.toLowerCase().includes(needle.toLowerCase()));\n  if (missingText.length) throw new Error('the frame is missing: ' + JSON.stringify(missingText));\n  const theirs = [\"更早\", \"全部桌面\", \"活跃\"]\n    .filter(needle => text.toLowerCase().includes(needle.toLowerCase()));\n  if (theirs.length) throw new Error('another language reached this frame: ' + JSON.stringify(theirs));\n  const han = document.body.innerText.match(/[\\u4e00-\\u9fff]+/);\n  if (han) throw new Error('Chinese text reached the English frame: ' + han[0]);\n  // The appearance is part of the frame: a phone set to dark draws the dark palette, and\n  // this scenario pins it, so the capture is the state it says it is.\n  if (!window.matchMedia('(prefers-color-scheme: dark)').matches)\n    throw new Error('the pinned appearance is not dark');\n  const painted = (start) => { let el = start; while (el && getComputedStyle(el).backgroundColor === 'rgba(0, 0, 0, 0)') el = el.parentElement; return el ? getComputedStyle(el).backgroundColor : null; };\n  const canvas = painted(rows[0]);\n  if (canvas !== 'rgb(21, 30, 46)' && canvas !== 'rgb(11, 18, 32)')\n    throw new Error('the frame is not painted on the dark palette: ' + canvas);\n  const title = [...rows[0].querySelectorAll('*')].find(el => el.children.length === 0 && (el.textContent || '').trim().length > 3);\n  if (!title || getComputedStyle(title).color !== 'rgb(230, 236, 246)')\n    throw new Error('the frame is not inked with the dark text colour: ' + (title ? getComputedStyle(title).color : 'no title'));\n  return 'five desktops, fourteen conversations, one stretch, no alerts';\n})()"
+          },
+          {
+            "shot": "home-devices-en.png"
+          }
+        ]
+      },
+      "fleet-picker-zh": {
+        "note": "The same page with the desktop picker open: 'all desktops' plus the five paired machines by name, which is where the merged list says who the glyphs on its rows belong to.",
+        "query": "?fleet=1",
+        "lang": "zh-CN",
+        "appearance": "dark",
+        "ready": "/全部桌面/.test(document.body.innerText)",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tap": "桌面选择"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => {\n  // The sheet that names them: the list itself names each machine by glyph, so the\n  // picker is where a reader (and this capture) can check which five are paired.\n  const text = document.body.innerText;\n  const missing = [\"实验室的 MacBook Pro\", \"办公室主机\", \"家里工作站\", \"楼下的服务器\", \"云端构建机\"].filter(name => !text.includes(name));\n  if (missing.length) throw new Error('the picker does not name every machine: ' + JSON.stringify(missing));\n  const radios = document.querySelectorAll('[role=radio]').length;\n  if (radios !== 6) throw new Error(\"'all desktops' plus five machines is six choices, got \" + radios);\n  // The appearance is part of the frame: a phone set to dark draws the dark palette, and\n  // this scenario pins it, so the capture is the state it says it is.\n  if (!window.matchMedia('(prefers-color-scheme: dark)').matches)\n    throw new Error('the pinned appearance is not dark');\n  const row = document.querySelector('[data-testid^=recent-row]');\n  const painted = (start) => { let el = start; while (el && getComputedStyle(el).backgroundColor === 'rgba(0, 0, 0, 0)') el = el.parentElement; return el ? getComputedStyle(el).backgroundColor : null; };\n  const canvas = painted(row);\n  if (canvas !== 'rgb(21, 30, 46)' && canvas !== 'rgb(11, 18, 32)')\n    throw new Error('the frame is not painted on the dark palette: ' + canvas);\n  const title = [...row.querySelectorAll('*')].find(el => el.children.length === 0 && (el.textContent || '').trim().length > 3);\n  if (!title || getComputedStyle(title).color !== 'rgb(230, 236, 246)')\n    throw new Error('the frame is not inked with the dark text colour: ' + (title ? getComputedStyle(title).color : 'no title'));\n\n  return 'the picker names all five machines';\n})()"
+          },
+          {
+            "shot": "home-devices-picker-zh.png"
+          }
+        ]
+      },
+      "fleet-picker-en": {
+        "note": "The same page with the desktop picker open: 'all desktops' plus the five paired machines by name, which is where the merged list says who the glyphs on its rows belong to.",
+        "query": "?fleet=1",
+        "lang": "en-US",
+        "appearance": "dark",
+        "ready": "/All desktops/.test(document.body.innerText)",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tap": "Desktops"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => {\n  // The sheet that names them: the list itself names each machine by glyph, so the\n  // picker is where a reader (and this capture) can check which five are paired.\n  const text = document.body.innerText;\n  const missing = [\"Lab MacBook Pro\", \"Office Desktop\", \"Home Workstation\", \"Downstairs Server\", \"Cloud Build Machine\"].filter(name => !text.includes(name));\n  if (missing.length) throw new Error('the picker does not name every machine: ' + JSON.stringify(missing));\n  const radios = document.querySelectorAll('[role=radio]').length;\n  if (radios !== 6) throw new Error(\"'all desktops' plus five machines is six choices, got \" + radios);\n  // The appearance is part of the frame: a phone set to dark draws the dark palette, and\n  // this scenario pins it, so the capture is the state it says it is.\n  if (!window.matchMedia('(prefers-color-scheme: dark)').matches)\n    throw new Error('the pinned appearance is not dark');\n  const row = document.querySelector('[data-testid^=recent-row]');\n  const painted = (start) => { let el = start; while (el && getComputedStyle(el).backgroundColor === 'rgba(0, 0, 0, 0)') el = el.parentElement; return el ? getComputedStyle(el).backgroundColor : null; };\n  const canvas = painted(row);\n  if (canvas !== 'rgb(21, 30, 46)' && canvas !== 'rgb(11, 18, 32)')\n    throw new Error('the frame is not painted on the dark palette: ' + canvas);\n  const title = [...row.querySelectorAll('*')].find(el => el.children.length === 0 && (el.textContent || '').trim().length > 3);\n  if (!title || getComputedStyle(title).color !== 'rgb(230, 236, 246)')\n    throw new Error('the frame is not inked with the dark text colour: ' + (title ? getComputedStyle(title).color : 'no title'));\n\n  return 'the picker names all five machines';\n})()"
+          },
+          {
+            "shot": "home-devices-picker-en.png"
+          }
+        ]
+      },
+      "parser-zh": {
+        "note": "The session the TUI frames were captured with, on the phone: `?parser=1` swaps in that scripted conversation (mobile/shot/mock/parserSession.ts) and `lang` pins the browser locale, so the interface and the transcript are in one language. The frame opens at the question and holds the diagnosis, the code and the table; the second turn (the two commits) sits below it, one scroll away.",
+        "query": "?parser=1",
+        "lang": "zh-CN",
+        "ready": "/表达式解析器里的 off-by-one/.test(document.body.innerText)",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "表达式解析器里的 off-by-one"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "(() => {\n  // The session the TUI frames were captured with, in this surface's own idiom: both turns,\n  // the folded process with the counts it stands for, the code block, the table and the two\n  // commits. A frame that loses a turn, or draws one language's strings, fails here.\n  const text = document.body.innerText;\n  const missing = [\"1+2+ 返回的是 3\", \"诊断\", \"别处还有同样的写法吗\", \"6b1f0c2\", \"d41e8aa\", \"while self.peek() < self.end {\", \"UnexpectedEof\", \"三种写法是同一个错误\", \"实验室的 MacBook Pro\", \"工作区 · future-os\"].filter(needle => !text.includes(needle));\n  if (missing.length) throw new Error('the transcript is missing: ' + JSON.stringify(missing));\n  // The folded process paints glyphs and counts; what it stands for is its spoken label, so\n  // the counts behind those rows are read there rather than from the painted text.\n  const labels = [...document.querySelectorAll('[role=button]')].map(el => el.getAttribute('aria-label') || '');\n  const unfound = [\"查看过程 · 工具调用 2 次 · 思考 1 次\", \"查看过程 · 工具调用 3 次 · 思考 2 次\"].filter(label => !labels.includes(label));\n  if (unfound.length) throw new Error('the folded process is missing: ' + JSON.stringify(unfound));\n  const theirs = [\"Diagnosis\", \"Show process\", \"Tool calls\"].filter(needle => text.includes(needle));\n  if (theirs.length) throw new Error('another language reached this frame: ' + JSON.stringify(theirs));\n  const pinned = \"zh-CN\";\n  if (!navigator.language.toLowerCase().startsWith(pinned.slice(0, 2)))\n    throw new Error('the interface is in ' + navigator.language + ', not ' + pinned);\n  return 'both turns, the folds, the code, the table and the commits are the TUI session\\'s';\n})()"
+          },
+          {
+            "eval": "(() => {\n  // The transcript is an `inverted` list: its scroller is the one carrying the vertical mirror,\n  // and `scrollTop = scrollHeight` is the oldest end of the conversation. A wheel step cannot\n  // land a frame deterministically (its delta is scaled and animated), so the position is set\n  // the way the list itself would put it there.\n  const mirrored = el => {\n    const parts = getComputedStyle(el).transform.match(/^matrix\\(([^)]+)\\)$/);\n    return !!parts && Number(parts[1].split(',')[3]) === -1;\n  };\n  const list = [...document.querySelectorAll('div')].find(el => mirrored(el) && el.scrollHeight > el.clientHeight + 10);\n  if (!list) throw new Error('no inverted transcript scroller');\n  list.scrollTop = list.scrollHeight;\n  return 'scrolled to the oldest row';\n})()"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => {\n  // What the frame itself has to hold, not merely the page: the question that opened the\n  // session, the diagnosis, the fixed line of code and the table, inside the transcript's\n  // band (58..734 — the top bar ends at 58, the composer starts at 734).\n  if (document.querySelector('[aria-label=\"稍后再说\"], [aria-label=\"Not now\"]'))\n    throw new Error('the update prompt is over the frame');\n  const band = [58, 734];\n  const deepest = needle => [...document.querySelectorAll('*')]\n    .filter(el => (el.textContent || '').includes(needle))\n    .sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length)[0];\n  const within = needle => {\n    const el = deepest(needle);\n    if (!el) return needle + ' is not drawn';\n    const r = el.getBoundingClientRect();\n    return r.top >= band[0] && r.bottom <= band[1] ? true : needle + ' sits at y=' + Math.round(r.top);\n  };\n  const bad = [\"1+2+ 返回的是 3\", \"诊断\", \"while self.peek() < self.end {\", \"UnexpectedEof\"].map(within).filter(result => result !== true);\n  if (bad.length) throw new Error('the frame does not hold the answer: ' + JSON.stringify(bad));\n  if (!((window.__shotUnflipped || 0) >= 1)) throw new Error('the transcript was not unflipped: the capture would be mirrored');\n  return 'the question, the diagnosis, the code and the table are inside the frame, upright';\n})()"
+          },
+          {
+            "shot": "mobile-zh.png"
+          }
+        ]
+      },
+      "parser-en": {
+        "note": "The session the TUI frames were captured with, on the phone: `?parser=1` swaps in that scripted conversation (mobile/shot/mock/parserSession.ts) and `lang` pins the browser locale, so the interface and the transcript are in one language. The frame opens at the question and holds the diagnosis, the code and the table; the second turn (the two commits) sits below it, one scroll away.",
+        "query": "?parser=1",
+        "lang": "en-US",
+        "ready": "/Off-by-One in the Expression Parser/.test(document.body.innerText)",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tap": "Workspace"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "Off-by-One in the Expression Parser"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "(() => {\n  // The session the TUI frames were captured with, in this surface's own idiom: both turns,\n  // the folded process with the counts it stands for, the code block, the table and the two\n  // commits. A frame that loses a turn, or draws one language's strings, fails here.\n  const text = document.body.innerText;\n  const missing = [\"1+2+ returns 3\", \"Diagnosis\", \"Does the same shape appear anywhere else?\", \"6b1f0c2\", \"d41e8aa\", \"while self.peek() < self.end {\", \"UnexpectedEof\", \"All three are the same mistake\", \"Lab MacBook Pro\", \"Workspace · future-os\"].filter(needle => !text.includes(needle));\n  if (missing.length) throw new Error('the transcript is missing: ' + JSON.stringify(missing));\n  // The folded process paints glyphs and counts; what it stands for is its spoken label, so\n  // the counts behind those rows are read there rather than from the painted text.\n  const labels = [...document.querySelectorAll('[role=button]')].map(el => el.getAttribute('aria-label') || '');\n  const unfound = [\"Show process · Tool calls 2× · Thought 1×\", \"Show process · Tool calls 3× · Thought 2×\"].filter(label => !labels.includes(label));\n  if (unfound.length) throw new Error('the folded process is missing: ' + JSON.stringify(unfound));\n  const theirs = [\"诊断\", \"查看过程\", \"工具调用\"].filter(needle => text.includes(needle));\n  if (theirs.length) throw new Error('another language reached this frame: ' + JSON.stringify(theirs));\n  // The English frame is English end to end: no Chinese string left anywhere the screen draws.\n  const han = text.match(/[\\u4e00-\\u9fff]+/);\n  if (han) throw new Error('Chinese text reached the English frame: ' + han[0]);\n  const pinned = \"en-US\";\n  if (!navigator.language.toLowerCase().startsWith(pinned.slice(0, 2)))\n    throw new Error('the interface is in ' + navigator.language + ', not ' + pinned);\n  return 'both turns, the folds, the code, the table and the commits are the TUI session\\'s';\n})()"
+          },
+          {
+            "eval": "(() => {\n  // The transcript is an `inverted` list: its scroller is the one carrying the vertical mirror,\n  // and `scrollTop = scrollHeight` is the oldest end of the conversation. A wheel step cannot\n  // land a frame deterministically (its delta is scaled and animated), so the position is set\n  // the way the list itself would put it there.\n  const mirrored = el => {\n    const parts = getComputedStyle(el).transform.match(/^matrix\\(([^)]+)\\)$/);\n    return !!parts && Number(parts[1].split(',')[3]) === -1;\n  };\n  const list = [...document.querySelectorAll('div')].find(el => mirrored(el) && el.scrollHeight > el.clientHeight + 10);\n  if (!list) throw new Error('no inverted transcript scroller');\n  list.scrollTop = list.scrollHeight;\n  return 'scrolled to the oldest row';\n})()"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => {\n  // What the frame itself has to hold, not merely the page: the question that opened the\n  // session, the diagnosis, the fixed line of code and the table, inside the transcript's\n  // band (58..734 — the top bar ends at 58, the composer starts at 734).\n  if (document.querySelector('[aria-label=\"稍后再说\"], [aria-label=\"Not now\"]'))\n    throw new Error('the update prompt is over the frame');\n  const band = [58, 734];\n  const deepest = needle => [...document.querySelectorAll('*')]\n    .filter(el => (el.textContent || '').includes(needle))\n    .sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length)[0];\n  const within = needle => {\n    const el = deepest(needle);\n    if (!el) return needle + ' is not drawn';\n    const r = el.getBoundingClientRect();\n    return r.top >= band[0] && r.bottom <= band[1] ? true : needle + ' sits at y=' + Math.round(r.top);\n  };\n  const bad = [\"1+2+ returns 3\", \"Diagnosis\", \"while self.peek() < self.end {\", \"UnexpectedEof\"].map(within).filter(result => result !== true);\n  if (bad.length) throw new Error('the frame does not hold the answer: ' + JSON.stringify(bad));\n  if (!((window.__shotUnflipped || 0) >= 1)) throw new Error('the transcript was not unflipped: the capture would be mirrored');\n  return 'the question, the diagnosis, the code and the table are inside the frame, upright';\n})()"
+          },
+          {
+            "shot": "mobile-en.png"
+          }
+        ]
+      },
       "hash-session-menu": {
         "note": "The composer's `#` picker: conversations from every workspace in one list, newest activity first (even when that pulls a chat above a workspace's own conversations), and the workspace named on each row.",
         "steps": [

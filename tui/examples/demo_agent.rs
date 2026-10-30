@@ -15,6 +15,17 @@
 //! cargo run -p future-tui --example demo_agent -- --port 5501
 //! future tui --grpc-addr 127.0.0.1:5501
 //! ```
+//!
+//! Three environment variables change what it answers, and a capture passes them
+//! (see `scripts/screenshots/capture.py tui`):
+//!
+//! - `FUTURE_DEMO_LANG=en` — the session in English: the session list, the
+//!   transcript, the streaming turn. Unset keeps the Chinese one.
+//! - `FUTURE_DEMO_LONG=1` — extra turns until the transcript outruns a tall
+//!   terminal's band, which is what a `scrolled` (or a deliberately full) frame
+//!   needs.
+//! - `FUTURE_DEMO_CWD=<path>` — the checkout the scripted session claims to sit
+//!   in, for the one panel that reads a real repository.
 
 use std::pin::Pin;
 
@@ -44,30 +55,80 @@ fn session_cwd() -> String {
     std::env::var("FUTURE_DEMO_CWD").unwrap_or_else(|_| SESSION_CWD.to_string())
 }
 
+/// The language the scripted *data* is in.
+///
+/// A capture pins the interface language (`capture.py tui --lang en`, which
+/// writes it into the TUI's `settings.json`), but the chrome is only half of a
+/// frame: a session list and a transcript are the agent's words, and a frame
+/// whose sidebar says `Sessions` while its rows say `parser 的 off-by-one` is
+/// neither language. So the harness passes the same choice here as
+/// `FUTURE_DEMO_LANG`, and the scripted session is written in it — the English
+/// payload is not a translation of the Chinese one, it is the session an
+/// English reader would be looking at.
+///
+/// Unset or unknown keeps the Chinese payload, which is what every committed
+/// frame was captured with; `system` is the TUI's own "follow the locale" and
+/// has no data of its own, so it keeps them too.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DemoLang {
+    Zh,
+    En,
+}
+
+fn demo_lang() -> DemoLang {
+    match std::env::var("FUTURE_DEMO_LANG")
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "en" | "en-us" | "en_us" | "en-gb" | "en_gb" => DemoLang::En,
+        _ => DemoLang::Zh,
+    }
+}
+
 /// The scripted conversation: one exchange that reasons, reads a file, runs the
 /// tests and answers. Written in the display projection's shape (`blocks`), so
 /// it travels the same mapper a real session's journal does.
 fn journal() -> Value {
-    let mut entries = vec![
+    let mut entries = match demo_lang() {
+        DemoLang::Zh => journal_zh(),
+        DemoLang::En => journal_en(),
+    };
+    if std::env::var_os("FUTURE_DEMO_LONG").is_some() {
+        long_turns(&mut entries);
+    }
+    json!({ "entries": entries })
+}
+
+/// The session in Chinese: the same two turns as [`journal_en`], so a frame taken
+/// in one language shows the same session as the other — same bug, same table,
+/// same two commits — in the words a Chinese reader would use.
+///
+/// Not a translation of the English payload: it is written in Chinese, and the
+/// shapes it exercises are the ones a Chinese frame has to get right — a heading,
+/// double-width bold and italic runs, a table whose cells are CJK, a highlighted
+/// block, a quote, and a folded process that opens into a tree.
+fn journal_zh() -> Vec<Value> {
+    vec![
         json!({
             "id": "e1", "kind": "user", "role": "user",
             "blocks": [{"kind": "text",
-                "text": "parser 里有个 off-by-one，找出来并补一个回归测试"}],
+                "text": "`1+2+` 返回的是 `3`，不是报错。表达式解析器里有个 off-by-one，找出来并补一个回归测试。"}],
         }),
         json!({
             "id": "e2", "kind": "assistant", "role": "assistant",
             "blocks": [{"kind": "reasoning",
-                "text": "先看 parse_expr 的边界条件，怀疑是最后一个 token 的处理。"}],
+                "text": "先从 `parse_expr` 的循环边界看：光标用 `<=` 比较时，「到末尾」和「越过末尾」是同一个状态，尾随的运算符会被接受，而它的右操作数其实并不存在。"}],
         }),
         json!({
             "id": "e3", "kind": "assistant", "role": "assistant",
             "blocks": [{"kind": "tool_call", "toolCallId": "call_read", "name": "read",
-                        "arguments": {"path": "src/parser.rs"}}],
+                        "arguments": {"path": "src/parser.rs", "offset": 138, "limit": 16}}],
         }),
         json!({
             "id": "e4", "kind": "tool", "role": "tool",
             "blocks": [{"kind": "tool_result", "toolCallId": "call_read", "isError": false,
-                "text": "142  fn parse_expr(&mut self) -> Result<Expr> {\n143      while self.peek() <= self.end { ... }\n"}],
+                "text": "142  fn parse_expr(&mut self) -> Result<Expr> {\n143      let mut lhs = self.parse_atom()?;\n144      while self.peek() <= self.end {\n145          let op = self.next();\n146          let rhs = self.parse_atom()?;\n147          lhs = apply(lhs, op, rhs);\n148      }\n149      Ok(lhs)\n150  }\n"}],
         }),
         json!({
             "id": "e5", "kind": "assistant", "role": "assistant",
@@ -77,18 +138,163 @@ fn journal() -> Value {
         json!({
             "id": "e6", "kind": "tool", "role": "tool",
             "blocks": [{"kind": "tool_result", "toolCallId": "call_test", "isError": false,
-                "text": "test result: ok. 40 passed; 0 failed\n"}],
+                "text": "running 41 tests\ntest result: ok. 41 passed; 0 failed; 0 ignored\n"}],
         }),
         json!({
             "id": "e7", "kind": "assistant", "role": "assistant",
             "blocks": [{"kind": "text",
-                "text": "`while self.peek() <= self.end` 在最后一个 token 上多读一次。改成 `<` 之后，41 个用例全过。"}],
+                "text": "### 诊断\n\n`parse_expr` 用 **`<=`** 比较光标，于是 *「到末尾」* 和 *「越过末尾」* 变成同一个状态——尾随的运算符被消费掉，而缺的那个右操作数就成了 `lhs`。\n\n```rust\n// 停在最后一个 token 上，而不是越过它。\nwhile self.peek() < self.end {\n    let op = self.next();\n    lhs = apply(lhs, op, self.parse_atom()?);\n}\n```\n\n| 形状 | 改前 | 改后 |\n| --- | --- | --- |\n| 1+2+ | 3 | UnexpectedEof |\n| [1,2, | [1, 2] | UnexpectedEof |\n| f(a, | f(a) | UnexpectedEof |\n\n三种写法是**同一个错误**，所以一张表驱动的用例就覆盖了它们——见 `src/parser/tests.rs`。"}],
         }),
-    ];
-    if std::env::var_os("FUTURE_DEMO_LONG").is_some() {
-        long_turns(&mut entries);
-    }
-    json!({ "entries": entries })
+        json!({
+            "id": "e8", "kind": "user", "role": "user",
+            "blocks": [{"kind": "text",
+                "text": "别处还有同样的写法吗？顺手拆成两个 commit 提交——先边界，再测试。"}],
+        }),
+        json!({
+            "id": "e9", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "reasoning",
+                "text": "搜这个比较本身，而不是搜 `parse_expr`：错的是边界，不是函数。"}],
+        }),
+        json!({
+            "id": "e10", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "tool_call", "toolCallId": "call_grep", "name": "shell",
+                        "arguments": {"command": "rg -n 'peek\\(\\) <=' src/"}}],
+        }),
+        json!({
+            "id": "e11", "kind": "tool", "role": "tool",
+            "blocks": [{"kind": "tool_result", "toolCallId": "call_grep", "isError": false,
+                "text": "src/parser.rs:144:        while self.peek() <= self.end {\nsrc/parser.rs:318:        while self.peek() <= self.end {\nsrc/args.rs:87:        while self.peek() <= self.end {\n"}],
+        }),
+        json!({
+            "id": "e12", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "reasoning",
+                "text": "另外两处，都能从同一个入口到达。边界放一个 commit、用例表放另一个，这样回滚测试不会把行为改动一起带走，中间也不会留一个红的测试集。"}],
+        }),
+        json!({
+            "id": "e13", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "tool_call", "toolCallId": "call_edit", "name": "edit",
+                        "arguments": {"path": "src/args.rs", "old": "while self.peek() <= self.end {", "new": "while self.peek() < self.end {"}}],
+        }),
+        json!({
+            "id": "e14", "kind": "tool", "role": "tool",
+            "blocks": [{"kind": "tool_result", "toolCallId": "call_edit", "isError": false,
+                "text": "patched src/args.rs:87\n1 file changed, 1 insertion(+), 1 deletion(-)\n"}],
+        }),
+        json!({
+            "id": "e15", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "tool_call", "toolCallId": "call_commit", "name": "shell",
+                        "arguments": {"command": "cargo test -p parser && git commit -am 'fix(parser): the loop bound'"}}],
+        }),
+        json!({
+            "id": "e16", "kind": "tool", "role": "tool",
+            "blocks": [{"kind": "tool_result", "toolCallId": "call_commit", "isError": false,
+                "text": "test result: ok. 44 passed; 0 failed; 0 ignored\n[parser 6b1f0c2] fix(parser): the loop bound\n 3 files changed, 3 insertions(+), 3 deletions(-)\n"}],
+        }),
+        json!({
+            "id": "e17", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "text",
+                "text": "分成 **两个 commit** 落地，都是绿的：\n\n1. `6b1f0c2` —— 三处边界，*只改行为*\n2. `d41e8aa` —— 表驱动的用例，*只改覆盖*\n\n> `cargo test -p parser`：44 passed，0 failed，0 ignored。\n\n回滚第二个 commit 之后 `41 passed` 原样回来——这就是你要的那条性质，别的东西一个都没动。"}],
+        }),
+    ]
+}
+
+/// The same session as an English reader would have it — and, deliberately, the
+/// richest transcript the demo agent can draw: a heading, **bold** and *italic*
+/// runs, inline code, a diff, a bordered table, a numbered list, a quote, and two
+/// folded processes whose calls and thoughts a click opens.
+///
+/// Rows, not words, are what a frame is made of, so the shapes are one turn each
+/// rather than the shortest thing that would parse: a panel is filled by content
+/// a reader would recognise, and a screenshot exists to show what the surface can
+/// draw.
+fn journal_en() -> Vec<Value> {
+    vec![
+        json!({
+            "id": "e1", "kind": "user", "role": "user",
+            "blocks": [{"kind": "text",
+                "text": "`1+2+` returns `3` instead of failing. There is an off-by-one in the expression parser — find it and add a regression test."}],
+        }),
+        json!({
+            "id": "e2", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "reasoning",
+                "text": "Start at `parse_expr`'s loop bound. If the cursor is compared with `<=`, \"at the end\" and \"past the end\" are the same state, and a trailing operator is accepted with an operand that is not there."}],
+        }),
+        json!({
+            "id": "e3", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "tool_call", "toolCallId": "call_read", "name": "read",
+                        "arguments": {"path": "src/parser.rs", "offset": 138, "limit": 16}}],
+        }),
+        json!({
+            "id": "e4", "kind": "tool", "role": "tool",
+            "blocks": [{"kind": "tool_result", "toolCallId": "call_read", "isError": false,
+                "text": "142  fn parse_expr(&mut self) -> Result<Expr> {\n143      let mut lhs = self.parse_atom()?;\n144      while self.peek() <= self.end {\n145          let op = self.next();\n146          let rhs = self.parse_atom()?;\n147          lhs = apply(lhs, op, rhs);\n148      }\n149      Ok(lhs)\n150  }\n"}],
+        }),
+        json!({
+            "id": "e5", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "tool_call", "toolCallId": "call_test", "name": "shell",
+                        "arguments": {"command": "cargo test -p parser"}}],
+        }),
+        json!({
+            "id": "e6", "kind": "tool", "role": "tool",
+            "blocks": [{"kind": "tool_result", "toolCallId": "call_test", "isError": false,
+                "text": "running 41 tests\ntest result: ok. 41 passed; 0 failed; 0 ignored\n"}],
+        }),
+        json!({
+            "id": "e7", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "text",
+                "text": "### Diagnosis\n\n`parse_expr` compares the cursor with **`<=`**, so *\"at the end\"* and *\"past the end\"* are one state — the trailing operator is consumed and its missing operand becomes `lhs`.\n\n```rust\n// Stop *at* the last token, not one past it.\nwhile self.peek() < self.end {\n    let op = self.next();\n    lhs = apply(lhs, op, self.parse_atom()?);\n}\n```\n\n| Shape | Before | After |\n| --- | --- | --- |\n| 1+2+ | 3 | UnexpectedEof |\n| [1,2, | [1, 2] | UnexpectedEof |\n| f(a, | f(a) | UnexpectedEof |\n\nAll three are the **same mistake**, so one table-driven test covers them — see `src/parser/tests.rs`."}],
+        }),
+        json!({
+            "id": "e8", "kind": "user", "role": "user",
+            "blocks": [{"kind": "text",
+                "text": "Does the same shape appear anywhere else? And land it as two commits — the bounds first, then the tests."}],
+        }),
+        json!({
+            "id": "e9", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "reasoning",
+                "text": "Search for the comparison itself rather than for `parse_expr`: the mistake is the bound, not the function."}],
+        }),
+        json!({
+            "id": "e10", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "tool_call", "toolCallId": "call_grep", "name": "shell",
+                        "arguments": {"command": "rg -n 'peek\\(\\) <=' src/"}}],
+        }),
+        json!({
+            "id": "e11", "kind": "tool", "role": "tool",
+            "blocks": [{"kind": "tool_result", "toolCallId": "call_grep", "isError": false,
+                "text": "src/parser.rs:144:        while self.peek() <= self.end {\nsrc/parser.rs:318:        while self.peek() <= self.end {\nsrc/args.rs:87:        while self.peek() <= self.end {\n"}],
+        }),
+        json!({
+            "id": "e12", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "reasoning",
+                "text": "Two more sites, both reachable from the same entry point. Bounds in one commit, the case table in the other, so reverting the tests cannot take the behaviour change with them — or leave a red suite in between."}],
+        }),
+        json!({
+            "id": "e13", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "tool_call", "toolCallId": "call_edit", "name": "edit",
+                        "arguments": {"path": "src/args.rs", "old": "while self.peek() <= self.end {", "new": "while self.peek() < self.end {"}}],
+        }),
+        json!({
+            "id": "e14", "kind": "tool", "role": "tool",
+            "blocks": [{"kind": "tool_result", "toolCallId": "call_edit", "isError": false,
+                "text": "patched src/args.rs:87\n1 file changed, 1 insertion(+), 1 deletion(-)\n"}],
+        }),
+        json!({
+            "id": "e15", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "tool_call", "toolCallId": "call_commit", "name": "shell",
+                        "arguments": {"command": "cargo test -p parser && git commit -am 'fix(parser): the loop bound'"}}],
+        }),
+        json!({
+            "id": "e16", "kind": "tool", "role": "tool",
+            "blocks": [{"kind": "tool_result", "toolCallId": "call_commit", "isError": false,
+                "text": "test result: ok. 44 passed; 0 failed; 0 ignored\n[parser 6b1f0c2] fix(parser): the loop bound\n 3 files changed, 3 insertions(+), 3 deletions(-)\n"}],
+        }),
+        json!({
+            "id": "e17", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "text",
+                "text": "Landed in **two commits**, both green:\n\n1. `6b1f0c2` — the three bounds, *behaviour only*\n2. `d41e8aa` — the table-driven test, *coverage only*\n\n> `cargo test -p parser`: 44 passed, 0 failed, 0 ignored."}],
+        }),
+    ]
 }
 
 /// How many extra turns `FUTURE_DEMO_LONG=1` appends: enough rows to outrun the
@@ -104,6 +310,13 @@ const LONG_TURNS: usize = 16;
 /// scenarios' frames are byte-identical pictures, and rows nobody asked for
 /// would change them.
 fn long_turns(entries: &mut Vec<Value>) {
+    match demo_lang() {
+        DemoLang::Zh => long_turns_zh(entries),
+        DemoLang::En => long_turns_en(entries),
+    }
+}
+
+fn long_turns_zh(entries: &mut Vec<Value>) {
     for turn in 1..=LONG_TURNS {
         entries.push(json!({
             "id": format!("lu{turn}"), "kind": "user", "role": "user",
@@ -118,11 +331,67 @@ fn long_turns(entries: &mut Vec<Value>) {
     }
 }
 
+/// The English long conversation: a reader working out why the retry layer
+/// exists, one question at a time, with the log excerpt and the test that came
+/// out of it.
+///
+/// Fixed turns rather than generated prose in a loop — a frame is compared run
+/// to run, and a numbered sentence repeated sixteen times is a picture of a mock
+/// rather than of a session. The round count comes from [`LONG_TURNS`] either
+/// way, so both languages outrun the same band.
+fn long_turns_en(entries: &mut Vec<Value>) {
+    const TURNS: [(&str, &str); 8] = [
+        (
+            "why is this retry layer still here?",
+            "Because the transport underneath it is silent rather than dead. The upstream stops writing after 45 seconds and never closes the socket, so nothing fires: no error, no EOF, no read timeout that we could lower. This layer is the only thing between that silence and a spinner nobody can explain.",
+        ),
+        (
+            "is the 45 seconds ours or theirs?",
+            "Theirs — it is the load balancer in front of the model gateway. Our client has a 5 second connect timeout and no read timeout at all, which is why a quiet connection looks, from inside the process, exactly like a slow answer.",
+        ),
+        (
+            "what does the log say when it fires?",
+            "Two lines, and the pair is the signal:\n\n```\n2026-10-29T09:41:12Z  retry attempt 3  session=demo  elapsed=45.0s\n2026-10-29T09:41:12Z  stream reopened     session=demo  attempt=1\n```\n\nThe attempt that timed out has no closing line: it is abandoned, not failed. Every deadline here should end with something — `finish_incomplete` is what the run record calls it.",
+        ),
+        (
+            "could we just lower our timeout?",
+            "For this path, yes: 20 seconds is already longer than a healthy first chunk. But that is a fix with a cost — a slow model on a busy machine would be cut off mid-answer — so it belongs behind the layer, as a budget the layer enforces, not as a socket option.",
+        ),
+        (
+            "where does the attempt counter live?",
+            "In the run record (`run_epoch`), not in the transport. That is deliberate: a reconnect that lands on the same run has to keep its epoch, and the counter is what says whether the reply the reader sees is still the one they asked for. Reset it on a new prompt, never on a new socket.",
+        ),
+        (
+            "what happens to the partial reply?",
+            "It stays, and that is the point of retrying rather than restarting. The transcript keeps the chunks that arrived, the activity row says `retrying`, and the new attempt is asked to continue instead of to answer again — repeating the opening paragraph is the one failure readers notice immediately.",
+        ),
+        (
+            "do the tests cover the silent path?",
+            "One does now. It fakes a stream that delivers two chunks and then goes quiet:\n\n- the run must not end\n- a reopen must arrive before the third read\n- the epoch must not change\n- the transcript must keep both chunks\n\nIt failed the first time for a boring reason — the fake held the sender, so the client saw a *closed* stream (an error) instead of a silent one. Silence has to be arranged with a task that never finishes, which is the same thing the demo agent below does on purpose.",
+        ),
+        (
+            "is there a cheaper signal than a timer?",
+            "Yes, when one exists — a keepalive from the server, or a byte count the gateway can report. There is none here today, so the timer is the honest answer: 45 seconds measured from the last byte rather than from the request, which is what makes it survive a slow first chunk and still catch a dead one.\n\nWhen the gateway grows a keepalive, this layer keeps its shape and loses its clock: the budget becomes \"three missed keepalives\" instead of \"45 seconds\". Until then, the number stays where it is and the log line stays paired.",
+        ),
+    ];
+    for (index, (question, answer)) in TURNS.iter().enumerate() {
+        let turn = index + 1;
+        entries.push(json!({
+            "id": format!("lu{turn}"), "kind": "user", "role": "user",
+            "blocks": [{"kind": "text", "text": *question}],
+        }));
+        entries.push(json!({
+            "id": format!("la{turn}"), "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "text", "text": *answer}],
+        }));
+    }
+}
+
 /// `get_state`: what the header, the status bar and the session list draw.
 fn state() -> Value {
-    json!({
+    let mut state = json!({
         "sessionId": SESSION_ID,
-        "sessionName": "parser 的 off-by-one",
+        "sessionName": session_name(),
         "cwd": session_cwd(),
         "model": MODEL,
         "thinkingLevel": "medium",
@@ -144,20 +413,270 @@ fn state() -> Value {
             "cacheReadTokens": 88_000, "cacheWriteTokens": 2_100,
             "costCny": 0.0137
         }
-    })
+    });
+    // `FUTURE_DEMO_QUEUE=1` also reports a turn in flight and the prompts waiting
+    // behind it, which is what the composer's queue band draws. Gated like
+    // `FUTURE_DEMO_CWD`: a stand-in that always had a queue would put a band in
+    // every other frame's baseline.
+    if std::env::var_os("FUTURE_DEMO_QUEUE").is_some() {
+        // A live turn is what makes the band truthful, but it also keeps the
+        // transcript in its *running* shape — no fold, no tree. `FUTURE_DEMO_QUEUE=idle`
+        // is the other half of a real state: the reply has just finished and its
+        // queued prompts have not been sent yet, so the band is up, the transcript is
+        // settled, and the work opens as a tree.
+        if std::env::var("FUTURE_DEMO_QUEUE").unwrap_or_default() != "idle" {
+            state["isStreaming"] = json!(true);
+            state["activeRun"] = json!({
+                "runId": "demo-run-live", "epoch": 1, "state": "running", "lastEventIdx": 0
+            });
+        }
+        // The prompts waiting behind the reply, in the frame's own language: a
+        // queue band is a list of the reader's *words*, so a Chinese one in an
+        // English frame reads as a mock (the same reason the transcript is
+        // localized). One entry carries a newline on purpose — the band shows it
+        // as `↵`, which is how a two-line prompt survives being one row.
+        let queued: [(&str, &str); 3] = match demo_lang() {
+            DemoLang::Zh => [
+                ("顺手把 tui 的 clippy 警告也清掉", "2026-03-04T10:00:00Z"),
+                (
+                    "再看一下 diff 面板的滚动，别一滚就跳到底\n顺便补个回归测试",
+                    "2026-03-04T10:00:04Z",
+                ),
+                ("跑完把两处改动的 sha 贴一下", "2026-03-04T10:00:09Z"),
+            ],
+            DemoLang::En => [
+                ("Also clear the clippy warnings in `tui`", "2026-03-04T10:00:00Z"),
+                (
+                    "Then look at the diff panel's scrolling — it jumps to the\nbottom. Add a regression test for it.",
+                    "2026-03-04T10:00:04Z",
+                ),
+                ("Paste both commit shas when you are done", "2026-03-04T10:00:09Z"),
+            ],
+        };
+        state["queuedRuns"] = Value::Array(
+            queued
+                .iter()
+                .enumerate()
+                .map(|(index, (text, accepted))| {
+                    json!({
+                        "runId": format!("demo-run-queued-{}", index + 1),
+                        "runSequence": index + 2,
+                        "clientRequestId": format!("demo-request-queued-{}", index + 1),
+                        "state": "queued",
+                        "queuePosition": index + 1,
+                        "acceptedAt": accepted,
+                        "displayText": text,
+                    })
+                })
+                .collect(),
+        );
+        state["queuedCount"] = json!(queued.len());
+    }
+    state
 }
 
+fn session_name() -> &'static str {
+    match demo_lang() {
+        DemoLang::Zh => "表达式解析器里的 off-by-one",
+        // Title case, like every other English title here: a session name in a
+        // rail is a title, and the TUI does not restyle what the agent sends.
+        DemoLang::En => "Off-by-One in the Expression Parser",
+    }
+}
+
+/// The sessions the rail lists.
+///
+/// The Chinese list is the three the committed frames were captured with. The
+/// English one is longer on purpose: a rail three rows tall is a picture of a
+/// mock, and the sidebar is half of the frame this payload exists for — a
+/// working checkout files a dozen conversations under a couple of workspaces,
+/// and that is what an English frame should show.
 fn sessions() -> Value {
-    json!({"sessions": [
-        {"id": SESSION_ID, "sessionName": "parser 的 off-by-one", "cwd": session_cwd(),
-         "model": MODEL, "updatedAtMs": now_ms(), "queryCount": 1, "isStreaming": false},
-        {"id": "demo-older", "sessionName": "workbench 布局草图",
-         "cwd": "/Users/you/future-os/.worktrees/ui", "model": MODEL,
-         "updatedAtMs": now_ms() - 3_600_000, "queryCount": 12, "isStreaming": false},
-        {"id": "demo-oldest", "sessionName": "nightly coverage run",
-         "cwd": "/Users/you/future-os", "model": MODEL,
-         "updatedAtMs": now_ms() - 86_400_000, "queryCount": 4, "isStreaming": false}
-    ]})
+    let sessions = match demo_lang() {
+        DemoLang::Zh => {
+            // The Chinese rail is the English one row for row — same workspaces,
+            // same ages, same query counts — with a title a Chinese reader would
+            // have written. A frame's session list is as much "the content" as
+            // its transcript, so pinning the language has to reach it too.
+            const HOME: &str = "/Users/you/future-os";
+            const UI: &str = "/Users/you/future-os/.worktrees/ui";
+            const NOTES: &str = "/Users/you/notes";
+            const OTHERS: [(&str, &str, i64, u32); 57] = [
+                ("重试层挡住了静默的流", HOME, 8, 23),
+                ("侧栏：把一个工作区折起来", HOME, 26, 9),
+                ("短查询的命盘排序", HOME, 51, 14),
+                ("目标面板的覆盖率闸门", HOME, 95, 31),
+                ("SQLite 视图 prepare 要 12ms", HOME, 140, 7),
+                ("工作台布局草图", UI, 240, 12),
+                ("静默 48 秒后重连", HOME, 300, 18),
+                ("把重试层从桥里拆出来", HOME, 420, 6),
+                ("按键审计：ctrl+g 与 ctrl+d", UI, 600, 11),
+                ("Windows 命名管道冒烟测试", HOME, 1_500, 4),
+                ("夜里那次覆盖率跑", HOME, 2_100, 4),
+                ("压缩数字的笔记", NOTES, 3_000, 3),
+                ("目录结构那一页", NOTES, 5_400, 2),
+                ("命盘需要一个过滤行", UI, 6_200, 8),
+                ("待办面板：把目标去重", HOME, 6_000, 5),
+                ("事件流来了两遍", HOME, 6_432, 16),
+                ("工具结果算不算正文行", HOME, 6_896, 9),
+                ("手机端：追问开了新会话", HOME, 7_393, 21),
+                ("会话的「最近」从不更新", HOME, 7_925, 13),
+                ("一次删掉一批会话", HOME, 8_496, 4),
+                ("45 秒的死线没有收尾行", HOME, 9_109, 17),
+                ("缓存命中率是 96%", HOME, 9_765, 6),
+                ("每次 run 花多少额度", NOTES, 10_468, 3),
+                ("一个 parser 一个 commit，还是三个", HOME, 11_223, 2),
+                ("指南：每个文件放哪里", NOTES, 12_031, 5),
+                ("截图：把侧栏宽度钉住", UI, 12_898, 7),
+                ("在隔离 home 里跑 grpcurl", HOME, 13_827, 8),
+                ("目标面板把一个 todo 忘了", HOME, 14_824, 11),
+                ("那个 flaky 测试在等什么", HOME, 15_892, 9),
+                ("Windows：锁文件不是原子的", HOME, 17_037, 6),
+                ("一个 prompt，两个会话", HOME, 18_264, 4),
+                ("正文丢了最后一行", HOME, 19_580, 12),
+                ("浅色主题的对比度", UI, 20_991, 9),
+                ("滚动：天花板上限要算窗口", HOME, 22_504, 7),
+                ("帮助浮层列了它没有的动词", HOME, 24_125, 3),
+                ("类型化 RPC：退役 JSON 兜底", HOME, 25_863, 15),
+                ("分支保护要求先合 main", HOME, 27_727, 2),
+                ("覆盖率：src-tauri 那一对", HOME, 29_725, 8),
+                ("滚轮为什么跳两行", UI, 31_866, 5),
+                ("工具调用参数被截断", HOME, 34_163, 10),
+                ("读 40MB 的日志不卡", HOME, 36_624, 6),
+                ("模型选择器什么都记不住", HOME, 39_263, 4),
+                ("diff 评审：把长 hunk 折起来", UI, 42_092, 11),
+                ("国际化：英文版用量面板", HOME, 45_125, 7),
+                ("沙箱层级名字有点误导", NOTES, 48_376, 3),
+                ("worktree 留到落地再删", HOME, 51_862, 2),
+                ("Windows：管道名按用户分", HOME, 55_598, 5),
+                ("两个 agent 抢一个 socket", HOME, 59_604, 3),
+                ("输入框随草稿长高", UI, 63_899, 9),
+                ("截图：侧栏再宽一点", UI, 68_503, 4),
+                ("Markdown 表格遇到宽字就散", HOME, 73_439, 6),
+                ("diff 面板读的是索引", HOME, 78_730, 7),
+                ("收尾锁里的陈旧锁", HOME, 84_403, 2),
+                ("覆盖率：把两次跑合起来", HOME, 90_484, 8),
+                ("一份刚好放得下的会话列表", NOTES, 97_004, 5),
+                ("读目标面板的账本", HOME, 103_993, 11),
+                ("一个 prompt，两个回答", HOME, 111_486, 3),
+            ];
+            let mut rows: Vec<(&str, &str, i64, u32)> = Vec::with_capacity(OTHERS.len() + 1);
+            rows.push((session_name(), HOME, 0, 1));
+            rows.extend(OTHERS);
+            Value::Array(
+                rows.iter()
+                    .enumerate()
+                    .map(|(index, (title, cwd, minutes, queries))| {
+                        let id = match index {
+                            0 => SESSION_ID.to_string(),
+                            other => format!("demo-zh-{}", other + 1),
+                        };
+                        json!({
+                            "id": id, "sessionName": title, "cwd": cwd, "model": MODEL,
+                            "updatedAtMs": now_ms() - minutes * 60_000,
+                            "queryCount": queries, "isStreaming": false
+                        })
+                    })
+                    .collect(),
+            )
+        }
+        DemoLang::En => {
+            // `(title, workspace, minutes ago, queries)`, newest first. Ages are
+            // in minutes so the rail's own `12m` / `3h` / `2d` stamps come out of
+            // the surface rather than being written here as text. A working
+            // checkout files a railful under a couple of workspaces — three rows
+            // of sessions next to a transcript the height of the band is a
+            // picture of a mock, not of a session list.
+            //
+            // Titles are title case. A session name is a *title* in the rail, and
+            // the surface prints whatever the agent sent, so the case has to come
+            // from here.
+            const HOME: &str = "/Users/you/future-os";
+            const UI: &str = "/Users/you/future-os/.worktrees/ui";
+            const NOTES: &str = "/Users/you/notes";
+            const OTHERS: [(&str, &str, i64, u32); 57] = [
+                ("Retry Layer Hides a Silent Stream", HOME, 8, 23),
+                ("Rail: Fold a Workspace Shut", HOME, 26, 9),
+                ("Palette Ranking for Short Queries", HOME, 51, 14),
+                ("Coverage Gate for the Goal Plane", HOME, 95, 31),
+                ("SQLite View Prepare Is 12ms", HOME, 140, 7),
+                ("Workbench Layout Sketch", UI, 240, 12),
+                ("48s of Silence, Then a Reopen", HOME, 300, 18),
+                ("Split the Retry out of the Bridge", HOME, 420, 6),
+                ("Keymap Audit: ctrl+g and ctrl+d", UI, 600, 11),
+                ("Windows Named Pipe Smoke Test", HOME, 1_500, 4),
+                ("Nightly Coverage Run", HOME, 2_100, 4),
+                ("Notes on the Compaction Numbers", NOTES, 3_000, 3),
+                ("Directory Layout Page", NOTES, 5_400, 2),
+                ("The Palette Needs a Filter Row", UI, 6_200, 8),
+                ("To-do Panel: Dedupe the Goals", HOME, 6_000, 5),
+                ("Stream Events Arrive Twice", HOME, 6_432, 16),
+                ("Tool Results as Transcript Rows", HOME, 6_896, 9),
+                ("Mobile: Follow-up Opens a New Chat", HOME, 7_393, 21),
+                ("Session Recency Is Never Updated", HOME, 7_925, 13),
+                ("Delete a Batch of Sessions", HOME, 8_496, 4),
+                ("The 45s Deadline Has No Closing Line", HOME, 9_109, 17),
+                ("Cache Hit Rate Is 96 Percent", HOME, 9_765, 6),
+                ("Cost per Run, in Credit Units", NOTES, 10_468, 3),
+                ("One Commit per Parser, or Three", HOME, 11_223, 2),
+                ("Guide: Where Each File Lives", NOTES, 12_031, 5),
+                ("Screenshots: Pin the Rail Width", UI, 12_898, 7),
+                ("A grpcurl Probe in a Scratch Home", HOME, 13_827, 8),
+                ("The Goal Plane Forgets a Todo", HOME, 14_824, 11),
+                ("What the Flaky Test Was Waiting For", HOME, 15_892, 9),
+                ("Windows: The Lock File Is Not Atomic", HOME, 17_037, 6),
+                ("One Prompt, Two Sessions", HOME, 18_264, 4),
+                ("The Transcript Loses Its Last Row", HOME, 19_580, 12),
+                ("Colour Contrast in the Light Theme", UI, 20_991, 9),
+                ("Scroll: The Ceiling Counts the Window", HOME, 22_504, 7),
+                ("Help Overlay Lists Verbs It Lacks", HOME, 24_125, 3),
+                ("Typed RPC: Retire the JSON Fallback", HOME, 25_863, 15),
+                ("Branch Protection Wants Main Merged", HOME, 27_727, 2),
+                ("Coverage: The src-tauri Pair", HOME, 29_725, 8),
+                ("Why the Wheel Jumps Two Lines", UI, 31_866, 5),
+                ("Tool Call Arguments Are Truncated", HOME, 34_163, 10),
+                ("Reading a 40MB Log Without Freezing", HOME, 36_624, 6),
+                ("The Model Picker Remembers Nothing", HOME, 39_263, 4),
+                ("Diff Review: Fold Long Hunks", UI, 42_092, 11),
+                ("i18n: The Usage Panel in English", HOME, 45_125, 7),
+                ("Sandbox Tier Names Are Misleading", NOTES, 48_376, 3),
+                ("Keep the Worktree Until It Lands", HOME, 51_862, 2),
+                ("Windows: The Pipe Name Is Per User", HOME, 55_598, 5),
+                ("Two Agents on One Socket", HOME, 59_604, 3),
+                ("The Composer Grows With the Draft", UI, 63_899, 9),
+                ("Screenshots: A Wider Rail", UI, 68_503, 4),
+                ("Markdown Tables Break on Wide Cells", HOME, 73_439, 6),
+                ("The Diff Panel Reads the Index", HOME, 78_730, 7),
+                ("Stale Locks in the Finish Lock", HOME, 84_403, 2),
+                ("Coverage: Merge the Two Runs", HOME, 90_484, 8),
+                ("A Session List That Fits", NOTES, 97_004, 5),
+                ("Reading the Goal Plane's Ledger", HOME, 103_993, 11),
+                ("One Prompt, Two Answers", HOME, 111_486, 3),
+            ];
+            // The session the frame opens is the newest row, so it cannot be in
+            // the const table: its title comes from `session_name()`.
+            let mut rows: Vec<(&str, &str, i64, u32)> = Vec::with_capacity(OTHERS.len() + 1);
+            rows.push((session_name(), HOME, 0, 1));
+            rows.extend(OTHERS);
+            Value::Array(
+                rows.iter()
+                    .enumerate()
+                    .map(|(index, (title, cwd, minutes, queries))| {
+                        let id = match index {
+                            0 => SESSION_ID.to_string(),
+                            other => format!("demo-en-{}", other + 1),
+                        };
+                        json!({
+                            "id": id, "sessionName": title, "cwd": cwd, "model": MODEL,
+                            "updatedAtMs": now_ms() - minutes * 60_000,
+                            "queryCount": queries, "isStreaming": false
+                        })
+                    })
+                    .collect(),
+            )
+        }
+    };
+    json!({ "sessions": sessions })
 }
 
 fn models() -> Value {
@@ -226,6 +745,40 @@ const STREAM_DELTAS: [&str; 44] = [
     "这样 revert 的粒度",
 ];
 
+/// The English streaming turn, delta for delta: the same answer, still arriving,
+/// stopping mid-word on purpose. Used by `--lang en --scenario streaming`.
+const STREAM_DELTAS_EN: [&str; 29] = [
+    "Start with the bound: ",
+    "`parse_expr` consumes the operator before it checks for the end of input, ",
+    "so the last token never reaches the branch that would close the expression.\n\n",
+    "It reproduces in one line — ",
+    "`1+2` is fine, ",
+    "`1+2+` comes back with a missing right-hand side. ",
+    "The loop advanced **before** it looked.\n\n",
+    "The fix is to check before the advance:\n\n```rust\n",
+    "while let Some(tok) = lexer.peek() {\n",
+    "    if tok.is_eof() { break; }\n",
+    "    let op = lexer.next();\n",
+    "    let rhs = parse_atom(lexer)?;\n",
+    "    lhs = apply(lhs, op, rhs);\n",
+    "}\n",
+    "```\n\n",
+    "The regression test pins exactly that: ",
+    "an expression that ends on an operator ",
+    "has to report `UnexpectedEof` ",
+    "instead of quietly returning the left-hand side.\n\n",
+    "There are two more sites with the same shape, ",
+    "in `parse_list` and `parse_args`, ",
+    "and I would fix all three together ",
+    "before running `cargo test -p parser`.\n\n",
+    "One thing worth saying about the class of bug: ",
+    "it is always the same picture — ",
+    "**advance, then check**. ",
+    "So a `next()` sitting above a condition in review ",
+    "is worth a second look, ",
+    "even while the tests are green.",
+];
+
 /// One delta every this many milliseconds: slow enough that a screenshot catches
 /// the reply in flight, fast enough that a capture does not wait on prose.
 const STREAM_DELTA: std::time::Duration = std::time::Duration::from_millis(120);
@@ -263,6 +816,10 @@ impl DemoAgent {
             return;
         };
         let run_id = run_id.to_string();
+        let deltas: &[&str] = match demo_lang() {
+            DemoLang::Zh => &STREAM_DELTAS,
+            DemoLang::En => &STREAM_DELTAS_EN,
+        };
         tokio::spawn(async move {
             let event = |kind: &str, data: Value| StreamEvent {
                 r#type: kind.to_string(),
@@ -280,7 +837,7 @@ impl DemoAgent {
             {
                 return;
             }
-            for delta in STREAM_DELTAS {
+            for delta in deltas {
                 tokio::time::sleep(STREAM_DELTA).await;
                 if tx
                     .send(event("text_chunk", json!({"text": delta})))

@@ -507,8 +507,28 @@ fn get_state_internal(
     // see `RpcSession::replay_cost_split`.
     let split = *sess.cumulative_cost_split.lock();
 
-    // Use API-reported prompt_tokens from the last request as actual context usage
-    let context_tokens = sess.last_prompt_tokens.load(Ordering::Relaxed);
+    // Use API-reported prompt_tokens from the last request as actual context usage.
+    //
+    // A compaction resets that counter — the checkpoint replaces the history the
+    // next request sends, and no request has been sent since — so a session that
+    // was just compacted would report an empty context until its next turn. It
+    // is not empty: the checkpoint's own `tokens_after` is the estimate of that
+    // next prompt, which is exactly the figure a context gauge should show in
+    // between (and the one the next request's usage will replace with the real
+    // count). Reporting 0 there drove every client's gauge to `0 / 200k` right
+    // after a compaction that had just said "62,203 → 33,281 tokens".
+    let context_tokens = {
+        let reported = sess.last_prompt_tokens.load(Ordering::Relaxed);
+        if reported > 0 {
+            reported
+        } else {
+            sess.active_checkpoint
+                .lock()
+                .as_ref()
+                .map(|checkpoint| checkpoint.tokens_after as i64)
+                .unwrap_or(0)
+        }
+    };
     // Query count: number of user messages (prompts and follow-ups).
     // Excludes internal tool/assistant messages.
     let stored_metadata = sess.session_manager.state_metadata(&session_id).ok();
@@ -1899,6 +1919,59 @@ mod tests {
         assert_eq!(price("costOutputCny"), 0.1);
         assert_eq!(price("costCacheReadCny"), 0.0);
         assert_eq!(price("costCacheWriteCny"), 0.0);
+    }
+
+    /// A compaction zeroes the API-reported prompt count (the next request is a
+    /// different prompt), and `get_state` used to report that zero as the
+    /// session's context usage — so every client's gauge read `0 / 200k 0%`
+    /// immediately after a compaction that had just reported
+    /// `62,203 → 33,281 tokens`.
+    ///
+    /// The checkpoint's `tokens_after` is the agent's own estimate of the prompt
+    /// that compaction left behind, which is what the gauge should show until
+    /// the next request states its real size — and a real request still wins.
+    #[test]
+    fn get_state_reports_the_checkpoints_estimate_between_a_compaction_and_the_next_request() {
+        let state = crate::rpc::commands::test_support::make_app_state();
+        let session = state.get_session("default").expect("the default session");
+        {
+            let sess = session.read();
+            sess.last_prompt_tokens
+                .store(0, std::sync::atomic::Ordering::Release);
+            *sess.active_checkpoint.lock() = Some(crate::compaction::ContextCheckpoint {
+                entry_id: "cmp-entry".to_string(),
+                checkpoint_id: "cmp-1".to_string(),
+                covered_from_entry_id: None,
+                cutoff_entry_id: None,
+                summary: vec![],
+                protected_entry_ids: vec![],
+                tokens_before: 62_203,
+                tokens_after: 33_281,
+                trigger: crate::compaction::CompactionTrigger::Manual,
+                phase: Some(crate::compaction::CompactionPhase::Standalone),
+                algorithm_version: "test-v1".to_string(),
+                summary_outcome: None,
+                model: "test-model".to_string(),
+                context_window: 200_000,
+                created_at: chrono::Utc::now(),
+            });
+        }
+
+        let value = get_state_internal(&state, "default", None).expect("a state");
+        assert_eq!(
+            value["contextTokens"], 33_281,
+            "the checkpoint's estimate stands in for the un-sent prompt: {value}"
+        );
+        assert!(value["contextPercent"].as_f64().unwrap() > 0.0);
+
+        // The next model call reports the real prompt size, and that is what the
+        // gauge shows from then on — the estimate must never outrank it.
+        session
+            .read()
+            .last_prompt_tokens
+            .store(12_345, std::sync::atomic::Ordering::Release);
+        let value = get_state_internal(&state, "default", None).expect("a state");
+        assert_eq!(value["contextTokens"], 12_345, "{value}");
     }
 
     #[test]

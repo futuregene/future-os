@@ -245,6 +245,50 @@ What the flags are for:
 - `--addr <host:port>` attaches to an agent that is already running (a *real*
   session) instead of starting `demo_agent`, and leaves the caller's
   `FUTURE_HOME` alone.
+- `--lang <system|zh|en>` pins the whole frame's language (default `zh`, the
+  language every committed asset was shot in): the chrome's copy goes into the
+  TUI's `settings.json` and the scripted data is handed to `demo_agent` as
+  `FUTURE_DEMO_LANG`. Both halves have to agree, or the frame is an English
+  shell around a Chinese session list. The English `streaming` scenario also
+  submits its prompt in English — the question is the reader's words, not a
+  keystroke. Both payloads are the same session — 58 conversations in the rail
+  and a two-turn transcript that exercises a heading, bold and italic runs,
+  inline code, a highlighted `rust` block, a bordered table and a quote — written
+  in each language rather than translated sentence by sentence, because a panel
+  with three rows in it is a picture of a mock. That also flushed out three
+  labels the chrome had left in English: the settled activity row (`idle`), a
+  session with no model chosen, and the reasoning effort beside the model
+  (`medium`), plus the age of the newest conversation (`now`, two cells wider as
+  刚刚 — the age column is measured over what is painted). It is also taller than a 54-row band by itself, so an
+  English frame is usually shot at 190×66 rather than at the documented 120×38.
+- `--sidebar-width <cols>` pins the rail's width (default: the surface's own,
+  `SIDEBAR_DEFAULT` = 36). The rail reserves a third of itself for the workspace
+  name, so at 36 columns an English session title gets about nineteen cells
+  before the ellipsis while the same list in Chinese fits; pass this when a
+  frame needs the titles to read through (the ceiling is 60).
+- `--sidebar-position <left|right>` pins which side the rail sits on (the
+  surface's own default is right).
+- `--theme <id>` pins the palette (`dark`, `light`, `dracula`, `tokyo-night`,
+  `gruvbox`, `rose-pine`, …; see `theme.rs`). The committed assets are all on the
+  shipped default, so this is for a frame that wants to show the palette picker's
+  effect rather than the product's own look.
+- `--scenario composing` is the frame of a reader *in the middle of writing*
+  after a reply has finished: four lines of draft in the composer (typed with
+  `ctrl+j`, never sent), the **queue band** above it listing three prompts that
+  are waiting to go out (`FUTURE_DEMO_QUEUE=idle` — the reply is done, the queued
+  prompts have not been sent yet), and the last turn's work **opened as a tree**:
+  `▾ 3 tool calls · 2 thoughts`, then `│ ▸ thinking` with the reasoning under it,
+  `│ edit src/args.rs`, `│ $ cargo test …`. Opening it is a keyboard walk —
+  `tab` to the fold, `enter`, `tab` into its first thought, `enter` again —
+  because a click on a transcript row does not arrive through the pty (measured:
+  the same SGR bytes open a rail tab and grab the divider, and leave a fold
+  shut); `shift+right` (`PanelNext`) then switches the rail from its flat *Recent*
+  list to the workspace view, so the conversations are filed under the heading
+  and count of the checkout they belong to. Both shapes only exist when the
+  session is *settled*: a run in flight renders every row flat, which is why the
+  queue band is captured in the idle half of that state. At 190×72 the whole
+  thing fits — 58 conversations in three workspace groups, the transcript's
+  table/highlighted code/quote, the opened tree, the band and the draft.
 
 The repository's own entry point for these frames is
 `tui/scripts/shot.sh <scenario> [WxH] [out.png]`, a thin wrapper that supplies
@@ -254,6 +298,9 @@ The repository's own entry point for these frames is
 tui/scripts/shot.sh chat 120x38 $PWD/docs/tui/assets/workbench-chat.png
 tui/scripts/shot.sh usage 120x38 $PWD/docs/tui/assets/workbench-panel-usage.png
 tui/scripts/shot.sh drag 120x38 $PWD/docs/tui/assets/workbench-drag-fixed.png
+# An English frame, big, rail on the left and wide enough for the titles:
+SHOT_LANG=en SHOT_SIDEBAR_WIDTH=56 SHOT_SIDEBAR_POSITION=left \
+  tui/scripts/shot.sh composing 190x72
 ```
 
 The third argument is the output path; without it the wrapper names the file
@@ -390,6 +437,87 @@ The captured PNGs land in `.screenshots/` (gitignored). Open
 a stand-in PTY server on port 7391 so the embedded terminal panel has something
 to show.
 
+### One session, two surfaces: the `parser-*` scenarios
+
+`.screenshots/tui-zh/` and `.screenshots/tui-en/` are the TUI's pictures of one
+scripted session — an off-by-one in an expression parser
+(`tui/examples/demo_agent.rs`, `journal_zh` / `journal_en`). `parser-zh` and
+`parser-en` show that same session in the app:
+
+```bash
+python3 scripts/screenshots/capture.py serve-desktop               # terminal 1
+python3 scripts/screenshots/capture.py capture-desktop parser-zh   # → .screenshots/desktop-zh.png
+python3 scripts/screenshots/capture.py capture-desktop parser-en   # → .screenshots/desktop-en.png
+```
+
+Both live in `scripts/screenshots/scenarios.d/parser-session.json` — a fragment,
+so the shared table is not edited by a session that only adds a scenario.
+
+`?thread=th_parser` opens that conversation and brings its workspace row with it;
+the default fixture, which every other scenario starts from, is left exactly as
+it was. `?lang=zh|en` pins **both halves** of the frame: the interface (read by
+`shot/prefs.ts` before the app boots) and the fixture's own session list and
+transcript (`desktop/shot/mock/data.ts` reads the same parameter). A rail whose
+heading said `Sessions` over rows that said `整理两篇文献的结论对比表` is neither
+language, so each scenario fails if a word of the other one reaches the frame.
+
+The window is a 16-inch laptop's default 1728×1117 at 2×, and the frame reads as
+a normal desktop app: the session rail, the transcript, and — opened from the
+header's own panel button (`展开上下文面板` / `Expand context panel`) — the
+workspace's files on the right. The panel seeds its **Files** tab when it opens
+from that button, so the scenario taps it once and then the `src` row; what it
+lists is the checkout the conversation is about — `parser.rs` and `args.rs` beside
+`lexer.rs`, `main.rs`, `Cargo.toml` and `AGENTS.md`, from `workspaceFiles` keyed by
+the workspace path. Opening it takes 384 px off the conversation column (1440 →
+1056 at this width), but the reading column is capped, so the text re-centres
+rather than re-wrapping; in a window too narrow for a third column the panel opens
+as an overlay over the conversation instead (`context-panel-narrow` captures that).
+
+A settled reply folds onto its answer, so the frame stands at the first turn and
+keeps its work folded — `查看过程 · 工具调用 2 次 · 思考 1 次`, which is the TUI's own
+`▸` line. `上一个问题` (`Previous question`, the transcript's own ↑ control) lands
+the reader's previous question just under the header, which is what puts a whole
+turn on one screen: the question, the folded process, and the diagnosis with its
+highlighted `rust` block, three-row table and closing line, the text word for word
+the TUI's. The second turn starts at the fold — its question is on screen, its
+answer is not — because a laptop window cannot hold both turns, and a
+taller-than-a-screen "window" was the alternative. The `eval` holds the frame to
+that: every block of the first turn above the composer, the second question still
+visible at the fold, and no word of the other language anywhere, the files panel
+included.
+
+The palette is the app's own dark appearance: `?theme=dark` pins it the way
+`?lang=` pins the words (both are read by `shot/prefs.ts` before the app boots),
+so the frames are the shipped default (`futureos`) in dark rather than a variant,
+and the scenario asserts `documentElement` carries `dark` so a capture cannot
+quietly come back light. **Only colour changes.** The geometry is the same as a
+light capture to the pixel — both scenarios still report the first turn ending
+292 px (zh) and 268 px (en) above the composer — and the contrast is measured
+rather than eyeballed: body and heading text at 14:1, the muted table cells and
+the quote at 7.6:1, the file tree at 15:1, all above WCAG AA, with 0.6 % of the
+frame's pixels brighter than 200 (the glyphs themselves). The colours a reader
+might compare across palettes — the `+18` / `-2` counts and the diff lines in the
+*Review* tab — come from the same `text-success` / `text-danger` tokens, so they
+follow the palette instead of being written per theme; this frame opens *Files*,
+so it shows the tree and not a diff.
+
+Two limits worth stating. Desktop captures are **not** byte-reproducible the way
+the TUI's are: they differ run to run in exactly two places — the relative age
+labels beside each message (`刚刚` / `1分钟前`, read from the wall clock) and the
+rotating indicator on a session the fixture reports as running. The content is
+stable; those pixels are not. (`capture-desktop steps-folded` moves the same two,
+so it is the surface rather than these scenarios.) And the fixture carries the
+session list and transcript in both languages; the settings, tasks and skills
+fixtures are still Chinese, which no English capture opens today.
+
+The transcript itself needed two handlers the mock did not have. A history read
+goes through the bounded transfer lane (`begin_session_history_transfer` and its
+chunked reads), and with only the inline command answered every conversation came
+out as `invalid_history_transfer` with a retry link — the transcript a screenshot
+exists to show never rendered; opening a step row also reads
+`list_approval_assessments`, which answered `null` and unmounted the app. Both are
+answered in `desktop/shot/mock/backend.ts` now.
+
 ## Mobile
 
 ```bash
@@ -403,6 +531,70 @@ resolve. `serve-mobile` sets `SHOT_WEB=1`; that flag is the only
 switch — `mobile/metro.config.js` redirects the remote context and the two native
 modules to `mobile/shot/mock/` **only** on the web platform and only when it is
 set, so native builds (`make run-mobile-android`) are unaffected.
+
+### One session, two surfaces: the `parser-*` scenarios
+
+`.screenshots/tui-zh/` and `.screenshots/tui-en/` are the TUI's pictures of one
+scripted session — an off-by-one in an expression parser (`tui/examples/demo_agent.rs`,
+`journal_zh` / `journal_en`). `parser-zh` and `parser-en` show that same session on
+the phone:
+
+```bash
+SHOT_WEB=1 python3 scripts/screenshots/capture.py serve-mobile    # terminal 1
+python3 scripts/screenshots/capture.py capture-mobile parser-zh   # → .screenshots/mobile-zh.png
+python3 scripts/screenshots/capture.py capture-mobile parser-en   # → .screenshots/mobile-en.png
+```
+
+`?parser=1` swaps the whole demo catalogue for that session — the machine's name,
+the three workspace groups, the conversation (`mobile/shot/mock/parserSession.ts`)
+— and `lang` pins the browser locale (`zh-CN` / `en-US`), so the chrome and the
+transcript are in one language: the mock takes its words from `navigator.language`,
+which is the same input the app takes its language from, and each scenario fails
+if a word of the other language reaches the frame.
+
+The phone cannot show both turns at once — the conversation is 1125 css px of
+transcript and the band between the bar and the composer is 672 — so the frame
+opens at the question and holds the folded process, the diagnosis, the fixed line
+of code and the table; the second turn (the two commits) sits one scroll below.
+The TUI's tree of tool rows has no phone equivalent: it is the fold row, whose
+spoken label (`Show process · Tool calls 2× · Thought 1×`) is where the counts
+live, and the scenario asserts those counts. The scenario is deterministic: two
+runs produce byte-identical PNGs, because nothing in the frame reads the clock.
+
+### Five desktops on one home screen: the `fleet-*` scenarios
+
+The home screen opens on the recency page — every conversation, newest reply
+first — and with more than one paired desktop the list merges them
+(`mergeSessions`, the picker's *all desktops*). `?fleet=1` swaps in five machines
+with fourteen conversations between them (`mobile/shot/mock/fleet.ts`):
+
+```bash
+python3 scripts/screenshots/capture.py capture-mobile fleet-zh          # → .screenshots/home-devices-zh.png
+python3 scripts/screenshots/capture.py capture-mobile fleet-en          # → .screenshots/home-devices-en.png
+python3 scripts/screenshots/capture.py capture-mobile fleet-picker-zh   # → .screenshots/home-devices-picker-zh.png
+python3 scripts/screenshots/capture.py capture-mobile fleet-picker-en   # → .screenshots/home-devices-picker-en.png
+```
+
+The two list scenarios assert the merge rather than the picture: the row order
+is the reply time each machine reported (not the machine), all five machines
+contribute rows, and the one caption counts all fourteen. The `-picker-` pair
+opens the sheet above the list, which is where the five machines are *named* — a
+row names its machine by glyph alone, because a name there would eat the title's
+width.
+
+Nothing in either capture is running or blocked. A `running`/`queued` row draws
+an `ActivityIndicator`, and a `waiting_approval` row draws the amber
+`CircleAlert` — a picture of "every machine in one list" should carry neither
+(the alert reads as an error on the newest rows, and a spinner is a different
+PNG every capture). So every conversation is settled: the page draws one stretch
+(`14`), and the scenarios assert both halves of that — no active caption, and no
+`circle-alert` or warning-stroked icon inside any row — so either one cannot
+come back unnoticed. Two runs produce byte-identical PNGs.
+
+The four frames are a phone set to dark (`"appearance": "dark"`), and the
+scenarios assert it: the row's painted surface has to be one of the dark tokens
+and its title has to be inked with the dark `ink`, so a capture that fell back
+to the light theme fails instead of publishing the wrong look.
 
 ### The transcript is upright (the inverted list's extra flip)
 
@@ -454,6 +646,16 @@ of each other are reported as inconclusive rather than as a pass. The judge and
 that direction are pinned offline by
 `scripts/tests/test-screenshot-upright-check.py` (`make test-screenshot-harness`).
 
+The probe judges the scroller that is *visible*, not the tallest one: the phone
+keeps the session list mounted underneath an open conversation, so a rail long
+enough to scroll is a taller scroller of its own. Before that filter it outlined a
+row of the list behind the chat, and the check reported "no in-place tile" for a
+transcript that was perfectly upright (`parser-zh` / `parser-en`, whose rail is
+long). It also takes a *paragraph* — a text block whose children are all inline
+runs — rather than only a childless element, because a frame whose largest plain
+leaf is one 13 px code line says nothing either way (0.045 upright against 0.053
+mirrored: inconclusive).
+
 ## Scenarios
 
 Scenarios are data, not code: `scripts/screenshots/scenarios.json`. Each one is a
@@ -479,6 +681,24 @@ Three platform-level knobs are worth knowing:
   is what keeps captures fast: a warm bundle is ready in about a second, a cold
   one can take 20. `settle` is only a small grace period after that. If a capture
   starts before the app paints, raise `readyTimeout` rather than `settle`.
+- **`lang` pins the browser locale, not a harness-only switch.** A scenario that
+  has to be in a language says `"lang": "en-US"`, and `cdp.mjs` makes the page's
+  system locale that value before the app's first script runs: `Emulation`
+  `setLocaleOverride` moves `Intl`, and the user agent override's `acceptLanguage`
+  moves `navigator.language` (measured on Chrome 156 — the locale override alone
+  leaves `navigator.language` at the host's `zh-CN`). The app reads the system
+  locale exactly as it does on a phone; a stored in-app preference still wins.
+- **`appearance` pins the platform's appearance, the way `lang` pins its locale.**
+  `"appearance": "dark"` makes the page report `prefers-color-scheme: dark`
+  (`Emulation.setEmulatedMedia`), which is exactly what a phone set to dark mode
+  reports — and the app's *follow the system* theme resolves against it
+  (`resolveScheme("system", …)` in `mobile/src/theme/theme.ts`). A stored in-app
+  preference still wins, so this pins the phone, not the reader's choice; the
+  desktop's `?theme=` pins its own window the other way, because a window has no
+  platform to ask.
+- **`query` appends to the platform's URL.** `"query": "?parser=1"` keeps a
+  scenario on whatever port `serve-mobile` is serving, instead of pinning
+  `http://localhost:8099/` in the scenario the way a full `url` does.
 - **`tap` needs an accessible name.** It matches `aria-label` first, then the
   element's own text for interactive roles. Where neither exists, use `tapText`;
   if you find yourself writing coordinate taps, that is a hint the control is

@@ -28,6 +28,7 @@ import {
   remoteSessions,
   remoteToolArgs,
   remoteWorkspaces,
+  requestedThread,
   reviewFiles,
   runs,
   sessionUsage,
@@ -141,6 +142,11 @@ function slow<T>(answer: T): T | Promise<T> {
 }
 const threadList = threads.map(thread => ({ ...thread }));
 const workspaceList = workspaces.map(workspace => ({ ...workspace }));
+/** Staged session-history pages, read back in 64 KiB chunks (see `begin_session_history_transfer`). */
+const historyTransfers = new Map<string, Uint8Array>();
+let historyTransferSeq = 0;
+/** The chunk size `historyTransfer.ts` insists on. */
+const HISTORY_CHUNK_BYTES = 64 * 1024;
 /** How many times each thread's agent state has been read (see the handler). */
 const stateReads = new Map<string, number>();
 
@@ -392,7 +398,7 @@ const handlers: Record<string, (args: any) => unknown> = {
     }
     return threadList;
   },
-  get_recent_thread: () => threadList.find(thread => thread.id === "th_review") ?? null,
+  get_recent_thread: () => threadList.find(thread => thread.id === (requestedThread() ?? "th_review")) ?? null,
   mark_thread_opened: () => null,
   pin_thread: (args) => {
     const target = threadList.find(thread => thread.id === args?.input?.threadId);
@@ -439,7 +445,7 @@ const handlers: Record<string, (args: any) => unknown> = {
         ? refreshedSessionUsage
         : sessionUsage;
     return {
-      model: "future/deepseek-v4-pro",
+      model: target.model ?? "future/deepseek-v4-pro",
       thinkingLevel: "medium",
       sessionName: target.title,
       sessionId: target.agentSessionId ?? null,
@@ -457,6 +463,35 @@ const handlers: Record<string, (args: any) => unknown> = {
   attach_remote_stream: () => ({ runId: null }),
 
   // ── Session history ────────────────────────────────────────────────────
+  /**
+   * A history read, staged and then read back in chunks.
+   *
+   * This is the lane `integrations/storage/historyTransfer.ts` uses: the backend
+   * stages the page, the client reads 64 KiB slices of it and composes the JSON
+   * cooperatively. Only the inline command was answered here, so every
+   * conversation in every capture came out as `invalid_history_transfer` and a
+   * retry link — the transcript a screenshot exists to show never rendered at
+   * all. The bytes are UTF-8 JSON, which is what `decodeJsonBytes` expects.
+   */
+  begin_session_history_transfer: (args) => {
+    const entries = entriesForThread(args?.threadId ?? "");
+    const page = { entries, hasMore: false, nextOffset: entries.length };
+    const bytes = new TextEncoder().encode(JSON.stringify(page));
+    const id = `shot_transfer_${++historyTransferSeq}`;
+    historyTransfers.set(id, bytes);
+    return { id, totalBytes: bytes.length, chunkBytes: HISTORY_CHUNK_BYTES };
+  },
+  read_session_history_transfer: (args) => {
+    const bytes = historyTransfers.get(String(args?.transferId ?? ""));
+    if (!bytes)
+      return [];
+    const offset = Math.max(0, Number(args?.offset ?? 0));
+    return Array.from(bytes.subarray(offset, offset + HISTORY_CHUNK_BYTES));
+  },
+  release_session_history_transfer: (args) => {
+    historyTransfers.delete(String(args?.transferId ?? ""));
+    return null;
+  },
   get_session_entries_page: (args) => {
     const entries = entriesForThread(args?.threadId ?? "");
     return { entries, hasMore: false, nextOffset: entries.length };
@@ -497,6 +532,15 @@ const handlers: Record<string, (args: any) => unknown> = {
       : [];
   },
   list_approval_requests: args => (args?.threadId === pendingApproval.threadId ? [pendingApproval] : []),
+  /**
+   * A run's auto-approval assessments: none here, but the *handler* has to exist.
+   *
+   * The run inspector renders them unconditionally, so an unanswered command
+   * reaches it as `null` and `data.filter` throws — which unmounts the whole app.
+   * Opening a step row (or the panel) is how a capture reaches that screen, so a
+   * missing answer here cost every frame that clicked a tool row, not a detail.
+   */
+  list_approval_assessments: () => [],
   list_pending_approval_requests: () => [pendingApproval],
   decide_approval_request: () => null,
   save_approval_rule: () => null,

@@ -33,6 +33,7 @@
     "notFound": "文件找不到了：{{name}}"
   },
   "filePreview": {
+    "back": "返回",
     "loading": "正在加载预览…",
     "close": "关闭预览",
     "truncated": "文件较大，仅显示开头部分。",

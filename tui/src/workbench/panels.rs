@@ -3,9 +3,9 @@
 //! Two of them are the rail's tabs, and both list *conversations*: 最近 lists
 //! every conversation by when it was last refreshed — a run still in flight
 //! first, under its own heading — and 工作区 files the same conversations the way
-//! the desktop does — pinned workspaces first, then the workspaces themselves,
-//! then the plain chats. Nothing else lives here: the usage figures are on the
-//! status bar, and skills are the palette's business.
+//! the desktop does — the conversations the reader pinned first, then the
+//! workspaces themselves, then the plain chats. Nothing else lives here: the
+//! usage figures are on the status bar, and skills are the palette's business.
 //!
 //! The third, [`PanelId::Files`], is not a tab: it is the session workspace as a
 //! tree, painted inside the files overlay (`screen::files_box`). It shares the
@@ -42,19 +42,38 @@ const TOP_GAP: usize = 1;
 /// What separates the two halves of a row's tail (`~/future-os · 5m`).
 const TAIL_SEPARATOR: &str = " · ";
 
-/// The widths a panel's right-hand tail reserves, measured over the rows it is
+/// The cells a 最近 row spends before its title: a space, the state slot, a
+/// space.
+const ROW_LEAD: usize = 3;
+
+/// Cells kept between a row's title and its workspace name, so a title that
+/// fills the budget never runs into the name beside it (`…agemfuture-os`).
+const ROW_GAP: usize = 1;
+
+/// What fraction of a conversation row the workspace *name* may claim: a third
+/// of the cells left once [`ROW_LEAD`] and [`ROW_GAP`] are paid for.
+///
+/// The name is measured per row, so a long directory costs only its own title —
+/// but without a ceiling one `session-supervisor` (18 cells) would leave its own
+/// title a stub. A name wider than its share is ellipsised instead; on a wide
+/// rail the share is wide enough to keep the whole name.
+const WORKSPACE_SHARE: usize = 3;
+
+/// The widths a panel's right-hand tail *shares*, measured over the rows it is
 /// about to paint.
 ///
 /// A rail's tail is read *down* the list rather than across one row — `313 会话 ·
-/// now` above `15 会话 · 6m` — so each of its parts is padded to a column: the
-/// `·` then stands in one cell and every age flushes against the same right
+/// now` above `15 会话 · 6m` — so the counts and the ages are padded to a column:
+/// the `·` then stands in one cell and every age flushes against the same right
 /// edge, instead of each row putting the divider wherever its own text ended.
+///
+/// A 最近 row's workspace name is deliberately *not* one of these: it is measured
+/// per row, so a long directory takes width from its own title and nobody
+/// else's (see [`WORKSPACE_SHARE`]).
 #[derive(Debug, Clone, Copy, Default)]
 struct TailColumns {
     /// The workspace headings' conversation count (`313` / `5`).
     units: usize,
-    /// The workspace a 最近 row is filed under (`future-os`).
-    workspace: usize,
     /// The age every tail ends with (`now` / `16h`).
     age: usize,
 }
@@ -130,7 +149,7 @@ impl Row {
 /// touch", so it stays most recently spoken first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
-    /// Conversations of the workspaces the reader pinned.
+    /// The conversations the reader pinned (`/pin`).
     Pinned,
     /// Every other workspace, most recently worked on first.
     Workspaces,
@@ -160,12 +179,12 @@ impl Section {
     /// Does this heading caption a flat block of conversations, rather than
     /// head a run of workspaces?
     ///
-    /// 最近's two stretches do, so their heading carries the count (`活跃 3`) —
-    /// the desktop's caption, in the rail's shape. 工作区's sections head
-    /// workspaces instead, and a workspace heading already counts what sits
-    /// under it.
+    /// 最近's two stretches and 工作区's 置顶 (a pin names a conversation) do, so
+    /// their heading carries the count (`活跃 3`) — the desktop's caption, in the
+    /// rail's shape. The other 工作区 sections head workspaces instead, and a
+    /// workspace heading already counts what sits under it.
     fn counts_sessions(self) -> bool {
-        matches!(self, Self::Active | Self::Earlier)
+        matches!(self, Self::Active | Self::Earlier | Self::Pinned)
     }
 }
 
@@ -217,37 +236,51 @@ pub fn rows_with(panel: PanelId, data: &WorkbenchData, folded: &Folded) -> Vec<R
         PanelId::Files => (0..data.tree.rows().len()).map(Row::File).collect(),
         PanelId::Workspaces => {
             let mut rows: Vec<Row> = Vec::new();
-            // One heading per section, not one per group inside it: the pinned
-            // workspaces share one 置顶 block however many there are.
-            for (pinned, kind) in [(true, Section::Pinned), (false, Section::Workspaces)] {
-                let mut headed = false;
-                for index in 0..data.workspaces.len() {
-                    let workspace = &data.workspaces[index];
-                    if workspace.pinned != pinned {
-                        continue;
-                    }
-                    let listed: Vec<usize> = workspace
-                        .session_ids
-                        .iter()
-                        .filter_map(|id| data.sessions.iter().position(|row| &row.id == id))
-                        .collect();
-                    if !headed {
-                        rows.push(Row::Section(kind));
-                        headed = true;
-                    }
-                    rows.push(Row::Workspace(index));
-                    // A folded workspace is its heading alone, which is what
-                    // makes a rail with two hundred conversations scrollable:
-                    // one line per group instead of one per conversation.
-                    if folded.contains(&workspace.path) {
-                        continue;
-                    }
-                    rows.extend(listed.into_iter().map(Row::Session));
-                }
+            // The pinned conversations lead, flat: a pin names a conversation,
+            // so it is lifted out of whichever workspace would have filed it
+            // (the desktop's tree view does the same, and its groups are the
+            // unpinned rest). One heading for the block, however many it holds,
+            // and none at all when nothing is pinned.
+            let pinned: Vec<usize> = (0..data.sessions.len())
+                .filter(|index| data.sessions[*index].pinned)
+                .collect();
+            if !pinned.is_empty() {
+                rows.push(Row::Section(Section::Pinned));
+                rows.extend(pinned.into_iter().map(Row::Session));
             }
+            // Then the workspaces in the order their newest conversation was
+            // spoken, each with what a pin did not lift out. A group with
+            // nothing left to hold is not drawn: a heading is here because
+            // conversations sit under it.
+            let mut headed = false;
+            for index in 0..data.workspaces.len() {
+                let workspace = &data.workspaces[index];
+                let listed = filed_sessions(data, &workspace.session_ids);
+                if listed.is_empty() {
+                    continue;
+                }
+                if !headed {
+                    rows.push(Row::Section(Section::Workspaces));
+                    headed = true;
+                }
+                rows.push(Row::Workspace(index));
+                // A folded workspace is its heading alone, which is what
+                // makes a rail with two hundred conversations scrollable:
+                // one line per group instead of one per conversation.
+                if folded.contains(&workspace.path) {
+                    continue;
+                }
+                rows.extend(listed.into_iter().map(Row::Session));
+            }
+            // …and the conversations that belong to no workspace, a pinned one
+            // again left to 置顶.
             let mut headed = false;
             for id in &data.chats {
-                if let Some(at) = data.sessions.iter().position(|row| &row.id == id) {
+                if let Some(at) = data
+                    .sessions
+                    .iter()
+                    .position(|row| &row.id == id && !row.pinned)
+                {
                     if !headed {
                         rows.push(Row::Section(Section::Chats));
                         headed = true;
@@ -258,6 +291,20 @@ pub fn rows_with(panel: PanelId, data: &WorkbenchData, folded: &Folded) -> Vec<R
             rows
         }
     }
+}
+
+/// The conversations a workspace heading draws under itself: the ids still in
+/// the list, minus the ones a pin lifted into 置顶.
+///
+/// The lift happens here rather than in the filing because 置顶 is a shape of
+/// the *rail*, not a fact about a directory: the same list is drawn as 最近 (a
+/// pin changes nothing there) and as this tab (it leads), and a filing that had
+/// already dropped the pinned rows could not serve both.
+fn filed_sessions(data: &WorkbenchData, ids: &[String]) -> Vec<usize> {
+    ids.iter()
+        .filter_map(|id| data.sessions.iter().position(|row| &row.id == id))
+        .filter(|index| !data.sessions[*index].pinned)
+        .collect()
 }
 
 /// The first row the cursor can stand on, starting at `from` and wrapping; `None`
@@ -491,7 +538,7 @@ fn item_rows(
         };
         return vec![vec![palette.dim(&fit(&format!("  {message}"), columns))]];
     }
-    let tail = tail_columns(panel, data, &model);
+    let tail = tail_columns(data, &model, lang);
     let items: Vec<Vec<String>> = model
         .iter()
         .enumerate()
@@ -511,6 +558,9 @@ fn item_rows(
             Row::Workspace(at) => match data.workspaces.get(*at) {
                 Some(workspace) => vec![workspace_row(
                     workspace,
+                    // What the heading actually draws under itself: a
+                    // conversation the reader pinned is in 置顶, not here.
+                    filed_sessions(data, &workspace.session_ids).len(),
                     // `▸` over rows that are not there: a fold of a group the
                     // list is showing whole.
                     folded.contains(&workspace.path),
@@ -523,7 +573,7 @@ fn item_rows(
                 None => vec![fit("", columns)],
             },
             Row::Session(at) => match data.sessions.get(*at) {
-                Some(session) => session_rows(panel, session, palette, columns, frame, tail),
+                Some(session) => session_rows(panel, session, palette, columns, frame, tail, lang),
                 None => vec![fit("", columns)],
             },
             Row::File(at) => match data.tree.get(*at) {
@@ -555,24 +605,21 @@ fn item_rows(
 /// The columns this frame's tails share, measured over the rows about to be
 /// painted — not over everything the agent listed: a filtered or folded panel
 /// should not reserve a column for a row it is not showing.
-fn tail_columns(panel: PanelId, data: &WorkbenchData, model: &[Row]) -> TailColumns {
+fn tail_columns(data: &WorkbenchData, model: &[Row], lang: Language) -> TailColumns {
     let mut columns = TailColumns::default();
     for row in model {
         match row {
             Row::Session(at) => {
                 if let Some(session) = data.sessions.get(*at) {
-                    columns.age = columns.age.max(width(&session.age));
-                    // 工作区 groups by the workspace already: its rows are under
-                    // a heading that names it, so only the age reaches the
-                    // tail there.
-                    if panel == PanelId::Recent {
-                        columns.workspace = columns.workspace.max(width(&session.workspace));
-                    }
+                    // Only the age is shared: a workspace name is measured on
+                    // its own row, so one long directory cannot take width out
+                    // of the titles around it.
+                    columns.age = columns.age.max(width(&age_text(lang, &session.age)));
                 }
             }
             Row::Workspace(at) => {
                 if let Some(workspace) = data.workspaces.get(*at) {
-                    columns.age = columns.age.max(width(&workspace.age));
+                    columns.age = columns.age.max(width(&age_text(lang, &workspace.age)));
                     let units = workspace.session_ids.len().to_string();
                     columns.units = columns.units.max(width(&units));
                 }
@@ -677,10 +724,22 @@ fn section_row(
     fit(&painted, columns)
 }
 
+/// A row's age as the reader reads it: `now` is a word (刚刚), the rest are a
+/// number and a unit that need no translation.
+fn age_text(lang: Language, age: &str) -> std::borrow::Cow<'_, str> {
+    if age == "now" {
+        std::borrow::Cow::Borrowed(t(lang, Key::AgeNow))
+    } else {
+        std::borrow::Cow::Borrowed(age)
+    }
+}
+
 /// A workspace's heading: the fold marker, its name, and how many
 /// conversations sit under it.
+#[allow(clippy::too_many_arguments)] // one painted row, one argument per fact it draws
 fn workspace_row(
     workspace: &crate::workbench::state::WorkspaceGroup,
+    count: usize,
     folded: bool,
     selected: bool,
     palette: &Palette,
@@ -688,12 +747,12 @@ fn workspace_row(
     lang: Language,
     tail: TailColumns,
 ) -> String {
-    let units = workspace.session_ids.len();
+    let units = count;
     // Both halves are padded to their column, so the `·` sits in one cell down
     // the list and the age keeps its own column beside it — `313 会话 · now`
     // over `5 会话 · 26m`.
     let units = align_right(&units.to_string(), tail.units);
-    let age = align_right(&workspace.age, tail.age);
+    let age = align_right(&age_text(lang, &workspace.age), tail.age);
     let tail_text = format!("{units} {} · {age}", t(lang, Key::SummaryUnitsSessions));
     // Never more than the row can leave the name. A rail that narrow falls back
     // to the age alone, which is the fact a heading cannot supply itself.
@@ -737,6 +796,7 @@ fn session_rows(
     columns: usize,
     frame: Option<usize>,
     tail: TailColumns,
+    lang: Language,
 ) -> Vec<String> {
     // The leading cell is the row's state slot, the desktop rail's indicator
     // seen from a terminal: a run still in flight spins there (the one thing in
@@ -767,46 +827,59 @@ fn session_rows(
             // `workspace · age` beneath it), which halved how many
             // conversations the rail could show for a fact that fits beside
             // the name. The age is short and never worth cutting, so it is
-            // reserved; the workspace takes what is left, and a plain chat
-            // (no workspace at all) shows only its age.
+            // reserved first; the workspace takes its share of what is left,
+            // and a plain chat (no workspace at all) shows only its age.
             //
-            // `workspace · age`, each half padded to its column so the same two
-            // cells hold the divider and the ages down the whole list. A plain
-            // chat (no workspace at all) shows its age alone: a divider with
-            // nothing in front of it reads as a name that went missing.
+            // The tail is measured **per row**, not as one column for the whole
+            // list: a shared column is sized by the longest directory name in
+            // it, so `session-supervisor` (18 cells) used to take the same
+            // width out of the title of a conversation filed under `tmp`. What
+            // stays shared is the age, and only the age: every one of them ends
+            // against the rail's edge, so the divider and the ages still read as
+            // one table down the list while the titles use whatever their own
+            // row leaves.
             //
-            // Half the row at most: the title is what the row is *for*. The
-            // workspace column is what is left of the budget once the age and
-            // the divider are paid for, and a name longer than that is
-            // ellipsised rather than allowed to move the dot.
+            // The title is what the row is *for*, so a name that would crowd it
+            // out is cut at its own share of the row ([`WORKSPACE_SHARE`]) with
+            // an ellipsis, and one cell is always kept between the title and the
+            // name so the two can only ever meet across a space. A plain chat
+            // (no workspace at all) shows its age alone: a divider with nothing
+            // in front of it reads as a name that went missing.
             //
-            // The name sits against the right of its column, so the names read
-            // as one column *ending* at the divider (`future-os` and
-            // `session-supervisor` both stop where the `·` is) rather than a
-            // column that starts together and leaves the dot to move.
-            let room = (columns / 2).max(5);
-            let workspace_column = tail
-                .workspace
-                .min(room.saturating_sub(width(TAIL_SEPARATOR) + tail.age));
-            let age = align_right(&session.age, tail.age);
-            let tail_text = if session.workspace.is_empty() || workspace_column == 0 {
+            // The name ends flush against the divider — `future-os` and
+            // `session-supervisor` both stop where the `·` is — rather than
+            // being padded out to a column, which is what used to leave the
+            // blank cells a shorter name did not need.
+            let usable = columns.saturating_sub(ROW_LEAD + ROW_GAP);
+            let room = (usable / WORKSPACE_SHARE)
+                .min(usable.saturating_sub(width(TAIL_SEPARATOR) + tail.age));
+            let age = align_right(&age_text(lang, &session.age), tail.age);
+            let tail_text = if session.workspace.is_empty() || room == 0 {
                 age
             } else {
-                // A name too wide for the column is cut at its tail instead,
-                // which keeps the head of a directory name and still fills the
-                // column edge to edge.
-                let name = if width(&session.workspace) <= workspace_column {
-                    align_right(&session.workspace, workspace_column)
+                // A name too wide for its share is cut at its tail instead,
+                // which keeps the head of a directory name.
+                let name = if width(&session.workspace) <= room {
+                    session.workspace.clone()
                 } else {
-                    fit(&session.workspace, workspace_column)
+                    fit(&session.workspace, room)
                 };
                 format!("{name}{TAIL_SEPARATOR}{age}")
             };
-            let tail = fit(&tail_text, room).trim_end().to_string();
+            // Clamped to the budget, then measured to its last glyph (no column
+            // padding at the end), so the age lands against the rail's edge; the
+            // title's budget below already leaves [`ROW_GAP`] free on top of
+            // that.
+            let tail = fit(&tail_text, usable).trim_end().to_string();
             let tail_width = width(&tail);
-            // ` marker ` is three cells (a space, the marker, a space).
-            let title = fit(&session.title, columns.saturating_sub(3 + tail_width));
-            let pad = columns.saturating_sub(3 + width(&title) + tail_width);
+            // What the tail does not take is the title's, less the cell kept
+            // between the two; `pad` carries the rest of the row when the title
+            // is shorter than its budget.
+            let title = fit(
+                &session.title,
+                columns.saturating_sub(ROW_LEAD + ROW_GAP + tail_width),
+            );
+            let pad = columns.saturating_sub(ROW_LEAD + width(&title) + tail_width);
             let title = if session.current {
                 palette.strong(palette.accent, &title)
             } else {
@@ -822,7 +895,8 @@ fn session_rows(
             // Under a workspace heading the heading already names the group, so
             // the row ends with its age — the same age a heading above prints,
             // in the same column: the pad puts it against the panel's edge.
-            let tail_width = width(&session.age);
+            let age_text = age_text(lang, &session.age);
+            let tail_width = width(&age_text);
             // ` marker ` is three cells (a space, the marker, a space).
             let title = fit(&session.title, columns.saturating_sub(3 + tail_width));
             let pad = columns.saturating_sub(3 + width(&title) + tail_width);
@@ -834,7 +908,7 @@ fn session_rows(
             vec![format!(
                 " {marker} {title}{}{}",
                 " ".repeat(pad),
-                palette.dim(&session.age)
+                palette.dim(&age_text)
             )]
         }
         // The file tree paints one row per entry, so a conversation's own row
@@ -963,13 +1037,16 @@ mod tests {
     fn the_recent_panel_names_each_conversations_workspace_and_age() {
         let data = demo::chat();
         // A wide rail, so the row has room for all three facts: title, the
-        // workspace it is filed under, and when it was refreshed.
+        // workspace it is filed under, and when it was refreshed. Wide enough
+        // for the fixture's longest workspace (`futureos-wechat-articles`) to
+        // survive the column's share — a narrower rail ellipsises it, which is
+        // the trade `a_long_workspace_name_gives_way_to_the_titles` pins.
         let mut hit = HitMap::new();
         let text: String = render(
             PanelId::Recent,
             &data,
             &P,
-            Rect::new(0, 0, 60, 20),
+            Rect::new(0, 0, 80, 20),
             PanelView::default(),
             &mut hit,
             Language::Zh,
@@ -982,7 +1059,10 @@ mod tests {
         for session in &data.sessions {
             assert!(text.contains(&session.title), "{session:?}: {text}");
             assert!(text.contains(&session.workspace), "{session:?}: {text}");
-            assert!(text.contains(&session.age), "{session:?}: {text}");
+            assert!(
+                text.contains(&*age_text(LANG, &session.age)),
+                "{session:?}: {text}"
+            );
         }
     }
 
@@ -1109,7 +1189,10 @@ mod tests {
 
     #[test]
     fn the_workspace_panel_files_pinned_then_workspaces_then_chats() {
-        let data = demo::chat();
+        let mut data = demo::chat();
+        // A pin names one conversation and lifts it out of the workspace that
+        // would have filed it — the desktop's tree view does the same.
+        data.sessions[1].pinned = true;
         let model = rows(PanelId::Workspaces, &data);
         let labels: Vec<String> = model
             .iter()
@@ -1127,20 +1210,52 @@ mod tests {
             ],
             "{labels:?}"
         );
+        // The pinned conversation leads the tab…
+        assert_eq!(model.get(1), Some(&Row::Session(1)), "{model:?}");
+        // …and is not filed under its workspace as well.
+        assert_eq!(
+            model.iter().filter(|row| **row == Row::Session(1)).count(),
+            1,
+            "a pinned conversation is listed once"
+        );
         // Every conversation is filed exactly once.
         let sessions: Vec<usize> = model.iter().filter_map(|row| row.session()).collect();
         let mut unique = sessions.clone();
         unique.sort_unstable();
         unique.dedup();
         assert_eq!(unique.len(), sessions.len(), "a conversation listed twice");
-        assert!(data.workspaces[0].pinned, "the fixture pins one workspace");
-        // …and the pinned one leads.
+        // The workspace headings follow in the order the filing built them,
+        // newest activity first — a pin does not move a workspace any more.
         assert_eq!(
             model.iter().find_map(|row| match row {
                 Row::Workspace(index) => Some(*index),
                 _ => None,
             }),
             Some(0)
+        );
+    }
+
+    /// Nothing pinned: the tab has no 置顶 heading at all, rather than one over
+    /// an empty block.
+    #[test]
+    fn the_pinned_heading_is_only_drawn_when_something_is_pinned() {
+        let data = demo::chat();
+        let labels: Vec<&'static str> = rows(PanelId::Workspaces, &data)
+            .iter()
+            .filter_map(|row| match row {
+                Row::Section(section) => Some(section.label(Language::Zh)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(labels, vec!["工作区", "对话会话"], "{labels:?}");
+        // …and its heading counts what it holds, like 活跃/更早 do.
+        let mut pinned = demo::chat();
+        pinned.sessions[0].pinned = true;
+        pinned.sessions[2].pinned = true;
+        let lines = plain_rows(PanelId::Workspaces, &pinned, 60, 30);
+        assert!(
+            lines.iter().any(|line| line.contains("置顶 2")),
+            "the pinned block is captioned with its count: {lines:?}"
         );
     }
 
@@ -1170,20 +1285,22 @@ mod tests {
                 .iter()
                 .find(|line| line.contains(&session.title))
                 .unwrap_or_else(|| panic!("no row for {}", session.title));
-            assert!(line.trim_end().ends_with(&session.age), "{line:?}");
+            assert!(
+                line.trim_end().ends_with(&*age_text(LANG, &session.age)),
+                "{line:?}"
+            );
             assert_eq!(width(line.trim_end()), 60, "{line:?}");
         }
     }
 
-    /// The workspace column reads to its *right* edge: a short name stops at
-    /// the divider exactly where a long one does, so the shortest row is not
-    /// a name followed by a gap the `·` floats away from.
+    /// A name sits against the divider rather than in a padded cell: a short
+    /// one stops at the `·` exactly where a long one does, so the shortest row
+    /// is not a name followed by a gap the divider floats away from.
     #[test]
     fn the_recent_rows_set_their_workspace_against_the_divider() {
         let mut data = demo::chat();
-        // The fixture's widest workspace takes the column; these two are much
-        // narrower than it, which is what leaves room to fall short of the
-        // divider.
+        // Two names of very different widths, so a row that padded its name out
+        // to anybody else's width would show it in the gap before the divider.
         data.sessions[0].workspace = "tmp".into();
         data.sessions[1].workspace = "session-supervisor".into();
         let lines = plain_rows(PanelId::Recent, &data, 80, 20);
@@ -1198,6 +1315,115 @@ mod tests {
                 "{} sits against the divider: {line:?}",
                 session.workspace
             );
+        }
+    }
+
+    /// The rail spends its width on the titles: a workspace name wider than its
+    /// share of *its own* row is ellipsised rather than allowed to cut the title
+    /// beside it down to a stub (`session-supervisor`, 18 cells, inside a
+    /// 48-column rail).
+    #[test]
+    fn a_long_workspace_name_gives_way_to_the_titles() {
+        let mut data = demo::chat();
+        data.sessions[0].title = "tui 中，edit 的内容点击展开能不能展示".into();
+        data.sessions[1].title = "workbench 布局草图改成两行显示再收起来".into();
+        data.sessions[1].workspace = "session-supervisor".into();
+        let lines = plain_rows(PanelId::Recent, &data, 48, 20);
+        let row = lines
+            .iter()
+            .find(|line| line.contains("workbench"))
+            .unwrap_or_else(|| panic!("no row for the long name: {lines:?}"));
+        // The name is cut at its share …
+        assert!(row.contains("session-super…"), "{row:?}");
+        assert!(!row.contains("session-supervisor"), "{row:?}");
+        // … a third of what the row leaves beside ` ▸ ` and the gap …
+        let usable = 48 - ROW_LEAD - ROW_GAP;
+        let name = column_of(row, "session-super").expect("the name is painted");
+        let divider = column_of(row, " · ").expect("the divider is painted");
+        assert!(
+            divider - name <= usable / WORKSPACE_SHARE,
+            "the name's share: {row:?}"
+        );
+        // … so the title keeps the majority of the row …
+        assert!(
+            name - ROW_LEAD - ROW_GAP > usable / 2,
+            "the title's cells: {row:?}"
+        );
+        // … and the two only ever meet across a space.
+        let at = row.find("session-super").expect("the name is painted");
+        assert!(row[..at].ends_with(' '), "a space before the name: {row:?}");
+    }
+
+    /// A row is measured on its own: a long directory name is not allowed to
+    /// take width out of the titles of conversations filed under a short one
+    /// (`tmp` used to lose exactly the cells `session-supervisor` claimed),
+    /// while the divider and the ages still line up down the list.
+    #[test]
+    fn a_short_workspace_name_hands_the_row_back_to_its_title() {
+        let mut data = demo::chat();
+        data.sessions[0].title = "tui 中，edit 的内容点击展开能不能展示".into();
+        data.sessions[1].title = "workbench 布局草图改成两行显示再收起来".into();
+        data.sessions[1].workspace = "session-supervisor".into();
+        data.sessions[2].title = "mobile 恢复会话时标题也要能长一些才好读".into();
+        data.sessions[2].workspace = "tmp".into();
+        let lines = plain_rows(PanelId::Recent, &data, 48, 20);
+        let long = lines
+            .iter()
+            .find(|line| line.contains("session-super"))
+            .unwrap_or_else(|| panic!("no row for the long name: {lines:?}"));
+        let short = lines
+            .iter()
+            .find(|line| line.contains("tmp"))
+            .unwrap_or_else(|| panic!("no row for the short name: {lines:?}"));
+        // The short row's title runs on past the cell where the long row's name
+        // *begins*: that name's width is nobody else's business …
+        let long_name = column_of(long, "session-super").expect("the long name is painted");
+        let short_cut = column_of(short, "…").expect("the short row's title is cut");
+        assert!(
+            short_cut >= long_name,
+            "the short row keeps its spare cells: {short:?} / {long:?}"
+        );
+        // … and the list still reads as a table: one cell for the divider, and
+        // both ages flush against the rail's edge.
+        assert_eq!(
+            column_of(long, " · "),
+            column_of(short, " · "),
+            "{long:?} / {short:?}"
+        );
+        for row in [long, short] {
+            assert_eq!(width(row.trim_end()), 48, "{row:?}");
+        }
+    }
+
+    /// Whatever the rail's width, a row keeps its age and one cell between its
+    /// title and its name. A name that filled its column used to run straight
+    /// into the title beside it (`…agentfutureos-wechat-art…`): both columns
+    /// were padded to the edge of their own budget with nothing between them.
+    #[test]
+    fn every_session_row_keeps_its_age_and_a_space_before_its_name() {
+        let mut data = demo::chat();
+        for session in &mut data.sessions {
+            // Both halves filling whatever they are given is the worst case for
+            // the row: no slack anywhere to hide a missing cell.
+            session.workspace = "session-supervisor".into();
+            session.title = "a title long enough to fill whatever the row gives it".into();
+        }
+        for columns in [24u16, 30, 34, 40, 48, 60, 80] {
+            let lines = plain_rows(PanelId::Recent, &data, columns, 20);
+            for (line, session) in lines[1..=data.sessions.len()].iter().zip(&data.sessions) {
+                assert_eq!(width(line), usize::from(columns), "{line:?}");
+                assert!(
+                    line.trim_end().ends_with(&session.age),
+                    "the age survives at {columns} columns: {line:?}"
+                );
+                let at = line
+                    .find("sess")
+                    .unwrap_or_else(|| panic!("no name at {columns} columns: {line:?}"));
+                assert!(
+                    line[..at].ends_with(' '),
+                    "a space before the name at {columns} columns: {line:?}"
+                );
+            }
         }
     }
 
@@ -1220,6 +1446,7 @@ mod tests {
                 parent_id: None,
                 streaming: false,
                 created_at_ms: 0,
+                pinned: false,
             });
             data.workspaces[1].session_ids.push(id);
         }
@@ -1288,6 +1515,7 @@ mod tests {
                 parent_id: None,
                 streaming: false,
                 created_at_ms: 0,
+                pinned: false,
             })
             .collect();
         let mut hit = HitMap::new();
@@ -1347,6 +1575,7 @@ mod tests {
                 parent_id: None,
                 streaming: false,
                 created_at_ms: 0,
+                pinned: false,
             })
             .collect();
         let total = rows(PanelId::Recent, &data).len();

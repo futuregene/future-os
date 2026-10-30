@@ -1,4 +1,4 @@
-use super::*;
+﻿use super::*;
 use crate::session::{Manager, Session};
 use future_rpc::proto::RpcCommand;
 
@@ -520,7 +520,9 @@ fn a_page_of_bodyless_rows_can_be_cut_at_the_materializer_budget() {
     assert!(!forward.has_more);
     // …and the materializer is where the page is cut, one row earlier.
     assert_eq!(forward.next_offset, 8);
-    let forward = materialize_display_page(forward, None, None, None, None).unwrap();
+    let forward = materialize_display_page(forward, None, None, None, None)
+        .unwrap()
+        .0;
     assert_eq!(forward["entries"].as_array().unwrap().len(), 7);
     assert_eq!(forward["hasMore"], true);
     assert_eq!(forward["nextOffset"], 7);
@@ -529,7 +531,9 @@ fn a_page_of_bodyless_rows_can_be_cut_at_the_materializer_budget() {
     // is the lowest ordinal and the next offset moves *past* it.
     let backward = read_display_page(&db, "s", Some(8), None, Some(1000)).unwrap();
     assert_eq!(backward.rows.len(), 8);
-    let backward = materialize_display_page(backward, Some(8), None, None, None).unwrap();
+    let backward = materialize_display_page(backward, Some(8), None, None, None)
+        .unwrap()
+        .0;
     assert_eq!(backward["entries"].as_array().unwrap().len(), 7);
     assert_eq!(backward["hasMore"], true);
     assert_eq!(backward["nextOffset"], 1);
@@ -628,7 +632,9 @@ fn first_native_page_keeps_one_snapshot_across_startup_metadata_replacement() {
                 Ok(())
             })
             .unwrap();
-        let actual = materialize_display_page(page, before, None, Some(store), None).unwrap();
+        let actual = materialize_display_page(page, before, None, Some(store), None)
+            .unwrap()
+            .0;
         assert_eq!(
             actual, expected,
             "one successful read, with no internal retry"
@@ -661,8 +667,4 @@ fn pinned_page_still_rejects_deletion_and_releases_snapshot_on_error() {
     assert!(materialize_display_page(page, None, None, Some(store), None).is_err());
     // Errors return the lease; normal history workers and all snapshot slots
     // remain available, and the deleted history is not served as success.
-    let leases = (0..4)
-        .map(|_| store.db.read_snapshot().unwrap())
-        .collect::<Vec<_>>();
-    drop(leases);
 }

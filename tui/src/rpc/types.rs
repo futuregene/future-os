@@ -27,12 +27,16 @@ where
 /// "supersede_session".
 pub const BUSY_ENQUEUE: &str = "enqueue_if_busy";
 
-/// Follow-up policy the composer submits with: the agent may fold a burst of
-/// submissions queued behind the running turn into ONE run, so a supplement
-/// sent seconds after the previous message is answered with it instead of in a
-/// separate reply. Folded submissions come back as terminal `merged` acks
-/// (`RunState::Merged`), which the composer renders instead of leaving them
-/// stuck at `queued`.
+/// The policy the composer submits with: a submission behind a running turn
+/// waits in the agent's queue, and at the turn boundary the run of prompts
+/// waiting there is folded into **one** message and answered together — the
+/// agent appends their texts in queue order (`start_next_scheduled`), so a burst
+/// of supplements reads the way the reader wrote it, as one follow-up.
+///
+/// Folding is a boundary event, not a submission event: until the running turn
+/// ends every request is its own row in `get_state.queuedRuns` — the band above
+/// the composer lists it, cancels it and recalls it on its own — and the order
+/// it folds in is the order it was queued in.
 pub const BUSY_ENQUEUE_COALESCING: &str = "enqueue_coalescing";
 
 /// `ThinkingLevel` — "off" | "minimal" | "low" | "medium" | "high" | "xhigh".
@@ -284,6 +288,22 @@ pub struct RunTerminalState {
     pub usage: future_rpc::message::MessageUsage,
     pub duration_ms: Option<i64>,
     pub error: Option<String>,
+}
+
+/// The agent's acknowledgement of a manual compaction (`compact`).
+///
+/// It carries no token counts: the compaction runs on the agent's own worker
+/// after this answer, and the numbers arrive with `compaction_committed` on
+/// the event stream. `operation_id` is the id every event of this compaction
+/// names, so a client watching a session can tell its own operation's
+/// terminal event from an older one's.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactAck {
+    #[serde(default)]
+    pub operation_id: String,
+    #[serde(default)]
+    pub accepted: bool,
 }
 
 // ============================================================================

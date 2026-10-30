@@ -26,8 +26,8 @@ use crate::rpc::provider_types::{
     parse_providers_response, validate_provider_input, ProviderInfo, ProviderInput,
 };
 use crate::rpc::types::{
-    AgentEvent, ModelInfo, ProjectedRunEvent, RpcSessionState, RunAck, SessionEntriesPage,
-    SessionSummary,
+    AgentEvent, CompactAck, ModelInfo, ProjectedRunEvent, RpcSessionState, RunAck,
+    SessionEntriesPage, SessionSummary,
 };
 use future_rpc::connection::ConnectionError;
 use future_rpc::proto::{Attachment, RpcCommand, StreamEvent, StreamRequest};
@@ -668,13 +668,36 @@ impl GrpcClient {
     /// caller that asks about a session it then fails to open has to re-read
     /// its own (`get_state`, i.e. the addressed-by-current form).
     pub async fn get_state_of(&self, session_id: &str) -> Result<RpcSessionState, String> {
+        let state = self.fetch_state_of(session_id).await?;
+        self.adopt_state(&state);
+        Ok(state)
+    }
+
+    /// The read half of [`Self::get_state_of`], with no bookkeeping.
+    ///
+    /// A switch the driver does not wait for reads state from another task
+    /// (see `Live::start_step_switch`), and two such reads can finish out of
+    /// order: the answer a reader has already stepped past must not move this
+    /// client's run map, so the fetch is separated from the adoption — the
+    /// thread that owns the client adopts the answer it keeps, and only that
+    /// one.
+    pub async fn fetch_state_of(&self, session_id: &str) -> Result<RpcSessionState, String> {
         let command = RpcCommand {
             session_id: session_id.to_string(),
             ..Default::default()
         };
         let resp = self.call("get_state", command).await?;
-        let state: RpcSessionState = serde_json::from_value(resp).map_err(|e| e.to_string())?;
+        serde_json::from_value(resp).map_err(|e| e.to_string())
+    }
 
+    /// The bookkeeping half of [`Self::get_state_of`]: record the agent
+    /// instance, the run map and the active run of the state just read.
+    ///
+    /// Idempotent for one state — a caller may adopt a state it also fetched
+    /// through [`Self::get_state_of`] — except for the lost-queued-run tally,
+    /// which is only appended to when the agent instance changed, so a caller
+    /// adopts each answer exactly once.
+    pub fn adopt_state(&self, state: &RpcSessionState) {
         let mut st = self.inner.state.lock();
         if let (Some(prev), Some(cur)) = (&st.agent_instance_id, &state.agent_instance_id) {
             if prev != cur {
@@ -701,8 +724,6 @@ impl GrpcClient {
         for queued in &state.queued_runs {
             st.runs.insert(queued.run_id.clone(), RunStatus::Queued);
         }
-        drop(st);
-        Ok(state)
     }
 
     /// `getMessages()` — the session's whole in-memory context in one
@@ -810,14 +831,20 @@ impl GrpcClient {
             .await
     }
 
-    /// `compact(customInstructions?)` — returns the result string.
-    pub async fn compact(&self, custom_instructions: Option<&str>) -> Result<String, String> {
+    /// `compact(customInstructions?)` — the agent's acknowledgement.
+    ///
+    /// The answer only says the compaction was accepted (and names its
+    /// operation): the work runs on the agent's worker, and the token counts
+    /// come with `compaction_committed` on the event stream.
+    pub async fn compact(&self, custom_instructions: Option<&str>) -> Result<CompactAck, String> {
         let cmd = RpcCommand {
             custom_instructions: custom_instructions.unwrap_or("").to_string(),
             ..Default::default()
         };
         let resp = self.call("compact", cmd).await?;
-        Ok(resp.as_str().unwrap_or("").to_string())
+        serde_json::from_value::<CompactAck>(resp).map_err(|error| {
+            format!("the agent acknowledged the compaction in a shape this client does not read: {error}")
+        })
     }
 
     /// `setCwd(cwd)`.
@@ -1210,27 +1237,40 @@ impl GrpcClient {
 
 /// One-shot `ExecuteCommand` with a deadline (mirrors the CLI port; the TS
 /// client reuses a channel, per-call connect is equivalent for our use).
+///
+/// Both futures are `Box::pin`ned, and that is load-bearing: the connect (TCP
+/// plus the readiness handshake, a unary call of its own) and the command are
+/// debug-build tonic/hyper state machines of a few hundred kilobytes, and an
+/// `async fn` that awaits them inline keeps that state in its own frame. Every
+/// caller up the chain then pays for it — measured on the test binary:
+/// `Live::apply`'s frame 708 KiB inline against 316 KiB boxed, `Live::command`
+/// 620 KiB against 248 KiB, `run::quit` 780 KiB against 344 KiB. A single TUI
+/// test needed 1.9 MiB of the 2 MiB stack a `cargo test` thread gets and died
+/// there on x86-64 CI (`a_launchpad_submit_creates_the_session_and_sends_the_prompt`,
+/// stack overflow, SIGABRT); boxed, the same test needs 1.05 MiB. A release
+/// build's frames are a fraction of that, so the shipped surface never noticed
+/// — but the depth is not free, and the tests are where it lands.
 async fn execute_unary(addr: &str, cmd: RpcCommand, timeout_secs: u64) -> Result<Value, String> {
-    let mut client = future_rpc::connection::connect_verified(
+    let mut client = Box::pin(future_rpc::connection::connect_verified(
         addr,
         future_rpc::connection::EXPECTED_AGENT_VERSION,
         Duration::from_secs(timeout_secs.min(5)),
         Duration::from_secs(5),
-    )
+    ))
     .await
     .map_err(|error| error.to_string())?;
-    let response = client
-        .execute_command(future_rpc::command_policy::request_with_timeout(cmd))
-        .await
-        .map_err(|status| {
-            let msg = status.message();
-            if msg.is_empty() {
-                status.to_string()
-            } else {
-                msg.to_string()
-            }
-        })?
-        .into_inner();
+    let response =
+        Box::pin(client.execute_command(future_rpc::command_policy::request_with_timeout(cmd)))
+            .await
+            .map_err(|status| {
+                let msg = status.message();
+                if msg.is_empty() {
+                    status.to_string()
+                } else {
+                    msg.to_string()
+                }
+            })?
+            .into_inner();
 
     if !response.success {
         return Err(if response.error.is_empty() {

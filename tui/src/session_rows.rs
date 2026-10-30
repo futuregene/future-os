@@ -60,16 +60,27 @@ pub fn random_id() -> String {
 }
 
 /// The divider text a compaction entry renders as.
-pub fn compaction_text(before: Option<&Value>, after: Option<&Value>) -> String {
-    match (
-        before.and_then(Value::as_u64),
-        after.and_then(Value::as_u64),
-    ) {
-        (Some(before), Some(after)) => {
+///
+/// The counts come from the committed checkpoint: `tokensBefore` is what the
+/// turn was about to send, `tokensAfter` the agent's estimate of the next
+/// turn's prompt. They are only meaningful as a pair — a lone count (a
+/// released journal, a legacy row) keeps the bare label.
+pub fn compaction_text_of(before: Option<u64>, after: Option<u64>) -> String {
+    match (before, after) {
+        (Some(before), Some(after)) if before > 0 && after > 0 => {
             format!("Context compacted: {before} → {after} tokens (estimated)")
         }
         _ => "Context compacted".into(),
     }
+}
+
+/// [`compaction_text_of`] over the display projection's JSON fields, the shape
+/// a stored `compaction` entry carries (`checkpoint.tokensBefore`).
+pub fn compaction_text(before: Option<&Value>, after: Option<&Value>) -> String {
+    compaction_text_of(
+        before.and_then(Value::as_u64),
+        after.and_then(Value::as_u64),
+    )
 }
 
 pub fn rows_to_messages(rows: &[Value]) -> Vec<ChatMessage> {

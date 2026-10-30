@@ -57,6 +57,21 @@ import {
   recentOnlySessions,
   sessions,
 } from "./data";
+import {
+  parserDesktopName,
+  parserEntries,
+  parserModels,
+  parserSessionId,
+  parserSessions,
+  parserWorkspaces,
+} from "./parserSession";
+import {
+  fleetActiveSessions,
+  fleetCatalogs,
+  fleetDesktops,
+  fleetOtherMachines,
+  fleetWorkspaces,
+} from "./fleet";
 import { seedComposerDraft, withApprovalRequest } from "./smallestType";
 
 type MockValue = Record<string, any>;
@@ -93,11 +108,30 @@ function withFallback(value: MockValue): MockValue {
 }
 
 export function RemoteProvider({ children }: PropsWithChildren) {
+  // `?parser=1` swaps the whole demo catalogue for the scripted session the TUI
+  // frames were captured with (`shot/mock/parserSession.ts`): the machine's name,
+  // the three workspace groups, the conversation. Everything else — screens,
+  // projection, i18n — is untouched, so a capture is still the real phone UI.
+  const parserDemo = new URLSearchParams(window.location.search).get("parser") === "1";
+  // `?fleet=1` pairs the phone with five desktops and merges their conversations
+  // into the home screen's recency page (`shot/mock/fleet.ts`). The product
+  // already draws a merged list — the picker's "all desktops", a machine glyph per
+  // row — but the default demo is one machine, which is the one shape that page
+  // cannot show.
+  const fleetDemo = new URLSearchParams(window.location.search).get("fleet") === "1";
   // `?single=1` leaves the phone with one pairing. It is the state where the
   // list has no other machine to fall back to, so `?held=1&single=1` is the one
   // that asks for the takeover page instead of the conversations.
   const singlePairing = new URLSearchParams(window.location.search).get("single") === "1";
-  const pairedDesktops = singlePairing ? demoDesktops.slice(0, 1) : demoDesktops;
+  // The machine's name is the user's own label, and it is drawn in the chat's
+  // top bar — so a frame pinned to English needs one in English too.
+  const pairedDesktops = (fleetDemo
+    ? fleetDesktops
+    : singlePairing
+      ? demoDesktops.slice(0, 1)
+      : demoDesktops).map(
+    (desktop, index) => (parserDemo && index === 0 ? { ...desktop, name: parserDesktopName } : desktop),
+  );
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [draft, setDraft] = useState(false);
   const [desktopId, setDesktopId] = useState(pairedDesktops[0]?.desktopId ?? "");
@@ -143,6 +177,19 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     ...sessions,
     ...(withRecentMany ? manyRecentSessions : []),
   ];
+  // The catalogue and the conversation a capture opens come from one branch, so
+  // `?parser=1` cannot pair the TUI's transcript with the dopamine rail.
+  const activeSessions = fleetDemo
+    ? fleetActiveSessions
+    : parserDemo
+      ? parserSessions
+      : catalogue;
+  const activeWorkspaces = fleetDemo
+    ? fleetWorkspaces(pairedDesktops[0]?.desktopId ?? "")
+    : parserDemo
+      ? parserWorkspaces
+      : demoWorkspaces;
+  const primarySessionId = parserDemo ? parserSessionId : "sess_dopamine_review";
   const [compactionFinished, setCompactionFinished] = useState(false);
   const scriptedCompaction = compactionFinished || new URLSearchParams(window.location.search).get("compacted") === "1";
   // `?multiTurnOlder=1` keeps one page of history above the multi-turn
@@ -171,13 +218,15 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     const search = new URLSearchParams(window.location.search);
     const renderFixture = leanRenderTimeline(renderMode);
     if (renderFixture) return renderFixture;
-    const historyEntries = search.get("compactHistory") === "1"
-      ? compactResumeEntries
-      : search.get("multiTurn") === "1"
-        ? olderLoaded
-          ? [...multiTurnOlderEntries, ...multiTurnEntries]
-          : multiTurnEntries
-        : demoEntries;
+    const historyEntries = parserDemo
+      ? parserEntries
+      : search.get("compactHistory") === "1"
+        ? compactResumeEntries
+        : search.get("multiTurn") === "1"
+          ? olderLoaded
+            ? [...multiTurnOlderEntries, ...multiTurnEntries]
+            : multiTurnEntries
+          : demoEntries;
     const history = timelineFromEntries(historyEntries as unknown as HistoryEntry[]);
     // `?approval=1` docks a run blocked on the reader's approval (see
     // `smallestType.ts`); every other capture gets the demo timeline untouched.
@@ -187,12 +236,12 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       { type: "compaction_started", runId: manualRun, idx: 900, data: JSON.stringify({ operation_id: "cmp_shot", trigger: "manual", phase: "standalone" }) },
       { type: "compaction_committed", runId: manualRun, idx: 901, data: JSON.stringify({ operation_id: "cmp_shot", checkpoint_id: "cp_shot", trigger: "manual", phase: "standalone", tokens_before: 33064, tokens_after: 9250 }) },
     ]));
-  }, [scriptedCompaction, renderMode, olderLoaded]);
+  }, [scriptedCompaction, renderMode, olderLoaded, parserDemo]);
   const timeline = useMemo(
-    () => (selectedSessionId === "" || selectedSessionId === "sess_dopamine_review"
+    () => (selectedSessionId === "" || selectedSessionId === primarySessionId
       ? baseTimeline
       : { ...baseTimeline, items: baseTimeline.items.slice(0, 2) }),
-    [baseTimeline, selectedSessionId],
+    [baseTimeline, selectedSessionId, primarySessionId],
   );
 
   // Switching desktops moves the whole pairing, as the real `switchDesktop`
@@ -277,18 +326,18 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
     // Catalogue
     catalogSync: { state: "ready", epoch: "epoch_1" },
-    sessions: catalogue.map(session =>
+    sessions: activeSessions.map(session =>
       sessionPins[session.sessionId] === undefined
         ? session
         : { ...session, pinned: sessionPins[session.sessionId] },
     ),
-    workspaces: demoWorkspaces.map(workspace =>
+    workspaces: activeWorkspaces.map(workspace =>
       workspacePins[workspace.id] === undefined
         ? workspace
         : { ...workspace, pinned: workspacePins[workspace.id] },
     ),
     unreadSessions: new Set<string>(["sess_dopamine_review"]),
-    models: demoModels,
+    models: parserDemo ? parserModels : demoModels,
     /**
      * Every *other* machine's catalogue, as the merged list reads it.
      *
@@ -298,31 +347,34 @@ export function RemoteProvider({ children }: PropsWithChildren) {
      * it does on a phone paired to one desktop.
      */
     catalogs: {
-      catalogs: [{
-        desktopId,
-        label: pairedDesktop?.name ?? desktopId,
-        // The harness always renders a machine that is answering: its catalogue
-        // is the one this file builds, not a mirror of a connection that could
-        // be down. The merged list draws only `connected` machines.
-        status: "connected" as const,
-        sessions,
-      }],
+      catalogs: fleetDemo
+        ? fleetCatalogs
+        : [{
+          desktopId,
+          label: pairedDesktop?.name ?? desktopId,
+          // The harness always renders a machine that is answering: its catalogue
+          // is the one this file builds, not a mirror of a connection that could
+          // be down. The merged list draws only `connected` machines.
+          status: "connected" as const,
+          sessions: activeSessions,
+        }],
       // `?peers=1` gives the second paired desktop a live connection, the state
       // that puts the dialog below on its machine step; every other capture
-      // wants the ordinary one-machine phone this file describes above.
-      machines: peerMachines,
+      // wants the ordinary one-machine phone this file describes above. `?fleet=1`
+      // lists the other four machines instead, all connected.
+      machines: fleetDemo ? fleetOtherMachines : peerMachines,
       refresh: async () => {},
       reconnect: () => {},
-      commandsFor: (id: string) => (withPeers && id === peerId ? peerCommands : null),
+      commandsFor: (id: string) => (fleetDemo || (withPeers && id === peerId) ? peerCommands : null),
       takeControlFor: async () => undefined,
-      readWorkspaces: async () => demoWorkspaces,
+      readWorkspaces: async (id: string) => (fleetDemo ? fleetWorkspaces(id) : activeWorkspaces),
     },
     skillsRevision: 0,
     desktopSettingsRevision: 0,
 
     // Conversation
     selectedSessionId,
-    selectedTitle: sessions.find(session => session.sessionId === selectedSessionId)?.title ?? "",
+    selectedTitle: activeSessions.find(session => session.sessionId === selectedSessionId)?.title ?? "",
     draft,
     draftMode: "chat",
     draftWorkspaceId: "",
@@ -344,7 +396,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     compacting: scriptedCompaction ? baseTimeline.compacting === true : new URLSearchParams(window.location.search).get("compacting") === "1",
 
     // Composer settings
-    modelId: "future/deepseek-v4-pro",
+    modelId: parserDemo ? "future/deepseek-flash" : "future/deepseek-v4-pro",
     thinkingLevel: "medium",
     // The amount in the top bar, refreshed by every state read in the app.
     sessionUsage: usageOverride ?? (selectedSessionId === "sess_chat_pvalue" ? demoUnpricedSessionUsage : demoSessionUsage),
