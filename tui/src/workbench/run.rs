@@ -935,7 +935,8 @@ async fn quit(
         if workbench.overlay.is_none() {
             match workbench.keys.action(key) {
                 Some(super::preferences::Action::Copy) => {
-                    copy_last(live).await;
+                    let text = live.copy_last();
+                    copy_to_clipboard(live, text, super::i18n::Key::CopyDone).await;
                     return Ok(false);
                 }
                 Some(super::preferences::Action::Mouse) => {
@@ -1045,7 +1046,8 @@ async fn quit(
                     continue;
                 }
                 "/copy" => {
-                    copy_last(live).await;
+                    let text = live.copy_last();
+                    copy_to_clipboard(live, text, super::i18n::Key::CopyDone).await;
                     continue;
                 }
                 "/paste" => {
@@ -1374,7 +1376,23 @@ async fn quit(
             continue;
         }
         if matches!(action, WbAction::CopyLast) {
-            copy_last(live).await;
+            let text = live.copy_last();
+            copy_to_clipboard(live, text, super::i18n::Key::CopyDone).await;
+            continue;
+        }
+        // The `[复制]` control under one message: the same clipboard road as
+        // `/copy`, with the message the reader pointed at instead of the last
+        // answer.
+        if let WbAction::CopyMessage(row) = &action {
+            let text = live.copy_message(*row);
+            copy_to_clipboard(live, text, super::i18n::Key::CopiedMessage).await;
+            continue;
+        }
+        // The `[分支]` control: forks at the prompt behind the reply, the same
+        // `fork` call `/fork` makes — the box only asks which point, and this
+        // chip already knows.
+        if let WbAction::ForkMessage(row) = &action {
+            live.fork_message(*row).await;
             continue;
         }
         if matches!(action, WbAction::ToggleMouse) {
@@ -1770,23 +1788,32 @@ async fn open_git_detail(live: &mut Live, frame: &Frame, workbench: &mut Workben
     workbench.overlay = Some(super::Overlay::Git);
 }
 
-async fn copy_last(live: &mut Live) {
-    match live.copy_last() {
-        Ok(text) => {
-            let result =
-                tokio::task::spawn_blocking(move || crate::clipboard::copy_text(&text)).await;
-            live.notice = Some(match result {
-                Ok(Ok(())) => super::i18n::t(live.language(), super::i18n::Key::CopyDone).into(),
-                Ok(Err(error)) => {
-                    super::i18n::render(live.language(), super::i18n::Key::CopyFailed, &[&error])
-                }
-                Err(error) => {
-                    super::i18n::render(live.language(), super::i18n::Key::CopyFailed, &[&error])
-                }
-            });
+/// Put `text` on the clipboard and say so on the notice row.
+///
+/// One road for every copy the conversation offers — `/copy`'s last answer, the
+/// `[复制]` control under one message — so the two cannot drift in how they
+/// report a clipboard that refused them. `done` is the sentence a successful
+/// copy leaves behind.
+async fn copy_to_clipboard(live: &mut Live, text: Result<String, String>, done: super::i18n::Key) {
+    let text = match text {
+        Ok(text) => text,
+        Err(error) => {
+            live.notice = Some(error);
+            return;
         }
-        Err(error) => live.notice = Some(error),
-    }
+    };
+    let result = tokio::task::spawn_blocking(move || crate::clipboard::copy_text(&text)).await;
+    live.notice = Some(match result {
+        Ok(Ok(())) => super::i18n::t(live.language(), done).into(),
+        Ok(Err(error)) => {
+            super::i18n::render(live.language(), super::i18n::Key::CopyFailed, &[&error])
+        }
+        Err(error) => super::i18n::render(
+            live.language(),
+            super::i18n::Key::CopyFailed,
+            &[&error.to_string()],
+        ),
+    });
 }
 
 /// Open the preview box on `path`, stepping through `scope`'s pictures.

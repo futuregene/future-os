@@ -187,12 +187,17 @@ pub fn rows_to_messages(rows: &[Value]) -> Vec<ChatMessage> {
             _ => ChatRole::Tool,
         };
         let id = obj.get("id").and_then(Value::as_str).unwrap_or("");
-        let id = if id.is_empty() {
-            random_id()
+        // A row that came from the journal *is* its entry: the id is what
+        // `fork` branches at. A row without one is a shape this build never
+        // writes, and gets a throwaway id and no entry — so nothing offers to
+        // fork at it.
+        let (id, entry_id) = if id.is_empty() {
+            (random_id(), None)
         } else {
-            id.to_string()
+            (id.to_string(), Some(id.to_string()))
         };
         let mut cm = ChatMessage::new(id, role_enum, &content);
+        cm.entry_id = entry_id;
         let tool = blocks
             .iter()
             .find(|b| matches!(b["kind"].as_str(), Some("tool_call" | "tool_result")));

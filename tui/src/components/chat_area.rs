@@ -115,30 +115,42 @@ pub enum RowAction {
     Tool { msg: usize },
     /// A `▸ thinking` marker: opening it shows the reasoning text.
     Thinking { msg: usize },
+    /// The **copy** control under a message: this message's own text goes to the
+    /// clipboard. A control, not a fold — pressing it changes nothing on screen,
+    /// so it has no [`RowKind`] and never opens or closes a row.
+    Copy { msg: usize },
+    /// The **fork** control under a reply: branch the conversation at the user
+    /// message that produced it, which is what the desktop's own fork button
+    /// does (see `Live::fork_message`).
+    Fork { msg: usize },
 }
 
 impl RowAction {
-    fn kind(&self) -> RowKind {
+    /// Which open/close flag this row addresses, or `None` for a control.
+    fn kind(&self) -> Option<RowKind> {
         match self {
-            Self::Process { .. } => RowKind::Process,
-            Self::Burst { .. } => RowKind::Burst,
-            Self::Tool { .. } => RowKind::Tool,
-            Self::Thinking { .. } => RowKind::Thinking,
+            Self::Process { .. } => Some(RowKind::Process),
+            Self::Burst { .. } => Some(RowKind::Burst),
+            Self::Tool { .. } => Some(RowKind::Tool),
+            Self::Thinking { .. } => Some(RowKind::Thinking),
+            Self::Copy { .. } | Self::Fork { .. } => None,
         }
     }
 
-    /// The message the row's reveal flag lives on.
+    /// The message the row belongs to.
     ///
-    /// Not always the message that *draws* the row: an opened fold's header is
-    /// the first row of the reply's tree, while the fold itself is remembered
-    /// against the reply's head — one flag, whichever of the two rows the
-    /// reader presses.
+    /// For a fold this is the message the reveal flag lives on, and not always
+    /// the message that *draws* the row: an opened fold's header is the first
+    /// row of the reply's tree, while the fold itself is remembered against the
+    /// reply's head — one flag, whichever of the two rows the reader presses.
     fn message(&self) -> usize {
         match self {
             Self::Process { msg }
             | Self::Burst { msg }
             | Self::Tool { msg }
-            | Self::Thinking { msg } => *msg,
+            | Self::Thinking { msg }
+            | Self::Copy { msg }
+            | Self::Fork { msg } => *msg,
         }
     }
 }
@@ -250,6 +262,10 @@ pub struct FoldWords {
     /// The label a summary row falls back on when it counts nothing (a fold
     /// that only hid prose).
     pub process: &'static str,
+    /// The copy control under a message (`[复制]` / `[copy]`).
+    pub copy: &'static str,
+    /// The fork control under a reply (`[分支]` / `[fork]`).
+    pub fork: &'static str,
 }
 
 impl Default for FoldWords {
@@ -261,6 +277,8 @@ impl Default for FoldWords {
             thoughts: "{} thoughts",
             thinking: "thinking",
             process: "process",
+            copy: "copy",
+            fork: "fork",
         }
     }
 }
@@ -359,6 +377,15 @@ pub struct ChatMessage {
     pub run_id: Option<String>,
     pub run_state: Option<RunState>,
     pub queue_position: Option<u32>,
+    /// The journal entry this message was read from — the id `fork` branches at,
+    /// and the reason a *live* message becomes forkable the moment the agent
+    /// says which entry it wrote (see `ChatArea::bind_user_entry`).
+    ///
+    /// `None` for a row the agent has not persisted yet: a reply whose prompt is
+    /// still being acknowledged is on screen before the entry exists, and a
+    /// control that would silently fork the wrong place is worse than one that
+    /// says it cannot yet.
+    pub entry_id: Option<String>,
     /// Pictures this message carries, in the order they were attached.
     ///
     /// The journal keeps a picture as a *path* — no bytes travel with an entry
@@ -396,6 +423,7 @@ impl ChatMessage {
             run_id: None,
             run_state: None,
             queue_position: None,
+            entry_id: None,
             pictures: Vec::new(),
         }
     }
@@ -1382,6 +1410,92 @@ impl ChatArea {
             .flat_map(|message| message.pictures.iter())
     }
 
+    /// The text a message carries, for its copy control: the message covering
+    /// `row`, trailing whitespace trimmed. `None` when the row covers no message
+    /// or the message has no prose of its own (a reply that only called tools,
+    /// a prompt that was only pictures) — the chip is not drawn there either.
+    pub fn copyable_text_at(&self, row: usize) -> Option<String> {
+        let index = self.message_at_row(row)?;
+        let message = self.messages.get(index)?;
+        let text = message.content.trim_end();
+        (!text.trim().is_empty()).then(|| text.to_string())
+    }
+
+    /// Which rendered rows are the per-message controls (`[复制]`, `[分支]`).
+    ///
+    /// The rows are derived from the same stops the walk uses, so a frame that
+    /// keeps its controls keeps them in one place — the frame tests read a
+    /// transcript's *own* rows by taking these out, and a test that guessed at
+    /// the chips' spelling would break the moment the language changed.
+    pub fn control_rows(&self) -> Vec<usize> {
+        let mut rows: Vec<usize> = self
+            .row_stops()
+            .into_iter()
+            .filter(|stop| matches!(stop.action, RowAction::Copy { .. } | RowAction::Fork { .. }))
+            .map(|stop| stop.row)
+            .collect();
+        // A reply's two chips share one row, and a row is one row: the list
+        // names each of them once (`row_stops` is sorted by row).
+        rows.dedup();
+        rows
+    }
+
+    /// The journal entry of the prompt behind the message covering `row` — the
+    /// point `fork` branches at.
+    ///
+    /// A reply is not forkable on its own: the fork means "branch where this
+    /// question was asked", so the walk goes back to the nearest user message
+    /// rather than to the reply itself (the desktop's fork button resolves its
+    /// target the same way). `None` when there is no such prompt above the row,
+    /// or when its entry is not written yet — a submission that was
+    /// acknowledged but never persisted, or a row from an older agent that
+    /// sends no `user_message` announcement.
+    pub fn preceding_user_entry(&self, row: usize) -> Option<String> {
+        let index = self.message_at_row(row)?;
+        self.messages[..=index]
+            .iter()
+            .rev()
+            .find(|msg| msg.role == ChatRole::User && !msg.welcome)
+            .and_then(|msg| msg.entry_id.clone())
+    }
+
+    /// Learn the journal entry a prompt was written to, after the fact.
+    ///
+    /// The agent announces it on its `user_message` event, which can arrive on
+    /// either side of the acknowledgement that binds the bubble to its run — and
+    /// a prompt the agent accepted straight away is never bound by id at all
+    /// (`bind_user_run` is the *queued* road). So the match tries, in order: the
+    /// run id (the queued case), then the newest prompt with no entry whose text
+    /// is the one announced. `text` is the announcement's display text; an
+    /// announcement that matches nothing is dropped rather than guessed at —
+    /// binding the wrong entry would fork the wrong place, and a missed one only
+    /// means the fork chip says it cannot yet.
+    pub fn bind_user_entry(&mut self, run_id: &str, entry_id: &str, text: &str) {
+        if entry_id.is_empty() {
+            return;
+        }
+        if !run_id.is_empty() {
+            if let Some(msg) = self.messages.iter_mut().find(|msg| {
+                msg.role == ChatRole::User
+                    && (msg.run_id.as_deref() == Some(run_id) || msg.id == run_id)
+            }) {
+                msg.entry_id = Some(entry_id.to_string());
+                return;
+            }
+        }
+        let text = text.trim();
+        if let Some(msg) = self
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|msg| msg.role == ChatRole::User && msg.entry_id.is_none())
+        {
+            if text.is_empty() || msg.content.trim() == text {
+                msg.entry_id = Some(entry_id.to_string());
+            }
+        }
+    }
+
     /// The content of the most recent assistant message (thinking excluded) —
     /// what `/copy` puts on the clipboard. `None` when the transcript has no
     /// assistant text yet.
@@ -1910,7 +2024,9 @@ impl ChatArea {
                     row: from + offset,
                     start: *start,
                     end: *end,
-                    expanded: open.get(action.kind()),
+                    // A control (copy, fork) has no open/closed state, so it is
+                    // never "expanded" — it is still a stop the cursor lands on.
+                    expanded: action.kind().is_some_and(|kind| open.get(kind)),
                     action: action.clone(),
                 });
             }
@@ -1942,7 +2058,10 @@ impl ChatArea {
             .messages
             .get(action.message())
             .map(|msg| msg.id.clone())?;
-        self.revealed.entry(id).or_default().toggle(action.kind());
+        // A control is not a fold: there is no state to toggle, and the buttons
+        // are answered by the driver (`WbAction::CopyMessage`/`ForkMessage`).
+        let kind = action.kind()?;
+        self.revealed.entry(id).or_default().toggle(kind);
         // Opening draws what the row stood for *below* it and closing takes it
         // away again, so every row above the pressed one is exactly where it
         // was: the viewport (a line index from the top) still names the same
@@ -1958,7 +2077,7 @@ impl ChatArea {
     }
 
     /// The message whose rendered rows cover `row`.
-    fn message_at_row(&self, row: usize) -> Option<usize> {
+    pub fn message_at_row(&self, row: usize) -> Option<usize> {
         self.message_line_ranges
             .iter()
             .position(|(from, to)| *from <= row && (row as i64) <= *to)
@@ -2778,6 +2897,12 @@ impl ChatArea {
         if !matches!(msg.role, ChatRole::User) {
             self.render_pictures(&msg);
         }
+        // The controls sit under everything the message drew — its pictures'
+        // captions included, so the last thing in a message is not the only
+        // thing the reader can press — and *outside* the user card, which is
+        // what keeps `[复制]` a control rather than something the reader
+        // typed.
+        self.push_message_controls(msg_idx, &msg, origin);
         self.nested = false;
         self.width = width;
         if tree.is_some() {
@@ -2874,6 +2999,114 @@ impl ChatArea {
     fn push_rail_row(&mut self) {
         let text = self.rail().trim_end().to_string();
         self.rendered_lines.push(RenderedLine { text, dim: true });
+    }
+
+    /// Record one span of the row just pushed as a stop: `start`..`end` are
+    /// display columns of that row, so a row carrying two controls has two
+    /// targets that each answer their own column.
+    fn mark_row_span(
+        &mut self,
+        msg_idx: usize,
+        origin: usize,
+        start: usize,
+        end: usize,
+        action: RowAction,
+    ) {
+        let Some(last) = self.rendered_lines.len().checked_sub(1) else {
+            return;
+        };
+        let offset = last.saturating_sub(origin);
+        self.row_meta
+            .entry(msg_idx)
+            .or_default()
+            .push((offset, action, start, end));
+    }
+
+    /// The row of controls under a message: `[复制]`, and on a reply `[分支]`.
+    ///
+    /// Every client carries these under its messages — the desktop puts the
+    /// user's copy in the bubble's footer and the reply's copy beside its fork
+    /// control — but the terminal cannot copy the desktop's *reveal*: a control
+    /// painted only while the pointer rests on a message does not exist on a
+    /// keyboard surface. So the row is always there, one row per message, and
+    /// it is the message's last one: `tab` reaches it after everything the
+    /// message says, and after its pictures' captions.
+    ///
+    /// Two rules decide whether a chip is drawn at all:
+    ///
+    /// * **Copy** needs text. A reply that only called tools has nothing to
+    ///   copy, and a button that copies nothing is a button that lies.
+    /// * **Fork** belongs to a *settled* reply — it branches at the user
+    ///   message that produced the reply, which is the desktop's own meaning of
+    ///   its fork button (`Live::fork_message`). While the reply is still
+    ///   arriving there is nothing to branch on yet, so the chip waits.
+    ///
+    /// Nothing is drawn for a welcome banner, for a prompt still waiting in the
+    /// agent's queue (it has no rows at all, see [`Self::render_user_message`]),
+    /// or for a row inside an opened fold — the tree is the fold's body, not a
+    /// message the reader acts on.
+    fn push_message_controls(&mut self, msg_idx: usize, msg: &ChatMessage, origin: usize) {
+        if msg.welcome || msg.pending || msg.run_state == Some(RunState::Queued) || self.nested {
+            return;
+        }
+        // Only the two roles a reader writes or reads get controls: a tool
+        // call's row and a compaction divider are the reply's *work*, not
+        // messages of their own, and a copy chip under every call would double
+        // the height of a folded run.
+        let (wants_copy, wants_fork) = match msg.role {
+            ChatRole::User => (true, false),
+            ChatRole::Assistant => (true, true),
+            ChatRole::Tool | ChatRole::System => return,
+        };
+        let mut chips: Vec<(&'static str, RowAction)> = Vec::new();
+        if wants_copy && !msg.content.trim().is_empty() {
+            chips.push((self.fold_words.copy, RowAction::Copy { msg: msg_idx }));
+        }
+        if wants_fork {
+            chips.push((self.fold_words.fork, RowAction::Fork { msg: msg_idx }));
+        }
+        if chips.is_empty() {
+            return;
+        }
+        // `[复制]`: the brackets are this surface's spelling for something
+        // pressable — a panel's `[× 关闭]`, the header's `[ctrl+r] 会话`.
+        let labels: Vec<String> = chips.iter().map(|(word, _)| format!("[{word}]")).collect();
+        // One space between chips, which is also what the spans' arithmetic
+        // below assumes.
+        let total = labels
+            .iter()
+            .map(|label| visible_width(label))
+            .sum::<usize>()
+            + labels.len().saturating_sub(1);
+        // Nothing fits in a frame this narrow: the chips would spill past the
+        // last column, and a control the reader cannot read is not a control.
+        if total + 1 > self.width {
+            return;
+        }
+        // The user's controls sit under the right edge of their own bubble, the
+        // way the desktop's do; a reply's sit under its own first column.
+        let lead = match msg.role {
+            ChatRole::User => self.width.saturating_sub(total + 1),
+            _ => 1,
+        };
+        let mut text = " ".repeat(lead);
+        let mut column = lead;
+        let mut spans: Vec<(usize, usize, RowAction)> = Vec::new();
+        for (position, (label, (_, action))) in labels.iter().zip(chips.iter()).enumerate() {
+            if position > 0 {
+                text.push(' ');
+                column += 1;
+            }
+            let end = column + visible_width(label);
+            spans.push((column, end, action.clone()));
+            text.push_str(&dim_raw(label));
+            column = end;
+        }
+        text.push_str(RESET);
+        self.rendered_lines.push(RenderedLine { text, dim: true });
+        for (start, end, action) in spans {
+            self.mark_row_span(msg_idx, origin, start, end, action);
+        }
     }
 
     /// Record that the row just pushed is the one `action` opens, spanning the
@@ -4011,7 +4244,14 @@ mod tests {
     /// slices, and each of those opens its detail.
     fn open_all_rows(chat: &mut ChatArea) {
         for _ in 0..128 {
-            let Some(stop) = chat.row_stops().into_iter().find(|stop| !stop.expanded) else {
+            // The controls are never open and never toggle: skipping them is
+            // what keeps the walk from stopping on the first message's
+            // `[copy]` with every fold still shut.
+            let Some(stop) = chat
+                .row_stops()
+                .into_iter()
+                .find(|stop| !stop.expanded && !is_control(&stop.action))
+            else {
                 return;
             };
             if chat.toggle_row(stop.row).is_none() {
@@ -4019,6 +4259,11 @@ mod tests {
             }
         }
         panic!("rows kept appearing: the walk did not settle");
+    }
+
+    /// Is this a control row (`[copy]`, `[fork]`) rather than a fold?
+    fn is_control(action: &RowAction) -> bool {
+        matches!(action, RowAction::Copy { .. } | RowAction::Fork { .. })
     }
 
     // ─── Compact activity (ctrl+d) ─────────────────────────────────────
@@ -4109,17 +4354,40 @@ mod tests {
     /// leading indent and background padding trimmed, blank separator rows
     /// dropped.
     fn compact_lines(chat: &mut ChatArea) -> Vec<String> {
-        render_trimmed(chat)
+        let rendered = render_trimmed(chat);
+        let lines = no_controls(chat, rendered);
+        lines
             .iter()
             .map(|line| strip(line).trim().to_string())
             .filter(|line| !line.is_empty())
             .collect()
     }
 
+    /// The transcript's rows with the per-message controls taken out.
+    ///
+    /// Every settled message ends in one (`ChatArea::push_message_controls`).
+    /// The cases that read a transcript as a list of *rows it says* take those
+    /// out instead of restating them in every expected vector: the control row
+    /// is the same under every message, and what those cases are about is the
+    /// text, the folds and the markers around it. The rows come from
+    /// [`ChatArea::control_rows`], not from the chips' spelling, so a localized
+    /// frame is read the same way.
+    fn no_controls(chat: &mut ChatArea, lines: Vec<String>) -> Vec<String> {
+        let controls = chat.control_rows();
+        lines
+            .into_iter()
+            .enumerate()
+            .filter(|(index, _)| !controls.contains(index))
+            .map(|(_, line)| line)
+            .collect()
+    }
+
     /// [`compact_lines`] with the tree's rail taken off, so a test can read an
     /// opened fold as the rows it stands for.
     fn rail_stripped(chat: &mut ChatArea) -> Vec<String> {
-        render_trimmed(chat)
+        let rendered = render_trimmed(chat);
+        let lines = no_controls(chat, rendered);
+        lines
             .iter()
             .map(|line| strip(line))
             .map(|line| {
@@ -4987,8 +5255,15 @@ mod tests {
             ],
         );
 
-        // Both rows are stops, and neither detail is on screen yet.
-        let stops = chat.row_stops();
+        // Both rows are stops, and neither detail is on screen yet. The
+        // messages' control rows are stops too (they are presses as well), so
+        // they are counted out of this one: what this case is about is the two
+        // details.
+        let stops: Vec<_> = chat
+            .row_stops()
+            .into_iter()
+            .filter(|stop| !is_control(&stop.action))
+            .collect();
         assert_eq!(stops.len(), 2, "{stops:?}");
         assert!(!stops.iter().any(|stop| stop.expanded));
         let plain = compact_lines(&mut chat).join("\n");
@@ -5012,6 +5287,148 @@ mod tests {
         assert!(both.contains("the reasoning"), "{both}");
         assert!(both.contains("the call's body"), "{both}");
         assert_matches_fresh_render(&mut chat);
+    }
+
+    /// Every message the reader wrote or read ends in its controls; a call's row
+    /// and a compaction divider end in nothing.
+    ///
+    /// This is the desktop's pair of footer controls (`MessageBlock`'s copy
+    /// button and its fork button beside it), made permanent: a terminal has no
+    /// hover to reveal them under, so the row is always there — one row per
+    /// message, the last one, where `tab` reaches it after the message's own
+    /// rows.
+    #[test]
+    fn the_controls_row_follows_each_message() {
+        let mut chat = detailed_chat();
+        chat.render(W);
+        set_messages(
+            &mut chat,
+            vec![
+                ChatMessage::new("u".into(), ChatRole::User, "fix it"),
+                ChatMessage::new("a".into(), ChatRole::Assistant, "fixed"),
+                completed_tool("read", r#"{"path":"/a.rs"}"#, "the body"),
+            ],
+        );
+        let rows: Vec<String> = render_trimmed(&mut chat)
+            .iter()
+            .map(|line| strip(line))
+            .collect();
+        let controls = chat.control_rows();
+        assert_eq!(controls.len(), 2, "one per message, none for the call");
+        // The prompt's sits under the right edge of her own card, outside its
+        // surface; the reply's sits at its own first column.
+        assert_eq!(rows[controls[0]].trim(), "[copy]", "{rows:?}");
+        assert!(
+            rows[controls[0]].starts_with("     "),
+            "the prompt's control is right-aligned: {:?}",
+            rows[controls[0]]
+        );
+        assert_eq!(rows[controls[1]].trim(), "[copy] [fork]", "{rows:?}");
+        assert!(
+            rows[controls[1]].starts_with(" [copy]"),
+            "a reply's controls lead at its first column: {:?}",
+            rows[controls[1]]
+        );
+        // Nothing else in the transcript carries one.
+        assert!(rows
+            .iter()
+            .enumerate()
+            .all(|(index, row)| controls.contains(&index) || !row.contains("[copy]")));
+    }
+
+    /// The two controls are two stops on one row, each over its own label — what
+    /// keeps a click on `[分支]` from running `[复制]`.
+    #[test]
+    fn the_two_controls_are_separate_stops_on_one_row() {
+        let mut chat = detailed_chat();
+        chat.render(W);
+        set_messages(
+            &mut chat,
+            vec![
+                ChatMessage::new("u".into(), ChatRole::User, "go"),
+                ChatMessage::new("a".into(), ChatRole::Assistant, "done"),
+            ],
+        );
+        let stops: Vec<_> = chat
+            .row_stops()
+            .into_iter()
+            .filter(|stop| is_control(&stop.action))
+            .collect();
+        let copy = stops
+            .iter()
+            .find(|stop| stop.action == RowAction::Copy { msg: 1 })
+            .expect("the reply has a copy control");
+        let fork = stops
+            .iter()
+            .find(|stop| stop.action == RowAction::Fork { msg: 1 })
+            .expect("the reply has a fork control");
+        assert_eq!(copy.row, fork.row, "one row carries both");
+        assert!(copy.end < fork.start, "the chips split the row: {copy:?}");
+        let rows = render_trimmed(&mut chat);
+        let row = strip(&rows[copy.row]);
+        assert_eq!(&row[copy.start..copy.end], "[copy]");
+        assert_eq!(&row[fork.start..fork.end], "[fork]");
+        // Neither is ever "open": a control has nothing to unfold.
+        assert!(!copy.expanded && !fork.expanded);
+    }
+
+    /// A reply that is still arriving has no controls yet: the fork branches at
+    /// a prompt that is still being answered, and the desktop hides both buttons
+    /// while it streams for the same reason.
+    #[test]
+    fn a_streaming_reply_has_no_controls_yet() {
+        let mut chat = new_chat();
+        chat.render(W);
+        let mut reply = ChatMessage::new("a".into(), ChatRole::Assistant, "half an ans");
+        reply.pending = true;
+        set_messages(
+            &mut chat,
+            vec![ChatMessage::new("u".into(), ChatRole::User, "go"), reply],
+        );
+        let rows = chat.control_rows();
+        assert_eq!(rows.len(), 1, "only the settled prompt has a row: {rows:?}");
+        // …and it appears under the reply the moment it settles.
+        chat.messages[1].pending = false;
+        chat.mark_message_dirty(1);
+        chat.render(W);
+        assert_eq!(chat.control_rows().len(), 2);
+    }
+
+    /// A prompt learns the journal entry it was written to, which is what the
+    /// fork control points at.
+    #[test]
+    fn a_prompt_learns_the_entry_it_was_written_to() {
+        let mut chat = detailed_chat();
+        chat.render(W);
+        set_messages(
+            &mut chat,
+            vec![
+                ChatMessage::new("u".into(), ChatRole::User, "go"),
+                ChatMessage::new("a".into(), ChatRole::Assistant, "done"),
+            ],
+        );
+        let reply_row = *chat.control_rows().last().expect("the reply's controls");
+        // A row that came from history knows its entry; a live one does not
+        // until the agent names it.
+        assert_eq!(chat.preceding_user_entry(reply_row), None);
+        chat.bind_user_entry("run-1", "entry-9", "go");
+        assert_eq!(
+            chat.preceding_user_entry(reply_row).as_deref(),
+            Some("entry-9")
+        );
+        // An announcement whose text is not the prompt's is not taken: binding
+        // the wrong entry would fork the wrong place.
+        let mut other = detailed_chat();
+        other.render(W);
+        set_messages(
+            &mut other,
+            vec![
+                ChatMessage::new("u".into(), ChatRole::User, "go"),
+                ChatMessage::new("a".into(), ChatRole::Assistant, "done"),
+            ],
+        );
+        other.bind_user_entry("run-2", "entry-10", "something else");
+        assert_eq!(other.preceding_user_entry(reply_row), None);
     }
 
     /// A running reply keeps every thought, call and piece of prose on screen.
@@ -5193,9 +5610,11 @@ mod tests {
         chat.end_thinking();
         let ended = compact_lines(&mut chat);
         assert_eq!(ended, vec!["go", "▸ thinking"], "{ended:?}");
-        assert_eq!(
-            chat.render_all(W).len(),
-            rows,
+        // The transcript never *loses* a row here: the marker keeps its place,
+        // and the reply's control row arrives beneath it now that the slice has
+        // settled (a streaming reply has none — see `push_message_controls`).
+        assert!(
+            chat.render_all(W).len() >= rows,
             "the marker left the screen: every line above it would jump down"
         );
         assert_matches_fresh_render(&mut chat);
@@ -5782,6 +6201,8 @@ mod tests {
             thoughts: "思考 {} 次",
             thinking: "思考",
             process: "过程",
+            copy: "复制",
+            fork: "分支",
         });
         chat.add_message(ChatMessage::new("u".into(), ChatRole::User, "开始"));
         chat.begin_reply_run();
@@ -6090,6 +6511,7 @@ mod tests {
         while lines.last().is_some_and(|line| line.is_empty()) {
             lines.pop();
         }
+        let lines = no_controls(chat, lines);
         lines
             .iter()
             .map(|line| strip(line).trim().to_string())
@@ -7552,9 +7974,15 @@ mod tests {
         let lines = chat.render_all(W);
         let bg = format!("\x1b[48;5;{}m", DARK_THEME.user_bg);
         // Card padding row, the text row, and the padding row under it — then
-        // the transcript's trailing spacer.
+        // the message's control row and the transcript's trailing spacer.
         let (card, tail) = lines.split_at(3);
-        assert_eq!(tail.len(), 1, "{lines:?}");
+        assert_eq!(tail.len(), 2, "{lines:?}");
+        assert_eq!(
+            chat.control_rows(),
+            vec![3],
+            "the controls sit under the card, not inside it"
+        );
+        assert!(!tail[0].starts_with(&bg), "…outside the surface: {tail:?}");
         for line in card {
             assert!(line.starts_with(&bg), "every block row carries the surface");
         }

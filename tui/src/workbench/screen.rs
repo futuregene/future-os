@@ -873,6 +873,26 @@ fn wrap_words(text: &str, line_width: usize) -> Vec<String> {
     out
 }
 
+/// The hit id a transcript stop answers to.
+///
+/// Two namespaces, because one row can carry two targets: the rows that *open*
+/// something (a folded reply, a burst of work, a call's body, a thinking
+/// marker) keep `chat.row.<row>`, while the controls under a message — copy and
+/// fork, which change nothing on screen — say which one was pressed. One id for
+/// both would make a click on `[分支]` resolve to `[复制]`, since the hit map
+/// stores a single id per region and the first stop on the row is the left one.
+fn stop_region_id(stop: &crate::components::chat_area::RowStop) -> String {
+    use crate::components::chat_area::RowAction;
+    match stop.action {
+        RowAction::Copy { .. } => format!("chat.button.{}.copy", stop.row),
+        RowAction::Fork { .. } => format!("chat.button.{}.fork", stop.row),
+        RowAction::Process { .. }
+        | RowAction::Burst { .. }
+        | RowAction::Tool { .. }
+        | RowAction::Thinking { .. } => format!("chat.row.{}", stop.row),
+    }
+}
+
 fn conversation(
     workbench: &mut Workbench,
     data: &WorkbenchData,
@@ -1064,7 +1084,7 @@ fn conversation(
                         (to - from) as u16,
                         1,
                     ),
-                    format!("chat.row.{}", stop.row),
+                    stop_region_id(stop),
                 );
             }
         }

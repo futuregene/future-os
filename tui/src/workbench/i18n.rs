@@ -526,6 +526,12 @@ pub enum Key {
     ChatFoldThoughts,
     ChatThinkingLabel,
     ChatProcessLabel,
+    /// The two controls under a message: `[复制]` and `[分支]`.
+    ChatCopyChip,
+    ChatForkChip,
+    /// What the copy control answers with, and why the fork control can refuse.
+    CopiedMessage,
+    ForkNeedsPersisted,
     CmdSessions,
     CmdModel,
     CmdLanguage,
@@ -1029,6 +1035,13 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ChatFoldThoughts => ("思考 {} 次", "{} thoughts"),
         ChatThinkingLabel => ("思考", "thinking"),
         ChatProcessLabel => ("过程", "process"),
+        ChatCopyChip => ("复制", "copy"),
+        ChatForkChip => ("分支", "fork"),
+        CopiedMessage => ("已复制这条消息", "Copied the message"),
+        ForkNeedsPersisted => (
+            "这条消息还没有写进会话记录，无法分支",
+            "This message is not in the session record yet, so it cannot be forked",
+        ),
         CmdSessions => ("浏览并切换会话", "Browse and switch sessions"),
         CmdModel => ("选择模型", "Choose a model"),
         CmdLanguage => ("界面语言", "Interface language"),
@@ -1454,7 +1467,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 344] = {
+    const ALL_KEYS: [Key; 348] = {
         use Key::*;
         [
             TabTodo,
@@ -1686,6 +1699,10 @@ mod tests {
             ChatNewOutput,
             ChatFoldToolCall,
             ChatFoldToolCalls,
+            ChatCopyChip,
+            ChatForkChip,
+            CopiedMessage,
+            ForkNeedsPersisted,
             ChatFoldThought,
             ChatFoldThoughts,
             ChatThinkingLabel,
