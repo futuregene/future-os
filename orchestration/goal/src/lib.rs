@@ -36,3 +36,4 @@ pub mod validator;
 pub mod webui;
 pub mod work_items;
 pub mod worker_bridge;
+pub mod worker_config;
