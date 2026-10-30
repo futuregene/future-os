@@ -1184,6 +1184,12 @@ pub struct ChatArea {
     /// text but not these bits, which is what lets the hot path skip the
     /// layout pass instead of recomputing it per character.
     fold_bits: Vec<u8>,
+    /// The message that carried the `[分支]` control in the rendered lines: the
+    /// transcript's newest reply, once it settled (see [`Self::fork_owner`]).
+    /// Remembered because the chip is *one* row belonging to an *earlier*
+    /// message the moment another reply arrives, so the incremental paths have
+    /// to notice it moving and rebuild rather than splice.
+    chip_owner: Option<usize>,
     on_change: Option<Box<dyn FnMut()>>,
     message_line_ranges: Vec<(usize, i64)>,
     /// The actionable rows each message draws, by message index: for each, its
@@ -1231,6 +1237,7 @@ impl ChatArea {
             opened_trees: HashMap::new(),
             nested: false,
             fold_bits: Vec::new(),
+            chip_owner: None,
             on_change: None,
             message_line_ranges: Vec::new(),
             row_meta: HashMap::new(),
@@ -2649,14 +2656,32 @@ impl ChatArea {
     /// changes an earlier message's row (a run's count) — and, when it dissolves
     /// again, brings rows back — so the transcript is rebuilt: correctness over
     /// a splice that would have to reason about both sides of the fold.
-    fn sync_compact_layout(&mut self) -> bool {
+    ///
+    /// `splicing` names the one message whose rows the caller is about to
+    /// re-render anyway (`None` when it is appending a new last message). It is
+    /// what decides whether the `[分支]` chip moving counts as a change *here*:
+    /// a reply starting or ending its stream moves the chip to or from that very
+    /// message, which the splice redraws, while a new reply arriving takes it
+    /// away from an *earlier* message that nothing is redrawing.
+    fn sync_compact_layout(&mut self, splicing: Option<usize>) -> bool {
         // `default` folds settled replies, so there is no "nothing folds" fast
         // path; the bit comparison below is what keeps the common case cheap.
         // A fold can only appear or dissolve when one of these bits moved, so
         // the common case (a delta arriving in the reply being streamed) costs
         // one linear scan of cheap comparisons instead of a layout rebuild.
         let bits = Self::fold_flags(&self.messages);
+        // Where the one `[分支]` chip goes. A chip painted under a message
+        // nothing is about to redraw has to be erased by a rebuild — that is a
+        // reply arriving while an earlier one held the chip — whereas a move to
+        // or from the message being spliced is drawn by that splice, which
+        // records the owner itself.
+        let fork_owner = self.fork_owner();
+        let splicing = splicing.filter(|msg| !self.is_folded(*msg));
+        let stale_chip = self
+            .chip_owner
+            .is_some_and(|owner| Some(owner) != fork_owner && Some(owner) != splicing);
         if bits == self.fold_bits
+            && !stale_chip
             && self.compact_layout.len() == self.messages.len()
             && self
                 .reply_folds
@@ -2680,6 +2705,7 @@ impl ChatArea {
         if fold_layout_extends(&self.compact_layout, &plan.heads)
             && plan.folds == self.reply_folds
             && plan.trees == self.opened_trees
+            && !stale_chip
         {
             self.compact_layout = plan.heads;
             self.reply_folds = plan.folds;
@@ -2707,6 +2733,7 @@ impl ChatArea {
         self.reply_folds = plan.folds;
         self.opened_trees = plan.trees;
         self.fold_bits = Self::fold_flags(&self.messages);
+        self.chip_owner = self.fork_owner();
         self.rendered_lines = Vec::new();
         self.message_line_ranges = Vec::new();
         // A folded message renders nothing and takes no separator with it, so
@@ -2742,7 +2769,7 @@ impl ChatArea {
         // A fold may have appeared (a tool completed into the run above it):
         // that changes an earlier message's rows, so the transcript is rebuilt
         // instead of spliced.
-        if self.sync_compact_layout() {
+        if self.sync_compact_layout(Some(msg_idx)) {
             return;
         }
         // The message's rows live in the run's summary row, and the summary
@@ -2760,6 +2787,12 @@ impl ChatArea {
             self.rerender();
             return;
         }
+        // A reply starting or ending its stream moves the `[分支]` chip to or
+        // from *this* message, which the splice redraws — so recording the new
+        // owner here is what makes the redrawn rows agree with a fresh layout
+        // (`sync_compact_layout` above has already refused the move when it
+        // involves any other message).
+        self.chip_owner = self.fork_owner();
         let range = self.message_line_ranges[msg_idx];
         // end can be start - 1 for a zero-line message (TS number semantics);
         // oldLen = end - start + 1 → 0 in that case.
@@ -2798,7 +2831,7 @@ impl ChatArea {
     fn append_last_message(&mut self) {
         // A message that folds into the run above it changes that run's summary
         // row, which sits somewhere in the middle of the transcript.
-        if self.sync_compact_layout() {
+        if self.sync_compact_layout(None) {
             return;
         }
         // A queued prompt draws no rows (it waits above the composer, not in
@@ -2807,6 +2840,11 @@ impl ChatArea {
         if self.waits_in_queue(self.messages.len().saturating_sub(1)) {
             return;
         }
+        // The appended message is the one that just took the `[分支]` chip (a
+        // new reply, whose stream has not started); `sync_compact_layout(None)`
+        // above has already rebuilt the transcript when an *earlier* message
+        // still had one painted.
+        self.chip_owner = self.fork_owner();
         self.rendered_lines.pop();
         if self.messages.len() > 1 {
             self.push_message_separator(self.messages.len() - 1, self.messages.len() - 2);
@@ -2832,6 +2870,30 @@ impl ChatArea {
         self.messages
             .iter()
             .rposition(|m| m.role == ChatRole::Assistant)
+    }
+
+    /// The one message that carries the `[分支]` control: the transcript's
+    /// **newest** reply, and only once its stream has ended.
+    ///
+    /// The desktop draws its fork button in every reply's footer but keeps it
+    /// invisible until the pointer rests on that message, so what a reader ever
+    /// sees there is *one* button, on the message they are on. A terminal has no
+    /// hover, so the same rule is spelled the only other way it can be: the chip
+    /// is painted under the reply the reader is looking at anyway — the newest
+    /// one, whose stream just ended — instead of under all of them, which put a
+    /// `[分支]` after every turn of the conversation. Branching at an older
+    /// point still exists and is the same call: `/fork` lists them all.
+    fn fork_owner(&self) -> Option<usize> {
+        let index = self
+            .messages
+            .iter()
+            .rposition(|m| m.role == ChatRole::Assistant)?;
+        let msg = &self.messages[index];
+        // The same three states a message may not act from: a banner is not a
+        // turn, a prompt still in the queue has no rows, and a reply still
+        // streaming has nothing to branch on yet.
+        let settled = !msg.welcome && !msg.pending && msg.run_state != Some(RunState::Queued);
+        settled.then_some(index)
     }
 
     fn find_tool_index(&self, tool_id: &str) -> Option<usize> {
@@ -3022,7 +3084,8 @@ impl ChatArea {
             .push((offset, action, start, end));
     }
 
-    /// The row of controls under a **reply**: `[复制]` and `[分支]`.
+    /// The row of controls under a **reply**: `[复制]` and, on the one reply
+    /// that carries it, `[分支]` (see [`Self::fork_owner`]).
     ///
     /// A reply ends in this row, one blank line below its own text, because the
     /// desktop draws the same pair in the message's footer — revealed on hover,
@@ -3037,7 +3100,11 @@ impl ChatArea {
     /// * **Fork** belongs to a *settled* reply — it branches at the turn that
     ///   produced the reply, which is the desktop's own meaning of its fork
     ///   button (`Live::fork_message`). While the reply is still arriving there
-    ///   is nothing to branch on yet, so the row waits.
+    ///   is nothing to branch on yet, so the row waits. And it is one chip, not
+    ///   one per turn: the desktop reveals its fork button under the message the
+    ///   pointer is on, so a terminal draws it under the newest reply only.
+    ///   Older points stay reachable through `/fork`, which lists every real
+    ///   user message.
     ///
     /// A **user** message gets nothing: the reader can retype their own prompt
     /// or select it with the mouse, and the desktop's copy chip under a bubble
@@ -3059,7 +3126,14 @@ impl ChatArea {
         if !msg.content.trim().is_empty() {
             chips.push((self.fold_words.copy, RowAction::Copy { msg: msg_idx }));
         }
-        chips.push((self.fold_words.fork, RowAction::Fork { msg: msg_idx }));
+        // The fork belongs to the newest reply alone (`Self::fork_owner`), so an
+        // older turn ends in its copy chip and nothing else.
+        if self.chip_owner == Some(msg_idx) {
+            chips.push((self.fold_words.fork, RowAction::Fork { msg: msg_idx }));
+        }
+        if chips.is_empty() {
+            return;
+        }
         // `[复制]`: the brackets are this surface's spelling for something
         // pressable — a panel's `[× 关闭]`, the header's `[ctrl+r] 会话`.
         let labels: Vec<String> = chips.iter().map(|(word, _)| format!("[{word}]")).collect();
@@ -5328,6 +5402,66 @@ mod tests {
             .all(|(index, row)| index == at || !row.contains("[copy]")));
     }
 
+    /// One fork chip for the transcript, not one per turn: it rides the *newest*
+    /// reply, whose stream has ended.
+    ///
+    /// The desktop draws that button in every reply's footer but reveals it only
+    /// under the message the pointer rests on, so a reader there ever sees one.
+    /// A terminal cannot hover, so the rule is spelled the other way round: the
+    /// chip is under the reply the reader is looking at anyway. An older reply
+    /// keeps its copy and loses the fork — its point is still one `/fork` away —
+    /// and while the newest reply is still streaming there is no chip at all.
+    #[test]
+    fn the_fork_chip_rides_the_newest_reply() {
+        let mut chat = new_chat();
+        chat.render(W);
+        let forks = |chat: &ChatArea| -> Vec<usize> {
+            chat.row_stops()
+                .into_iter()
+                .filter_map(|stop| match stop.action {
+                    RowAction::Fork { msg } => Some(msg),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        chat.add_message(ChatMessage::new("u1".into(), ChatRole::User, "first?"));
+        chat.add_message(ChatMessage::new("a1".into(), ChatRole::Assistant, "one"));
+        assert_eq!(forks(&chat), vec![1], "the only reply carries it");
+
+        // A second turn moves the chip: the first reply's row is *earlier* than
+        // the message that arrived, and the incremental append has to rebuild
+        // rather than leave a second chip behind.
+        chat.add_message(ChatMessage::new("u2".into(), ChatRole::User, "and again?"));
+        assert_eq!(forks(&chat), vec![1], "a prompt does not move it");
+        chat.add_message(ChatMessage::new("a2".into(), ChatRole::Assistant, "two"));
+        assert_eq!(forks(&chat), vec![3], "it moved to the newest reply");
+        let rows: Vec<String> = render_trimmed(&mut chat)
+            .iter()
+            .map(|line| strip(line))
+            .collect();
+        let plain = chat
+            .control_rows()
+            .into_iter()
+            .map(|row| rows[row].trim().to_string())
+            .collect::<Vec<_>>();
+        // The prompt carries nothing (a reader can retype what they wrote); each
+        // reply ends in its copy, and only the newest one adds the fork.
+        assert_eq!(plain, vec!["[copy]", "[copy] [fork]"], "{rows:?}");
+
+        // The newest reply still streaming: nothing to branch on yet, and the
+        // settled reply above it does not stand in for it.
+        chat.messages[3].pending = true;
+        chat.mark_message_dirty(3);
+        chat.render(W);
+        assert!(forks(&chat).is_empty(), "{rows:?}");
+        chat.messages[3].pending = false;
+        chat.mark_message_dirty(3);
+        chat.render(W);
+        assert_eq!(forks(&chat), vec![3], "it comes back when the stream ends");
+        assert_matches_fresh_render(&mut chat);
+    }
+
     /// The two controls are two stops on one row, each over its own label — what
     /// keeps a click on `[分支]` from running `[复制]`.
     #[test]
@@ -5944,14 +6078,17 @@ mod tests {
             !live.iter().any(|line| line.contains("weighing it")),
             "{live:?}"
         );
-        let live_height = chat.render_all(W).len();
-
         chat.mark_last_message_complete();
         chat.end_reply_run();
         let lines = compact_lines(&mut chat);
+        // The fold *is* the collapse: the marker, the call and their gaps become
+        // one summary row. Counted on the rows the transcript says rather than
+        // on the frame's height, because settling also earns the reply its row of
+        // controls — the blank line and the chips — which would otherwise cancel
+        // the fold out of the arithmetic while the work still visibly collapsed.
         assert!(
-            chat.render_all(W).len() < live_height,
-            "settling is the first point where the reply may collapse"
+            lines.len() < live.len(),
+            "settling is the first point where the reply may collapse: {lines:?}"
         );
         assert_eq!(
             lines,
