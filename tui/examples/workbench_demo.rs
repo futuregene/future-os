@@ -7,7 +7,7 @@ use future_tui::workbench::layout::{self, Rect};
 use future_tui::workbench::mouse::{MouseEvent, MouseKind};
 use future_tui::workbench::picker::PickerKind;
 use future_tui::workbench::state::{
-    ApprovalView, DiffView, ForkPoint, PanelId, QueuedPrompt, WorktreeView,
+    ApprovalView, DiffView, ForkPoint, ForkRole, PanelId, QueuedPrompt, WorktreeView,
 };
 use future_tui::workbench::{Overlay, PaneId, WbAction, WbEvent, Workbench};
 
@@ -110,10 +110,12 @@ fn main() {
                     data.fork_points = vec![
                         ForkPoint {
                             id: "e1".into(),
+                            role: ForkRole::User,
                             text: "先比较 DSH-TUI、Codex、OpenCode 与 Claude Code".into(),
                         },
                         ForkPoint {
                             id: "e7".into(),
+                            role: ForkRole::User,
                             text: "实现多行编辑器，再处理队列与滚动".into(),
                         },
                     ];

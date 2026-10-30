@@ -511,14 +511,13 @@ impl GrpcClient {
         Ok(result)
     }
 
-    /// `getForkMessages()` for an explicit session — `{messages: [...]}`.
-    pub async fn get_fork_messages(&self) -> Result<Value, String> {
-        self.call("get_fork_messages", RpcCommand::default()).await
-    }
-
-    pub async fn fork_messages_for(&self, session_id: &str) -> Result<Value, String> {
+    /// `getForkEntries()` for an explicit session — `{entries: [...]}`, every
+    /// persisted question *and* answer a `/fork` can stop after, in transcript
+    /// order. The ones a still-running reply is writing are left out by the
+    /// agent, which is what makes the prompt of the live turn the newest point.
+    pub async fn fork_entries_for(&self, session_id: &str) -> Result<Value, String> {
         self.call(
-            "get_fork_messages",
+            "get_fork_entries",
             RpcCommand {
                 session_id: session_id.to_string(),
                 ..Default::default()
@@ -527,23 +526,22 @@ impl GrpcClient {
         .await
     }
 
-    /// Fork `session_id` so the child ends with the **whole turn** that starts at
-    /// `entry_id` — the prompt, its tool calls and the reply they produced.
+    /// Fork `session_id` so the child ends **with the chosen message**.
     ///
-    /// The mode is what makes that so, and leaving it off was a bug: the agent
-    /// reads an empty mode as `through_entry`, which copies the selected entry
-    /// and stops there — so a fork taken from a reply arrived in the child with
-    /// the question and no answer, and the reader had to read the parent to see
-    /// what they had branched. `through_turn` is what the desktop's own fork
-    /// sends (`host::agent_commands::fork_command`), and it cuts at the entry
-    /// before the next prompt, so the child ends where the turn did.
+    /// `through_entry` is the mode that says exactly that: the parent's entries
+    /// up to and including `entry_id`, and nothing after it. The picker lists
+    /// both kinds of message, so both kinds are points — picking a question
+    /// stops the child at the question (a clean place to ask again), picking an
+    /// answer stops it at the answer. (`through_turn` would extend a question's
+    /// fork to the answer it produced, which is no longer what the reader chose:
+    /// the answer is its own row in the same list.)
     pub async fn fork_from(&self, session_id: &str, entry_id: &str) -> Result<Value, String> {
         self.call(
             "fork",
             RpcCommand {
                 session_id: session_id.to_string(),
                 entry_id: entry_id.to_string(),
-                mode: "through_turn".to_string(),
+                mode: "through_entry".to_string(),
                 created_by: "tui".to_string(),
                 ..Default::default()
             },
@@ -3328,7 +3326,6 @@ pub(crate) mod tests {
                 ("switch_session".into(), "{\"cancelled\":false}".into()),
                 ("fork".into(), "{\"sessionId\":\"s-fork\"}".into()),
                 ("clone".into(), "{\"sessionId\":\"s-clone\"}".into()),
-                ("get_fork_messages".into(), "{\"messages\":[]}".into()),
                 (
                     "list_sessions".into(),
                     "{\"sessions\":[{\"id\":\"s1\",\"cwd\":\"/tmp\",\"updatedAt\":\"2026-01-01\",\"model\":\"m\"}, {\"bad\":true}]}"
@@ -3361,7 +3358,6 @@ pub(crate) mod tests {
         assert_eq!(client.get_current_session_id(), "s-clone");
 
         // Plain calls.
-        client.get_fork_messages().await.unwrap();
         client.set_session_name("name").await.unwrap();
         let sessions = client.list_sessions().await.unwrap();
         assert_eq!(sessions.len(), 1); // the malformed entry is dropped

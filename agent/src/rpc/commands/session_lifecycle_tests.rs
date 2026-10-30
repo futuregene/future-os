@@ -744,6 +744,127 @@ fn get_fork_messages_handles_legacy_bare_string_content() {
     assert_eq!(messages[0]["blocks"][0]["text"], "plain legacy text");
 }
 
+// ── coverage batch 1: get_fork_entries ─────────────────────────────────
+
+/// The picker's own list: every question *and* every answer, in transcript
+/// order, with the role the surface labels the row by.
+#[test]
+fn get_fork_entries_lists_questions_and_answers() {
+    let state = make_app_state();
+    let user = crate::session::SessionEntry::new_user(
+        "user",
+        serde_json::json!([
+            {"type": "text", "text": "why does it fail?"},
+            {"type": "text", "text": "agent-injected attachment list"},
+        ]),
+    );
+    let assistant = crate::session::SessionEntry::new_assistant(
+        serde_json::json!("because the loop advanced first"),
+        vec![],
+    );
+    // A tool result and a report-less assistant step are steps of a reply, not
+    // messages a reader branches at: neither is listed.
+    let tool = crate::session::SessionEntry::new_tool("call-1", "file body");
+    let tool_only = crate::session::SessionEntry::new_assistant(serde_json::json!([]), vec![]);
+    save_via(
+        &state,
+        "pick-src",
+        "mock",
+        vec![user, assistant, tool, tool_only],
+    );
+
+    let cmd = make_cmd_for("get_fork_entries", "pick-src");
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true, "{resp}");
+    let entries = resp["data"]["entries"].as_array().unwrap();
+    let listed: Vec<_> = entries
+        .iter()
+        .map(|entry| {
+            (
+                entry["role"].as_str().unwrap().to_string(),
+                entry["blocks"][0]["text"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        vec![
+            ("user".to_string(), "why does it fail?".to_string()),
+            (
+                "assistant".to_string(),
+                "because the loop advanced first".to_string()
+            ),
+        ]
+    );
+    assert!(!entries[0]["id"].as_str().unwrap().is_empty());
+    assert!(entries[0]["createdAtMs"].is_i64());
+}
+
+#[test]
+fn get_fork_entries_unknown_session_returns_empty() {
+    let state = make_app_state();
+    let cmd = make_cmd_for("get_fork_entries", "ghost");
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["data"]["entries"], serde_json::json!([]));
+}
+
+/// A run that is still writing is not a fork point: its entries have no answer
+/// to stop at yet, so the newest message the picker offers is the prompt that
+/// started it. Settling the run puts its reply back on the list.
+#[test]
+fn get_fork_entries_stops_before_the_run_that_is_still_writing() {
+    let state = make_app_state();
+    let question = crate::session::SessionEntry::new_user("user", serde_json::json!("first"));
+    let answer = crate::session::SessionEntry::new_assistant(serde_json::json!("done"), vec![]);
+    let live_prompt = crate::session::SessionEntry::new_user("user", serde_json::json!("and now?"));
+    let live_start = crate::session::SessionEntry::run_started("run-2", 1);
+    let half_written =
+        crate::session::SessionEntry::new_assistant(serde_json::json!("half an ans"), vec![]);
+    save_via(
+        &state,
+        "live-src",
+        "mock",
+        vec![
+            question,
+            answer,
+            live_prompt,
+            live_start,
+            half_written.clone(),
+        ],
+    );
+
+    let texts = |state: &crate::rpc::AppState| -> Vec<String> {
+        let cmd = make_cmd_for("get_fork_entries", "live-src");
+        let resp = parse_response(&handle_command_internal(state, cmd));
+        resp["data"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["blocks"][0]["text"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(texts(&state), vec!["first", "done", "and now?"]);
+
+    // The run's terminal marker settles it, and the answer joins the list.
+    let mut settled = vec![half_written];
+    settled.push(crate::session::SessionEntry::run_terminal(
+        "run-2",
+        "completed",
+        10,
+        20,
+        None,
+    ));
+    let existing = state.session_manager.load("live-src").unwrap().entries;
+    let mut entries = existing;
+    entries.extend(settled);
+    save_via(&state, "live-src", "mock", entries);
+    assert_eq!(
+        texts(&state),
+        vec!["first", "done", "and now?", "half an ans"]
+    );
+}
+
 // ── coverage batch 1: new_session variants ──────────────────────────────
 
 #[test]

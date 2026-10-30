@@ -586,7 +586,8 @@ pub struct WorkbenchData {
     pub approval: Option<ApprovalView>,
     /// Read-only git working-tree review.
     pub diff: Option<DiffView>,
-    /// Real user-message fork points from `get_fork_messages`.
+    /// The messages a `/fork` can stop after, in transcript order: every
+    /// question and every answer the session has persisted (`get_fork_entries`).
     pub fork_points: Vec<ForkPoint>,
     /// Read-only git worktree list.
     pub worktrees: Vec<WorktreeView>,
@@ -695,9 +696,24 @@ pub struct DiffView {
     pub error: Option<String>,
 }
 
+/// Whose message a `/fork` point is: the reader's or the model's.
+///
+/// The picker lists both, because "fork after this message" means the same
+/// thing either way — the child ends with the message the reader picked. The
+/// role is only what the row is labelled by.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ForkRole {
+    /// A question the reader asked.
+    #[default]
+    User,
+    /// An answer the model wrote.
+    Assistant,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ForkPoint {
     pub id: String,
+    pub role: ForkRole,
     pub text: String,
 }
 

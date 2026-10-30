@@ -355,9 +355,6 @@ pub enum WbAction {
     /// ANSI and never sees the message, so the driver is what reads the words
     /// off the transcript (`Live::copy_message`).
     CopyMessage(usize),
-    /// The `[分支]` control under a reply: branch the conversation at the user
-    /// message that produced it (`Live::fork_message`).
-    ForkMessage(usize),
     SetTools(Vec<String>),
     CancelQueued(String),
     RecallQueued(String),
@@ -2027,14 +2024,10 @@ impl Workbench {
         };
         match stop {
             ChatStop::Row(stop) => match &stop.action {
-                // The two controls under a message change nothing on screen:
-                // they are one press each, answered by the driver (which owns
-                // the clipboard and the agent).
+                // The control under a reply changes nothing on screen: it is
+                // one press, answered by the driver (which owns the clipboard).
                 crate::components::chat_area::RowAction::Copy { .. } => {
                     vec![WbAction::CopyMessage(stop.row)]
-                }
-                crate::components::chat_area::RowAction::Fork { .. } => {
-                    vec![WbAction::ForkMessage(stop.row)]
                 }
                 _ => {
                     // The transcript is about to change height because of what
@@ -2063,9 +2056,9 @@ impl Workbench {
     /// The index in [`Self::chat_stops`] that a click names: the row's own stop,
     /// by the rendered line it sits on.
     ///
-    /// The row's *controls* are not candidates: they answer to
-    /// `chat.button.<row>.<chip>` and are resolved by [`Self::button_stop_index`],
-    /// so a `chat.row.` id can never land on a copy chip that shares its row.
+    /// The row's *control* is not a candidate: it answers to
+    /// `chat.button.<row>.copy` and is resolved by [`Self::button_stop_index`],
+    /// so a `chat.row.` id can never land on the chip that shares its row.
     fn row_stop_index(&mut self, row: usize, data: &WorkbenchData) -> Option<usize> {
         use crate::components::chat_area::RowAction;
         self.chat_stops(data).iter().position(|stop| {
@@ -2073,20 +2066,19 @@ impl Workbench {
                 stop,
                 ChatStop::Row(check)
                     if check.row == row
-                        && !matches!(check.action, RowAction::Copy { .. } | RowAction::Fork { .. })
+                        && !matches!(check.action, RowAction::Copy { .. })
             )
         })
     }
 
-    /// The index in [`Self::chat_stops`] of one of a row's two controls: `copy`
-    /// picks the copy chip, anything else the fork one. Separated because both
-    /// chips sit on one rendered row and the pointer may land on either.
+    /// The index in [`Self::chat_stops`] of the control on a row: separated
+    /// because the chip shares its rendered row with the rows that open things,
+    /// and a `chat.row.` id must never land on it.
     fn button_stop_index(&mut self, row: usize, copy: bool, data: &WorkbenchData) -> Option<usize> {
         use crate::components::chat_area::RowAction;
         self.chat_stops(data).iter().position(|stop| match stop {
             ChatStop::Row(check) if check.row == row => match &check.action {
                 RowAction::Copy { .. } => copy,
-                RowAction::Fork { .. } => !copy,
                 _ => false,
             },
             _ => false,
@@ -4762,10 +4754,12 @@ mod tests {
         data.fork_points = vec![
             state::ForkPoint {
                 id: "entry-1".into(),
+                role: state::ForkRole::User,
                 text: "start".into(),
             },
             state::ForkPoint {
                 id: "entry-2".into(),
+                role: state::ForkRole::Assistant,
                 text: "second".into(),
             },
         ];
@@ -5692,7 +5686,7 @@ mod tests {
     /// a click on `[分支]` run `[复制]` because the copy chip is the row's first
     /// stop.
     #[test]
-    fn the_message_controls_press_their_own_verbs() {
+    fn the_message_control_presses_its_own_verb() {
         let mut chat = rendered_chat(1);
         // The band's text width, which is what the transcript was wrapped at:
         // the rail hidden is the 120-column frame `chat_data` renders for.
@@ -5709,30 +5703,6 @@ mod tests {
         let mut workbench = workbench();
         workbench.sidebar_visible = false;
         workbench.render(&data, 120, 38);
-        let region = |workbench: &Workbench, id: &str| {
-            workbench
-                .hits()
-                .regions()
-                .iter()
-                .find(|(_, region)| region == id)
-                .map(|(rect, _)| *rect)
-                .unwrap_or_else(|| panic!("no region {id}"))
-        };
-        let copy = region(&workbench, &format!("chat.button.{reply_row}.copy"));
-        let fork = region(&workbench, &format!("chat.button.{reply_row}.fork"));
-        assert_eq!(copy.y, fork.y, "one row, two chips");
-        assert!(copy.x + copy.w <= fork.x, "{copy:?} {fork:?}");
-
-        assert_eq!(
-            click_region(
-                &mut workbench,
-                &data,
-                120,
-                38,
-                &format!("chat.button.{reply_row}.fork")
-            ),
-            vec![WbAction::ForkMessage(reply_row)]
-        );
         assert_eq!(
             click_region(
                 &mut workbench,
@@ -5746,7 +5716,7 @@ mod tests {
 
         // The keyboard walks the same stops: the reply's folded process is the
         // first one here (a row that opens something, so not pressed), then its
-        // two chips.
+        // chip.
         let mut keys = super::tests::workbench();
         keys.sidebar_visible = false;
         keys.render(&data, 120, 38);
@@ -5755,8 +5725,6 @@ mod tests {
         keys.handle(WbEvent::Key("tab".into()), &data);
         keys.handle(WbEvent::Key("tab".into()), &data);
         assert_eq!(enter(&mut keys), vec![WbAction::CopyMessage(reply_row)]);
-        keys.handle(WbEvent::Key("tab".into()), &data);
-        assert_eq!(enter(&mut keys), vec![WbAction::ForkMessage(reply_row)]);
     }
 
     /// A click on a transcript row opens it, the same as `enter` on the cursor —
@@ -11215,9 +11183,13 @@ mod tests {
         data.fork_points = (0..6)
             .map(|index| state::ForkPoint {
                 id: format!("e{index}"),
-                text: format!(
-                    "第 {index} 条用户消息：把浮层的上下键改成一次一行，并把列表裁成一行"
-                ),
+                // Alternating: the picker lists questions and answers alike.
+                role: if index % 2 == 0 {
+                    state::ForkRole::User
+                } else {
+                    state::ForkRole::Assistant
+                },
+                text: format!("第 {index} 条消息：把浮层的上下键改成一次一行，并把列表裁成一行"),
             })
             .collect();
         data.worktrees = (0..6)
@@ -11994,7 +11966,8 @@ mod tests {
         data.fork_points = (0..30)
             .map(|index| state::ForkPoint {
                 id: format!("e{index}"),
-                text: format!("第 {index} 条用户消息，同样很长，长到占不下一行"),
+                role: state::ForkRole::User,
+                text: format!("第 {index} 条消息，同样很长，长到占不下一行"),
             })
             .collect();
         data.worktrees = (0..30)

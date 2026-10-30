@@ -119,10 +119,6 @@ pub enum RowAction {
     /// clipboard. A control, not a fold — pressing it changes nothing on screen,
     /// so it has no [`RowKind`] and never opens or closes a row.
     Copy { msg: usize },
-    /// The **fork** control under a reply: branch the conversation at the user
-    /// message that produced it, which is what the desktop's own fork button
-    /// does (see `Live::fork_message`).
-    Fork { msg: usize },
 }
 
 impl RowAction {
@@ -133,7 +129,7 @@ impl RowAction {
             Self::Burst { .. } => Some(RowKind::Burst),
             Self::Tool { .. } => Some(RowKind::Tool),
             Self::Thinking { .. } => Some(RowKind::Thinking),
-            Self::Copy { .. } | Self::Fork { .. } => None,
+            Self::Copy { .. } => None,
         }
     }
 
@@ -149,8 +145,7 @@ impl RowAction {
             | Self::Burst { msg }
             | Self::Tool { msg }
             | Self::Thinking { msg }
-            | Self::Copy { msg }
-            | Self::Fork { msg } => *msg,
+            | Self::Copy { msg } => *msg,
         }
     }
 }
@@ -264,8 +259,6 @@ pub struct FoldWords {
     pub process: &'static str,
     /// The copy control under a message (`[复制]` / `[copy]`).
     pub copy: &'static str,
-    /// The fork control under a reply (`[分支]` / `[fork]`).
-    pub fork: &'static str,
 }
 
 impl Default for FoldWords {
@@ -278,7 +271,6 @@ impl Default for FoldWords {
             thinking: "thinking",
             process: "process",
             copy: "copy",
-            fork: "fork",
         }
     }
 }
@@ -377,15 +369,6 @@ pub struct ChatMessage {
     pub run_id: Option<String>,
     pub run_state: Option<RunState>,
     pub queue_position: Option<u32>,
-    /// The journal entry this message was read from — the id `fork` branches at,
-    /// and the reason a *live* message becomes forkable the moment the agent
-    /// says which entry it wrote (see `ChatArea::bind_user_entry`).
-    ///
-    /// `None` for a row the agent has not persisted yet: a reply whose prompt is
-    /// still being acknowledged is on screen before the entry exists, and a
-    /// control that would silently fork the wrong place is worse than one that
-    /// says it cannot yet.
-    pub entry_id: Option<String>,
     /// Pictures this message carries, in the order they were attached.
     ///
     /// The journal keeps a picture as a *path* — no bytes travel with an entry
@@ -423,7 +406,6 @@ impl ChatMessage {
             run_id: None,
             run_state: None,
             queue_position: None,
-            entry_id: None,
             pictures: Vec::new(),
         }
     }
@@ -1184,12 +1166,6 @@ pub struct ChatArea {
     /// text but not these bits, which is what lets the hot path skip the
     /// layout pass instead of recomputing it per character.
     fold_bits: Vec<u8>,
-    /// The message that carried the `[分支]` control in the rendered lines: the
-    /// transcript's newest reply, once it settled (see [`Self::fork_owner`]).
-    /// Remembered because the chip is *one* row belonging to an *earlier*
-    /// message the moment another reply arrives, so the incremental paths have
-    /// to notice it moving and rebuild rather than splice.
-    chip_owner: Option<usize>,
     on_change: Option<Box<dyn FnMut()>>,
     message_line_ranges: Vec<(usize, i64)>,
     /// The actionable rows each message draws, by message index: for each, its
@@ -1237,7 +1213,6 @@ impl ChatArea {
             opened_trees: HashMap::new(),
             nested: false,
             fold_bits: Vec::new(),
-            chip_owner: None,
             on_change: None,
             message_line_ranges: Vec::new(),
             row_meta: HashMap::new(),
@@ -1428,7 +1403,7 @@ impl ChatArea {
         (!text.trim().is_empty()).then(|| text.to_string())
     }
 
-    /// Which rendered rows are the per-message controls (`[复制]`, `[分支]`).
+    /// Which rendered rows are the per-message control (`[复制]`).
     ///
     /// The rows are derived from the same stops the walk uses, so a frame that
     /// keeps its controls keeps them in one place — the frame tests read a
@@ -1438,69 +1413,13 @@ impl ChatArea {
         let mut rows: Vec<usize> = self
             .row_stops()
             .into_iter()
-            .filter(|stop| matches!(stop.action, RowAction::Copy { .. } | RowAction::Fork { .. }))
+            .filter(|stop| matches!(stop.action, RowAction::Copy { .. }))
             .map(|stop| stop.row)
             .collect();
-        // A reply's two chips share one row, and a row is one row: the list
-        // names each of them once (`row_stops` is sorted by row).
+        // One row is one row, whatever it carries: `row_stops` is sorted by
+        // row, so a row that somehow drew two chips still names once.
         rows.dedup();
         rows
-    }
-
-    /// The journal entry of the prompt behind the message covering `row` — the
-    /// point `fork` branches at.
-    ///
-    /// A reply is not forkable on its own: the fork means "branch where this
-    /// question was asked", so the walk goes back to the nearest user message
-    /// rather than to the reply itself (the desktop's fork button resolves its
-    /// target the same way). `None` when there is no such prompt above the row,
-    /// or when its entry is not written yet — a submission that was
-    /// acknowledged but never persisted, or a row from an older agent that
-    /// sends no `user_message` announcement.
-    pub fn preceding_user_entry(&self, row: usize) -> Option<String> {
-        let index = self.message_at_row(row)?;
-        self.messages[..=index]
-            .iter()
-            .rev()
-            .find(|msg| msg.role == ChatRole::User && !msg.welcome)
-            .and_then(|msg| msg.entry_id.clone())
-    }
-
-    /// Learn the journal entry a prompt was written to, after the fact.
-    ///
-    /// The agent announces it on its `user_message` event, which can arrive on
-    /// either side of the acknowledgement that binds the bubble to its run — and
-    /// a prompt the agent accepted straight away is never bound by id at all
-    /// (`bind_user_run` is the *queued* road). So the match tries, in order: the
-    /// run id (the queued case), then the newest prompt with no entry whose text
-    /// is the one announced. `text` is the announcement's display text; an
-    /// announcement that matches nothing is dropped rather than guessed at —
-    /// binding the wrong entry would fork the wrong place, and a missed one only
-    /// means the fork chip says it cannot yet.
-    pub fn bind_user_entry(&mut self, run_id: &str, entry_id: &str, text: &str) {
-        if entry_id.is_empty() {
-            return;
-        }
-        if !run_id.is_empty() {
-            if let Some(msg) = self.messages.iter_mut().find(|msg| {
-                msg.role == ChatRole::User
-                    && (msg.run_id.as_deref() == Some(run_id) || msg.id == run_id)
-            }) {
-                msg.entry_id = Some(entry_id.to_string());
-                return;
-            }
-        }
-        let text = text.trim();
-        if let Some(msg) = self
-            .messages
-            .iter_mut()
-            .rev()
-            .find(|msg| msg.role == ChatRole::User && msg.entry_id.is_none())
-        {
-            if text.is_empty() || msg.content.trim() == text {
-                msg.entry_id = Some(entry_id.to_string());
-            }
-        }
     }
 
     /// The content of the most recent assistant message (thinking excluded) —
@@ -2031,8 +1950,8 @@ impl ChatArea {
                     row: from + offset,
                     start: *start,
                     end: *end,
-                    // A control (copy, fork) has no open/closed state, so it is
-                    // never "expanded" — it is still a stop the cursor lands on.
+                    // A control (copy) has no open/closed state, so it is never
+                    // "expanded" — it is still a stop the cursor lands on.
                     expanded: action.kind().is_some_and(|kind| open.get(kind)),
                     action: action.clone(),
                 });
@@ -2065,8 +1984,8 @@ impl ChatArea {
             .messages
             .get(action.message())
             .map(|msg| msg.id.clone())?;
-        // A control is not a fold: there is no state to toggle, and the buttons
-        // are answered by the driver (`WbAction::CopyMessage`/`ForkMessage`).
+        // A control is not a fold: there is no state to toggle, and the button
+        // is answered by the driver (`WbAction::CopyMessage`).
         let kind = action.kind()?;
         self.revealed.entry(id).or_default().toggle(kind);
         // Opening draws what the row stood for *below* it and closing takes it
@@ -2658,30 +2577,14 @@ impl ChatArea {
     /// a splice that would have to reason about both sides of the fold.
     ///
     /// `splicing` names the one message whose rows the caller is about to
-    /// re-render anyway (`None` when it is appending a new last message). It is
-    /// what decides whether the `[分支]` chip moving counts as a change *here*:
-    /// a reply starting or ending its stream moves the chip to or from that very
-    /// message, which the splice redraws, while a new reply arriving takes it
-    /// away from an *earlier* message that nothing is redrawing.
-    fn sync_compact_layout(&mut self, splicing: Option<usize>) -> bool {
+    fn sync_compact_layout(&mut self) -> bool {
         // `default` folds settled replies, so there is no "nothing folds" fast
         // path; the bit comparison below is what keeps the common case cheap.
         // A fold can only appear or dissolve when one of these bits moved, so
         // the common case (a delta arriving in the reply being streamed) costs
         // one linear scan of cheap comparisons instead of a layout rebuild.
         let bits = Self::fold_flags(&self.messages);
-        // Where the one `[分支]` chip goes. A chip painted under a message
-        // nothing is about to redraw has to be erased by a rebuild — that is a
-        // reply arriving while an earlier one held the chip — whereas a move to
-        // or from the message being spliced is drawn by that splice, which
-        // records the owner itself.
-        let fork_owner = self.fork_owner();
-        let splicing = splicing.filter(|msg| !self.is_folded(*msg));
-        let stale_chip = self
-            .chip_owner
-            .is_some_and(|owner| Some(owner) != fork_owner && Some(owner) != splicing);
         if bits == self.fold_bits
-            && !stale_chip
             && self.compact_layout.len() == self.messages.len()
             && self
                 .reply_folds
@@ -2705,7 +2608,6 @@ impl ChatArea {
         if fold_layout_extends(&self.compact_layout, &plan.heads)
             && plan.folds == self.reply_folds
             && plan.trees == self.opened_trees
-            && !stale_chip
         {
             self.compact_layout = plan.heads;
             self.reply_folds = plan.folds;
@@ -2733,7 +2635,6 @@ impl ChatArea {
         self.reply_folds = plan.folds;
         self.opened_trees = plan.trees;
         self.fold_bits = Self::fold_flags(&self.messages);
-        self.chip_owner = self.fork_owner();
         self.rendered_lines = Vec::new();
         self.message_line_ranges = Vec::new();
         // A folded message renders nothing and takes no separator with it, so
@@ -2769,7 +2670,7 @@ impl ChatArea {
         // A fold may have appeared (a tool completed into the run above it):
         // that changes an earlier message's rows, so the transcript is rebuilt
         // instead of spliced.
-        if self.sync_compact_layout(Some(msg_idx)) {
+        if self.sync_compact_layout() {
             return;
         }
         // The message's rows live in the run's summary row, and the summary
@@ -2787,12 +2688,6 @@ impl ChatArea {
             self.rerender();
             return;
         }
-        // A reply starting or ending its stream moves the `[分支]` chip to or
-        // from *this* message, which the splice redraws — so recording the new
-        // owner here is what makes the redrawn rows agree with a fresh layout
-        // (`sync_compact_layout` above has already refused the move when it
-        // involves any other message).
-        self.chip_owner = self.fork_owner();
         let range = self.message_line_ranges[msg_idx];
         // end can be start - 1 for a zero-line message (TS number semantics);
         // oldLen = end - start + 1 → 0 in that case.
@@ -2831,7 +2726,7 @@ impl ChatArea {
     fn append_last_message(&mut self) {
         // A message that folds into the run above it changes that run's summary
         // row, which sits somewhere in the middle of the transcript.
-        if self.sync_compact_layout(None) {
+        if self.sync_compact_layout() {
             return;
         }
         // A queued prompt draws no rows (it waits above the composer, not in
@@ -2840,11 +2735,6 @@ impl ChatArea {
         if self.waits_in_queue(self.messages.len().saturating_sub(1)) {
             return;
         }
-        // The appended message is the one that just took the `[分支]` chip (a
-        // new reply, whose stream has not started); `sync_compact_layout(None)`
-        // above has already rebuilt the transcript when an *earlier* message
-        // still had one painted.
-        self.chip_owner = self.fork_owner();
         self.rendered_lines.pop();
         if self.messages.len() > 1 {
             self.push_message_separator(self.messages.len() - 1, self.messages.len() - 2);
@@ -2870,30 +2760,6 @@ impl ChatArea {
         self.messages
             .iter()
             .rposition(|m| m.role == ChatRole::Assistant)
-    }
-
-    /// The one message that carries the `[分支]` control: the transcript's
-    /// **newest** reply, and only once its stream has ended.
-    ///
-    /// The desktop draws its fork button in every reply's footer but keeps it
-    /// invisible until the pointer rests on that message, so what a reader ever
-    /// sees there is *one* button, on the message they are on. A terminal has no
-    /// hover, so the same rule is spelled the only other way it can be: the chip
-    /// is painted under the reply the reader is looking at anyway — the newest
-    /// one, whose stream just ended — instead of under all of them, which put a
-    /// `[分支]` after every turn of the conversation. Branching at an older
-    /// point still exists and is the same call: `/fork` lists them all.
-    fn fork_owner(&self) -> Option<usize> {
-        let index = self
-            .messages
-            .iter()
-            .rposition(|m| m.role == ChatRole::Assistant)?;
-        let msg = &self.messages[index];
-        // The same three states a message may not act from: a banner is not a
-        // turn, a prompt still in the queue has no rows, and a reply still
-        // streaming has nothing to branch on yet.
-        let settled = !msg.welcome && !msg.pending && msg.run_state != Some(RunState::Queued);
-        settled.then_some(index)
     }
 
     fn find_tool_index(&self, tool_id: &str) -> Option<usize> {
@@ -3084,35 +2950,26 @@ impl ChatArea {
             .push((offset, action, start, end));
     }
 
-    /// The row of controls under a **reply**: `[复制]` and, on the one reply
-    /// that carries it, `[分支]` (see [`Self::fork_owner`]).
+    /// The row of controls under a **reply**: `[复制]`.
     ///
     /// A reply ends in this row, one blank line below its own text, because the
-    /// desktop draws the same pair in the message's footer — revealed on hover,
-    /// which a terminal cannot do, so the row is permanent and `tab` walks onto
-    /// it. The blank line is what keeps the chips from reading as the answer's
-    /// last paragraph.
+    /// desktop draws its copy button in the message's footer — revealed on
+    /// hover, which a terminal cannot do, so the row is permanent and `tab`
+    /// walks onto it. The blank line is what keeps the chip from reading as the
+    /// answer's last paragraph. Branching is not a chip at all: the surface has
+    /// one road for it, `/fork`, and a control that also forked would be a
+    /// second spelling of the same verb on a per-message basis (see
+    /// `docs/guide/tui.md`).
     ///
-    /// Two rules decide whether a chip is drawn at all:
-    ///
-    /// * **Copy** needs text. A reply that only called tools has nothing to
-    ///   copy, and a button that copies nothing is a button that lies.
-    /// * **Fork** belongs to a *settled* reply — it branches at the turn that
-    ///   produced the reply, which is the desktop's own meaning of its fork
-    ///   button (`Live::fork_message`). While the reply is still arriving there
-    ///   is nothing to branch on yet, so the row waits. And it is one chip, not
-    ///   one per turn: the desktop reveals its fork button under the message the
-    ///   pointer is on, so a terminal draws it under the newest reply only.
-    ///   Older points stay reachable through `/fork`, which lists every real
-    ///   user message.
-    ///
-    /// A **user** message gets nothing: the reader can retype their own prompt
-    /// or select it with the mouse, and the desktop's copy chip under a bubble
-    /// was the one thing here that read as part of what they typed. Nothing is
-    /// drawn for a welcome banner, for a prompt still waiting in the agent's
-    /// queue (it has no rows at all, see [`Self::render_user_message`]), for a
-    /// tool call or a compaction divider (the reply's work, not a message of
-    /// its own), or for a row inside an opened fold.
+    /// **Copy** needs text. A reply that only called tools has nothing to copy,
+    /// and a button that copies nothing is a button that lies. A **user** message
+    /// gets nothing: the reader can retype their own prompt or select it with
+    /// the mouse, and the desktop's copy chip under a bubble was the one thing
+    /// here that read as part of what they typed. Nothing is drawn for a welcome
+    /// banner, for a prompt still waiting in the agent's queue (it has no rows at
+    /// all, see [`Self::render_user_message`]), for a tool call or a compaction
+    /// divider (the reply's work, not a message of its own), or for a row inside
+    /// an opened fold.
     fn push_message_controls(&mut self, msg_idx: usize, msg: &ChatMessage, origin: usize) {
         if msg.role != ChatRole::Assistant
             || msg.welcome
@@ -3125,11 +2982,6 @@ impl ChatArea {
         let mut chips: Vec<(&'static str, RowAction)> = Vec::new();
         if !msg.content.trim().is_empty() {
             chips.push((self.fold_words.copy, RowAction::Copy { msg: msg_idx }));
-        }
-        // The fork belongs to the newest reply alone (`Self::fork_owner`), so an
-        // older turn ends in its copy chip and nothing else.
-        if self.chip_owner == Some(msg_idx) {
-            chips.push((self.fold_words.fork, RowAction::Fork { msg: msg_idx }));
         }
         if chips.is_empty() {
             return;
@@ -4328,9 +4180,9 @@ mod tests {
         panic!("rows kept appearing: the walk did not settle");
     }
 
-    /// Is this a control row (`[copy]`, `[fork]`) rather than a fold?
+    /// Is this a control row (`[copy]`) rather than a fold?
     fn is_control(action: &RowAction) -> bool {
-        matches!(action, RowAction::Copy { .. } | RowAction::Fork { .. })
+        matches!(action, RowAction::Copy { .. })
     }
 
     // ─── Compact activity (ctrl+d) ─────────────────────────────────────
@@ -5356,15 +5208,15 @@ mod tests {
         assert_matches_fresh_render(&mut chat);
     }
 
-    /// A reply ends in its controls, one line below its own text; a prompt ends
+    /// A reply ends in its control, one line below its own text; a prompt ends
     /// in nothing, and neither does a call.
     ///
-    /// The pair is the desktop's message footer — its copy button, and the fork
-    /// button beside it — made permanent: a terminal has no hover to reveal
-    /// them under, so the row is always there, after a blank line that keeps the
-    /// chips from reading as the answer's last paragraph. A prompt gets none:
-    /// the reader can retype or select what they wrote, and the chip under a
-    /// bubble read as part of the bubble.
+    /// The chip is the desktop's message footer — its copy button — made
+    /// permanent: a terminal has no hover to reveal it under, so the row is
+    /// always there, after a blank line that keeps the chip from reading as the
+    /// answer's last paragraph. A prompt gets none: the reader can retype or
+    /// select what they wrote, and the chip under a bubble read as part of the
+    /// bubble. Branching has no chip at all — `/fork` is the one road.
     #[test]
     fn the_controls_row_follows_a_reply() {
         let mut chat = detailed_chat();
@@ -5384,7 +5236,7 @@ mod tests {
         let controls = chat.control_rows();
         assert_eq!(controls.len(), 1, "the reply's, and nothing else: {rows:?}");
         let at = controls[0];
-        assert_eq!(rows[at].trim(), "[copy] [fork]", "{rows:?}");
+        assert_eq!(rows[at].trim(), "[copy]", "{rows:?}");
         assert!(
             rows[at].starts_with(" [copy]"),
             "a reply's controls lead at its first column: {:?}",
@@ -5402,105 +5254,9 @@ mod tests {
             .all(|(index, row)| index == at || !row.contains("[copy]")));
     }
 
-    /// One fork chip for the transcript, not one per turn: it rides the *newest*
-    /// reply, whose stream has ended.
-    ///
-    /// The desktop draws that button in every reply's footer but reveals it only
-    /// under the message the pointer rests on, so a reader there ever sees one.
-    /// A terminal cannot hover, so the rule is spelled the other way round: the
-    /// chip is under the reply the reader is looking at anyway. An older reply
-    /// keeps its copy and loses the fork — its point is still one `/fork` away —
-    /// and while the newest reply is still streaming there is no chip at all.
-    #[test]
-    fn the_fork_chip_rides_the_newest_reply() {
-        let mut chat = new_chat();
-        chat.render(W);
-        let forks = |chat: &ChatArea| -> Vec<usize> {
-            chat.row_stops()
-                .into_iter()
-                .filter_map(|stop| match stop.action {
-                    RowAction::Fork { msg } => Some(msg),
-                    _ => None,
-                })
-                .collect()
-        };
-
-        chat.add_message(ChatMessage::new("u1".into(), ChatRole::User, "first?"));
-        chat.add_message(ChatMessage::new("a1".into(), ChatRole::Assistant, "one"));
-        assert_eq!(forks(&chat), vec![1], "the only reply carries it");
-
-        // A second turn moves the chip: the first reply's row is *earlier* than
-        // the message that arrived, and the incremental append has to rebuild
-        // rather than leave a second chip behind.
-        chat.add_message(ChatMessage::new("u2".into(), ChatRole::User, "and again?"));
-        assert_eq!(forks(&chat), vec![1], "a prompt does not move it");
-        chat.add_message(ChatMessage::new("a2".into(), ChatRole::Assistant, "two"));
-        assert_eq!(forks(&chat), vec![3], "it moved to the newest reply");
-        let rows: Vec<String> = render_trimmed(&mut chat)
-            .iter()
-            .map(|line| strip(line))
-            .collect();
-        let plain = chat
-            .control_rows()
-            .into_iter()
-            .map(|row| rows[row].trim().to_string())
-            .collect::<Vec<_>>();
-        // The prompt carries nothing (a reader can retype what they wrote); each
-        // reply ends in its copy, and only the newest one adds the fork.
-        assert_eq!(plain, vec!["[copy]", "[copy] [fork]"], "{rows:?}");
-
-        // The newest reply still streaming: nothing to branch on yet, and the
-        // settled reply above it does not stand in for it.
-        chat.messages[3].pending = true;
-        chat.mark_message_dirty(3);
-        chat.render(W);
-        assert!(forks(&chat).is_empty(), "{rows:?}");
-        chat.messages[3].pending = false;
-        chat.mark_message_dirty(3);
-        chat.render(W);
-        assert_eq!(forks(&chat), vec![3], "it comes back when the stream ends");
-        assert_matches_fresh_render(&mut chat);
-    }
-
-    /// The two controls are two stops on one row, each over its own label — what
-    /// keeps a click on `[分支]` from running `[复制]`.
-    #[test]
-    fn the_two_controls_are_separate_stops_on_one_row() {
-        let mut chat = detailed_chat();
-        chat.render(W);
-        set_messages(
-            &mut chat,
-            vec![
-                ChatMessage::new("u".into(), ChatRole::User, "go"),
-                ChatMessage::new("a".into(), ChatRole::Assistant, "done"),
-            ],
-        );
-        let stops: Vec<_> = chat
-            .row_stops()
-            .into_iter()
-            .filter(|stop| is_control(&stop.action))
-            .collect();
-        let copy = stops
-            .iter()
-            .find(|stop| stop.action == RowAction::Copy { msg: 1 })
-            .expect("the reply has a copy control");
-        let fork = stops
-            .iter()
-            .find(|stop| stop.action == RowAction::Fork { msg: 1 })
-            .expect("the reply has a fork control");
-        assert_eq!(copy.row, fork.row, "one row carries both");
-        assert!(copy.end < fork.start, "the chips split the row: {copy:?}");
-        let rows = render_trimmed(&mut chat);
-        let row = strip(&rows[copy.row]);
-        assert_eq!(&row[copy.start..copy.end], "[copy]");
-        assert_eq!(&row[fork.start..fork.end], "[fork]");
-        // Neither is ever "open": a control has nothing to unfold.
-        assert!(!copy.expanded && !fork.expanded);
-    }
-
-    /// A reply that is still arriving has no controls yet: the fork branches at
-    /// a prompt that is still being answered, and the desktop hides both buttons
-    /// while it streams for the same reason.
+    /// A reply that is still arriving has no control yet: there is nothing final
+    /// to copy, and the desktop hides its copy button while it streams for the
+    /// same reason.
     #[test]
     fn a_streaming_reply_has_no_controls_yet() {
         let mut chat = new_chat();
@@ -5521,43 +5277,6 @@ mod tests {
         chat.mark_message_dirty(1);
         chat.render(W);
         assert_eq!(chat.control_rows().len(), 1);
-    }
-
-    /// A prompt learns the journal entry it was written to, which is what the
-    /// fork control points at.
-    #[test]
-    fn a_prompt_learns_the_entry_it_was_written_to() {
-        let mut chat = detailed_chat();
-        chat.render(W);
-        set_messages(
-            &mut chat,
-            vec![
-                ChatMessage::new("u".into(), ChatRole::User, "go"),
-                ChatMessage::new("a".into(), ChatRole::Assistant, "done"),
-            ],
-        );
-        let reply_row = *chat.control_rows().last().expect("the reply's controls");
-        // A row that came from history knows its entry; a live one does not
-        // until the agent names it.
-        assert_eq!(chat.preceding_user_entry(reply_row), None);
-        chat.bind_user_entry("run-1", "entry-9", "go");
-        assert_eq!(
-            chat.preceding_user_entry(reply_row).as_deref(),
-            Some("entry-9")
-        );
-        // An announcement whose text is not the prompt's is not taken: binding
-        // the wrong entry would fork the wrong place.
-        let mut other = detailed_chat();
-        other.render(W);
-        set_messages(
-            &mut other,
-            vec![
-                ChatMessage::new("u".into(), ChatRole::User, "go"),
-                ChatMessage::new("a".into(), ChatRole::Assistant, "done"),
-            ],
-        );
-        other.bind_user_entry("run-2", "entry-10", "something else");
-        assert_eq!(other.preceding_user_entry(reply_row), None);
     }
 
     /// A running reply keeps every thought, call and piece of prose on screen.
@@ -6334,7 +6053,6 @@ mod tests {
             thinking: "思考",
             process: "过程",
             copy: "复制",
-            fork: "分支",
         });
         chat.add_message(ChatMessage::new("u".into(), ChatRole::User, "开始"));
         chat.begin_reply_run();

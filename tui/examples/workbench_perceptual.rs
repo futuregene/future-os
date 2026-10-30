@@ -33,7 +33,7 @@ use future_tui::workbench::diff_review::DiffFile;
 use future_tui::workbench::i18n::LanguagePreference;
 use future_tui::workbench::preferences::PreferenceRow;
 use future_tui::workbench::state::{
-    DiffView, ForkPoint, PanelId, QueuedPrompt, SessionRow, WorkbenchData, WorktreeView,
+    DiffView, ForkPoint, ForkRole, PanelId, QueuedPrompt, SessionRow, WorkbenchData, WorktreeView,
 };
 use future_tui::workbench::{Overlay, WbEvent, Workbench, COMMANDS};
 
@@ -113,6 +113,7 @@ fn surfaces() -> Vec<Surface> {
     data.fork_points = (0..9)
         .map(|index| ForkPoint {
             id: format!("e{index}"),
+            role: ForkRole::User,
             text: format!(
                 "F{index:02} 这一段用户消息特别长，长到一行绝对放不下，而且还带了换行\n第二行也跟着一起来"
             ),
