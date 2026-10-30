@@ -418,13 +418,16 @@ pub fn parse_log(text: &str) -> Vec<GitRow> {
             if !entry.who.is_empty() {
                 columns.push(ansi::fit(&entry.who, who_width));
             }
-            // The subject leads — it is what a reader scans — and the
-            // decorations follow, whole pieces a narrow box drops one at a time.
+            // The refs lead and the subject follows, the way tig reads a log:
+            // `HEAD -> dev-huichen, origin/dev-huichen · Merge branch …` says
+            // which line of work the row belongs to before what the commit did.
+            // A commit with no refs on it starts at the subject, which is then
+            // the first thing in the row.
             let mut pieces = Vec::new();
             let mut kinds = Vec::new();
             for (piece, kind) in [
-                (entry.subject.as_str(), Plain),
                 (entry.decorations.as_str(), Decoration),
+                (entry.subject.as_str(), Plain),
             ] {
                 if !piece.is_empty() {
                     pieces.push(piece.to_string());
@@ -1034,8 +1037,11 @@ mod tests {
         assert_eq!(rows.len(), 2, "one row per commit, none for the drawing");
         assert_eq!(rows[0].prefix, "● ");
         assert_eq!(rows[0].key.as_deref(), Some("abc1234"));
-        assert_eq!(rows[0].pieces[0], "fix | the parser");
-        assert_eq!(rows[0].pieces[1], "HEAD -> main, tag: v1");
+        assert_eq!(
+            rows[0].pieces[0], "HEAD -> main, tag: v1",
+            "the refs say which line of work the row is on, before what it did"
+        );
+        assert_eq!(rows[0].pieces[1], "fix | the parser");
         assert!(
             !rows[0].pieces.iter().any(|piece| piece.contains("abc1234")),
             "the id is the detail pane's: {:?}",
@@ -1195,8 +1201,8 @@ mod tests {
         assert!(filtered
             .rows
             .iter()
-            .filter_map(|row| row.pieces.first())
-            .any(|subject| subject == "merge feature"));
+            .flat_map(|row| row.pieces.iter())
+            .any(|piece| piece == "merge feature"));
 
         // A requested row that is not selectable (the graph's continuation)
         // lands on the next one that is.
@@ -1253,7 +1259,11 @@ mod tests {
         );
         assert!(log.iter().all(|row| row.key.is_some()), "{log:?}");
         let commits: Vec<&GitRow> = log.iter().filter(|row| row.key.is_some()).collect();
-        assert_eq!(commits[0].pieces[0], "merge feature");
+        assert_eq!(
+            commits[0].pieces[0], "HEAD -> main, tag: v1",
+            "the tagged merge leads with its refs"
+        );
+        assert_eq!(commits[0].pieces[1], "merge feature");
         // The columns carry the committer's own stamp, minute precision and no
         // zone, in one width for every row.
         let columns = commits[0].columns.join("  ");
@@ -1340,12 +1350,12 @@ mod tests {
         let feature = rows(dir.path(), GitSection::Commits, Some("feature")).unwrap();
         assert!(feature
             .iter()
-            .filter_map(|row| row.pieces.first())
-            .any(|subject| subject == "feature commit"));
+            .flat_map(|row| row.pieces.iter())
+            .any(|piece| piece == "feature commit"));
         assert!(!feature
             .iter()
-            .filter_map(|row| row.pieces.first())
-            .any(|subject| subject == "second commit"));
+            .flat_map(|row| row.pieces.iter())
+            .any(|piece| piece == "second commit"));
     }
 
     /// Worktree blocks: the branch leads, the path is the key, and the checkout
@@ -1460,8 +1470,8 @@ mod tests {
         let log = rows(dir.path(), GitSection::Commits, Some("feature")).unwrap();
         assert!(log
             .iter()
-            .filter_map(|row| row.pieces.first())
-            .any(|subject| subject == "feature commit"));
+            .flat_map(|row| row.pieces.iter())
+            .any(|piece| piece == "feature commit"));
     }
 
     #[test]

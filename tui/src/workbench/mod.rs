@@ -11416,7 +11416,8 @@ mod tests {
         let mut data = demo::chat();
         let mut git = demo::git();
         // Long enough that a pan of eight cells is inside the line, not past it.
-        git.rows[0].pieces[0] =
+        // The subject is the piece after the refs — that is the row's order.
+        git.rows[0].pieces[1] =
             "fix(tui): a subject long enough that its tail needs the arrow key to read".into();
         data.git = Some(git);
         let mut wb = workbench();
