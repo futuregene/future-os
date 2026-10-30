@@ -1859,6 +1859,35 @@ impl Workbench {
         }
     }
 
+    /// The conversation one rail row away from the cursor, without moving it.
+    ///
+    /// The counterpart of [`Self::step_session`] for a reader who is *not*
+    /// stepping (yet): the driver warms the two conversations a step could land
+    /// on, so the step itself finds its page already materialized (see
+    /// `Live::prefetch_page`). Same walk, same rules: a caption is not a stop, a
+    /// step over a workspace heading still lands on a conversation, and the end
+    /// of the list answers `None`.
+    pub(crate) fn session_beside(&self, data: &WorkbenchData, direction: i32) -> Option<String> {
+        if direction == 0 {
+            return None;
+        }
+        let rows = self.panel_rows(data);
+        let headings = self.panel == PanelId::Workspaces;
+        let from = match rows.get(self.sidebar_index) {
+            Some(row) if row.selectable() => self.sidebar_index,
+            _ => self.current_row(data).unwrap_or(self.sidebar_index),
+        };
+        let next = if headings {
+            panels::step_row(&rows, from, direction)
+        } else {
+            panels::step_session(&rows, from, direction)
+        }?;
+        rows.get(next)
+            .and_then(|row| row.session())
+            .and_then(|index| data.sessions.get(index))
+            .map(|session| session.id.clone())
+    }
+
     /// Open what the cursor stands on: a conversation, or the workspace
     /// heading that folds the conversations under it.
     fn open_selected(&mut self, data: &WorkbenchData) -> Vec<WbAction> {
@@ -6045,6 +6074,59 @@ mod tests {
         );
         assert_eq!(workbench.overlay, None);
     }
+    /// The conversation one row away from the cursor, without moving it: what
+    /// the driver warms so the *next* step finds its page already materialized.
+    /// It walks the same rows `step_session` does, so a heading is not a
+    /// neighbour and the ends of the list have none.
+    #[test]
+    fn the_conversation_beside_the_cursor_is_the_one_a_step_would_reach() {
+        let data = demo::workspaces();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        // Recent: every row is a conversation.
+        workbench.panel = PanelId::Recent;
+        let rows = workbench.panel_rows(&data);
+        let first = rows
+            .iter()
+            .position(|row| row.session().is_some())
+            .expect("the recent list is conversations");
+        workbench.sidebar_index = first;
+        let beside = workbench.session_beside(&data, 1);
+        let landed = workbench.step_session(1, &data);
+        let switched = landed.iter().find_map(|action| match action {
+            WbAction::SwitchSession(id) => Some(id.clone()),
+            _ => None,
+        });
+        assert_eq!(beside, switched, "the same row a step would open");
+        assert_eq!(
+            workbench.sidebar_index,
+            first + 1,
+            "and asking did not move the cursor"
+        );
+        // The end of the list has nothing beside it.
+        workbench.sidebar_index = rows.len().saturating_sub(1);
+        assert_eq!(workbench.session_beside(&data, 1), None, "past the end");
+        workbench.sidebar_index = first;
+        assert_eq!(
+            workbench.session_beside(&data, -1),
+            None,
+            "before the first"
+        );
+
+        // Workspaces: a heading is a stop, not a neighbour.
+        workbench.panel = PanelId::Workspaces;
+        let rows = workbench.panel_rows(&data);
+        let heading = rows
+            .iter()
+            .position(|row| matches!(row, panels::Row::Workspace(_)))
+            .expect("the panel heads its first workspace");
+        workbench.sidebar_index = heading + 1;
+        assert_eq!(
+            workbench.session_beside(&data, -1),
+            None,
+            "the row above it is a heading, and a heading is not a conversation"
+        );
+    }
+
     /// `shift+↑`/`shift+↓` walk the rail's rows: a step that lands on a
     /// conversation switches it (the chat follows the cursor), and a step that
     /// lands on a workspace heading stops there so an empty draft can give
