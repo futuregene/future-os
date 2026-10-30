@@ -13,7 +13,7 @@ import { Field } from "../../components/ui/Field";
 import { IconButton } from "../../components/ui/IconButton";
 import { Select } from "../../components/ui/Select";
 import { TextInput } from "../../components/ui/TextInput";
-import { knownThinkingLevels } from "../../integrations/agent/agentClient";
+import { knownThinkingLevels, thinkingLevelName } from "../../integrations/agent/agentClient";
 import { errorMessage } from "../../lib/errors";
 
 const API_OPTIONS = [
@@ -179,16 +179,13 @@ export function CustomProviderDialog({
    * A chip label: the level's **wire** value, untranslated.
    *
    * These chips configure the model's wire vocabulary — the exact strings the
-   * agent sends — so they stay in English (`off`, `xhigh`, `max`) while the
-   * composer, where the reader only picks an effort, names them in their own
-   * language (`关闭`, `极高`, `最大`). The point of this row is to match the
-   * endpoint's documentation and the saved config, and a translated name hides
-   * the string being configured. `default` is implicit (never a chip, never
-   * stored) and is not a wire value, so it keeps its name for the calibration
-   * step's progress text.
+   * agent sends — so they read as `off`, `xhigh`, `max` (see
+   * {@link thinkingLevelName}); the point of this row is to match the
+   * endpoint's documentation and the saved config, and a translated name would
+   * hide the string being configured.
    */
   function levelLabel(level: string) {
-    return level === "" ? t("agent:composer.thinkingLevelLabels.default") : level;
+    return thinkingLevelName(level);
   }
 
   /** A result describes one probe's inputs; editing them makes it stale. */

@@ -145,7 +145,7 @@ describe("custom provider thinking-level detection", () => {
     mount(provider([model({ thinkingLevels: [] })]), onProbe);
 
     act(() => button("Detect").click());
-    expect(document.body.textContent).toContain("Testing Default…");
+    expect(document.body.textContent).toContain("Testing default…");
 
     await act(async () => pending.shift()!());
     expect(document.body.textContent).toContain("Testing off…");

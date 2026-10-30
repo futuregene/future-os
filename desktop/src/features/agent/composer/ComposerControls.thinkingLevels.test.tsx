@@ -89,33 +89,32 @@ function menuRows(): string[] {
 it("lists only the levels the model declares", async () => {
   await mount([narrowModel], "low");
   await act(async () => thinkingTrigger().click());
-  expect(menuRows()).toEqual(["Default", "Off", "Low", "High"]);
+  expect(menuRows()).toEqual(["default", "off", "low", "high"]);
 });
 
 it("offers arbitrary wire values verbatim, with a raw label fallback", async () => {
   await mount([{ ...narrowModel, thinkingLevels: ["default", "max", "ultra"], defaultThinkingLevel: "default" }], "max");
   await act(async () => thinkingTrigger().click());
-  // `max` ships a translation; `ultra` does not and falls back to its raw value.
-  expect(menuRows()).toEqual(["Default", "Max", "ultra"]);
+  expect(menuRows()).toEqual(["default", "max", "ultra"]);
 });
 
 it("shows the stored level only while the model offers it", async () => {
   // `xhigh` came from another model (or from before this one narrowed its list):
   // the trigger must not claim an effort this model cannot run at.
   await mount([narrowModel], "xhigh");
-  expect(thinkingTrigger().textContent).toContain("Default");
+  expect(thinkingTrigger().textContent).toContain("default");
 });
 
 it("keeps all six when the model declares nothing", async () => {
   await mount([{ id: "narrow", provider: "custom", label: "Narrow" }], "medium");
   await act(async () => thinkingTrigger().click());
-  expect(menuRows()).toEqual(["Off", "Minimal", "Low", "Medium", "High", "XHigh"]);
+  expect(menuRows()).toEqual(["off", "minimal", "low", "medium", "high", "xhigh"]);
 });
 
 it("disables the picker when the model offers only the implicit default", async () => {
   await mount([{ id: "narrow", provider: "custom", label: "Narrow", thinkingLevels: ["default"], defaultThinkingLevel: "default" }], "default");
   expect(thinkingTrigger().disabled).toBe(true);
-  expect(thinkingTrigger().textContent).toContain("Default");
+  expect(thinkingTrigger().textContent).toContain("default");
 });
 
 it("enables the picker as soon as there is a second option", async () => {
