@@ -408,7 +408,6 @@ pub enum Key {
     CmdSandbox,
     CmdCompact,
     CmdTools,
-    CmdProviders,
     DiffTitle,
     DiffHint,
     DiffClean,
@@ -485,7 +484,6 @@ pub enum Key {
     ToolsUsage,
     ToolsPending,
     NeedsConversation,
-    ProvidersEmpty,
     WorkflowFailed,
     ForkEmptyId,
     CmdQueue,
@@ -885,7 +883,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ),
         CmdCompact => ("压缩上下文，可附自定义说明", "Compact context, optionally with instructions"),
         CmdTools => ("设置工具列表，off 禁用全部", "Set the tool list; off disables all"),
-        CmdProviders => ("列出模型提供商", "List model providers"),
         DiffTitle => ("Diff 审查 · 工作区未提交改动", "Diff review · uncommitted workspace changes"),
         DiffHint => ("tab 文件/变更 · ↑↓ 操作 · ←→ 选择文件 · r 刷新 · esc 关闭", "tab files/patch · ↑↓ navigate · ←→ choose file · r refreshes · esc closes"),
         DiffClean => ("工作区没有未提交改动", "No uncommitted changes in this workspace"),
@@ -983,10 +980,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         NeedsConversation => (
             "先发一条消息开始一个会话（或 /new 新建）",
             "Send a message to start a conversation first (or /new)",
-        ),
-        ProvidersEmpty => (
-            "没有配置任何模型提供商",
-            "No model providers are configured",
         ),
         WorkflowFailed => ("操作失败：{}", "Operation failed: {}"),
         ForkEmptyId => ("fork 未返回会话 id", "Fork returned no session id"),
@@ -1463,7 +1456,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 347] = {
+    const ALL_KEYS: [Key; 345] = {
         use Key::*;
         [
             TabTodo,
@@ -1604,7 +1597,6 @@ mod tests {
             CmdSandbox,
             CmdCompact,
             CmdTools,
-            CmdProviders,
             DiffTitle,
             DiffHint,
             DiffClean,
@@ -1668,7 +1660,6 @@ mod tests {
             ToolsUsage,
             ToolsPending,
             NeedsConversation,
-            ProvidersEmpty,
             WorkflowFailed,
             ForkEmptyId,
             CmdQueue,

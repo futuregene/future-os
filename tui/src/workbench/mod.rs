@@ -4417,15 +4417,14 @@ enum PaletteMatch {
 ///
 /// A description *finds* a row; the name is what the reader is typing, so a name
 /// hit outranks a description hit no matter where in the name it lands. Without
-/// that split `/model` listed `/providers` first (its English description, "List
-/// model providers", contains the word and the verb sits earlier in [`COMMANDS`]),
-/// and `enter` ran a verb the reader had not asked for.
+/// that split a verb whose description merely mentions the word ("Compact
+/// context, optionally with instructions") outranked the one the reader named,
+/// and `enter` ran a verb they had not asked for.
 ///
 /// A query that matches no name at all — every Chinese query, since the verbs
 /// are declared in English — can only reach rows through their descriptions, and
-/// those tiers stay equal: `/model` and `/providers` are then ordered as they are
-/// declared. Ranking cannot tell them apart, because "选择模型" and "列出模型提供商"
-/// both merely mention the word.
+/// those tiers stay equal: rows are then ordered as they are declared. Ranking
+/// cannot tell them apart, because the copy merely mentions the word.
 ///
 /// An empty query matches everything at the best rank, so an opened palette keeps
 /// its own order.
@@ -4536,15 +4535,15 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 /// [`TYPED_ONLY`] is where those verbs live. The two lists are the whole
 /// vocabulary, and `every_palette_entry_has_a_handler` walks both.
 ///
-/// **The order is a name order, not a rank.** These fifteen are a list a reader
+/// **The order is a name order, not a rank.** These fourteen are a list a reader
 /// reads *for a name they already have in mind* (`/fork`, `/export`), and an
 /// alphabetical column is the only order that answers "where is it?" without
 /// being memorised — the surface's other ordering rules ("most used first",
 /// "what the next message runs with") describe sets that fit on one line, not
-/// fifteen rows. A consequence worth naming: `enter` on an empty query runs the
+/// fourteen rows. A consequence worth naming: `enter` on an empty query runs the
 /// first row by name (`/approval`), so the top of this list is a letter and not
 /// a recommendation.
-pub const COMMANDS: [(&str, Key); 15] = [
+pub const COMMANDS: [(&str, Key); 14] = [
     ("/approval", Key::CmdApproval),
     ("/compact", Key::CmdCompact),
     ("/copy", Key::CmdCopy),
@@ -4553,7 +4552,6 @@ pub const COMMANDS: [(&str, Key); 15] = [
     ("/fork", Key::CmdFork),
     ("/history", Key::CmdHistory),
     ("/pin", Key::CmdPin),
-    ("/providers", Key::CmdProviders),
     ("/queue", Key::CmdQueue),
     ("/refresh", Key::CmdRefresh),
     ("/reply-detail", Key::CmdReplyDetail),
@@ -8551,11 +8549,19 @@ mod tests {
             Some(PaletteMatch::Name)
         );
         assert_eq!(
-            palette_rank("/providers", "List model providers", "model"),
+            palette_rank(
+                "/compact",
+                "Compact context, optionally with instructions",
+                "context"
+            ),
             Some(PaletteMatch::Description)
         );
         assert_eq!(
-            palette_rank("/providers", "List model providers", "zzz"),
+            palette_rank(
+                "/compact",
+                "Compact context, optionally with instructions",
+                "zzz"
+            ),
             None
         );
         assert_eq!(

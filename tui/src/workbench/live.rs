@@ -78,7 +78,7 @@ struct Paging {
 /// ([`super::Workbench::surface_command`]) and this list have to account for
 /// every entry exactly once. That is the check whose absence let five entries
 /// advertise themselves and then answer `Unknown command`.
-pub const APP_COMMANDS: [&str; 19] = [
+pub const APP_COMMANDS: [&str; 18] = [
     "/new",
     "/stop",
     "/reply-detail",
@@ -90,7 +90,6 @@ pub const APP_COMMANDS: [&str; 19] = [
     "/mouse",
     "/compact",
     "/tools",
-    "/providers",
     "/git",
     "/files",
     "/approval",
@@ -2255,25 +2254,6 @@ impl Live {
                     }
                 }
             }
-            "providers" => match self.client.list_providers().await {
-                Ok(providers) => {
-                    // An empty list used to paint an empty notice row, which
-                    // reads as "the verb did nothing" rather than "there are no
-                    // providers": an unconfigured agent is a real state.
-                    self.notice = Some(if providers.is_empty() {
-                        t(self.lang, Key::ProvidersEmpty).into()
-                    } else {
-                        providers
-                            .iter()
-                            .map(|provider| format!("{} ({})", provider.id, provider.model_count))
-                            .collect::<Vec<_>>()
-                            .join(" · ")
-                    });
-                }
-                Err(error) => {
-                    self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
-                }
-            },
             // A model named in the command line is a choice like any other, so
             // it takes the launchpad road too when nothing is attached.
             "model" if !arg.is_empty() && self.detached() => self.set_pending_model(&arg),
@@ -8975,7 +8955,6 @@ mod tests {
                     ("get_state", r#"{"sessionId":"s1","model":"mock"}"#),
                     ("get_session_entries", r#"{"entries":[]}"#),
                     ("export_html", r#"{"path":"/tmp/x.html"}"#),
-                    ("list_providers", r#"{"providers":[]}"#),
                     ("list_sessions", r#"{"sessions":[]}"#),
                     ("list_models", r#"{"models":[]}"#),
                 ]);
