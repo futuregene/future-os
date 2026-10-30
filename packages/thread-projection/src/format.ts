@@ -100,6 +100,14 @@ export function classifyAgentError(raw: string): FriendlyAgentError {
     return { key: "agent:failure.rateLimited" };
   if (status?.startsWith("5"))
     return { key: "agent:failure.serverError", params: { status } };
+  // A 400 means the provider refused *this request* — an unknown model id, an
+  // unsupported parameter, a rejected tool schema. Only the provider's own
+  // message says what to change, and "try again later" is actively misleading
+  // (resending the same request cannot succeed), so it reaches the user as-is.
+  // Context-limit 400s are the agent's own `[CTX_LIMIT]` case and are handled
+  // above with compaction guidance instead.
+  if (status === "400")
+    return { key: "agent:failure.badRequest", params: { message: agentErrorDetail(message) } };
   const reasonKeys: Record<string, string> = {
     RESPONSE_UNCONFIRMED: "responseUnconfirmed",
     RESPONSE_TIMEOUT: "responseTimeout",
