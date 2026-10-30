@@ -1,10 +1,10 @@
 import { useState } from "react";
 import type { FusionConfiguration, FusionModelConfig, FusionSettings } from "@future-os/thread-projection";
 import { fusionSettingsIssue, newFusionParticipant } from "@future-os/thread-projection";
-import { ChevronDown, Trash2, X } from "lucide-react-native";
-import { FlatList, Keyboard, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ChevronDown, Trash2 } from "lucide-react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { SelectionSheet } from "../../components/SelectionSheet";
 import { Button } from "../../components/Button";
 import { thinkingLevelLabel } from "../../i18n/thinkingLevelLabel";
 import { useRemoteControls } from "../../remote/RemoteContext";
@@ -20,14 +20,12 @@ function Editor({ snapshot, models, providerNames, reload }: { snapshot: FusionS
   const styles = useStyles();
   const settingsStyles = useSettingsStyles();
   const { colors } = useTheme();
-  const insets = useSafeAreaInsets();
   const [saved, setSaved] = useState(snapshot);
   const [draft, setDraft] = useState(snapshot.configuration);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
   const [picker, setPicker] = useState<{ index: number; field: "model" | "thinking" } | null>(null);
-  const [query, setQuery] = useState("");
   const conflict = snapshot.revision > saved.revision;
   const locked = busy || !remote.desktopReadable || conflict;
   const issue = fusionSettingsIssue(draft);
@@ -49,7 +47,7 @@ function Editor({ snapshot, models, providerNames, reload }: { snapshot: FusionS
     setDone(false);
     setDraft(index < 0 ? { ...draft, moderator: value } : { ...draft, panel: draft.panel.map((entry, i) => i === index ? value : entry) });
   }
-  function open(index: number, field: "model" | "thinking") { Keyboard.dismiss(); setQuery(""); setPicker({ index, field }); }
+  function open(index: number, field: "model" | "thinking") { setPicker({ index, field }); }
   const displayName = (model: RemoteModel) => `${providerNames[model.provider ?? ""] ?? model.provider ?? ""}/${model.label || model.id}`;
   function row(value: FusionModelConfig, index: number) {
     const selected = models.find(model => modelReference(model) === value.model);
@@ -61,7 +59,7 @@ function Editor({ snapshot, models, providerNames, reload }: { snapshot: FusionS
   }
   const picked = picker ? profile(picker.index) : null;
   const pickedModel = picked ? models.find(model => modelReference(model) === picked.model) : undefined;
-  const choices = picker?.field === "thinking" ? modelThinkingLevels(pickedModel).map(level => ({ id: level, label: thinkingLevelLabel(t, level) })) : models.filter(model => `${displayName(model)} ${model.id} ${model.provider}`.toLowerCase().includes(query.toLowerCase())).map(model => ({ id: modelReference(model), label: displayName(model) }));
+  const choices = picker?.field === "thinking" ? modelThinkingLevels(pickedModel).map(level => ({ value: level, label: thinkingLevelLabel(t, level) })) : models.map(model => ({ value: modelReference(model), label: model.label || model.id, description: providerNames[model.provider ?? ""] ?? model.provider, searchText: `${model.id} ${model.provider ?? ""}` }));
   return <>
     <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
       <SettingsSwitch label={t("desktopSettings.fusionEnabled")} description={t("desktopSettings.fusionEnabledHint")} disabled={locked} value={saved.enabled} onChange={enabled => void persist(undefined, enabled)} />
@@ -75,22 +73,23 @@ function Editor({ snapshot, models, providerNames, reload }: { snapshot: FusionS
       <Button label={t("desktopSettings.fusionSave")} loading={busy} disabled={locked || !!issue || !dirty} onPress={() => void persist(draft)} />
       {done ? <Text accessibilityLiveRegion="polite" style={settingsStyles.description}>{t("desktopSettings.fusionSaved")}</Text> : null}
     </ScrollView>
-    <Modal visible={picker !== null} transparent animationType="slide" onRequestClose={() => setPicker(null)}>
-      <View style={[styles.overlay, { paddingTop: insets.top + layout.gutter, paddingBottom: insets.bottom + layout.gutter }]}>
-        <Pressable accessible={false} style={StyleSheet.absoluteFill} onPress={() => setPicker(null)} />
-        <View accessibilityViewIsModal style={styles.picker}>
-          <View style={styles.heading}><Text accessibilityRole="header" style={settingsStyles.label}>{picker ? role(picker.index) : ""} · {t(picker?.field === "thinking" ? "desktopSettings.fusionThinking" : "desktopSettings.fusionModel")}</Text><Pressable accessibilityRole="button" accessibilityLabel={t("common.close")} style={styles.remove} onPress={() => setPicker(null)}><X size={20} color={colors.inkMuted} /></Pressable></View>
-          {picker?.field === "model" ? <TextInput accessibilityLabel={t("desktopSettings.searchModels")} placeholder={t("desktopSettings.searchModels")} placeholderTextColor={colors.inkMuted} value={query} onChangeText={setQuery} style={settingsStyles.search} /> : null}
-          <FlatList data={choices} keyExtractor={item => item.id} keyboardShouldPersistTaps="handled" renderItem={({ item }) => <Pressable accessibilityRole="radio" accessibilityState={{ checked: (picker?.field === "thinking" ? picked?.thinking_level : picked?.model) === item.id }} style={styles.option} onPress={() => {
-            if (!picker || !picked || locked) return;
-            const selected = models.find(model => modelReference(model) === item.id);
-            const levels = modelThinkingLevels(selected);
-            change(picker.index, picker.field === "thinking" ? { ...picked, thinking_level: item.id } : { ...newFusionParticipant(), model: item.id, thinking_level: levels.includes(picked.thinking_level) ? picked.thinking_level : levels[0] ?? "default" });
-            setPicker(null);
-          }}><Text style={styles.choiceText}>{item.label}</Text></Pressable>} />
-        </View>
-      </View>
-    </Modal>
+    <SelectionSheet
+      visible={picker !== null}
+      title={`${picker ? role(picker.index) : ""} · ${t(picker?.field === "thinking" ? "desktopSettings.fusionThinking" : "desktopSettings.fusionModel")}`}
+      closeLabel={t("common.close")}
+      emptyLabel={t("desktopSettings.noModels")}
+      options={choices}
+      selectedValue={picked ? picker?.field === "thinking" ? picked.thinking_level : picked.model : null}
+      disabled={locked}
+      searchPlaceholder={picker?.field === "model" ? t("desktopSettings.searchModels") : undefined}
+      onClose={() => setPicker(null)}
+      onSelect={value => {
+        if (!picker || !picked || locked) return;
+        const selected = models.find(model => modelReference(model) === value);
+        const levels = modelThinkingLevels(selected);
+        change(picker.index, picker.field === "thinking" ? { ...picked, thinking_level: value } : { ...newFusionParticipant(), model: value, thinking_level: levels.includes(picked.thinking_level) ? picked.thinking_level : levels[0] ?? "default" });
+      }}
+    />
   </>;
 }
 export function FusionSettingsPage() {
@@ -109,7 +108,4 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   choiceText: { flex: 1, color: theme.colors.ink, fontSize: theme.font(14) },
   remove: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center" },
   error: { color: theme.colors.danger, fontSize: theme.font(13) },
-  overlay: { flex: 1, justifyContent: "center", paddingHorizontal: layout.gutter, backgroundColor: theme.colors.overlay },
-  picker: { maxHeight: "80%", padding: spacing.md, gap: spacing.sm, borderRadius: radius.lg, backgroundColor: theme.colors.surface },
-  option: { minHeight: layout.touchTarget, justifyContent: "center", padding: spacing.md },
 }));

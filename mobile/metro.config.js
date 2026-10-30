@@ -33,8 +33,9 @@ const resolveDefault = (context, moduleName, platform) => context.resolveRequest
  * stays the shipped implementation, so the Expo web build renders the real UI
  * against a fixed dataset. Native builds never take this path.
  */
+// Remote hooks also use same-directory imports of their context.
 const WEB_SHOT_MOCKS = [
-  [/remote[/\\]RemoteContext$/, "shot/mock/RemoteContext.tsx"],
+  [/remote[/\\]RemoteContext$|^\.\/RemoteContext$/, "shot/mock/RemoteContext.tsx"],
   [/^future-share-intent$/, "shot/mock/shareIntent.ts"],
   [/^future-file-handler$/, "shot/mock/fileHandler.ts"],
 ];
