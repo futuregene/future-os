@@ -1,5 +1,4 @@
 // @vitest-environment jsdom
-import type { MessageSegment } from "@future-os/thread-projection";
 import type { TranscriptMessage } from "./questionNav";
 import { act } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -10,17 +9,11 @@ import { useQuestionNav } from "./useQuestionNav";
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 function user(id: string): TranscriptMessage {
-  return { id, role: "user", content: `prompt ${id}` };
+  return { id, role: "user" };
 }
 
-function assistant(id: string, segments: MessageSegment[]): TranscriptMessage {
-  return { id, role: "assistant", content: "", segments };
-}
-
-const text = (id: string): MessageSegment => ({ id, kind: "text", text: "…" }) as MessageSegment;
-const reasoning = (id: string): MessageSegment => ({ id, kind: "thinking", text: "…" }) as MessageSegment;
-function call(id: string): MessageSegment {
-  return ({ id, kind: "activity", item: { id, kind: "read", status: "completed" } }) as unknown as MessageSegment;
+function assistant(id: string): TranscriptMessage {
+  return { id, role: "assistant" };
 }
 
 /** The viewport's own top edge, in viewport coordinates. */
@@ -47,27 +40,28 @@ function rectAt(contentTop: number, height: number, container: HTMLElement): DOM
 }
 
 /**
- * Two turns. The first reply opens with reasoning and a call before its prose
- * (the shape that made the landing matter), the second is plain prose.
+ * Two turns, each a prompt and a reply. The reply heights are what make the
+ * walk's geometry interesting: the first one is taller than the viewport.
  */
 const MESSAGES: TranscriptMessage[] = [
   user("u1"),
-  assistant("a1", [reasoning("h1"), call("w1"), text("t1")]),
+  assistant("a1"),
   user("u2"),
-  assistant("a2", [text("t2")]),
+  assistant("a2"),
 ];
 
 /**
- * A transcript with rows at fixed heights and — for the reply a1 — a marked
- * anchor block inside it, laid out the way `MessageBlock` marks it. Rects are
- * computed from `scrollTop` so the hook sees a real viewport: this is the only
- * way to exercise "the row the reader is inside" without a browser.
+ * A transcript with rows at fixed heights. Rects are computed from `scrollTop`
+ * so the hook sees a real viewport: this is the only way to exercise "the row
+ * the reader is inside" without a browser.
  */
-function transcript({
-  heights = [100, 400, 80, 200],
-  anchors = { a1: 120 } as Record<string, number>,
-  viewportHeight = 300,
-} = {}) {
+function transcript(
+  messages: TranscriptMessage[] = MESSAGES,
+  {
+    heights = [100, 400, 80, 200],
+    viewportHeight = 300,
+  } = {},
+) {
   const container = document.createElement("div");
   container.style.height = `${viewportHeight}px`;
   container.style.overflow = "auto";
@@ -79,7 +73,7 @@ function transcript({
     running += height;
   }
   const total = running;
-  const rows = MESSAGES.map((message, index) => {
+  const rows = messages.map((message, index) => {
     const row = document.createElement("div");
     row.dataset.messageId = message.id;
     row.style.height = `${heights[index]}px`;
@@ -105,14 +99,6 @@ function transcript({
   rows.forEach((row, index) => {
     vi.spyOn(row, "getBoundingClientRect").mockImplementation(() =>
       rect(offsets[index]!, heights[index]!));
-    const anchorOffset = anchors[MESSAGES[index]!.id];
-    if (anchorOffset === undefined)
-      return;
-    const anchor = document.createElement("div");
-    anchor.dataset.replyTail = "";
-    row.appendChild(anchor);
-    vi.spyOn(anchor, "getBoundingClientRect").mockImplementation(() =>
-      rect(offsets[index]! + anchorOffset, 280));
   });
   const scrollRef = { current: container as HTMLElement | null };
   return { container, rows, scrollRef, offsets, total, top };
@@ -130,9 +116,9 @@ function scrollTo(container: HTMLElement, offset: number) {
 
 function mount(
   messages: TranscriptMessage[] = MESSAGES,
-  layout: Parameters<typeof transcript>[0] = {},
+  layout: { heights?: number[]; viewportHeight?: number } = {},
 ) {
-  const world = transcript(layout);
+  const world = transcript(messages, layout);
   const onTakeOver = vi.fn();
   const hook = renderHook(() =>
     useQuestionNav({ messages, onTakeOver, scrollRef: world.scrollRef }),
@@ -150,9 +136,9 @@ function press(key: string, target?: EventTarget, init: KeyboardEventInit = {}) 
 }
 
 describe("useQuestionNav", () => {
-  it("offers ↑ from the tail before the reader has scrolled, and no ↓", () => {
+  it("offers ↑ from the top only when a prompt is above, and ↓ to the next one", () => {
     // At the top of the loaded window the first row is the reader's, so ↑ has
-    // nowhere to go; ↓ walks the conversation from there.
+    // nowhere to go; ↓ walks to the second prompt.
     const { container, hook } = mount();
     expect(hook.current.previous).toBeNull();
     expect(hook.current.hasNext).toBe(true);
@@ -189,7 +175,7 @@ describe("useQuestionNav", () => {
     scrollTo(container, 564);
 
     // The reader is at the newest row, so ↑ offers that turn's prompt…
-    expect(hook.current.previous).toEqual({ kind: "question", index: 2, messageId: "u2" });
+    expect(hook.current.previous).toBe(2);
     // …and there is nothing newer below the newest row.
     expect(hook.current.hasNext).toBe(false);
     hook.unmount();
@@ -206,8 +192,9 @@ describe("useQuestionNav", () => {
     });
     scrollTo(container, 400);
 
-    expect(hook.current.previous).toEqual({ kind: "question", index: 0, messageId: "u1" });
-    expect(hook.current.hasNext).toBe(true);
+    expect(hook.current.previous).toBe(0);
+    // The reader is at the newest prompt, so there is no later question below.
+    expect(hook.current.hasNext).toBe(false);
     hook.unmount();
     container.remove();
   });
@@ -236,15 +223,16 @@ describe("useQuestionNav", () => {
     // Above the end of the transcript, where the rows themselves decide: the
     // previous reply's last 40px are under the top edge and the prompt the
     // reader is looking at is fully in view below it. The reader is in that
-    // prompt, so ↓ offers the reply that answers it.
-    const { container, hook } = mount(MESSAGES, {
-      heights: [100, 400, 80, 260],
-      viewportHeight: 300,
-    });
+    // prompt, so ↓ offers the prompt after it — not the one the sliver belongs
+    // to, which would be a press that goes backwards.
+    const { container, hook } = mount(
+      [user("u1"), assistant("a1"), user("u2"), assistant("a2"), user("u3")],
+      { heights: [100, 400, 80, 260, 120], viewportHeight: 300 },
+    );
     scrollTo(container, 484);
 
-    expect(hook.current.next).toEqual({ kind: "replyTail", index: 3, messageId: "a2" });
-    expect(hook.current.previous).toEqual({ kind: "question", index: 0, messageId: "u1" });
+    expect(hook.current.next).toBe(4);
+    expect(hook.current.previous).toBe(0);
     hook.unmount();
     container.remove();
   });
@@ -259,9 +247,9 @@ describe("useQuestionNav", () => {
     scrollTo(container, 200);
 
     // ↑ reaches its own prompt…
-    expect(hook.current.previous).toEqual({ kind: "question", index: 0, messageId: "u1" });
+    expect(hook.current.previous).toBe(0);
     // …and ↓ the prompt below it.
-    expect(hook.current.next).toEqual({ kind: "question", index: 2, messageId: "u2" });
+    expect(hook.current.next).toBe(2);
     act(() => hook.current.goToNext());
     // The prompt below cannot reach the top edge (the content ends above it), so
     // the landing goes as far as it can: the reader gets that prompt in view.
@@ -270,15 +258,13 @@ describe("useQuestionNav", () => {
     container.remove();
   });
 
-  it("lands a reply on its last output, not on the row's start", () => {
+  it("skips a whole answer in one press", () => {
     const { container, hook } = mount();
-    // The reader is inside the first prompt, so the next stop below is the reply
-    // that answers it.
+    // From the first prompt, ↓ lands on the second prompt — the 400px answer
+    // between them is passed in this single press, never landed in.
     act(() => hook.current.goToNext());
 
-    // The row starts at 100, but its prose sits 120px into it: the press was for
-    // the answer, so that is what takes the reading edge.
-    expect(container.scrollTop).toBe(100 + 120 - 16);
+    expect(container.scrollTop).toBe(500 - 16);
     hook.unmount();
     container.remove();
   });
@@ -290,7 +276,7 @@ describe("useQuestionNav", () => {
     act(() => hook.current.goToPrevious());
 
     // Inside the second turn, ↑ reaches the first prompt: the reply between the
-    // two is what ↓ is for.
+    // two is never a stop.
     expect(container.scrollTop).toBe(0);
     hook.unmount();
     container.remove();
@@ -364,7 +350,7 @@ describe("useQuestionNav", () => {
     });
     scrollTo(container, 344);
 
-    expect(hook.current.previous).toEqual({ kind: "question", index: 0, messageId: "u1" });
+    expect(hook.current.previous).toBe(0);
     expect(hook.current.hasNext).toBe(false);
     hook.unmount();
     container.remove();
@@ -383,19 +369,6 @@ describe("useQuestionNav", () => {
     container.remove();
   });
 
-  it("lands a reply row at its start when the row marked no anchor", () => {
-    // A reply whose output is plain content, or one the renderer found no
-    // output block in: the row's own top is all there is to aim at.
-    const world = transcript({ anchors: {} });
-    const hook = renderHook(() =>
-      useQuestionNav({ messages: MESSAGES, onTakeOver: () => {}, scrollRef: world.scrollRef }),
-    );
-    act(() => hook.current.goToNext());
-    expect(world.container.scrollTop).toBe(100 - 16);
-    hook.unmount();
-    world.container.remove();
-  });
-
   it("goes inert when there is no transcript to read", () => {
     const scrollRef = { current: null as HTMLElement | null };
     const hook = renderHook(() =>
@@ -411,13 +384,13 @@ describe("useQuestionNav", () => {
 describe("useQuestionNav page keys", () => {
   it("walks the transcript with Page Up / Page Down", () => {
     // The buttons and the keys are one walk, so a press has to land exactly
-    // where its button would: ↓ takes the next stop below, ↑ the previous
-    // prompt. The reader starts at the top of the loaded window, where only ↓
-    // has anywhere to go.
+    // where its button would: ↓ the next prompt below, ↑ the previous one. The
+    // reader starts at the top of the loaded window, where only ↓ has anywhere
+    // to go.
     const { container, hook } = mount();
 
     press("PageDown");
-    expect(container.scrollTop).toBe(100 + 120 - 16);
+    expect(container.scrollTop).toBe(500 - 16);
     expect(hook.current.hasPrevious).toBe(true);
 
     press("PageUp");
@@ -480,7 +453,7 @@ describe("useQuestionNav page keys", () => {
     // …and closing it hands the key back.
     menu.unmount();
     press("PageDown");
-    expect(container.scrollTop).toBe(100 + 120 - 16);
+    expect(container.scrollTop).toBe(500 - 16);
     hook.unmount();
     container.remove();
   });
@@ -603,15 +576,15 @@ function queuedFrames() {
 describe("useQuestionNav paging from the window's top", () => {
   const WINDOW_MESSAGES: TranscriptMessage[] = [
     user("u5"),
-    assistant("a5", [text("t5")]),
+    assistant("a5"),
     user("u6"),
-    assistant("a6", [text("t6")]),
+    assistant("a6"),
   ];
   const PAGE_MESSAGES: TranscriptMessage[] = [
     user("u1"),
-    assistant("a1", [text("t1")]),
+    assistant("a1"),
     user("u2"),
-    assistant("a2", [text("t2")]),
+    assistant("a2"),
   ];
   const WINDOW_IDS = ["u5", "a5", "u6", "a6"];
   const PAGE_IDS = ["u1", "a1", "u2", "a2"];
@@ -810,7 +783,7 @@ describe("useQuestionNav paging from the window's top", () => {
  */
 it("takes a press with no transcript mounted, and stops looking for rows", async () => {
   // Its own window: the paging suite's fixtures live inside its `describe`.
-  const messages: TranscriptMessage[] = [user("u1"), assistant("a1", [text("t1")])];
+  const messages: TranscriptMessage[] = [user("u1"), assistant("a1")];
   const frames = queuedFrames();
   const loadOlder = vi.fn(() => Promise.resolve());
   const onTakeOver = vi.fn();
@@ -854,7 +827,7 @@ it("takes a press with no transcript mounted, and stops looking for rows", async
  * experiences as a ↑ button that stopped working.
  */
 it("releases the press when the page read throws on the way in", async () => {
-  const messages: TranscriptMessage[] = [user("u1"), assistant("a1", [text("t1")])];
+  const messages: TranscriptMessage[] = [user("u1"), assistant("a1")];
   const world = pagedTranscript();
   world.layOut(["u1", "a1"]);
   const frames = queuedFrames();
@@ -903,17 +876,16 @@ it("releases the press when the page read throws on the way in", async () => {
  * past the prompt of the turn on screen.
  */
 describe("useQuestionNav inside a row taller than the viewport", () => {
-  it("answers with the row the reader is in, and offers the reply below it", () => {
+  it("answers with the row the reader is in, and offers the prompt below it", () => {
     const { container, hook } = mount(MESSAGES, {
-      anchors: {},
       heights: [900, 100, 100, 100],
       viewportHeight: 300,
     });
 
     // The reader is inside u1 (900px tall, its middle far below the fold)…
     expect(hook.current.previous).toBeNull();
-    // …so the next stop below is the end of the reply that follows it.
-    expect(hook.current.next).toEqual({ kind: "replyTail", index: 1, messageId: "a1" });
+    // …so the next stop below is the prompt that follows it.
+    expect(hook.current.next).toBe(2);
 
     hook.unmount();
     container.remove();

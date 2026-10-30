@@ -2,12 +2,12 @@ import { ArrowDown, ArrowUp } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 /**
- * "↑ previous question / ↓ next passage" for the transcript's corner.
+ * "↑ previous question / ↓ next question" for the transcript's corner.
  *
- * The pair is deliberately not symmetric (see `useQuestionNav`): ↑ walks the
- * reader's own prompts, skipping whatever answer lies between two of them, while
- * ↓ takes the next stop below of either kind — so ↓ reads as the transcript
- * written out, prompt, reply, prompt…
+ * Both directions walk the reader's own prompts, and only those: a press is
+ * asking "what else was asked", so it never comes to rest inside an answer — a
+ * long reply costs one press to pass, not one per screenful (see
+ * `useQuestionNav`).
  *
  * Two round buttons on the conversation's own right edge, just above the
  * composer: the shape the mobile client ships, and for the same reason — a
@@ -46,7 +46,7 @@ export function QuestionNavControl({
       <NavButton
         disabled={!hasNext}
         icon={<ArrowDown className="size-4" />}
-        label={t("thread.nextPassage")}
+        label={t("thread.questionNext")}
         shortcut="PgDn"
         onClick={onNext}
       />
