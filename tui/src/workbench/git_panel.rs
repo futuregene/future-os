@@ -264,8 +264,11 @@ const PASSES: usize = 4;
 ///   so opening a branch never shifts the lanes beside it — a column that
 ///   moved would also change colour, since a lane's colour is its column.
 /// * **No diagonals and no orphan rows.** A connection is a vertical, a
-///   horizontal, or an elbow between them (`┐ ┘ ├ ┤ ┬ ┴ ┼`), and each one is
-///   drawn on the row of the commit that makes it. Every row carries a commit.
+///   horizontal, or an elbow between them (`┐ ┘ ┤ ┬ ┴`), and each one is drawn
+///   on the row of the commit that makes it. Every row carries a commit. The
+///   horizontal breaks around a lane that keeps going (`●─│─┐`) rather than
+///   striking through it: a crossing mark would claim the two lines touch,
+///   where the connection merely passes.
 /// * **A lane that carries nothing is not drawn.** When a merge's extra parent
 ///   is a commit another lane already reaches — `origin/main` merged into every
 ///   feature branch, or a branch merged twice — the lane opened for it runs down
@@ -363,17 +366,23 @@ fn draw(
             .iter()
             .map(|parent| position.get(parent.as_str()).copied().unwrap_or(GHOST))
             .collect();
-        // The extra parents, each in a free column right of this one: a column
-        // already taken (by another lane, or by an earlier parent of this same
-        // commit) is passed over, so two lines never share a column. One whose
-        // lane was found to carry nothing is not opened at all.
+        // The extra parents, each in a column right of this one: the leftmost
+        // one that is free, and — this is what keeps the page narrow — a column
+        // a lane is giving up on *this* row. A branch that ends where the next
+        // one begins hangs off the same cell as the one before it (`●─┤`), which
+        // is how successive short branches stay in one column beside the line
+        // instead of walking right by two every merge. A column already taken
+        // by another lane, or by an earlier parent of this same commit, is
+        // passed over, so two live lines never share one. One whose lane was
+        // found to carry nothing is not opened at all.
         let mut opened: Vec<(usize, usize, usize)> = Vec::new();
         for (index, &parent) in parents.iter().enumerate().skip(1) {
             if covered.contains(&(at, index)) {
                 continue;
             }
             let free = (mine + 1..lanes.len()).find(|column| {
-                lanes[*column].is_none() && !opened.iter().any(|(taken, _, _)| taken == column)
+                (lanes[*column].is_none() || closed.contains(column))
+                    && !opened.iter().any(|(taken, _, _)| taken == column)
             });
             let column = match free {
                 Some(column) => column,
@@ -399,10 +408,12 @@ fn draw(
         let mut cells = vec![' '; 2 * (width + 1)];
         for column in 0..=width {
             let up = lanes.get(column).is_some_and(|lane| lane.is_some()) && column != mine;
-            let down = if closed.contains(&column) {
-                false
-            } else if opened.iter().any(|(taken, _, _)| *taken == column) {
+            // A column a line gives up on and another takes over in the same row
+            // continues below: the vertical passes through it.
+            let down = if opened.iter().any(|(taken, _, _)| *taken == column) {
                 true
+            } else if closed.contains(&column) {
+                false
             } else {
                 up
             };
@@ -445,15 +456,22 @@ fn draw(
 
 /// The glyph where a lane meets the row's horizontal: which of the four
 /// directions have a line (`up`, `down`, `left`, `right`), and nothing drawn
-/// outside ones that do. `├`/`┤` never carry a lane *opening* or *closing*,
-/// only one that keeps going under a horizontal.
+/// outside ones that do.
+///
+/// Every column right of the commit has a line to its *left* (the horizontal
+/// comes from the commit), so `left` is only ever false on the commit's own
+/// column — which is a `●`, not a junction. What is left to decide is whether
+/// the horizontal goes on past the column (`right`) and whether the vertical
+/// runs above or below it.
 fn junction(up: bool, down: bool, left: bool, right: bool) -> char {
     if !left && !right {
         return if up || down { '│' } else { ' ' };
     }
     match (up, down, right) {
-        (true, true, true) => '┼',
-        (true, true, false) => '├',
+        // A lane that keeps going is drawn as it is, with the horizontal broken
+        // around it: a crossing mark would claim the two lines touch.
+        (true, true, true) => '│',
+        (true, true, false) => '┤',
         (true, false, true) => '┴',
         (true, false, false) => '┘',
         (false, true, true) => '┬',
@@ -1209,7 +1227,7 @@ mod tests {
     fn a_connection_crosses_a_lane_without_moving_it() {
         assert_eq!(
             gutters(&[("m", "x y"), ("x", "p q"), ("y", ""), ("p", ""), ("q", ""),]),
-            vec!["●─┐   ", "●─┼─┐ ", "│ ● │ ", "●   │ ", "    ● "]
+            vec!["●─┐   ", "●─│─┐ ", "│ ● │ ", "●   │ ", "    ● "]
         );
         // Two lanes joining one commit turn into it side by side.
         assert_eq!(
@@ -1221,6 +1239,26 @@ mod tests {
                 ("d", ""),
             ]),
             vec!["●─┬─┐ ", "● │ │ ", "│ ● │ ", "│ │ ● ", "●─┴─┘ "]
+        );
+    }
+
+    /// A branch that starts where the one before it ends hangs off the same
+    /// cell: the merge closes a lane with `┤` and the next branch opens in that
+    /// column, so a run of short branches stays two columns wide instead of
+    /// walking right by two at every merge (tig's shape).
+    #[test]
+    fn a_branch_that_starts_where_another_ends_keeps_the_column() {
+        assert_eq!(
+            gutters(&[
+                ("m2", "b2 d2"),
+                ("b2", "m1"),
+                ("d2", "m1"),
+                ("m1", "b1 d1"),
+                ("b1", "m0"),
+                ("d1", "m0"),
+                ("m0", ""),
+            ]),
+            vec!["●─┐ ", "● │ ", "│ ● ", "●─┤ ", "● │ ", "│ ● ", "●─┘ "]
         );
     }
 
@@ -1348,6 +1386,22 @@ mod tests {
         // The number is the row's position, not its arrival: a skipped blank
         // line must not renumber the rest.
         assert_eq!(rows[1].prefix, "#1 ");
+    }
+
+    #[test]
+    #[ignore]
+    fn dump_real_log() {
+        let dir = std::path::Path::new("/Users/geilige/future-os");
+        let rows = rows(dir, GitSection::Commits, None).unwrap();
+        let width = rows
+            .iter()
+            .map(|r| r.prefix.chars().count())
+            .max()
+            .unwrap_or(0);
+        println!("gutter {width}");
+        for r in rows.iter().take(80) {
+            println!("{}|{}", r.prefix, r.pieces.join(" · "));
+        }
     }
 
     /// The read the panel performs, against a real repository: all four
