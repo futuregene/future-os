@@ -384,8 +384,7 @@ run out, so the remaining actions have **no chord**: deleting a conversation (`/
 `delete` in the rail — it asks first), the queue (`/queue` — the prompts sent
 while a run was in flight), the interface language (`/lang`), a refresh
 (`/refresh`), copy (`/copy`), mouse capture (`/mouse`), the newest attachment
-(`/preview`), the rail's two panels (a click, or `shift+←`/`shift+→`), and
-reduced motion (the preferences overlay). The
+(`/preview`), the rail's two panels (a click, or `shift+←`/`shift+→`). The
 help overlay prints `—` in the key column for those. The collisions are the
 reason: a terminal sends Backspace, Tab, `\n` and Enter for `ctrl+h`/`i`/`j`/`m`;
 `ctrl+a`/`ctrl+b` are the `screen` and `tmux` prefixes; `ctrl+z` is suspend;
