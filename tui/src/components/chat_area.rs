@@ -3087,14 +3087,14 @@ impl ChatArea {
             }
         }
 
-        // Spacer between thinking and content (only when the reasoning text is
-        // on screen — a marker row and the answer read fine without it, and the
-        // streaming marker never coexists with content).
-        if has_thinking
-            && self.is_open(&msg.id, RowKind::Thinking)
-            && fold.is_none()
-            && !msg.content.trim().is_empty()
-        {
+        // Spacer between the reasoning and the answer, opened or not: the
+        // marker (`▸ 思考`) is a row *about* the reasoning, so wedged against
+        // the prose it reads as the answer's first line — the same complaint the
+        // summary row below answers (reported 2026-10-30 against a collapsed
+        // marker and the answer right under it). A reply that has only reasoned
+        // so far has no content, so the spacer never appears mid-stream before
+        // there is an answer to separate.
+        if has_thinking && shows_marker && !msg.content.trim().is_empty() {
             self.rendered_lines.push(RenderedLine {
                 text: String::new(),
                 dim: true,
@@ -3104,10 +3104,9 @@ impl ChatArea {
         // …and the same row above a folded reply's answer. The counts are chrome
         // that heads the answer, so wedged against the prose they read as its
         // first line (`▸ 工具调用 62 次 · 思考 39 次` and `是缓存命中率…` on
-        // consecutive rows). This never stacks with the spacer above: that one
-        // needs `fold.is_none()`, and a folded reply shows its reasoning text
-        // only when the reasoning is the whole output, which leaves no content
-        // to space out here.
+        // consecutive rows). This never stacks with the spacer above: a folded
+        // reply draws its own marker only when the reasoning is the whole
+        // output (`reasoning_only`), which leaves no content to space out here.
         if summary_drawn && !msg.content.trim().is_empty() {
             self.rendered_lines.push(RenderedLine {
                 text: String::new(),
@@ -5311,6 +5310,55 @@ mod tests {
             "exactly one blank row between the counts and the answer: {rows:?}"
         );
         assert!(rows[summary + 1].is_empty(), "{rows:?}");
+    }
+
+    /// The collapsed reasoning marker heads the answer too, so it gets the same
+    /// blank row: `▸ 思考` wedged against `大致可以分成六块…` read as that
+    /// paragraph's opening line (reported 2026-10-30). The marker says the model
+    /// reasoned — it is not the first line of what it reasoned to.
+    ///
+    /// `Detailed` is where the marker is drawn for a settled reply (at the
+    /// default level the work folds into a count row, which has its own spacer
+    /// above), and a live reply draws it at either level.
+    #[test]
+    fn a_collapsed_thought_marker_keeps_a_blank_row_above_its_answer() {
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.set_reply_detail(ReplyDetail::Detailed);
+        set_messages(
+            &mut chat,
+            vec![
+                ChatMessage::new("u1".into(), ChatRole::User, "go"),
+                ChatMessage {
+                    thinking: Some("weighed the options".into()),
+                    ..ChatMessage::new("a1".into(), ChatRole::Assistant, "the answer")
+                },
+            ],
+        );
+        let rows: Vec<String> = render_trimmed(&mut chat)
+            .iter()
+            .map(|line| strip(line).trim().to_string())
+            .collect();
+        let marker = rows
+            .iter()
+            .position(|row| row.contains("thinking"))
+            .unwrap_or_else(|| panic!("no marker row: {rows:?}"));
+        let answer = rows
+            .iter()
+            .position(|row| row == "the answer")
+            .unwrap_or_else(|| panic!("no answer row: {rows:?}"));
+        assert_eq!(
+            answer,
+            marker + 2,
+            "exactly one blank row between the marker and the answer: {rows:?}"
+        );
+        assert!(rows[marker + 1].is_empty(), "{rows:?}");
+        // The reasoning text stays folded away: the spacer separates the marker
+        // from the answer, it does not reveal the thought.
+        assert!(
+            !rows.iter().any(|row| row.contains("weighed the options")),
+            "{rows:?}"
+        );
     }
 
     /// The blank row is an answer's spacer, not a summary's: a fold that rides
