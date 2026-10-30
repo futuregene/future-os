@@ -95,7 +95,7 @@ describe("custom provider thinking-level detection", () => {
   it("tests the default request first, then every level, and selects the accepted ones", async () => {
     const onProbe = accepting(["low", "high"]);
     mount(provider([model({ thinkingLevels: ["off", "medium"] })]), onProbe);
-    expect(pressedLabels()).toEqual(["Off", "Medium"]);
+    expect(pressedLabels()).toEqual(["off", "medium"]);
 
     await act(async () => button("Detect").click());
 
@@ -110,7 +110,7 @@ describe("custom provider thinking-level detection", () => {
       providerId: "acme",
     });
     // Exactly the accepted levels replace the previous guess.
-    expect(pressedLabels()).toEqual(["Low", "High"]);
+    expect(pressedLabels()).toEqual(["low", "high"]);
     expect(document.body.textContent).toContain("Selected the 2 accepted level(s).");
   });
 
@@ -124,7 +124,7 @@ describe("custom provider thinking-level detection", () => {
     await act(async () => button("Detect").click());
 
     expect(onProbe).toHaveBeenCalledTimes(1);
-    expect(pressedLabels()).toEqual(["Low"]);
+    expect(pressedLabels()).toEqual(["low"]);
     expect(document.body.textContent).toContain("The default request failed");
     expect(document.body.textContent).toContain("invalid api key");
   });
@@ -148,7 +148,7 @@ describe("custom provider thinking-level detection", () => {
     expect(document.body.textContent).toContain("Testing Default…");
 
     await act(async () => pending.shift()!());
-    expect(document.body.textContent).toContain("Testing Off…");
+    expect(document.body.textContent).toContain("Testing off…");
 
     // Drain the remaining levels one round trip at a time so the run finishes
     // before unmount.
@@ -171,7 +171,7 @@ describe("custom provider thinking-level detection", () => {
 
     // `default` and `off` were answered, so `off` is selected; the transport
     // failure is reported rather than silently dropping what was proven.
-    expect(pressedLabels()).toEqual(["Off"]);
+    expect(pressedLabels()).toEqual(["off"]);
     expect(document.body.textContent).toContain("Detection failed");
     expect(document.body.textContent).toContain("Future Agent is unavailable");
   });

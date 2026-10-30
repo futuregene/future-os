@@ -175,10 +175,20 @@ export function CustomProviderDialog({
     setModels(current => current.map((model, modelIndex) => (modelIndex === index ? { ...model, ...patch } : model)));
   }
 
-  /** A chip label: the level's translated name, or its wire value when unknown. */
+  /**
+   * A chip label: the level's **wire** value, untranslated.
+   *
+   * These chips configure the model's wire vocabulary — the exact strings the
+   * agent sends — so they stay in English (`off`, `xhigh`, `max`) while the
+   * composer, where the reader only picks an effort, names them in their own
+   * language (`关闭`, `极高`, `最大`). The point of this row is to match the
+   * endpoint's documentation and the saved config, and a translated name hides
+   * the string being configured. `default` is implicit (never a chip, never
+   * stored) and is not a wire value, so it keeps its name for the calibration
+   * step's progress text.
+   */
   function levelLabel(level: string) {
-    const key = level === "" ? "default" : level;
-    return t(`agent:composer.thinkingLevelLabels.${key}`, { defaultValue: key });
+    return level === "" ? t("agent:composer.thinkingLevelLabels.default") : level;
   }
 
   /** A result describes one probe's inputs; editing them makes it stale. */
