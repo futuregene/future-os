@@ -210,15 +210,6 @@ pub struct Live {
     /// Recent runs this client submitted, awaiting a terminal state. Bounded
     /// because cancellation and incomplete streams need not produce agent_end.
     completion_candidates: std::collections::VecDeque<String>,
-    /// The journal entry each accepted prompt was written to, by run id.
-    ///
-    /// The agent announces it on its `user_message` event; the acknowledgement
-    /// that binds a bubble to its run can arrive on either side of that event,
-    /// so the pair is remembered here and applied wherever the bubble shows up
-    /// (see [`Self::note_user_entry`]). What it feeds is the `[分支]` control:
-    /// a fork branches at an entry id, and a live prompt has no id until this
-    /// arrives.
-    user_entries: HashMap<String, String>,
     detail: ReplyDetail,
     /// Palette id, so a `/theme` cycle does not need the surface's own state.
     pub theme_id: String,
@@ -460,7 +451,6 @@ impl Live {
             revision: 0,
             mouse_capture,
             completion_candidates: std::collections::VecDeque::new(),
-            user_entries: HashMap::new(),
             detail,
             theme_id: theme.id.to_string(),
             lang,
@@ -1111,17 +1101,6 @@ impl Live {
             self.state_refresh_pending = true;
         }
         match event.r#type.as_str() {
-            // The agent persisted the prompt this run is answering, and names the
-            // entry it wrote. That id is what `[分支]` forks at, and it is the
-            // only place a *live* turn learns it (a row loaded from history
-            // carries its own).
-            "user_message" => {
-                self.note_user_entry(
-                    &str_field(&event.data, "run_id"),
-                    &str_field(&event.data, "entry_id"),
-                    &text,
-                );
-            }
             "text_chunk" => {
                 self.mark(ActivityKind::Streaming);
                 // A run this client attached to mid-flight never saw its
@@ -1908,7 +1887,6 @@ impl Live {
             }
             WbAction::CopyLast
             | WbAction::CopyMessage(_)
-            | WbAction::ForkMessage(_)
             | WbAction::ToggleMouse
             | WbAction::OpenQueue
             | WbAction::OpenApproval
@@ -2160,13 +2138,6 @@ impl Live {
                         self.completion_candidates.pop_front();
                     }
                     self.completion_candidates.push_back(ack.run_id.clone());
-                }
-                // The agent may have announced the entry this prompt was written
-                // to before the acknowledgement reached us: the pair is waiting
-                // in `user_entries`, and the bubble learns it now.
-                if let Some(entry) = self.user_entries.get(&ack.run_id).cloned() {
-                    let typed = message.trim().to_string();
-                    self.chat.bind_user_entry(&ack.run_id, &entry, &typed);
                 }
                 if ack.accepted_state == "queued" {
                     // Bind the bubble to the run *and* to the queue: the card
@@ -3585,27 +3556,39 @@ impl Live {
             .unwrap_or_default()
     }
 
-    pub async fn load_fork_points(&mut self) {
+    /// Load the messages `/fork` can stop after: every question and every
+    /// answer the session has persisted, in transcript order.
+    ///
+    /// The list comes from the agent rather than off the transcript, because
+    /// the agent is what knows which messages are *persisted*: a reply still
+    /// streaming has no entry to fork at yet, so the newest point the picker
+    /// offers is the prompt that started it — exactly the rule the surface
+    /// states. `get_fork_messages` is the other, older question ("which user
+    /// turns a fork can start from"); this one is the picker's.
+    pub async fn load_fork_entries(&mut self) {
         let session_id = self.state.session_id.clone();
-        match self.client.fork_messages_for(&session_id).await {
+        match self.client.fork_entries_for(&session_id).await {
             Ok(value) => {
                 self.fork_points = value
-                    .get("messages")
+                    .get("entries")
                     .and_then(Value::as_array)
                     .into_iter()
                     .flatten()
-                    .filter_map(|message| {
-                        let id = message.get("id")?.as_str()?.to_string();
-                        let text = message
+                    .filter_map(|entry| {
+                        let id = entry.get("id")?.as_str()?.to_string();
+                        let role = match entry.get("role").and_then(Value::as_str) {
+                            Some("assistant") => super::state::ForkRole::Assistant,
+                            _ => super::state::ForkRole::User,
+                        };
+                        let text = entry
                             .get("blocks")
                             .and_then(Value::as_array)
                             .into_iter()
                             .flatten()
                             .find_map(|block| block.get("text").and_then(Value::as_str))
-                            .or_else(|| message.get("content").and_then(Value::as_str))
                             .unwrap_or("")
                             .to_string();
-                        Some(super::state::ForkPoint { id, text })
+                        Some(super::state::ForkPoint { id, role, text })
                     })
                     .collect();
             }
@@ -3613,20 +3596,6 @@ impl Live {
                 self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
             }
         }
-    }
-
-    /// Remember the journal entry a prompt was written to, and hand it to the
-    /// bubble that carries it.
-    ///
-    /// Kept by run id as well, because the announcement and the prompt's
-    /// acknowledgement race: whichever arrives second finds the pair here.
-    fn note_user_entry(&mut self, run_id: &str, entry_id: &str, text: &str) {
-        if run_id.is_empty() || entry_id.is_empty() {
-            return;
-        }
-        self.user_entries
-            .insert(run_id.to_string(), entry_id.to_string());
-        self.chat.bind_user_entry(run_id, entry_id, text);
     }
 
     /// The `[复制]` control under one message: that message's own text, as the
@@ -3639,22 +3608,6 @@ impl Live {
         self.chat
             .copyable_text_at(row)
             .ok_or_else(|| t(self.lang, Key::CopyEmpty).to_string())
-    }
-
-    /// The `[分支]` control under a reply: fork at the user message that produced
-    /// it, which is what the desktop's own fork button does.
-    ///
-    /// The point comes off the transcript rather than out of the reply: a fork
-    /// branches a *question*, so the walk goes back to the nearest user message
-    /// and takes the journal entry it was written to ([`ChatArea::bind_user_entry`]
-    /// is what learns that id for a live turn). A prompt that has not been
-    /// persisted has no entry, and the notice says so instead of forking
-    /// somewhere the reader did not point at.
-    pub async fn fork_message(&mut self, row: usize) {
-        match self.chat.preceding_user_entry(row) {
-            Some(entry) => self.fork_at(&entry).await,
-            None => self.notice = Some(t(self.lang, Key::ForkNeedsPersisted).to_string()),
-        }
     }
 
     pub async fn fork_at(&mut self, entry_id: &str) {
@@ -5282,7 +5235,6 @@ fn fold_words(lang: Language) -> FoldWords {
         thinking: t(lang, Key::ChatThinkingLabel),
         process: t(lang, Key::ChatProcessLabel),
         copy: t(lang, Key::ChatCopyChip),
-        fork: t(lang, Key::ChatForkChip),
     }
 }
 
@@ -9463,16 +9415,69 @@ mod tests {
         assert!(live.copy_message(9_999).is_err());
     }
 
-    /// The `[分支]` control forks at the prompt behind the reply — the same
-    /// `fork` command `/fork` sends, with the point already chosen — and says so
-    /// when the prompt has no journal entry yet.
+    /// The `/fork` box lists what the agent says is persisted: questions *and*
+    /// answers, in transcript order, each with the role its row is labelled by.
+    ///
+    /// The list comes from the agent and not off the transcript on purpose — a
+    /// reply still streaming has no entry yet, so the newest point a live turn
+    /// offers is the prompt that started it.
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // FUTURE_HOME is process-global and must stay pinned across awaits.
-    async fn the_fork_control_branches_at_the_prompt_behind_the_reply() {
+    async fn the_fork_box_lists_questions_and_answers() {
         let _guard = crate::test_env::lock();
         let home = tempfile::tempdir().unwrap();
         let _home = crate::test_env::EnvVarGuard::set("FUTURE_HOME", home.path());
-        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            (
+                "get_fork_entries",
+                r#"{"entries":[
+                    {"id":"e1","role":"user","blocks":[{"kind":"text","text":"why does it fail?"}],"createdAtMs":1},
+                    {"id":"e2","role":"assistant","blocks":[{"kind":"text","text":"because the loop advanced first"}],"createdAtMs":2}
+                ]}"#,
+            ),
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            ("get_session_entries", r#"{"entries":[]}"#),
+            ("list_sessions", r#"{"sessions":[]}"#),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+
+        live.load_fork_entries().await;
+        let points: Vec<_> = live
+            .fork_points
+            .iter()
+            .map(|point| (point.role, point.text.as_str(), point.id.as_str()))
+            .collect();
+        assert_eq!(
+            points,
+            vec![
+                (
+                    super::super::state::ForkRole::User,
+                    "why does it fail?",
+                    "e1"
+                ),
+                (
+                    super::super::state::ForkRole::Assistant,
+                    "because the loop advanced first",
+                    "e2"
+                ),
+            ]
+        );
+        assert!(live.notice.is_none(), "{:?}", live.notice);
+    }
+
+    /// A chosen point is the message it names: `through_entry`, so the child
+    /// ends there — an answer's fork carries the answer, a question's fork
+    /// stops at the question.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // FUTURE_HOME is process-global and must stay pinned across awaits.
+    async fn the_chosen_fork_point_ends_the_child_with_that_message() {
+        let _guard = crate::test_env::lock();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_env::EnvVarGuard::set("FUTURE_HOME", home.path());
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
             ("get_state", r#"{"sessionId":"s1"}"#),
             ("get_session_entries", r#"{"entries":[]}"#),
             ("list_sessions", r#"{"sessions":[]}"#),
@@ -9482,82 +9487,11 @@ mod tests {
         let (mut live, _events) = Live::attach(&addr, None, false, None)
             .await
             .expect("attach to the test agent");
-        live.chat.add_message(ChatMessage::new(
-            "u1".into(),
-            ChatRole::User,
-            "写个回归测试",
-        ));
-        live.chat
-            .add_message(ChatMessage::new("a1".into(), ChatRole::Assistant, "好了。"));
-        live.chat.render(80);
-        let reply_row = *live
-            .chat
-            .control_rows()
-            .last()
-            .expect("the reply's controls");
 
-        // A prompt the agent has not announced has no entry: the chip refuses
-        // instead of forking somewhere the reader did not point at.
-        live.fork_message(reply_row).await;
-        // The refusal is a sentence in the interface language, and that language
-        // comes from the reader's locale (`Live::attach` with no settings). So
-        // assert the key's rendering *in the language this run resolved*, not a
-        // literal: CI runs in English and a Chinese desktop in Chinese, and a
-        // literal would be right in exactly one of them.
-        assert_eq!(
-            live.notice.as_deref(),
-            Some(t(live.language(), Key::ForkNeedsPersisted)),
-            "the chip says why it cannot fork, rather than forking somewhere else"
-        );
-        assert!(
-            !seen.lock().unwrap().iter().any(|command| command == "fork"),
-            "nothing was forked"
-        );
-
-        // Once the entry is known (the `user_message` event says so), the chip
-        // forks at it.
-        live.note_user_entry("run-1", "entry-9", "写个回归测试");
-        live.fork_message(reply_row).await;
+        live.fork_at("entry-9").await;
         let request = crate::rpc::grpc_client::tests::last_request_of(&mock, "fork");
         assert_eq!(request.entry_id, "entry-9");
-        // `through_turn`, not the agent's default `through_entry`: the child has
-        // to carry the answer the reader branched on, not stop at the question.
-        assert_eq!(request.mode, "through_turn");
-    }
-
-    /// The announcement the agent makes when it persists a prompt is what makes
-    /// a live turn forkable: it names the entry, and the bubble that matches it
-    /// (by text — a running prompt is never bound by id) learns it.
-    #[test]
-    fn the_user_message_event_teaches_a_live_prompt_its_entry() {
-        let mut chat = ChatArea::new(80, None);
-        chat.render(80);
-        chat.add_message(ChatMessage::new(
-            "m-1".into(),
-            ChatRole::User,
-            "写个回归测试",
-        ));
-        chat.add_message(ChatMessage::new(
-            "m-2".into(),
-            ChatRole::Assistant,
-            "好了。",
-        ));
-        chat.render(80);
-        let reply_row = *chat.control_rows().last().expect("the reply's controls");
-        assert_eq!(chat.preceding_user_entry(reply_row), None);
-        chat.bind_user_entry("run-1", "entry-9", "写个回归测试");
-        assert_eq!(
-            chat.preceding_user_entry(reply_row).as_deref(),
-            Some("entry-9")
-        );
-        // An announcement for another prompt is not applied.
-        let mut other = ChatArea::new(80, None);
-        other.render(80);
-        other.add_message(ChatMessage::new("m-1".into(), ChatRole::User, "别的"));
-        other.add_message(ChatMessage::new("m-2".into(), ChatRole::Assistant, "好"));
-        other.render(80);
-        let row = *other.control_rows().last().expect("the reply's controls");
-        other.bind_user_entry("run-2", "entry-10", "写个回归测试");
-        assert_eq!(other.preceding_user_entry(row), None);
+        assert_eq!(request.mode, "through_entry");
+        assert_eq!(request.created_by, "tui");
     }
 }

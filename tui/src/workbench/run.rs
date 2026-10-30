@@ -987,7 +987,7 @@ async fn quit(
                     continue;
                 }
                 "/fork" => {
-                    live.load_fork_points().await;
+                    live.load_fork_entries().await;
                     workbench.overlay = Some(super::Overlay::Fork);
                     workbench.workflow_index = 0;
                     continue;
@@ -1379,13 +1379,6 @@ async fn quit(
         if let WbAction::CopyMessage(row) = &action {
             let text = live.copy_message(*row);
             copy_to_clipboard(live, text, super::i18n::Key::CopiedMessage).await;
-            continue;
-        }
-        // The `[分支]` control: forks at the prompt behind the reply, the same
-        // `fork` call `/fork` makes — the box only asks which point, and this
-        // chip already knows.
-        if let WbAction::ForkMessage(row) = &action {
-            live.fork_message(*row).await;
             continue;
         }
         if matches!(action, WbAction::ToggleMouse) {

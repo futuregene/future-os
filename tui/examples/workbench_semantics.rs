@@ -230,6 +230,7 @@ fn fork_row() -> Result<(), String> {
     data.fork_points = (0..6)
         .map(|index| future_tui::workbench::state::ForkPoint {
             id: format!("e{index}"),
+            role: future_tui::workbench::state::ForkRole::User,
             text: format!("point {index}"),
         })
         .collect();

@@ -28,7 +28,7 @@ use future_tui::workbench::layout::Rect;
 use future_tui::workbench::mouse::{MouseEvent, MouseKind};
 use future_tui::workbench::picker::PickerKind;
 use future_tui::workbench::state::{
-    ApprovalView, DiffView, ForkPoint, PanelId, QueuedPrompt, WorkbenchData, WorktreeView,
+    ApprovalView, DiffView, ForkPoint, ForkRole, PanelId, QueuedPrompt, WorkbenchData, WorktreeView,
 };
 use future_tui::workbench::{Overlay, WbAction, WbEvent, Workbench};
 
@@ -247,7 +247,14 @@ pub fn highlight(path: &str, text: &str) -> Vec<Line> {
                 data.fork_points = (0..5)
                     .map(|index| ForkPoint {
                         id: format!("e{index}"),
-                        text: format!("user message point {index}"),
+                        // Every other row is an answer: the picker lists both
+                        // kinds, and the label is what tells them apart.
+                        role: if index % 2 == 0 {
+                            ForkRole::User
+                        } else {
+                            ForkRole::Assistant
+                        },
+                        text: format!("message point {index}"),
                     })
                     .collect();
                 data

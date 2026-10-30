@@ -869,22 +869,33 @@ fn wrap_words(text: &str, line_width: usize) -> Vec<String> {
 
 /// The hit id a transcript stop answers to.
 ///
-/// Two namespaces, because one row can carry two targets: the rows that *open*
-/// something (a folded reply, a burst of work, a call's body, a thinking
-/// marker) keep `chat.row.<row>`, while the controls under a message — copy and
-/// fork, which change nothing on screen — say which one was pressed. One id for
-/// both would make a click on `[分支]` resolve to `[复制]`, since the hit map
-/// stores a single id per region and the first stop on the row is the left one.
+/// Two namespaces, because a control shares its row with nothing but itself:
+/// the rows that *open* something (a folded reply, a burst of work, a call's
+/// body, a thinking marker) keep `chat.row.<row>`, while the control under a
+/// message — copy, which changes nothing on screen — says what was pressed. A
+/// shared id would make a click resolve to whichever stop the hit map saw
+/// first.
 fn stop_region_id(stop: &crate::components::chat_area::RowStop) -> String {
     use crate::components::chat_area::RowAction;
     match stop.action {
         RowAction::Copy { .. } => format!("chat.button.{}.copy", stop.row),
-        RowAction::Fork { .. } => format!("chat.button.{}.fork", stop.row),
         RowAction::Process { .. }
         | RowAction::Burst { .. }
         | RowAction::Tool { .. }
         | RowAction::Thinking { .. } => format!("chat.row.{}", stop.row),
     }
+}
+
+/// What one `/fork` row says about its message: the first words of it, as one
+/// line.
+///
+/// The row is a *label*, not the message: a markdown heading's `#` and the
+/// blank lines between paragraphs are structure, and a frame that shows them
+/// verbatim makes a column of `###` where the reader wants to recognise their
+/// own question.
+fn fork_preview(text: &str) -> String {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    collapsed.trim_start_matches('#').trim_start().to_string()
 }
 
 fn conversation(
@@ -1371,11 +1382,23 @@ fn workflow_box(
                     .iter()
                     .enumerate()
                     .map(|(index, point)| {
-                        let number = format!("{}. ", index + 1);
-                        let text = point.text.replace('\n', " ↵ ");
+                        // Whose message it is, then the text: a fork after a
+                        // question and a fork after an answer are different
+                        // points in the same list, and the label is the only
+                        // thing telling them apart.
+                        let role = match point.role {
+                            crate::workbench::state::ForkRole::Assistant => {
+                                t(workbench.lang, Key::ForkRoleAssistant)
+                            }
+                            crate::workbench::state::ForkRole::User => {
+                                t(workbench.lang, Key::ForkRoleUser)
+                            }
+                        };
+                        let prefix = format!("{}. {role} · ", index + 1);
+                        let text = fork_preview(&point.text);
                         workflows::record_line(
                             index == workbench.workflow_index,
-                            &number,
+                            &prefix,
                             &[&text],
                             columns.saturating_sub(4),
                         )
