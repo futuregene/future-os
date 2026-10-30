@@ -2262,6 +2262,16 @@ struct FrameCache {
 /// `scroll` is the rows a transcript occupies, offered only when they are the
 /// transcript's own (a terminal scroll moves whole rows, so a rail painted beside
 /// it would be scrolled too) and when no in-line picture is on screen.
+///
+/// **Everything here is in physical rows.** `rows` is one string per screen row —
+/// the transcript's logical lines were wrapped into rows before this function saw
+/// them (`ChatArea::render_all_shared` hands out the wrapped lines) — and the band
+/// indexes that same list. A wrapped line is therefore a run of consecutive
+/// entries: the shift test compares them like any other row, so a scroll that
+/// would break a wrapped line apart cannot pass it. Do not re-derive a band from
+/// logical lines (message rows, transcript lines before wrapping): a logical
+/// "one line up" is not a physical one whenever something wrapped, and the frames
+/// would disagree by however many rows that line took.
 fn frame_bytes_since(
     rows: &[String],
     width: usize,
@@ -2325,6 +2335,10 @@ fn frame_bytes_since(
 /// different conversation, a rail, an overlay — answers `None` and the row diff
 /// takes over, which is what keeps a "smarter" repaint from painting the wrong
 /// screen.
+///
+/// The unit is the physical row (`shown` and `rows` are screen rows, wrapping
+/// already applied): a logical line that wrapped to three rows is three entries
+/// that must shift together, which the equality enforces for free.
 ///
 /// It also has to pay: the scroll costs three sequences and `n` rows, and it is
 /// only taken when the row diff would have written more rows than that.
@@ -3088,6 +3102,57 @@ mod tests {
         }));
         rows.extend((0..2).map(|i| format!("composer {i}")));
         rows
+    }
+
+    /// A long line that wrapped occupies several *physical* rows, and a scroll
+    /// moves all of them together — or none.
+    ///
+    /// This is the one case where "content moved up a line" and "the screen moved
+    /// up a line" could disagree: if a band were measured in logical lines, a
+    /// three-row wrapped line would hand the terminal a `CSI 1 S` and then write
+    /// the wrong number of rows, shifting everything below it. The band here is
+    /// physical rows, so the predicate sees the wrapped run as three equalities:
+    /// a scroll that would tear it apart cannot pass.
+    #[test]
+    fn a_wrapped_line_moves_as_whole_physical_rows_or_not_at_all() {
+        // One logical line, three physical rows, at band rows 5, 6 and 7.
+        let frame_at = |first: usize| -> Vec<String> {
+            let mut rows: Vec<String> = (0..2).map(|i| format!("header {i}")).collect();
+            for index in 0..36 {
+                let row = first + index;
+                rows.push(match row {
+                    5 => "\x1b[38;5;252m  line 5: a long message, part 1 of 3\x1b[0m".into(),
+                    6 => "\x1b[38;5;252m  line 5: a long message, part 2 of 3\x1b[0m".into(),
+                    7 => "\x1b[38;5;252m  line 5: a long message, part 3 of 3\x1b[0m".into(),
+                    other => format!("\x1b[38;5;252m  line {other}\x1b[0m"),
+                });
+            }
+            rows.extend((0..2).map(|i| format!("composer {i}")));
+            rows
+        };
+
+        // Scrolled by one physical row: the wrapped run moved with everything else.
+        let shown = frame_at(0);
+        let next = frame_at(1);
+        let mut cache = FrameCache::default();
+        frame_bytes_since(&shown, 180, None, &mut cache, Some((2, 37)));
+        let bytes = frame_bytes_since(&next, 180, None, &mut cache, Some((2, 37)));
+        assert!(bytes.contains("\x1b[1S"), "{bytes:?}");
+        // And the terminal ends up showing exactly the new frame: a wrapped line
+        // that was torn would show part 2 where part 1 belongs.
+        let mut grid = shown.clone();
+        grid[2..=36].clone_from_slice(&shown[3..=37]);
+        grid[37] = next[37].clone();
+        assert_eq!(grid, next, "the wrapped run moved as one");
+
+        // The wrap itself changed (the same logical line re-wrapped, so a row of
+        // the run differs): that is not a shift, and it is repainted.
+        let mut cache = FrameCache::default();
+        frame_bytes_since(&shown, 180, None, &mut cache, Some((2, 37)));
+        let mut rewrapped = frame_at(1);
+        rewrapped[8] = "\x1b[38;5;252m  line 7: re-wrapped\x1b[0m".into();
+        let bytes = frame_bytes_since(&rewrapped, 180, None, &mut cache, Some((2, 37)));
+        assert!(!bytes.contains('S'), "a re-wrap is repainted: {bytes:?}");
     }
 
     /// The workspaces the reader folded shut survive a restart through the same
