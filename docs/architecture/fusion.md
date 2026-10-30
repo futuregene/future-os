@@ -2,7 +2,7 @@
 
 [中文](fusion.zh-CN.md)
 
-Status: first tool implementation available with fixed development models. Design/implementation date: 2026-10-29.
+Status: tool orchestration and shared settings implemented. Updated: 2026-10-30.
 
 Fusion is a multi-model thinking tool available to the main Agent. Its orchestration kernel lives in `orchestration/fusion`, alongside Goal and Tasks. Users add the `fusion` tool to the current main run with `/fusion`. The main Agent investigates and may submit a focused decision question. Internal read-only discussion returns a final conclusion, then the original main flow continues the user's task. Users can inspect the complete discussion separately.
 
@@ -10,17 +10,17 @@ Delivery requires desktop, mobile and terminal support, with hosts on Windows, m
 
 ## Current implementation and usage
 
-The moderator is fixed to `future/deepseek-flash`. Panelists are `future/deepseek-flash`, `future/glm-5.3-flash` and `future/qwen3.7-plus`, the third selected from the live Future catalog with the user's confirmation. Missing models fail explicitly; no default-model substitution occurs.
+The default moderator is `future/deepseek-flash`. Default panelists are `future/deepseek-flash`, `future/glm-5.3-flash` and `future/qwen3.7-plus`, the third selected from the live Future catalog with the user's confirmation. Missing models fail explicitly; no default-model substitution occurs.
 
-Start Desktop or `future host`, then submit `/fusion <task>` from Desktop, Mobile or TUI. The main Agent receives a real run-scoped tool and decides when to consult on a focused question. The inner 3→1→3→1 protocol returns one final result and the original flow continues. Later ordinary runs do not inherit the tool. Expand the reply process and Fusion activity to see a four-stage progress bar and one thinking-status row per model. Full messages and evidence remain in storage and terminal queries. TUI offers `/fusion-log [step-id]`; CLI offers `future fusion show <parent-session-id> [--run <id> --tool <id>] [--step <id>] [--offset <bytes>] --json`. Reads never invoke models.
+Start Desktop or `future host`, then submit `/fusion <task>` from Desktop, Mobile or TUI. The main Agent receives a real run-scoped tool and decides when to consult on a focused question. The inner N→1→N→1 (N = 2–5) protocol returns one final result and the original flow continues. Later ordinary runs do not inherit the tool. Expand the reply process and Fusion activity to see a four-stage progress bar and one thinking-status row per model. Full messages and evidence remain in storage and terminal queries. TUI offers `/fusion-log [step-id]`; CLI offers `future fusion show <parent-session-id> [--run <id> --tool <id>] [--step <id>] [--offset <bytes>] --json`. Reads never invoke models.
 
 The Host executor claims a bounded durable queue in `~/.future/fusion/fusion.db`, avoiding an Agent-to-Host crate dependency. The existing Host instance lock gives one executor, with at most two concurrent consultations. The Agent validates the leading token from the original submission and persists `ScheduledSettingsSnapshot.fusion_enabled` with the raw input/request key. Remote outboxes retain that original directive and key. No persistent session-tool setting is changed. Inner sessions carry `created_by=fusion`; each run forcibly receives only the four snapshot tools regardless of ordinary session configuration.
 
-Only explicit, parent-authorized UTF-8 `read_scope` files are captured, once per consultation, with hashes shared across every round. Empty scope supports conceptual decisions. Escapes, links/reparse points, special files and oversized inputs fail. Limits are 1 MiB/file, 16 MiB total and 1024 files/directories. Capture timestamps and observed-change detection are recorded; this is not an atomic filesystem snapshot. Input/result limits are 48/32 KiB. All panelists and the moderator have 16384 output tokens per completion, raised to 32768 only for an output-limit retry. Fixed thinking levels are medium for DeepSeek Flash and Qwen 3.7 Plus, low for GLM 5.3 Flash, and medium for the DeepSeek moderator. Steps allow five tool-loop turns and 300 seconds including all generations. A discussion has a 2700-second total deadline measured from creation; an attempt cannot reset that budget. Each parent run admits at most two discussions, with at most two attempts per step. Whole-step timeout, cancellation, authentication and unclassified failures do not trigger an identical retry. Empty read scopes expose no file tools. Intermediate model answers have a separate 128 KiB bound; the final tool result stays at 32 KiB. Completeness reflects actual full/partial/single participation.
+Only explicit, parent-authorized UTF-8 `read_scope` files are captured, once per consultation, with hashes shared across every round. Empty scope supports conceptual decisions. Escapes, links/reparse points, special files and oversized inputs fail. Limits are 1 MiB/file, 16 MiB total and 1024 files/directories. Capture timestamps and observed-change detection are recorded; this is not an atomic filesystem snapshot. Input/result limits are 48/32 KiB. All panelists and the moderator have 16384 output tokens per completion, raised to 32768 only for an output-limit retry. Default thinking levels are medium for DeepSeek Flash and Qwen 3.7 Plus, low for GLM 5.3 Flash, and medium for the DeepSeek moderator. Steps allow five tool-loop turns and 300 seconds including all generations. A discussion has a 2700-second total deadline measured from creation; an attempt cannot reset that budget. Each parent run admits at most two discussions, with at most two attempts per step. Whole-step timeout, cancellation, authentication and unclassified failures do not trigger an identical retry. Empty read scopes expose no file tools. Intermediate model answers have a separate 128 KiB bound; the final tool result stays at 32 KiB. Completeness reflects actual full/partial/single participation.
 
 The `fusion_runs/inputs/participants/steps/messages/issues/positions/events` tables store structure, inputs, state, references and diagnostics. Complete messages/tool evidence remain in Agent child transcripts. Previews are bounded; original transcripts use UTF-8 byte paging. Queries verify the parent, database source and step ownership. Restart interrupts unfinished consultations without automatic paid replay. Parent cancellation stops child work and fences late results. Deleting a parent stops/deletes linked children and removes its consultation/snapshot records. Offline `future data` backups include the Fusion database and snapshots. Archived reads remain valid after restoring the same Agent database; execution still requires the current restore identity.
 
-Later sections retain the planned product contract. Editable model/thinking settings, dedicated redacted export, richer position-change records and monetary budgets remain future work; this development version uses fixed models plus token/count/time limits. Cross-system builds and unit regressions run in CI. See the [implementation verification record](../testing/fusion-implementation.md). See the [device-run database audit and compact UI checks](../testing/fusion-database-audit.md).
+Later sections retain the planned product contract. Dedicated redacted export, richer position-change records and monetary budgets remain future work; this version retains token/count/time limits. Cross-system builds and unit regressions run in CI. See the [implementation verification record](../testing/fusion-implementation.md). See the [device-run database audit and compact UI checks](../testing/fusion-database-audit.md).
 
 The fixed defaults live in `orchestration/fusion/src/config.rs`. Each new discussion persists a configuration snapshot; each attempt persists its thinking level, output cap, effective timeout and retry reason. Host and Agent negotiate the generation-policy version and reject mismatching child/model/thinking bindings. Existing records without these optional fields remain readable. The same Host/Agent policy serves Desktop, Mobile and terminal; no client independently chooses generation settings. See the [budget policy verification record](../testing/fusion-budget-policy.md).
 
@@ -30,7 +30,7 @@ Fusion thinks, investigates, compares, discusses and proposes plans; it does not
 
 The outer main Agent owns interpretation, tool use, implementation, verification and the final reply. A Fusion call is one tool invocation inside that flow, not a replacement for the entire user request or a prerequisite for each write/command. Recommendations cannot expand user authorization. A request to implement continues naturally under existing permissions; an analysis-only request ends with analysis, without requiring an extra execution button.
 
-Distinguish the outer main Agent from the inner Fusion moderator: one completes the user task, the other chairs a consultation. They may use the same model configuration but have separate contexts, runtime identities and permissions. Settings eventually select a moderator, panelists and thinking levels. Development fixes one moderator and three panelists through `future-fusion` constants, reusing existing model IDs and credential resolution without copying API keys.
+Distinguish the outer main Agent from the inner Fusion moderator: one completes the user task, the other chairs a consultation. They may use the same model configuration but have separate contexts, runtime identities and permissions. Settings select one moderator and 2–5 panel roles, with independent thinking levels, reusing existing model IDs and credential resolution without copying API keys.
 
 Goal, Tasks and Fusion retain separate responsibilities. V1 enables the tool only through an explicit user `/fusion` request. Model-generated text, skills, files and schedulers cannot enlarge the tool catalog. Once enabled, the outer main Agent decides whether consultation is useful according to the task and tool description.
 
@@ -87,6 +87,26 @@ The outer flow receives only the final result: `fusion_run_id`, status/completen
 
 The result is decision material, not a new user instruction or execution queue. The main Agent may adopt, adapt or reject it under the original authorization, current facts and constraints. Before implementation, read the live workspace and recheck key facts. Correct local issues directly; reconsider consultation only when new evidence changes a key decision. Conclusions are not verification. The final reply separates discussion recommendations from actual execution results.
 
+## Fusion settings
+
+[Settings verification](../testing/fusion-settings.md).
+
+Desktop places Fusion immediately below Models. Remote desktop and mobile expose the same host-owned settings. Select one required moderator and 2–5 panel roles, each with its own model and thinking level. Roles may share a model, including different thinking levels. Stable role identities (moderator, P1…PN) keep progress separate even when models match. The moderator is separate from the outer chat model.
+
+The switch controls availability of `/fusion`, not automatic consultation on every message. It starts enabled for compatibility. Disabling removes completion and rejects manually typed commands and new consultations in the backend. Existing discussions retain their frozen configuration and history remains readable. The switch saves immediately; model edits require Save.
+
+`fusion_meta` in `<FUTURE_HOME>/fusion/fusion.db` stores key `settings`: enabled, configuration and revision. Updates compare expected_revision in a transaction and reject stale saves. Clients preserve unsaved drafts and offer Reload on conflict. The Agent resolves callable models, validates their declared thinking levels and clamps output caps to model limits without LLM requests. RPCs are `get_fusion_settings` and `update_fusion_settings`; Remote uses a dedicated `fusionSettings` payload and `fusion_settings_v1` capability, plus settings invalidations.
+
+CLI: `future fusion settings --json`, `--disable`, or `--enable`. TUI: `/fusion-settings` with the same flags. `--main MODEL --thinking LEVEL` sets the moderator; repeated `--participant MODEL --thinking LEVEL` replaces the whole panel and must specify 2–5 roles. Thinking applies to the most recently selected role. For example:
+
+```sh
+future fusion settings --main future/deepseek-flash --thinking medium \
+  --participant future/deepseek-flash --thinking low \
+  --participant future/qwen3.7-plus --thinking medium
+```
+
+The executor runs N+1+N+1 logical steps and validates issue references against the actual P1…PN roster. Old histories retain recorded configuration. Clients use Agent RPC/paired-host services rather than local database access, preserving Windows, macOS and Linux hosting support.
+
 ## Shared architecture
 
 Follow the orchestration/host split in [Tasks](tasks.md) and the GUI-free service boundary in the [Host architecture](headless-package-development.md).
@@ -136,7 +156,7 @@ flowchart TD
 
 Panelists cannot see each other's analysis in round one or receive an initial preferred answer from the moderator. The moderator chairs and synthesizes without a separately configured Judge. Round two receives first-round material in a fixed order; early round-two results cannot change another participant's input. Save a common trimmed input when material exceeds budget while retaining originals.
 
-V1 uses one cross-review round with program-controlled transitions. Three panelists produce eight Agent phase executions, `3 + 1 + 3 + 1`; tool loops may involve further model requests, so this is not a promise of eight API calls total. Issue mapping does not decide prematurely, and the last phase still synthesizes without acting. Agreement is not accuracy. `3131` is an initial internal strategy, not a permanent external tool contract.
+V1 uses one cross-review round with program-controlled transitions. N participants produce `N + 1 + N + 1` Agent phase executions (eight with the default three participants); tool loops may involve further model requests, so this is not a promise of eight API calls total. Issue mapping does not decide prematurely, and the last phase still synthesizes without acting. Agreement is not accuracy. `3131` is an initial internal strategy, not a permanent external tool contract.
 
 Each phase has a versioned protocol. Validate structured issue maps and synthesis, retaining issue decisions, message references and proposed verification internally while returning the compact final tool contract. Structured results and public panel text remain audit records available through terminal queries. Do not publish partial JSON or intermediate judgments to the parent model.
 
@@ -259,7 +279,7 @@ Negotiate proposed `fusion_v1`. Old hosts show an upgrade explanation in menus a
 | Mobile, Android and iOS | Same command/submission metadata, main-flow tool card, compact stage progress and model-status rows, stop, outbox resend and foreground/background recovery |
 | TUI and CLI | TUI `/fusion` palette/parsing, main-flow tool progress, compact discussion status and step transcript queries; CLI ordinary submission recognizes the same directive and offers JSON queries, stop and history |
 
-All clients read/configure moderator and panelists from one source, showing identical fixed development configuration. Keep English/Chinese strings aligned. Narrow screens/terminals use ordered collapsible content. TUI starts no second executor; non-watch CLI reads invoke no models. `/fusion` cannot be a skill-text expansion on one client and native tool activation on another.
+All clients read/configure moderator and panelists from one source, showing the same persisted configuration. Keep English/Chinese strings aligned. Narrow screens/terminals use ordered collapsible content. TUI starts no second executor; non-watch CLI reads invoke no models. `/fusion` cannot be a skill-text expansion on one client and native tool activation on another.
 
 ## Discussion and review interface
 
@@ -291,7 +311,7 @@ All three host systems support orchestration, four tools, SQLite, cancellation, 
 | M2 | Run snapshots, recovery, budget, export/cleanup and diagnostics | Failure/version/permission acceptance passes across all host systems |
 | M3 | Moderator/panel/thinking settings | Consistent client configuration; changes affect future consultations without altering existing snapshots |
 
-M0/M1 may use first-read freezing for development; complete delivery requires M2 snapshot acceptance. Show fixed configuration before M3. Natural main-flow implementation after tool return is core M0 behavior, not a later execution mode. Future Goal linkage does not alter read-only tool boundaries.
+M0/M1 may use first-read freezing for development; complete delivery requires M2 snapshot acceptance. M3 implements the availability switch and independent role settings. Natural main-flow implementation after tool return is core M0 behavior, not a later execution mode. Future Goal linkage does not alter read-only tool boundaries.
 
 Acceptance covers:
 

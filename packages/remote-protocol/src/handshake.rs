@@ -37,6 +37,7 @@ pub const SERVER_FEATURES: &[&str] = &[
     "skill_management_v1",
     "compaction_v1",
     "fusion_v1",
+    "fusion_settings_v1",
     "provider_management_v1",
     "fork_v1",
     "tasks_v1",

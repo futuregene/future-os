@@ -38,6 +38,8 @@ pub struct RpcCommand {
     // compact
     #[serde(default)]
     pub custom_instructions: String,
+    #[serde(default)]
+    pub fusion_settings_json: String,
 
     // new_session — typed provenance (see proto). Legacy clients smuggle the
     // same info as JSON in custom_instructions.

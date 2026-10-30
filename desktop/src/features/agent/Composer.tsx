@@ -9,6 +9,7 @@ import { Paperclip, TriangleAlert, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { modelKey, modelOption } from "../../integrations/agent/agentClient";
+import { useFusionAvailability } from "../../integrations/fusion/settings";
 import { useSkillCatalog } from "../../integrations/skills/useSkillCatalog";
 import { cn } from "../../lib/cn";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
@@ -235,17 +236,18 @@ function ComposerImpl({
     setContextActionPending(false);
   }, [draftKey]);
 
+  const fusionAvailable = useFusionAvailability();
   const contextTools = useMemo<ContextToolOption[]>(() => {
     const fusion = { id: "fusion", name: "/fusion", description: t("fusion.enableDescription"), searchText: "fusion 讨论 多模型 思考" };
     if (!onCompactContext || sending || compactionPending)
-      return [fusion];
-    return [fusion, {
+      return fusionAvailable ? [fusion] : [];
+    return [...(fusionAvailable ? [fusion] : []), {
       id: "compact",
       name: t("composer.compactContext"),
       description: t("composer.compactContextDescription"),
       searchText: "compact compaction compress context 压缩 上下文",
     }];
-  }, [compactionPending, onCompactContext, sending, t]);
+  }, [compactionPending, onCompactContext, sending, t, fusionAvailable]);
 
   const catalog = useSkillCatalog();
   const skills = useMemo<SkillMentionOption[]>(() => {
@@ -399,6 +401,10 @@ function ComposerImpl({
 
   function submitValue() {
     const trimmed = (editorRef.current?.getContent() ?? "").trim();
+    if (fusionTask(trimmed) !== null && !fusionAvailable) {
+      emitFutureEvent("toast", { message: t("fusion.disabled"), tone: "error" });
+      return;
+    }
     if (fusionTask(trimmed) === "") {
       editorRef.current?.restore("/fusion ");
       return;

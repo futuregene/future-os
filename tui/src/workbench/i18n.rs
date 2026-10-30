@@ -543,6 +543,10 @@ pub enum Key {
     CmdTranscript,
     CmdFusion,
     CmdFusionLog,
+    CmdFusionSettings,
+    FusionDisabled,
+    FusionMainRole,
+    FusionParticipantRole,
     FusionLogTitle,
     FusionPreparing,
     FusionAnalyzing,
@@ -1086,6 +1090,10 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         CmdSkills => ("技能列表", "Installed skills"),
         CmdExport => ("导出会话", "Export the session"),
         CmdFusion => ("启用 Fusion 讨论工具", "Enable the Fusion discussion tool"),
+        CmdFusionSettings => ("Fusion 设置（--enable/--disable、--main、--participant、--thinking）", "Fusion settings (--enable/--disable, --main, --participant, --thinking)"),
+        FusionDisabled => ("Fusion 已在设置中关闭", "Fusion is turned off in settings"),
+        FusionMainRole => ("主模型", "Main model"),
+        FusionParticipantRole => ("参与模型 {}", "Participant {}"),
         CmdFusionLog => ("查看 Fusion 讨论进度", "Inspect Fusion discussion progress"),
         FusionLogTitle => ("Fusion 讨论记录（只读）", "Fusion discussion record (read-only)"),
         FusionPreparing => ("准备讨论", "Preparing discussion"),
@@ -1522,7 +1530,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 373] = {
+    const ALL_KEYS: [Key; 377] = {
         use Key::*;
         [
             TabTodo,
@@ -1775,6 +1783,10 @@ mod tests {
             CmdTranscript,
             CmdFusion,
             CmdFusionLog,
+            CmdFusionSettings,
+            FusionDisabled,
+            FusionMainRole,
+            FusionParticipantRole,
             FusionLogTitle,
             FusionPreparing,
             FusionAnalyzing,

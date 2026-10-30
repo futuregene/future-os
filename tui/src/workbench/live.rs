@@ -78,7 +78,10 @@ struct Paging {
 /// ([`super::Workbench::surface_command`]) and this list have to account for
 /// every entry exactly once. That is the check whose absence let five entries
 /// advertise themselves and then answer `Unknown command`.
-pub const APP_COMMANDS: [&str; 20] = [
+pub const APP_COMMANDS: [&str; 23] = [
+    "/fusion",
+    "/fusion-log",
+    "/fusion-settings",
     "/new",
     "/stop",
     "/reply-detail",
@@ -167,6 +170,7 @@ pub struct Live {
     /// [`Self::begin_sessions_refresh`]). The driver's clock drains it, so a
     /// slow answer costs a frame's worth of staleness instead of a freeze.
     sessions_refresh: Option<tokio::sync::oneshot::Receiver<Result<Vec<SessionSummary>, String>>>,
+    fusion_settings_refresh: Option<tokio::sync::oneshot::Receiver<Option<bool>>>,
     /// Bumped when the pinned conversations change (a pin re-files the 工作区
     /// tab, so the view it feeds is stale from that moment).
     pins_rev: u64,
@@ -176,6 +180,7 @@ pub struct Live {
     /// contract is measured with (see [`Self::session_view_builds`]).
     session_view_builds: u64,
     models: Vec<ModelInfo>,
+    fusion_enabled: Option<bool>,
     approval: Option<ApprovalPrompt>,
     diff: Option<super::state::DiffView>,
     fork_points: Vec<super::state::ForkPoint>,
@@ -392,10 +397,12 @@ impl Live {
             shown_page: None,
             sessions: SessionList::default(),
             sessions_refresh: None,
+            fusion_settings_refresh: None,
             pins_rev: 0,
             session_view: None,
             session_view_builds: 0,
             models: Vec::new(),
+            fusion_enabled: None,
             approval: None,
             diff: None,
             fork_points: Vec::new(),
@@ -478,6 +485,12 @@ impl Live {
         // A conversation that is already writing when the terminal attaches
         // owns the row from the first frame (see [`Live::adopt_run`]).
         live.adopt_run();
+        live.fusion_enabled = live
+            .client
+            .fusion_settings(None)
+            .await
+            .ok()
+            .map(|settings| settings.enabled);
         live.load_tail().await;
         Ok((live, events))
     }
@@ -758,7 +771,51 @@ impl Live {
             .any(|session| session.is_streaming.unwrap_or(false))
     }
 
+    /// Keep cross-client availability current without blocking terminal input.
+    pub fn begin_fusion_settings_refresh(&mut self) -> bool {
+        if self.fusion_settings_refresh.is_some() {
+            return false;
+        }
+        let client = Arc::clone(&self.client);
+        let (send, receive) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let enabled = client
+                .fusion_settings(None)
+                .await
+                .ok()
+                .map(|settings| settings.enabled);
+            let _ = send.send(enabled);
+        });
+        self.fusion_settings_refresh = Some(receive);
+        true
+    }
+
+    pub fn poll_fusion_settings(&mut self) -> bool {
+        let Some(receiver) = self.fusion_settings_refresh.as_mut() else {
+            return false;
+        };
+        let received = match receiver.try_recv() {
+            Ok(enabled) => enabled,
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return false,
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => None,
+        };
+        self.fusion_settings_refresh = None;
+        if let Some(enabled) = received {
+            let changed = self.fusion_enabled != Some(enabled);
+            self.fusion_enabled = Some(enabled);
+            changed
+        } else {
+            false
+        }
+    }
+
     pub async fn refresh_models(&mut self) {
+        self.fusion_enabled = self
+            .client
+            .fusion_settings(None)
+            .await
+            .ok()
+            .map(|settings| settings.enabled);
         if let Ok(models) = self.client.list_models().await {
             self.models = models;
         }
@@ -1664,6 +1721,7 @@ impl Live {
 
         WorkbenchData {
             version: crate::version::VERSION.to_string(),
+            fusion_enabled: self.fusion_enabled,
             connected: self.connected(),
             session: SessionMeta {
                 id: if self.launchpad {
@@ -2117,10 +2175,46 @@ impl Live {
         let arg = parts.next().unwrap_or("").trim().to_string();
         match name.as_str() {
             "fusion" => {
-                if arg.is_empty() {
+                self.fusion_enabled = self
+                    .client
+                    .fusion_settings(None)
+                    .await
+                    .ok()
+                    .map(|settings| settings.enabled);
+                if self.fusion_enabled == Some(false) {
+                    self.notice = Some(t(self.lang, Key::FusionDisabled).into());
+                } else if arg.is_empty() {
                     self.set_draft("/fusion ".into(), 8);
                 } else {
                     self.submit(&format!("/fusion {arg}")).await;
+                }
+            }
+            "fusion-settings" => {
+                let result = async {
+                    let current = self.client.fusion_settings(None).await?;
+                    let args = arg
+                        .split_whitespace()
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>();
+                    let settings = if let Some(patch) =
+                        future_fusion::settings_patch_from_args(&current, &args)
+                            .map_err(|error| error.to_string())?
+                    {
+                        self.client.fusion_settings(Some(patch)).await?
+                    } else {
+                        current
+                    };
+                    self.fusion_enabled = Some(settings.enabled);
+                    serde_json::to_string_pretty(&settings).map_err(|error| error.to_string())
+                }
+                .await;
+                match result {
+                    Ok(text) => self.chat.add_message(ChatMessage::new(
+                        format!("fusion-settings-{}", uuid::Uuid::new_v4()),
+                        ChatRole::System,
+                        &text,
+                    )),
+                    Err(error) => self.notice = Some(error),
                 }
             }
             "fusion-log" => match self.client.fusion_discussion(&arg, 0).await {

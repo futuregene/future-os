@@ -1577,6 +1577,8 @@ export const remotePeers: MockPeer[] = [
     // The capabilities the host advertises; the UI gates optional actions on
     // these, so a fixture without them renders fewer rows than the app can.
     features: [
+      "fusion_v1",
+      "fusion_settings_v1",
       "approval_tier_v1",
       "auto_approval_v1",
       "provider_management_v1",

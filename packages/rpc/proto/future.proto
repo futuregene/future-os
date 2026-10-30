@@ -97,6 +97,9 @@ message RpcCommand {
   // Optional custom instructions for the compaction summariser.
   string custom_instructions = 60;
 
+  // Versioned Fusion settings patch with expected_revision (update_fusion_settings).
+  string fusion_settings_json = 173;
+
   // ── set_auto_compaction / set_auto_retry ───────────────────────────────
 
   // Toggle flag (true = on, false = off).

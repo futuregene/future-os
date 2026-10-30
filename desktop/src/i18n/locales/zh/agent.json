@@ -401,6 +401,9 @@
     "stageCount": "{{current}} / {{total}}",
     "progress": "讨论阶段进度",
     "partialNotice": "部分模型未完成讨论",
-    "statusUnavailable": "暂时无法读取讨论状态"
+    "statusUnavailable": "暂时无法读取讨论状态",
+    "disabled": "Fusion 已在设置中关闭",
+    "moderatorRole": "主模型",
+    "participantRole": "参与模型 {{number}}"
   }
 }

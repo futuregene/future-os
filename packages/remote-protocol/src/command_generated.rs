@@ -98,6 +98,8 @@ pub struct IncomingCmd {
     pub reason: String,
     /// get_event_content_range: session/run scoped immutable event field and UTF-8 page coordinates.
     pub content_request: Option<serde_json::Value>,
+    /// Host-owned Fusion settings patch with expected_revision.
+    pub fusion_settings: serde_json::Value,
 }
 impl Default for IncomingCmd {
     fn default() -> Self {
@@ -168,6 +170,7 @@ impl Default for IncomingCmd {
             features: Vec::new(),
             reason: String::new(),
             content_request: None,
+            fusion_settings: serde_json::Value::Null,
         }
     }
 }

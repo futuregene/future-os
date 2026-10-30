@@ -40,6 +40,9 @@ pub struct RpcCommand {
     /// Optional custom instructions for the compaction summariser.
     #[prost(string, tag = "60")]
     pub custom_instructions: ::prost::alloc::string::String,
+    /// Versioned Fusion settings patch with expected_revision (update_fusion_settings).
+    #[prost(string, tag = "173")]
+    pub fusion_settings_json: ::prost::alloc::string::String,
     /// Toggle flag (true = on, false = off).
     #[prost(bool, tag = "70")]
     pub enabled: bool,

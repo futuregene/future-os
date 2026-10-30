@@ -1184,6 +1184,7 @@ impl Workbench {
         };
         let commands: Vec<(PaletteMatch, PaletteRow)> = COMMANDS
             .iter()
+            .filter(|(command, _)| *command != "/fusion" || data.fusion_enabled != Some(false))
             .filter_map(|(command, key)| {
                 let description = t(self.lang, *key);
                 palette_rank(command, description, &needle).map(|rank| {
@@ -4286,6 +4287,9 @@ impl Workbench {
             )];
         }
         if let Some(task) = future_fusion::fusion_prompt(&text) {
+            if data.fusion_enabled == Some(false) {
+                return vec![WbAction::Notice(t(self.lang, Key::FusionDisabled).into())];
+            }
             return if task.is_empty() {
                 vec![WbAction::EditInput {
                     text: "/fusion ".into(),
@@ -4521,11 +4525,7 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 /// The command palette's entries: `(command, description)`. Kept here rather
 /// than in the app so the palette, the help overlay and the tests share one
 /// list.
-<<<<<<< HEAD
 pub const COMMANDS: [(&str, Key); 37] = [
-=======
-pub const COMMANDS: [(&str, Key); 34] = [
->>>>>>> origin/main
     ("/new", Key::CmdNew),
     ("/stop", Key::CmdStop),
     ("/delete", Key::CmdDelete),
@@ -4560,6 +4560,7 @@ pub const COMMANDS: [(&str, Key); 34] = [
     ("/transcript", Key::CmdTranscript),
     ("/fusion", Key::CmdFusion),
     ("/fusion-log", Key::CmdFusionLog),
+    ("/fusion-settings", Key::CmdFusionSettings),
     ("/help", Key::CmdHelp),
     ("/quit", Key::CmdQuit),
 ];
@@ -5285,6 +5286,21 @@ mod tests {
     /// listed, selectable, and then answered `Unknown command` by the agent,
     /// which has no such commands. Adding a sixth entry without a handler now
     /// fails here instead of in front of the reader.
+    #[test]
+    fn disabling_fusion_hides_activation_but_keeps_settings_and_history() {
+        let mut data = demo::chat();
+        let workbench = workbench();
+        data.fusion_enabled = Some(false);
+        let rows = workbench.palette_rows(&data);
+        let has = |name| {
+            rows.iter()
+                .any(|row| matches!(row, PaletteRow::Command { command, .. } if *command == name))
+        };
+        assert!(!has("/fusion"));
+        assert!(has("/fusion-settings"));
+        assert!(has("/fusion-log"));
+    }
+
     #[test]
     fn every_palette_entry_has_a_handler() {
         let data = demo::chat();

@@ -4,7 +4,7 @@ use crate::{
     Output,
 };
 
-pub const HELP:&str="future fusion — inspect multi-model consultations\n\nUsage:\n  future run '/fusion <task>'\n  future fusion show <parent-session-id> [--run <id> --tool <id>] [--step <id>] [--offset <bytes>] [--json]\n\nWithout --run/--tool, shows the latest consultation in this session.\n--step reads an original child transcript in bounded pages. No model is called.\nStop the parent with future session abort <parent-session-id>.";
+pub const HELP:&str="future fusion — inspect multi-model consultations\n\nUsage:\n  future run '/fusion <task>'\n  future fusion settings [--enable|--disable] [--main MODEL --thinking LEVEL] [--participant MODEL --thinking LEVEL ...] [--json]\n  future fusion show <parent-session-id> [--run <id> --tool <id>] [--step <id>] [--offset <bytes>] [--json]\n\nWithout --run/--tool, shows the latest consultation in this session.\n--step reads an original child transcript in bounded pages. No model is called.\nStop the parent with future session abort <parent-session-id>.";
 
 pub async fn fusion(command: Option<&str>, args: &[String], out: &Output) -> Result<(), String> {
     if command.is_none()
@@ -12,6 +12,19 @@ pub async fn fusion(command: Option<&str>, args: &[String], out: &Output) -> Res
         || args.iter().any(|s| s == "--help" || s == "-h")
     {
         out.log(HELP);
+        return Ok(());
+    }
+    if command == Some("settings") {
+        let client = RunClient::new(&grpc_addr());
+        let current = client.fusion_settings(None).await?;
+        let settings = if let Some(patch) = future_fusion::settings_patch_from_args(&current, args)
+            .map_err(|error| error.to_string())?
+        {
+            client.fusion_settings(Some(patch)).await?
+        } else {
+            current
+        };
+        out.log(&serde_json::to_string_pretty(&settings).map_err(|error| error.to_string())?);
         return Ok(());
     }
     if command != Some("show") {

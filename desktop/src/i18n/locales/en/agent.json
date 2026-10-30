@@ -400,6 +400,9 @@
     "stageCount": "{{current}} / {{total}}",
     "progress": "Discussion stage progress",
     "partialNotice": "Some models did not complete the discussion",
-    "statusUnavailable": "Discussion status is temporarily unavailable"
+    "statusUnavailable": "Discussion status is temporarily unavailable",
+    "disabled": "Fusion is turned off in settings",
+    "moderatorRole": "Main model",
+    "participantRole": "Participant {{number}}"
   }
 }

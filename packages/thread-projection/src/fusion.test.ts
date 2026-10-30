@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fusionProgress, type FusionDiscussion, type FusionStep } from "./fusion";
+import { fusionSettingsIssue, newFusionParticipant } from "./fusionSettings";
 function step(phase: string, model: string, participant: string, status: string, at: number, attempt = 0, error: string | null = null): FusionStep {
   return { id: `${phase}-${participant}-${attempt}`, phase, model, participant, status, attempt, error, input: "", output: "", session_id: "", agent_run_id: "", started_at: at, usage: null };
 }
@@ -10,6 +11,21 @@ function discussion(steps: FusionStep[], phase = "synthesizing", status = "compl
   return { run: { id: "f", phase, status, completeness, input: { question: "A or B?", goal: "choose", background: "facts", constraints: [] } }, steps };
 }
 describe("Fusion progress", () => {
+  it("keeps identical models in separate roles and supports two to five participants", () => {
+    for (const count of [2, 5]) {
+      const profile = { ...newFusionParticipant(), model: deepseek, thinking_level: "medium" };
+      const value = discussion([step("analyzing", deepseek, "P1", "failed", 1), step("analyzing", deepseek, "P2", "running", 2)], "analyzing", "running");
+      value.run!.configuration = { version: 2, moderator: profile, panel: Array.from({ length: count }, () => ({ ...profile, thinking_level: "low" })), step_timeout_secs: 300, run_timeout_secs: 2700 };
+      expect(fusionSettingsIssue(value.run!.configuration)).toBeNull();
+      const progress = fusionProgress(value);
+      expect(progress.models).toHaveLength(count + 1);
+      expect(progress.models.find(model => model.id === "moderator")?.status).toBe("waiting");
+      expect(progress.models.find(model => model.id === "P1")?.status).toBe("failed");
+      expect(progress.models.find(model => model.id === "P2")?.status).toBe("thinking");
+      value.run!.configuration.moderator = { ...profile, model: "" };
+      expect(fusionSettingsIssue(value.run!.configuration)).toBe("moderatorRequired");
+    }
+  });
   it("shows stages and exactly one row per model", () => {
     const value = fusionProgress(discussion([
       step("analyzing", deepseek, "P1", "completed", 1), step("reviewing", deepseek, "P1", "completed", 2), step("synthesizing", deepseek, "moderator", "running", 3),

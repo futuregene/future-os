@@ -52,7 +52,9 @@ pub(crate) fn route(cmd_type: &str) -> Option<Route> {
             Route::Prompt
         }
         "compact_context" => Route::Compaction,
-        "get_desktop_settings"
+        "get_fusion_settings"
+        | "update_fusion_settings"
+        | "get_desktop_settings"
         | "update_desktop_settings"
         | "list_settings_models"
         | "list_available_skills"
@@ -263,6 +265,8 @@ mod tests {
         "download_prepare",
         "fork_session",
         "generate_session_title",
+        "get_fusion_settings",
+        "update_fusion_settings",
         "get_desktop_settings",
         "get_events_since",
         "get_prompt_receipt",

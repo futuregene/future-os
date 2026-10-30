@@ -56,9 +56,9 @@ export function FusionToolRow({ tool, resolveTarget }: { tool: TimelineToolRow; 
       {progress.models.map(model => {
         const failed = ["failed", "timed_out", "output_limited"].includes(model.status);
         const Icon = model.status === "thinking" ? LoaderCircle : model.status === "completed" ? Check : model.status === "timed_out" ? Clock : failed || model.status === "partial" ? TriangleAlert : Circle;
-        return <View key={model.model} style={styles.fusionModelRow}>
+        return <View key={model.id} style={styles.fusionModelRow}>
           <Icon size={14} color={failed ? colors.danger : model.status === "thinking" ? colors.accent : colors.inkMuted} />
-          <Text style={styles.fusionModelName}>{model.label}</Text>
+          <Text style={styles.fusionModelName}>{model.role ? `${t(model.role === "moderator" ? "chat.fusionModeratorRole" : "chat.fusionParticipantRole", { number: model.number })} · ` : ""}{model.label}</Text>
           <Text style={[styles.fusionStatus, failed ? { color: colors.danger } : null]}>{t(`chat.fusionModelStates.${model.status}`)}</Text>
         </View>;
       })}

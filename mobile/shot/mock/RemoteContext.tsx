@@ -1,3 +1,5 @@
+import { applyFusionSettings, fusionSettingsModels, initialFusionSettings } from "../../../scripts/screenshots/fixtures/fusion-settings";
+import type { FusionSettingsPatch } from "@future-os/thread-projection";
 import { fusionProgressFixture } from "../../../scripts/screenshots/fixtures/fusion-progress";
 import fusionFixture from "../../../scripts/screenshots/fixtures/fusion.json";
 /**
@@ -144,6 +146,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const [sessionPins, setSessionPins] = useState<Record<string, boolean>>({});
   const [workspacePins, setWorkspacePins] = useState<Record<string, boolean>>({});
   const [usageOverride, setUsageOverride] = useState<RemoteSessionUsage | null>(null);
+  const [fusionSettings, setFusionSettings] = useState(initialFusionSettings);
   const [providers, setProviders] = useState(demoProviders);
   const [desktopSettings, setDesktopSettings] = useState<DesktopSettings>({
     autoUpgradeSkills: true,
@@ -290,6 +293,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
   const value = withFallback({
     // Connection
+    desktopReadable: !connectionDropped && !heldByAnother,
     phase: connectionDropped ? "stopped" : "ready",
     error: null,
     credentials,
@@ -373,7 +377,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       readWorkspaces: async (id: string) => (fleetDemo ? fleetWorkspaces(id) : activeWorkspaces),
     },
     skillsRevision: 0,
-    desktopSettingsRevision: 0,
+    desktopSettingsRevision: fusionSettings.revision,
 
     // Conversation
     selectedSessionId,
@@ -419,6 +423,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       "workspace_pinning_v1",
       "compaction_v1",
       "fusion_v1",
+      "fusion_settings_v1",
       "fork_v1",
       "tasks_v1",
       // What the shipping client declares (src/remote/client.ts); the lean
@@ -476,12 +481,18 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setWorkspacePins(current => ({ ...current, [workspaceId]: pinned })),
 
     // Desktop settings & skills pages
+    getFusionSettings: async () => fusionSettings,
+    updateFusionSettings: async (patch: FusionSettingsPatch) => {
+      const next = applyFusionSettings(fusionSettings, patch);
+      setFusionSettings(next);
+      return next;
+    },
     getDesktopSettings: async () => desktopSettings,
     updateDesktopSettings: async (patch: Partial<DesktopSettings>) => {
       setDesktopSettings(current => ({ ...current, ...patch }));
       return { ...desktopSettings, ...patch };
     },
-    listSettingsModels: async (): Promise<RemoteModel[]> => demoModels,
+    listSettingsModels: async (): Promise<RemoteModel[]> => new URLSearchParams(window.location.search).has("fusionSettings") ? [...demoModels, ...fusionSettingsModels] : demoModels,
     // Providers and models, as the desktop reports them. Mutations are applied
     // locally so the harness shows the same list a real write would produce.
     listProviders: async () => providers,

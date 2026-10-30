@@ -439,6 +439,8 @@ const noop = async () => undefined;
  * reading.
  */
 const NO_MANAGEMENT = {
+  getFusionSettings: noop as never,
+  updateFusionSettings: noop as never,
   getDesktopSettings: noop as never,
   updateDesktopSettings: noop as never,
   listSettingsModels: noop as never,

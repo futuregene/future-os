@@ -1029,6 +1029,8 @@ mod gui {
                 set_window_caption_colors,
                 get_agent_status,
                 get_fusion,
+                get_fusion_settings,
+                update_fusion_settings,
                 check_app_update,
                 app_maintenance_status,
                 acknowledge_update_repair,

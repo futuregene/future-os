@@ -45,7 +45,11 @@ async fn observe_once(
     let instance = client.readiness().agent_instance_id.clone();
     let mut stream = client
         .stream_events(future_rpc::proto::StreamRequest {
-            event_types: vec!["ping".to_string(), "provider_config_changed".to_string()],
+            event_types: vec![
+                "ping".to_string(),
+                "provider_config_changed".to_string(),
+                "fusion_settings_changed".to_string(),
+            ],
             global_events: true,
             ..Default::default()
         })
@@ -62,6 +66,12 @@ async fn observe_once(
         .await
         .map_err(|error| format!("global config stream closed: {error}"))?
     {
+        if event.r#type == "fusion_settings_changed" || event.r#type == "ping" {
+            crate::agent_events::publish_invalidation("app_settings_changed");
+            if event.r#type == "fusion_settings_changed" {
+                continue;
+            }
+        }
         let mut payload = serde_json::from_str::<serde_json::Value>(&event.data)
             .unwrap_or_else(|_| serde_json::json!({}));
         let revision = payload

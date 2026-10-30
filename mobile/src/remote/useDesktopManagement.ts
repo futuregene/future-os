@@ -1,3 +1,4 @@
+import type { FusionSettings, FusionSettingsPatch } from "@future-os/thread-projection";
 import { useCallback, useMemo, type RefObject } from "react";
 import type { RemoteClient } from "./client";
 import { requestReadPage } from "@future-os/remote-client/readPages";
@@ -33,6 +34,8 @@ export function useDesktopManagement(clientRef: RefObject<RemoteClient | null>) 
   }, [clientRef]);
 
   return useMemo(() => ({
+    getFusionSettings: () => request<FusionSettings>({ type: "get_fusion_settings" }),
+    updateFusionSettings: (settings: FusionSettingsPatch) => request<FusionSettings>({ type: "update_fusion_settings", fusionSettings: { ...settings } }, true),
     getDesktopSettings: () => request<DesktopSettings>({ type: "get_desktop_settings" }),
     updateDesktopSettings: (settings: Partial<DesktopSettings>) =>
       request<DesktopSettings>({ type: "update_desktop_settings", settings }, true),

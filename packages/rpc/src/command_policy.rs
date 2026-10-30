@@ -78,6 +78,8 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "export_html",
     "fork",
     "generate_session_title",
+    "get_fusion_settings",
+    "update_fusion_settings",
     "get_fusion_status",
     "get_fusion",
     "get_agent_info",
@@ -171,7 +173,8 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
             RetryPolicy::SameRequestId,
             ExecutionKind::AsyncAck,
         ),
-        "get_fusion_status"
+        "get_fusion_settings"
+        | "get_fusion_status"
         | "get_agent_info"
         | "get_agent_readiness"
         | "get_commands"
@@ -188,6 +191,9 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
             RetryPolicy::SafeRead,
             ExecutionKind::Immediate,
         ),
+        "update_fusion_settings" => {
+            policy(STORAGE_TIMEOUT, RetryPolicy::Never, ExecutionKind::Bounded)
+        }
         "prompt" => policy(
             PROMPT_ACK_TIMEOUT,
             RetryPolicy::SameRequestId,

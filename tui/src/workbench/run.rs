@@ -281,6 +281,7 @@ async fn event_loop(
     // The rail's list is re-read on its own clock (see `SESSIONS_POLL`), starting
     // now: the first frame paints what the attach already read.
     let mut sessions_poll = Instant::now();
+    let mut fusion_settings_poll = Instant::now();
     // Something is on screen to paint from the first iteration — and after
     // that only when an event or the clock changed what the frame shows. A
     // ticker that repaints an unchanged frame is not free: composing it means
@@ -509,6 +510,10 @@ async fn event_loop(
                 // awaiting it put the whole surface behind one agent answer,
                 // which at 67 conversations was 6.9 s every five seconds.
                 let changed = live.poll_sessions().unwrap_or(false);
+                let fusion_changed = live.poll_fusion_settings();
+                if fusion_settings_poll.elapsed() >= SESSIONS_POLL && live.begin_fusion_settings_refresh() {
+                    fusion_settings_poll = Instant::now();
+                }
                 if frame.layout.sidebar.is_some()
                     && sessions_poll.elapsed() >= SESSIONS_POLL
                     && live.begin_sessions_refresh()
@@ -532,6 +537,7 @@ async fn event_loop(
                     ages_on_screen(&frame),
                     Instant::now(),
                 ) || changed
+                    || fusion_changed
                     || arrived
                     || connected
                     || preview_arrived;
