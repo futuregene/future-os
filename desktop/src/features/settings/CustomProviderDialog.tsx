@@ -1,6 +1,11 @@
-import type { CustomProvider, CustomProviderModel } from "../../integrations/agent/providers";
+import type {
+  CustomProvider,
+  CustomProviderModel,
+  ThinkingLevelProbeInput,
+  ThinkingLevelProbeOutcome,
+} from "../../integrations/agent/providers";
 import { Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
@@ -9,6 +14,7 @@ import { IconButton } from "../../components/ui/IconButton";
 import { Select } from "../../components/ui/Select";
 import { TextInput } from "../../components/ui/TextInput";
 import { knownThinkingLevels } from "../../integrations/agent/agentClient";
+import { errorMessage } from "../../lib/errors";
 
 const API_OPTIONS = [
   { label: "OpenAI Completions", value: "openai-completions" },
@@ -78,10 +84,17 @@ function RequiredLabel({ children }: { children: string }) {
   );
 }
 
+/**
+ * The custom-provider editor. Two things here are not plain form fields: the
+ * thinking-level chips are the model's declared wire vocabulary, and (where the
+ * caller can reach the provider) a detect run replaces them with the levels the
+ * endpoint actually accepts.
+ */
 export function CustomProviderDialog({
   existing,
   initial,
   onClose,
+  onProbe,
   onSubmit,
   open,
 }: {
@@ -89,6 +102,12 @@ export function CustomProviderDialog({
   existing: Array<{ id: string; name: string }>;
   initial: CustomProvider | null;
   onClose: () => void;
+  /**
+   * Probe one thinking level against the provider being edited (nothing is
+   * saved first). Absent where the provider is not served by this machine
+   * (a remote peer), which hides the detect control.
+   */
+  onProbe?: (input: ThinkingLevelProbeInput) => Promise<ThinkingLevelProbeOutcome>;
   onSubmit: (input: CustomProviderSubmit) => Promise<void>;
   open: boolean;
 }) {
@@ -102,8 +121,33 @@ export function CustomProviderDialog({
   const [models, setModels] = useState<ModelRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  /**
+   * The row whose thinking levels are being detected, and the level currently
+   * on the wire (`""` = the calibration call). One detection at a time keeps
+   * the progress text unambiguous and the provider from taking parallel
+   * requests.
+   */
+  const [probing, setProbing] = useState<{ key: string; level: string } | null>(null);
+  /** Per-row result of the last detection: selected count, or why it stopped. */
+  const [probeNotice, setProbeNotice] = useState<{
+    key: string;
+    kind: "ok" | "error";
+    text: string;
+  } | null>(null);
+  /**
+   * Bumped whenever the dialog is (re)opened or closed. A detection run checks
+   * it after every round trip and stops when it has been superseded — closing
+   * the dialog must not keep spending model calls behind it.
+   */
+  const probeRunRef = useRef(0);
 
   useEffect(() => {
+    // Opening, closing or switching provider supersedes a detection run that is
+    // still in flight: the run checks this after every round trip and stops, so
+    // a closed dialog cannot keep spending model calls.
+    probeRunRef.current += 1;
+    setProbing(null);
+    setProbeNotice(null);
     if (!open) {
       return;
     }
@@ -125,11 +169,26 @@ export function CustomProviderDialog({
   }, [initial, open]);
 
   function updateModel(index: number, patch: Partial<CustomProviderModel>) {
+    const editedKey = models[index]?.key;
+    if (editedKey)
+      clearProbeNotice(editedKey);
     setModels(current => current.map((model, modelIndex) => (modelIndex === index ? { ...model, ...patch } : model)));
+  }
+
+  /** A chip label: the level's translated name, or its wire value when unknown. */
+  function levelLabel(level: string) {
+    const key = level === "" ? "default" : level;
+    return t(`agent:composer.thinkingLevelLabels.${key}`, { defaultValue: key });
+  }
+
+  /** A result describes one probe's inputs; editing them makes it stale. */
+  function clearProbeNotice(key?: string) {
+    setProbeNotice(current => (current && (key === undefined || current.key === key) ? null : current));
   }
 
   /** Add or remove one thinking level on a model row. */
   function toggleThinkingLevel(index: number, level: string) {
+    clearProbeNotice(models[index]?.key);
     setModels(current => current.map((model, modelIndex) => {
       if (modelIndex !== index)
         return model;
@@ -141,6 +200,109 @@ export function CustomProviderDialog({
           : [...levels, level],
       };
     }));
+  }
+
+  /** Replace one row's levels by key, so a probe survives row reordering. */
+  function setModelThinkingLevels(key: string, levels: string[]) {
+    setModels(current => current.map(model => (model.key === key ? { ...model, thinkingLevels: levels } : model)));
+  }
+
+  /**
+   * Detect which thinking levels this endpoint accepts.
+   *
+   * The implicit `default` level goes first and sends no thinking parameter at
+   * all: if even that fails, the Base URL / API type / key / model ID is wrong
+   * and no level verdict would mean anything, so the levels are left alone and
+   * the failure is reported instead. Only then is every known level tried, and
+   * the accepted ones replace the row's selection — the point of the feature is
+   * to offer exactly the levels that work, not to keep a guess.
+   *
+   * A level the provider refuses (`ok: false`) is an ordinary answer and simply
+   * is not selected. A rejected *call* (agent unreachable, timeout) stops the
+   * run and keeps what was already proven.
+   */
+  async function detectThinkingLevels(model: ModelRow) {
+    if (!onProbe)
+      return;
+    const trimmedBaseUrl = baseUrl.trim();
+    const modelId = model.id.trim();
+    if (!trimmedBaseUrl || !modelId) {
+      setProbeNotice({ key: model.key, kind: "error", text: t("customProvider.probe.needBaseUrl") });
+      return;
+    }
+    const run = (level: string) => onProbe({
+      api,
+      apiKey: apiKey.trim() || null,
+      baseUrl: trimmedBaseUrl,
+      level,
+      modelId,
+      providerId: id.trim() || undefined,
+    });
+    const runId = ++probeRunRef.current;
+    setError(null);
+    setProbeNotice(null);
+    setProbing({ key: model.key, level: "" });
+    let calibration: ThinkingLevelProbeOutcome;
+    try {
+      calibration = await run("default");
+    }
+    catch (probeError) {
+      if (probeRunRef.current !== runId)
+        return;
+      setProbing(null);
+      setProbeNotice({
+        key: model.key,
+        kind: "error",
+        text: t("customProvider.probe.failed", { error: errorMessage(probeError) }),
+      });
+      return;
+    }
+    if (probeRunRef.current !== runId)
+      return;
+    if (!calibration.ok) {
+      setProbing(null);
+      setProbeNotice({
+        key: model.key,
+        kind: "error",
+        text: t("customProvider.probe.calibrationFailed", { error: calibration.error ?? "" }),
+      });
+      return;
+    }
+
+    const accepted: string[] = [];
+    for (const level of knownThinkingLevels) {
+      setProbing({ key: model.key, level });
+      try {
+        const outcome = await run(level);
+        if (probeRunRef.current !== runId)
+          return;
+        if (outcome.ok)
+          accepted.push(level);
+      }
+      catch (probeError) {
+        if (probeRunRef.current !== runId)
+          return;
+        setProbing(null);
+        setModelThinkingLevels(model.key, accepted);
+        setProbeNotice({
+          key: model.key,
+          kind: "error",
+          text: t("customProvider.probe.failed", { error: errorMessage(probeError) }),
+        });
+        return;
+      }
+    }
+    if (probeRunRef.current !== runId)
+      return;
+    setProbing(null);
+    setModelThinkingLevels(model.key, accepted);
+    setProbeNotice({
+      key: model.key,
+      kind: "ok",
+      text: accepted.length === 0
+        ? t("customProvider.probe.none")
+        : t("customProvider.probe.accepted", { count: accepted.length }),
+    });
   }
 
   async function handleSubmit() {
@@ -298,7 +460,7 @@ export function CustomProviderDialog({
       footer={(
         <>
           <Button onClick={onClose} variant="secondary">{t("customProvider.cancel")}</Button>
-          <Button disabled={saving} onClick={() => void handleSubmit()} variant="primary">
+          <Button disabled={saving || probing !== null} onClick={() => void handleSubmit()} variant="primary">
             {saving ? t("customProvider.saving") : t("customProvider.save")}
           </Button>
         </>
@@ -308,7 +470,10 @@ export function CustomProviderDialog({
         <Field label={<RequiredLabel>{t("customProvider.idLabel")}</RequiredLabel>}>
           <TextInput
             disabled={editing}
-            onChange={event => setId(event.target.value.toLowerCase())}
+            onChange={(event) => {
+              setProbeNotice(null);
+              setId(event.target.value.toLowerCase());
+            }}
             placeholder={t("customProvider.idPlaceholder")}
             value={id}
           />
@@ -317,18 +482,34 @@ export function CustomProviderDialog({
           <TextInput onChange={event => setName(event.target.value)} placeholder={t("customProvider.namePlaceholder")} value={name} />
         </Field>
         <Field label={<RequiredLabel>{t("customProvider.apiTypeLabel")}</RequiredLabel>}>
-          <Select onChange={event => setApi(event.target.value)} value={api}>
+          <Select
+            onChange={(event) => {
+              setProbeNotice(null);
+              setApi(event.target.value);
+            }}
+            value={api}
+          >
             {API_OPTIONS.map(option => (
               <option key={option.value} value={option.value}>{option.label}</option>
             ))}
           </Select>
         </Field>
         <Field label={<RequiredLabel>{t("customProvider.baseUrlLabel")}</RequiredLabel>}>
-          <TextInput onChange={event => setBaseUrl(event.target.value)} placeholder={t("customProvider.baseUrlPlaceholder")} value={baseUrl} />
+          <TextInput
+            onChange={(event) => {
+              setProbeNotice(null);
+              setBaseUrl(event.target.value);
+            }}
+            placeholder={t("customProvider.baseUrlPlaceholder")}
+            value={baseUrl}
+          />
         </Field>
         <Field label={editing ? t("customProvider.apiKeyLabelEditing") : t("customProvider.apiKeyLabel")}>
           <TextInput
-            onChange={event => setApiKey(event.target.value)}
+            onChange={(event) => {
+              setProbeNotice(null);
+              setApiKey(event.target.value);
+            }}
             placeholder={t("customProvider.apiKeyPlaceholder")}
             type="password"
             value={apiKey}
@@ -410,6 +591,33 @@ export function CustomProviderDialog({
                             the round trip without a chip of their own. */}
                         <fieldset className="space-y-1.5">
                           <legend className="text-xs text-ink-muted">{t("customProvider.thinkingLevelsLabel")}</legend>
+                          {/* Detection: the failing `default` request is what
+                              tells a wrong Base URL/key/model id from a level
+                              the endpoint merely refuses, so it is reported
+                              separately from the level selection. */}
+                          {onProbe
+                            ? (
+                                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                  <button
+                                    className="text-xs font-medium text-accent transition-colors hover:underline disabled:cursor-not-allowed disabled:text-ink-soft disabled:no-underline"
+                                    disabled={probing !== null}
+                                    onClick={() => void detectThinkingLevels(model)}
+                                    type="button"
+                                  >
+                                    {probing?.key === model.key
+                                      ? t("customProvider.probe.detecting", { level: levelLabel(probing.level) })
+                                      : t("customProvider.probe.detect")}
+                                  </button>
+                                  {probeNotice && probeNotice.key === model.key
+                                    ? (
+                                        <span className={probeNotice.kind === "error" ? "text-xs text-danger" : "text-xs text-ink-muted"}>
+                                          {probeNotice.text}
+                                        </span>
+                                      )
+                                    : null}
+                                </div>
+                              )
+                            : null}
                           <div className="flex flex-wrap items-center gap-1.5">
                             {knownThinkingLevels.map((level) => {
                               const selected = (model.thinkingLevels ?? []).includes(level);
@@ -423,7 +631,7 @@ export function CustomProviderDialog({
                                   onClick={() => toggleThinkingLevel(index, level)}
                                   type="button"
                                 >
-                                  {t(`agent:composer.thinkingLevelLabels.${level}`, { defaultValue: level })}
+                                  {levelLabel(level)}
                                 </button>
                               );
                             })}

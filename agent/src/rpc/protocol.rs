@@ -144,6 +144,12 @@ pub struct RpcCommand {
     #[serde(skip)]
     pub provider_config: Option<crate::config::providers::ProviderUpsertSpec>,
 
+    // probe_thinking_level — an ad-hoc provider/model probe for the
+    // custom-provider editor's thinking-level detection. Populated from the
+    // proto sub-message by the gRPC layer; the handler answers per level.
+    #[serde(skip)]
+    pub thinking_probe: Option<crate::llm::probe::ThinkingLevelProbeSpec>,
+
     // suggest_skill — the user's first-turn text plus the UNINSTALLED skill
     // candidates the caller offers to Jev. Populated from the proto fields by
     // the gRPC layer; the agent never sees installed skills.
