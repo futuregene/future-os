@@ -97,6 +97,22 @@ describe("remoteReferenceOptions", () => {
 });
 
 describe("sessionReferenceQuery", () => {
+  /**
+   * Two conversations used at the same instant arrive in whatever order the host
+   * listed them. Ordering those by id keeps the menu's rows from swapping places
+   * between renders, and makes the "longest token first" expansion below
+   * deterministic — `localeCompare` is not, which is why the comparator is by hand.
+   */
+  it("breaks a tie on activity with a total order on the id", () => {
+    const tied = [
+      { sessionId: "sess_b", title: "B", mode: "chat" as const, lastMessageAt: 500 },
+      { sessionId: "sess_a", title: "A", mode: "chat" as const, lastMessageAt: 500 },
+    ];
+    expect(remoteReferenceOptions(tied).map(option => option.sessionId)).toEqual(["sess_a", "sess_b"]);
+    // The same list in the other order answers the same way.
+    expect(remoteReferenceOptions([...tied].reverse()).map(option => option.sessionId)).toEqual(["sess_a", "sess_b"]);
+  });
+
   it("reads a `#` word at the caret", () => {
     expect(sessionReferenceQuery("#", 1)).toEqual({ start: 0, end: 1, query: "" });
     expect(sessionReferenceQuery("#flaky", 6)).toEqual({ start: 0, end: 6, query: "flaky" });
@@ -117,6 +133,13 @@ describe("sessionReferenceQuery", () => {
     expect(sessionReferenceQuery("#fi and then some text", 3)).toEqual({ start: 0, end: 3, query: "fi" });
     // Nothing being typed at this caret.
     expect(sessionReferenceQuery("see #fix and more", 13)).toBeNull();
+  });
+
+  it("opens nothing when the word runs into a character a reference cannot hold", () => {
+    // `#fix)` — the caret sits inside punctuation, so what is being typed is a
+    // reference that cannot be completed; replacing its head would leave `)` behind.
+    expect(sessionReferenceQuery("#fix)", 4)).toBeNull();
+    expect(sessionReferenceQuery("see #fix, and more", 8)).toBeNull();
   });
 
   it("opens nothing while a range is selected", () => {
