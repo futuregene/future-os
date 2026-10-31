@@ -202,3 +202,26 @@ it("opens the menu above the row", async () => {
   expect(view.menu()!.className).toContain("bottom-full");
   await view.unmount();
 });
+
+/**
+ * Escape closes the menu without picking anything.
+ *
+ * The layer is dismissed on Escape as well as on a press outside it: the menu is
+ * drawn over the draft, and a reader who opened it by accident needs the same
+ * way out of it they use for every other panel.
+ */
+it("closes the workspace menu on Escape and changes nothing", async () => {
+  const view = await mount();
+  await act(async () => view.button("Workspaces").click());
+  expect(view.menu()).not.toBeNull();
+
+  await act(async () => {
+    document.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+  });
+
+  expect(view.menu()).toBeNull();
+  expect(view.onSelect).not.toHaveBeenCalled();
+  // The button still names the answer in force, so nothing was changed by closing.
+  expect(view.button("Workspaces")).toBeTruthy();
+  await view.unmount();
+});

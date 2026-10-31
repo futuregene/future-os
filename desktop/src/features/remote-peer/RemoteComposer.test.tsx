@@ -1037,6 +1037,27 @@ it("walks the conversation menu with the arrow keys", async () => {
 });
 
 /**
+ * Pressing a conversation row keeps the caret in the draft.
+ *
+ * The reference is inserted where the `#` word was typed and the sentence
+ * continues from there, so the press must not move focus to the row — a click
+ * that did would put the next keystroke into a button that is about to close.
+ */
+it("keeps the caret in the draft when a conversation row is pressed", async () => {
+  const view = await mount({ conversations });
+  await act(async () => view.type("#"));
+
+  const mousedown = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+  await act(async () => menuRows(view)[0]!.dispatchEvent(mousedown));
+
+  expect(mousedown.defaultPrevented).toBe(true);
+  // The press still chooses: preventing the focus change is not a swallowed click.
+  await act(async () => menuRows(view)[0]!.click());
+  expect(view.input.value).toBe("#Fix the flaky test ");
+  await view.unmount();
+});
+
+/**
  * …and upwards, wrapping at the first row.
  *
  * The walk is a ring in both directions: a reader who overshoots the row they
