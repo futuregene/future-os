@@ -470,31 +470,29 @@ from that button, so the scenario taps it once and then the `src`, `benches` and
 `parser.rs` and `args.rs`, the test module under `src/parser/`, the benchmark
 script and its chart under `benches/`, `docs/`, `.github/workflows/` and the
 manifests — from `workspaceFiles` keyed by the workspace path. Thirty-five rows of
-it, which is what makes the panel read as a tree rather than a stub: with those
-three folders open the list fills its viewport (1018 px) and its last row ends
-4 px above the panel's closing hairline. The rows are divided, too — a hairline
-*above* each one, the same token and inset the app's other file lists use
-(`RemoteFilesPanel`, the review list). Above and not below, so the last row carries
-no rule of its own and the panel's edge is the only line under it; the list's own
-top rule stands in for the first row's. One row more and the row is
-cut by the viewport instead — which is a normal scroll, but not what this frame is
-about — so the scenario measures every row's box against the closing edge rather
-than the window's edge, and never against `scrollHeight` (which reports the
-viewport for a short tree and would pass for an empty panel).
+it, which is what makes the panel read as a tree rather than a stub.
 
-That edge is the product's now, not the fixture's: the Files list gained a hairline
-under it. It belongs to a 6 px strip *below* the scroll viewport — a border on the
-viewport would travel with the content and land on the window's own last pixel — so
-it stays put while the list scrolls and always has the panel's surface under it
-(1 px of `border-line-soft` at y 1111 of 1117, then 5 px of `bg-surface-panel`).
-`FileTreePanel.frame.test.tsx` asserts that shape (the line is outside the scroller,
-the strip is the flex child that keeps its height; jsdom has no layout, so the
-pixels are the scenario's job), and the capture measures it: 1 px, the panel's
-width, below the last row, above the window's last pixels. The demo tree also drops
-the names a checkout ignores — `node_modules`, `target`, `.git`, `dist`, `.next`,
-`coverage` and friends — in the mock's `list_directory`, so a fixture entry added
-later cannot put a build directory into a screenshot; the scenario fails if one
-appears. Opening it takes
+The tree is a **card**, the same treatment the composer and the approval prompt get
+(`rounded-lg border border-line bg-surface/95`), inset from the panel's edges so its
+top and its rounded bottom corners are visible, with the rows and their hairlines
+inside it. It used to be the panel's own edge-to-edge column with a single rule
+above it, and that is what went wrong in the README's first image: a column of names
+whose border runs into the window's bottom edge reads as a list spilling out of the
+panel however long it is. The card's own rounded border closes the bottom now, so
+there is no separate strip under the scroll area — one line, ever. The rows are
+divided by a hairline *above* each one, the same token the app's other file lists
+use (`RemoteFilesPanel`, the review list); above and not below, so the last row
+carries no rule that would double with the card's border, and the card's own top
+border stands in for the first row's.
+
+`FileTreePanel.frame.test.tsx` asserts that shape — the card's classes and its
+inset, the rows' rules, and that no closing strip has crept back — while the pixels
+(the radius actually rendered, nothing past the card's bottom border, the card's
+bottom above the window's edge) are the capture's job, since jsdom has no layout.
+The demo tree also drops the names a checkout ignores — `node_modules`, `target`,
+`.git`, `dist`, `.next`, `coverage` and friends — in the mock's `list_directory`, so
+a fixture entry added later cannot put a build directory into a screenshot; the
+scenario fails if one appears. Opening the panel takes
 384 px off the conversation column (1440 → 1056 at this width), but the reading
 column is capped, so the text re-centres rather than re-wrapping; in a window too
 narrow for a third column the panel opens as an overlay over the conversation
