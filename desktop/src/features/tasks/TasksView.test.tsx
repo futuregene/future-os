@@ -494,6 +494,26 @@ describe("tasksView", () => {
     expect(mocks.invokeCommand).toHaveBeenCalledWith("delete_task", { id: "tsk_1" });
   });
 
+  it("does nothing when the task is gone from under an open confirmation", async () => {
+    // Another client (a phone over Remote, a second process on the same home) deleted the
+    // task while the confirmation was up: the list reloads on its own event, the row
+    // disappears, and the confirm button must then be a no-op rather than deleting an
+    // id the store no longer holds.
+    const { container } = await renderView();
+    await click(rows(container)[0]);
+    await click(container.querySelector<HTMLButtonElement>("button[aria-label='Delete scheduled task']")!);
+    mocks.invokeCommand.mockClear();
+
+    // The host's own event: a reload that brings back no tasks.
+    backend([], []);
+    await fireHostEvent("threads-updated");
+    expect(container.textContent).not.toContain("daily report");
+
+    await click(buttonByText(container, "Delete"));
+
+    expect(mocks.invokeCommand).not.toHaveBeenCalledWith("delete_task", expect.anything());
+  });
+
   it("reports a failed delete and leaves the dialog usable", async () => {
     // The store can refuse (a task another client already removed, an agent that is
     // down). The task is still there, so the dialog has to stay up with the reason,
