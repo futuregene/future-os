@@ -7,8 +7,8 @@ summary percentages (istanbul `lines.pct`, llvm-cov "Lines") are not the accepta
 `npx vitest run --coverage --coverage.reporter=lcov` on Node from `rust-toolchain.toml`'s
 neighbour (the desk's Node 24; the suite also passes on 22).
 
-**Result**: `DA:0` = **159** lines in **61** files. **33** of them are waived here
-(33 records: 29 `W2` + 4 `W8`; 26 distinct constructs — the rail's four feature rows share one cause); the other **126** are *reachable and not yet written*
+**Result**: `DA:0` = **157** lines in **61** files. **35** of them are waived here
+(35 records: 31 `W2` + 4 `W8`); the other **122** are *reachable and not yet written*
 — they are work items, listed per file in the campaign's working report, **not** waivers.
 
 ```bash
@@ -67,6 +67,8 @@ exists), and the falsifier. The ledger convention (`docs/testing/waiver-ledger.m
 | 31 | `desktop/src/components/layout/ActivityRail.tsx:1685` | **W8** | the same callback's `return (` | same |
 | 32 | `desktop/src/components/layout/ActivityRail.tsx:1691` | **W8** | the same row's `onClick` | same |
 | 33 | `desktop/src/components/layout/ActivityRail.tsx:1761` | **W2** | `sortThreads`' `return a.status === "active" ? -1 : 1` | `src/components/layout/ActivityRail.recent.test.tsx` :: *draws every conversation flat, with no heading for where it lives* |
+| 34 | `desktop/src/components/layout/hooks/useAppSettings.ts:144` | **W2** | auto-approval fallback's `if (autoFallbackRef.current) return` | `src/components/layout/hooks/useAppSettings.test.tsx` :: *mirrors the UI language for automatic titles and preserves an explicit opt-out despite the enabled default* |
+| 35 | `desktop/src/components/layout/hooks/useAppSettings.ts:155` | **W2** | sandbox fallback's `if (sandboxFallbackRef.current) return` | `src/components/layout/hooks/useAppSettings.sandboxFallback.test.tsx` :: *falls back to manual approval exactly once under StrictMode* |
 
 ## 1. `theme.ts:229` — W2
 
@@ -301,6 +303,14 @@ condition as the guard.
 - **`TerminalPanel.tsx:239`** — `ErrorBar` is rendered only under
   `{tabs.createError ? <ErrorBar tabs={tabs} /> : null}` (`:139`).
 
+## Wave 7 (layout group) — rows 34-35 added
+
+The lane's residual went **159 → 157**: the rail's own deep-lineage walk (`ActivityRail:1038`)
+and its "chain already open" branch (`:476`) are **reachable and now covered** — a looping
+`parentSessionId` pair and a leaf → middle step both drive them, so no waiver was needed for
+either. Two fallback guards in `useAppSettings` joined the ledger (`:144`, `:155`), and
+`useAppSettings:55` was examined and is **not** waived (see the note below).
+
 ## Wave 6 (layout group) — rows 25-33 added
 
 The lane's residual went **168 → 159** with three adapters covered (`ActivityRail`'s host row
@@ -444,6 +454,53 @@ pre-filter.
 - **Positive control (stated)**: call `sortThreads` with an unfiltered list (one active, one
   archived) → line 1761 executes.
 - **Falsifier**: a caller of `sortThreads` that does not pre-filter by status.
+
+## 34-35. `useAppSettings.ts:144`, `:155` — W2 (one measured)
+
+Both fallback effects write their tier once and then guard against writing it again:
+
+```ts
+138:   useEffect(() => {
+139:     if (!autoFallbackRequired) { autoFallbackRef.current = false; return; }
+143:     if (autoFallbackRef.current) return;          // 144
+145:     autoFallbackRef.current = true;
+146:     void changeSettings({ approvalTier: "sandbox" });
+
+149:   useEffect(() => {
+150:     if (!sandboxFallbackRequired) { sandboxFallbackRef.current = false; return; }
+154:     if (sandboxFallbackRef.current) return;        // 155
+156:     sandboxFallbackRef.current = true;
+```
+
+Both requirements are tier predicates — `approvalTier === "auto"` with a signed-out session
+(`automaticApproval.ts:12-13`) and `approvalTier === "sandbox"` on an unavailable probe
+(`useSandboxAvailability.ts:44-53`) — and the write in between changes that very tier
+optimistically, so the next render's requirement is already false and the ref is reset by the
+`if (!…Required)` branch before the guard could be reached. The suite's own header says the
+same in prose (*"What keeps the count at one is the optimistic update inside `changeSettings`
+… not the `sandboxFallbackRef` guard"*).
+
+- **Pinned by** `useAppSettings.sandboxFallback.test.tsx` :: *falls back to manual approval
+  exactly once under StrictMode* (155's half) and `useAppSettings.test.tsx` :: *mirrors the UI
+  language for automatic titles…* (the write path that both arms depend on).
+- **Positive control (measured, 2026-11-01)**: delete the optimistic
+  `setAppSettings(current => ({ ...current, ...patch }))` from `changeSettings` and re-run the
+  sandbox suite → **`DA:155` becomes 1** (the guard executes) with both tests still green;
+  restore it and the line returns to `DA:0`. For `:144` the same edit in a suite that drives the
+  auto → sandboxfallback is the control (stated, not run: no such suite yet).
+- **Falsifier**: a render in which the requirement is still true after the write — i.e. a
+  fallback whose target tier satisfies its own predicate.
+
+## Not waived, and why: `useAppSettings.ts:55`
+
+`adoptSettings(loadedAppSettings)` in the load-mirroring effect. Two attempts to reach it
+failed: (a) a load that resolves late with a non-default payload — the hook's own mount-time
+title-language sync calls `changeSettings`, which sets `dirtyRef.current = true` synchronously
+(`useAppSettings.ts:61`), so the effect skips; (b) the same test with the mount sync deleted
+from the source — `DA:55` stayed 0, so the arm is blocked a second way as well (the resource's
+`loadedAppSettings === DEFAULT_APP_SETTINGS` short-circuit is the other half). It stays a
+**work item** until someone finds the seam that produces "loaded, not default, not dirty";
+calling it W2 here would be an assertion this file cannot back.
 
 ## How to retire a row
 
