@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { CameraView } from "expo-camera";
-import { BackHandler, Modal, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { BackHandler, Linking, Modal, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { Button } from "../../components/Button";
 import { DialogSurface } from "../../components/DialogSurface";
 import { PairingScreen } from "../PairingScreen";
@@ -46,7 +46,10 @@ jest.mock("react-native-safe-area-context", () => ({
   SafeAreaView: "SafeAreaView",
   useSafeAreaInsets: () => ({ top: 24, bottom: 34, left: 0, right: 0 }),
 }));
-jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+let mockLanguage = "en";
+jest.mock("react-i18next", () => ({
+  useTranslation: () => ({ t: (key: string) => key, i18n: { get language() { return mockLanguage; } } }),
+}));
 jest.mock("../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }));
 
 let tree: ReactTestRenderer;
@@ -62,6 +65,7 @@ beforeEach(() => {
   mockPermission = { granted: true, canAskAgain: true };
   mockPair.mockResolvedValue(undefined);
   mockDimensions = { width: 402, height: 874, scale: 3, fontScale: 1 };
+  mockLanguage = "en";
   act(() => { tree = create(createElement(PairingScreen, { onBack, onPaired })); });
 });
 afterEach(() => act(() => tree.unmount()));
@@ -290,5 +294,21 @@ test("a screen with no back handler registers no hardware-back listener", () => 
     expect(back).not.toHaveBeenCalled();
   } finally {
     back.mockRestore();
+  }
+});
+
+// The policy has to be readable before anyone is paired — that is the moment a
+// user is being asked to hand over a code — so the link is on this screen and
+// opens the same bilingual page the settings screen does.
+test("opens the privacy policy from the pairing screen", async () => {
+  const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+  try {
+    mockLanguage = "zh-Hans";
+    act(() => tree.update(createElement(PairingScreen, { onBack, onPaired })));
+    await act(async () => { button("common.privacyPolicy").props.onPress(); });
+    // The page is bilingual; the app's language picks which half it opens on.
+    expect(open).toHaveBeenCalledWith("https://future-os.cn/privacy-mobile.html?lang=zh");
+  } finally {
+    open.mockRestore();
   }
 });
