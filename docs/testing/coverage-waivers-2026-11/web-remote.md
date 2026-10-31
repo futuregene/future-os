@@ -10,7 +10,11 @@ lane (`src/components/layout/`, `features/vibe/`, `features/agent/`,
 registered in [`web.md`](./web.md); four of this group's lines were already
 registered there and are **not** repeated here (§0).
 
-**Branch**: `test/cov-web2`, cut from `origin/dev-huichen@07b0efab2`.
+**Branch**: `test/cov-web2` (cut from `origin/dev-huichen@07b0efab2`, since merged
+as `728663ea1` and rebased on top of it — the branch is now **0 commits ahead** of
+`origin/dev-huichen`; this file's numbers below were re-measured on that merged
+tree and the earlier table is kept as the history of the round that produced the
+tests).
 
 **Measurement** (both legs are the same command, same Node, same tree):
 
@@ -20,20 +24,26 @@ npx vitest run --coverage --coverage.reporter=lcov --coverage.reporter=json-summ
 python3 ../coverage/2026-11/tools/lcov-missed.py coverage/lcov.info --json before|after.json
 ```
 
-| | `DA:0` (whole lane) | `DA:0` (this group) |
-|---|---:|---:|
-| before (`origin/dev-huichen`, `coverage/2026-11/after/web2/before-web-detail.json`) | 188 | 76 |
-| after (this branch, `coverage/2026-11/after/web2/after-web-detail.json`) | **142** | **30** |
+| round | tree | `DA:0` (whole lane) | `DA:0` (this group) |
+|---|---|---:|---:|
+| 1 — before | `origin/dev-huichen@07b0efab2` | 188 | 76 |
+| 1 — after | `test/cov-web2@ae5f28bbd` | **142** | **30** |
+| 2 — re-measured | merged tree (`728663ea1`), *this* file's rows audited | **111** | **30** |
 
-The whole-lane drop is **−46**, all of it from this group (the sibling worker's
-files were untouched here and their 112 lines are byte-identical in both legs).
-Suite: **400 files / 5612 tests**, all green; istanbul lines **99.13 %**
-(16189 / 16331) with the denominator unchanged, because this branch touches no
-production code — every changed file is a test or a doc.
+Round 1's drop is **−46**, all of it from this group. Round 2 changed no product
+code and no test: it re-measured on the merged tree (the sibling's waves 5–7 and
+the lane's other fixes moved the lane total 142 → 111 outside this group) and
+audited every row here — see §R2. This group's residual is unchanged at 30, of
+which **22 are the remote-page files** that round 2 was scoped to and **8 are the
+settings/lib lines** registered here in round 1.
+
+Suite on the merged tree: **402 files / 5631 tests**, all green; istanbul lines
+**99.32 %** (16220 / 16331) with the denominator unchanged, because this group's
+work touches no production code — every changed file is a test or a doc.
 
 Of the 30 lines still reading `DA:0` in this group, **4 were already waived in
 `web.md`** (§0) and **26 are registered here**. That accounts for all 30: the rest
-of the group is at **`DA:0` = 0**, and the lane's total is 142 = 30 + 112 (the
+of the group is at **`DA:0` = 0**, and the lane's total is 111 = 30 + 81 (the
 out-of-group files of §10).
 
 ## 0. Already registered in `web.md` — deliberately not duplicated
@@ -48,6 +58,131 @@ out-of-group files of §10).
 Each of those four names its own mechanism and falsifier there. Nothing in this
 file restates them, so a reader who counts waivers should count
 `22 (web.md) + 26 (here) = 48` and must not double-count these four.
+
+## R2. Round 2 — the post-merge audit of the 22 lines
+
+Round 1's work landed as `728663ea1`, and the group's remote-page files then read
+**22** `DA:0` lines:
+
+| file | lines |
+|---|---|
+| `features/remote-peer/useRemoteTimeline.ts` | 9 — `380, 666, 750, 834, 879, 889, 992, 995, 1000` |
+| `features/remote-peer/DeviceChoiceDialog.tsx` | 3 — `104, 107, 198` |
+| `features/remote-peer/RemoteComposer.tsx` | 3 — `412, 727, 778` |
+| `features/remote/RemoteView.tsx` | 2 — `353, 374` |
+| `features/remote-peer/RemoteConversationView.tsx` | 1 — `642` |
+| `RemotePeersView.tsx` · `RemoteStandbyNotice.tsx` · `RemoteWorkspaceCreateDialog.tsx` · `useRemoteApprovals.ts` | 1 each — `178`, `50`, `42`, `155` |
+
+Every one of them is already a row in the table above, so round 2's job was not to
+write more rows but to **try to falsify the existing ones on the merged tree**.
+Three things were done, all re-runnable; the outcome is that nothing moved — the
+22 stay waivers — but they now rest on measurements rather than on reading.
+
+### R2.1 The audit (automated, and it fails loudly)
+
+```bash
+cd desktop && npx vitest run --coverage --coverage.reporter=lcov && cd ..
+python3 coverage/2026-11/after/web2/audit-waivers.py \
+    --lcov coverage/2026-11/after/web2/lcov.info \
+    --root .worktrees/cov-web2/desktop/src \
+    --json coverage/2026-11/after/web2/waiver-audit-round2.json
+# → rows: 26  pass: 26  fail: 0
+```
+
+Two checks per row, and the second is the one that catches a merge:
+
+1. the line still reads `DA:0` — a row that reads `1` must be **deleted**, not kept;
+2. the construct the row quotes is still on the recorded line **or the guard line
+   immediately above it** — an unbraced `if (c)` / `return;` carries the `DA:0`
+   record on the `return` while the condition sits one line up, so the window is
+   two lines wide by construction.
+
+Result on the merged tree: **26 pass, 0 fail** (`waiver-audit-round2.json`). No
+row is stale, and no quoted line has drifted since registration.
+
+`coverage/` is gitignored (regenerated output), so the script — like
+`coverage/2026-11/tools/lcov-missed.py` — does not travel with a clone, and both
+checks are written out here in one line each for the reader who has none of it:
+
+```bash
+# 1. still uncovered? (the 22 remote-page rows, from the table below)
+awk '/^SF:/{f=substr($0,4)} /^DA:[0-9]+,0$/{split(substr($0,4),a,","); print f":"a[1]}' \
+  desktop/coverage/lcov.info | grep -E 'RemoteView.tsx:(353|374)\b'
+# 2. still the same construct? print the recorded line and the guard above it
+sed -n '352,353p' desktop/src/features/remote/RemoteView.tsx
+```
+
+Check 2 is a `grep` of the `construct` column below at that line pair — which is
+why every row quotes its code with the line number rather than paraphrasing it.
+
+### R2.2 Four executable probes for the claims that could be measured
+
+Run from a throwaway `src/features/remote-peer/__waiver-probes.test.tsx`
+(4 tests, green, deleted afterwards — the bodies below are the whole harness), and
+then measured again with `--coverage.include=` on the two files:
+
+```ts
+// 107: can the arrow-walk ever have zero rows?
+mountDeviceDialog([
+  peer({ agentAvailable: false, name: "Build box" }),   // nothing installed
+  peer({ control: "standby", name: "Held box" }),       // another device drives it
+  peer({ connected: false, error: "refused", name: "Off box" }),
+]);
+document.querySelectorAll("[role='dialog'] button:not(:disabled)").length
+// observed: 1 — "This computer" is never disabled and never removed.
+
+// 104: is the key listener alive while the ref can be null?
+await unmount(); document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown" }));
+// observed: the dialog is gone and nothing answers — the listener left with it.
+
+// 879 / 992: can either reader be handed a non-object?
+pushEvent("a string");                                  // payload is not an object
+// observed: no entry, no throw → dropped at the session gate (:665) first.
+
+// 995 / 889 / 1000: can `data` reach the reader as anything but a string?
+for (const data of [5, null, undefined]) pushEvent({ data, type: "agent_text", … });
+// observed: no entry, no throw → `readRaw` normalises (`JSON.stringify` / `?? ""`).
+```
+
+Measured afterwards (probe + the components' own suites, `--coverage.include`):
+`DeviceChoiceDialog 104/107/198` and `useRemoteTimeline 879/889/992/995/1000` all
+**still read `DA:0`**. That is the positive control the rows were missing: the
+adversarial shapes were actually sent through the real components, and the
+defensive arms still did not run.
+
+The same run also settles row 15 (`useRemoteTimeline:666`): a frame naming
+`sess_2` reaching a `sess_1` transcript draws nothing **and leaves `:666` at 0**,
+which is the measurement behind the claim that the listener at `:764-765` drops it
+first.
+
+### R2.3 The controls that were already tests
+
+For the "same condition disables the control" family (§1) the control does not
+need a new probe — the suite already presses the disabled control and asserts
+nothing happened, which is what makes the guarded press unproducible:
+
+| row | existing control (test name) |
+|---|---|
+| 1 `RemoteView:353` | *does not open a QR code until a device is asked for* — no code, so no Copy button |
+| 2 `RemoteView:374` | *hides the id while the switch is off* — no id row, so no Copy button |
+| 3 `RemotePeersView:178` | *will not pair an empty link* — asserts the Connect button `disabled` |
+| 4 `RemoteComposer:412` | *closes attachment staging while another device holds the machine* — asserts `attach.disabled` |
+| 7–9 `DeviceChoiceDialog` | *walks the rows with the arrows and skips a machine that cannot take work* — proves a row always exists to walk; §R2.2 measures the count |
+| 10 `RemoteConversationView:642` | *offers no fork on a user entry, nor before any prompt* |
+| 11 `RemoteStandbyNotice:50` | *disables the control while the takeover is in flight* |
+| 12 `RemoteWorkspaceCreateDialog:42` | *names the machine it writes to and refuses to submit without a path* |
+| 25–26 `UpdatePage:82/145` | *offers the install control only while an update exists*; §9's `presentation.repair` derivation |
+
+### R2.4 Outcome
+
+- **0 of 22 converted to work items**: no probe reached a guarded line, and the
+  disabled-control family is pressed (and refused) by tests that already exist.
+- **0 rows deleted**: none reads `1`.
+- Rows 5, 6, 13, 14, 16, 17, 18 stay on their round-1 mechanisms (the field is
+  always drawn; two guards on one fact; the shared reader throws `stale_sync_lane`
+  first; an attribution artifact; a ref filled during render) — each is re-checked
+  by R2.1 on every future run, so drift shows up as a failed audit rather than a
+  stale paragraph.
 
 ## The 26 lines
 
@@ -319,6 +454,16 @@ in.
 **Falsifier**: a test that resolves the page promise and bumps the epoch *between*
 the reader's final check and its return would cover it; there is no seam between
 those two statements (both are in the same continuation).
+
+**Round 2 tried the one fixture that could have found a seam** and it does not
+exist: `fetchRunReplay` awaits `parseJsonText(event.data, { isCurrent })`
+(`remoteRunReplay.ts:62`) for a page event above 32 KB, which is the only
+suspension between the shared reader's last check and this guard. But
+`cooperativeJson.ts:189-192` parses **synchronously** below `NATIVE_LIMIT` and,
+above it, awaits an admission slot whose continuation re-runs `check(options)` —
+which throws `stale_content_read` when the lane is stale. So a staleness that
+lands inside that window raises (and is handled by the `catch (err)` at `:399`, whose own
+`if (!isCurrent())` is the line that runs) rather than reaching `:379`. Recorded here so the next reader does not re-litigate it.
 
 ### `:750` — W5, attribution
 
