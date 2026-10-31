@@ -1123,22 +1123,24 @@ test("the bar carries the desktop this conversation is on, named the way the lis
 });
 
 
-// A picture opened from the conversation is dismissed back to it. The viewer is
-// the last surface drawn (so it stacks above the file preview a picture can be
-// opened from) and its dismissal is wired to the same state that opens it.
-test("the image viewer sits above every other surface and dismisses to the conversation", () => {
+// Where the viewer sits and what its dismissal is wired to. The surfaces above
+// it are stubbed in this file, so a picture cannot be opened through the
+// transcript here; what this screen owns is the position (last, so it stacks
+// above the file preview a picture can be opened from) and the state its close
+// resets.
+test("the image viewer is the last surface, and its dismissal leaves the conversation as it was", () => {
   const viewer = () => tree.root.findAll(node => typeof node.type === "function"
     && (node.type as { name?: string }).name === "ImageViewer").at(-1)!;
-  // Nothing is open until a picture is tapped: the viewer is mounted anyway, so
-  // the context it is given is the one that opens it.
+  // Nothing is open until a picture is tapped.
   expect(viewer().props.target).toBeNull();
 
   // Last of the surfaces, in the same stack as the sheets it must cover.
   const siblings = viewer().parent!.children;
   expect(siblings[siblings.length - 1]).toBe(viewer());
 
-  // Dismissing it (the close button, or Android's back gesture through the
-  // modal) puts the screen back to "no picture".
+  // The close button and Android's back gesture both run this: with nothing
+  // open it must leave the screen exactly as it found it.
+  expect(typeof viewer().props.onClose).toBe("function");
   act(() => viewer().props.onClose());
   expect(viewer().props.target).toBeNull();
 });
