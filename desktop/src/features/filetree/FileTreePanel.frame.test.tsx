@@ -33,16 +33,21 @@ let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 
 /**
- * The panel's closing edge.
+ * The panel's shape: a card, divided.
  *
- * The Files list is the last thing in a full-height column: without a rule of its
- * own a long tree ends at the window's bottom edge, the last row sliced through
- * its glyphs and nothing under it — which is exactly how the README's hero frame
- * looked. The rule therefore belongs to a strip *below* the scroll viewport, and
- * these assertions are about that relationship rather than about pixels (jsdom
- * has no layout; the capture scenario measures the real boxes).
+ * The Files list is a full-height column in the context panel. Left edge-to-edge
+ * it read as a list spilling out of the panel — its border ran into the window's
+ * bottom edge and nothing closed it. It is a card now (`rounded-lg border
+ * border-line`, the composer's and the approval prompt's own treatment), inset
+ * from the panel's edges, with the rows divided inside it and the card's rounded
+ * border closing the bottom. There is no separate strip under the scroll area:
+ * one line only, ever.
+ *
+ * These assertions are about the DOM relationship — jsdom has no layout, so the
+ * pixels (radius visible, nothing clipped, one line at the bottom) are the
+ * capture scenario's job.
  */
-describe("fileTreePanel closing edge", () => {
+describe("fileTreePanel is a card", () => {
   beforeEach(() => {
     listDirectory.mockReset();
     listDirectory.mockResolvedValue([entry("README.md"), entry("src", true), entry("Cargo.toml")]);
@@ -70,60 +75,40 @@ describe("fileTreePanel closing edge", () => {
     return container.querySelector<HTMLElement>("div.floating-scrollbar")!;
   }
 
-  function closingEdge(): HTMLElement {
-    return container.querySelector<HTMLElement>("[data-testid='file-tree-bottom-edge']")!;
-  }
-
-  it("draws a hairline under the viewport, outside the part that scrolls", async () => {
+  it("draws the list inside a rounded, bordered card", async () => {
     await mount();
-    const edge = closingEdge();
-    expect(edge).not.toBeNull();
-
-    // Outside the scroller: a border on the viewport would travel with the
-    // content and land on the window's own edge.
-    expect(viewport().contains(edge)).toBe(false);
-    expect(edge.compareDocumentPosition(viewport()) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
-
-    // A hairline, not a band: one rule, in the token the panel's other edges use.
-    expect(edge.className).toContain("border-t");
-    expect(edge.className).toContain("border-line-soft");
-    expect(edge.className).toContain("h-1.5");
-    expect(edge.className).toContain("shrink-0");
-
-    // The strip keeps its height while the list takes the rest, which is what
-    // puts the rule below the rows instead of under them.
-    const list = viewport().parentElement!;
-    expect(list.className).toContain("flex-1");
-    expect(list.className).toContain("flex-col");
-    expect(viewport().className).toContain("flex-1");
-    expect(viewport().className).toContain("min-h-0");
-    expect(list.lastElementChild).toBe(edge);
+    const card = viewport().parentElement!;
+    expect(card.className).toContain("rounded-lg");
+    expect(card.className).toContain("border");
+    expect(card.className).toContain("border-line");
+    // Clipped by the radius, not merely drawn next to it: the rows must not
+    // paint over the card's rounded corners.
+    expect(card.className).toContain("overflow-hidden");
+    // Inset from the panel's edges, so the radius has something to show against.
+    expect(card.parentElement?.className).toContain("px-2");
+    expect(card.parentElement?.className).toContain("pb-2");
   });
 
-  it("divides the rows with the same hairline the other file lists use", async () => {
+  it("closes on the card's own border, with no second rule under the list", async () => {
+    await mount();
+    // The strip that used to sit below the viewport is gone: the card's border is
+    // the only line at the bottom of the panel.
+    expect(container.querySelector("[data-testid='file-tree-bottom-edge']")).toBeNull();
+    const card = viewport().parentElement!;
+    expect(card.querySelector("[data-testid='file-tree-bottom-edge']")).toBeNull();
+  });
+
+  it("divides the rows inside the card and leaves the last one unruled", async () => {
     await mount();
     const rows = [...viewport().querySelectorAll<HTMLElement>("li > div")];
     expect(rows.length).toBe(3);
-    // Above, not below: the last row must not carry a rule that would double
-    // with the panel's closing edge.
     for (const row of rows.slice(1)) {
       expect(row.className).toContain("border-t");
       expect(row.className).toContain("border-line-soft/50");
+      // A rule under the last row would be the card's second bottom line.
       expect(row.className).not.toContain("border-b");
     }
-    // The list's own top rule stands in for the first row's.
-    const list = viewport();
-    expect(list.className).toContain("[&>ul>li:first-child>div]:border-t-0");
-  });
-
-  it("keeps the rows in the scroller and the edge in the panel", async () => {
-    await mount();
-    const edge = closingEdge();
-    const rows = [...viewport().querySelectorAll("li")];
-    expect(rows.length).toBe(3);
-    for (const row of rows)
-      expect(edge.contains(row)).toBe(false);
-    // The strip sits in the panel, not inside the list that scrolls.
-    expect(viewport().contains(edge)).toBe(false);
+    // The card's top border stands in for the first row's rule.
+    expect(viewport().className).toContain("[&>ul>li:first-child>div]:border-t-0");
   });
 });
