@@ -542,21 +542,29 @@ while self.peek() < self.end {
 All three are the **same mistake**, so one table-driven test covers them — see \`src/parser/tests.rs\`.`;
 
 /** The closing answer: a numbered list of the two commits and a quote of the test run. */
-const PARSER_RESULT_ZH = `分成 **两个 commit** 落地，都是绿的：
+const PARSER_RESULT_ZH = `两个 commit 都绿了（\`6b1f0c2\` 边界、\`d41e8aa\` 用例）；\`benches/run.sh\` 四个用例各 5 次取中位数：
 
-1. \`6b1f0c2\` —— 三处边界，*只改行为*
-2. \`d41e8aa\` —— 表驱动的用例，*只改覆盖*
+| 用例 | 改前 | 改后 | 变化 |
+| --- | --- | --- | --- |
+| \`1+2+\`（提前报错） | 412 | 408 | −1.0% |
+| \`f(a, b, c, d)\` | 3 210 | 3 194 | −0.5% |
+| \`((((1))))\` × 64 层 | 11 700 | 12 410 | **+6.1%** |
 
-> \`cargo test -p parser\`：44 passed，0 failed，0 ignored。
+深嵌套这 6% 是真的：\`<\` 每轮多一次边界比较，64 层就是 64 次；换的是 \`1+2+\` 不再返回 \`3\`。递归深度是另一笔账（每层一帧，1 MB 栈约 900 层），\`max_depth = 256\` 单独 commit。接下来：\`plot.py\` 进 CI 比基线、\`SmallVec\` 换数组、补 255/256/257 的深度用例。
 
-回滚第二个 commit 之后 \`41 passed\` 原样回来——这就是你要的那条性质，别的东西一个都没动。`;
+![四个用例的吞吐：改前 vs 改后](/Users/lixin/future-os/benches/parser-throughput.png)`;
 
-const PARSER_RESULT_EN = `Landed in **two commits**, both green:
+const PARSER_RESULT_EN = `Both commits are green (\`6b1f0c2\` bounds, \`d41e8aa\` cases); \`benches/run.sh\`, four cases, median of five:
 
-1. \`6b1f0c2\` — the three bounds, *behaviour only*
-2. \`d41e8aa\` — the table-driven test, *coverage only*
+| Case | Before | After | Delta |
+| --- | --- | --- | --- |
+| \`1+2+\` (fails early) | 412 | 408 | −1.0% |
+| \`f(a, b, c, d)\` | 3,210 | 3,194 | −0.5% |
+| \`((((1))))\` × 64 deep | 11,700 | 12,410 | **+6.1%** |
 
-> \`cargo test -p parser\`: 44 passed, 0 failed, 0 ignored.`;
+That 6% is real: \`<\` costs one extra comparison per iteration — 64 of them here — and it buys \`1+2+\` failing instead of returning \`3\`. Depth is the other debt (a frame per level, 1 MB ≈ 900 levels), so \`max_depth = 256\` is its own commit. Next: \`plot.py\` into CI, an array instead of the \`Vec\`, depth cases at 255/256/257.
+
+![Throughput on four cases: before vs after](/Users/lixin/future-os/benches/parser-throughput.png)`;
 
 /**
  * The parser session's two turns, in the desktop's entry shape.
@@ -637,8 +645,8 @@ export function parserEntries(): MockEntry[] {
       blocks: [{
         kind: "text",
         text: pick(
-          "别处还有同样的写法吗？顺手拆成两个 commit 提交——先边界，再测试。",
-          "Does the same shape appear anywhere else? And land it as two commits — the bounds first, then the tests.",
+          "别处还有同样的写法吗？拆两个 commit，改完跑个基准——我怕 `<` 更慢。",
+          "Does the same shape appear anywhere else? Two commits, then a benchmark — I suspect the `<` is slower.",
         ),
       }],
     },
@@ -672,6 +680,13 @@ export function parserEntries(): MockEntry[] {
           ),
         },
         {
+          kind: "reasoning",
+          text: pick(
+            "基准要盯两件事：一是尾部用例（提前报错）不能被 `<` 拖慢，二是深嵌套这种递归下降的老账要能量出来，否则「慢了一点」只是感觉。四个用例各跑 5 次取中位数，同一台 runner。",
+            "Two things the benchmark has to show: that the early-error case did not get slower, and how much the deep-nesting case costs — otherwise \"a bit slower\" is a feeling, not a number. Four cases, five repetitions, median, same runner.",
+          ),
+        },
+        {
           kind: "tool_call",
           toolCallId: "pc_edit",
           name: "edit",
@@ -687,6 +702,18 @@ export function parserEntries(): MockEntry[] {
           name: "shell",
           arguments: { command: "cargo test -p parser && git commit -am 'fix(parser): the loop bound'" },
         },
+        {
+          kind: "tool_call",
+          toolCallId: "pc_bench",
+          name: "shell",
+          arguments: { command: "benches/run.sh --save-baseline after" },
+        },
+        {
+          kind: "tool_call",
+          toolCallId: "pc_plot",
+          name: "shell",
+          arguments: { command: "python benches/plot.py --out benches/parser-throughput.png" },
+        },
         { kind: "text", text: pick(PARSER_RESULT_ZH, PARSER_RESULT_EN) },
       ],
     },
@@ -700,6 +727,8 @@ export function parserEntries(): MockEntry[] {
         { kind: "tool_result", toolCallId: "pc_grep" },
         { kind: "tool_result", toolCallId: "pc_edit" },
         { kind: "tool_result", toolCallId: "pc_commit" },
+        { kind: "tool_result", toolCallId: "pc_bench" },
+        { kind: "tool_result", toolCallId: "pc_plot" },
       ],
     },
   ];
@@ -1034,6 +1063,66 @@ export const pendingApproval = {
 };
 
 /**
+ * The parser session's pending approval: the benchmark figure.
+ *
+ * The story the card tells is the one the transcript is in the middle of — the
+ * sandbox refused to write the chart the benchmark script draws, and the model
+ * asks for that one path. `kind: "sandbox_escalation"` with a
+ * `sandbox_failure` trigger is what makes the card *localize its own title*
+ * (`approval.escalationRetryTitle`) instead of showing the agent's English
+ * string; the command, the reason and the blocked path are the fixture's and
+ * therefore carry both languages, like the transcript.
+ */
+export const parserApproval = {
+  id: "apr_parser",
+  threadId: PARSER_THREAD_ID,
+  runId: "run_parser_2",
+  toolCallId: "pc_push",
+  kind: "sandbox_escalation",
+  status: "pending",
+  title: "This command needs to run outside the sandbox",
+  summary: pick(
+    "沙箱拒绝这个会话的出站网络",
+    "The sandbox refused outbound network for this session",
+  ),
+  riskLevel: "medium",
+  requestedAction: "shell",
+  actionCategory: "shell",
+  actionPayload: JSON.stringify({
+    tool: "shell",
+    category: "sandbox_escalation",
+    behavior: "network",
+    summary: pick(
+      "沙箱拒绝这个会话的出站网络",
+      "The sandbox refused outbound network for this session",
+    ),
+    command: "git push origin fix/parser-bound",
+    justification: pick(
+      "两个 commit 要先推上去，CI 才会跑基准；只推这一个分支，不碰 main。",
+      "The commits have to be pushed before CI runs the benchmark. This branch only — main is untouched.",
+    ),
+    // snake_case on purpose: `parseAction` reads `escalation_trigger`, and the
+    // camelCase spelling is dropped — which is why the card falls back to the
+    // generic escalation title when it is written the other way.
+    escalation_trigger: "sandbox_failure",
+    scope: {
+      cwd: `${HOME}/future-os`,
+      insideWorkspace: true,
+      estimatedBlastRadius: "low",
+    },
+  }),
+  sandboxBoundary: `${HOME}/future-os`,
+  saveSuggestion: null,
+  decisionNote: null,
+  decidedAt: null,
+  reviewer: "user",
+  decisionScope: "session",
+  decisionSource: "local",
+  createdAt: now - 30_000,
+  updatedAt: now - 30_000,
+};
+
+/**
  * A pending approval on the *host*, delivered the way a real one arrives: as an
  * `approval_request` event on the peer event stream. A remote approval has no
  * local store to read, so the fixture must push it rather than serve it.
@@ -1081,6 +1170,15 @@ src/args.rs:87:        while self.peek() <= self.end {
   pc_commit: `test result: ok. 44 passed; 0 failed; 0 ignored
 [parser 6b1f0c2] fix(parser): the loop bound
  3 files changed, 3 insertions(+), 3 deletions(-)
+`,
+  pc_bench: `running 4 benchmarks (median of 5)
+1+2+                    412 -> 408 ns/op
+a+b*c                   1840 -> 1862 ns/op
+f(a, b, c, d)           3210 -> 3194 ns/op
+((((1)))) x64          11700 -> 12410 ns/op
+baseline written to benches/baseline.json
+`,
+  pc_plot: `wrote benches/parser-throughput.png (38 KB)
 `,
 };
 
@@ -1208,26 +1306,53 @@ export const workspaceFiles: Record<string, Array<{ name: string; path: string; 
  * the fixture changes.
  */
 const REPO = `${HOME}/future-os`;
+function dir(name: string, parent: string, minutes: number) {
+  return { name, path: `${parent}/${name}`, isDir: true, size: 0, modified: now - minutes * minute };
+}
+function file(name: string, parent: string, size: number, minutes: number) {
+  return { name, path: `${parent}/${name}`, isDir: false, size, modified: now - minutes * minute };
+}
+
 workspaceFiles[REPO] = [
-  { name: "docs", path: `${REPO}/docs`, isDir: true, size: 0, modified: now - 6 * hour },
-  { name: "src", path: `${REPO}/src`, isDir: true, size: 0, modified: now - 4 * minute },
-  { name: "AGENTS.md", path: `${REPO}/AGENTS.md`, isDir: false, size: 8_960, modified: now - 2 * day },
-  { name: "Cargo.toml", path: `${REPO}/Cargo.toml`, isDir: false, size: 1_940, modified: now - 3 * day },
-  { name: "README.md", path: `${REPO}/README.md`, isDir: false, size: 3_400, modified: now - 9 * day },
-  { name: "rust-toolchain.toml", path: `${REPO}/rust-toolchain.toml`, isDir: false, size: 132, modified: now - 11 * day },
+  dir(".github", REPO, 6 * 24 * 60),
+  dir("benches", REPO, 3),
+  dir("docs", REPO, 6 * 60),
+  dir("src", REPO, 4),
+  file("AGENTS.md", REPO, 8_960, 2 * 24 * 60),
+  file("Cargo.lock", REPO, 41_280, 3 * 24 * 60),
+  file("Cargo.toml", REPO, 1_940, 3 * 24 * 60),
+  file("README.md", REPO, 3_400, 9 * 24 * 60),
+  file("rust-toolchain.toml", REPO, 132, 11 * 24 * 60),
 ];
-workspaceFiles[`${REPO}/src`] = [
-  { name: "parser", path: `${REPO}/src/parser`, isDir: true, size: 0, modified: now - 2 * minute },
-  { name: "args.rs", path: `${REPO}/src/args.rs`, isDir: false, size: 4_120, modified: now - 5 * minute },
-  { name: "lexer.rs", path: `${REPO}/src/lexer.rs`, isDir: false, size: 9_870, modified: now - 3 * day },
-  { name: "main.rs", path: `${REPO}/src/main.rs`, isDir: false, size: 2_310, modified: now - 8 * day },
-  { name: "parser.rs", path: `${REPO}/src/parser.rs`, isDir: false, size: 14_260, modified: now - 6 * minute },
+workspaceFiles[`${REPO}/.github`] = [
+  dir("workflows", `${REPO}/.github`, 6 * 24 * 60),
+  file("dependabot.yml", `${REPO}/.github`, 480, 20 * 24 * 60),
 ];
-workspaceFiles[`${REPO}/src/parser`] = [
-  { name: "tests.rs", path: `${REPO}/src/parser/tests.rs`, isDir: false, size: 7_540, modified: now - 2 * minute },
+workspaceFiles[`${REPO}/.github/workflows`] = [
+  file("ci.yml", `${REPO}/.github/workflows`, 3_120, 5 * 24 * 60),
+  file("bench.yml", `${REPO}/.github/workflows`, 1_460, 2 * 24 * 60),
+];
+workspaceFiles[`${REPO}/benches`] = [
+  file("baseline.json", `${REPO}/benches`, 2_240, 12),
+  file("parser-throughput.png", `${REPO}/benches`, 38_400, 1),
+  file("plot.py", `${REPO}/benches`, 1_880, 25),
+  file("run.sh", `${REPO}/benches`, 620, 4 * 60),
 ];
 workspaceFiles[`${REPO}/docs`] = [
-  { name: "parser.md", path: `${REPO}/docs/parser.md`, isDir: false, size: 5_180, modified: now - 4 * hour },
+  file("benchmarks.md", `${REPO}/docs`, 4_260, 3 * 60),
+  file("parser.md", `${REPO}/docs`, 5_180, 4 * 60),
+];
+workspaceFiles[`${REPO}/src`] = [
+  dir("parser", `${REPO}/src`, 2),
+  file("args.rs", `${REPO}/src`, 4_120, 5),
+  file("lexer.rs", `${REPO}/src`, 9_870, 3 * 24 * 60),
+  file("main.rs", `${REPO}/src`, 2_310, 8 * 24 * 60),
+  file("parser.rs", `${REPO}/src`, 14_260, 6),
+];
+workspaceFiles[`${REPO}/src/parser`] = [
+  file("depth.rs", `${REPO}/src/parser`, 2_640, 40),
+  file("mod.rs", `${REPO}/src/parser`, 1_120, 3 * 24 * 60),
+  file("tests.rs", `${REPO}/src/parser`, 7_540, 2),
 ];
 
 /**
