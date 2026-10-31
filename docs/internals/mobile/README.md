@@ -76,10 +76,16 @@ development and distribution maintenance.
 - The session list's header is two rows: a desktop picker (a chosen machine shows
   its own glyph and name, the name on up to two lines, and the row takes a line
   of its own at the reader's largest text size), the list-actions menu `⋯`
-  (search, batch selection), the connection dot and settings; the row under it
-  belongs entirely to the page switch (recent / workspaces / conversations). The search
-  field and the batch bar still replace that lower row, so the header — machine,
-  connection, settings — stays visible while typing or selecting.
+  (search, batch selection) and settings; the row under it belongs entirely to
+  the page switch (recent / workspaces / conversations). The search field and
+  the batch bar still replace that lower row, so the header — machine, tools,
+  settings — stays visible while typing or selecting. The connection dot is not
+  a control of its own: it sits at the end of the picker's trigger, and the sheet
+  that trigger opens is both the machine choice and the connection's own
+  explanation — the dot's state in words, the reason, and the action that reaches
+  the machines again. Two controls beside each other meant the header paid two
+  touch targets and the reader had to guess which one to tap when something was
+  wrong, when both were answers to the same question.
 - The workspace picker in the new-conversation dialog can register a directory
   on the connected desktop as a workspace. The user types the host path (the
   phone has no folder picker for the desktop); the directory must already exist,
@@ -434,11 +440,15 @@ Whether the phone has anything to read is the phone's own question rather than
 the open machine's: while any paired desktop answers, the list stays on screen —
 even when the machine whose conversation is open is the one that is down — and
 the whole-page connecting/disconnected state appears only when none of them
-answers. The status popover's own block says the same: with some machines
-answering and some not, it reports the set ("Some desktops are not connected",
-the connected count, Reconnect all) rather than the open machine's state, and
-only when every machine answers — or none does — does that one machine's own
-copy stand.
+answers. The status block at the top of the device sheet says the same: with some
+machines answering and some not, it reports the set ("Some desktops are not
+connected", the connected count, Reconnect all) rather than the open machine's
+state, and only when every machine answers — or none does — does that one
+machine's own copy stand. The rows under it are where "which machine" is read:
+each carries its own dot and state, and a machine that answers while another
+device holds it wears the same yellow as the trigger, with the takeover on that
+row. With a single machine the block is already its answer and the row keeps
+just its name.
 
 Each desktop in the list has a pencil button to rename it; the name is saved
 locally only and never synced to the Desktop or platform; clearing the name

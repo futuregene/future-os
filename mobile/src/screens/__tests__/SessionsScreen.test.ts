@@ -11,7 +11,6 @@ import {
   View,
 } from "react-native";
 import { ChevronRight } from "lucide-react-native";
-import { ConnectionBadge } from "../../components/ConnectionBadge";
 import { Button } from "../../components/Button";
 import { DialogSurface } from "../../components/DialogSurface";
 import { SessionsScreen } from "../SessionsScreen";
@@ -141,6 +140,18 @@ const button = (label: string) => tree.root.findAll(node =>
   node.props.accessibilityLabel === label && typeof node.props.onPress === "function",
 )[0]!;
 /**
+ * The device trigger above the list.
+ *
+ * Its accessible name now carries what the list is showing and how the phone
+ * stands — the dot it wears is the only other way to learn the last part, and a
+ * screen reader cannot read a colour — so it is found by the label's beginning
+ * rather than by equality.
+ */
+const pickerButton = () => tree.root.findAll(node =>
+  typeof node.props.onPress === "function"
+  && String(node.props.accessibilityLabel ?? "").startsWith("desktops.pickerLabel"),
+)[0]!;
+/**
  * The action sheet that is actually up.
  *
  * The header carries one of its own now (the list's tools), and a closed sheet
@@ -168,7 +179,7 @@ afterEach(() => act(() => tree.unmount()));
  * selector does not collide with the connection badge beside it.
  */
 test("device header has real gutters and a non-shrinking touch target on a small phone", () => {
-  const selector = button("desktops.pickerLabel");
+  const selector = pickerButton();
   const style = StyleSheet.flatten(selector.props.style({ pressed: false }));
   expect(style.minHeight).toBeGreaterThanOrEqual(44);
   expect(style.minWidth).toBe(0);
@@ -181,9 +192,13 @@ test("device header has real gutters and a non-shrinking touch target on a small
     header = header.parent;
   }
   expect(StyleSheet.flatten(header?.props.style).paddingHorizontal).toBe(16);
-  const badge = tree.root.findByType(ConnectionBadge);
-  expect(badge.findAllByType(Text)).toHaveLength(0);
-  expect(badge.props.active).toBe(true);
+  // The status dot is part of this trigger now, not a control beside it: the
+  // header gives up one touch target over what it had, and there is one thing to
+  // tap when the dot says something is wrong. It is the picker's own child, so
+  // the two cannot drift apart again.
+  expect(tree.root.findByType(DesktopPicker).findAll(node =>
+    typeof node.type === "string" && node.props.testID === "connection-dot")).toHaveLength(1);
+  expect(tree.root.findByType(DesktopPicker).props.active).toBe(true);
   // Opening the picker is the selector's own action now; managing pairings moved
   // into the picker's list, which is where someone looking for another desktop
   // will be. Rendering it must not throw (the mocked icon set is the reason a
@@ -210,7 +225,7 @@ test("the picker can be dismissed without choosing a desktop", () => {
   // Nothing to dismiss while the list is shut, so the close button the user
   // reaches for only exists once the picker is open.
   expect(pickerModal().props.visible).toBe(false);
-  act(() => button("desktops.pickerLabel").props.onPress());
+  act(() => pickerButton().props.onPress());
   const open = pickerModal();
   expect(open.props.visible).toBe(true);
   const close = open.findAll(node =>
@@ -238,7 +253,7 @@ test("each picker row commits its own choice and closes the sheet", () => {
     node.props.accessibilityState?.checked !== undefined);
   const labelOf = (row: ReactTestInstance) =>
     row.findAllByType(Text).flatMap(text => text.props.children as string[]).join("");
-  const openPicker = () => act(() => button("desktops.pickerLabel").props.onPress());
+  const openPicker = () => act(() => pickerButton().props.onPress());
 
   // The merged option is a row like any other, and picking it is what closes the
   // sheet — the sheet is not a mode the user has to leave separately.
@@ -480,7 +495,7 @@ test("a disconnected lone desktop keeps the reconnect page rather than the takeo
 });
 
 test("a picker row is the desktop's name and nothing else", () => {
-  act(() => button("desktops.pickerLabel").props.onPress());
+  act(() => pickerButton().props.onPress());
   // Host nodes only: a composite and its host both carry the row's props.
   // Rows are radios — one of them is the answer in force, which is not a
   // navigation the way the trigger above the list is.
@@ -489,12 +504,14 @@ test("a picker row is the desktop's name and nothing else", () => {
     node.props.accessibilityRole === "radio" &&
     node.props.accessibilityState?.checked !== undefined);
   // The mark sits in its own column and is drawn rather than typed, so the row's
-  // copy is the texts it holds — the machine's name and nothing else.
+  // copy is the texts it holds — the machine's name.
   const labels = rows.map(row =>
     row.findAllByType(Text).flatMap(text => text.props.children as string[]).join(" "));
-  // `desktop_1` is the one this phone is paired with, and the header's status dot
-  // already says whether the phone is connected to it — a "Connected" label on
-  // that one row repeats the dot and makes the spare row look second-class.
+  // One machine, so the sheet's block above is already its answer: repeating
+  // "已连接" under the name would be the same fact a few lines lower. The state
+  // moves onto the rows only when there are several to tell apart (see the
+  // picker's own tests); a peer no runtime has reported yet keeps its name and
+  // stays selectable, because missing data is not evidence of a fault.
   expect(labels).toEqual(["desktops.filterAll", "A very long desktop name", "desktop_2"]);
 });
 
@@ -506,13 +523,16 @@ test("the status dot answers for every machine, and reconnect reaches them all",
   ];
   try {
     act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
-    const badge = tree.root.findByType(ConnectionBadge);
-    expect(badge.props.machines.map((machine: MachineSummary) => machine.desktopId))
+    // The trigger *is* the dot now, so these are the machines it paints for.
+    const picker = tree.root.findByType(DesktopPicker);
+    expect(picker.props.machines.map((machine: MachineSummary) => machine.desktopId))
       .toEqual(["desktop_1", "desktop_2"]);
-    expect(badge.props.machines[0].active).toBe(true);
-    expect(badge.props.machines[0].label).toBe("A very long desktop name");
+    expect(picker.props.machines[0].active).toBe(true);
+    expect(picker.props.machines[0].label).toBe("A very long desktop name");
 
-    act(() => badge.props.onReconnect());
+    // ...and its sheet is where the manual reconnect lives, still reaching every
+    // machine rather than only the one the phone happens to be reading.
+    act(() => picker.props.connection.onReconnect());
     expect(mockRemote.reconnect).toHaveBeenCalledTimes(1);
     expect(mockCatalogs.reconnect).toHaveBeenCalledTimes(1);
   } finally {
@@ -521,23 +541,23 @@ test("the status dot answers for every machine, and reconnect reaches them all",
 });
 
 /**
- * The dot's sheet takes over the row's machine, not the open one.
+ * The device sheet takes over the row's machine, not the open one.
  *
  * Its rows list the machines other than the open one too, and a peer in somebody
  * else's hands is the ordinary reason the dot is yellow at all. Asking the open
  * machine instead is granted and changes nothing — a desktop this phone already
  * drives answers `changed: false` — so the sheet closed, the held machine stayed
  * held, and the tap read as one that did not work. The row's own connection is
- * the one that can move control, which is what the picker's rows already use.
+ * the one that can move control.
  */
-test("a peer's takeover behind the status dot reaches that peer", async () => {
+test("a peer's takeover in the device sheet reaches that peer", async () => {
   mockCatalogs.machines = [
     { desktopId: "desktop_2", label: "Office", active: false, status: "connected", control: "standby" },
   ];
   try {
     act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
-    const badge = tree.root.findByType(ConnectionBadge);
-    await act(async () => { await badge.props.onTakeControl("desktop_2"); });
+    const picker = tree.root.findByType(DesktopPicker);
+    await act(async () => { await picker.props.onTakeControl("desktop_2"); });
     expect(mockCatalogs.takeControlFor).toHaveBeenCalledWith("desktop_2");
     expect(mockRemote.takeControl).not.toHaveBeenCalled();
   } finally {
@@ -553,17 +573,19 @@ test("category switching is delegated to the list toolbar, without a separate ta
   expect(tree.root.findByType(SessionList).props.tab).toBe("chat");
 });
 
-test("tablet and large-text layouts keep the status dot-only", () => {
+test("tablet and large-text layouts keep the header's dot, losing nothing to a second control", () => {
+  const dotOnTrigger = () => tree.root.findByType(DesktopPicker)
+    .findAll(node => typeof node.type === "string" && node.props.testID === "connection-dot");
   mockDimensions = { width: 820, height: 1180, scale: 1, fontScale: 1 };
   act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
-  expect(tree.root.findByType(ConnectionBadge).findAllByType(Text)).toHaveLength(0);
+  expect(dotOnTrigger()).toHaveLength(1);
   expect(tree.root.findAllByType(View).some(node => {
     const style = StyleSheet.flatten(node.props.style);
     return style?.maxWidth === 760 && style.alignSelf === "center";
   })).toBe(true);
   mockDimensions = { ...mockDimensions, fontScale: 1.6 };
   act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
-  expect(tree.root.findByType(ConnectionBadge).findAllByType(Text)).toHaveLength(0);
+  expect(dotOnTrigger()).toHaveLength(1);
 });
 
 test("settings uses a full-screen scrollable page and can be dismissed", () => {
@@ -845,7 +867,7 @@ describe("screen-owned surfaces", () => {
   });
 
   test("unpairing asks first and only then disconnects", () => {
-    act(() => tree.root.findByType(ConnectionBadge).props.onUnpair());
+    act(() => tree.root.findByType(DesktopPicker).props.connection.onUnpair());
     // `sessions.unpairConfirm` carries a `{{name}}` placeholder (en and zh both),
     // so the dialog has to name the machine it is about to drop: without the
     // option i18next leaves the raw placeholder in the sentence.
@@ -1678,7 +1700,7 @@ describe("several desktops, only some answering", () => {
     expect(moduleDisconnected()).toBeUndefined();
     expect(rows()).toEqual(["desktop_2"]);
     // The badge is judged on the same two machines the list is.
-    expect(tree.root.findByType(ConnectionBadge).props.machines).toHaveLength(2);
+    expect(tree.root.findByType(DesktopPicker).props.machines).toHaveLength(2);
   });
 
   test("a machine that is still connecting contributes no rows", () => {
@@ -1722,7 +1744,7 @@ describe("several desktops, only some answering", () => {
     // The picker stays on screen — it is how the reader gets to a machine that
     // does answer — and the list says how the picked one stands.
     expect(moduleDisconnected()).toBeUndefined();
-    expect(button("desktops.pickerLabel")).toBeDefined();
+    expect(pickerButton()).toBeDefined();
     const empty = renderEmpty();
     expect(empty.texts).toContain("connection.disconnected");
     // ...with the action that reaches *that* machine, not the set.
