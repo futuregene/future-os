@@ -417,8 +417,12 @@ mod tests {
     fn panic_hook_restores_terminal_and_writes_crash_log() {
         let _guard = crate::test_env::lock();
         let home = tempfile::tempdir().unwrap();
-        let old_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", home.path());
+        // RAII, not set-then-restore at the end: a failing assertion in between
+        // would leave the process-global `HOME` pointing into a temp dir that is
+        // about to be deleted, and every later test in this binary would resolve
+        // the future home into nothing (`FLAKES.md` §4c: a mutex is not a
+        // restore).
+        let _home = crate::test_env::EnvVarGuard::set("HOME", home.path());
 
         let _hook = InstalledHook::install();
         let log = crash_log(home.path());
@@ -449,8 +453,6 @@ mod tests {
             assert!(note.contains("future-tui panicked: panicked at"));
             assert!(note.contains("coverage-test-panic"));
         }
-
-        restore_env("HOME", old_home);
     }
 
     #[cfg(unix)]
@@ -468,7 +470,6 @@ mod tests {
     #[test]
     fn panic_hook_survives_unwritable_crash_log() {
         let _guard = crate::test_env::lock();
-        let old_home = std::env::var_os("HOME");
         let _hook = InstalledHook::install();
         let _armed = ReportArmed::arm();
         #[cfg(unix)]
@@ -482,25 +483,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let fake_home = dir.path().join("not-a-dir");
         std::fs::write(&fake_home, "x").unwrap();
-        std::env::set_var("HOME", &fake_home);
+        // One guard per value, all alive to the end of the test: they restore in
+        // reverse order, so the original `HOME` comes back even when an assertion
+        // between them panics.
+        let _home = crate::test_env::EnvVarGuard::set("HOME", &fake_home);
         let no_home = std::panic::catch_unwind(|| panic!("coverage-test-no-home"));
         assert_eq!(panic_message(no_home), "coverage-test-no-home");
 
         // crash.log exists as a DIRECTORY → open() fails.
         let home2 = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(crash_log(home2.path())).unwrap();
-        std::env::set_var("HOME", home2.path());
+        let _home2 = crate::test_env::EnvVarGuard::set("HOME", home2.path());
         let collision = std::panic::catch_unwind(|| panic!("coverage-test-dir-collision"));
         assert_eq!(panic_message(collision), "coverage-test-dir-collision");
 
         // Both failures were tolerated: the hook still reports afterwards.
         let home3 = tempfile::tempdir().unwrap();
-        std::env::set_var("HOME", home3.path());
+        let _home3 = crate::test_env::EnvVarGuard::set("HOME", home3.path());
         let recovered = std::panic::catch_unwind(|| panic!("coverage-test-after-failures"));
         assert!(crash_log(home3.path()).exists());
         assert_eq!(panic_message(recovered), "coverage-test-after-failures");
-
-        restore_env("HOME", old_home);
     }
 
     /// Regression guard for the leak this module used to have.
