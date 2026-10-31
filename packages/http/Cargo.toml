@@ -3,8 +3,14 @@ name = "future-http"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "HTTP client entry points that install the process TLS provider before construction"
+description = "HTTP client entry points that install the process TLS provider and hostname resolver before construction"
 
 [dependencies]
 reqwest = { workspace = true, features = ["blocking", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio = { workspace = true, features = ["net", "time"] }
+rand = "0.8"
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
