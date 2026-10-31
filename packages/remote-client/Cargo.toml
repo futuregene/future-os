@@ -10,8 +10,7 @@ test-support = []
 [dependencies]
 future-remote-protocol = { path = "../remote-protocol" }
 future-remote-crypto = { path = "../remote-crypto" }
-future-http = { path = "../http" }
-rustls-native-certs = "0.8"
+future-relay-endpoint = { path = "../relay-endpoint" }
 base64 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

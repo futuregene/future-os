@@ -1276,12 +1276,19 @@ pub async fn connect(
     // when this process has its own resolver the address is resolved here and
     // the connection is pinned to the name it was resolved from; see
     // [`crate::relay_endpoint`].
-    let endpoint = crate::relay_endpoint::for_connect(
+    let endpoint = future_relay_endpoint::for_connect(
         &creds.nats_url,
         environment.root_bundle.as_deref(),
         plaintext,
     )
-    .await?;
+    .await
+    .map_err(|error| {
+        if error.transient {
+            crate::Error::RemoteTransport(error.message)
+        } else {
+            crate::Error::Message(error.message)
+        }
+    })?;
     let options = match endpoint.tls {
         Some(config) => options.tls_client_config(config),
         None => options,

@@ -1,0 +1,16 @@
+[package]
+name = "future-relay-endpoint"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Connect to the relay by a resolved address when this process resolves host names itself"
+
+[dependencies]
+future-http = { path = "../http" }
+async-nats = "0.50"
+url = "2"
+base64 = { workspace = true }
+rustls-native-certs = "0.8"
+
+[dev-dependencies]
+tempfile.workspace = true
