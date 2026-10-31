@@ -4265,7 +4265,6 @@ mod driver_tests {
 
     mod repository_keys {
         use super::*;
-        use crate::workbench::Overlay;
 
         /// The repository browser's own keys: the tabs are numbered, `tab` moves
         /// between the list and the patch, and the horizontal pan is the pane's —
