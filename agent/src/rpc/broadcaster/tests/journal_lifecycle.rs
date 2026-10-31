@@ -523,6 +523,10 @@ fn an_append_past_the_pending_age_limit_kills_the_journal_and_it_never_recovers(
         "{error}"
     );
     assert!(
+        error.contains("oldest pending") && error.contains("of 1ms"),
+        "the refusal must name the bound that fired and how far past it it is: {error}"
+    );
+    assert!(
         interrupt.load(std::sync::atomic::Ordering::SeqCst),
         "the refusal must interrupt the run's production"
     );

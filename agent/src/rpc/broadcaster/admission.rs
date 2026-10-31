@@ -86,10 +86,23 @@ impl Admission {
                 .first_key_value()
                 .is_some_and(|(_, time)| time.elapsed() >= state.age_limit)
         {
-            return Err(AppendFailure::Unavailable(
-                "event storage backlog exceeded its byte or age limit; generation interrupted"
-                    .into(),
-            ));
+            // Name which bound fired and by how much: "byte or age" was all an
+            // operator got from the 2026-10-31 incident, and the two have very
+            // different causes (one huge session vs. a stalled shared writer).
+            let oldest = state
+                .pending
+                .first_key_value()
+                .map(|(_, time)| time.elapsed())
+                .unwrap_or_default();
+            return Err(AppendFailure::Unavailable(format!(
+                "event storage backlog exceeded its byte or age limit; generation interrupted \
+                 (oldest pending {}ms of {}ms, {} of {} bytes, {} events)",
+                oldest.as_millis(),
+                state.age_limit.as_millis(),
+                state.bytes.saturating_add(bytes),
+                SESSION_BYTES,
+                state.pending.len()
+            )));
         }
         GLOBAL_PENDING
             .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
