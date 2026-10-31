@@ -23,7 +23,7 @@ interface HookSpies {
   pinThread: (input: unknown) => void;
   pinWorkspace: (input: unknown) => void;
   reclamp: () => void;
-  refreshAgentModels: () => void;
+  refreshAgentModels: ReturnType<typeof vi.fn>;
   refreshAuth: () => void;
   refreshBalance: () => void;
   refreshRemote: () => void;
@@ -1320,6 +1320,157 @@ describe("app shell workspace handlers", () => {
    * paired the machine is the first question — the one the old flow quietly
    * answered for the user by opening the local folder picker.
    */
+  it("hands the panel the shell's own callbacks, and they act on the shell", async () => {
+    // The panel is drawn by this file, so its `view` is the shell's wiring: a decision
+    // made in a cell has to refresh the store, a fork has to land on the fork, and the
+    // approval tier a cell sets has to become the application's setting. The panel's
+    // own rendering is `VibeStage.test.tsx`'s; here it is the seam between the two.
+    // The panel draws only *pinned* conversations, and it re-renders the same
+    // `AgentThread` the main window does — so the cell has to exist for the captured
+    // props to be the panel's rather than the centre pane's.
+    mocks.store.threadStore = {
+      ...(mocks.store.threadStore as Record<string, unknown>),
+      threads: [{ ...chatThread, pinned: true }],
+    };
+    const view = mount(<AppShell />);
+    act(() => runCommand("vibe.toggle"));
+    // The panel, not the main window's conversation: this is what makes the callbacks
+    // below the shell's `view` rather than its center pane's props.
+    expect(view.container.querySelector("[data-vibe-layer]")).not.toBeNull();
+    const cell = children.agentThread as {
+      onChangeApprovalTier: (tier: string) => void;
+      onApprovalDecision: (approval: unknown, status: string) => Promise<void>;
+      onForked: (threadId: string) => void;
+      onRetryAgentConnection: () => void;
+      onThreadActivity: () => void;
+    };
+    expect(cell, "a cell of the panel").toBeTruthy();
+    mocks.changeSettings.mockClear();
+    mocks.refreshStore.mockClear();
+    mocks.hooks.refreshAgentModels.mockClear();
+
+    act(() => cell.onChangeApprovalTier("manual"));
+    expect(mocks.changeSettings).toHaveBeenCalledWith({ approvalTier: "manual" });
+
+    await act(async () => {
+      await cell.onApprovalDecision({ id: "ap1", threadId: "t1" }, "approved");
+    });
+    // The decision is persisted by the panel's own queue; the shell only catches up.
+    expect(mocks.refreshStore).toHaveBeenCalledWith("t1");
+
+    act(() => cell.onForked("t9"));
+    expect(mocks.refreshStore).toHaveBeenCalledWith("t9");
+
+    act(() => cell.onRetryAgentConnection());
+    expect(mocks.hooks.refreshAgentModels).toHaveBeenCalledTimes(1);
+
+    mocks.refreshStore.mockClear();
+    act(() => cell.onThreadActivity());
+    expect(mocks.refreshStore).toHaveBeenCalledWith("t1");
+    view.unmount();
+  });
+
+  it("unpins a cell from the panel's own menu, through the shell's pinner", async () => {
+    // The panel addresses a cell by its key, but the pin is written by id: the shell is
+    // the one that owns the call, and the panel only says which conversation and whether.
+    mocks.store.threadStore = {
+      ...(mocks.store.threadStore as Record<string, unknown>),
+      threads: [{ ...chatThread, pinned: true }],
+    };
+    const view = mount(<AppShell />);
+    act(() => runCommand("vibe.toggle"));
+    act(() => runCommand("vibe.menu"));
+    const selected = () => document.querySelector("[aria-current=\"true\"]")?.getAttribute("data-vibe-menu-row") ?? null;
+    for (let step = 0; step < 12 && selected() !== "remove"; step++) {
+      act(() => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, code: "ArrowDown", key: "ArrowDown" }));
+      });
+    }
+    expect(selected()).toBe("remove");
+
+    // The pin is asynchronous (store write, then a re-read), so the assertions come
+    // after the shell's own continuations have run.
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, code: "Enter", key: "Enter" }));
+      await Promise.resolve();
+    });
+
+    expect(mocks.hooks.pinThread).toHaveBeenCalledWith({ pinned: false, threadId: "t1" });
+    // …and the shell re-reads the store it just changed, onto the conversation it is on.
+    expect(mocks.refreshStore).toHaveBeenCalledWith("t1");
+    view.unmount();
+  });
+
+  it("opens the focused cell in the shell from the panel, and closes the panel behind it", () => {
+    // The panel is a surface over the app, not a second app: opening a conversation in
+    // the shell must also give the screen back.
+    mocks.store.threadStore = {
+      ...(mocks.store.threadStore as Record<string, unknown>),
+      threads: [{ ...chatThread, pinned: true }],
+    };
+    const view = mount(<AppShell />);
+    act(() => runCommand("vibe.toggle"));
+    const header = view.container.querySelector<HTMLElement>("[data-vibe-cell] header");
+    expect(header, "a cell of the panel").not.toBeNull();
+    const setActiveThreadId = (mocks.store.threadStore as { setActiveThreadId: ReturnType<typeof vi.fn> }).setActiveThreadId;
+
+    act(() => {
+      header!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+
+    expect(setActiveThreadId).toHaveBeenLastCalledWith("t1");
+    expect(view.container.querySelector("[data-vibe-layer]")).toBeNull();
+    view.unmount();
+  });
+
+  it("closes the machine question without creating anything", () => {
+    // The dismiss is the answer "not now": no form opens, no workspace is created, and
+    // the question is gone — a dialog that stayed up would hold the only way in.
+    mocks.remotePeers = { catalogs: [], peers: [hostPeer()] };
+    const view = mount(<AppShell />);
+    act(() => rail().onNewWorkspace());
+    expect(view.container.querySelector("[data-child='workspace-device-dialog']")).not.toBeNull();
+
+    act(() => (children.workspaceDeviceDialog as { onClose: () => void }).onClose());
+
+    expect(view.container.querySelector("[data-child='workspace-device-dialog']")).toBeNull();
+    expect(children.newConversation).toBeNull();
+    expect(mocks.hooks.createWorkspace).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it("closes the chat's machine question from its own dismiss", () => {
+    // `DeviceChoiceDialog` is the real component here (the shell only supplies the
+    // callbacks), so this presses the button a reader presses.
+    mocks.remotePeers = { catalogs: [], peers: [hostPeer()] };
+    const view = mount(<AppShell />);
+    act(() => rail().onNewChat());
+    const cancel = [...view.container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent === "Cancel");
+    expect(cancel, "the question's own way out").not.toBeUndefined();
+
+    act(() => cancel!.click());
+
+    // Nothing started: no composer, and the dialog is gone.
+    expect([...view.container.querySelectorAll("button")].every(button => button.textContent !== "Cancel")).toBe(true);
+    expect(children.newConversation).toBeNull();
+    view.unmount();
+  });
+
+  it("closes the remote workspace form without creating a workspace on the host", () => {
+    mocks.remotePeers = { catalogs: [], peers: [hostPeer()] };
+    const view = mount(<AppShell />);
+    act(() => rail().onNewWorkspace());
+    act(() => (children.workspaceDeviceDialog as { onPickPeer: (peer: unknown) => void }).onPickPeer(hostPeer()));
+    expect(view.container.querySelector("[data-child='remote-workspace-create']")).not.toBeNull();
+
+    act(() => (children.remoteWorkspaceCreateDialog as { onClose: () => void }).onClose());
+
+    expect(view.container.querySelector("[data-child='remote-workspace-create']")).toBeNull();
+    expect(mocks.invoke).not.toHaveBeenCalledWith("remote_create_workspace", expect.anything());
+    view.unmount();
+  });
+
   it("asks which machine before opening the create-workspace form", () => {
     mocks.remotePeers = { catalogs: [], peers: [hostPeer()] };
     const view = mount(<AppShell />);
