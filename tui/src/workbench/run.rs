@@ -4149,6 +4149,94 @@ mod driver_tests {
         assert!(!notice.is_empty(), "the failed save was silent: {notice:?}");
     }
 
+    mod overlay_navigation {
+        use super::*;
+
+        /// Navigation inside an overlay belongs to the overlay: the arrows, the paging
+        /// keys and `home`/`end` move *inside* the box and none of them leaves it.
+        ///
+        /// This is the door a reader uses most and the one a stray `WbAction` would
+        /// break silently — a key that closed the box would look like a mis-press and
+        /// not like a bug.
+        #[tokio::test]
+        async fn navigation_inside_an_overlay_moves_without_closing_it() {
+            use crate::workbench::{picker::PickerKind, Overlay};
+
+            let overlays = [
+                Overlay::Help,
+                Overlay::Queue,
+                Overlay::Git,
+                Overlay::Files,
+                Overlay::Worktree,
+                Overlay::DeleteSession,
+                Overlay::Fork,
+                Overlay::PanelFull,
+                Overlay::Picker(PickerKind::Model),
+                Overlay::Picker(PickerKind::Sessions),
+            ];
+            for overlay in overlays {
+                let mut driver = Driver::attach_conversation().await;
+                driver.workbench.overlay = Some(overlay);
+                for key in ["down", "up", "pageDown", "pageUp", "home", "end"] {
+                    assert!(
+                        !driver.quit_key(key).await,
+                        "{key} left the workbench inside {overlay:?}"
+                    );
+                    assert_eq!(
+                        driver.workbench.overlay,
+                        Some(overlay),
+                        "{key} closed {overlay:?}"
+                    );
+                }
+            }
+        }
+
+        /// A picker is a list with a highlight of its own: `down` moves the row the
+        /// box would commit, and `escape` leaves without committing anything.
+        #[tokio::test]
+        async fn a_picker_moves_its_highlight_and_escape_commits_nothing() {
+            use crate::workbench::{picker::PickerKind, Overlay};
+
+            let mut driver = Driver::attach(&[
+                ("get_state", r#"{"sessionId":"s1","model":"future/old"}"#),
+                ("get_session_entries", r#"{"entries":[]}"#),
+                (
+                    "list_models",
+                    r#"{"models":[
+                    {"id":"old","label":"old","provider":"future","thinkingLevel":"default",
+                     "thinkingLevels":["default"],"defaultThinkingLevel":"default",
+                     "isDefault":true},
+                    {"id":"new","label":"new","provider":"future","thinkingLevel":"default",
+                     "thinkingLevels":["default"],"defaultThinkingLevel":"default"}
+                ]}"#,
+                ),
+            ])
+            .await;
+            let frame = driver.frame();
+            let data = driver.live.data(&frame);
+            driver.workbench.open_picker(PickerKind::Model, &data);
+            assert_eq!(
+                driver.workbench.overlay,
+                Some(Overlay::Picker(PickerKind::Model))
+            );
+            let before = driver.workbench.picker.index;
+            assert!(!driver.quit_key("down").await, "down does not leave");
+            assert_ne!(
+                driver.workbench.picker.index, before,
+                "the highlight did not move down the list"
+            );
+            assert!(!driver.quit_key("escape").await, "escape does not leave");
+            assert_eq!(
+                driver.workbench.overlay, None,
+                "escape did not close the box"
+            );
+            assert!(
+                driver.live.pending_model().is_none(),
+                "escape committed the highlighted row"
+            );
+        }
+    }
+
     mod workspace_panel {
         use super::*;
         use crate::workbench::Overlay;
