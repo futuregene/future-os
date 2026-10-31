@@ -19,6 +19,7 @@ import {
   HOME,
   installedSkills,
   models,
+  parserApproval,
   pendingApproval,
   providersView,
   refreshedSessionUsage,
@@ -177,6 +178,7 @@ export function assetUrl(path: string): string {
   const known: Record<string, string> = {
     "effect-size.png": "/shot/assets/effect-size.png",
     "forest-plot.png": "/shot/assets/forest-plot.png",
+    "parser-throughput.png": "/shot/assets/parser-throughput.png",
   };
   return known[path.split("/").pop() ?? ""] ?? path;
 }
@@ -531,7 +533,23 @@ const handlers: Record<string, (args: any) => unknown> = {
       ? [{ id: `out_${args.toolCallId}`, toolCallId: args.toolCallId, kind: "text", content, createdAt: Date.now() }]
       : [];
   },
-  list_approval_requests: args => (args?.threadId === pendingApproval.threadId ? [pendingApproval] : []),
+  /**
+   * The cards waiting on the reader, per conversation.
+   *
+   * `th_review` has the fixture's original escalation (the forest plot); the
+   * parser session has its own — the push the two commits are waiting for (see
+   * `parserApproval`). Both are `sandbox_escalation`, so the card localizes its
+   * own title instead of showing the agent's English string.
+   */
+  list_approval_requests: (args) => {
+    const threadId = args?.threadId;
+    const cards: unknown[] = [];
+    if (threadId === pendingApproval.threadId)
+      cards.push(pendingApproval);
+    if (threadId === parserApproval.threadId)
+      cards.push(parserApproval);
+    return cards;
+  },
   /**
    * A run's auto-approval assessments: none here, but the *handler* has to exist.
    *

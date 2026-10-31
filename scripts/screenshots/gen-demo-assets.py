@@ -81,6 +81,48 @@ def main() -> int:
     fig.savefig(out / "forest-plot.png", facecolor="white")
     plt.close(fig)
 
+    # The parser session's benchmark: the two bounds (`<=` then `<`) against the
+    # same four cases, as the agent's plot script would draw them.
+    #
+    # Drawn on the app's own dark surface rather than on white: this figure sits
+    # inside a dark transcript, and a white plate in the middle of it reads as a
+    # screenshot of something else. Its labels are the case expressions and the
+    # unit — the same words the transcript's table uses, because a chart of
+    # numbers is data, not prose.
+    cases = ["((((1)))) × 64", "f(a, b, c, d)", "a+b*c", "1+2+"]
+    before = [11.70, 3.210, 1.840, 0.412]
+    after = [12.41, 3.194, 1.862, 0.408]
+
+    fig, ax = plt.subplots(figsize=(6.4, 0.95), dpi=200)
+    fig.patch.set_facecolor("#0d1117")
+    ax.set_facecolor("#0d1117")
+    y = np.arange(len(cases))
+    height = 0.34
+    ax.barh(y + height / 2, before, height, color="#3d4b5f", label="before")
+    ax.barh(y - height / 2, after, height, color="#4c9aff", label="after")
+    # Only the delta, right after the shorter of the two bars: the absolute
+    # numbers are in the transcript's table, and a long label at this render
+    # width ran into the axes edge.
+    for index, (old, new) in enumerate(zip(before, after)):
+        delta = (new - old) / old * 100
+        ax.text(max(old, new) + 0.35, index, f"{delta:+.1f}%",
+                va="center", fontsize=8, color="#c9d1d9")
+    ax.set_yticks(y, cases, fontsize=8.5, color="#c9d1d9")
+    ax.set_xlabel("µs/op, median of 5", fontsize=8.5, color="#8b949e")
+    ax.set_xlim(0, 16)
+    ax.grid(axis="x", color="#21262d", lw=0.8)
+    ax.set_axisbelow(True)
+    for spine in ("top", "right", "left"):
+        ax.spines[spine].set_visible(False)
+    ax.spines["bottom"].set_color("#30363d")
+    ax.tick_params(axis="both", length=0, colors="#8b949e", labelsize=8)
+    legend = ax.legend(loc="lower right", frameon=False, fontsize=7.5)
+    for text in legend.get_texts():
+        text.set_color("#8b949e")
+    fig.tight_layout()
+    fig.savefig(out / "parser-throughput.png", facecolor=fig.get_facecolor())
+    plt.close(fig)
+
     print("wrote", out)
     return 0
 

@@ -465,34 +465,53 @@ The window is a 16-inch laptop's default 1728×1117 at 2×, and the frame reads 
 a normal desktop app: the session rail, the transcript, and — opened from the
 header's own panel button (`展开上下文面板` / `Expand context panel`) — the
 workspace's files on the right. The panel seeds its **Files** tab when it opens
-from that button, so the scenario taps it once and then the `src` row; what it
-lists is the checkout the conversation is about — `parser.rs` and `args.rs` beside
-`lexer.rs`, `main.rs`, `Cargo.toml` and `AGENTS.md`, from `workspaceFiles` keyed by
-the workspace path. Opening it takes 384 px off the conversation column (1440 →
-1056 at this width), but the reading column is capped, so the text re-centres
-rather than re-wrapping; in a window too narrow for a third column the panel opens
-as an overlay over the conversation instead (`context-panel-narrow` captures that).
+from that button, so the scenario taps it once and then the `src`, `benches` and
+`src/parser` rows; what it lists is the checkout the conversation is about —
+`parser.rs` and `args.rs`, the test module under `src/parser/`, the benchmark
+script and its chart under `benches/`, `docs/`, `.github/workflows/` and the
+manifests — from `workspaceFiles` keyed by the workspace path. Opening it takes
+384 px off the conversation column (1440 → 1056 at this width), but the reading
+column is capped, so the text re-centres rather than re-wrapping; in a window too
+narrow for a third column the panel opens as an overlay over the conversation
+instead (`context-panel-narrow` captures that).
 
-A settled reply folds onto its answer, so the frame stands at the first turn and
-keeps its work folded — `查看过程 · 工具调用 2 次 · 思考 1 次`, which is the TUI's own
-`▸` line. `上一个问题` (`Previous question`, the transcript's own ↑ control) lands
-the reader's previous question just under the header, which is what puts a whole
-turn on one screen: the question, the folded process, and the diagnosis with its
-highlighted `rust` block, three-row table and closing line, the text word for word
-the TUI's. The second turn starts at the fold — its question is on screen, its
-answer is not — because a laptop window cannot hold both turns, and a
-taller-than-a-screen "window" was the alternative. The `eval` holds the frame to
-that: every block of the first turn above the composer, the second question still
-visible at the fold, and no word of the other language anywhere, the files panel
-included.
+A settled reply folds onto its answer, so the work of a turn is one quiet line —
+`查看过程 · 工具调用 5 次 · 思考 3 次`, the desktop's own version of the TUI's `▸`. The
+frame stands on the second turn, the benchmark, because that is where the picture
+is: `上一个问题` walks back to the question and an `eval` then sets the column so it
+sits 8 px under the header (the press alone lands on the reply once the answer
+grows), and from there the frame reads question → folded process → the benchmark
+table and the paragraph that argues from it → the throughput chart → the approval
+card. The first turn is one screen above: the session keeps the whole diagnosis
+the TUI and the phone draw, with its highlighted `rust` block and three-row table,
+and nothing of it is half-visible in this frame.
+
+That cut is arithmetic, not taste. With the approval card in the floating band the
+clear transcript band is about 600 px, and this session is roughly 2 400 px tall,
+so the frame can hold one turn — and it holds the one carrying the chart, the
+numbers and the card. The `eval` holds it there: the first block on screen is the
+second question, every block below it is above the card, the card is wholly above
+the composer, and no word of the other language reaches the frame, the files panel
+and the card included.
+
+The card is the session's own pending approval (`parserApproval` in the fixture):
+the two commits are green and the model wants `git push origin fix/parser-bound`,
+which the sandbox refuses — so it stops and asks, with the command, the reason and
+the one-time-escalation warning, and `拒绝` / `允许一次` underneath. That is only
+true because of the tier: `?settings=approvalTier:sandbox` pins the approval mode
+the way `?lang=` pins the words, so the composer's chip reads `沙箱保护`
+(`Sandboxed`) rather than `完全访问`; the scenario fails on either `Full access`
+string. The chart is the reply's own inline image — the markdown points at
+`benches/parser-throughput.png` in the demo checkout, `shot/mock/core.ts` maps that
+name to a real PNG that `gen-demo-assets.py` draws on the app's dark surface, and
+the assertion requires it to have *decoded* (`naturalWidth > 0`), not merely to be
+present. The same path is in the right panel's tree, so the two columns agree.
 
 The palette is the app's own dark appearance: `?theme=dark` pins it the way
 `?lang=` pins the words (both are read by `shot/prefs.ts` before the app boots),
 so the frames are the shipped default (`futureos`) in dark rather than a variant,
 and the scenario asserts `documentElement` carries `dark` so a capture cannot
-quietly come back light. **Only colour changes.** The geometry is the same as a
-light capture to the pixel — both scenarios still report the first turn ending
-292 px (zh) and 268 px (en) above the composer — and the contrast is measured
+quietly come back light. Colour is all it changes, and the contrast is measured
 rather than eyeballed: body and heading text at 14:1, the muted table cells and
 the quote at 7.6:1, the file tree at 15:1, all above WCAG AA, with 0.6 % of the
 frame's pixels brighter than 200 (the glyphs themselves). The colours a reader
