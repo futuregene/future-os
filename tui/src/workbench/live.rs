@@ -10645,4 +10645,209 @@ mod tests {
             live.client.disconnect();
         }
     }
+
+    /// The typed verbs that reach the adapter (the surface takes the rest before
+    /// they arrive), one row each — the parsing, the list-shaped argument and the
+    /// refusal all have a sentence the reader sees.
+    #[tokio::test]
+    async fn every_adapter_verb_parses_and_answers() {
+        type Check = fn(&mut super::Live) -> bool;
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(&str, &[(&str, &str)], &str, Option<Check>)> = vec![
+            (
+                "`/sessions` re-reads the rail",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("list_sessions", r#"{"sessions":[]}"#),
+                ],
+                "/sessions",
+                None,
+            ),
+            (
+                "`/worktree new x` says it is creating one",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                "/worktree new feat/x",
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "`/worktree` with a name that is not `new` shows the usage line",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                "/worktree feat/x",
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "`/tools a,b` splits the list and sends it",
+                &[("get_state", r#"{"sessionId":"s1"}"#), ("set_tools", "{}")],
+                "/tools read, shell",
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "a refused `/tools` is the failure sentence",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                "/tools read",
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "`/model x` applies the model",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("set_model", r#"{"model":"future/new"}"#),
+                ],
+                "/model future/new",
+                Some(|live| live.pending_model() == Some("future/new")),
+            ),
+            (
+                "`/model` cycles the agent's own order",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("cycle_model", r#"{"model":"future/next"}"#),
+                ],
+                "/model",
+                Some(|live| live.pending_model() == Some("future/next")),
+            ),
+            (
+                "a refused `/export` is a sentence, not a path",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                "/export",
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "`/fork` and `/history` are the surface's own",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                "/history",
+                None,
+            ),
+            (
+                "the choosers the surface opens are not unknown verbs",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                "/thinking",
+                None,
+            ),
+        ];
+
+        for (what, pairs, verb, check) in rows {
+            let mut live = live_on(pairs).await;
+            let before = (live.notice.clone(), live.draft.editor.text().to_string());
+            assert!(
+                matches!(live.command(verb).await, Outcome::Continue),
+                "{what}: a verb must not end the app"
+            );
+            match check {
+                Some(check) => assert!(check(&mut live), "{what}"),
+                None => assert_eq!(
+                    (live.notice.clone(), live.draft.editor.text().to_string()),
+                    before,
+                    "{what}: the adapter spoke about a verb it does not own"
+                ),
+            }
+            live.client.disconnect();
+        }
+    }
+
+    /// The events the transcript turns into rows *within* a run: a streaming tool
+    /// call, its final text, and the three compaction outcomes.
+    #[tokio::test]
+    async fn a_running_turn_updates_its_own_rows() {
+        let mut live = live_on(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            ("get_session_entries", r#"{"entries":[]}"#),
+        ])
+        .await;
+        let current = live.state.session_id.clone();
+        let stamped = |kind: &str, data: serde_json::Value| {
+            let mut event = event(kind, data);
+            event.session_id = Some(current.clone());
+            event
+        };
+
+        // A tool call streaming its arguments keeps one row, not one per delta —
+        // and each of the three events owes a frame (the revision is what the
+        // loop repaints on), which is the surface-visible half of that.
+        let mut revision = live.revision;
+        for (kind, data) in [
+            (
+                "tool_start",
+                json!({"tool_call_id": "t-1", "name": "bash", "phase": "input"}),
+            ),
+            (
+                "tool_delta",
+                json!({"tool_call_id": "t-1", "text": "ls -la"}),
+            ),
+            (
+                "tool_end",
+                json!({"tool_call_id": "t-1", "ok": true, "output": "done"}),
+            ),
+        ] {
+            live.handle_event(stamped(kind, data));
+            assert_ne!(
+                live.revision, revision,
+                "{kind} did not owe the surface a frame"
+            );
+            revision = live.revision;
+        }
+        assert_eq!(
+            live.activity_snapshot().tools,
+            1,
+            "one tool call, counted once"
+        );
+
+        // The three compaction outcomes: committed ends the takeover, unchanged
+        // says nothing changed, failed says why.
+        live.begin_compaction();
+        assert!(live.compacting(), "the probe did not take the session over");
+        live.handle_event(stamped(
+            "compaction_committed",
+            json!({"tokensSaved": 1200}),
+        ));
+        assert!(
+            !live.compacting(),
+            "a committed compaction left the session held"
+        );
+
+        live.notice = None;
+        live.handle_event(stamped("compaction_unchanged", json!({})));
+        assert!(
+            live.notice.is_some(),
+            "an unchanged compaction said nothing at all"
+        );
+
+        live.notice = None;
+        live.handle_event(stamped(
+            "compaction_failed",
+            json!({"error": "the model refused"}),
+        ));
+        let notice = live.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("the model refused"),
+            "a failed compaction dropped the agent's reason: {notice:?}"
+        );
+
+        // An unknown kind is not a panic and not a painted row.
+        live.handle_event(stamped("not_a_kind_at_all", json!({})));
+        live.client.disconnect();
+    }
+
+    /// The launchpad drops stream events: the transcript was cleared on purpose,
+    /// and the previous session's reply must not narrate into it.
+    #[tokio::test]
+    async fn the_launchpad_ignores_stream_events() {
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        let before = live.chat.render_all(100).len();
+        live.to_launchpad();
+        live.handle_event(event(
+            "text_chunk",
+            json!({"text": "from the session I left"}),
+        ));
+        let rows = live.chat.render_all(100).join("\n");
+        assert!(
+            !rows.contains("from the session I left"),
+            "the launchpad painted the conversation the reader left: {rows:?}"
+        );
+        assert!(
+            live.activity_kind() == super::ActivityKind::Idle,
+            "a dropped event still moved the activity row"
+        );
+        let _ = before;
+        live.client.disconnect();
+    }
 }
