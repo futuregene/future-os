@@ -7,7 +7,10 @@ summary percentages (istanbul `lines.pct`, llvm-cov "Lines") are not the accepta
 `npx vitest run --coverage --coverage.reporter=lcov` on Node from `rust-toolchain.toml`'s
 neighbour (the desk's Node 24; the suite also passes on 22).
 
-**Result**: `DA:0` = **103** lines in **53** files for the lane as a whole (measured on the merge
+**Result**: `DA:0` = **101** lines in **53** files for the lane as a whole (merge tree of
+wave 9, `origin/dev-huichen@5b15afe54`). **40** of them are waived here (36 `W2` + 4 `W8`);
+the remote/settings group waived another **26** in `web-remote.md`; **35** are reachable and
+not yet written — work items, not waivers.
 tree of wave 8, `origin/dev-huichen@7c85ec1ad`). **37** of them are waived here (33 `W2` + 4
 `W8`); the remote/settings group waived another **26** in `web-remote.md`; **40** are reachable
 and not yet written — work items, not waivers.
@@ -74,6 +77,9 @@ exists), and the falsifier. The ledger convention (`docs/testing/waiver-ledger.m
 | 35 | `desktop/src/components/layout/hooks/useAppSettings.ts:155` | **W2** | sandbox fallback's `if (sandboxFallbackRef.current) return` | `src/components/layout/hooks/useAppSettings.sandboxFallback.test.tsx` :: *falls back to manual approval exactly once under StrictMode* |
 | 36 | `desktop/src/features/agent/AgentThread.tsx:349` | **W2** | `thread.copyReply`'s `if (!lastReply) return` | `src/features/agent/AgentThread.test.tsx` :: *leaves the copy key unclaimed while the turn has no answer* |
 | 37 | `desktop/src/features/agent/MentionEditor.tsx:201` | **W2** | the mutation effect's `if (!editor) return` | `src/features/agent/MentionEditor.placeholder.test.tsx` :: *tracks DOM edits even without an input event, without replacing the text or caret* |
+| 38 | `desktop/src/features/agent/Composer.tsx:516` | **W2** | `dropSubmittedDraft`'s `if (!isCurrent() \|\| !editorRef.current \|\| draftKeyRef.current !== submittedDraftKey) return` | `src/features/agent/Composer.delivery.test.tsx` :: *keeps a draft typed after the send instead of restoring the refused message* |
+| 39 | `desktop/src/features/agent/Composer.tsx:573` | **W2** | `installRecommendedSkill`'s `if (!reco?.card \|\| installingSkill) return` | `src/features/agent/Composer.skillRecommend.test.tsx` :: *installs, appends the slash command and sends on 安装并使用* |
+| 40 | `desktop/src/features/agent/Composer.tsx:606` | **W2** | `dismissRecommendedSkill`'s `if (!skillRecommendation?.card) return` | `src/features/agent/Composer.skillRecommend.test.tsx` :: *sends the original draft unchanged on dismiss* |
 
 ## 1. `theme.ts:229` — W2
 
@@ -307,6 +313,13 @@ condition as the guard.
 - **`RunsPanel.tsx:155`** — the only caller is `disabled={archiving || finishedCount === 0}` (`:182-184`).
 - **`TerminalPanel.tsx:239`** — `ErrorBar` is rendered only under
   `{tabs.createError ? <ErrorBar tabs={tabs} /> : null}` (`:139`).
+
+## Wave 10 (layout group) — rows 38-40 added
+
+The lane's residual went **103 → 101** (`Composer:422` — the queue taking the whole sentence
+clears the stored draft with the box — and `Composer:498` — an answer about an earlier draft
+must not send text the reader has since edited). Three `Composer` guards joined the ledger
+(`:516`, `:573`, `:606`), each with its caller's own condition quoted as the evidence.
 
 ## Wave 9 (layout group) — no new rows
 
@@ -569,6 +582,71 @@ component has no branch that renders without it.
   changing the effect's deps → the effect runs with `editorRef.current === null` and line 201
   executes.
 - **Falsifier**: a render in which the editor element is absent while the effect still runs.
+
+## 38-40. `Composer.tsx` — three guards whose subject the caller already checked
+
+### 38 — `:516`, the submitted draft's drop
+
+```ts
+499:     const submittedDraftKey = draftKeyRef.current;
+503:     const isCurrent = captureOperation();
+514:     const dropSubmittedDraft = () => {
+515:       if (!isCurrent() || !editorRef.current || draftKeyRef.current !== submittedDraftKey)
+516| return;
+...
+545| dropSubmittedDraft();
+```
+
+The function is called **synchronously at 545**, in the same block that captured the token
+(`503`) and read the ref (`499`); between the capture and the call no render, unmount or
+draft switch can happen, so all three disjuncts are false by construction. The guard is the
+shape the *other* sibling (`restoreComposer`, `:533`) genuinely needs — it runs from a promise
+continuation — written on the one that does not.
+
+- **Pinned by** `Composer.delivery.test.tsx` :: *keeps a draft typed after the send instead of
+  restoring the refused message* (the box is emptied at send; a draft typed later survives).
+- **Positive control (stated)**: move the `dropSubmittedDraft()` call into the send promise's
+  `.then` (its sibling's position) → a draft switch during delivery reaches line 516.
+- **Falsifier**: an asynchronous call site for `dropSubmittedDraft`.
+
+### 39 — `:573`, install
+
+```ts
+626:       {skillRecommendation?.card
+628:             <SkillRecommendCard
+630:               installing={installingSkill}
+633:               onInstall={() => void installRecommendedSkill()}
+SkillRecommendCard.tsx:45:          disabled={installing}
+```
+
+`installRecommendedSkill`'s only caller is the card's install button, which exists only while
+`card` is truthy (`626`) and is `disabled={installing}` while the install runs
+(`SkillRecommendCard.tsx:45`) — both halves of the guard are enforced one layer up.
+
+- **Pinned by** `Composer.skillRecommend.test.tsx` :: *installs, appends the slash command and
+  sends on 安装并使用*.
+- **Positive control (stated)**: call `onInstall` from a second affordance that is not disabled
+  while installing → `installingSkill` is true and line 573 executes.
+- **Falsifier**: an install trigger outside the card.
+
+### 40 — `:606`, dismiss
+
+```ts
+446:       if (reco.card && !cardHandledRef.current) {
+449:         dismissRecommendedSkill();
+626:       {skillRecommendation?.card
+632:               onDismiss={dismissRecommendedSkill}
+```
+
+Two call sites, both already conditional on a card: the send path checks `reco.card` before
+calling (`448`), and the button is rendered under `skillRecommendation?.card` (`626`). So the
+guard's condition cannot be true.
+
+- **Pinned by** `Composer.skillRecommend.test.tsx` :: *sends the original draft unchanged on
+  dismiss*.
+- **Positive control (stated)**: call `dismissRecommendedSkill()` from a path that does not
+  check the card (e.g. an unmount cleanup) → line 606 executes.
+- **Falsifier**: a dismiss trigger while no card is on screen.
 
 ## How to retire a row
 
