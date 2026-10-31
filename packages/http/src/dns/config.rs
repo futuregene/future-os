@@ -104,6 +104,13 @@ impl Plan {
         let dns_server = non_empty(std::env::var(DNS_SERVER_ENV).ok());
         let resolv_conf = non_empty(std::env::var(RESOLV_CONF_ENV).ok());
         let prefix = non_empty(std::env::var(PREFIX_ENV).ok());
+        // Windows' `getaddrinfo` is the Windows DNS client, not a reader of
+        // `/etc/resolv.conf`, so the absence of that file there says nothing
+        // about whether this process can resolve a name. Only an explicit
+        // setting moves Windows onto the custom path.
+        if cfg!(windows) && dns_server.is_none() && resolv_conf.is_none() {
+            return Plan::System;
+        }
         let inputs = Inputs {
             dns_server: dns_server.as_deref(),
             resolv_conf: resolv_conf.as_deref(),
