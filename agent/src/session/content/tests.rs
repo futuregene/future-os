@@ -547,3 +547,79 @@ fn a_shell_result_entry_binds_its_facts_and_summary_as_bodies() {
         })
         .unwrap();
 }
+
+/// An entry that finishes a block the run already streamed reuses the sealed
+/// stream body by identity instead of copying the bytes into a second object.
+#[test]
+fn an_entry_reuses_the_sealed_stream_body_it_finishes() {
+    use crate::session::sqlite_store::SqliteStore;
+    use serde_json::json;
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+    let body = "streamed text";
+    let id = store
+        .db
+        .call(|db| {
+            let tx = db.transaction()?;
+            tx.execute("INSERT INTO sessions(id) VALUES('new')", [])?;
+            enable(&tx, "new")?;
+            let id = create(&tx)?;
+            append(&tx, id, 0, body)?;
+            let mut digest = ContentDigest::default();
+            digest.push(body)?;
+            let range = seal(&tx, id, digest)?;
+            let scope = stream::StreamIdentity {
+                session_id: "new".into(),
+                run_id: "r".into(),
+                epoch: 0,
+            };
+            stream_body::bind(&tx, &scope, "block-0", range, stream::Encoding::Text)?;
+            tx.commit()?;
+            Ok(id)
+        })
+        .unwrap();
+    let entry = json!({"id":"a","type":"assistant","role":"assistant","timestamp":"2026-10-26T00:00:00Z",
+        "meta":{"run_id":"r","_future_stream_blocks":["block-0"],"_future_stream_epoch":0},
+        "content":[{"type":"text","text":body}]});
+    store.append("new", vec![entry.clone()]).unwrap();
+    // The transcript reads back the same text (the stream bookkeeping keys are
+    // internal and are not returned to readers).
+    let mut readable = entry.clone();
+    let meta = readable["meta"].as_object_mut().unwrap();
+    meta.remove("_future_stream_blocks");
+    meta.remove("_future_stream_epoch");
+    assert_eq!(store.entries("new").unwrap(), vec![readable]);
+    store
+        .db
+        .read(move |db| {
+            // ...because the entry's reference points at the streamed object,
+            // which is still the only body stored for this conversation.
+            let objects: i64 =
+                db.query_row("SELECT count(*) FROM content_objects", [], |r| r.get(0))?;
+            assert_eq!(objects, 1, "the finished block must not be copied");
+            let referenced: i64 = db.query_row(
+                "SELECT count(*) FROM content_references WHERE session_id='new' AND owner_kind='entry' AND owner_id='a' AND field='/content/0/text' AND content_id=?1",
+                [id],
+                |r| r.get(0),
+            )?;
+            assert_eq!(referenced, 1, "the entry must own a reference to it");
+            Ok(())
+        })
+        .unwrap();
+
+    // Text that is not byte-identical to the streamed body is *not* reused: it
+    // is staged as its own object, so a different completion cannot alias it.
+    let mut changed = entry.clone();
+    changed["id"] = json!("b");
+    changed["content"][0]["text"] = json!("streamed text!");
+    store.append("new", vec![changed]).unwrap();
+    store
+        .db
+        .read(|db| {
+            let objects: i64 =
+                db.query_row("SELECT count(*) FROM content_objects", [], |r| r.get(0))?;
+            assert_eq!(objects, 2);
+            Ok(())
+        })
+        .unwrap();
+}
