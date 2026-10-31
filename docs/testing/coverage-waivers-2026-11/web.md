@@ -7,8 +7,8 @@ summary percentages (istanbul `lines.pct`, llvm-cov "Lines") are not the accepta
 `npx vitest run --coverage --coverage.reporter=lcov` on Node from `rust-toolchain.toml`'s
 neighbour (the desk's Node 24; the suite also passes on 22).
 
-**Result**: `DA:0` = **168** lines in **63** files. **24** of them are waived here
-(24 records, 24 distinct constructs); the other **144** are *reachable and not yet written*
+**Result**: `DA:0` = **159** lines in **61** files. **33** of them are waived here
+(33 records: 29 `W2` + 4 `W8`; 26 distinct constructs — the rail's four feature rows share one cause); the other **126** are *reachable and not yet written*
 — they are work items, listed per file in the campaign's working report, **not** waivers.
 
 ```bash
@@ -58,6 +58,15 @@ exists), and the falsifier. The ledger convention (`docs/testing/waiver-ledger.m
 | 22 | `desktop/src/features/terminal/TerminalPanel.tsx:239` | **W2** | `ErrorBar`'s `if (!error) return null` | `src/features/terminal/TerminalPanel.test.tsx` :: *shows a create failure with a retry and no home-fallback shortcut* |
 | 23 | `desktop/src/components/layout/AppShell.tsx:1058` | **W2** | `handlePreviewLeftPanel`'s `if (showLeftPanel) return` | `src/components/layout/AppShell.test.tsx` :: *previews the collapsed rail on hover and drops it again on leave* |
 | 24 | `desktop/src/components/layout/AppShell.tsx:1261` | **W2** | `openRemoteConversation`'s `if (conversation.desktopId === null) return` | `src/components/layout/AppShell.test.tsx` :: *opens a remote conversation on the machine that owns it* |
+| 25 | `desktop/src/components/layout/ActivityRail.tsx:1107` | **W2** | `stepConversation`'s `if (walkableRows.length === 0) return` | `src/components/layout/ActivityRail.nav.test.tsx` :: *leaves the keys unclaimed on a section with no list* |
+| 26 | `desktop/src/components/layout/ActivityRail.tsx:1125` | **W2** | `stepGroup`'s `if (groupStops.length === 0) return` | `src/components/layout/ActivityRail.nav.test.tsx` :: *walks to the next and previous conversation in the drawn order* |
+| 27 | `desktop/src/components/layout/ActivityRail.tsx:1165` | **W2** | `stepDevice`'s `if (!onChangeDeviceFilter) return` | `src/components/layout/ActivityRail.remote.test.tsx` :: *shows only the chosen machine's conversations when one is filtered* |
+| 28 | `desktop/src/components/layout/ActivityRail.tsx:1360` | **W2** | `featureItems.length > 0` branch's `<NavButton>` open | `src/components/layout/ActivityRail.nav.test.tsx` :: *renders exactly the expected set of nav entries* |
+| 29 | `desktop/src/components/layout/ActivityRail.tsx:1365` | **W2** | the same row's `onClick` | same |
+| 30 | `desktop/src/components/layout/ActivityRail.tsx:1684` | **W8** | collapsed rail's `featureItems.map((item) => { const Icon = item.icon;` | same |
+| 31 | `desktop/src/components/layout/ActivityRail.tsx:1685` | **W8** | the same callback's `return (` | same |
+| 32 | `desktop/src/components/layout/ActivityRail.tsx:1691` | **W8** | the same row's `onClick` | same |
+| 33 | `desktop/src/components/layout/ActivityRail.tsx:1761` | **W2** | `sortThreads`' `return a.status === "active" ? -1 : 1` | `src/components/layout/ActivityRail.recent.test.tsx` :: *draws every conversation flat, with no heading for where it lives* |
 
 ## 1. `theme.ts:229` — W2
 
@@ -292,6 +301,16 @@ condition as the guard.
 - **`TerminalPanel.tsx:239`** — `ErrorBar` is rendered only under
   `{tabs.createError ? <ErrorBar tabs={tabs} /> : null}` (`:139`).
 
+## Wave 6 (layout group) — rows 25-33 added
+
+The lane's residual went **168 → 159** with three adapters covered (`ActivityRail`'s host row
+from the keyboard, `VibeRemoteCell`'s five actions, `useNewConversation`'s pin flow), and nine
+lines in `ActivityRail` were proven unreachable: one `W2` for each of the three walk guards
+(their commands are registered only while they have somewhere to go), and the four-row block
+driven by a module constant that is deliberately empty — one `W2` for the branch, three `W8`
+for the mapper body. `sortThreads`' status tiebreak is the ninth (`W2`: its only caller
+pre-filters to `status === "active"`).
+
 ## Wave 5 (layout group) — rows 23-24 added
 
 The layout-and-interaction group's own residual went **76 → 57** in this wave (the lane's total
@@ -355,6 +374,76 @@ binds it). So `openRemoteConversation` (`1259-1262`) can only be called with a n
 - **Positive control (stated)**: route `openRow`'s local branch through
   `onOpenRemoteConversation` as well → a local row reaches line 1261 and returns.
 - **Falsifier**: a second caller of `onOpenRemoteConversation` that can pass a local row.
+
+## 25-33. `ActivityRail.tsx` — W2 ×5, W8 ×3
+
+### 25-27 — the three walk guards
+
+Each walk command is registered only while it has somewhere to go, so its own
+empty-list guard cannot be reached:
+
+```ts
+1140:  useCommand("thread.previous", () => stepConversation(-1), listShowing && walkableRows.length > 0);
+1141:  useCommand("thread.next", () => stepConversation(1), listShowing && walkableRows.length > 0);
+1144:  useCommand("group.previous", () => stepGroup(-1), listShowing && groupStops.length > 1);
+1145:  useCommand("group.next", () => stepGroup(1), listShowing && groupStops.length > 1);
+1181:  useCommand("rail.device.next", stepDevice, listShowing && Boolean(onChangeDeviceFilter) && remotePeers.length > 0);
+```
+
+`stepConversation` (`1105-1107`), `stepGroup` (`1123-1125`) and `stepDevice` (`1163-1165`) are
+their own only callers' targets — the guard inside each is the registration condition
+repeated. The `thread.*`/`group.*` keys are absent with no rows at all, and
+`rail.device.next` is absent without `onChangeDeviceFilter` or any paired machine.
+
+- **Pinned by** `ActivityRail.nav.test.tsx` :: *leaves the keys unclaimed on a section with no
+  list* (the key does not even fire, and is not consumed), *walks to the next and previous
+  conversation in the drawn order* (the positive half), and `ActivityRail.remote.test.tsx` ::
+  *shows only the chosen machine's conversations when one is filtered*.
+- **Positive control (stated)**: register each command unconditionally (`useCommand(id, fn)`)
+  → pressing the key on an empty list reaches line 1107 / 1125 / 1165.
+- **Falsifier**: a second caller of `stepConversation`, `stepGroup` or `stepDevice`.
+
+### 28-32 — the feature rows (one W2, three W8)
+
+`featureItems` is a module constant, deliberately empty:
+
+```ts
+166: // Data / Skill entries are temporarily hidden from the navigation:
+167: // these modules have been deprioritised (see PLAN.md "Next Priorities").
+168: const featureItems: Array<{ id: ActivitySection; label: string; icon: LucideIcon }> = [];
+```
+
+so `featureItems.length > 0` (`1356`) is always false and `featureItems.map(...)` (`1683`)
+never calls its callback. Lines 1360/1365 are the dead branch (W2); 1684/1685/1691 are the
+never-invoked mapper body (W8 — the producer is the constant, and it produces nothing).
+
+- **Pinned by** `ActivityRail.nav.test.tsx` :: *renders exactly the expected set of nav entries*
+  — the labelled set is asserted verbatim, so a re-enabled feature row makes that test
+  fail before it can silently appear.
+- **Positive control (stated)**: give the constant one entry → both blocks render and all
+  five lines execute.
+- **Falsifier**: any assignment to `featureItems` besides the empty literal.
+
+### 33 — `sortThreads`' status tiebreak
+
+`sortThreads` is only ever called on threads already filtered to one status:
+
+```ts
+371:   const visibleThreads = useMemo(
+372:     () => sortThreads(threads.filter(thread => thread.status === "active")),
+373:     [threads],
+374:   );
+```
+
+so the comparator's `a.status !== b.status` (`1760`) cannot be true and the `-1 : 1` arm
+(`1761`) is unreachable. The tiebreak stays as defence for a second caller that does not
+pre-filter.
+
+- **Pinned by** `ActivityRail.recent.test.tsx` :: *draws every conversation flat, with no
+  heading for where it lives* (the list's own order is what those assertions read).
+- **Positive control (stated)**: call `sortThreads` with an unfiltered list (one active, one
+  archived) → line 1761 executes.
+- **Falsifier**: a caller of `sortThreads` that does not pre-filter by status.
 
 ## How to retire a row
 
