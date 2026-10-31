@@ -3432,9 +3432,6 @@ mod driver_tests {
         /// Every command type the mock agent was asked, in order: what the driver
         /// actually sent, not what it meant to.
         pub seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-        /// Whether `load_rx` was moved into a run (a receiver cannot be reused,
-        /// so the next run needs a fresh channel).
-        load_rx_consumed: bool,
         /// The same log, with the session each command named: what the driver asked
         /// *about*, not just what it asked.
         pub seen_sessions: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
@@ -3551,7 +3548,6 @@ mod driver_tests {
                 settings_path,
                 seen: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
                 seen_sessions: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-                load_rx_consumed: false,
                 _agent_stream: agent_stream,
                 _dir: dir,
             }
@@ -3613,26 +3609,40 @@ mod driver_tests {
             crate::terminal::capture::take()
         }
 
+        /// Run the loop in short slices until `done` holds, up to `budget`.
+        ///
+        /// A fixed sleep is a guess about how long a read takes, and under a
+        /// loaded machine it is the wrong guess: this waits for the *effect*
+        /// instead (a section installed, a notice set), which is what the test
+        /// is about. Returns whether it arrived in time.
+        pub async fn wait_for(
+            &mut self,
+            budget: Duration,
+            mut done: impl FnMut(&Driver) -> bool,
+        ) -> bool {
+            let deadline = tokio::time::Instant::now() + budget;
+            loop {
+                if done(self) {
+                    return true;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    return false;
+                }
+                let _ = self.pump(Duration::from_millis(40)).await;
+            }
+        }
+
         /// One bounded run of the loop: `Some(outcome)` when the script ended it
         /// itself, `None` when the budget ran out first.
         async fn step(&mut self, budget: Duration) -> Option<Result<(), String>> {
             crate::terminal::capture::start();
-            // `DriverIo` takes the loaded-page receiver by value, so a run
-            // consumes it — and `Live` has to be pointed at the channel this run
-            // actually drains, or a read started here answers into the previous
-            // run's dropped receiver and is silently lost (measured: the second
-            // `pump` of a driver never installed its `/git` read). The channel
-            // from `attach_at` is kept for the first run, so a test can still
-            // queue a page before it starts.
-            if self.load_rx_consumed {
-                let (load_tx, load_rx) = mpsc::unbounded_channel();
-                self.load_tx = load_tx.clone();
-                self.load_rx = load_rx;
-                self.live.set_load_sender(load_tx);
-                self.load_rx_consumed = false;
-            }
+            // `DriverIo` takes the loaded-page receiver by value, so the driver
+            // lends it to the loop and takes it back afterwards. One channel for
+            // the driver's whole life is the point: a read started before a run
+            // that answers *during* it (or between two slices of `wait_for`) is
+            // delivered, instead of landing in a receiver the previous run
+            // dropped.
             let load_rx = std::mem::replace(&mut self.load_rx, mpsc::unbounded_channel().1);
-            self.load_rx_consumed = true;
             let mut io = DriverIo {
                 terminal: &mut self.terminal,
                 notifications: &mut self.notifications,
@@ -3654,16 +3664,9 @@ mod driver_tests {
             )
             .await
             .ok();
-            // A read started between two runs (a test pressing a key through
-            // `quit`, which is how the loop hands one key over without a run) has
-            // to answer somewhere, and the run's receiver died with `io`. Give the
-            // driver a fresh channel now: the next `step` drains it, so the answer
-            // is delivered rather than dropped.
-            let (load_tx, load_rx) = mpsc::unbounded_channel();
-            self.load_tx = load_tx.clone();
-            self.load_rx = load_rx;
-            self.live.set_load_sender(load_tx);
-            self.load_rx_consumed = false;
+            // Take the receiver back: the next run (and anything the loop did
+            // not drain) keeps flowing through the same channel.
+            self.load_rx = io.load_rx;
             outcome
         }
 
@@ -4276,7 +4279,15 @@ mod driver_tests {
         async fn the_repository_tabs_focus_and_pan_are_its_own_keys() {
             let mut driver = Driver::attach_conversation().await;
             assert!(!driver.quit_key("ctrl+g").await);
-            let _ = driver.pump(Duration::from_millis(700)).await;
+            assert!(
+                driver
+                    .wait_for(Duration::from_secs(20), |driver| driver
+                        .live
+                        .git()
+                        .is_some())
+                    .await,
+                "the log never installed"
+            );
             let log = driver.live.git().cloned().expect("the log installed");
             assert_eq!(
                 log.section,
@@ -4286,7 +4297,16 @@ mod driver_tests {
 
             // `2` is the next tab, and the read that follows lands on it.
             assert!(!driver.quit_key("2").await, "a tab key does not leave");
-            let _ = driver.pump(Duration::from_millis(700)).await;
+            let want = crate::workbench::state::GitSection::ALL[1];
+            assert!(
+                driver
+                    .wait_for(Duration::from_secs(20), |driver| driver
+                        .live
+                        .git()
+                        .is_some_and(|view| view.section == want))
+                    .await,
+                "the refs never installed"
+            );
             let refs = driver.live.git().cloned().expect("the refs installed");
             assert_ne!(
                 refs.section, log.section,
@@ -4316,16 +4336,21 @@ mod driver_tests {
 
             // `1` is the log again, whichever tab the reader left open.
             assert!(!driver.quit_key("1").await);
-            let _ = driver.pump(Duration::from_millis(700)).await;
-            assert_eq!(
-                driver.live.git().map(|view| view.section),
-                Some(crate::workbench::state::GitSection::Commits),
+            assert!(
+                driver
+                    .wait_for(Duration::from_secs(20), |driver| driver
+                        .live
+                        .git()
+                        .is_some_and(
+                            |view| view.section == crate::workbench::state::GitSection::Commits
+                        ))
+                    .await,
                 "the first tab did not land back on the log"
             );
 
             // `r` re-reads the section on screen.
             assert!(!driver.quit_key("r").await, "refresh does not leave");
-            let _ = driver.pump(Duration::from_millis(700)).await;
+            let _ = driver.pump(Duration::from_millis(200)).await;
             assert!(
                 driver.live.git().is_some(),
                 "the refresh dropped the panel's view"
@@ -4344,10 +4369,26 @@ mod driver_tests {
             for (index, section) in sections.iter().enumerate() {
                 let mut driver = Driver::attach_conversation().await;
                 assert!(!driver.quit_key("ctrl+g").await);
-                let _ = driver.pump(Duration::from_millis(700)).await;
+                assert!(
+                    driver
+                        .wait_for(Duration::from_secs(20), |driver| driver
+                            .live
+                            .git()
+                            .is_some())
+                        .await,
+                    "the log never installed"
+                );
                 let key = (index + 1).to_string();
                 assert!(!driver.quit_key(&key).await, "{key} left the workbench");
-                let _ = driver.pump(Duration::from_millis(700)).await;
+                assert!(
+                    driver
+                        .wait_for(Duration::from_secs(20), |driver| driver
+                            .live
+                            .git()
+                            .is_some_and(|view| view.section == *section))
+                        .await,
+                    "tab {key} never landed on {section:?}"
+                );
                 let view = driver.live.git().cloned().expect("a view");
                 assert_eq!(
                     view.section, *section,
@@ -4424,7 +4465,17 @@ mod driver_tests {
                 Some(Overlay::Git),
                 "ctrl+g did not open the repository panel"
             );
-            let painted = driver.pump(Duration::from_millis(700)).await;
+            assert!(
+                driver
+                    .wait_for(Duration::from_secs(20), |driver| driver
+                        .live
+                        .git()
+                        .is_some())
+                    .await,
+                "the repository read never landed"
+            );
+            // The read landing owes a frame; paint it before reading the screen.
+            let painted = driver.pump(Duration::from_millis(200)).await;
             let view = driver
                 .live
                 .git()

@@ -10916,6 +10916,37 @@ mod tests {
             "the attachment is not the file the probe wrote: {attachments:?}"
         );
 
+        // Text on the clipboard. The probes are distinguished by what the
+        // *measured* table looks like (2026-11-01, macOS): the image probe is
+        // `osascript` with the output path embedded in its script, the text
+        // command is `pbpaste` with no arguments — so "the arguments name a
+        // .png" is the image probe, and everything else is the text tool.
+        live.clipboard = ClipboardCapture::with_runner(
+            Box::new(|_program: &str, args: &[String]| {
+                if args.iter().any(|arg| arg.contains(".png")) {
+                    Ok((1, String::new(), String::new()))
+                } else {
+                    Ok((0, "clipboard text".to_string(), String::new()))
+                }
+            }),
+            dir.path().to_path_buf(),
+        );
+        live.notice = Some("stale".into());
+        live.paste_clipboard().await;
+        // The draft still carries the picture's marker from the row above; a
+        // paste appends, so the text is what it now ends with.
+        let draft = live.draft.editor.text().to_string();
+        assert!(
+            draft.ends_with("clipboard text"),
+            "the clipboard's text did not reach the draft: {draft:?} (notice: {:?})",
+            live.notice
+        );
+        assert!(
+            live.notice.is_none(),
+            "a successful text paste left a notice: {:?}",
+            live.notice
+        );
+
         // A refusal with a reason: the reason is the reader's sentence.
         live.clipboard = ClipboardCapture::with_runner(
             Box::new(|_program: &str, _args: &[String]| {
@@ -11001,6 +11032,206 @@ mod tests {
         assert!(
             live.notice.is_some(),
             "a link with no opener on PATH failed silently"
+        );
+        live.client.disconnect();
+    }
+
+    /// `/continue`-style attach: the session list is re-read and the newest row
+    /// is opened — and when the newest row is already on screen, nothing is
+    /// re-read or re-painted.
+    #[tokio::test]
+    async fn attaching_to_the_most_recent_opens_the_newest_row() {
+        let sessions = r#"{"sessions":[
+            {"id":"s-old","cwd":"/tmp","updatedAtMs":1700000001000,"model":"m"},
+            {"id":"s-new","cwd":"/tmp","updatedAtMs":1700000009000,"model":"m"}
+        ]}"#;
+        // The switch re-reads the state, so the fixture's answer has to move to
+        // the row being opened (a static table would report the one it left).
+        let table = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
+            (
+                "get_state".to_string(),
+                r#"{"sessionId":"s-old"}"#.to_string(),
+            ),
+            (
+                "get_session_entries".to_string(),
+                r#"{"entries":[]}"#.to_string(),
+            ),
+            ("list_sessions".to_string(), sessions.to_string()),
+            ("get_state_of".to_string(), "{}".to_string()),
+        ])));
+        let (mock, _seen) = (
+            crate::rpc::grpc_client::tests::api_mock_with_table(table.clone()),
+            (),
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s-old"), false, None)
+            .await
+            .expect("attach to the mock agent");
+        table
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-new"}"#.into());
+        live.attach_most_recent().await;
+        assert_eq!(
+            live.state.session_id, "s-new",
+            "the newest row is not the one that opened"
+        );
+
+        // Already on the newest one: the read happens, the switch does not.
+        live.attach_most_recent().await;
+        assert_eq!(
+            live.state.session_id, "s-new",
+            "a second attach moved off the newest conversation"
+        );
+        live.client.disconnect();
+    }
+
+    /// Deleting the conversation on screen hands the screen to the row that slid
+    /// into its place, falls back to the launchpad when it was the only one, and
+    /// a refused delete is the notice — nothing is closed under the reader.
+    #[tokio::test]
+    async fn deleting_a_conversation_moves_to_its_successor() {
+        let two = r#"{"sessions":[
+            {"id":"s1","cwd":"/tmp","updatedAtMs":1700000002000,"model":"m"},
+            {"id":"s2","cwd":"/tmp","updatedAtMs":1700000001000,"model":"m"}
+        ]}"#;
+        // The list the agent has *after* the delete: one row left.
+        let after = r#"{"sessions":[
+            {"id":"s2","cwd":"/tmp","updatedAtMs":1700000001000,"model":"m"}
+        ]}"#;
+        let table = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
+            ("get_state".to_string(), r#"{"sessionId":"s1"}"#.to_string()),
+            (
+                "get_session_entries".to_string(),
+                r#"{"entries":[]}"#.to_string(),
+            ),
+            ("list_sessions".to_string(), two.to_string()),
+            (
+                "delete_session".to_string(),
+                r#"{"success":true}"#.to_string(),
+            ),
+        ])));
+        let (mock, _seen) = (
+            crate::rpc::grpc_client::tests::api_mock_with_table(table.clone()),
+            (),
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the mock agent");
+        // The delete re-reads the list before it opens anything.
+        table
+            .lock()
+            .unwrap()
+            .insert("list_sessions".into(), after.to_string());
+        // The switch to the successor re-reads the state as well.
+        table
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s2"}"#.into());
+        live.delete_session("s1").await;
+        assert_eq!(
+            live.state.session_id, "s2",
+            "the row that took the deleted one's place is not on screen"
+        );
+
+        // The last remaining conversation: the launchpad, with no id left.
+        let empty = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
+            ("get_state".to_string(), r#"{"sessionId":"s2"}"#.to_string()),
+            (
+                "get_session_entries".to_string(),
+                r#"{"entries":[]}"#.to_string(),
+            ),
+            ("list_sessions".to_string(), after.to_string()),
+            (
+                "delete_session".to_string(),
+                r#"{"success":true}"#.to_string(),
+            ),
+        ])));
+        let (mock, _seen) = (
+            crate::rpc::grpc_client::tests::api_mock_with_table(empty.clone()),
+            (),
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut last, _events) = Live::attach(&addr, Some("s2"), false, None)
+            .await
+            .expect("attach to the mock agent");
+        empty
+            .lock()
+            .unwrap()
+            .insert("list_sessions".into(), r#"{"sessions":[]}"#.into());
+        last.delete_session("s2").await;
+        assert!(last.detached(), "deleting the last one left a session open");
+        assert!(
+            last.state.session_id.is_empty(),
+            "the deleted id is still the current one: {:?}",
+            last.state.session_id
+        );
+
+        // A refused delete: the conversation stays, and the reader is told.
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_failing(
+            &[
+                ("get_state", r#"{"sessionId":"s1"}"#),
+                ("get_session_entries", r#"{"entries":[]}"#),
+                ("list_sessions", two),
+            ],
+            "delete_session",
+            "the run is in flight",
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut refused, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the failing mock");
+        refused.delete_session("s1").await;
+        let notice = refused.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("the run is in flight"),
+            "a refused delete dropped the agent's reason: {notice:?}"
+        );
+        assert_eq!(
+            refused.state.session_id, "s1",
+            "a refused delete moved off the conversation anyway"
+        );
+        refused.client.disconnect();
+        last.client.disconnect();
+        live.client.disconnect();
+    }
+
+    /// The preview of a draft attachment reads the last picture in it; with no
+    /// picture the reader is told there is nothing to show rather than being
+    /// given an empty box.
+    #[tokio::test]
+    async fn previewing_an_attachment_reads_the_last_picture_in_the_draft() {
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+
+        // Nothing attached: the "nothing to preview" sentence, and no box.
+        assert!(!live.load_attachment(), "an empty draft claimed a picture");
+        assert!(
+            live.notice.is_some(),
+            "an empty draft said nothing about the missing picture"
+        );
+
+        // Two pictures: the last one is the one the box opens on. They are real
+        // files — the editor sniffs the bytes before it attaches a path, which
+        // is what keeps a pasted `/tmp/notes.txt` from becoming a thumbnail.
+        const PNG: &[u8] = &[
+            0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, b'I', b'H', b'D', b'R',
+            0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1f, 0x15, 0xc4, 0x89, 0, 0, 0, 0x0a, b'I',
+            b'D', b'A', b'T', 0x78, 0x9c, 0x63, 0, 0, 0, 2, 0, 1, 0x1b, 0x8f, 0x0f, 0x7d, 0, 0, 0,
+            0, b'I', b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82,
+        ];
+        let dir = tempfile::tempdir().expect("tempdir");
+        let first = dir.path().join("first.png");
+        let second = dir.path().join("second.png");
+        std::fs::write(&first, PNG).expect("write the first picture");
+        std::fs::write(&second, PNG).expect("write the second picture");
+        let mut editor = live.draft.editor.clone();
+        editor.paste(&first.to_string_lossy());
+        editor.paste(&second.to_string_lossy());
+        live.draft = super::InputView::from_editor(editor, live.draft.placeholder.clone());
+        assert!(
+            live.load_attachment(),
+            "a draft with pictures claimed there was none"
         );
         live.client.disconnect();
     }
