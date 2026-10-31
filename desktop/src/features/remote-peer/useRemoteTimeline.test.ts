@@ -1836,7 +1836,9 @@ describe("useRemoteTimeline stale answers", () => {
     requestMock.mockImplementation(async (_desktop: string, command: { runId?: string; type?: string }) => {
       if (command?.type === "get_events_since") {
         reads.push(command.runId ?? "");
-        return new Promise((resolve) => { answer = resolve; });
+        return new Promise((resolve) => {
+          answer = resolve;
+        });
       }
       return page([]);
     });
