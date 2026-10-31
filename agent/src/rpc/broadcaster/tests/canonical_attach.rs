@@ -264,3 +264,55 @@ fn canonical_resume_refuses_to_reuse_a_run_identity_in_a_different_epoch() {
     assert_eq!(old.events.len(), 1);
     assert!(old.events[0].data.contains("preserved"));
 }
+
+/// A live delta larger than the delivery budget is streamed as several bounded
+/// pieces that stay one canonical body: the pieces tile the text exactly, keep
+/// contiguous byte offsets, and only the first may be a replacement snapshot.
+#[test]
+fn a_live_delta_over_the_text_budget_is_delivered_as_bounded_pieces() {
+    let (_root, manager, _store) = canonical_store();
+    let broadcaster = SseBroadcaster::new();
+    broadcaster.configure_journal("s", &manager).unwrap();
+    assert!(broadcaster.uses_segmented_storage());
+    let mut receiver = broadcaster.subscribe();
+    broadcaster.start_run("run".into(), 1);
+    broadcaster.broadcast(SseEvent::new("agent_start", json!({})));
+    broadcaster.broadcast(SseEvent::new("message_start", json!({"entry_id": "m"})));
+    let text = "思考🙂".repeat(2_000);
+    assert!(text.len() > crate::session::content::transport::LIVE_TEXT_BYTES);
+    broadcaster.broadcast_deferred(SseEvent::new(
+        "text_chunk",
+        json!({"text": text, "snapshot": true}),
+    ));
+    broadcaster.broadcast(SseEvent::new("text_end", json!({})));
+    broadcaster.broadcast(SseEvent::new("agent_end", json!({"state": "completed"})));
+    broadcaster.flush_journal().unwrap();
+    assert!(
+        broadcaster.persistence_error().is_none(),
+        "{:?}",
+        broadcaster.persistence_error()
+    );
+
+    let delivered: Vec<serde_json::Value> = std::iter::from_fn(|| receiver.try_recv().ok())
+        .filter(|event| event.event_type == "text_chunk")
+        .map(|event| serde_json::from_str(&event.data).unwrap())
+        .collect();
+    assert!(delivered.len() > 1, "the delta was not split");
+    let mut assembled = String::new();
+    let mut expected_offset = 0;
+    for (index, piece) in delivered.iter().enumerate() {
+        let piece_text = piece["text"].as_str().unwrap();
+        assert!(!piece_text.is_empty());
+        assert!(
+            piece_text.len() <= crate::session::content::transport::LIVE_TEXT_BYTES,
+            "piece {index} exceeds the live text budget"
+        );
+        // Each piece continues the same canonical body at the byte it starts.
+        assert_eq!(piece["content_offset"], json!(expected_offset));
+        assert_eq!(piece["content_bytes"], json!(piece_text.len()));
+        assert_eq!(piece["snapshot"], json!(index == 0));
+        expected_offset += piece_text.len() as i64;
+        assembled.push_str(piece_text);
+    }
+    assert_eq!(assembled, text, "the pieces must tile the original text");
+}
