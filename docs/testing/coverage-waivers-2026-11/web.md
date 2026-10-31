@@ -7,8 +7,8 @@ summary percentages (istanbul `lines.pct`, llvm-cov "Lines") are not the accepta
 `npx vitest run --coverage --coverage.reporter=lcov` on Node from `rust-toolchain.toml`'s
 neighbour (the desk's Node 24; the suite also passes on 22).
 
-**Result**: `DA:0` = **157** lines in **61** files. **35** of them are waived here
-(35 records: 31 `W2` + 4 `W8`); the other **122** are *reachable and not yet written*
+**Result**: `DA:0` = **151** lines in **60** files. **37** of them are waived here
+(37 records: 33 `W2` + 4 `W8`); the other **114** are *reachable and not yet written*
 — they are work items, listed per file in the campaign's working report, **not** waivers.
 
 ```bash
@@ -69,6 +69,8 @@ exists), and the falsifier. The ledger convention (`docs/testing/waiver-ledger.m
 | 33 | `desktop/src/components/layout/ActivityRail.tsx:1761` | **W2** | `sortThreads`' `return a.status === "active" ? -1 : 1` | `src/components/layout/ActivityRail.recent.test.tsx` :: *draws every conversation flat, with no heading for where it lives* |
 | 34 | `desktop/src/components/layout/hooks/useAppSettings.ts:144` | **W2** | auto-approval fallback's `if (autoFallbackRef.current) return` | `src/components/layout/hooks/useAppSettings.test.tsx` :: *mirrors the UI language for automatic titles and preserves an explicit opt-out despite the enabled default* |
 | 35 | `desktop/src/components/layout/hooks/useAppSettings.ts:155` | **W2** | sandbox fallback's `if (sandboxFallbackRef.current) return` | `src/components/layout/hooks/useAppSettings.sandboxFallback.test.tsx` :: *falls back to manual approval exactly once under StrictMode* |
+| 36 | `desktop/src/features/agent/AgentThread.tsx:349` | **W2** | `thread.copyReply`'s `if (!lastReply) return` | `src/features/agent/AgentThread.test.tsx` :: *leaves the copy key unclaimed while the turn has no answer* |
+| 37 | `desktop/src/features/agent/MentionEditor.tsx:201` | **W2** | the mutation effect's `if (!editor) return` | `src/features/agent/MentionEditor.placeholder.test.tsx` :: *tracks DOM edits even without an input event, without replacing the text or caret* |
 
 ## 1. `theme.ts:229` — W2
 
@@ -303,6 +305,13 @@ condition as the guard.
 - **`TerminalPanel.tsx:239`** — `ErrorBar` is rendered only under
   `{tabs.createError ? <ErrorBar tabs={tabs} /> : null}` (`:139`).
 
+## Wave 8 (layout group's wrap-up) — rows 36-37 added
+
+The lane's residual went **157 → 151**: four guards on the way in and out of a draft are now
+covered (`useComposerAttachments`' locked pasteboard and its stale native image,
+`AgentThread`'s refused copy and its input-layer leave, `MentionEditor`'s zero-height caret),
+and two further guards joined the ledger as `W2`.
+
 ## Wave 7 (layout group) — rows 34-35 added
 
 The lane's residual went **159 → 157**: the rail's own deep-lineage walk (`ActivityRail:1038`)
@@ -501,6 +510,50 @@ from the source — `DA:55` stayed 0, so the arm is blocked a second way as well
 `loadedAppSettings === DEFAULT_APP_SETTINGS` short-circuit is the other half). It stays a
 **work item** until someone finds the seam that produces "loaded, not default, not dirty";
 calling it W2 here would be an assertion this file cannot back.
+
+## 36-37. Two guards whose subject the same commit already provided
+
+### 36 — `AgentThread.tsx:349`
+
+```ts
+347:   useCommand("thread.copyReply", () => {
+348:     if (!lastReply)
+349:       return;
+...
+354:   }, ownsCommands && lastReply !== null);
+```
+
+The command is registered with `enabled = ownsCommands && lastReply !== null`, so the handler
+only exists in the renders where `lastReply` is non-null; the guard is the registration
+condition written a second time.
+
+- **Pinned by** `AgentThread.test.tsx` :: *leaves the copy key unclaimed while the turn has no
+  answer* — with no answer the key is not even claimed (`defaultPrevented` false), which is the
+  observable half of that condition; *copies the last reply* is the positive half.
+- **Positive control (stated)**: register it unconditionally (`useCommand("thread.copyReply", fn)`)
+  → pressing `⌘⇧C` on a transcript with no answer reaches line 349.
+- **Falsifier**: a caller of the handler that is not the registry.
+
+### 37 — `MentionEditor.tsx:201`
+
+```ts
+198:   useEffect(() => {
+199:     const editor = editorRef.current;
+200:     if (!editor)
+201:       return;
+```
+
+`editorRef` is attached by the `[role=textbox]` element this component renders in the same
+commit the effect belongs to, so by the time the effect runs the ref is always set: the
+component has no branch that renders without it.
+
+- **Pinned by** `MentionEditor.placeholder.test.tsx` :: *tracks DOM edits even without an input
+  event, without replacing the text or caret* — the effect's real job, driven through the
+  element the ref points at.
+- **Positive control (stated)**: return `null` from one render path (e.g. behind a prop) without
+  changing the effect's deps → the effect runs with `editorRef.current === null` and line 201
+  executes.
+- **Falsifier**: a render in which the editor element is absent while the effect still runs.
 
 ## How to retire a row
 
