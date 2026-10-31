@@ -157,6 +157,20 @@ describe("the recent view's hierarchy", () => {
     expect(opened.roots.get("worker")).toBe("parent");
   });
 
+  it("keeps two runs of one conversation together, in the order they arrived", () => {
+    // A conversation that spawned two workers: both hang under the same parent, and a
+    // second child must append to the first rather than replace it.
+    const tree = recentTree([
+      item("parent"),
+      item("worker-one", { parentKey: "parent" }),
+      item("worker-two", { parentKey: "parent" }),
+    ]);
+    expect(tree.children.get("parent")?.map(row => row.key)).toEqual(["worker-one", "worker-two"]);
+    const opened = expandRecent(tree.roots, tree, new Set(["parent"]));
+    expect(keys(opened.rows)).toEqual(["parent", "worker-one", "worker-two"]);
+    expect(opened.meta.get("worker-two")).toEqual({ depth: 1, hasChildren: false });
+  });
+
   it("draws a grandchild only when its own parent is open", () => {
     const tree = recentTree([
       item("parent"),

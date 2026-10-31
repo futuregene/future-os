@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   describeKey,
   isGesturePress,
@@ -41,10 +41,38 @@ describe("keyProbeAvailable", () => {
     expect(keyProbeAvailable(false, key => (key === KEY_PROBE_STORAGE_KEY ? "1" : null))).toBe(true);
   });
 
+  it("reads the opt-in from storage when no reader is injected", () => {
+    // The shipped path: the default reader is the only thing that touches storage,
+    // so an unreadable store has to answer "not available" rather than throw.
+    localStorage.removeItem(KEY_PROBE_STORAGE_KEY);
+    expect(keyProbeAvailable(false)).toBe(false);
+    localStorage.setItem(KEY_PROBE_STORAGE_KEY, "1");
+    expect(keyProbeAvailable(false)).toBe(true);
+    localStorage.setItem(KEY_PROBE_STORAGE_KEY, "0");
+    expect(keyProbeAvailable(false)).toBe(false);
+    localStorage.removeItem(KEY_PROBE_STORAGE_KEY);
+  });
+
   it("is off when storage refuses to answer", () => {
     expect(keyProbeAvailable(false, () => {
       throw new Error("denied");
     })).toBe(false);
+  });
+});
+
+describe("the default storage reader", () => {
+  it("answers nothing when storage itself throws", () => {
+    // A locked-down webview: reading may throw rather than return null, and the
+    // readout simply stays off.
+    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("denied");
+    });
+    try {
+      expect(keyProbeAvailable(false)).toBe(false);
+    }
+    finally {
+      getItem.mockRestore();
+    }
   });
 });
 

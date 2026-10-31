@@ -144,6 +144,77 @@ describe("the rail's view switch", () => {
     view.unmount();
   });
 
+  it("starts no drag from a right-click", () => {
+    // The right button belongs to the platform's menu; treating it as the start of
+    // a drag would move the segments out from under it.
+    const view = mount();
+    const workspace = view.segment("workspace");
+    act(() => {
+      workspace.dispatchEvent(new PointerEvent("pointerdown", {
+        bubbles: true,
+        button: 2,
+        clientX: 50,
+        clientY: 12,
+        pointerId: 1,
+      }));
+    });
+    pointer(workspace, "pointermove", 150);
+
+    expect(view.all.onMove).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it("exchanges nothing while the pointer is past both segments", () => {
+    // A drag that leaves the switch sideways is still held, but there is no half
+    // under the pointer to hand the segment to — so nothing moves.
+    const view = mount();
+    const workspace = view.segment("workspace");
+    pointer(workspace, "pointerdown", 50);
+    pointer(workspace, "pointermove", 60);
+    pointer(workspace, "pointermove", 500);
+
+    expect(view.all.onMove).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it("hands the pointer capture back when the drag ends", () => {
+    // On an engine with pointer capture the segment holds the pointer for the whole
+    // drag; letting go is what returns it to the rest of the UI.
+    const view = mount();
+    const workspace = view.segment("workspace");
+    const release = vi.fn();
+    workspace.hasPointerCapture = () => true;
+    workspace.releasePointerCapture = release;
+    pointer(workspace, "pointerdown", 50);
+    pointer(workspace, "pointermove", 56);
+    pointer(workspace, "pointerup", 56);
+
+    expect(release).toHaveBeenCalledWith(1);
+    view.unmount();
+  });
+
+  it("ignores the end of a pointer that was never captured", () => {
+    // A second finger's pointerup, or a stale event after the drag was reset: it
+    // must not clear the drag the first pointer is still making.
+    const view = mount();
+    const workspace = view.segment("workspace");
+    pointer(workspace, "pointerdown", 50);
+    act(() => {
+      workspace.dispatchEvent(new PointerEvent("pointerup", {
+        bubbles: true,
+        button: 0,
+        clientX: 50,
+        clientY: 12,
+        pointerId: 2,
+      }));
+    });
+    pointer(workspace, "pointermove", 56);
+    pointer(workspace, "pointermove", 150);
+
+    expect(view.all.onMove).toHaveBeenCalledWith("workspace", "recent");
+    view.unmount();
+  });
+
   it("swaps with Alt+Arrow for a reader without a pointer", () => {
     const view = mount();
     act(() => {
