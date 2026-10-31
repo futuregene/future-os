@@ -151,7 +151,11 @@ describe("the rail's view switch", () => {
     const workspace = view.segment("workspace");
     act(() => {
       workspace.dispatchEvent(new PointerEvent("pointerdown", {
-        bubbles: true, button: 2, clientX: 50, clientY: 12, pointerId: 1,
+        bubbles: true,
+        button: 2,
+        clientX: 50,
+        clientY: 12,
+        pointerId: 1,
       }));
     });
     pointer(workspace, "pointermove", 150);
@@ -197,7 +201,11 @@ describe("the rail's view switch", () => {
     pointer(workspace, "pointerdown", 50);
     act(() => {
       workspace.dispatchEvent(new PointerEvent("pointerup", {
-        bubbles: true, button: 0, clientX: 50, clientY: 12, pointerId: 2,
+        bubbles: true,
+        button: 0,
+        clientX: 50,
+        clientY: 12,
+        pointerId: 2,
       }));
     });
     pointer(workspace, "pointermove", 56);

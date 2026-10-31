@@ -34,7 +34,7 @@ describe("composer history", () => {
     // entries off it would be a guess.
     sessionStorage.setItem("composer-history:t1", JSON.stringify({ entries: ["x"] }));
     expect(loadComposerHistory("t1")).toEqual([]);
-    sessionStorage.setItem("composer-history:t1", '"one message"');
+    sessionStorage.setItem("composer-history:t1", "\"one message\"");
     expect(loadComposerHistory("t1")).toEqual([]);
   });
 
