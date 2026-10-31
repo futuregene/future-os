@@ -469,12 +469,14 @@ from that button, so the scenario taps it once and then the `src`, `benches` and
 `src/parser` rows; what it lists is the checkout the conversation is about —
 `parser.rs` and `args.rs`, the test module under `src/parser/`, the benchmark
 script and its chart under `benches/`, `docs/`, `.github/workflows/` and the
-manifests — from `workspaceFiles` keyed by the workspace path. Thirty-seven rows
-of it, which is what makes the panel read as a tree rather than a stub: with those
-three folders open the list reaches the bottom edge and scrolls a dozen pixels, and
-the scenario measures that (the last row's box against the panel's, not
-`scrollHeight`, which reports the viewport for a short tree and would pass for an
-empty one). Opening it takes
+manifests — from `workspaceFiles` keyed by the workspace path. Thirty-six rows of
+it, which is what makes the panel read as a tree rather than a stub: with those
+three folders open the list stops 16 px short of the window edge, so the last row
+is whole. One row more and that edge slices the row through its glyphs — the panel
+is a full-height column whose only rule is the hairline *above* the list, so there
+is nothing at the bottom to stop a row — and the scenario fails on it: it measures
+every row's box against the panel's bottom, not `scrollHeight` (which reports the
+viewport for a short tree and would pass for an empty panel). Opening it takes
 384 px off the conversation column (1440 → 1056 at this width), but the reading
 column is capped, so the text re-centres rather than re-wrapping; in a window too
 narrow for a third column the panel opens as an overlay over the conversation

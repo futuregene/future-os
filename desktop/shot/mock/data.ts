@@ -1315,7 +1315,9 @@ function file(name: string, parent: string, size: number, minutes: number) {
 
 // A working checkout, deep enough that the Files panel is a tree rather than a
 // few rows hanging off the top: with `src`, `benches` and `src/parser` open (what
-// the capture opens) it fills a 1728×1117 window and scrolls by a dozen pixels.
+// the capture opens) it fills a 1728×1117 window and stops 16 px short of the
+// bottom edge — a row more, and the window edge cuts the last one through its
+// glyphs (the panel is a full-height column with no border of its own down there).
 workspaceFiles[REPO] = [
   dir(".github", REPO, 6 * 24 * 60),
   dir("benches", REPO, 3),
@@ -1348,7 +1350,6 @@ workspaceFiles[`${REPO}/benches`] = [
   file("plot.py", `${REPO}/benches`, 1_880, 25),
   file("run.sh", `${REPO}/benches`, 620, 4 * 60),
   file("throughput.rs", `${REPO}/benches`, 5_640, 2 * 60),
-  file("warmup.rs", `${REPO}/benches`, 2_310, 5 * 24 * 60),
 ];
 workspaceFiles[`${REPO}/docs`] = [
   file("benchmarks.md", `${REPO}/docs`, 4_260, 3 * 60),
