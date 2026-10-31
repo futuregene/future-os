@@ -3394,6 +3394,19 @@ mod driver_tests {
     use crate::terminal::Terminal;
     use crate::workbench::{WbEvent, Workbench};
 
+    /// The frame's text with the escape sequences taken out, so an assertion
+    /// reads the way the reader did.
+    pub(super) fn text_of(painted: &str) -> String {
+        let ansi = regex::Regex::new(r"\x1b\[[0-9;?]*[A-Za-z]").expect("regex");
+        ansi.replace_all(painted, "").into_owned()
+    }
+
+    /// How many whole frames the capture holds: every frame starts by hiding the
+    /// cursor and addressing the home cell.
+    pub(super) fn frames(painted: &str) -> usize {
+        painted.matches("\x1b[?25l").count()
+    }
+
     /// How long a scripted run may take before the test gives up: every script
     /// ends with a `quit`/`Signal`, so anything near this bound is a loop that
     /// stopped reading its input.
@@ -3472,7 +3485,18 @@ mod driver_tests {
         /// paints, and a prompt goes to the agent rather than starting a session.
         pub async fn attach_conversation() -> Self {
             Self::attach(&[
-                ("get_state", r#"{"sessionId":"s1","model":"future/old"}"#),
+                (
+                    "get_state",
+                    // A workspace, because the surface reads it: `/git` and the
+                    // files panel are both rooted there, and a session with no
+                    // `cwd` takes the repository panel's "no workspace" door
+                    // instead of a read.
+                    concat!(
+                        r#"{"sessionId":"s1","model":"future/old","cwd":""#,
+                        env!("CARGO_MANIFEST_DIR"),
+                        r#""}"#
+                    ),
+                ),
                 ("get_session_entries", r#"{"entries":[]}"#),
                 (
                     "list_models",
@@ -3661,19 +3685,6 @@ mod driver_tests {
     mod tests {
         use super::*;
         use crate::workbench::live::Loaded;
-
-        /// The frame's text with the escape sequences taken out, so an assertion
-        /// reads the way the reader did.
-        fn text_of(painted: &str) -> String {
-            let ansi = regex::Regex::new(r"\x1b\[[0-9;?]*[A-Za-z]").expect("regex");
-            ansi.replace_all(painted, "").into_owned()
-        }
-
-        /// How many whole frames the capture holds: every frame starts by hiding the
-        /// cursor and addressing the home cell.
-        fn frames(painted: &str) -> usize {
-            painted.matches("\x1b[?25l").count()
-        }
 
         /// A frame is painted before the loop waits for anything, and `ctrl+x`
         /// leaves. The first assertion is the one the loop's own comment makes: the
@@ -4136,5 +4147,141 @@ mod driver_tests {
         assert!(!driver.command("/mouse").await, "/mouse does not leave");
         let notice = driver.live.notice.clone().expect("a notice");
         assert!(!notice.is_empty(), "the failed save was silent: {notice:?}");
+    }
+
+    mod workspace_panel {
+        use super::*;
+        use crate::workbench::Overlay;
+
+        /// `ctrl+g` opens the repository browser for the session's own workspace
+        /// and the read lands on its own wake-up: the panel paints the rows the
+        /// disk produced, not an empty list.
+        ///
+        /// The fixture's session carries a `cwd` — without one `open_git_panel`
+        /// takes its "no workspace" door and never reads anything, which is why
+        /// that whole path measured zero before this test.
+        #[tokio::test]
+        async fn the_repository_panel_reads_the_session_workspace() {
+            let mut driver = Driver::attach_conversation().await;
+            assert!(!driver.quit_key("ctrl+g").await, "ctrl+g does not leave");
+            assert_eq!(
+                driver.workbench.overlay,
+                Some(Overlay::Git),
+                "ctrl+g did not open the repository panel"
+            );
+            let painted = driver.pump(Duration::from_millis(700)).await;
+            let view = driver
+                .live
+                .git()
+                .cloned()
+                .expect("the read installed a view");
+            assert!(
+                view.error.is_none(),
+                "the workspace is a repository: {:?}",
+                view.error
+            );
+            assert!(
+                !view.rows.is_empty(),
+                "the commit log of a repository with history is empty"
+            );
+            assert!(
+                !view.repo.is_empty() && text_of(&painted).contains(&view.repo),
+                "the panel does not name the repository it read ({:?})",
+                view.repo
+            );
+        }
+
+        /// Moving inside the repository panel is a detail read: the row under the
+        /// cursor is what the bottom half shows, and the surface decides which row
+        /// that is.
+        #[tokio::test]
+        async fn moving_in_the_repository_panel_reads_the_row_under_the_cursor() {
+            let mut driver = Driver::attach_conversation().await;
+            assert!(!driver.quit_key("ctrl+g").await);
+            let _ = driver.pump(Duration::from_millis(700)).await;
+            let first = driver.live.git().cloned().expect("a view");
+            assert!(first.rows.len() > 1, "no second row to move to");
+
+            // `down` inside the panel is a selection, not a draft key.
+            assert!(!driver.quit_key("down").await, "down does not leave");
+            let painted = driver.pump(Duration::from_millis(700)).await;
+            let moved = driver.live.git().cloned().expect("a view");
+            assert_ne!(
+                moved.selected, first.selected,
+                "the cursor did not move off the first row"
+            );
+            assert!(
+                !moved.detail.is_empty() || moved.error.is_some(),
+                "the row under the cursor was never read"
+            );
+            assert!(frames(&painted) >= 1);
+        }
+
+        /// A parked approval owns `y`/`n`/`enter` on the base surface: `enter`
+        /// opens the card rather than answering blind, and the letter is the
+        /// answer the agent is told.
+        #[tokio::test]
+        async fn a_parked_approval_is_answered_by_its_own_keys() {
+            let mut driver = Driver::attach(&[
+                (
+                    "get_state",
+                    r#"{"sessionId":"s1","model":"future/old","pendingApprovals":[
+                        {"approvalRequestId":"a-1","toolName":"bash","kind":"command","riskLevel":"high"}]}"#,
+                ),
+                ("get_session_entries", r#"{"entries":[]}"#),
+                (
+                    "list_models",
+                    r#"{"models":[{"id":"old","label":"old","provider":"future",
+                        "thinkingLevel":"default","thinkingLevels":["default"],
+                        "defaultThinkingLevel":"default","isDefault":true}]}"#,
+                ),
+                ("approval_decision", r#"{"success":true}"#),
+            ])
+            .await;
+            assert!(
+                driver.live.approval().is_some(),
+                "the state named a pending approval"
+            );
+
+            // `enter` opens the card instead of answering blind.
+            assert!(!driver.quit_key("enter").await, "enter does not leave");
+            assert_eq!(
+                driver.workbench.overlay,
+                Some(Overlay::Approval),
+                "enter did not open the approval card"
+            );
+
+            // `y` on the base surface is the answer, and it clears the card.
+            driver.workbench.overlay = None;
+            assert!(!driver.quit_key("y").await, "y does not leave");
+            assert!(
+                driver.live.approval().is_none(),
+                "an answered approval is still parked"
+            );
+            let seen = driver.seen.lock().expect("seen").clone();
+            assert!(
+                seen.iter().any(|kind| kind == "approval_decision"),
+                "no decision reached the agent: {seen:?}"
+            );
+        }
+
+        /// A session with no workspace takes the panel's "nothing to read" door:
+        /// the box still opens, and it does not run git in an empty path.
+        #[tokio::test]
+        async fn the_repository_panel_without_a_workspace_says_so() {
+            let mut driver = Driver::attach(&[
+                ("get_state", r#"{"sessionId":"s1","model":"future/old"}"#),
+                ("get_session_entries", r#"{"entries":[]}"#),
+            ])
+            .await;
+            assert!(!driver.quit_key("ctrl+g").await);
+            let painted = driver.pump(Duration::from_millis(300)).await;
+            assert_eq!(driver.workbench.overlay, Some(Overlay::Git));
+            assert!(
+                driver.live.git().is_none(),
+                "a workspace-less session read a repository"
+            );
+            assert!(frames(&painted) >= 1);
+        }
     }
 }
