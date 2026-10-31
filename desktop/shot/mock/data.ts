@@ -550,9 +550,9 @@ const PARSER_RESULT_ZH = `两个 commit 都绿了（\`6b1f0c2\` 边界、\`d41e8
 | \`f(a, b, c, d)\` | 3 210 | 3 194 | −0.5% |
 | \`((((1))))\` × 64 层 | 11 700 | 12 410 | **+6.1%** |
 
-深嵌套这 6% 是真的：\`<\` 每轮多一次边界比较，64 层就是 64 次；换的是 \`1+2+\` 不再返回 \`3\`。递归深度是另一笔账（每层一帧，1 MB 栈约 900 层），\`max_depth = 256\` 单独 commit。接下来：\`plot.py\` 进 CI 比基线、\`SmallVec\` 换数组、补 255/256/257 的深度用例。
+深嵌套这 6% 是真的：\`<\` 每轮多一次边界比较，64 层就是 64 次——换的是 \`1+2+\` 不再返回 \`3\`。深度是另一笔账（每层一帧，1 MB 栈约 900 层），\`max_depth = 256\` 单独 commit；接着把 \`plot.py\` 接进 CI、\`SmallVec\` 换数组、补深度用例。
 
-![四个用例的吞吐：改前 vs 改后](/Users/lixin/future-os/benches/parser-throughput.png)`;
+![三个用例的吞吐：改前 vs 改后](/Users/lixin/future-os/benches/parser-throughput.png)`;
 
 const PARSER_RESULT_EN = `Both commits are green (\`6b1f0c2\` bounds, \`d41e8aa\` cases); \`benches/run.sh\`, four cases, median of five:
 
@@ -562,9 +562,9 @@ const PARSER_RESULT_EN = `Both commits are green (\`6b1f0c2\` bounds, \`d41e8aa\
 | \`f(a, b, c, d)\` | 3,210 | 3,194 | −0.5% |
 | \`((((1))))\` × 64 deep | 11,700 | 12,410 | **+6.1%** |
 
-That 6% is real: \`<\` costs one extra comparison per iteration — 64 of them here — and it buys \`1+2+\` failing instead of returning \`3\`. Depth is the other debt (a frame per level, 1 MB ≈ 900 levels), so \`max_depth = 256\` is its own commit. Next: \`plot.py\` into CI, an array instead of the \`Vec\`, depth cases at 255/256/257.
+That 6% is real: \`<\` costs one extra comparison per iteration — 64 here — and it buys \`1+2+\` failing instead of returning \`3\`. Depth is the other debt (1 MB ≈ 900 levels, so \`max_depth = 256\` ships separately). Next: \`plot.py\` into CI, an array for the \`Vec\`, depth cases at 255/256/257.
 
-![Throughput on four cases: before vs after](/Users/lixin/future-os/benches/parser-throughput.png)`;
+![Throughput on three cases: before vs after](/Users/lixin/future-os/benches/parser-throughput.png)`;
 
 /**
  * The parser session's two turns, in the desktop's entry shape.
@@ -646,7 +646,7 @@ export function parserEntries(): MockEntry[] {
         kind: "text",
         text: pick(
           "别处还有同样的写法吗？拆两个 commit，改完跑个基准——我怕 `<` 更慢。",
-          "Does the same shape appear anywhere else? Two commits, then a benchmark — I suspect the `<` is slower.",
+          "Anywhere else with this shape? Two commits, then the benchmark.",
         ),
       }],
     },
@@ -1099,7 +1099,7 @@ export const parserApproval = {
     command: "git push origin fix/parser-bound",
     justification: pick(
       "两个 commit 要先推上去，CI 才会跑基准；只推这一个分支，不碰 main。",
-      "The commits have to be pushed before CI runs the benchmark. This branch only — main is untouched.",
+      "Pushed before CI can run the benchmark. This branch only, not main.",
     ),
     // snake_case on purpose: `parseAction` reads `escalation_trigger`, and the
     // camelCase spelling is dropped — which is why the card falls back to the
@@ -1313,46 +1313,68 @@ function file(name: string, parent: string, size: number, minutes: number) {
   return { name, path: `${parent}/${name}`, isDir: false, size, modified: now - minutes * minute };
 }
 
+// A working checkout, deep enough that the Files panel is a tree rather than a
+// few rows hanging off the top: with `src`, `benches` and `src/parser` open (what
+// the capture opens) it fills a 1728×1117 window and stops 16 px short of the
+// bottom edge — a row more, and the window edge cuts the last one through its
+// glyphs (the panel is a full-height column with no border of its own down there).
 workspaceFiles[REPO] = [
   dir(".github", REPO, 6 * 24 * 60),
   dir("benches", REPO, 3),
   dir("docs", REPO, 6 * 60),
   dir("src", REPO, 4),
+  dir("tests", REPO, 9 * 24 * 60),
   file("AGENTS.md", REPO, 8_960, 2 * 24 * 60),
   file("Cargo.lock", REPO, 41_280, 3 * 24 * 60),
   file("Cargo.toml", REPO, 1_940, 3 * 24 * 60),
+  file("LICENSE", REPO, 1_080, 120 * 24 * 60),
   file("README.md", REPO, 3_400, 9 * 24 * 60),
+  file("clippy.toml", REPO, 240, 30 * 24 * 60),
   file("rust-toolchain.toml", REPO, 132, 11 * 24 * 60),
+  file("rustfmt.toml", REPO, 210, 40 * 24 * 60),
 ];
 workspaceFiles[`${REPO}/.github`] = [
   dir("workflows", `${REPO}/.github`, 6 * 24 * 60),
   file("dependabot.yml", `${REPO}/.github`, 480, 20 * 24 * 60),
 ];
 workspaceFiles[`${REPO}/.github/workflows`] = [
-  file("ci.yml", `${REPO}/.github/workflows`, 3_120, 5 * 24 * 60),
   file("bench.yml", `${REPO}/.github/workflows`, 1_460, 2 * 24 * 60),
+  file("ci.yml", `${REPO}/.github/workflows`, 3_120, 5 * 24 * 60),
+  file("release.yml", `${REPO}/.github/workflows`, 2_180, 12 * 24 * 60),
 ];
 workspaceFiles[`${REPO}/benches`] = [
+  file("README.md", `${REPO}/benches`, 1_260, 6 * 24 * 60),
   file("baseline.json", `${REPO}/benches`, 2_240, 12),
+  file("cases.json", `${REPO}/benches`, 1_480, 3),
   file("parser-throughput.png", `${REPO}/benches`, 38_400, 1),
   file("plot.py", `${REPO}/benches`, 1_880, 25),
   file("run.sh", `${REPO}/benches`, 620, 4 * 60),
+  file("throughput.rs", `${REPO}/benches`, 5_640, 2 * 60),
 ];
 workspaceFiles[`${REPO}/docs`] = [
   file("benchmarks.md", `${REPO}/docs`, 4_260, 3 * 60),
+  file("grammar.md", `${REPO}/docs`, 6_120, 14 * 24 * 60),
   file("parser.md", `${REPO}/docs`, 5_180, 4 * 60),
 ];
 workspaceFiles[`${REPO}/src`] = [
   dir("parser", `${REPO}/src`, 2),
   file("args.rs", `${REPO}/src`, 4_120, 5),
+  file("ast.rs", `${REPO}/src`, 6_480, 15 * 24 * 60),
+  file("error.rs", `${REPO}/src`, 3_260, 8 * 24 * 60),
+  file("eval.rs", `${REPO}/src`, 5_940, 20 * 24 * 60),
   file("lexer.rs", `${REPO}/src`, 9_870, 3 * 24 * 60),
   file("main.rs", `${REPO}/src`, 2_310, 8 * 24 * 60),
   file("parser.rs", `${REPO}/src`, 14_260, 6),
+  file("span.rs", `${REPO}/src`, 1_740, 30 * 24 * 60),
+  file("token.rs", `${REPO}/src`, 2_960, 18 * 24 * 60),
 ];
 workspaceFiles[`${REPO}/src/parser`] = [
   file("depth.rs", `${REPO}/src/parser`, 2_640, 40),
+  file("errors.rs", `${REPO}/src/parser`, 3_180, 6 * 24 * 60),
   file("mod.rs", `${REPO}/src/parser`, 1_120, 3 * 24 * 60),
+  file("pratt.rs", `${REPO}/src/parser`, 8_420, 22 * 24 * 60),
   file("tests.rs", `${REPO}/src/parser`, 7_540, 2),
+  file("tokens.rs", `${REPO}/src/parser`, 2_250, 11 * 24 * 60),
 ];
 
 /**

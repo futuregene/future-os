@@ -18,6 +18,49 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_OUT = ROOT / "desktop" / "shot" / "assets"
 
 
+def check_tick_labels_do_not_collide(fig, ax, minimum_gap: float = 4.0) -> None:
+    """Fail the run when the chart's y tick labels touch each other.
+
+    The transcript renders this plate ~768 css px wide and the README shows the
+    whole frame at 900, so a stack of labels in the source is unreadable in both.
+    Measuring beats eyeballing: a label's window extent is what the renderer will
+    draw, and two of them overlapping is the defect — the same way the screenshot
+    scenarios assert geometry instead of trusting the picture.
+    """
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    boxes = []
+    for label in ax.get_yticklabels():
+        text = label.get_text()
+        if not text:
+            continue
+        box = label.get_window_extent(renderer)
+        boxes.append((text, box))
+    for index, (text_a, box_a) in enumerate(boxes):
+        for text_b, box_b in boxes[index + 1:]:
+            overlap_x = min(box_a.x1, box_b.x1) - max(box_a.x0, box_b.x0)
+            overlap_y = min(box_a.y1, box_b.y1) - max(box_a.y0, box_b.y0)
+            if overlap_x > 0 and overlap_y > 0:
+                raise SystemExit(
+                    f"parser-throughput: the tick labels {text_a!r} and {text_b!r} overlap "
+                    f"by {overlap_x:.1f}x{overlap_y:.1f} px — give the plate more height, or drop a row"
+                )
+    gaps = [
+        max(box_a.y0, box_b.y0) - min(box_a.y1, box_b.y1)
+        for index, (_, box_a) in enumerate(boxes)
+        for _, box_b in boxes[index + 1:]
+    ]
+    closest = min(gaps) if gaps else 0.0
+    if closest < minimum_gap:
+        raise SystemExit(
+            f"parser-throughput: the closest pair of tick labels is {closest:.1f} px apart, "
+            f"under the {minimum_gap:.0f} px this chart needs to stay readable at 768 css px"
+        )
+    label_height = boxes[0][1].height if boxes else 0.0
+    print(f"parser-throughput: {len(boxes)} tick labels of {label_height:.0f} px, "
+          f"closest pair {closest:.1f} px apart")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default=str(DEFAULT_OUT), help="output directory")
@@ -82,32 +125,38 @@ def main() -> int:
     plt.close(fig)
 
     # The parser session's benchmark: the two bounds (`<=` then `<`) against the
-    # same four cases, as the agent's plot script would draw them.
+    # same three cases the transcript's table lists, as the agent's plot script
+    # would draw them.
     #
     # Drawn on the app's own dark surface rather than on white: this figure sits
     # inside a dark transcript, and a white plate in the middle of it reads as a
     # screenshot of something else. Its labels are the case expressions and the
     # unit — the same words the transcript's table uses, because a chart of
     # numbers is data, not prose.
-    cases = ["((((1)))) × 64", "f(a, b, c, d)", "a+b*c", "1+2+"]
-    before = [11.70, 3.210, 1.840, 0.412]
-    after = [12.41, 3.194, 1.862, 0.408]
+    #
+    # The plate is as tall as the labels need, not as tall as the bars happen to
+    # be: four rows on a 190 px plate put 23 px labels 32 px apart, which reads as
+    # a stack. Three rows on 240 px leaves them ~60 px apart, and the check at the
+    # bottom of this block fails the run if a later edit closes that gap again.
+    cases = ["((((1)))) × 64", "f(a, b, c, d)", "1+2+"]
+    before = [11.70, 3.210, 0.412]
+    after = [12.41, 3.194, 0.408]
 
-    fig, ax = plt.subplots(figsize=(6.4, 0.95), dpi=200)
+    fig, ax = plt.subplots(figsize=(6.4, 1.15), dpi=200)
     fig.patch.set_facecolor("#0d1117")
     ax.set_facecolor("#0d1117")
     y = np.arange(len(cases))
     height = 0.34
     ax.barh(y + height / 2, before, height, color="#3d4b5f", label="before")
     ax.barh(y - height / 2, after, height, color="#4c9aff", label="after")
-    # Only the delta, right after the shorter of the two bars: the absolute
+    # Only the delta, right after the longer of the two bars: the absolute
     # numbers are in the transcript's table, and a long label at this render
     # width ran into the axes edge.
     for index, (old, new) in enumerate(zip(before, after)):
         delta = (new - old) / old * 100
         ax.text(max(old, new) + 0.35, index, f"{delta:+.1f}%",
                 va="center", fontsize=8, color="#c9d1d9")
-    ax.set_yticks(y, cases, fontsize=8.5, color="#c9d1d9")
+    ax.set_yticks(y, cases, fontsize=9, color="#c9d1d9")
     ax.set_xlabel("µs/op, median of 5", fontsize=8.5, color="#8b949e")
     ax.set_xlim(0, 16)
     ax.grid(axis="x", color="#21262d", lw=0.8)
@@ -120,6 +169,7 @@ def main() -> int:
     for text in legend.get_texts():
         text.set_color("#8b949e")
     fig.tight_layout()
+    check_tick_labels_do_not_collide(fig, ax)
     fig.savefig(out / "parser-throughput.png", facecolor=fig.get_facecolor())
     plt.close(fig)
 

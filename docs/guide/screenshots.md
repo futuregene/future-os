@@ -469,7 +469,14 @@ from that button, so the scenario taps it once and then the `src`, `benches` and
 `src/parser` rows; what it lists is the checkout the conversation is about —
 `parser.rs` and `args.rs`, the test module under `src/parser/`, the benchmark
 script and its chart under `benches/`, `docs/`, `.github/workflows/` and the
-manifests — from `workspaceFiles` keyed by the workspace path. Opening it takes
+manifests — from `workspaceFiles` keyed by the workspace path. Thirty-six rows of
+it, which is what makes the panel read as a tree rather than a stub: with those
+three folders open the list stops 16 px short of the window edge, so the last row
+is whole. One row more and that edge slices the row through its glyphs — the panel
+is a full-height column whose only rule is the hairline *above* the list, so there
+is nothing at the bottom to stop a row — and the scenario fails on it: it measures
+every row's box against the panel's bottom, not `scrollHeight` (which reports the
+viewport for a short tree and would pass for an empty panel). Opening it takes
 384 px off the conversation column (1440 → 1056 at this width), but the reading
 column is capped, so the text re-centres rather than re-wrapping; in a window too
 narrow for a third column the panel opens as an overlay over the conversation
@@ -506,6 +513,13 @@ string. The chart is the reply's own inline image — the markdown points at
 name to a real PNG that `gen-demo-assets.py` draws on the app's dark surface, and
 the assertion requires it to have *decoded* (`naturalWidth > 0`), not merely to be
 present. The same path is in the right panel's tree, so the two columns agree.
+
+The figure's own labels are checked the way the frame's geometry is: after drawing,
+`gen-demo-assets.py` takes each y tick label's window extent and fails the run if
+any two of them overlap or sit closer than 4 px — four rows on a 190 px plate put
+23 px labels 32 px apart, which reads as a stack at the size the README shows it
+(~320 px wide), so the plate is 230 px tall and carries the three cases the
+transcript's table lists (the closest pair measures ~16 px).
 
 The palette is the app's own dark appearance: `?theme=dark` pins it the way
 `?lang=` pins the words (both are read by `shot/prefs.ts` before the app boots),
