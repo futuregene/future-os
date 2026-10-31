@@ -9702,4 +9702,317 @@ mod tests {
         );
         live.client.disconnect();
     }
+
+    /// The cycle and approval verbs on an **attached** session go to the agent:
+    /// the launchpad stages them, a live conversation applies them.
+    ///
+    /// This is the other half of `the_launchpad_chips_cycle_and_wrap_without_sending`:
+    /// the same three chips, on the side where "stage it" would be a lie.
+    #[tokio::test]
+    async fn an_attached_cycle_is_applied_not_staged() {
+        use crate::approval_mode::ApprovalMode;
+
+        let mut live = live_on(&[
+            ("get_state", r#"{"sessionId":"s1","model":"future/old"}"#),
+            ("cycle_model", r#"{"model":"future/new"}"#),
+            ("cycle_thinking_level", r#"{"level":"high"}"#),
+            ("set_sandbox_policy", r#"{"success":true}"#),
+        ])
+        .await;
+        assert!(!live.detached(), "the fixture attaches a session");
+
+        live.cycle_model().await;
+        assert_eq!(
+            live.state.model.as_deref(),
+            Some("future/new"),
+            "the agent's answer is the model now in force"
+        );
+        assert_eq!(
+            live.pending_model(),
+            Some("future/new"),
+            "…and it is what the next session inherits"
+        );
+
+        live.cycle_thinking().await;
+        assert_eq!(
+            live.state.thinking_level, "high",
+            "the level came from the agent's answer"
+        );
+
+        // The approval ring: every mode in turn, each one applied to the agent,
+        // and the ring comes back to where it started after one lap.
+        let start = live.shown_mode();
+        let mut seen = Vec::new();
+        for _ in 0..ApprovalMode::ALL.len() {
+            let before = live.state.sandbox_tier.clone();
+            live.cycle_mode().await;
+            let after = live.state.sandbox_tier.clone();
+            assert_ne!(before, after, "the approval ring did not move");
+            seen.push(after.clone());
+            assert!(
+                live.notice.is_none(),
+                "applying an approval mode reported an error: {:?}",
+                live.notice
+            );
+        }
+        assert_eq!(
+            live.shown_mode(),
+            start,
+            "the approval ring did not wrap after one lap: {seen:?}"
+        );
+
+        // An unknown mode is refused with a notice, not sent.
+        live.set_approval("not-a-mode").await;
+        assert!(
+            live.notice.is_some(),
+            "an unknown approval mode was accepted silently"
+        );
+        live.client.disconnect();
+    }
+
+    /// A workspace the reader picks is the next session's directory on the
+    /// launchpad, and the session's own workspace when one is attached — the two
+    /// sides of the same verb.
+    #[tokio::test]
+    async fn picking_a_workspace_stages_it_or_moves_the_session() {
+        let mut live = live_on(&[
+            ("get_state", r#"{"sessionId":"s1","cwd":"/work/old"}"#),
+            ("set_cwd", r#"{"success":true}"#),
+        ])
+        .await;
+
+        // The directory the session already has is a no-op, not a round trip
+        // with a notice.
+        live.select_workspace("/work/old").await;
+        assert!(
+            live.notice.is_none(),
+            "re-picking the current workspace spoke: {:?}",
+            live.notice
+        );
+
+        // Attached: the agent moves the session, and the client remembers the
+        // choice for the next start.
+        live.select_workspace("/work/new/").await;
+        assert!(
+            live.notice.is_some(),
+            "picking another workspace said nothing"
+        );
+        assert_eq!(
+            live.take_workspace_to_remember().as_deref(),
+            Some("/work/new"),
+            "the choice is not remembered (the trailing slash is trimmed)"
+        );
+
+        // The launchpad stages it instead, and says so.
+        live.to_launchpad();
+        live.select_workspace("/work/staged").await;
+        assert_eq!(
+            live.pending_cwd.as_deref(),
+            Some("/work/staged"),
+            "the launchpad did not stage the directory"
+        );
+
+        // An empty path is not a choice.
+        let before = live.pending_cwd.clone();
+        live.select_workspace("   ").await;
+        assert_eq!(
+            live.pending_cwd, before,
+            "an empty path moved the workspace"
+        );
+        live.client.disconnect();
+    }
+
+    /// `/new` on a session asks the agent for a fresh conversation and lands on
+    /// it; the launchpad is what `/new` is *already* showing, so it stays put.
+    #[tokio::test]
+    async fn a_new_session_lands_on_the_agents_answer() {
+        // The id is the agent's, and this client re-reads the state right after
+        // asking for it — so the answer has to change between the two reads. A
+        // static table would report the conversation the client just left.
+        let table = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
+            ("get_state".to_string(), r#"{"sessionId":"s1"}"#.to_string()),
+            (
+                "get_session_entries".to_string(),
+                r#"{"entries":[]}"#.to_string(),
+            ),
+            (
+                "new_session".to_string(),
+                r#"{"sessionId":"s-fresh"}"#.to_string(),
+            ),
+        ])));
+        let (mock, _seen) = (
+            crate::rpc::grpc_client::tests::api_mock_with_table(table.clone()),
+            (),
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the mock agent");
+        live.pending_cwd = Some("/work/staged".into());
+        table
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-fresh"}"#.into());
+        live.new_session().await;
+        assert!(!live.detached(), "a fresh session is not the launchpad");
+        assert_ne!(
+            live.state.session_id, "s1",
+            "the new session did not become the current one"
+        );
+        assert!(
+            !live.state.session_id.is_empty(),
+            "the client ended up attached to no session at all"
+        );
+        assert_eq!(
+            live.state.session_id, "s-fresh",
+            "the fresh id did not install"
+        );
+        assert!(
+            live.pending_cwd.is_none(),
+            "the staged workspace was not spent by the session it started"
+        );
+        assert!(
+            live.notice.is_none(),
+            "a fresh session reported an error: {:?}",
+            live.notice
+        );
+        live.client.disconnect();
+    }
+
+    /// A failure from the agent is a notice, never a silent default: the model
+    /// and level cycles say why they did not move.
+    #[tokio::test]
+    async fn a_refused_cycle_is_reported() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_failing(
+            &[("get_state", r#"{"sessionId":"s1","model":"future/old"}"#)],
+            "cycle_model",
+            "no other model",
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the failing mock");
+        live.cycle_model().await;
+        assert!(
+            live.notice.is_some(),
+            "a refused cycle left the reader without a reason"
+        );
+        live.client.disconnect();
+
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_failing(
+            &[("get_state", r#"{"sessionId":"s1","model":"future/old"}"#)],
+            "cycle_thinking_level",
+            "no other level",
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the failing mock");
+        live.cycle_thinking().await;
+        assert!(
+            live.notice.is_some(),
+            "a refused level cycle left the reader without a reason"
+        );
+        live.client.disconnect();
+    }
+
+    /// The two events that become a desktop notification: an approval asking for
+    /// a human, and an error. Everything else is the transcript's business, and
+    /// a message with no body falls back to the kind's own sentence.
+    #[tokio::test]
+    async fn only_an_approval_or_an_error_becomes_a_notification() {
+        use crate::notifications::NotifyKind;
+
+        let live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+
+        let approval = live
+            .alert_for(&event(
+                "approval_request",
+                json!({"summary": "run: rm -rf build"}),
+            ))
+            .expect("an approval asks for a human");
+        assert_eq!(approval.kind, NotifyKind::ApprovalNeeded);
+        assert_eq!(approval.body, "run: rm -rf build");
+
+        let error = live
+            .alert_for(&event("error", json!({"error": "the model refused"})))
+            .expect("an error is worth a notification");
+        assert_eq!(error.kind, NotifyKind::Failed);
+        assert_eq!(error.body, "the model refused");
+
+        // No body: the kind's own sentence, not an empty bubble.
+        let bare = live
+            .alert_for(&event("approval_request", json!({})))
+            .expect("still an approval");
+        assert!(
+            !bare.body.trim().is_empty(),
+            "a notification with no body fell back to nothing"
+        );
+
+        // Everything else is the transcript's.
+        for kind in [
+            "text_chunk",
+            "tool_start",
+            "agent_end",
+            "usage",
+            "run_state",
+        ] {
+            assert!(
+                live.alert_for(&event(kind, json!({"text": "x"}))).is_none(),
+                "{kind} should not ring the desktop"
+            );
+        }
+        live.client.disconnect();
+    }
+
+    /// The completion notice: its body is the last answer (cleaned), and the
+    /// sentence that stands in when the transcript has nothing to quote. The
+    /// "is this the last turn" gate is the queue, which the driver reads.
+    #[tokio::test]
+    async fn a_finished_run_quotes_the_answer_or_falls_back() {
+        use crate::notifications::NotifyKind;
+
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+
+        // Nothing on screen yet: the fallback sentence, never an empty bubble.
+        let bare = live.completion_notification();
+        assert_eq!(bare.kind, NotifyKind::Completed);
+        assert!(
+            !bare.body.trim().is_empty(),
+            "a completion with no answer fell back to nothing"
+        );
+
+        // With an answer on screen, the notice quotes it.
+        live.chat
+            .add_message(crate::components::chat_area::ChatMessage::new(
+                "a-1".into(),
+                crate::components::chat_area::ChatRole::Assistant,
+                "the build is green",
+            ));
+        let quoted = live.completion_notification();
+        assert_eq!(quoted.body, "the build is green");
+
+        // The last-turn gate is the queue, empty here.
+        assert!(live.queue_is_empty(), "an attach has nothing queued");
+        let queued = super::RpcSessionState {
+            session_id: "s1".into(),
+            queued_runs: vec![crate::rpc::types::QueuedRunState {
+                run_id: "q-1".into(),
+                display_text: "next".into(),
+                run_sequence: 1,
+                client_request_id: "c-1".into(),
+                state: "queued".into(),
+                queue_position: 1,
+                accepted_at: "2026-11-01T00:00:00Z".into(),
+            }],
+            queued_count: Some(1),
+            ..Default::default()
+        };
+        live.install_state_refresh(Ok(queued));
+        assert!(
+            !live.queue_is_empty(),
+            "a queued prompt must hold the completion notice back"
+        );
+        live.client.disconnect();
+    }
 }
