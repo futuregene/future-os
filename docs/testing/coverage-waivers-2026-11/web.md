@@ -7,7 +7,10 @@ summary percentages (istanbul `lines.pct`, llvm-cov "Lines") are not the accepta
 `npx vitest run --coverage --coverage.reporter=lcov` on Node from `rust-toolchain.toml`'s
 neighbour (the desk's Node 24; the suite also passes on 22).
 
-**Result**: `DA:0` = **151** lines in **60** files. **37** of them are waived here
+**Result**: `DA:0` = **103** lines in **53** files for the lane as a whole (measured on the merge
+tree of wave 8, `origin/dev-huichen@7c85ec1ad`). **37** of them are waived here (33 `W2` + 4
+`W8`); the remote/settings group waived another **26** in `web-remote.md`; **40** are reachable
+and not yet written — work items, not waivers.
 (37 records: 33 `W2` + 4 `W8`); the other **114** are *reachable and not yet written*
 — they are work items, listed per file in the campaign's working report, **not** waivers.
 
@@ -304,6 +307,18 @@ condition as the guard.
 - **`RunsPanel.tsx:155`** — the only caller is `disabled={archiving || finishedCount === 0}` (`:182-184`).
 - **`TerminalPanel.tsx:239`** — `ErrorBar` is rendered only under
   `{tabs.createError ? <ErrorBar tabs={tabs} /> : null}` (`:139`).
+
+## Wave 9 (layout group) — no new rows
+
+The lane's residual went **105 → 103** on the merged tree: `useRemotePeers:764` (one host's
+snapshot must not rebuild another machine's catalogue — asserted by object identity) and
+`TasksView:376` (a confirmation whose task was deleted under it deletes nothing). The
+`Composer` six lines were triaged this wave and are **not** waived — they are four separate
+interaction fixtures (the context-tool menu, the queue hand-back, the stale-evaluated-text
+guard and the skill-card install/dismiss guards), which is work for a session that has the
+menu fixtures open. `useRemotePeers:467` likewise stays a work item: the suite's
+"version is not an object" case does not reach `readNumber` because the version gate refuses
+the payload earlier.
 
 ## Wave 8 (layout group's wrap-up) — rows 36-37 added
 
