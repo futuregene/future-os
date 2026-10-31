@@ -24,6 +24,17 @@ const RESOLV_CONF_CANDIDATES: &[&str] = &[
     "/run/resolvconf/resolv.conf",
 ];
 
+/// The resolv.conf path this build looks at first.
+///
+/// Anything other than `/etc/resolv.conf` means the binary was patched to read
+/// a path the device can actually write (the appliance case: `/etc` is
+/// read-only and musl has no environment override) — worth naming at startup,
+/// because such a binary that finds no file looks like "no DNS elsewhere"
+/// rather than "my patch lost its configuration file".
+pub(crate) fn compiled_resolv_conf() -> &'static std::path::Path {
+    std::path::Path::new(RESOLV_CONF_CANDIDATES[0])
+}
+
 /// Where host overrides are read from, before `$PREFIX` is considered.
 const HOSTS_CANDIDATES: &[&str] = &["/etc/hosts"];
 

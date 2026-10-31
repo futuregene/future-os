@@ -155,10 +155,37 @@ fn plan() -> &'static Plan {
 /// resolver this process actually used. One line at startup makes that
 /// answerable without strace.
 fn announce(plan: &Plan) {
-    match plan {
-        Plan::System => eprintln!("[dns] plan=system (getaddrinfo)"),
-        Plan::Custom(config) => eprintln!("[dns] plan=custom: {}", config.describe()),
+    for line in announcement(plan, config::compiled_resolv_conf()) {
+        eprintln!("{line}");
     }
+}
+
+/// The lines [`announce`] prints, separated out so the shapes can be asserted
+/// without capturing stderr.
+///
+/// Two questions have to be answerable from one line: *which mechanism won*
+/// (this process's resolver, or libc reading a file) and *which file that is* —
+/// on a patched appliance build the file is not `/etc/resolv.conf`, and when it
+/// is missing the binary still looks patched while nothing can resolve.
+fn announcement(plan: &Plan, compiled: &std::path::Path) -> Vec<String> {
+    let mut lines = Vec::new();
+    match plan {
+        Plan::System => lines.push(format!(
+            "[dns] plan=system file={} (musl reads it)",
+            compiled.display()
+        )),
+        Plan::Custom(config) => {
+            lines.push(format!("[dns] plan=custom: {}", config.describe()));
+            if compiled != std::path::Path::new("/etc/resolv.conf") && !compiled.exists() {
+                lines.push(format!(
+                    "[dns] this binary was patched to read {} and that file is missing — \
+                     the patch is in place, its configuration is not",
+                    compiled.display()
+                ));
+            }
+        }
+    }
+    lines
 }
 
 /// Attach this process's resolver to an async client builder.
@@ -547,8 +574,7 @@ mod tests {
         );
     }
 
-    /// The default path attaches nothing: no resolver on the client builder.
-    /// This is the invariant that keeps existing users unaffected, and it is
+    /// The default path attaches nothing: no resolver on the client builder.    /// This is the invariant that keeps existing users unaffected, and it is
     /// asserted on the plan rather than on a live lookup because a live lookup
     /// on a healthy machine would pass either way.
     #[test]
@@ -556,6 +582,33 @@ mod tests {
         static SYSTEM: Plan = Plan::System;
         assert!(resolver_for(&SYSTEM).is_none());
         assert!(resolver_for(leaked(config_with(None, Some("192.0.2.1"), None, &[]))).is_some());
+    }
+
+    /// The startup line has to say *which file* the system path reads: on a
+    /// patched appliance build it is not `/etc/resolv.conf`, and "plan=system"
+    /// alone would leave the reader guessing which copy of the file won.
+    #[test]
+    fn the_system_plan_names_the_file_it_reads() {
+        static SYSTEM: Plan = Plan::System;
+        assert_eq!(
+            announcement(&SYSTEM, Path::new("/sdcard/dns.conf")),
+            vec!["[dns] plan=system file=/sdcard/dns.conf (musl reads it)".to_string()]
+        );
+    }
+
+    /// A patched binary whose file is gone has to say exactly that, instead of
+    /// looking like a machine with no DNS at all.
+    #[test]
+    fn a_patched_binary_without_its_file_says_the_patch_lost_it() {
+        let plan = leaked(config_with(None, None, None, &[]));
+        let lines = announcement(plan, Path::new("/sdcard/definitely-absent/dns.conf"));
+        assert!(lines[0].starts_with("[dns] plan=custom: "), "{lines:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("patched to read") && line.contains("missing")),
+            "{lines:?}"
+        );
     }
 
     /// On Windows there is no `/etc/resolv.conf` to find, and that absence must
