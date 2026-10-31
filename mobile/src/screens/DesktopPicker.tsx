@@ -1,17 +1,25 @@
 import type { DesktopFilter } from "../remote/mergeSessions";
 import type { PairedDesktop } from "../remote/types";
 import type { MachineSummary } from "../remote/desktopStatus";
+import { machineStatusKey } from "../remote/desktopStatus";
+import {
+  ConnectionStatusBlock,
+  connectionStateColors,
+  machineDotColor,
+  useConnectionSummary,
+  type ConnectionFacts,
+} from "../components/ConnectionStatus";
 import { Check, ChevronDown, Layers, X } from "lucide-react-native";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { DialogSurface } from "../components/DialogSurface";
 import { PeerIconGlyph } from "../remote/PeerIconGlyph";
 import { layout, radius, spacing } from "../theme/tokens";
 import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 
 /**
- * The desktop picker above the session list.
+ * The device menu above the session list.
  *
  * Two states the user has to tell apart at a glance — "all desktops" (a merged
  * list) and "one desktop" — because the list below looks otherwise identical
@@ -22,9 +30,14 @@ import { createThemedStyles, useTheme } from "../theme/ThemeContext";
  * machine the phone happens to be reading under another machine's name is the
  * one thing the list must never do.
  *
- * Which desktop the phone is actually connected to is deliberately not repeated
- * on the row: the header's status dot already answers that, and a label on the
- * one connected row made it look like a different kind of row than the rest.
+ * The trigger is also the phone's status dot, and its sheet is also the
+ * connection's own explanation. The two used to be separate controls beside each
+ * other — a dot that opened a popover with the same machines listed again — and
+ * the header paid for both: a touch target, and the question of which of the two
+ * to tap when something was wrong. They answer one question ("which of my
+ * machines can I use, and what do I do about the rest"), so a tap on either part
+ * of the same control opens the one sheet, and the state the dot is painting is
+ * the first thing the sheet says.
  */
 export function DesktopPicker({
   filter,
@@ -33,6 +46,8 @@ export function DesktopPicker({
   desktops,
   machines,
   onTakeControl,
+  connection,
+  active = true,
   fullWidth = false,
 }: {
   filter: DesktopFilter;
@@ -51,12 +66,24 @@ export function DesktopPicker({
   /** Ask `desktopId` to let this phone drive it. */
   onTakeControl?: (desktopId: string) => Promise<void> | void;
   /**
+   * How the phone stands with those machines: the dot's own state, the
+   * explanation under it, and the actions that reach them again.
+   */
+  connection: ConnectionFacts;
+  /**
+   * Whether the screen this header belongs to is the one on screen.
+   *
+   * A sheet left open would outlive the screen it was opened from, so the
+   * header closes it rather than keeping it for a return that may never come.
+   */
+  active?: boolean;
+  /**
    * Give the trigger the row to itself.
    *
    * At the largest text size the name a reader chose no longer fits beside the
-   * list's tools, the status dot and settings — and the name is the one thing
-   * here that must not be cut — so the header above the list puts this trigger
-   * on its own line and the tools on the next one.
+   * list's tools and settings — and the name is the one thing here that must
+   * not be cut — so the header above the list puts this trigger on its own line
+   * and the tools on the next one.
    */
   fullWidth?: boolean;
 }) {
@@ -65,17 +92,31 @@ export function DesktopPicker({
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
-  const label = (desktop: PairedDesktop) => desktop.name ?? desktop.desktopId;
+  if (!active && open) setOpen(false);
+  const status = useConnectionSummary({ machines, ...connection });
+  const { dot: dotColor } = connectionStateColors(colors)[status.state];
+  const desktopName = (desktop: PairedDesktop) => desktop.name ?? desktop.desktopId;
   const selected = filter.kind === "desktop"
     ? desktops.find(desktop => desktop.desktopId === filter.desktopId)
     : undefined;
+  /** What the trigger reads: the chosen machine, or the merged list's name. */
+  const scopeName = selected ? desktopName(selected) : t("desktops.filterAll");
   const stateOf = (desktopId: string) => machines?.find(machine => machine.desktopId === desktopId);
+  /**
+   * Whether the rows need to answer for themselves.
+   *
+   * With one machine the block above is already its answer — its title is that
+   * machine's state — and a second "已连接" a few lines lower reads as a
+   * repeat rather than as a second fact. With several, the block answers for the
+   * set ("some desktops are not connected") and the rows are the only place that
+   * says which, so they carry their own dot and state.
+   */
+  const perMachineState = (machines?.length ?? 0) > 1;
   /** Connected, and held by another device. */
   const standby = (desktopId: string) => {
     const machine = stateOf(desktopId);
     return machine?.status === "connected" && machine.control === "standby";
   };
-  const offline = (desktopId: string) => stateOf(desktopId)?.status === "offline";
 
   async function take(desktopId: string) {
     if (!onTakeControl || busy) return;
@@ -100,8 +141,15 @@ export function DesktopPicker({
   return (
     <>
       <Pressable
-        accessibilityLabel={t("desktops.pickerLabel")}
+        // The name says what the button is, what the list below is showing, and
+        // how it stands: the dot is the only other way to learn the last part,
+        // and a screen reader cannot read a colour. `desktops.pickerLabel` is
+        // still the beginning of the name, so the control is found the same way
+        // it always was.
+        accessibilityLabel={`${t("desktops.pickerLabel")}: ${scopeName}, ${status.label}`}
+        accessibilityHint={t("connection.showDetails")}
         accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
         onPress={() => setOpen(true)}
         style={({ pressed }) => [
           styles.trigger,
@@ -122,9 +170,11 @@ export function DesktopPicker({
             instead of cutting it to "实验室的…" — the sheet this button opens is
             a place to *choose* a machine, not the only place to find out which
             one is on screen. */}
-        <Text numberOfLines={2} style={styles.triggerLabel}>
-          {selected ? label(selected) : t("desktops.filterAll")}
-        </Text>
+        <Text numberOfLines={2} style={styles.triggerLabel}>{scopeName}</Text>
+        {/* The dot that used to stand on its own beside this trigger, inside it
+            now: it was the phone's answer about its machines, and so is this
+            button. Tapping it anywhere opens the one sheet. */}
+        <View testID="connection-dot" style={[styles.dot, { backgroundColor: dotColor }]} />
         <ChevronDown color={colors.inkSoft} size={14} />
       </Pressable>
 
@@ -149,11 +199,15 @@ export function DesktopPicker({
               <X color={colors.inkSoft} size={20} />
             </Pressable>
           </View>
-          <ScrollView style={styles.list}>
-            {/* Every row carries the same leading icon column, and the chosen
-                one is tinted behind the check: without them "all desktops" sits
-                flush with the sheet title and reads as a heading for the
-                machines below rather than as one of the answers. */}
+          {/* The state the header's dot was painting, in words, with the action
+              that reaches the machines again: the dot said something was wrong
+              and this is where the reader finds out what. */}
+          <ConnectionStatusBlock machines={machines} {...connection} />
+          {/* Every row carries the same leading icon column, and the chosen one
+              is tinted behind the check: without them "all desktops" sits flush
+              with the sheet title and reads as a heading for the machines below
+              rather than as one of the answers. */}
+          <View style={styles.options}>
             <Pressable
               accessibilityRole="radio"
               accessibilityState={{ checked: filter.kind === "all" }}
@@ -174,8 +228,8 @@ export function DesktopPicker({
             </Pressable>
             {desktops.map((desktop) => {
               const isSelected = filter.kind === "desktop" && filter.desktopId === desktop.desktopId;
+              const machine = stateOf(desktop.desktopId);
               const isStandby = standby(desktop.desktopId);
-              const isOffline = offline(desktop.desktopId);
               return (
                 <Pressable
                   accessibilityRole="radio"
@@ -193,20 +247,32 @@ export function DesktopPicker({
                   </View>
                   <View style={styles.optionText}>
                     <Text style={[styles.optionLabel, isSelected && styles.optionLabelSelected]}>
-                      {label(desktop)}
+                      {desktopName(desktop)}
                     </Text>
                     {/* Under the name, not beside it: a row with a second
                         control in it would make "pick this machine" and "take
-                        it over" look like the same kind of answer. */}
-                    {isStandby ? (
-                      <Text style={styles.optionNote}>{t("connection.machineStandbyHint")}</Text>
-                    ) : isOffline ? (
-                      <Text style={styles.optionNote}>{t("connection.machine.offline")}</Text>
+                        it over" look like the same kind of answer. The dot is
+                        the header's own judgement of that machine — green only
+                        for connected and ours to drive — so the tally in the
+                        block above and these rows can never say different
+                        things. */}
+                    {machine && perMachineState ? (
+                      <View style={styles.optionState}>
+                        <View
+                          testID={`machine-dot-${desktop.desktopId}`}
+                          style={[styles.stateDot, { backgroundColor: machineDotColor(machine, colors) }]}
+                        />
+                        <Text style={styles.optionNote}>
+                          {isStandby
+                            ? t("connection.machineStandby")
+                            : t(machineStatusKey(machine.status))}
+                        </Text>
+                      </View>
                     ) : null}
                   </View>
                   {isStandby && onTakeControl ? (
                     <Pressable
-                      accessibilityLabel={`${t("connection.takeControl")} ${label(desktop)}`}
+                      accessibilityLabel={`${t("connection.takeControl")} ${desktopName(desktop)}`}
                       accessibilityRole="button"
                       disabled={busy !== null}
                       onPress={() => void take(desktop.desktopId)}
@@ -221,21 +287,21 @@ export function DesktopPicker({
                 </Pressable>
               );
             })}
-            <View style={styles.separator} />
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => {
-                setOpen(false);
-                onManage();
-              }}
-              style={({ pressed }) => [styles.option, pressed && styles.pressed]}
-            >
-              {/* An action, not a choice — the rule above separates it from the
-                  answers, and the empty column keeps its text on their edge. */}
-              <View style={styles.optionIcon} />
-              <Text style={styles.manage}>{t("desktops.manage")}</Text>
-            </Pressable>
-          </ScrollView>
+          </View>
+          <View style={styles.separator} />
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => {
+              setOpen(false);
+              onManage();
+            }}
+            style={({ pressed }) => [styles.option, pressed && styles.pressed]}
+          >
+            {/* An action, not a choice — the rule above separates it from the
+                answers, and the empty column keeps its text on their edge. */}
+            <View style={styles.optionIcon} />
+            <Text style={styles.manage}>{t("desktops.manage")}</Text>
+          </Pressable>
         </DialogSurface>
       </Modal>
     </>
@@ -252,8 +318,8 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     // Tighter than the sheet's own spacing: this row also holds the list's
-    // tools, the status dot and settings, and every point the two chevrons and
-    // the icon give up is a point the machine's name keeps.
+    // tools and settings, and every point the chevron and the icon give up is a
+    // point the machine's name keeps.
     gap: 6,
     borderWidth: 1,
     borderColor: theme.colors.line,
@@ -265,6 +331,7 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   triggerIcon: { width: 17, alignItems: "center" },
   triggerFullWidth: { flexBasis: "100%" },
   triggerLabel: { flex: 1, minWidth: 0, color: theme.colors.inkStrong, fontSize: theme.font(15), fontWeight: "600" },
+  dot: { width: 8, height: 8, borderRadius: 4 },
   pressed: { opacity: 0.7 },
   header: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   title: { flex: 1, minWidth: 0, color: theme.colors.inkStrong, fontSize: theme.font(18), fontWeight: "700" },
@@ -275,7 +342,7 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     justifyContent: "center",
     borderRadius: radius.pill,
   },
-  list: { maxHeight: 420 },
+  options: { gap: spacing.xs },
   option: {
     minHeight: 48,
     flexDirection: "row",
@@ -290,7 +357,9 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   optionIcon: { width: 24, alignItems: "center", justifyContent: "center" },
   optionText: { flex: 1, minWidth: 0 },
   optionLabel: { color: theme.colors.ink, fontSize: theme.font(15) },
-  optionNote: { color: theme.colors.inkMuted, fontSize: theme.font(12), marginTop: 1 },
+  optionState: { flexDirection: "row", alignItems: "center", gap: spacing.xs, marginTop: 1 },
+  stateDot: { width: 6, height: 6, borderRadius: 3 },
+  optionNote: { color: theme.colors.inkMuted, fontSize: theme.font(12) },
   takeControl: {
     minHeight: 32,
     justifyContent: "center",

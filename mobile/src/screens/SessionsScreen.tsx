@@ -26,7 +26,6 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Button } from "../components/Button";
 import { ActionMenu } from "../components/ActionMenu";
-import { ConnectionBadge } from "../components/ConnectionBadge";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { DialogSurface } from "../components/DialogSurface";
 import { useAppDialog } from "../components/useAppDialog";
@@ -994,6 +993,13 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           ] : []}
         />
         <View style={[styles.deviceBar, stackHeader && styles.deviceBarStacked]}>
+          {/* The device menu and the status dot are one control. The dot is
+              the trigger's own indicator and this sheet is both the choice of
+              machine and the explanation of how the phone stands with them, so
+              its rows are per machine: `takeControlFor` resolves the row's own
+              connection, whereas `remote.takeControl` speaks only for the open
+              machine — a peer's row asked the desktop this phone already
+              drives, and the held machine stayed held. */}
           <DesktopPicker
             desktops={remote.desktops}
             filter={scopedFilter}
@@ -1002,6 +1008,16 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
             onManage={onManageDesktops}
             onTakeControl={remote.catalogs.takeControlFor}
             fullWidth={stackHeader}
+            active={active}
+            connection={{
+              presentation: connection,
+              disconnectReason: remote.presence?.reason,
+              error: remote.error,
+              standby: remote.presence?.control === "standby",
+              holder: remote.presence?.holder ?? null,
+              onReconnect: reconnect,
+              onUnpair: confirmUnpair,
+            }}
           />
           <SessionListActions
             canSelect={canSelect}
@@ -1009,25 +1025,6 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
             onSelect={() => listRef.current?.startSelecting()}
           />
           <View style={styles.topActions}>
-            {/* The sheet's rows are per machine, so the takeover has to be too:
-                it lists the machines other than the open one as well, and those
-                are exactly the rows that carry the action when a peer is the one
-                somebody else holds. `remote.takeControl` speaks only for the open
-                machine, so a peer's row asked the desktop this phone already
-                drives — granted, nothing changed, sheet closed, held machine
-                still held. `takeControlFor` resolves the row's own connection. */}
-            <ConnectionBadge
-              active={active}
-              machines={machines}
-              presentation={connection}
-              disconnectReason={remote.presence?.reason}
-              error={remote.error}
-              holder={remote.presence?.holder ?? null}
-              onTakeControl={remote.catalogs.takeControlFor}
-              standby={remote.presence?.control === "standby"}
-              onReconnect={reconnect}
-              onUnpair={confirmUnpair}
-            />
             <Pressable
               accessibilityLabel={t("sessions.settings")}
               accessibilityRole="button"
