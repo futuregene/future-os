@@ -155,7 +155,57 @@ fn arm_exit_deadline(
 /// Write all bytes to stdout, retrying on interruption, serialized by `lock`.
 fn write_str(lock: &Mutex<()>, data: &str) {
     let _guard = lock.lock();
+    #[cfg(test)]
+    if capture::write(data.as_bytes()) {
+        return;
+    }
     let _ = platform::write_stdout(data.as_bytes());
+}
+
+/// Test-only capture of the bytes a test thread writes to the terminal.
+///
+/// The driver (`workbench::run`) paints through [`write_str`], which forwards
+/// straight to fd 1. A unit test that drives the loop would therefore spray
+/// escape sequences over the harness's own output, and — worse — the only way
+/// to assert *what* a frame contained would be a real terminal to read it back
+/// from. With this installed the bytes land in a buffer instead, so the same
+/// test can check the frame it asked for.
+///
+/// Thread-local on purpose: another test's frame, or the harness's own progress
+/// line, is never captured, and no test has to hold a process-global lock to be
+/// sure of that. Nothing here is compiled outside `cfg(test)`.
+#[cfg(test)]
+pub(crate) mod capture {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static SINK: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+    }
+
+    /// Start capturing on this thread, discarding anything captured before.
+    pub(crate) fn start() {
+        SINK.with(|sink| *sink.borrow_mut() = Some(Vec::new()));
+    }
+
+    /// Stop capturing and return what was written since [`start`].
+    pub(crate) fn take() -> String {
+        SINK.with(|sink| {
+            let bytes = sink.borrow_mut().take().unwrap_or_default();
+            String::from_utf8_lossy(&bytes).into_owned()
+        })
+    }
+
+    /// Hand `data` to an active capture. `false` means "this thread is not
+    /// capturing" and the caller writes for real.
+    pub(crate) fn write(data: &[u8]) -> bool {
+        SINK.with(|sink| match sink.borrow_mut().as_mut() {
+            Some(buffer) => {
+                buffer.extend_from_slice(data);
+                true
+            }
+            None => false,
+        })
+    }
 }
 
 // ─── Size helpers (shared: env fallback mirrors `tui.ts`) ────────────────
