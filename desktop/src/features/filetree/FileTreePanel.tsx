@@ -258,9 +258,9 @@ export function FileTreePanel({
 
       {/* Every state stays mounted in one edge-to-edge scroll region so the
           boundary and scrollbar do not jump while the tree loads. */}
-      <div className="group relative min-h-0 flex-1 border-t border-line-soft/70">
+      <div className="group relative flex min-h-0 flex-1 flex-col border-t border-line-soft/70">
         <div
-          className="floating-scrollbar h-full overflow-x-hidden overflow-y-auto bg-surface/50"
+          className="floating-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-surface/50"
           onScroll={listScrollbar.handleScroll}
           ref={listScrollbar.scrollRef}
         >
@@ -305,6 +305,24 @@ export function FileTreePanel({
         <FloatingScrollbar
           onPointerDown={listScrollbar.handleThumbPointerDown}
           scrollbar={listScrollbar.scrollbar}
+        />
+        {/*
+          The panel's closing edge.
+
+          The Files list is the last thing in a full-height column, so without a
+          rule of its own a long tree simply ran out at the window's bottom edge —
+          the last row sliced through its glyphs, nothing under it, which reads as
+          a list spilling out of the panel rather than one that ends. The hairline
+          belongs to this strip and not to the scroll viewport: the viewport is
+          what scrolls, and a border on it would travel with the content and sit
+          on the window edge. Here it stays put, sits below the viewport, and has
+          a few pixels of the panel's own surface under it, so it is never the
+          last pixel row of the window.
+        */}
+        <div
+          aria-hidden="true"
+          className="h-1.5 shrink-0 border-t border-line-soft"
+          data-testid="file-tree-bottom-edge"
         />
       </div>
 
