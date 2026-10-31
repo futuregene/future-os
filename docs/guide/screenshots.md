@@ -469,14 +469,30 @@ from that button, so the scenario taps it once and then the `src`, `benches` and
 `src/parser` rows; what it lists is the checkout the conversation is about —
 `parser.rs` and `args.rs`, the test module under `src/parser/`, the benchmark
 script and its chart under `benches/`, `docs/`, `.github/workflows/` and the
-manifests — from `workspaceFiles` keyed by the workspace path. Thirty-six rows of
-it, which is what makes the panel read as a tree rather than a stub: with those
-three folders open the list stops 16 px short of the window edge, so the last row
-is whole. One row more and that edge slices the row through its glyphs — the panel
-is a full-height column whose only rule is the hairline *above* the list, so there
-is nothing at the bottom to stop a row — and the scenario fails on it: it measures
-every row's box against the panel's bottom, not `scrollHeight` (which reports the
-viewport for a short tree and would pass for an empty panel). Opening it takes
+manifests — from `workspaceFiles` keyed by the workspace path. Thirty-five rows of
+it, which is what makes the panel read as a tree rather than a stub.
+
+The tree is a **card**, the same treatment the composer and the approval prompt get
+(`rounded-lg border border-line bg-surface/95`), inset from the panel's edges so its
+top and its rounded bottom corners are visible, with the rows and their hairlines
+inside it. It used to be the panel's own edge-to-edge column with a single rule
+above it, and that is what went wrong in the README's first image: a column of names
+whose border runs into the window's bottom edge reads as a list spilling out of the
+panel however long it is. The card's own rounded border closes the bottom now, so
+there is no separate strip under the scroll area — one line, ever. The rows are
+divided by a hairline *above* each one, the same token the app's other file lists
+use (`RemoteFilesPanel`, the review list); above and not below, so the last row
+carries no rule that would double with the card's border, and the card's own top
+border stands in for the first row's.
+
+`FileTreePanel.frame.test.tsx` asserts that shape — the card's classes and its
+inset, the rows' rules, and that no closing strip has crept back — while the pixels
+(the radius actually rendered, nothing past the card's bottom border, the card's
+bottom above the window's edge) are the capture's job, since jsdom has no layout.
+The demo tree also drops the names a checkout ignores — `node_modules`, `target`,
+`.git`, `dist`, `.next`, `coverage` and friends — in the mock's `list_directory`, so
+a fixture entry added later cannot put a build directory into a screenshot; the
+scenario fails if one appears. Opening the panel takes
 384 px off the conversation column (1440 → 1056 at this width), but the reading
 column is capped, so the text re-centres rather than re-wrapping; in a window too
 narrow for a third column the panel opens as an overlay over the conversation

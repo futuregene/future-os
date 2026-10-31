@@ -1,4 +1,4 @@
-//! A minimal stdio MCP client — the execution half of `future mcp`.
+//! The MCP client behind `future mcp` — both transports.
 //!
 //! FutureOS has no MCP client inside the agent (its tool set is the four
 //! built-ins), so the CLI is the one place an MCP server can be reached. The
@@ -7,12 +7,22 @@
 //! cap are all exercised on an in-memory duplex, and process spawning is a thin
 //! adapter on top of it.
 //!
-//! Transport is stdio only. The server is spawned with piped stdio and speaks
-//! newline-delimited JSON (the MCP stdio framing — no `Content-Length` header).
+//! Two transports reach a server, and [`ServerSpec::transport`] says which one a
+//! configured entry describes:
+//!
+//! - **stdio** — a spawned process with piped stdio, speaking newline-delimited
+//!   JSON (the MCP stdio framing — no `Content-Length` header). This module.
+//! - **Streamable HTTP** — an endpoint reached by POST, answering with JSON or a
+//!   server-sent-event stream. [`crate::commands::mcp_http`].
+//!
+//! Everything above the transport — the handshake, cursor paging, a tool call and
+//! the shape of an error — is shared, so the two behave the same way and a
+//! command only has to name a server, not its transport.
 
+use crate::commands::mcp_http::HttpSession;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -66,12 +76,27 @@ const STDERR_TAIL_LINES: usize = 40;
 /// open (or left it open behind a child of its own).
 const STDERR_DRAIN_GRACE: Duration = Duration::from_secs(2);
 
+/// How a configured server is reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    /// A local process, spawned with piped stdio.
+    Stdio,
+    /// A Streamable HTTP endpoint.
+    Http,
+}
+
 /// One configured MCP server, as `~/.future/mcp.json` describes it.
+///
+/// The two transports are distinguished by which of `command` / `url` is set:
+/// exactly one of them, never both (see [`ServerSpec::transport`]). Everything a
+/// stdio process needs (`args`, `env`, `cwd`) and everything an HTTP endpoint
+/// needs (`headers`) is optional, so the file stays a plain map of servers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerSpec {
     /// The executable to spawn. Resolved through `PATH`.
-    pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
     /// Arguments passed verbatim.
     #[serde(default)]
     pub args: Vec<String>,
@@ -81,6 +106,12 @@ pub struct ServerSpec {
     /// Working directory for the server process.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// The HTTP endpoint (Streamable HTTP transport: one URL, POST + SSE).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Extra request headers for a `url` server — credentials, mostly.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
     /// Disabled servers stay in the file but are refused by name.
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -91,12 +122,61 @@ fn default_true() -> bool {
 }
 
 impl ServerSpec {
-    /// The command line, for error messages (`rea --mcp`).
-    pub fn command_line(&self) -> String {
-        std::iter::once(self.command.as_str())
+    /// Which transport this entry describes.
+    ///
+    /// Both keys and neither are configuration mistakes, and both are reported
+    /// here rather than deeper down, where the message would be about whatever
+    /// failed first (a spawn of an absent command, a connect to an absent URL).
+    pub fn transport(&self) -> Result<Transport, String> {
+        match (self.command.as_ref(), self.url.as_ref()) {
+            (Some(_), None) => {
+                // The settings of the other transport are refused rather than
+                // ignored: an entry that looks configured and quietly is not is
+                // worse than one that says what is wrong with it.
+                if !self.headers.is_empty() {
+                    return Err(
+                        "sets \"headers\", which belongs to an HTTP endpoint — remove them, or \
+                         use \"url\" instead of \"command\""
+                            .to_string(),
+                    );
+                }
+                Ok(Transport::Stdio)
+            }
+            (None, Some(_)) => {
+                if !self.args.is_empty() || !self.env.is_empty() || self.cwd.is_some() {
+                    return Err(
+                        "sets \"args\", \"env\" or \"cwd\", which describe a local process — \
+                         remove them, or use \"command\" instead of \"url\""
+                            .to_string(),
+                    );
+                }
+                Ok(Transport::Http)
+            }
+            (Some(_), Some(_)) => Err(
+                "set either \"command\" (a local process over stdio) or \"url\" (an HTTP \
+                 endpoint), not both"
+                    .to_string(),
+            ),
+            (None, None) => Err(
+                "needs a \"command\" (a local process over stdio) or a \"url\" (an HTTP \
+                 endpoint)"
+                    .to_string(),
+            ),
+        }
+    }
+
+    /// The endpoint, for a list row or an error message: the command line of a
+    /// stdio server (`rea --mcp`), or the URL of an HTTP one.
+    pub fn endpoint(&self) -> String {
+        if let Some(url) = self.url.as_ref() {
+            return url.clone();
+        }
+        std::iter::once(self.command.as_deref().unwrap_or(""))
             .chain(self.args.iter().map(String::as_str))
             .collect::<Vec<_>>()
             .join(" ")
+            .trim()
+            .to_string()
     }
 }
 
@@ -173,37 +253,13 @@ where
 
     /// Every tool the server advertises, following `nextCursor` to the end.
     pub async fn list_tools(&mut self) -> Result<Vec<Value>, String> {
-        let mut tools = Vec::new();
-        let mut cursor: Option<String> = None;
-        for _ in 0..MAX_TOOL_PAGES {
-            let mut params = Map::new();
-            if let Some(cursor) = cursor.as_ref() {
-                params.insert("cursor".to_string(), Value::String(cursor.clone()));
-            }
-            let result = self.request("tools/list", Value::Object(params)).await?;
-            if let Some(page) = result.get("tools").and_then(Value::as_array) {
-                tools.extend(page.iter().cloned());
-            }
-            cursor = result
-                .get("nextCursor")
-                .and_then(Value::as_str)
-                .filter(|cursor| !cursor.is_empty())
-                .map(str::to_string);
-            if cursor.is_none() {
-                return Ok(tools);
-            }
-        }
-        Err(format!(
-            "MCP 'tools/list' did not finish after {MAX_TOOL_PAGES} pages — the server keeps \
-             returning a nextCursor"
-        ))
+        list_tools(self).await
     }
 
     /// One `tools/call`. The returned value is the MCP `result` envelope
     /// (`content`, `isError`, …), not the tool's own payload.
     pub async fn call_tool(&mut self, name: &str, arguments: Value) -> Result<Value, String> {
-        let params = json!({ "name": name, "arguments": arguments });
-        self.request("tools/call", params).await
+        call_tool(self, name, arguments).await
     }
 
     async fn send(&mut self, body: &Value) -> Result<(), String> {
@@ -252,7 +308,73 @@ where
     }
 }
 
-fn describe_error(error: &Value) -> String {
+impl<R, W> Rpc for Session<R, W>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    async fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        Session::request(self, method, params).await
+    }
+
+    async fn notify(&mut self, method: &str, params: Value) -> Result<(), String> {
+        Session::notify(self, method, params).await
+    }
+}
+
+/// The two verbs an MCP transport provides: one request that waits for its own
+/// answer, and one fire-and-forget notification.
+///
+/// Everything above this — the handshake, cursor paging, a tool call — is written
+/// once against these two, so stdio and HTTP differ only in how a frame travels
+/// and not in what the commands do with it.
+///
+/// The futures are deliberately not `Send`-bounded: one connection lives on the
+/// task that opened it and nothing here is spawned, so a `Send` bound would
+/// constrain both transports without buying anything.
+#[allow(async_fn_in_trait)]
+pub trait Rpc {
+    async fn request(&mut self, method: &str, params: Value) -> Result<Value, String>;
+
+    async fn notify(&mut self, method: &str, params: Value) -> Result<(), String>;
+}
+
+/// Every tool the server advertises, following `nextCursor` to the end.
+pub async fn list_tools<T: Rpc>(rpc: &mut T) -> Result<Vec<Value>, String> {
+    let mut tools = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..MAX_TOOL_PAGES {
+        let mut params = Map::new();
+        if let Some(cursor) = cursor.as_ref() {
+            params.insert("cursor".to_string(), Value::String(cursor.clone()));
+        }
+        let result = rpc.request("tools/list", Value::Object(params)).await?;
+        if let Some(page) = result.get("tools").and_then(Value::as_array) {
+            tools.extend(page.iter().cloned());
+        }
+        cursor = result
+            .get("nextCursor")
+            .and_then(Value::as_str)
+            .filter(|cursor| !cursor.is_empty())
+            .map(str::to_string);
+        if cursor.is_none() {
+            return Ok(tools);
+        }
+    }
+    Err(format!(
+        "MCP 'tools/list' did not finish after {MAX_TOOL_PAGES} pages — the server keeps \
+         returning a nextCursor"
+    ))
+}
+
+/// One `tools/call` (`result` envelope, not the tool's own payload).
+pub async fn call_tool<T: Rpc>(rpc: &mut T, name: &str, arguments: Value) -> Result<Value, String> {
+    let params = json!({ "name": name, "arguments": arguments });
+    rpc.request("tools/call", params).await
+}
+
+/// The `code`/`message`/`data` an MCP error object carries, for an error message.
+pub(crate) fn describe_error(error: &Value) -> String {
     let code = match error.get("code") {
         Some(Value::Number(number)) => number.to_string(),
         Some(Value::String(text)) => text.clone(),
@@ -311,7 +433,7 @@ async fn read_frame<R: AsyncRead + Unpin>(
 
 /// The over-cap message: it names what was being awaited and both budgets, so
 /// the reader is not left with only `--max-bytes`, which cannot help.
-fn over_cap_error(limit: usize, method: &str) -> String {
+pub(crate) fn over_cap_error(limit: usize, method: &str) -> String {
     format!(
         "the MCP server sent a frame larger than {limit} bytes while answering '{method}'\n\
          This is the read budget (what is held in memory), which `--max-bytes` does not affect. \
@@ -347,7 +469,12 @@ impl ServerProcess {
         timeout: Duration,
         max_frame_bytes: usize,
     ) -> Result<Self, String> {
-        let mut command = tokio::process::Command::new(&spec.command);
+        let Some(program) = spec.command.as_ref() else {
+            return Err(format!(
+                "server '{name}' has no \"command\" — it is configured as an HTTP endpoint"
+            ));
+        };
+        let mut command = tokio::process::Command::new(program);
         command
             .args(&spec.args)
             .stdin(Stdio::piped())
@@ -372,7 +499,7 @@ impl ServerProcess {
         let mut child = command.spawn().map_err(|error| {
             format!(
                 "could not start the MCP server '{name}' ({}): {error}",
-                spec.command_line()
+                spec.endpoint()
             )
         })?;
         let stdin = child
@@ -438,6 +565,75 @@ impl ServerProcess {
             .is_err()
         {
             let _ = self.child.kill().await;
+        }
+    }
+}
+
+// ── The live connection ───────────────────────────────────────────────────
+
+/// A live connection to a configured server, whatever its transport.
+///
+/// Every subcommand holds one: `call` and `tools` start it, use it and stop it,
+/// `serve` keeps it alive. The transport decides only how it starts and stops —
+/// an HTTP endpoint has no process to kill and no stderr to read.
+pub enum Connection {
+    /// Boxed: a spawned process carries its child handle, two pipes and the
+    /// stderr tail, and one connection is made per command, so the indirection
+    /// costs nothing and keeps the enum small.
+    Stdio(Box<ServerProcess>),
+    Http(HttpSession),
+}
+
+impl Connection {
+    /// Open `name` (the configured server) and complete the MCP handshake.
+    pub async fn start(
+        name: &str,
+        spec: &ServerSpec,
+        timeout: Duration,
+        max_frame_bytes: usize,
+    ) -> Result<Self, String> {
+        let transport = spec
+            .transport()
+            .map_err(|error| format!("server '{name}': {error}"))?;
+        match transport {
+            Transport::Stdio => Ok(Self::Stdio(Box::new(
+                ServerProcess::start_with_frame_cap(name, spec, timeout, max_frame_bytes).await?,
+            ))),
+            Transport::Http => Ok(Self::Http(
+                HttpSession::start(name, spec, timeout, max_frame_bytes).await?,
+            )),
+        }
+    }
+
+    pub async fn list_tools(&mut self) -> Result<Vec<Value>, String> {
+        match self {
+            Self::Stdio(process) => process.session().list_tools().await,
+            Self::Http(session) => session.list_tools().await,
+        }
+    }
+
+    pub async fn call_tool(&mut self, name: &str, arguments: Value) -> Result<Value, String> {
+        match self {
+            Self::Stdio(process) => process.session().call_tool(name, arguments).await,
+            Self::Http(session) => session.call_tool(name, arguments).await,
+        }
+    }
+
+    /// The server's recent stderr, for attaching to a failure message. An HTTP
+    /// endpoint writes none, so this is empty for it.
+    pub fn stderr_tail(&self) -> String {
+        match self {
+            Self::Stdio(process) => process.stderr_tail(),
+            Self::Http(_) => String::new(),
+        }
+    }
+
+    /// Close the connection: close stdin and wait out the process, or end the
+    /// HTTP session if the server offered one.
+    pub async fn shutdown(self) {
+        match self {
+            Self::Stdio(process) => process.shutdown().await,
+            Self::Http(session) => session.shutdown().await,
         }
     }
 }
@@ -911,10 +1107,12 @@ mod tests {
     #[tokio::test]
     async fn a_non_string_environment_value_is_refused_before_spawning() {
         let mut spec = ServerSpec {
-            command: "definitely-not-a-real-program".to_string(),
+            command: Some("definitely-not-a-real-program".to_string()),
             args: Vec::new(),
             env: Map::new(),
             cwd: None,
+            url: None,
+            headers: BTreeMap::new(),
             enabled: true,
         };
         spec.env.insert("COUNT".to_string(), json!(5));
@@ -962,10 +1160,12 @@ done
 
         fn sh_spec(script: String, env: Map<String, Value>, cwd: Option<String>) -> ServerSpec {
             ServerSpec {
-                command: "/bin/sh".to_string(),
+                command: Some("/bin/sh".to_string()),
                 args: vec!["-c".to_string(), script],
                 env,
                 cwd,
+                url: None,
+                headers: BTreeMap::new(),
                 enabled: true,
             }
         }

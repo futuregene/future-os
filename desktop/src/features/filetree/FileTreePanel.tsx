@@ -256,56 +256,70 @@ export function FileTreePanel({
         </div>
       </div>
 
-      {/* Every state stays mounted in one edge-to-edge scroll region so the
-          boundary and scrollbar do not jump while the tree loads. */}
-      <div className="group relative min-h-0 flex-1 border-t border-line-soft/70">
-        <div
-          className="floating-scrollbar h-full overflow-x-hidden overflow-y-auto bg-surface/50"
-          onScroll={listScrollbar.handleScroll}
-          ref={listScrollbar.scrollRef}
-        >
-          {rootEntries === null
-            ? (
-                tree.rootErrored
-                  ? (
-                      <div className="flex h-full items-center justify-center text-sm text-ink-muted">
-                        {t("loadFailed")}
-                      </div>
-                    )
-                  : showLoading
+      {/*
+        The tree is a card, the same treatment the composer and the approval
+        prompt get (`rounded-lg border border-line bg-surface/95`), inset from the
+        panel's edges so both its top and its rounded bottom corners are visible.
+
+        It used to be the panel's own edge-to-edge column with a single rule above
+        it: a column of names whose left border ran straight into the window's
+        bottom edge reads as a list spilling out of the panel rather than one that
+        ends, however long it is. The card's own border closes it, which is why
+        there is no separate closing strip under the scroll area — one line only.
+
+        Every state stays mounted in the one scroll region inside the card, so the
+        boundary and the scrollbar do not jump while the tree loads.
+      */}
+      <div className="min-h-0 flex-1 px-2 pb-2">
+        <div className="group relative flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-line bg-surface/95">
+          <div
+            className="floating-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto [&>ul>li:first-child>div]:border-t-0"
+            onScroll={listScrollbar.handleScroll}
+            ref={listScrollbar.scrollRef}
+          >
+            {rootEntries === null
+              ? (
+                  tree.rootErrored
                     ? (
                         <div className="flex h-full items-center justify-center text-sm text-ink-muted">
-                          {t("loading")}
+                          {t("loadFailed")}
                         </div>
                       )
-                    : null
-              )
-            : rootEntries.length === 0
-              ? (
-                  <div className="flex h-full items-center justify-center text-sm text-ink-muted">
-                    {t("empty")}
-                  </div>
+                    : showLoading
+                      ? (
+                          <div className="flex h-full items-center justify-center text-sm text-ink-muted">
+                            {t("loading")}
+                          </div>
+                        )
+                      : null
                 )
-              : (
-                  <ul>
-                    {rootEntries.map(entry => (
-                      <FileTreeNode
-                        activePath={activeMenuPath}
-                        depth={0}
-                        entry={entry}
-                        key={entry.path}
-                        onContextMenu={handleContextMenu}
-                        onOpenFile={handleOpenFile}
-                        tree={tree}
-                      />
-                    ))}
-                  </ul>
-                )}
+              : rootEntries.length === 0
+                ? (
+                    <div className="flex h-full items-center justify-center text-sm text-ink-muted">
+                      {t("empty")}
+                    </div>
+                  )
+                : (
+                    <ul>
+                      {rootEntries.map(entry => (
+                        <FileTreeNode
+                          activePath={activeMenuPath}
+                          depth={0}
+                          entry={entry}
+                          key={entry.path}
+                          onContextMenu={handleContextMenu}
+                          onOpenFile={handleOpenFile}
+                          tree={tree}
+                        />
+                      ))}
+                    </ul>
+                  )}
+          </div>
+          <FloatingScrollbar
+            onPointerDown={listScrollbar.handleThumbPointerDown}
+            scrollbar={listScrollbar.scrollbar}
+          />
         </div>
-        <FloatingScrollbar
-          onPointerDown={listScrollbar.handleThumbPointerDown}
-          scrollbar={listScrollbar.scrollbar}
-        />
       </div>
 
       <LinkContextMenu controller={menu} items={menuItems} />
