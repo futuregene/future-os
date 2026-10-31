@@ -3695,3 +3695,189 @@ async fn a_run_abandoned_by_persistence_still_sends_a_terminal() {
         "the outcome was never recorded, so the run must not look settled"
     );
 }
+
+/// Test-only: persist an accepting snapshot plus a queued receipt, which is the
+/// durable half of "this client request was already accepted" after a restart
+/// (the in-memory scheduler is empty again, so admission has to read it back).
+#[tokio::test(flavor = "current_thread")]
+async fn a_persisted_receipt_answers_a_replayed_request_and_refuses_a_different_body() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![]), "receipt-replay");
+    let mut session = fixture.session;
+    let msg = "replayed input";
+    let snapshot = crate::session::Session::snapshot(
+        "s1".to_string(),
+        session.cwd.clone(),
+        "mock".to_string(),
+        String::new(),
+        String::new(),
+        vec![crate::session::SessionEntry::run_started("run-receipt", 1)],
+    );
+    session.session_manager.save(&snapshot).unwrap();
+    // The fingerprint is the canonical hash admission recomputes from the
+    // request itself; anything else means a different input was accepted.
+    let fingerprint = crate::session::compaction_ops::canonical_hash(&serde_json::json!({
+        "message": msg, "modelContext": "", "images": [], "attachments": []
+    }))
+    .unwrap();
+    let ack = crate::runtime::RunAck::queued("run-receipt".into(), 1, 1);
+    let user: crate::session::SessionEntry = serde_json::from_value(serde_json::json!({
+        "id":"u-replayed","type":"user","role":"user",
+        "timestamp":"2026-10-26T00:00:01Z","meta":{"run_id":"run-receipt"},"content":msg
+    }))
+    .unwrap();
+    session
+        .session_manager
+        .record_queued_receipt(
+            "s1",
+            "req-receipt",
+            &ack,
+            &fingerprint,
+            &serde_json::json!({}),
+            &user,
+        )
+        .unwrap();
+
+    // The same body under the same request id is the same accepted input: the
+    // client gets the original acknowledgement instead of a second run.
+    let replayed = session
+        .enqueue_prompt(
+            msg,
+            &[],
+            &[],
+            None,
+            "req-receipt",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    assert_eq!(replayed.run_id, "run-receipt");
+    assert_eq!(replayed.run_sequence, Some(1));
+    assert_eq!(
+        replayed.accepted_state,
+        crate::runtime::RunAcceptedState::Existing
+    );
+    // Naming the receipt's own run id is also the same accepted input.
+    let named = session
+        .enqueue_prompt(
+            msg,
+            &[],
+            &[],
+            Some("run-receipt"),
+            "req-receipt",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    assert_eq!(
+        named.accepted_state,
+        crate::runtime::RunAcceptedState::Existing
+    );
+
+    // A different body under the same request id is refused, and nothing new
+    // was accepted for it.
+    let error = session
+        .enqueue_prompt(
+            "different body",
+            &[],
+            &[],
+            None,
+            "req-receipt",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("already belongs to another accepted input"),
+        "{error}"
+    );
+    // Naming a *different* run id for the same request id is refused too.
+    let error = session
+        .enqueue_prompt(
+            msg,
+            &[],
+            &[],
+            Some("run-other"),
+            "req-receipt",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("already belongs to another accepted input"),
+        "{error}"
+    );
+}
+
+/// A reset owns the conversation's identities while it runs: new input has to
+/// wait rather than race the rewrite.
+#[tokio::test(flavor = "current_thread")]
+async fn a_history_reset_in_progress_refuses_new_input_until_it_finishes() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![]), "reset-guard");
+    let mut session = fixture.session;
+    session
+        .history_reset_in_progress
+        .store(true, std::sync::atomic::Ordering::Release);
+    let error = session
+        .enqueue_prompt(
+            "hi",
+            &[],
+            &[],
+            None,
+            "req-reset",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("session history reset is in progress"),
+        "{error}"
+    );
+    // The refusal is the flag, not a permanent state: clearing it admits the
+    // same input.
+    session
+        .history_reset_in_progress
+        .store(false, std::sync::atomic::Ordering::Release);
+    assert!(session
+        .enqueue_prompt(
+            "hi",
+            &[],
+            &[],
+            None,
+            "req-reset",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .is_ok());
+}
+
+/// A session whose journal already failed refuses new input with that failure
+/// instead of accepting work it could not persist.
+#[tokio::test(flavor = "current_thread")]
+async fn a_failed_journal_refuses_new_input_with_its_persistence_failure() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![]), "journal-failed");
+    let mut session = fixture.session;
+    session
+        .broadcaster
+        .fail_persistence("injected journal failure");
+    let error = session
+        .enqueue_prompt(
+            "hi",
+            &[],
+            &[],
+            None,
+            "req-failed",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap_err();
+    let text = format!("{error:#}");
+    assert!(text.contains("injected journal failure"), "{text}");
+    assert!(
+        matches!(
+            error.downcast_ref::<crate::runtime::RunQueueError>(),
+            Some(crate::runtime::RunQueueError::PersistenceUnavailable(_))
+        ),
+        "{text}"
+    );
+    // Nothing was accepted for that request id.
+    assert!(session.scheduler.queued().is_empty());
+}
