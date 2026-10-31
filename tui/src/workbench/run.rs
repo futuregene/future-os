@@ -4595,4 +4595,88 @@ mod driver_tests {
             assert!(frames(&painted) >= 1);
         }
     }
+
+    mod image_paint {
+        use super::*;
+        use crate::terminal_image::{CapabilitiesGuard, ImageProtocol};
+        use crate::workbench::{demo, Overlay};
+
+        /// What a frame does with a picture on screen: the terminal is asked to
+        /// place it, asked again only when the frame disturbed the cells it
+        /// covers, and told to delete it when it goes away.
+        ///
+        /// `paint_images` measured zero because the capability probe answers
+        /// "no pictures" on a host with no image protocol in its environment.
+        /// The guard pins the answer a kitty terminal gives, and the frame here
+        /// is the demo's own picture — the same fixture the preview box's own
+        /// test uses.
+        #[test]
+        fn a_frame_places_the_picture_only_while_it_is_disturbed() {
+            let _caps = CapabilitiesGuard::pin(ImageProtocol::Kitty);
+            let mut data = demo::chat();
+            data.preview = Some(demo::preview_image());
+            let mut workbench = Workbench::new();
+            workbench.overlay = Some(Overlay::FilePreview);
+            let rows = workbench.render(&data, 120, 38);
+            assert_eq!(rows.len(), 38, "the frame is the height it was asked for");
+            assert!(
+                !workbench.image_requests.is_empty(),
+                "a kitty terminal is asked to place the picture"
+            );
+            let mut terminal = Terminal::new().expect("terminal");
+
+            // A frame that rewrote the picture's rows asks for it again.
+            let all_rows: Vec<usize> = (0..38).collect();
+            crate::terminal::capture::start();
+            super::super::paint_images(&mut terminal, &mut workbench, &all_rows);
+            let placed = crate::terminal::capture::take();
+            assert!(
+                placed.contains("\x1b_Ga=T"),
+                "the frame did not transmit the picture's pixels: {:?}",
+                &placed[..placed.len().min(120)]
+            );
+            assert!(
+                !workbench.painted_images.ids.is_empty(),
+                "the placement was not remembered, so the next frame would repeat it"
+            );
+
+            // The same frame again, with none of its rows rewritten: the picture
+            // is already there, so nothing is sent (the measured cost of
+            // repeating it is the picture itself, every frame).
+            crate::terminal::capture::start();
+            super::super::paint_images(&mut terminal, &mut workbench, &[]);
+            let untouched = crate::terminal::capture::take();
+            assert!(
+                !untouched.contains("a=T"),
+                "an untouched picture had its pixels transmitted again: {:?}",
+                &untouched[..untouched.len().min(120)]
+            );
+            assert!(
+                untouched.contains("a=p"),
+                "the placement was dropped from an otherwise unchanged frame: {:?}",
+                &untouched[..untouched.len().min(120)]
+            );
+
+            // The box closes: what was placed is deleted rather than left on top
+            // of the rows painted over it.
+            workbench.overlay = None;
+            let _ = workbench.render(&data, 120, 38);
+            assert!(
+                workbench.image_requests.is_empty(),
+                "a closed box still asks for the picture"
+            );
+            crate::terminal::capture::start();
+            super::super::paint_images(&mut terminal, &mut workbench, &[]);
+            let cleared = crate::terminal::capture::take();
+            assert!(
+                cleared.contains("a=d"),
+                "the picture was not deleted when its box closed: {:?}",
+                &cleared[..cleared.len().min(120)]
+            );
+            assert!(
+                workbench.painted_images.ids.is_empty(),
+                "a deleted placement was kept in the bookkeeping"
+            );
+        }
+    }
 }
