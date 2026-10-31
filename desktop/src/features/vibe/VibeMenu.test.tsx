@@ -179,4 +179,97 @@ describe("vibeMenu", () => {
     render([row("layout", { value: "3 列" })]);
     expect(container.textContent).toContain("3 列");
   });
+  describe("the menu under a pointer", () => {
+    function menuRow(id: string) {
+      return container.querySelector<HTMLElement>(`[data-vibe-menu-row="${id}"]`)!;
+    }
+
+    it("runs the row that was clicked, and rings it first", () => {
+      const onRun = vi.fn();
+      render([row("a"), row("b", { onRun })]);
+      const target = menuRow("b");
+
+      act(() => {
+      // React derives `onMouseEnter` from a `mouseover` that crossed the boundary.
+        target.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      });
+      // Hovering is what a pointer's "selection" is: the ring follows the hand, so the
+      // keyboard picks up from the row the pointer last touched.
+      expect(selectedRow()).toBe("b");
+
+      act(() => target.click());
+      expect(onRun).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not run a disabled row that was clicked", () => {
+    // `aria-disabled` keeps the button pressable so the row can still be read; the
+    // guard is what makes it inert.
+      const onRun = vi.fn();
+      render([row("a", { disabled: true, onRun })]);
+
+      act(() => menuRow("a").click());
+
+      expect(onRun).not.toHaveBeenCalled();
+    });
+
+    it("keeps a press on the panel away from the backdrop's dismiss", () => {
+    // The backdrop closes the menu; a press on the sheet itself is reading, not
+    // dismissing, and without the stop it would close under the reader's finger.
+      const onClose = vi.fn();
+      render([row("a")], onClose);
+
+      act(() => {
+        menuRow("a").dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      });
+
+      expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it("leaves a key another handler already took alone", () => {
+    // A press that was answered before it reached the window (the panel's own chord, an
+    // input method committing) must not also move this menu.
+      render([row("a"), row("b")]);
+      const taken = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, code: "ArrowDown", key: "ArrowDown" });
+      taken.preventDefault();
+      act(() => {
+        window.dispatchEvent(taken);
+      });
+
+      expect(selectedRow()).toBe("a");
+    });
+
+    it("leaves a chord to the panel, even one of its own keys", () => {
+    // `⌘⌥→` is the panel's "move this cell": the menu holds the keyboard, but it must
+    // not also adjust the row the ring is on — one press, one action.
+      const onAdjust = vi.fn();
+      render([row("layout", { onAdjust })]);
+      act(() => {
+        window.dispatchEvent(new KeyboardEvent("keydown", {
+          altKey: true,
+          bubbles: true,
+          cancelable: true,
+          code: "ArrowRight",
+          ctrlKey: true,
+          key: "ArrowRight",
+        }));
+      });
+
+      expect(onAdjust).not.toHaveBeenCalled();
+      expect(selectedRow()).toBe("layout");
+    });
+
+    it("ignores a key it does not answer", () => {
+    // Letters belong to nothing here: the menu consumes the keys it knows and lets the
+    // rest through untouched (the editor two layers down may still want them).
+      render([row("a"), row("b")]);
+      const letter = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, code: "KeyA", key: "a" });
+      let reached = false;
+      act(() => {
+        reached = window.dispatchEvent(letter);
+      });
+
+      expect(reached).toBe(true);
+      expect(selectedRow()).toBe("a");
+    });
+  });
 });
