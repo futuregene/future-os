@@ -2446,9 +2446,14 @@ done
 
             let config = load_config().unwrap();
             let spec = resolve(&config, "fake").unwrap();
-            let mut process = ServerProcess::start("fake", spec, Duration::from_secs(10))
-                .await
-                .unwrap();
+            let mut process = Connection::start(
+                "fake",
+                spec,
+                Duration::from_secs(10),
+                max_frame_bytes_from_env(),
+            )
+            .await
+            .unwrap();
             assert_eq!(starts_in(&log_file), 1, "one handshake so far");
 
             let requests = concat!(
@@ -2488,9 +2493,14 @@ done
 
             let config = load_config().unwrap();
             let spec = resolve(&config, "fake").unwrap();
-            let mut process = ServerProcess::start("fake", spec, Duration::from_secs(10))
-                .await
-                .unwrap();
+            let mut process = Connection::start(
+                "fake",
+                spec,
+                Duration::from_secs(10),
+                max_frame_bytes_from_env(),
+            )
+            .await
+            .unwrap();
 
             let requests = concat!(
                 "not json at all\n",
@@ -3069,9 +3079,14 @@ done
 
             let config = load_config().unwrap();
             let spec = resolve(&config, "fake").unwrap();
-            let mut process = ServerProcess::start("fake", spec, Duration::from_secs(10))
-                .await
-                .unwrap();
+            let mut process = Connection::start(
+                "fake",
+                spec,
+                Duration::from_secs(10),
+                max_frame_bytes_from_env(),
+            )
+            .await
+            .unwrap();
             let (out, sink) = Output::memory();
             serve_requests(&mut process, &out, tokio::io::BufReader::new(FailingReader))
                 .await
