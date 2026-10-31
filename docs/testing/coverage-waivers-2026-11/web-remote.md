@@ -455,6 +455,16 @@ in.
 the reader's final check and its return would cover it; there is no seam between
 those two statements (both are in the same continuation).
 
+**Round 2 tried the one fixture that could have found a seam** and it does not
+exist: `fetchRunReplay` awaits `parseJsonText(event.data, { isCurrent })`
+(`remoteRunReplay.ts:62`) for a page event above 32 KB, which is the only
+suspension between the shared reader's last check and this guard. But
+`cooperativeJson.ts:189-192` parses **synchronously** below `NATIVE_LIMIT` and,
+above it, awaits an admission slot whose continuation re-runs `check(options)` —
+which throws `stale_content_read` when the lane is stale. So a staleness that
+lands inside that window raises (and is handled by the `catch (err)` at `:399`, whose own
+`if (!isCurrent())` is the line that runs) rather than reaching `:379`. Recorded here so the next reader does not re-litigate it.
+
 ### `:750` — W5, attribution
 
 ```ts
