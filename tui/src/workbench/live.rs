@@ -10417,4 +10417,232 @@ mod tests {
         }
         false
     }
+
+    /// Every `WbAction` arm the surface can hand the adapter, one row each.
+    ///
+    /// The arms are one line apiece and a behaviour test would never name them,
+    /// so a table is the only way this stays honest: each row says which mock
+    /// answers the command it dispatches to and what the surface should then see.
+    /// The arms that are deliberately the surface's own (a rectangle, a palette,
+    /// a redraw) must leave the draft and the notice row **alone** — that is
+    /// their assertion, not "it ran".
+    #[tokio::test]
+    async fn every_action_arm_dispatches_to_its_own_effect() {
+        type Check = fn(&mut super::Live) -> bool;
+
+        // (name, mock answers, action, check) — `None` means "an arm the surface
+        // owns: it must leave the draft and the notice row exactly as they were".
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(&str, &[(&str, &str)], WbAction, Option<Check>)> = vec![
+            (
+                "a session step is the surface's own cursor",
+                &[],
+                WbAction::SessionStep(1),
+                None,
+            ),
+            (
+                "a diff selection is the surface's own",
+                &[],
+                WbAction::SelectDiff(0),
+                None,
+            ),
+            (
+                "opening the worktree box does not read anything here",
+                &[],
+                WbAction::OpenWorktree,
+                None,
+            ),
+            (
+                "the attachment preview is the driver's to open",
+                &[],
+                WbAction::PreviewAttachment,
+                None,
+            ),
+            (
+                "the language is the driver's to resolve and persist",
+                &[],
+                WbAction::SetLanguage(super::LanguagePreference::System),
+                None,
+            ),
+            (
+                "preferences are the driver's to persist",
+                &[],
+                WbAction::SetPreferences,
+                None,
+            ),
+            (
+                "the shortcut editor is the driver's too",
+                &[],
+                WbAction::SetKeybindings,
+                None,
+            ),
+            (
+                "a pin lands in this client's settings, not the agent's",
+                &[],
+                WbAction::SetSessionPinned {
+                    id: "s1".into(),
+                    pinned: true,
+                },
+                None,
+            ),
+            (
+                "a focused pane is a layout fact",
+                &[],
+                WbAction::FocusPane(crate::workbench::PaneId::Chat),
+                None,
+            ),
+            (
+                "entering a worktree moves the session and is remembered",
+                &[
+                    ("get_state", r#"{"sessionId":"s1","cwd":"/work/main"}"#),
+                    ("set_cwd", r#"{"success":true}"#),
+                ],
+                WbAction::SelectWorktree("/work/feature".into()),
+                Some(|live| live.take_workspace_to_remember().as_deref() == Some("/work/feature")),
+            ),
+            (
+                "an approval mode the reader picked is applied",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("set_sandbox_policy", r#"{"success":true}"#),
+                ],
+                WbAction::SetApproval("sandbox".into()),
+                Some(|live| live.state.sandbox_tier.as_deref() == Some("sandbox")),
+            ),
+            (
+                "a workspace the reader picked is applied and remembered",
+                &[
+                    ("get_state", r#"{"sessionId":"s1","cwd":"/work/old"}"#),
+                    ("set_cwd", r#"{"success":true}"#),
+                ],
+                WbAction::SelectWorkspace("/work/new".into()),
+                Some(|live| live.take_workspace_to_remember().as_deref() == Some("/work/new")),
+            ),
+            (
+                "the plain chat is a workspace too",
+                &[
+                    ("get_state", r#"{"sessionId":"s1","cwd":"/work/old"}"#),
+                    ("set_cwd", r#"{"success":true}"#),
+                ],
+                WbAction::SelectChatWorkspace,
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "refreshing the files starts a read",
+                &[(
+                    "get_state",
+                    concat!(
+                        r#"{"sessionId":"s1","cwd":""#,
+                        env!("CARGO_MANIFEST_DIR"),
+                        r#""}"#
+                    ),
+                )],
+                WbAction::RefreshFiles,
+                Some(|live| live.tree_read.is_some()),
+            ),
+            (
+                "a preview reads the file off the loop",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                WbAction::PreviewFile("/etc/hosts".into()),
+                Some(|live| live.notice.is_none()),
+            ),
+            (
+                "a picture preview steps through this conversation's pictures",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                WbAction::PreviewChatFile("/tmp/missing.png".into()),
+                Some(|live| live.notice.is_none()),
+            ),
+            (
+                "a tool set is sent, and the notice says so",
+                &[("get_state", r#"{"sessionId":"s1"}"#), ("set_tools", "{}")],
+                WbAction::SetTools(vec!["read".into()]),
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "cancelling a queued prompt goes to the agent",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("cancel_queued_run", "{}"),
+                ],
+                WbAction::CancelQueued("q-1".into()),
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "a model the reader picked is applied",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("set_model", r#"{"model":"future/new"}"#),
+                ],
+                WbAction::SetModel("future/new".into()),
+                // `state.model` comes back from the agent's next `get_state`; the
+                // staged value is what this call installs.
+                Some(|live| live.pending_model() == Some("future/new")),
+            ),
+            (
+                "a level the reader picked is applied",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("set_thinking_level", r#"{"level":"high"}"#),
+                ],
+                WbAction::SetThinking("high".into()),
+                Some(|live| live.pending_effort() == Some("high")),
+            ),
+            (
+                "a compaction the agent refuses is a notice, not a takeover",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("compact", r#"{"accepted":false}"#),
+                ],
+                WbAction::Compact(String::new()),
+                Some(|live| !live.compacting() && live.notice.is_some()),
+            ),
+            (
+                "forking from a row lands on the new conversation",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("fork", r#"{"sessionId":"s-fork"}"#),
+                    ("get_session_entries", r#"{"entries":[]}"#),
+                    ("list_sessions", r#"{"sessions":[]}"#),
+                ],
+                WbAction::ForkAt("e-1".into()),
+                Some(|live| !live.detached()),
+            ),
+            (
+                "loading an older page without a driver reads it here",
+                &[
+                    (
+                        "get_state",
+                        r#"{"sessionId":"s1","activeRun":{"runId":"r","epoch":1,"state":"done"}}"#,
+                    ),
+                    (
+                        "get_session_entries",
+                        r#"{"entries":[],"hasMore":true,"nextOffset":0}"#,
+                    ),
+                    ("session_older_page", r#"{"entries":[]}"#),
+                ],
+                WbAction::LoadOlder,
+                Some(|live| live.notice.is_none()),
+            ),
+        ];
+
+        for (what, pairs, action, check) in rows {
+            let mut live = live_on(pairs).await;
+            // The surface the arm must leave alone, captured before it runs.
+            let before = (live.notice.clone(), live.draft.editor.text().to_string());
+            let outcome = live.apply(action).await;
+            assert!(
+                matches!(outcome, Outcome::Continue),
+                "{what}: this arm must not end the app"
+            );
+            match check {
+                Some(check) => assert!(check(&mut live), "{what}"),
+                None => assert_eq!(
+                    (live.notice.clone(), live.draft.editor.text().to_string()),
+                    before,
+                    "{what}: an arm the surface owns changed the draft or the notice"
+                ),
+            }
+            live.client.disconnect();
+        }
+    }
 }
