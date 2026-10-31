@@ -9,10 +9,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { isMacOS } from "../../lib/platform";
 import { installShortcuts } from "../../test/installShortcuts";
-import { loadComposerDraft } from "../agent/composerDraft";
-import { clearCommandHandlers } from "../keyboard/commands";
+import { loadComposerDraft, saveComposerDraft } from "../agent/composerDraft";
+import { clearCommandHandlers, runCommand } from "../keyboard/commands";
 import { resetShortcutScopes } from "../keyboard/scopes";
 import { resetAllCommandBindings } from "../keyboard/shortcuts";
+import { gridOf } from "./layout";
 import { clearVibePreferences, readVibePreferences, writeVibeDevice } from "./vibePreferences";
 import { VibeStage } from "./VibeStage";
 
@@ -28,11 +29,19 @@ import { VibeStage } from "./VibeStage";
  * mounting a conversation's whole machinery three times.
  */
 const h = vi.hoisted(() => ({
-  approvals: { activeApproval: null as unknown, decideApproval: vi.fn(async () => {}) },
+  approvals: {
+    activeApproval: null as unknown,
+    decideApproval: vi.fn<(approval: unknown, status: string) => Promise<void>>(async () => {}),
+  },
   counts: new Map<string, number>(),
   cached: { current: null as { model?: string; thinkingLevel?: string } | null },
   /** What the panel's queue answered when the stub composer handed a sentence over. */
   probe: { taken: undefined as boolean | undefined },
+  /** The panel's two writers for a cell's model/level (mocked, see below). */
+  setters: {
+    model: vi.fn<(threadId: string, modelId: string, options: unknown) => Promise<void>>(async () => {}),
+    thinking: vi.fn<(threadId: string, level: string) => Promise<void>>(async () => {}),
+  },
   /** The one window object the panel sees (see the mock above). */
   win: {
     isFullscreen: vi.fn(async () => false),
@@ -41,10 +50,24 @@ const h = vi.hoisted(() => ({
   },
 }));
 
+vi.mock("./vibeCellSettings", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./vibeCellSettings")>();
+  return {
+    ...actual,
+    // The real writers both go to the store over IPC; what this file owns is *which*
+    // model the ring picks, so the write itself is a probe.
+    setVibeCellModel: h.setters.model,
+    setVibeCellThinkingLevel: h.setters.thinking,
+  };
+});
+
 vi.mock("../agent/AgentThread", () => ({
   AgentThread: (props: {
+    activeApproval?: { id: string } | null;
     chrome?: string;
     composerControls?: string;
+    onApprovalDecision?: (approval: { id: string }, status: "approved" | "rejected") => Promise<void>;
+    onLeaveInput?: () => void;
     onQueue?: (payload: { attachments: unknown[]; content: string }) => boolean;
     thread: { id: string };
   }) => (
@@ -67,6 +90,22 @@ vi.mock("../agent/AgentThread", () => ({
             />
           )
         : null}
+      {/* The real `AgentThread` is what answers an approval and what reports that the
+          editor was left; the panel only supplies the two callbacks. */}
+      {props.onApprovalDecision
+        ? (
+            <button
+              data-approval-probe=""
+              onClick={() => {
+                void props.onApprovalDecision?.(props.activeApproval ?? { id: "approval" }, "approved");
+              }}
+              type="button"
+            />
+          )
+        : null}
+      {props.onLeaveInput
+        ? <button data-leave-input-probe="" onClick={() => props.onLeaveInput!()} type="button" />
+        : null}
       {props.chrome === "input"
         ? <div contentEditable data-input-editor="" suppressContentEditableWarning />
         : null}
@@ -78,11 +117,19 @@ vi.mock("../agent/AgentThread", () => ({
 }));
 
 vi.mock("../../components/layout/ContextPanel", () => ({
-  ContextPanel: () => <div data-vibe-column-stub="" />,
+  ContextPanel: (props: { onToggleExpanded?: () => void }) => (
+    <div data-vibe-column-stub="">
+      <button data-toggle-expanded="" onClick={props.onToggleExpanded} type="button" />
+    </div>
+  ),
 }));
 
 vi.mock("../remote-peer/RemoteFilesPanel", () => ({
-  RemoteFilesPanel: () => <div data-vibe-column-stub="" />,
+  RemoteFilesPanel: (props: { onToggleExpanded?: () => void }) => (
+    <div data-vibe-column-stub="">
+      <button data-toggle-expanded="" onClick={props.onToggleExpanded} type="button" />
+    </div>
+  ),
 }));
 
 vi.mock("../../components/layout/hooks/useApprovals", () => ({
@@ -189,6 +236,8 @@ function mount(options: {
   onNewConversation?: () => void;
   onPinLocal?: (threadId: string, pinned: boolean) => void;
   onPinRemote?: (desktopId: string, sessionId: string, pinned: boolean) => void;
+  view?: Partial<VibeThreadViewProps>;
+  workspaces?: StoredWorkspace[];
 }) {
   act(() => {
     root.render(
@@ -204,8 +253,8 @@ function mount(options: {
         runStatuses={(options.runStatuses ?? {}) as never}
         threads={options.threads}
         unreadThreadIds={new Set(options.unread ?? [])}
-        view={VIEW}
-        workspaces={WORKSPACES}
+        view={{ ...VIEW, ...options.view }}
+        workspaces={options.workspaces ?? WORKSPACES}
       />,
     );
   });
@@ -1373,5 +1422,722 @@ describe("order", () => {
     press({ code: "ArrowLeft", key: "ArrowLeft", ctrlKey: true, altKey: true });
     press({ code: "Enter", key: "Enter" });
     expect(drawn("input")).toEqual(["b"]);
+  });
+});
+
+describe("the panel's own commands with nothing under them", () => {
+  // Every one of these is a guard, not a feature: the panel registers a command
+  // whenever its *layer* is open, and the thing the command acts on can be gone by the
+  // time a key reaches it (nothing pinned, no ring, a page that does not exist). What
+  // they must never do is throw or write a preference for a cell that is not there.
+  const emptyPrefs = { columns: null, device: { kind: "all" }, order: [], panel: {}, panelDefault: "auto" };
+
+  it("keeps the ring, the order and the column keys quiet on a panel with no cells", () => {
+    mount({ threads: [] });
+    // `moveFocus`: there is no cell to move to.
+    act(() => void runCommand("vibe.focus.left"));
+    // `setPanelPreference`: no focused conversation, so there is no choice to remember.
+    act(() => void runCommand("vibe.panel.hide"));
+    act(() => void runCommand("vibe.panel.pin"));
+    // `vibe.move.left/right`: nothing to reorder.
+    act(() => void runCommand("vibe.move.left"));
+    act(() => void runCommand("vibe.move.right"));
+
+    expect(readVibePreferences()).toEqual(emptyPrefs);
+  });
+
+  it("stays put when the ring is already at the edge", () => {
+    // One cell, so every direction is the same square: the key must not clear the ring
+    // (which would drop the reader out of the cell they are looking at).
+    mount({ threads: [thread("a", 100)] });
+    act(() => void runCommand("vibe.focus.left"));
+    act(() => void runCommand("vibe.focus.up"));
+    press({ code: "Enter", key: "Enter" });
+    expect(drawn("input")).toEqual(["a"]);
+  });
+
+  it("does not step past the ends of the row while reading", () => {
+    mount({ threads: [thread("a", 100)] });
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    // `stepFocus` clamps, and a single cell means both directions land where it already is.
+    act(() => void runCommand("vibe.zoom.previous"));
+    act(() => void runCommand("vibe.zoom.next"));
+    expect(drawn("read")).toEqual(["a"]);
+  });
+
+  it("steps through nothing when the last cell is unpinned from the reading layer", () => {
+    // The layer is a state of the panel, not of the cells: unpinning the conversation
+    // being read leaves the reading layer open with no cells in it.
+    mount({ threads: [thread("a", 100)] });
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    rerender({ threads: [] });
+
+    act(() => void runCommand("vibe.zoom.next"));
+
+    expect(drawn("read")).toEqual([]);
+  });
+
+  it("ignores a digit that is not a cell number", () => {
+    mount({ threads: [thread("a", 100), thread("b", 200)] });
+    const binding = (code: string) => ({ alt: false, code, ctrl: false, mod: false, shift: false });
+    // `0` is the key left of `1`, and a letter carries no number at all.
+    act(() => void runCommand("vibe.cell", binding("Digit0")));
+    act(() => void runCommand("vibe.cell", binding("KeyA")));
+    // The ring stayed on the first cell.
+    press({ code: "Enter", key: "Enter" });
+    expect(drawn("input")).toEqual(["a"]);
+  });
+
+  it("falls back to the first cell when the tile the ring sits on has been filled", () => {
+    // The ring is on the add tile of a 2×2 with one free square; pinning a fourth
+    // conversation fills that square, so the tile — and the key the ring was on — is gone.
+    // The ring lands on the first cell rather than on nothing: a ring on "no cell" would
+    // leave `⏎` with nowhere to go on a panel the reader can still see.
+    mount({ threads: [thread("a", 100), thread("b", 200), thread("c", 300)] });
+    act(() => void runCommand("vibe.cell", { alt: false, code: "Digit4", ctrl: false, mod: false, shift: false }));
+
+    rerender({ threads: [thread("a", 100), thread("b", 200), thread("c", 300), thread("d", 400)] });
+    act(() => void runCommand("vibe.open"));
+
+    expect(drawn("input")).toEqual(["a"]);
+  });
+
+  it("does not turn past the last page", () => {
+    // Thirteen conversations are two pages; the second page's `next` is the same page.
+    const many = Array.from({ length: 13 }, (_, index) => thread(`t${index}`, 100 + index));
+    mount({ threads: many });
+    act(() => void runCommand("vibe.page.next"));
+    // Thirteen conversations are twelve on the first page and one on the second.
+    const secondPage = drawn("read");
+    expect(secondPage).toEqual(["t12"]);
+
+    act(() => void runCommand("vibe.page.next"));
+
+    // Still the second page, and still ringing the same conversation: `next` at the end
+    // is the page it is already on.
+    expect(drawn("read")).toEqual(secondPage);
+  });
+});
+
+describe("the grid area it measures", () => {
+  it("lays the cells out from the area's own size, and stops measuring when unmounted", () => {
+    // The grid area is smaller than the window (the bar above it and the padding around
+    // it are what a cell does not get), which is the whole reason it is measured. jsdom
+    // has no ResizeObserver, so this is also the branch that never runs in the app's
+    // tests — and the one a missing registration would leave silently stale.
+    const observed: Array<() => void> = [];
+    const disconnect = vi.fn();
+    const observe = vi.fn();
+    class FakeResizeObserver {
+      constructor(callback: () => void) {
+        observed.push(callback);
+      }
+
+      disconnect = disconnect;
+      observe = observe;
+      unobserve = vi.fn();
+    }
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    try {
+      mount({ threads: [thread("a", 100), thread("b", 200), thread("c", 300), thread("d", 400)] });
+      expect(observe).toHaveBeenCalledTimes(1);
+      const area = observe.mock.calls[0]![0] as HTMLElement;
+      // The element it watches is the one the cells are drawn in, not the window.
+      expect(area.contains(container.querySelector("[data-chrome]"))).toBe(true);
+
+      Object.defineProperty(area, "clientHeight", { configurable: true, value: 300 });
+      Object.defineProperty(area, "clientWidth", { configurable: true, value: 400 });
+      act(() => observed.forEach(callback => callback()));
+
+      // The shape now follows the measured area rather than the window's 1024×768.
+      const grid = container.querySelector<HTMLElement>(".grid")!;
+      const expected = gridOf(4, 400, 300, null);
+      expect(grid.style.gridTemplateColumns).toBe(`repeat(${expected.columns}, minmax(0, 1fr))`);
+    }
+    finally {
+      act(() => root.unmount());
+      container.remove();
+      uninstallShortcuts();
+      vi.unstubAllGlobals();
+    }
+    expect(disconnect).toHaveBeenCalled();
+
+    // `afterEach` unmounts again; keep it harmless by re-creating what it removes.
+    container = document.body.appendChild(document.createElement("div"));
+    root = createRoot(container);
+    uninstallShortcuts = installShortcuts();
+  });
+});
+
+describe("the menu's rows, run rather than adjusted", () => {
+  // Each row has two faces: `←`/`→` adjusts the value in place, `⏎` runs the row's own
+  // action. The adjust half is covered above; this is the run half, which is what a
+  // pointer and a remote's OK button actually press.
+  function openMenu() {
+    press({ code: "ContextMenu", key: "ContextMenu" });
+  }
+
+  it("returns the layout to automatic from its row", () => {
+    mount({ threads: [thread("a", 100), thread("b", 200), thread("c", 300)] });
+    openMenu();
+    walkTo("layout");
+    // A manual column count first, so "automatic" is a change rather than the state it
+    // was already in.
+    press({ code: "ArrowRight", key: "ArrowRight" });
+    expect(readVibePreferences().columns).toBe(1);
+
+    press({ code: "Enter", key: "Enter" });
+
+    expect(readVibePreferences().columns).toBeNull();
+    // The sheet stays up: a layout change is something the reader watches happen behind it.
+    expect(container.querySelector("[role=\"menu\"]")).not.toBeNull();
+  });
+
+  it("goes back to every machine from the device row", () => {
+    mount({
+      catalogs: [{ desktopId: "desk_1", sessions: [] } as never],
+      peers: [{ desktopId: "desk_1", name: "Studio" } as never],
+      threads: [thread("a", 100)],
+    });
+    openMenu();
+    walkTo("device");
+    press({ code: "ArrowRight", key: "ArrowRight" });
+    expect(readVibePreferences().device).toEqual({ desktopId: "local", kind: "device" });
+
+    press({ code: "Enter", key: "Enter" });
+
+    expect(readVibePreferences().device).toEqual({ kind: "all" });
+  });
+
+  it("hides the second column from its row, and remembers the sticky default", () => {
+    mount({ threads: [thread("a", 100), thread("b", 200)] });
+    openMenu();
+    walkTo("panel");
+    press({ code: "Enter", key: "Enter" });
+
+    // One write for the conversation's choice and the default the next cell follows.
+    expect(readVibePreferences()).toEqual(expect.objectContaining({
+      panel: { "local:a": "hidden" },
+      panelDefault: "hidden",
+    }));
+  });
+
+  it("moves the focused cell later in the panel from its row", () => {
+    mount({ threads: [thread("a", 100), thread("b", 200), thread("c", 300)] });
+    openMenu();
+    walkTo("move-later");
+    press({ code: "Enter", key: "Enter" });
+
+    // The focused cell (the first) moves one place later, and the rest keep their order.
+    expect(readVibePreferences().order).toEqual(["local:b", "local:a", "local:c"]);
+  });
+
+  it("opens the focused conversation in the shell from its row", () => {
+    const onOpenInShell = vi.fn();
+    mount({ onOpenInShell, threads: [thread("a", 100)] });
+    openMenu();
+    walkTo("open-in-shell");
+    press({ code: "Enter", key: "Enter" });
+
+    expect(onOpenInShell).toHaveBeenCalledWith(expect.objectContaining({ id: "a" }));
+  });
+
+  it("opens a host's conversation in the shell on that host", () => {
+    const onOpenRemoteInShell = vi.fn();
+    mount({
+      catalogs: [{ desktopId: "desk_1", sessions: [{ pinned: true, sessionId: "s1", status: "completed", title: "Remote" }] } as never],
+      onOpenRemoteInShell,
+      peers: [{ desktopId: "desk_1", name: "Studio" } as never],
+      threads: [],
+    });
+    openMenu();
+    walkTo("open-in-shell");
+    press({ code: "Enter", key: "Enter" });
+
+    expect(onOpenRemoteInShell).toHaveBeenCalledWith("desk_1", "s1");
+  });
+});
+
+describe("the add tile's menu", () => {
+  // The tile's menu is the keyboard's way into the picker: a remote has four arrows and
+  // OK, and a dialog with three columns is not something they can drive.
+  /** Three cells make a 2×2 with one free square, so the tile exists: `4` rings it. */
+  function openTileMenu() {
+    press({ code: "Digit4", key: "4" });
+    press({ code: "Enter", key: "Enter" });
+  }
+
+  it("starts a new conversation from its own row", () => {
+    const onNewConversation = vi.fn();
+    mount({ onNewConversation, threads: [thread("a", 100), thread("b", 200), thread("c", 300)] });
+    openTileMenu();
+    walkTo("add:new");
+    press({ code: "Enter", key: "Enter" });
+
+    expect(onNewConversation).toHaveBeenCalledTimes(1);
+    // Both sheets are gone: the reader asked to leave, not to keep reading the list.
+    expect(container.querySelector("[role=\"menu\"]")).toBeNull();
+  });
+
+  it("opens the full picker from the browse row", () => {
+    mount({ threads: [thread("a", 100), thread("b", 200), thread("c", 300)] });
+    openTileMenu();
+    walkTo("add:browse");
+    press({ code: "Enter", key: "Enter" });
+
+    expect(container.querySelector("[role=\"menu\"]")).toBeNull();
+    // The dialog, not the tile's short list: it can add a conversation from any machine.
+    expect(container.querySelector("[data-add-machine]")).not.toBeNull();
+  });
+
+  it("adds a recent conversation from the tile's list, and rings it", () => {
+    const onPinLocal = vi.fn();
+    mount({
+      onPinLocal,
+      threads: [
+        thread("a", 100),
+        thread("b", 200),
+        thread("c", 300),
+        thread("candidate", 400, { pinned: false, title: "Candidate" }),
+      ],
+    });
+    openTileMenu();
+    walkTo("recent:local:candidate");
+    press({ code: "Enter", key: "Enter" });
+
+    expect(onPinLocal).toHaveBeenCalledWith("candidate", true);
+    expect(container.querySelector("[role=\"menu\"]")).toBeNull();
+  });
+
+  it("adds a host's recent conversation on that host", () => {
+    const onPinRemote = vi.fn();
+    mount({
+      catalogs: [{
+        desktopId: "desk_1",
+        sessions: [
+          { pinned: true, sessionId: "s0", status: "completed", title: "Remote, pinned" },
+          { pinned: false, sessionId: "s1", status: "completed", title: "Remote candidate" },
+        ],
+      } as never],
+      onPinRemote,
+      peers: [{ desktopId: "desk_1", name: "Studio" } as never],
+      threads: [thread("a", 100), thread("b", 200)],
+    });
+    openTileMenu();
+    walkTo("recent:remote:desk_1:s1");
+    press({ code: "Enter", key: "Enter" });
+
+    expect(onPinRemote).toHaveBeenCalledWith("desk_1", "s1", true);
+  });
+});
+
+describe("the cell's two writers, from the menu's rings", () => {
+  const MODEL_OPTIONS = [
+    { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", provider: "future" },
+    { id: "claude-sonnet", label: "Claude Sonnet", provider: "future" },
+  ] as never;
+
+  function mountWithModels() {
+    h.cached.current = { model: "future/deepseek-v4-pro", thinkingLevel: "medium" };
+    mount({ threads: [thread("a", 100)], view: { modelOptions: MODEL_OPTIONS } });
+  }
+
+  it("hands the ring's next model to that conversation's writer", () => {
+    mountWithModels();
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    walkTo("model");
+    press({ code: "ArrowRight", key: "ArrowRight" });
+
+    // The conversation's own id — not the shell's "active thread" — and the catalogue it
+    // was chosen from, so the level can be re-derived for the new model.
+    expect(h.setters.model).toHaveBeenLastCalledWith("a", "future/claude-sonnet", MODEL_OPTIONS);
+  });
+
+  it("wraps the model ring in both directions", () => {
+    mountWithModels();
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    walkTo("model");
+    // Two models: one step left from the first is the last.
+    press({ code: "ArrowLeft", key: "ArrowLeft" });
+
+    expect(h.setters.model).toHaveBeenLastCalledWith("a", "future/claude-sonnet", MODEL_OPTIONS);
+  });
+
+  it("hands the ring's next thinking level to that conversation's writer", () => {
+    mountWithModels();
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    walkTo("thinking");
+    press({ code: "ArrowRight", key: "ArrowRight" });
+
+    expect(h.setters.thinking).toHaveBeenCalledWith("a", expect.any(String));
+    // Not the level it was already on: the ring moved.
+    expect(h.setters.thinking.mock.calls[0]![1]).not.toBe("medium");
+  });
+});
+
+describe("what a cell reports back to the panel", () => {
+  it("answers an approval through the panel's queue and tells the conversation", async () => {
+    const onApprovalDecided = vi.fn();
+    const approval = { id: "ap_1" };
+    h.approvals.activeApproval = approval;
+    mount({ threads: [thread("a", 100)], view: { onApprovalDecided } });
+    // The reading layer, because the grid hands every cell `null` (one queue, not twelve).
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+
+    const probe = container.querySelector<HTMLElement>("[data-approval-probe]");
+    expect(probe, "a cell that can answer").not.toBeNull();
+    await act(async () => {
+      probe!.click();
+    });
+
+    expect(h.approvals.decideApproval).toHaveBeenCalledWith(approval, "approved");
+    // The conversation is told after the decision lands, not before: it is what closes
+    // the card there.
+    expect(onApprovalDecided).toHaveBeenCalledTimes(1);
+    h.approvals.activeApproval = null;
+  });
+
+  it("leaves the input layer when the editor says it was left", () => {
+    // An empty draft closed with `⏎` reports through the composer's own callback rather
+    // than through a command, so the panel has to honour it.
+    mount({ threads: [thread("a", 100)] });
+    press({ code: "Enter", key: "Enter" });
+    expect(drawn("input")).toEqual(["a"]);
+
+    const probe = container.querySelector<HTMLElement>("[data-leave-input-probe]");
+    expect(probe, "an editor that reports being left").not.toBeNull();
+    act(() => probe!.click());
+
+    expect(drawn("input")).toEqual([]);
+    expect(drawn("read")).toEqual(["a"]);
+  });
+});
+
+describe("the column commands", () => {
+  // Five ways to say how many columns: cycle (1→2→3→4→automatic), more, fewer, and back
+  // to automatic. Each writes immediately, so a relaunch lands on the last one pressed.
+  const columnsPref = () => readVibePreferences().columns;
+
+  it("cycles 1 → 2 → 3 → 4 → automatic", () => {
+    mount({ threads: [thread("a", 100)] });
+    const seen: Array<number | null> = [];
+    for (let step = 0; step < 5; step++) {
+      act(() => void runCommand("vibe.columns.cycle"));
+      seen.push(columnsPref());
+    }
+    // The first press moves off the automatic layout, and the fifth comes back to it.
+    expect(seen).toEqual([2, 3, 4, null, 2]);
+  });
+
+  it("adds a column, up to four, and takes one away, down to one", () => {
+    mount({ threads: [thread("a", 100)] });
+    for (let step = 0; step < 6; step++)
+      act(() => void runCommand("vibe.columns.more"));
+    // Four is the cap: more columns than that are not readable at this size.
+    expect(columnsPref()).toBe(4);
+
+    for (let step = 0; step < 5; step++)
+      act(() => void runCommand("vibe.columns.fewer"));
+    expect(columnsPref()).toBe(1);
+  });
+
+  it("goes back to the automatic layout from a manual count", () => {
+    mount({ threads: [thread("a", 100)] });
+    act(() => void runCommand("vibe.columns.more"));
+    expect(columnsPref()).toBeGreaterThan(0);
+
+    act(() => void runCommand("vibe.columns.auto"));
+
+    expect(columnsPref()).toBeNull();
+  });
+
+  it("counts from the layout the panel computed when no count was chosen", () => {
+    // Automatic is `null`, so "more" has to start from what the grid is drawing rather
+    // than from zero: 0 + 1 would be a *fewer* layout.
+    mount({ threads: [thread("a", 100)] });
+    act(() => void runCommand("vibe.columns.more"));
+    const automatic = gridOf(1, window.innerWidth, window.innerHeight, null);
+    expect(columnsPref()).toBe(Math.min(4, automatic.columns + 1));
+  });
+});
+
+describe("the pointer's ways in", () => {
+  it("rings the cell that was pressed and opens the reading layer on it", () => {
+    mount({ threads: [thread("a", 100), thread("b", 200)] });
+    const cells = () => [...container.querySelectorAll<HTMLElement>("[data-vibe-cell]")];
+    act(() => {
+      cells()[1]!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+
+    // The press both rings the cell and opens it: a pointer has no separate `⏎`.
+    expect(drawn("read")).toEqual(["b"]);
+    expect(container.querySelector("[data-vibe-layer]")?.getAttribute("data-vibe-layer")).toBe("read");
+  });
+
+  it("opens the tile's menu from the tile itself", () => {
+    mount({ threads: [thread("a", 100), thread("b", 200), thread("c", 300)] });
+    const tile = container.querySelector<HTMLElement>("[data-vibe-add-slot]")!;
+    expect(tile).not.toBeNull();
+
+    act(() => {
+      tile.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      tile.click();
+    });
+
+    // The tile's own menu, not the panel's: the rows are the ones it can add.
+    expect(container.querySelector("[data-vibe-menu-row=\"add:new\"]")).not.toBeNull();
+  });
+
+  it("opens a conversation in the shell by double-clicking its header", () => {
+    const onOpenInShell = vi.fn();
+    const onOpenRemoteInShell = vi.fn();
+    mount({
+      catalogs: [{ desktopId: "desk_1", sessions: [{ pinned: true, sessionId: "s1", status: "completed", title: "Remote" }] } as never],
+      onOpenInShell,
+      onOpenRemoteInShell,
+      peers: [{ desktopId: "desk_1", name: "Studio" } as never],
+      threads: [thread("a", 100)],
+    });
+    const headers = () => [...container.querySelectorAll<HTMLElement>("[data-vibe-cell] header")];
+    act(() => {
+      headers()[0]!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+    act(() => {
+      headers()[1]!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+
+    expect(onOpenInShell).toHaveBeenCalledWith(expect.objectContaining({ id: "a" }));
+    // A host's conversation opens on the host, as the host's session.
+    expect(onOpenRemoteInShell).toHaveBeenCalledWith("desk_1", "s1");
+  });
+
+  it("opens the menu and the picker from the bar and the empty state", () => {
+    mount({ threads: [thread("a", 100)] });
+    const barButton = (label: string) => [...container.querySelectorAll<HTMLElement>("header button")]
+      .find(button => button.getAttribute("aria-label") === label)!;
+
+    act(() => barButton("Panel menu").click());
+    expect(container.querySelector("[role=\"menu\"]")).not.toBeNull();
+    act(() => barButton("Panel menu").click());
+
+    // The empty panel offers the picker as its only way forward.
+    rerender({ threads: [] });
+    const add = [...container.querySelectorAll<HTMLElement>("button")]
+      .find(button => button.textContent === "Add a conversation")!;
+    act(() => add.click());
+    expect(container.querySelector("[data-add-machine]")).not.toBeNull();
+  });
+
+  it("opens the focused conversation in the shell by double-clicking the transcript", () => {
+    const onOpenInShell = vi.fn();
+    const onOpenRemoteInShell = vi.fn();
+    mount({ onOpenInShell, onOpenRemoteInShell, threads: [thread("a", 100)] });
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    const transcript = container.querySelector<HTMLElement>("[data-vibe-transcript-for]")!;
+
+    act(() => {
+      transcript.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+
+    expect(onOpenInShell).toHaveBeenCalledWith(expect.objectContaining({ id: "a" }));
+  });
+});
+
+describe("the reading layer's second column when it is pinned", () => {
+  const column = () => container.querySelector("[data-vibe-column-stub]");
+
+  it("draws this machine's own panel for a local conversation", () => {
+    // jsdom's window is narrower than the automatic rule needs, so the pin is what puts
+    // the column on screen — and a pin is a per-conversation choice. The conversation
+    // belongs to a workspace, so the panel is handed the workspace itself rather than
+    // "none": a files column with no root is a column with nothing in it.
+    mount({
+      threads: [thread("a", 100)],
+      workspaces: [{ id: "ws", name: "future-os", path: "/tmp/future-os" } as StoredWorkspace],
+    });
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    act(() => void runCommand("vibe.panel.pin"));
+
+    expect(column()).not.toBeNull();
+  });
+
+  it("closes the column from the panel's own toggle", () => {
+    mount({ threads: [thread("a", 100)] });
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    act(() => void runCommand("vibe.panel.pin"));
+    const toggle = column()!.querySelector<HTMLElement>("[data-toggle-expanded]");
+
+    expect(toggle, "the column's collapse control").not.toBeNull();
+    act(() => toggle!.click());
+
+    // The sticky default follows the toggle, so the next conversation opens closed too.
+    expect(readVibePreferences()).toEqual(expect.objectContaining({
+      panel: { "local:a": "hidden" },
+      panelDefault: "hidden",
+    }));
+  });
+
+  it("draws the host's file panel for a host's conversation", () => {
+    mount({
+      catalogs: [{ desktopId: "desk_1", sessions: [{ pinned: true, sessionId: "s1", status: "completed", title: "Remote" }] } as never],
+      peers: [{ desktopId: "desk_1", name: "Studio" } as never],
+      threads: [],
+    });
+    // A host's conversation has no composer here, so `⏎` opens it for reading directly.
+    press({ code: "Enter", key: "Enter" });
+    act(() => void runCommand("vibe.panel.pin"));
+
+    // `RemoteFilesPanel` is stubbed the same way: what matters is that the host's
+    // conversation gets the host's panel rather than this machine's files.
+    expect(container.querySelectorAll("[data-vibe-column-stub]")).toHaveLength(1);
+
+    // And it closes by the same sticky rule as this machine's panel.
+    act(() => container.querySelector<HTMLElement>("[data-toggle-expanded]")!.click());
+    expect(readVibePreferences()).toEqual(expect.objectContaining({
+      panel: { "remote:desk_1:s1": "hidden" },
+      panelDefault: "hidden",
+    }));
+  });
+});
+
+describe("two more of the menu's rows", () => {
+  it("moves a later cell earlier from its row", () => {
+    mount({ threads: [thread("a", 100), thread("b", 200), thread("c", 300)] });
+    // Ring the second cell, so "move earlier" is not the row that cannot run.
+    act(() => void runCommand("vibe.focus.right"));
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    walkTo("move-earlier");
+    press({ code: "Enter", key: "Enter" });
+
+    expect(readVibePreferences().order).toEqual(["local:b", "local:a", "local:c"]);
+  });
+
+  it("leaves the model row inert while the catalogue is still empty", () => {
+    // A shell that has not loaded its models yet: the row is drawn (the conversation is
+    // this machine's) but there is nothing to cycle to, so the ring must not write an id.
+    h.cached.current = { model: "future/unknown", thinkingLevel: "medium" };
+    mount({ threads: [thread("a", 100)] });
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    walkTo("model");
+    press({ code: "ArrowRight", key: "ArrowRight" });
+
+    expect(h.setters.model).not.toHaveBeenCalled();
+  });
+});
+
+describe("a held sentence the reader has started writing over", () => {
+  it("keeps it queued and says why, instead of overwriting the box", () => {
+    // The refusal is the queue's `busy`: the box holds something typed since, and
+    // putting the held sentence back would replace it.
+    const toasts: Array<{ message: string }> = [];
+    const dispose = onFutureEvent("toast", (payload) => {
+      toasts.push(payload as { message: string });
+    });
+    try {
+      mount({ runStatuses: { a: { status: "running" } }, threads: [thread("a", 100)] });
+      // The sentence is handed over from the grid's composer, then the reader goes back
+      // into the editor and starts typing something of their own.
+      act(() => container.querySelector<HTMLElement>("[data-queue-probe]")!.click());
+      press({ code: "Enter", key: "Enter" });
+      saveComposerDraft("a", { attachments: [], text: "something I am writing" });
+
+      // The cancel key, as a press rather than as a direct call: the row is only
+      // registered while a sentence is held.
+      press({ code: "KeyX", key: "x", ctrlKey: !isMacOS, metaKey: isMacOS, shiftKey: true });
+
+      // The refusal is spoken, and the box keeps what the reader was writing.
+      expect(toasts).toHaveLength(1);
+      expect(loadComposerDraft("a")?.text).toBe("something I am writing");
+
+      // And nothing was lost: once the box is empty again the same key hands the
+      // sentence back, which is only true if it was still in the queue.
+      saveComposerDraft("a", { attachments: [], text: "" });
+      press({ code: "KeyX", key: "x", ctrlKey: !isMacOS, metaKey: isMacOS, shiftKey: true });
+      expect(loadComposerDraft("a")?.text).toBe("held sentence");
+    }
+    finally {
+      dispose();
+    }
+  });
+});
+
+describe("what the panel reports back", () => {
+  it("leaves the grid for the reading layer when a cell says its editor was left", () => {
+    // A grid cell draws the same `AgentThread` in its reading chrome, and the editor
+    // there reports being left the same way. The panel's answer is the reading layer,
+    // which is where a reader who closed an empty box wants to be.
+    mount({ threads: [thread("a", 100)] });
+    const layer = () => container.querySelector("[data-vibe-layer]")?.getAttribute("data-vibe-layer");
+    expect(layer()).toBe("grid");
+
+    const probe = container.querySelector<HTMLElement>("[data-leave-input-probe]");
+    expect(probe, "a cell that can report being left").not.toBeNull();
+    act(() => probe!.click());
+
+    expect(layer()).toBe("read");
+  });
+
+  it("answers an approval raised in the input layer too", async () => {
+    // The same two callbacks are wired into the input layer's view; a decision made while
+    // dictating must close the card on the conversation just as one made while reading.
+    const onApprovalDecided = vi.fn();
+    h.approvals.activeApproval = { id: "ap_input" };
+    mount({ threads: [thread("a", 100)], view: { onApprovalDecided } });
+    press({ code: "Enter", key: "Enter" });
+    expect(drawn("input")).toEqual(["a"]);
+
+    const probe = container.querySelector<HTMLElement>("[data-leave-input-probe]");
+    // The input layer's own probe belongs to the editor there; the approval probe is
+    // beside it, in the same view.
+    const approvalProbe = [...container.querySelectorAll<HTMLElement>("[data-approval-probe]")];
+    expect(approvalProbe.length).toBeGreaterThan(0);
+    await act(async () => {
+      approvalProbe[0]!.click();
+    });
+
+    // The decision reaches the panel's queue, and the conversation is told afterwards.
+    // (The input layer hands the composer the callback without the card's object — the
+    // card itself is the composer's, so its exact argument is asserted in the reading
+    // layer's case above.)
+    expect(h.approvals.decideApproval).toHaveBeenCalledTimes(1);
+    expect(h.approvals.decideApproval.mock.calls[0]![1]).toBe("approved");
+    expect(onApprovalDecided).toHaveBeenCalledTimes(1);
+    h.approvals.activeApproval = null;
+    expect(probe).not.toBeNull();
+  });
+
+  it("opens a host's conversation in the shell from the reading layer's transcript", () => {
+    const onOpenRemoteInShell = vi.fn();
+    mount({
+      catalogs: [{ desktopId: "desk_1", sessions: [{ pinned: true, sessionId: "s1", status: "completed", title: "Remote" }] } as never],
+      onOpenRemoteInShell,
+      peers: [{ desktopId: "desk_1", name: "Studio" } as never],
+      threads: [],
+    });
+    press({ code: "Enter", key: "Enter" });
+
+    act(() => {
+      container.querySelector<HTMLElement>("[data-vibe-transcript-for]")!
+        .dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+
+    expect(onOpenRemoteInShell).toHaveBeenCalledWith("desk_1", "s1");
+  });
+
+  it("closes the tile's menu from its own dismiss", () => {
+    mount({ threads: [thread("a", 100), thread("b", 200), thread("c", 300)] });
+    press({ code: "Digit4", key: "4" });
+    press({ code: "Enter", key: "Enter" });
+    expect(container.querySelector("[data-vibe-menu-row=\"add:new\"]")).not.toBeNull();
+
+    press({ code: "Escape", key: "Escape" });
+
+    expect(container.querySelector("[role=\"menu\"]")).toBeNull();
   });
 });
