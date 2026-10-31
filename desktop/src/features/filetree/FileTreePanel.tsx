@@ -260,7 +260,7 @@ export function FileTreePanel({
           boundary and scrollbar do not jump while the tree loads. */}
       <div className="group relative flex min-h-0 flex-1 flex-col border-t border-line-soft/70">
         <div
-          className="floating-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-surface/50"
+          className="floating-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-surface/50 [&>ul>li:first-child>div]:border-t-0"
           onScroll={listScrollbar.handleScroll}
           ref={listScrollbar.scrollRef}
         >

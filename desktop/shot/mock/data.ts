@@ -1329,7 +1329,6 @@ workspaceFiles[REPO] = [
   file("Cargo.toml", REPO, 1_940, 3 * 24 * 60),
   file("LICENSE", REPO, 1_080, 120 * 24 * 60),
   file("README.md", REPO, 3_400, 9 * 24 * 60),
-  file("clippy.toml", REPO, 240, 30 * 24 * 60),
   file("rust-toolchain.toml", REPO, 132, 11 * 24 * 60),
   file("rustfmt.toml", REPO, 210, 40 * 24 * 60),
 ];
