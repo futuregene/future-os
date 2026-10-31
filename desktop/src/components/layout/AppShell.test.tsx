@@ -27,7 +27,7 @@ interface HookSpies {
   refreshAuth: () => void;
   refreshBalance: () => void;
   refreshRemote: () => void;
-  refreshRemotePeers: () => void;
+  refreshRemotePeers: ReturnType<typeof vi.fn>;
   refreshSkills: () => void;
   restoreThread: (threadId: string) => Promise<unknown>;
   revalidateAgentState: (threadId: string) => void;
@@ -1367,6 +1367,192 @@ describe("app shell workspace handlers", () => {
     mocks.refreshStore.mockClear();
     act(() => cell.onThreadActivity());
     expect(mocks.refreshStore).toHaveBeenCalledWith("t1");
+    view.unmount();
+  });
+
+  it("starts a new conversation from the panel's add tile", async () => {
+    // The tile's menu is the keyboard's way into the picker (a remote has four arrows and
+    // OK). Its "new conversation" row is the shell's own: close the panel, open the
+    // composer, and arm the pin so the conversation it creates joins the panel it came
+    // from.
+    mocks.store.threadStore = {
+      ...(mocks.store.threadStore as Record<string, unknown>),
+      threads: [
+        { ...chatThread, id: "t1", pinned: true },
+        { ...chatThread, id: "t2", pinned: true },
+        { ...chatThread, id: "t3", pinned: true },
+      ],
+    };
+    const view = mount(<AppShell />);
+    act(() => runCommand("vibe.toggle"));
+    // Three cells are a 2×2 with one free square, so the tile is drawn and `4` rings it.
+    act(() => runCommand("vibe.cell", { alt: false, code: "Digit4", ctrl: false, mod: false, shift: false }));
+    act(() => runCommand("vibe.open"));
+    const selected = () => document.querySelector("[aria-current=\"true\"]")?.getAttribute("data-vibe-menu-row") ?? null;
+    for (let step = 0; step < 12 && selected() !== "add:new"; step++) {
+      act(() => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, code: "ArrowDown", key: "ArrowDown" }));
+      });
+    }
+    expect(selected()).toBe("add:new");
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, code: "Enter", key: "Enter" }));
+    });
+
+    // The panel gives the screen back, and the composer is up.
+    expect(view.container.querySelector("[data-vibe-layer]")).toBeNull();
+    expect(view.container.querySelector("[data-child='new-conversation']")).not.toBeNull();
+    view.unmount();
+  });
+
+  it("unpins a host's cell on the host, through the host's own route", async () => {
+    // The panel's per-cell menu is the same menu for both halves, but the write is not:
+    // a host's pin goes to that host (by *thread id*, which the catalogue is what turns
+    // its session id into), and the catalogue is re-read afterwards either way.
+    mocks.store.threadStore = { ...(mocks.store.threadStore as Record<string, unknown>), threads: [] };
+    mocks.remotePeers = {
+      catalogs: [{
+        desktopId: "desk_1",
+        sessions: [{
+          pinned: true,
+          sessionId: "s1",
+          status: "completed",
+          threadId: "th_remote",
+          title: "Remote",
+        }],
+      }],
+      peers: [{
+        agentAvailable: true,
+        bridgeInstanceId: "bridge_1",
+        connected: true,
+        desktopId: "desk_1",
+        error: null,
+        features: [],
+        icon: "laptop",
+        name: "Studio",
+        pairId: "pair_1",
+        stopped: false,
+      }],
+    };
+    const view = mount(<AppShell />);
+    act(() => runCommand("vibe.toggle"));
+    expect(view.container.querySelector("[data-vibe-cell]")).not.toBeNull();
+    mocks.invoke.mockClear();
+    mocks.hooks.refreshRemotePeers.mockClear();
+
+    act(() => runCommand("vibe.menu"));
+    const selected = () => document.querySelector("[aria-current=\"true\"]")?.getAttribute("data-vibe-menu-row") ?? null;
+    for (let step = 0; step < 12 && selected() !== "remove"; step++) {
+      act(() => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, code: "ArrowDown", key: "ArrowDown" }));
+      });
+    }
+    expect(selected()).toBe("remove");
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, code: "Enter", key: "Enter" }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The host is addressed by its thread id, on the conversation's own lane.
+    expect(mocks.invoke).toHaveBeenCalledWith("remote_peer_request", {
+      command: { pinned: false, threadId: "th_remote", type: "set_session_pinned" },
+      desktopId: "desk_1",
+      lane: "s1",
+    });
+    // Either way the catalogue is re-read: a refused pin leaves the row as it was.
+    expect(mocks.hooks.refreshRemotePeers).toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it("says why a host refused a pin, and re-reads it either way", async () => {
+    // A host can refuse (a session that is no longer there, a lane that dropped). The
+    // panel's row must not claim the pin happened: the refusal is a toast, and the
+    // catalogue is re-read so the row shows what the host actually holds.
+    mocks.store.threadStore = { ...(mocks.store.threadStore as Record<string, unknown>), threads: [] };
+    mocks.remotePeers = {
+      catalogs: [{
+        desktopId: "desk_1",
+        sessions: [{ pinned: true, sessionId: "s1", status: "completed", threadId: "th_remote", title: "Remote" }],
+      }],
+      peers: [{
+        agentAvailable: true,
+        bridgeInstanceId: "bridge_1",
+        connected: true,
+        desktopId: "desk_1",
+        error: null,
+        features: [],
+        icon: "laptop",
+        name: "Studio",
+        pairId: "pair_1",
+        stopped: false,
+      }],
+    };
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "remote_peer_request")
+        throw new Error("peer_not_connected");
+      return undefined;
+    });
+    const view = mount(<AppShell />);
+    mocks.emit.mockClear();
+
+    act(() => runCommand("vibe.toggle"));
+    act(() => runCommand("vibe.menu"));
+    const selected = () => document.querySelector("[aria-current=\"true\"]")?.getAttribute("data-vibe-menu-row") ?? null;
+    for (let step = 0; step < 12 && selected() !== "remove"; step++) {
+      act(() => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, code: "ArrowDown", key: "ArrowDown" }));
+      });
+    }
+    mocks.hooks.refreshRemotePeers.mockClear();
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, code: "Enter", key: "Enter" }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The refusal is spoken as an error toast, with the panel's own generic sentence
+    // (the wire code is not something to put on screen).
+    expect(mocks.hooks.refreshRemotePeers).toHaveBeenCalled();
+    expect(mocks.emit).toHaveBeenCalledWith("toast", expect.objectContaining({ tone: "error" }));
+    view.unmount();
+  });
+
+  it("opens a host's cell in the shell from the panel, and closes the panel behind it", async () => {
+    // The same double-click as a local cell's, on the other half: a host's conversation
+    // opens as that host's session, and the panel gives the screen back.
+    mocks.store.threadStore = { ...(mocks.store.threadStore as Record<string, unknown>), threads: [] };
+    mocks.remotePeers = {
+      catalogs: [{
+        desktopId: "desk_1",
+        sessions: [{ pinned: true, sessionId: "s1", status: "completed", threadId: "th_remote", title: "Remote" }],
+      }],
+      peers: [{
+        agentAvailable: true,
+        bridgeInstanceId: "bridge_1",
+        connected: true,
+        desktopId: "desk_1",
+        error: null,
+        features: [],
+        icon: "laptop",
+        name: "Studio",
+        pairId: "pair_1",
+        stopped: false,
+      }],
+    };
+    const view = mount(<AppShell />);
+    act(() => runCommand("vibe.toggle"));
+    const header = view.container.querySelector<HTMLElement>("[data-vibe-cell] header");
+    expect(header, "a host's cell").not.toBeNull();
+
+    act(() => {
+      header!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+
+    // The panel is gone, and the shell is showing that host's conversation.
+    expect(view.container.querySelector("[data-vibe-layer]")).toBeNull();
+    expect(children.remoteConversationView).toMatchObject({ desktopId: "desk_1" });
     view.unmount();
   });
 

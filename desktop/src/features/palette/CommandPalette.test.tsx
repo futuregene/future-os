@@ -122,6 +122,39 @@ describe("command palette", () => {
     expect(container.textContent).toContain("Nothing matches");
   });
 
+  it("does nothing when Enter or an arrow arrives with no row to act on", () => {
+    // The palette stays open on "nothing matches", and the reader's hand keeps
+    // moving: Enter with no selection must not run an undefined command, and an
+    // arrow must not divide by zero rows. Both are the same empty state.
+    mount();
+    type("zzzz");
+    expect(rows()).toHaveLength(0);
+
+    press("Enter");
+    press("ArrowDown");
+    press("ArrowUp");
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(openSettings).not.toHaveBeenCalled();
+    expect(newChat).not.toHaveBeenCalled();
+    // Still the palette, still empty.
+    expect(rows()).toHaveLength(0);
+    expect(container.textContent).toContain("Nothing matches");
+  });
+
+  it("runs the row that was clicked, and rings the row under the pointer", () => {
+    // Two ways in for a pointer: a click runs the row, a hover moves the ring (so
+    // `↓` continues from where the hand is rather than from the top).
+    mount();
+    act(() => rows()[1]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
+    expect(rows()[1]!.getAttribute("aria-selected")).toBe("true");
+
+    act(() => rows()[1]!.click());
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    act(() => rows()[0]!.click());
+  });
+
   it("wraps the selection at both ends", () => {
     mount();
     // Up from the first row lands on the last …
