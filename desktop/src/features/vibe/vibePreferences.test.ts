@@ -149,12 +149,22 @@ describe("writing keeps the other fields", () => {
 
   it("survives storage that refuses to write", () => {
     // A quota-limited or blocked storage must cost the user nothing but the
-    // preference surviving a restart — the call itself may not throw.
-    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-      throw new Error("QuotaExceededError");
+    // preference surviving a restart — the call itself may not throw. The global
+    // itself is replaced, not the `Storage` prototype: this file runs in the node
+    // environment, where `localStorage` is the suite's in-memory object and
+    // `Storage` is not a global at all.
+    vi.stubGlobal("localStorage", {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("QuotaExceededError");
+      },
     });
-    expect(() => writeVibeColumns(2)).not.toThrow();
-    expect(() => writeVibeOrder(["thread:a"])).not.toThrow();
-    setItem.mockRestore();
+    try {
+      expect(() => writeVibeColumns(2)).not.toThrow();
+      expect(() => writeVibeOrder(["thread:a"])).not.toThrow();
+    }
+    finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

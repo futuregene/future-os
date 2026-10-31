@@ -3487,19 +3487,22 @@ mod driver_tests {
         /// reader coming back to a session is in: the transcript is what the frame
         /// paints, and a prompt goes to the agent rather than starting a session.
         pub async fn attach_conversation() -> Self {
+            // A workspace, because the surface reads it: `/git` and the files
+            // panel are both rooted there, and a session with no `cwd` takes the
+            // repository panel's "no workspace" door instead of a read.
+            Self::attach_conversation_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))).await
+        }
+
+        /// The same conversation with its workspace somewhere else. A read of the
+        /// workspace (`/git`) answers from `cwd`, so a test that needs a
+        /// particular repository points the session at it instead of borrowing
+        /// whatever the sources were checked out into.
+        pub async fn attach_conversation_in(cwd: &std::path::Path) -> Self {
+            let cwd =
+                serde_json::to_string(&cwd.to_string_lossy()).expect("a workspace path serialises");
+            let state = format!(r#"{{"sessionId":"s1","model":"future/old","cwd":{cwd}}}"#);
             Self::attach(&[
-                (
-                    "get_state",
-                    // A workspace, because the surface reads it: `/git` and the
-                    // files panel are both rooted there, and a session with no
-                    // `cwd` takes the repository panel's "no workspace" door
-                    // instead of a read.
-                    concat!(
-                        r#"{"sessionId":"s1","model":"future/old","cwd":""#,
-                        env!("CARGO_MANIFEST_DIR"),
-                        r#""}"#
-                    ),
-                ),
+                ("get_state", state.as_str()),
                 ("get_session_entries", r#"{"entries":[]}"#),
                 (
                     "list_models",
@@ -4371,16 +4374,50 @@ mod driver_tests {
         use super::*;
         use crate::workbench::Overlay;
 
+        /// A throwaway repository whose log has two commits, so a test that moves
+        /// a cursor in it states its own premise instead of inheriting the
+        /// checkout's history: CI clones one commit deep (`actions/checkout`
+        /// without `fetch-depth: 0`) and a source tarball has no repository at
+        /// all, so neither is a place to measure "the second row".
+        fn repo_with_two_commits() -> tempfile::TempDir {
+            let dir = tempfile::tempdir().expect("a temp directory");
+            let git = |args: &[&str]| {
+                let output = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(dir.path())
+                    .args(args)
+                    .output()
+                    .expect("run git");
+                assert!(
+                    output.status.success(),
+                    "git {args:?}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            };
+            git(&["init", "-q", "-b", "main"]);
+            git(&["config", "user.email", "tui@example.invalid"]);
+            git(&["config", "user.name", "TUI test"]);
+            std::fs::write(dir.path().join("a.txt"), "one\n").expect("write the first file");
+            git(&["add", "."]);
+            git(&["commit", "-qm", "first commit"]);
+            std::fs::write(dir.path().join("a.txt"), "two\n").expect("write the second file");
+            git(&["commit", "-qam", "second commit"]);
+            dir
+        }
+
         /// `ctrl+g` opens the repository browser for the session's own workspace
         /// and the read lands on its own wake-up: the panel paints the rows the
         /// disk produced, not an empty list.
         ///
         /// The fixture's session carries a `cwd` — without one `open_git_panel`
         /// takes its "no workspace" door and never reads anything, which is why
-        /// that whole path measured zero before this test.
+        /// that whole path measured zero before this test. The repository is the
+        /// fixture's own, so "the log of a repository with history" is a fact of
+        /// the test rather than of the checkout it runs in.
         #[tokio::test]
         async fn the_repository_panel_reads_the_session_workspace() {
-            let mut driver = Driver::attach_conversation().await;
+            let repo = repo_with_two_commits();
+            let mut driver = Driver::attach_conversation_in(repo.path()).await;
             assert!(!driver.quit_key("ctrl+g").await, "ctrl+g does not leave");
             assert_eq!(
                 driver.workbench.overlay,
@@ -4412,9 +4449,14 @@ mod driver_tests {
         /// Moving inside the repository panel is a detail read: the row under the
         /// cursor is what the bottom half shows, and the surface decides which row
         /// that is.
+        ///
+        /// The repository is the fixture's own (`repo_with_two_commits`): the log
+        /// has to have a second row to move onto, and that is a property of this
+        /// test's repository rather than of wherever the sources were checked out.
         #[tokio::test]
         async fn moving_in_the_repository_panel_reads_the_row_under_the_cursor() {
-            let mut driver = Driver::attach_conversation().await;
+            let repo = repo_with_two_commits();
+            let mut driver = Driver::attach_conversation_in(repo.path()).await;
             assert!(!driver.quit_key("ctrl+g").await);
             let _ = driver.pump(Duration::from_millis(700)).await;
             let first = driver.live.git().cloned().expect("a view");
