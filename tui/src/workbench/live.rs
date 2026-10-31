@@ -9494,4 +9494,212 @@ mod tests {
         assert_eq!(request.mode, "through_entry");
         assert_eq!(request.created_by, "tui");
     }
+
+    /// Attach to a mock agent that answers `pairs`, for the tables below.
+    async fn live_on(pairs: &[(&str, &str)]) -> Live {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(pairs);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the mock agent");
+        live
+    }
+
+    /// Every adapter action the surface can hand over has the effect the surface
+    /// then sees — or an explicit "nothing, the surface owns it" arm.
+    ///
+    /// The table is the point: `apply`'s arms are one line each, and no behaviour
+    /// test would name them one by one, but an action wired to the wrong arm (a
+    /// stage that sends, a send that stages) is exactly what a silently-empty arm
+    /// hides.
+    #[tokio::test]
+    async fn every_adapter_action_has_the_effect_the_surface_expects() {
+        type Check = fn(&mut super::Live) -> bool;
+
+        let cases: Vec<(&str, WbAction, Check)> = vec![
+            (
+                "a draft edit lands in the draft",
+                WbAction::EditInput {
+                    text: "half typed".into(),
+                    cursor: 4,
+                },
+                |live| live.draft.editor.text() == "half typed",
+            ),
+            (
+                "a staged model is staged, not sent",
+                WbAction::SetPendingModel("future/other".into()),
+                |live| live.pending_model() == Some("future/other"),
+            ),
+            (
+                "a staged level is staged, not sent",
+                WbAction::SetPendingThinking("high".into()),
+                |live| live.pending_effort() == Some("high"),
+            ),
+            (
+                "`/new` detaches from the conversation",
+                WbAction::NewSession,
+                |live| live.detached(),
+            ),
+            (
+                "the palette is the surface's own",
+                WbAction::SetTheme("future-dark".into()),
+                |_| true,
+            ),
+            (
+                "the panel rectangle is the surface's own",
+                WbAction::ResizeSidebar(40),
+                |_| true,
+            ),
+            (
+                "a notice is the driver's to show",
+                WbAction::Notice("hello".into()),
+                |_| true,
+            ),
+            (
+                "a redraw is a frame, not an answer",
+                WbAction::Redraw,
+                |_| true,
+            ),
+            (
+                "a scroll is the surface's own",
+                WbAction::Scroll(-3),
+                |_| true,
+            ),
+        ];
+
+        for (what, action, check) in cases {
+            let mut live = live_on(&[]).await;
+            let outcome = live.apply(action).await;
+            assert!(
+                matches!(outcome, Outcome::Continue),
+                "{what}: an action must not end the app"
+            );
+            assert!(check(&mut live), "{what}");
+            live.client.disconnect();
+        }
+    }
+
+    /// The launchpad chips walk the agent's own order and stage the answer: a
+    /// cycle never sends anything (there is no session to send it to), and the
+    /// ring wraps rather than stopping at the end of the list.
+    #[tokio::test]
+    async fn the_launchpad_chips_cycle_and_wrap_without_sending() {
+        let models = r#"{"models":[
+            {"id":"a","label":"a","provider":"future","thinkingLevel":"default",
+             "thinkingLevels":["default","low","high"],"defaultThinkingLevel":"default",
+             "isDefault":true},
+            {"id":"b","label":"b","provider":"future","thinkingLevel":"default",
+             "thinkingLevels":["default","high"],"defaultThinkingLevel":"default"}
+        ]}"#;
+        let mut live = live_on(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            ("list_models", models),
+        ])
+        .await;
+        live.to_launchpad();
+        assert!(live.detached(), "the launchpad is the detached surface");
+        assert_eq!(live.models.len(), 2, "the list installed");
+
+        // Model: each press moves, and the ring comes back to where it started
+        // after exactly one lap of the list it walks.
+        let ring = live.models.len();
+        live.cycle_pending_model();
+        let start = live.pending_model().map(str::to_string);
+        assert!(start.is_some(), "the first press staged nothing");
+        let mut seen = vec![start.clone()];
+        let mut steps = 0;
+        loop {
+            let before = live.pending_model().map(str::to_string);
+            live.cycle_pending_model();
+            steps += 1;
+            let now = live.pending_model().map(str::to_string);
+            assert_ne!(before, now, "a press did not move the chip");
+            if now == start {
+                break;
+            }
+            assert!(
+                steps <= ring,
+                "the ring did not come back to its start within one lap: {seen:?}"
+            );
+            seen.push(now);
+        }
+        assert_eq!(
+            steps, ring,
+            "the ring should visit every model once: {seen:?}"
+        );
+
+        // Level: the staged model's own ring, and it wraps too.
+        live.cycle_pending_effort();
+        let start = live.pending_effort().map(str::to_string);
+        let mut levels = vec![start.clone()];
+        for _ in 0..8 {
+            let before = live.pending_effort().map(str::to_string);
+            live.cycle_pending_effort();
+            let now = live.pending_effort().map(str::to_string);
+            assert_ne!(before, now, "a level press did not move");
+            if now == start {
+                break;
+            }
+            levels.push(now);
+        }
+        assert!(
+            live.pending_effort().map(str::to_string) == start,
+            "the level ring never came back to its start: {levels:?}"
+        );
+
+        // No models loaded at all: the chip says so instead of doing nothing.
+        let mut bare = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        bare.to_launchpad();
+        bare.models.clear();
+        bare.cycle_pending_model();
+        assert!(
+            bare.notice.is_some(),
+            "an empty model list said nothing at all"
+        );
+        bare.client.disconnect();
+        live.client.disconnect();
+    }
+
+    /// The queue row's two verbs: recalling puts the queued prompt back in the
+    /// draft, cancelling explains itself — and both go through the agent, which
+    /// is what makes them the queue's own verbs rather than the draft's.
+    #[tokio::test]
+    async fn a_queued_prompt_can_be_recalled_or_cancelled() {
+        let queued = super::RpcSessionState {
+            session_id: "s1".into(),
+            queued_runs: vec![crate::rpc::types::QueuedRunState {
+                run_id: "q-1".into(),
+                display_text: "earlier question".into(),
+                run_sequence: 1,
+                client_request_id: "c-1".into(),
+                state: "queued".into(),
+                queue_position: 1,
+                accepted_at: "2026-11-01T00:00:00Z".into(),
+            }],
+            queued_count: Some(1),
+            ..Default::default()
+        };
+        let mut live = live_on(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            ("cancel_queued_run", "{}"),
+        ])
+        .await;
+        live.install_state_refresh(Ok(queued));
+        assert_eq!(live.state.queued_runs.len(), 1, "the queue installed");
+
+        live.recall_queued("q-1").await;
+        assert_eq!(
+            live.draft.editor.text(),
+            "earlier question",
+            "recall did not put the prompt back in the draft"
+        );
+
+        live.install_state_refresh(Err("nothing".into()));
+        live.cancel_queued("q-1").await;
+        assert!(
+            live.notice.is_some(),
+            "the cancel neither refreshed nor explained itself"
+        );
+        live.client.disconnect();
+    }
 }

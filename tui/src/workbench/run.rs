@@ -3432,6 +3432,9 @@ mod driver_tests {
         /// Every command type the mock agent was asked, in order: what the driver
         /// actually sent, not what it meant to.
         pub seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        /// Whether `load_rx` was moved into a run (a receiver cannot be reused,
+        /// so the next run needs a fresh channel).
+        load_rx_consumed: bool,
         /// The same log, with the session each command named: what the driver asked
         /// *about*, not just what it asked.
         pub seen_sessions: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
@@ -3545,6 +3548,7 @@ mod driver_tests {
                 settings_path,
                 seen: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
                 seen_sessions: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                load_rx_consumed: false,
                 _agent_stream: agent_stream,
                 _dir: dir,
             }
@@ -3610,11 +3614,22 @@ mod driver_tests {
         /// itself, `None` when the budget ran out first.
         async fn step(&mut self, budget: Duration) -> Option<Result<(), String>> {
             crate::terminal::capture::start();
-            // `DriverIo` takes the loaded-page receiver by value (the loop drains it
-            // and hands it back to `Live`), so a run moves it out; the stand-in
-            // below is a channel nothing writes to, which is what a second `run` on
-            // the same driver would see anyway.
+            // `DriverIo` takes the loaded-page receiver by value, so a run
+            // consumes it — and `Live` has to be pointed at the channel this run
+            // actually drains, or a read started here answers into the previous
+            // run's dropped receiver and is silently lost (measured: the second
+            // `pump` of a driver never installed its `/git` read). The channel
+            // from `attach_at` is kept for the first run, so a test can still
+            // queue a page before it starts.
+            if self.load_rx_consumed {
+                let (load_tx, load_rx) = mpsc::unbounded_channel();
+                self.load_tx = load_tx.clone();
+                self.load_rx = load_rx;
+                self.live.set_load_sender(load_tx);
+                self.load_rx_consumed = false;
+            }
             let load_rx = std::mem::replace(&mut self.load_rx, mpsc::unbounded_channel().1);
+            self.load_rx_consumed = true;
             let mut io = DriverIo {
                 terminal: &mut self.terminal,
                 notifications: &mut self.notifications,
@@ -3622,7 +3637,7 @@ mod driver_tests {
                 update_rx: &mut self.update_rx,
                 load_rx,
             };
-            tokio::time::timeout(
+            let outcome = tokio::time::timeout(
                 budget,
                 event_loop(
                     &mut io,
@@ -3635,7 +3650,18 @@ mod driver_tests {
                 ),
             )
             .await
-            .ok()
+            .ok();
+            // A read started between two runs (a test pressing a key through
+            // `quit`, which is how the loop hands one key over without a run) has
+            // to answer somewhere, and the run's receiver died with `io`. Give the
+            // driver a fresh channel now: the next `step` drains it, so the answer
+            // is delivered rather than dropped.
+            let (load_tx, load_rx) = mpsc::unbounded_channel();
+            self.load_tx = load_tx.clone();
+            self.load_rx = load_rx;
+            self.live.set_load_sender(load_tx);
+            self.load_rx_consumed = false;
+            outcome
         }
 
         /// Hand `quit` one event, the way the loop does, and report whether it asked
@@ -4147,6 +4173,198 @@ mod driver_tests {
         assert!(!driver.command("/mouse").await, "/mouse does not leave");
         let notice = driver.live.notice.clone().expect("a notice");
         assert!(!notice.is_empty(), "the failed save was silent: {notice:?}");
+    }
+
+    mod overlay_navigation {
+        use super::*;
+
+        /// Navigation inside an overlay belongs to the overlay: the arrows, the paging
+        /// keys and `home`/`end` move *inside* the box and none of them leaves it.
+        ///
+        /// This is the door a reader uses most and the one a stray `WbAction` would
+        /// break silently — a key that closed the box would look like a mis-press and
+        /// not like a bug.
+        #[tokio::test]
+        async fn navigation_inside_an_overlay_moves_without_closing_it() {
+            use crate::workbench::{picker::PickerKind, Overlay};
+
+            let overlays = [
+                Overlay::Help,
+                Overlay::Queue,
+                Overlay::Git,
+                Overlay::Files,
+                Overlay::Worktree,
+                Overlay::DeleteSession,
+                Overlay::Fork,
+                Overlay::PanelFull,
+                Overlay::Picker(PickerKind::Model),
+                Overlay::Picker(PickerKind::Sessions),
+            ];
+            for overlay in overlays {
+                let mut driver = Driver::attach_conversation().await;
+                driver.workbench.overlay = Some(overlay);
+                for key in ["down", "up", "pageDown", "pageUp", "home", "end"] {
+                    assert!(
+                        !driver.quit_key(key).await,
+                        "{key} left the workbench inside {overlay:?}"
+                    );
+                    assert_eq!(
+                        driver.workbench.overlay,
+                        Some(overlay),
+                        "{key} closed {overlay:?}"
+                    );
+                }
+            }
+        }
+
+        /// A picker is a list with a highlight of its own: `down` moves the row the
+        /// box would commit, and `escape` leaves without committing anything.
+        #[tokio::test]
+        async fn a_picker_moves_its_highlight_and_escape_commits_nothing() {
+            use crate::workbench::{picker::PickerKind, Overlay};
+
+            let mut driver = Driver::attach(&[
+                ("get_state", r#"{"sessionId":"s1","model":"future/old"}"#),
+                ("get_session_entries", r#"{"entries":[]}"#),
+                (
+                    "list_models",
+                    r#"{"models":[
+                    {"id":"old","label":"old","provider":"future","thinkingLevel":"default",
+                     "thinkingLevels":["default"],"defaultThinkingLevel":"default",
+                     "isDefault":true},
+                    {"id":"new","label":"new","provider":"future","thinkingLevel":"default",
+                     "thinkingLevels":["default"],"defaultThinkingLevel":"default"}
+                ]}"#,
+                ),
+            ])
+            .await;
+            let frame = driver.frame();
+            let data = driver.live.data(&frame);
+            driver.workbench.open_picker(PickerKind::Model, &data);
+            assert_eq!(
+                driver.workbench.overlay,
+                Some(Overlay::Picker(PickerKind::Model))
+            );
+            let before = driver.workbench.picker.index;
+            assert!(!driver.quit_key("down").await, "down does not leave");
+            assert_ne!(
+                driver.workbench.picker.index, before,
+                "the highlight did not move down the list"
+            );
+            assert!(!driver.quit_key("escape").await, "escape does not leave");
+            assert_eq!(
+                driver.workbench.overlay, None,
+                "escape did not close the box"
+            );
+            assert!(
+                driver.live.pending_model().is_none(),
+                "escape committed the highlighted row"
+            );
+        }
+    }
+
+    mod repository_keys {
+        use super::*;
+
+        /// The repository browser's own keys: the tabs are numbered, `tab` moves
+        /// between the list and the patch, and the horizontal pan is the pane's —
+        /// the cursor does not move out from under the reader while they pan.
+        #[tokio::test]
+        async fn the_repository_tabs_focus_and_pan_are_its_own_keys() {
+            let mut driver = Driver::attach_conversation().await;
+            assert!(!driver.quit_key("ctrl+g").await);
+            let _ = driver.pump(Duration::from_millis(700)).await;
+            let log = driver.live.git().cloned().expect("the log installed");
+            assert_eq!(
+                log.section,
+                crate::workbench::state::GitSection::Commits,
+                "the panel opens on the log"
+            );
+
+            // `2` is the next tab, and the read that follows lands on it.
+            assert!(!driver.quit_key("2").await, "a tab key does not leave");
+            let _ = driver.pump(Duration::from_millis(700)).await;
+            let refs = driver.live.git().cloned().expect("the refs installed");
+            assert_ne!(
+                refs.section, log.section,
+                "the numbered tab did not switch the section"
+            );
+
+            // `tab` moves the keys between the list and the patch…
+            let was = driver.workbench.git_detail_focus;
+            assert!(!driver.quit_key("tab").await);
+            assert_ne!(
+                driver.workbench.git_detail_focus, was,
+                "tab did not move the focus between the panes"
+            );
+            // …and with the focus on the patch, `down` never moves the list's
+            // cursor: the arrows belong to the pane the keys are in.
+            let cursor = driver.workbench.workflow_index;
+            let scroll = driver.workbench.overlay_scroll;
+            assert!(!driver.quit_key("down").await);
+            assert_eq!(
+                driver.workbench.workflow_index, cursor,
+                "a panned pane moved the list's cursor"
+            );
+            assert!(
+                driver.workbench.overlay_scroll >= scroll,
+                "scrolling the patch moved it backwards"
+            );
+
+            // `1` is the log again, whichever tab the reader left open.
+            assert!(!driver.quit_key("1").await);
+            let _ = driver.pump(Duration::from_millis(700)).await;
+            assert_eq!(
+                driver.live.git().map(|view| view.section),
+                Some(crate::workbench::state::GitSection::Commits),
+                "the first tab did not land back on the log"
+            );
+
+            // `r` re-reads the section on screen.
+            assert!(!driver.quit_key("r").await, "refresh does not leave");
+            let _ = driver.pump(Duration::from_millis(700)).await;
+            assert!(
+                driver.live.git().is_some(),
+                "the refresh dropped the panel's view"
+            );
+
+            // `escape` closes it, and the next key belongs to the surface again.
+            assert!(!driver.quit_key("escape").await);
+            assert_eq!(driver.workbench.overlay, None, "escape did not close it");
+        }
+
+        /// A section with nothing to list still opens: the panel is a view of the
+        /// repository, and "no stashes" is an answer, not an error.
+        #[tokio::test]
+        async fn every_repository_section_opens_without_an_error() {
+            let sections = crate::workbench::state::GitSection::ALL;
+            for (index, section) in sections.iter().enumerate() {
+                let mut driver = Driver::attach_conversation().await;
+                assert!(!driver.quit_key("ctrl+g").await);
+                let _ = driver.pump(Duration::from_millis(700)).await;
+                let key = (index + 1).to_string();
+                assert!(!driver.quit_key(&key).await, "{key} left the workbench");
+                let _ = driver.pump(Duration::from_millis(700)).await;
+                let view = driver.live.git().cloned().expect("a view");
+                assert_eq!(
+                    view.section, *section,
+                    "tab {key} did not land on {section:?}"
+                );
+                assert!(
+                    view.error.is_none(),
+                    "{} could not be read in a repository: {:?}",
+                    section_name(*section),
+                    view.error
+                );
+            }
+        }
+
+        fn section_name(section: crate::workbench::state::GitSection) -> &'static str {
+            match section {
+                crate::workbench::state::GitSection::Commits => "the log",
+                _ => "a repository section",
+            }
+        }
     }
 
     mod workspace_panel {
