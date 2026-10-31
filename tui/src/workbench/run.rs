@@ -3369,3 +3369,919 @@ mod tests {
         assert!(OPEN_SETTLE <= Duration::from_millis(100));
     }
 }
+
+#[cfg(test)]
+mod driver_tests {
+    //! The driver loop itself, driven in-process: what a key, an agent event, a
+    //! loaded page and the clock each do to the frame.
+    //!
+    //! Everything here goes through the real `event_loop`, or through the real
+    //! `quit` with the event the loop would have handed it. The loop's own wiring —
+    //! which arm paints, which key lands a pending session step first, what the
+    //! terminal is handed at exit — is exactly what the tests around it cannot see.
+    //!
+    //! The bytes a frame writes are captured (`terminal::capture`) instead of
+    //! reaching fd 1, so a test can assert what the reader would have seen.
+
+    use std::time::Duration;
+
+    use tokio::sync::mpsc;
+
+    use super::super::live::Live;
+    use super::{event_loop, frame_of, quit, DriverIo, InputIo, TerminalEvent};
+    use crate::rpc::types::AgentEvent;
+    use crate::settings::TuiSettings;
+    use crate::terminal::Terminal;
+    use crate::workbench::{WbEvent, Workbench};
+
+    /// The frame's text with the escape sequences taken out, so an assertion
+    /// reads the way the reader did.
+    pub(super) fn text_of(painted: &str) -> String {
+        let ansi = regex::Regex::new(r"\x1b\[[0-9;?]*[A-Za-z]").expect("regex");
+        ansi.replace_all(painted, "").into_owned()
+    }
+
+    /// How many whole frames the capture holds: every frame starts by hiding the
+    /// cursor and addressing the home cell.
+    pub(super) fn frames(painted: &str) -> usize {
+        painted.matches("\x1b[?25l").count()
+    }
+
+    /// How long a scripted run may take before the test gives up: every script
+    /// ends with a `quit`/`Signal`, so anything near this bound is a loop that
+    /// stopped reading its input.
+    const RUN_BUDGET: Duration = Duration::from_secs(20);
+
+    /// A workbench loop wired exactly as `run` wires it: a mock agent, a terminal,
+    /// the two channels the loop reads, and the settings file it writes.
+    pub(super) struct Driver {
+        pub terminal: Terminal,
+        pub notifications: crate::notifications::NotifyCenter,
+        pub theme_explicit: bool,
+        pub update_rx: Option<tokio::sync::oneshot::Receiver<Option<String>>>,
+        pub load_rx: mpsc::UnboundedReceiver<super::super::live::Loaded>,
+        pub load_tx: mpsc::UnboundedSender<super::super::live::Loaded>,
+        pub workbench: Workbench,
+        pub live: Live,
+        pub agent_events: mpsc::UnboundedReceiver<AgentEvent>,
+        pub agent_tx: mpsc::UnboundedSender<AgentEvent>,
+        pub input_rx: mpsc::UnboundedReceiver<TerminalEvent>,
+        pub input_tx: mpsc::UnboundedSender<TerminalEvent>,
+        pub settings: TuiSettings,
+        pub settings_path: std::path::PathBuf,
+        /// Every command type the mock agent was asked, in order: what the driver
+        /// actually sent, not what it meant to.
+        pub seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        /// The same log, with the session each command named: what the driver asked
+        /// *about*, not just what it asked.
+        pub seen_sessions: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+        /// The stream `Live` attached to. Kept alive but not read by these tests:
+        /// the agent events a script injects come through `agent_tx` instead, so a
+        /// test can say exactly what the agent said and when.
+        _agent_stream: mpsc::UnboundedReceiver<AgentEvent>,
+        /// Kept so the directory outlives the driver (the settings file lives in
+        /// it).
+        _dir: tempfile::TempDir,
+    }
+
+    impl Driver {
+        /// Attach to a mock agent that answers `pairs` (and nothing else), the way
+        /// `run` attaches to a real one.
+        pub async fn attach(pairs: &[(&str, &str)]) -> Self {
+            let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(pairs);
+            let seen_sessions = mock.seen_sessions.clone();
+            let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+            let mut driver = Self::attach_at(&addr).await;
+            driver.seen = seen;
+            driver.seen_sessions = seen_sessions;
+            driver
+        }
+
+        /// Attach with a rail of two conversations, the state a reader stepping
+        /// through their recent work is in.
+        pub async fn attach_sessions() -> Self {
+            Self::attach(&[
+                ("get_state", r#"{"sessionId":"s1","model":"future/old"}"#),
+                (
+                    "list_sessions",
+                    r#"{"sessions":[
+                    {"id":"s1","cwd":"/tmp","updatedAtMs":1700000002000,"model":"future/old"},
+                    {"id":"s2","cwd":"/tmp","updatedAtMs":1700000001000,"model":"future/old"}
+                ]}"#,
+                ),
+                ("get_session_entries", r#"{"entries":[]}"#),
+                (
+                    "list_models",
+                    r#"{"models":[{"id":"old","label":"old","provider":"future",
+                    "thinkingLevel":"default","thinkingLevels":["default"],
+                    "defaultThinkingLevel":"default","isDefault":true}]}"#,
+                ),
+            ])
+            .await
+        }
+
+        /// Attach to a conversation that is already current, which is the state a
+        /// reader coming back to a session is in: the transcript is what the frame
+        /// paints, and a prompt goes to the agent rather than starting a session.
+        pub async fn attach_conversation() -> Self {
+            Self::attach(&[
+                (
+                    "get_state",
+                    // A workspace, because the surface reads it: `/git` and the
+                    // files panel are both rooted there, and a session with no
+                    // `cwd` takes the repository panel's "no workspace" door
+                    // instead of a read.
+                    concat!(
+                        r#"{"sessionId":"s1","model":"future/old","cwd":""#,
+                        env!("CARGO_MANIFEST_DIR"),
+                        r#""}"#
+                    ),
+                ),
+                ("get_session_entries", r#"{"entries":[]}"#),
+                (
+                    "list_models",
+                    r#"{"models":[{"id":"old","label":"old","provider":"future",
+                        "thinkingLevel":"default","thinkingLevels":["default"],
+                        "defaultThinkingLevel":"default","isDefault":true}]}"#,
+                ),
+                // The prompt ack is the one payload the wire keeps snake_case
+                // (`payloads_ext::RunAck`); camelCase here is a *different*
+                // answer, and one the client reports as unconfirmed.
+                ("prompt", r#"{"run_id":"r-1","accepted_state":"running"}"#),
+            ])
+            .await
+        }
+
+        pub async fn attach_at(addr: &str) -> Self {
+            let (mut live, agent_stream) = Live::attach(addr, None, false, None)
+                .await
+                .expect("attach to the mock agent");
+            let (agent_tx, agent_events) = mpsc::unbounded_channel();
+            let (input_tx, input_rx) = mpsc::unbounded_channel::<TerminalEvent>();
+            let (load_tx, load_rx) = mpsc::unbounded_channel();
+            // The driver's own wiring (`run`): the reads a step starts answer on
+            // this channel instead of inside the loop. Without it a step opens
+            // nothing, which is what made this driver's first version look like
+            // the surface ignoring the key.
+            live.set_load_sender(load_tx.clone());
+            let dir = tempfile::tempdir().expect("tempdir");
+            let settings_path = dir.path().join("settings.json");
+            let mut terminal = Terminal::new().expect("terminal");
+            terminal.set_mouse_mode(true);
+            Self {
+                terminal,
+                notifications: crate::notifications::NotifyCenter::default(),
+                theme_explicit: true,
+                update_rx: None,
+                load_rx,
+                load_tx,
+                workbench: Workbench::new(),
+                live,
+                agent_events,
+                agent_tx,
+                input_rx,
+                input_tx,
+                settings: TuiSettings::default(),
+                settings_path,
+                seen: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                seen_sessions: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                _agent_stream: agent_stream,
+                _dir: dir,
+            }
+        }
+
+        /// Queue raw terminal bytes; the loop parses them exactly as it parses a
+        /// real read.
+        pub fn data(&self, bytes: &str) {
+            let _ = self.input_tx.send(TerminalEvent::Data(bytes.to_string()));
+        }
+
+        /// Queue a signal (the arm that leaves without looking at the surface).
+        pub fn signal(&self) {
+            let _ = self.input_tx.send(TerminalEvent::Signal);
+        }
+
+        pub fn frame(&self) -> super::super::layout::Frame {
+            frame_of(&self.terminal, &self.workbench)
+        }
+
+        /// The conversation on screen, as the surface names it (`""` on the
+        /// launchpad).
+        pub fn session_id(&mut self) -> String {
+            let frame = self.frame();
+            self.live.data(&frame).session.id.clone()
+        }
+
+        /// Hand `quit` one key, the way the loop hands it one parsed event, and
+        /// report whether it asked to leave.
+        ///
+        /// The event is built from the key's own spelling — what the action
+        /// table is keyed on. Going through terminal bytes here would turn every
+        /// chord this helper does not spell into a *paste*, and the sweep below
+        /// over the whole binding table would then assert nothing about the
+        /// chords it could not spell. The byte-to-key round trip is
+        /// `events_of`'s business and is covered where it lives.
+        pub async fn quit_key(&mut self, chord: &str) -> bool {
+            self.quit(WbEvent::Key(chord.to_string()))
+                .await
+                .expect("the chord does not fail")
+        }
+
+        /// Run the loop until it returns, with what it painted. The script must end
+        /// it (a `ctrl+x`, a `/quit`, a `Signal`).
+        pub async fn run(&mut self) -> (Result<(), String>, String) {
+            let outcome = self.step(RUN_BUDGET).await;
+            (
+                outcome.expect("the script must end the loop"),
+                crate::terminal::capture::take(),
+            )
+        }
+
+        /// Let the loop run for `budget`, returning what it painted. A script that
+        /// injects several wakes (agent events, loaded pages, a resize) has no key
+        /// to end on — each wake is one iteration, and the budget is what stops it
+        /// after they are all handled.
+        pub async fn pump(&mut self, budget: Duration) -> String {
+            let _ = self.step(budget).await;
+            crate::terminal::capture::take()
+        }
+
+        /// One bounded run of the loop: `Some(outcome)` when the script ended it
+        /// itself, `None` when the budget ran out first.
+        async fn step(&mut self, budget: Duration) -> Option<Result<(), String>> {
+            crate::terminal::capture::start();
+            // `DriverIo` takes the loaded-page receiver by value (the loop drains it
+            // and hands it back to `Live`), so a run moves it out; the stand-in
+            // below is a channel nothing writes to, which is what a second `run` on
+            // the same driver would see anyway.
+            let load_rx = std::mem::replace(&mut self.load_rx, mpsc::unbounded_channel().1);
+            let mut io = DriverIo {
+                terminal: &mut self.terminal,
+                notifications: &mut self.notifications,
+                theme_explicit: &mut self.theme_explicit,
+                update_rx: &mut self.update_rx,
+                load_rx,
+            };
+            tokio::time::timeout(
+                budget,
+                event_loop(
+                    &mut io,
+                    &mut self.workbench,
+                    &mut self.live,
+                    &mut self.agent_events,
+                    &mut self.input_rx,
+                    &mut self.settings,
+                    &self.settings_path,
+                ),
+            )
+            .await
+            .ok()
+        }
+
+        /// Hand `quit` one event, the way the loop does, and report whether it asked
+        /// to leave. This is the action table without a loop around it: a test can
+        /// ask about one chord without arranging a whole session first.
+        pub async fn quit(&mut self, event: WbEvent) -> Result<bool, String> {
+            let frame = self.frame();
+            let mut io = InputIo {
+                terminal: &mut self.terminal,
+                settings: &mut self.settings,
+                settings_path: &self.settings_path,
+                theme_explicit: &mut self.theme_explicit,
+            };
+            quit(&mut self.workbench, &mut self.live, event, &frame, &mut io).await
+        }
+
+        /// Type `text` key by key through the driver: what a reader typing into the
+        /// draft does, one terminal read at a time.
+        pub async fn type_text(&mut self, text: &str) -> bool {
+            let mut leave = false;
+            for character in text.chars() {
+                let mut buffer = [0u8; 4];
+                let bytes = character.encode_utf8(&mut buffer);
+                for event in super::events_of(bytes) {
+                    leave |= self.quit(event).await.expect("a key does not fail");
+                }
+            }
+            leave
+        }
+
+        /// Type a whole command (`"/files"`) and submit it. The line is pasted, not
+        /// typed character by character: a bare `/` opens the command palette, so a
+        /// typed line never reaches the draft — paste does, and the surface answers
+        /// it on `enter` like any other line.
+        pub async fn command(&mut self, command: &str) -> bool {
+            let mut leave = false;
+            self.quit(WbEvent::Paste(command.to_string()))
+                .await
+                .map(|asked| leave |= asked)
+                .expect("a paste does not fail");
+            let enter = super::events_of("\r").into_iter().next().expect("enter");
+            leave || self.quit(enter).await.expect("enter does not fail")
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::workbench::live::Loaded;
+
+        /// A frame is painted before the loop waits for anything, and `ctrl+x`
+        /// leaves. The first assertion is the one the loop's own comment makes: the
+        /// screen is never stale while the loop waits.
+        #[tokio::test]
+        async fn a_first_frame_is_painted_before_any_input_and_ctrl_x_leaves() {
+            let mut driver = Driver::attach(&[]).await;
+            driver.data("\u{18}");
+            let (outcome, painted) = driver.run().await;
+            assert!(outcome.is_ok(), "{outcome:?}");
+            assert_eq!(frames(&painted), 1, "one frame, then the key left");
+            let text = text_of(&painted);
+            assert!(text.contains("FUTURE OS"), "{text:?}");
+            assert!(text.contains("New Chat"), "{text:?}");
+            assert!(
+                painted.contains("\x1b[?25h"),
+                "the frame puts the cursor back where the draft is: {painted:?}"
+            );
+        }
+
+        /// A signal leaves without waiting for a key, and the loop does not report an
+        /// error: the terminal is restored by `run`, which is not this path.
+        #[tokio::test]
+        async fn a_signal_ends_the_loop() {
+            let mut driver = Driver::attach(&[]).await;
+            driver.signal();
+            let (outcome, _painted) = driver.run().await;
+            assert!(outcome.is_ok(), "{outcome:?}");
+        }
+
+        /// The clock is a clock, not a paint: with nothing moving on screen the loop
+        /// wakes on its ticker and paints nothing more. This is the property
+        /// `TickClock`'s own test states, measured here through the loop that has to
+        /// honour it.
+        #[tokio::test]
+        async fn an_idle_loop_wakes_on_its_ticker_without_painting_again() {
+            let mut driver = Driver::attach(&[]).await;
+            let painted = driver.pump(Duration::from_millis(400)).await;
+            assert_eq!(
+                frames(&painted),
+                1,
+                "a tick with nothing to show repaints the frame: {painted:?}"
+            );
+        }
+
+        /// What the reader types is painted in the draft on the next frame, and the
+        /// draft is what the loop asked the surface for — not a second copy of the
+        /// text.
+        #[tokio::test]
+        async fn typed_text_is_painted_into_the_draft() {
+            let mut driver = Driver::attach(&[]).await;
+            driver.data("hi");
+            let painted = driver.pump(Duration::from_millis(400)).await;
+            let text = text_of(&painted);
+            assert!(
+                text.contains("hi"),
+                "the draft did not take the keys: {text:?}"
+            );
+            assert!(frames(&painted) >= 2, "typing is a repaint: {painted:?}");
+        }
+
+        /// `enter` on a non-empty draft is a `prompt` to the agent — the command the
+        /// driver exists to send.
+        #[tokio::test]
+        async fn enter_sends_the_draft_as_a_prompt() {
+            let mut driver = Driver::attach_conversation().await;
+            // Two reads, the way a terminal delivers typed keys: the text first,
+            // then the `enter` that submits it. One read containing both is a
+            // *paste*, and a paste is inserted, never submitted.
+            driver.data("hello there");
+            driver.data("\r");
+            let painted = driver.pump(Duration::from_millis(700)).await;
+            // The message is in the transcript the moment it is sent: the reader
+            // sees their own text before the agent has answered.
+            assert!(
+                text_of(&painted).contains("hello there"),
+                "the sent message was not painted: {painted:?}"
+            );
+            let seen = driver.seen.lock().expect("seen").clone();
+            assert!(
+                seen.iter().any(|kind| kind == "prompt"),
+                "no prompt reached the agent: {seen:?}"
+            );
+        }
+
+        /// An agent event the loop is woken for is applied and painted: a streamed
+        /// text chunk is on screen after the wake-up, without a key press.
+        #[tokio::test]
+        async fn a_streamed_text_chunk_is_painted_when_it_arrives() {
+            let mut driver = Driver::attach_conversation().await;
+            let session = driver.session_id();
+            for (kind, data) in [
+                ("agent_start", serde_json::json!({})),
+                ("text_chunk", serde_json::json!({"text": "streamed answer"})),
+                ("agent_end", serde_json::json!({})),
+            ] {
+                let _ = driver.agent_tx.send(AgentEvent {
+                    r#type: kind.into(),
+                    data,
+                    session_id: Some(session.clone()),
+                    run_id: Some("run-1".into()),
+                    ..Default::default()
+                });
+            }
+            let painted = driver.pump(Duration::from_millis(700)).await;
+            assert!(
+                text_of(&painted).contains("streamed answer"),
+                "the chunk never reached the screen: {painted:?}"
+            );
+            assert!(frames(&painted) >= 2);
+        }
+
+        /// A burst of agent events is drained into one frame: the loop applies the
+        /// token deltas that arrived while it was busy and paints once, not once per
+        /// token.
+        #[tokio::test]
+        async fn a_burst_of_agent_events_costs_one_frame() {
+            let mut driver = Driver::attach_conversation().await;
+            let session = driver.session_id();
+            let _ = driver.agent_tx.send(AgentEvent {
+                r#type: "agent_start".into(),
+                session_id: Some(session.clone()),
+                run_id: Some("run-1".into()),
+                ..Default::default()
+            });
+            for index in 0..8 {
+                let _ = driver.agent_tx.send(AgentEvent {
+                    r#type: "text_chunk".into(),
+                    data: serde_json::json!({"text": format!("chunk{index} ")}),
+                    session_id: Some(session.clone()),
+                    run_id: Some("run-1".into()),
+                    ..Default::default()
+                });
+            }
+            let _ = driver.agent_tx.send(AgentEvent {
+                r#type: "agent_end".into(),
+                session_id: Some(session.clone()),
+                run_id: Some("run-1".into()),
+                ..Default::default()
+            });
+            let painted = driver.pump(Duration::from_millis(700)).await;
+            let text = text_of(&painted);
+            assert!(
+                text.contains("chunk7"),
+                "the burst was not applied: {text:?}"
+            );
+        }
+
+        /// A read the surface started without waiting for it is installed on its own
+        /// wake-up, and a page that names another conversation is dropped instead of
+        /// being prepended to the one on screen.
+        ///
+        /// Both answers go into one run: the first installs and repaints, the second
+        /// is stale and must paint nothing — so the frame count is the count of
+        /// answers that were actually used.
+        #[tokio::test]
+        async fn a_loaded_page_is_installed_and_a_stale_one_is_dropped() {
+            let mut driver = Driver::attach_conversation().await;
+            let current = driver.session_id();
+            let _ = driver
+                .load_tx
+                .send(Loaded::State(Ok(crate::rpc::types::RpcSessionState {
+                    session_id: "s2".into(),
+                    ..Default::default()
+                })));
+            let _ = driver
+                .load_tx
+                .send(Loaded::Older(crate::workbench::live::OlderPage {
+                    session_id: format!("{current}-other"),
+                    before: 40,
+                    page: Err("unused".into()),
+                }));
+            let painted = driver.pump(Duration::from_millis(500)).await;
+            assert_eq!(
+                frames(&painted),
+                2,
+                "the first frame, plus the one page that installed (the stale page owed nothing): {painted:?}"
+            );
+        }
+
+        /// The startup update check answers whenever it answers; the loop paints the
+        /// notice on its own arm, after the first frame.
+        #[tokio::test]
+        async fn the_update_check_arms_a_notice_and_disarms_itself() {
+            let mut driver = Driver::attach(&[]).await;
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            driver.update_rx = Some(rx);
+            tx.send(Some("a newer future is out".into()))
+                .expect("send the notice");
+            let painted = driver.pump(Duration::from_millis(400)).await;
+            assert!(driver.live.notice.is_some(), "no notice was armed");
+            assert!(
+                text_of(&painted).contains("a newer future is out"),
+                "the notice was not painted: {painted:?}"
+            );
+            assert!(driver.update_rx.is_none(), "the arm must disarm itself");
+        }
+
+        /// A resize wake-up that leaves the frame identical paints nothing: the
+        /// loop composes for the size it has now, and the incremental cache drops a
+        /// frame that did not change. A resize look-alike is therefore free, which is
+        /// what keeps a terminal that reports its size on every read from costing a
+        /// full repaint a tick.
+        #[tokio::test]
+        async fn a_resize_that_changes_nothing_paints_nothing() {
+            let mut driver = Driver::attach(&[]).await;
+            let _ = driver.input_tx.send(TerminalEvent::Resize);
+            let painted = driver.pump(Duration::from_millis(300)).await;
+            assert_eq!(
+                frames(&painted),
+                1,
+                "an unchanged frame was repainted for a resize: {painted:?}"
+            );
+        }
+
+        /// `ctrl+x` is the one chord that leaves; every other chord is the surface's.
+        #[tokio::test]
+        async fn ctrl_x_asks_to_leave_and_another_chord_does_not() {
+            let mut driver = Driver::attach(&[]).await;
+            assert!(!driver.quit_key("ctrl+c").await, "idle ctrl+c just reports");
+            assert!(driver.quit_key("ctrl+x").await, "ctrl+x leaves");
+        }
+
+        /// The rail's chord opens the panel and the same chord closes it: one key
+        /// moves the surface in and out, and it never leaves the screen in a state
+        /// the next key cannot undo.
+        #[tokio::test]
+        async fn the_rail_chord_opens_and_closes_the_same_panel() {
+            let mut driver = Driver::attach(&[]).await;
+            assert!(!driver.quit_key("ctrl+d").await, "ctrl+d does not leave");
+            assert_eq!(
+                driver.workbench.overlay,
+                Some(crate::workbench::Overlay::PanelFull),
+                "ctrl+d did not open the rail"
+            );
+            assert!(!driver.quit_key("escape").await, "escape does not leave");
+            assert_eq!(
+                driver.workbench.overlay, None,
+                "the panel did not close on escape"
+            );
+        }
+
+        /// The typed door to a panel: the command is answered by the surface, and
+        /// the panel is open on the frame after it.
+        #[tokio::test]
+        async fn a_submitted_command_opens_its_panel_without_reaching_the_agent() {
+            let mut driver = Driver::attach(&[]).await;
+            let leave = driver.command("/files").await;
+            assert!(!leave);
+            assert_eq!(
+                driver.workbench.overlay,
+                Some(crate::workbench::Overlay::Files),
+                "the files panel did not open"
+            );
+            let seen = driver.seen.lock().expect("seen").clone();
+            assert!(
+                !seen.iter().any(|kind| kind == "prompt"),
+                "a panel command reached the agent as a prompt: {seen:?}"
+            );
+        }
+        /// Every overlay the surface can put up is painted when it opens, and none
+        /// of them takes the loop with it. One pass over the enum: an overlay that
+        /// panics or paints nothing is a door the reader cannot come back from.
+        #[tokio::test]
+        async fn every_overlay_paints_a_frame_when_it_opens() {
+            use crate::workbench::{picker::PickerKind, Overlay};
+
+            // What the frame looks like with no overlay on it: an overlay that
+            // painted this instead would be a door that opens nothing.
+            let mut bare = Driver::attach_conversation().await;
+            let baseline = bare.pump(Duration::from_millis(250)).await;
+
+            let overlays = [
+                Overlay::Help,
+                Overlay::Palette,
+                Overlay::PanelFull,
+                Overlay::Picker(PickerKind::Model),
+                Overlay::Queue,
+                Overlay::Approval,
+                Overlay::Diff,
+                Overlay::Git,
+                Overlay::Files,
+                Overlay::Fork,
+                Overlay::Worktree,
+                Overlay::DeleteSession,
+                Overlay::FilePreview,
+                Overlay::Preferences,
+                Overlay::Keybindings,
+            ];
+            for overlay in overlays {
+                let mut driver = Driver::attach_conversation().await;
+                driver.workbench.overlay = Some(overlay);
+                let painted = driver.pump(Duration::from_millis(250)).await;
+                assert!(
+                    frames(&painted) >= 1,
+                    "{overlay:?} painted nothing: {painted:?}"
+                );
+                assert_ne!(
+                    painted, baseline,
+                    "{overlay:?} paints the same screen as no overlay at all"
+                );
+            }
+        }
+
+        /// Only the quit chord leaves. Every other configurable action is the
+        /// surface's business, and one that ended the process would be a key nobody
+        /// dares press — this walks the whole binding table in one pass so a new
+        /// action cannot quietly claim the quit path.
+        #[tokio::test]
+        async fn only_the_quit_chord_leaves_the_workbench() {
+            use crate::workbench::preferences::{Action, Keybindings};
+
+            let keys = Keybindings::default();
+            for action in crate::workbench::preferences::ACTIONS {
+                if action == Action::Quit {
+                    continue;
+                }
+                let chord = keys.key(action);
+                if chord.is_empty() {
+                    continue;
+                }
+                let mut driver = Driver::attach_conversation().await;
+                assert!(
+                    !driver.quit_key(chord).await,
+                    "{chord} ({}) left the workbench",
+                    action.id()
+                );
+            }
+        }
+
+        /// The typed door to the surface's own verbs: each one is answered by the
+        /// surface — it does not leave, and it does not become a prompt. `/quit` is
+        /// the one verb that leaves, which is the other half of the claim.
+        #[tokio::test]
+        async fn a_surface_verb_is_answered_locally_and_only_quit_leaves() {
+            use crate::workbench::{COMMANDS, TYPED_ONLY};
+
+            let verbs: Vec<&str> = COMMANDS
+                .iter()
+                .map(|(command, _)| *command)
+                .chain(TYPED_ONLY.iter().map(|(command, _)| *command))
+                .collect();
+            for verb in verbs {
+                let mut driver = Driver::attach_conversation().await;
+                let leave = driver.command(verb).await;
+                if verb == "/quit" {
+                    assert!(leave, "/quit did not leave");
+                    continue;
+                }
+                assert!(!leave, "{verb} left the workbench");
+                let seen = driver.seen.lock().expect("seen").clone();
+                assert!(
+                    !seen.iter().any(|kind| kind == "prompt"),
+                    "{verb} reached the agent as a prompt: {seen:?}"
+                );
+            }
+        }
+
+        /// `ctrl+j` is a newline in the draft, `enter` is what sends: a two-line
+        /// prompt stays one prompt with both lines in it, which is the property the
+        /// composer's own hint row promises.
+        #[tokio::test]
+        async fn a_newline_chord_extends_the_draft_instead_of_sending_it() {
+            let mut driver = Driver::attach_conversation().await;
+            assert!(!driver.type_text("first line").await);
+            assert!(!driver.type_text("\n").await);
+            assert!(!driver.type_text("second line").await);
+            let painted = driver.pump(Duration::from_millis(300)).await;
+            let text = text_of(&painted);
+            assert!(text.contains("first line"), "{text:?}");
+            assert!(text.contains("second line"), "{text:?}");
+            let seen = driver.seen.lock().expect("seen").clone();
+            assert!(
+                !seen.iter().any(|kind| kind == "prompt"),
+                "a newline sent the prompt: {seen:?}"
+            );
+        }
+    }
+    /// A step key moves the rail's cursor and opens the conversation it lands
+    /// on — through the settle window, because that read is not cached: the
+    /// switch is what the loop's own timer arm does, not a side effect of the
+    /// key press.
+    #[tokio::test]
+    async fn a_session_step_opens_the_conversation_it_stops_on() {
+        let mut driver = Driver::attach_sessions().await;
+        assert_eq!(driver.session_id(), "s1", "attached to the newest");
+        // `shift+down`: one step towards the older conversation.
+        driver.data("\x1b[1;2B");
+        let painted = driver.pump(Duration::from_millis(600)).await;
+        assert!(
+            painted.contains("\x1b[?25l"),
+            "the step painted nothing: {painted:?}"
+        );
+        // The switch is the read the step owes: the state and the tail page of
+        // the conversation it landed on. (This mock answers `get_state` with the
+        // conversation it started on for every caller, so the *request* is what
+        // says which one the step opened.)
+        let asked = driver.seen_sessions.lock().expect("seen").clone();
+        assert!(
+            asked
+                .iter()
+                .any(|(command, session)| command == "get_state" && session == "s2"),
+            "the step never opened s2: {asked:?}"
+        );
+    }
+    /// A rebound action still reaches the driver's own arm: the four verbs with
+    /// no shipped chord (copy, queue, refresh, mouse) are bound here and each is
+    /// answered — never by leaving the workbench.
+    #[tokio::test]
+    async fn a_rebound_action_reaches_its_own_arm() {
+        use crate::workbench::preferences::{Action, Keybindings};
+
+        let mut keys = Keybindings::default();
+        for (action, chord) in [
+            (Action::Copy, "ctrl+y"),
+            (Action::Queue, "ctrl+e"),
+            (Action::Refresh, "ctrl+b"),
+            (Action::Mouse, "ctrl+w"),
+        ] {
+            keys.bind(action, chord).expect("a spare chord");
+        }
+        for chord in ["ctrl+y", "ctrl+e", "ctrl+b", "ctrl+w"] {
+            let mut driver = Driver::attach_conversation().await;
+            driver.workbench.keys = keys.clone();
+            assert!(!driver.quit_key(chord).await, "{chord} left the workbench");
+        }
+        // The mouse verb is a toggle, and the surface is what remembers it.
+        let mut driver = Driver::attach_conversation().await;
+        driver.workbench.keys = keys;
+        let before = driver.workbench.mouse_capture;
+        assert!(!driver.quit_key("ctrl+w").await);
+        assert_ne!(
+            driver.workbench.mouse_capture, before,
+            "the rebound mouse chord did not toggle mouse capture"
+        );
+        assert!(
+            driver.settings.mouse_capture == Some(driver.workbench.mouse_capture),
+            "the toggle was not written to the settings"
+        );
+    }
+
+    /// A settings file that cannot be written is reported on the surface: a
+    /// preference the reader just changed must not look saved when it was not.
+    #[tokio::test]
+    async fn an_unwritable_settings_file_is_reported_not_swallowed() {
+        let mut driver = Driver::attach_conversation().await;
+        // A regular file standing where the directory has to be: every write
+        // below it fails with ENOTDIR, which is the one failure the writer
+        // cannot create its way out of.
+        let blocker = driver
+            .settings_path
+            .parent()
+            .expect("a parent")
+            .join("blocker");
+        std::fs::write(&blocker, b"not a directory").expect("write the blocker");
+        driver.settings_path = blocker.join("settings.json");
+
+        // `/mouse` is the verb that both flips the preference and writes it, so
+        // a failed write is reported on the notice row.
+        assert!(!driver.command("/mouse").await, "/mouse does not leave");
+        let notice = driver.live.notice.clone().expect("a notice");
+        assert!(!notice.is_empty(), "the failed save was silent: {notice:?}");
+    }
+
+    mod workspace_panel {
+        use super::*;
+        use crate::workbench::Overlay;
+
+        /// `ctrl+g` opens the repository browser for the session's own workspace
+        /// and the read lands on its own wake-up: the panel paints the rows the
+        /// disk produced, not an empty list.
+        ///
+        /// The fixture's session carries a `cwd` — without one `open_git_panel`
+        /// takes its "no workspace" door and never reads anything, which is why
+        /// that whole path measured zero before this test.
+        #[tokio::test]
+        async fn the_repository_panel_reads_the_session_workspace() {
+            let mut driver = Driver::attach_conversation().await;
+            assert!(!driver.quit_key("ctrl+g").await, "ctrl+g does not leave");
+            assert_eq!(
+                driver.workbench.overlay,
+                Some(Overlay::Git),
+                "ctrl+g did not open the repository panel"
+            );
+            let painted = driver.pump(Duration::from_millis(700)).await;
+            let view = driver
+                .live
+                .git()
+                .cloned()
+                .expect("the read installed a view");
+            assert!(
+                view.error.is_none(),
+                "the workspace is a repository: {:?}",
+                view.error
+            );
+            assert!(
+                !view.rows.is_empty(),
+                "the commit log of a repository with history is empty"
+            );
+            assert!(
+                !view.repo.is_empty() && text_of(&painted).contains(&view.repo),
+                "the panel does not name the repository it read ({:?})",
+                view.repo
+            );
+        }
+
+        /// Moving inside the repository panel is a detail read: the row under the
+        /// cursor is what the bottom half shows, and the surface decides which row
+        /// that is.
+        #[tokio::test]
+        async fn moving_in_the_repository_panel_reads_the_row_under_the_cursor() {
+            let mut driver = Driver::attach_conversation().await;
+            assert!(!driver.quit_key("ctrl+g").await);
+            let _ = driver.pump(Duration::from_millis(700)).await;
+            let first = driver.live.git().cloned().expect("a view");
+            assert!(first.rows.len() > 1, "no second row to move to");
+
+            // `down` inside the panel is a selection, not a draft key.
+            assert!(!driver.quit_key("down").await, "down does not leave");
+            let painted = driver.pump(Duration::from_millis(700)).await;
+            let moved = driver.live.git().cloned().expect("a view");
+            assert_ne!(
+                moved.selected, first.selected,
+                "the cursor did not move off the first row"
+            );
+            assert!(
+                !moved.detail.is_empty() || moved.error.is_some(),
+                "the row under the cursor was never read"
+            );
+            assert!(frames(&painted) >= 1);
+        }
+
+        /// A parked approval owns `y`/`n`/`enter` on the base surface: `enter`
+        /// opens the card rather than answering blind, and the letter is the
+        /// answer the agent is told.
+        #[tokio::test]
+        async fn a_parked_approval_is_answered_by_its_own_keys() {
+            let mut driver = Driver::attach(&[
+                (
+                    "get_state",
+                    r#"{"sessionId":"s1","model":"future/old","pendingApprovals":[
+                        {"approvalRequestId":"a-1","toolName":"bash","kind":"command","riskLevel":"high"}]}"#,
+                ),
+                ("get_session_entries", r#"{"entries":[]}"#),
+                (
+                    "list_models",
+                    r#"{"models":[{"id":"old","label":"old","provider":"future",
+                        "thinkingLevel":"default","thinkingLevels":["default"],
+                        "defaultThinkingLevel":"default","isDefault":true}]}"#,
+                ),
+                ("approval_decision", r#"{"success":true}"#),
+            ])
+            .await;
+            assert!(
+                driver.live.approval().is_some(),
+                "the state named a pending approval"
+            );
+
+            // `enter` opens the card instead of answering blind.
+            assert!(!driver.quit_key("enter").await, "enter does not leave");
+            assert_eq!(
+                driver.workbench.overlay,
+                Some(Overlay::Approval),
+                "enter did not open the approval card"
+            );
+
+            // `y` on the base surface is the answer, and it clears the card.
+            driver.workbench.overlay = None;
+            assert!(!driver.quit_key("y").await, "y does not leave");
+            assert!(
+                driver.live.approval().is_none(),
+                "an answered approval is still parked"
+            );
+            let seen = driver.seen.lock().expect("seen").clone();
+            assert!(
+                seen.iter().any(|kind| kind == "approval_decision"),
+                "no decision reached the agent: {seen:?}"
+            );
+        }
+
+        /// A session with no workspace takes the panel's "nothing to read" door:
+        /// the box still opens, and it does not run git in an empty path.
+        #[tokio::test]
+        async fn the_repository_panel_without_a_workspace_says_so() {
+            let mut driver = Driver::attach(&[
+                ("get_state", r#"{"sessionId":"s1","model":"future/old"}"#),
+                ("get_session_entries", r#"{"entries":[]}"#),
+            ])
+            .await;
+            assert!(!driver.quit_key("ctrl+g").await);
+            let painted = driver.pump(Duration::from_millis(300)).await;
+            assert_eq!(driver.workbench.overlay, Some(Overlay::Git));
+            assert!(
+                driver.live.git().is_none(),
+                "a workspace-less session read a repository"
+            );
+            assert!(frames(&painted) >= 1);
+        }
+    }
+}
