@@ -2,6 +2,7 @@
 
 pub mod credentials;
 mod error;
+mod relay_endpoint;
 pub mod session;
 pub use error::Error;
 pub(crate) use future_remote_protocol::json as codec;

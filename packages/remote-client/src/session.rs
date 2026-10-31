@@ -1254,6 +1254,7 @@ pub async fn connect(
     // The pairing's token URL records whether its self-hosted relay declared
     // plaintext transport. Platform/HTTPS pairings continue to require TLS.
     // Test-only plaintext fixtures still validate loopback before connecting.
+    let plaintext = creds.token_url.starts_with("http://");
     let options = if environment.insecure_loopback() {
         let endpoint = url::Url::parse(&creds.nats_url)
             .map_err(|_| crate::Error::Message("remote_test_endpoint_invalid".into()))?;
@@ -1266,12 +1267,26 @@ pub async fn connect(
             ));
         }
         options
-    } else if creds.token_url.starts_with("http://") {
+    } else if plaintext {
         options
     } else {
         options.require_tls(true)
     };
-    let client = options.connect(&creds.nats_url).await.map_err(|error| {
+    // `async-nats` resolves inside itself and offers no hook to replace that, so
+    // when this process has its own resolver the address is resolved here and
+    // the connection is pinned to the name it was resolved from; see
+    // [`crate::relay_endpoint`].
+    let endpoint = crate::relay_endpoint::for_connect(
+        &creds.nats_url,
+        environment.root_bundle.as_deref(),
+        plaintext,
+    )
+    .await?;
+    let options = match endpoint.tls {
+        Some(config) => options.tls_client_config(config),
+        None => options,
+    };
+    let client = options.connect(&endpoint.url).await.map_err(|error| {
         // Two different kinds of failure, which need two different responses from
         // the caller: an authorization failure will never succeed on a retry (the
         // credential is the problem), while everything else on this leg — a
