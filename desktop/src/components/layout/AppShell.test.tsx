@@ -3400,8 +3400,15 @@ describe("app shell keyboard commands", () => {
         sessions: [{ pinned: false, sessionId: "s1", status: "completed", title: "Remote one" }],
       }],
       peers: [{
-        agentAvailable: true, bridgeInstanceId: "bridge_1", connected: true, desktopId: "desktop_a",
-        error: null, features: [], icon: "laptop", name: "Studio iMac", pairId: "pair_1",
+        agentAvailable: true,
+        bridgeInstanceId: "bridge_1",
+        connected: true,
+        desktopId: "desktop_a",
+        error: null,
+        features: [],
+        icon: "laptop",
+        name: "Studio iMac",
+        pairId: "pair_1",
         stopped: false,
       }],
     };
