@@ -175,6 +175,41 @@ it("holds the draft while the card is up, then sends it unchanged when send is p
   }
 });
 
+it("does not send the text the recommender was asked about once the draft has moved on", async () => {
+  // The evaluation is asynchronous and the editor stays editable while it runs. What the
+  // recommender answered is about the *earlier* draft: sending it now would post a
+  // sentence the reader has already edited, and would send it a second time when they
+  // press Enter on what they actually wrote.
+  const host = document.createElement("div");
+  document.body.append(host);
+  const onSend = vi.fn();
+  let release!: (card: null) => void;
+  const evaluate = vi.fn(() => new Promise<null>((resolve) => {
+    release = resolve;
+  }));
+  try {
+    await mount(host, recommendationProps(evaluate as unknown as SkillRecommendationProp["onEvaluate"]), onSend);
+    typeInto(host, "first version");
+    await submit(host);
+    expect(evaluate).toHaveBeenCalledWith("first version");
+
+    // The reader keeps typing while the recommender is thinking.
+    typeInto(host, "first version, now longer");
+    await act(async () => {
+      release(null);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Nothing was sent: the answer was about text that no longer exists in the box.
+    expect(onSend).not.toHaveBeenCalled();
+    expect(host.querySelector<HTMLElement>("[role=textbox]")!.textContent).toBe("first version, now longer");
+  }
+  finally {
+    act(() => host.remove());
+  }
+});
+
 it("does not ask the recommender twice for the same draft", async () => {
   const host = document.createElement("div");
   document.body.append(host);
