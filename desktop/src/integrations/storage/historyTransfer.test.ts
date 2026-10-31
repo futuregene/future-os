@@ -79,4 +79,132 @@ describe("native history transfer", () => {
     invokeMock.mockImplementation(async command => command === "begin_session_history_transfer" ? { id: "snapshot", totalBytes: 2, chunkBytes } : raw);
     await expect(readHistoryTransfer({})).rejects.toThrow("invalid_history_transfer_chunk");
   });
+
+  /** Two transfers that hold both slots until the test releases them. */
+  function holdSlots() {
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "begin_session_history_transfer")
+        await held;
+      return undefined;
+    });
+    // These never finish on their own; the caller releases them and swallows the
+    // rejection a released transfer produces from its bogus descriptor.
+    const held_reads = [readHistoryTransfer({}).catch(() => {}), readHistoryTransfer({}).catch(() => {})];
+    return {
+      async finish() {
+        release();
+        await Promise.all(held_reads);
+      },
+      held_reads,
+    };
+  }
+
+  it("refuses to queue a 33rd transfer instead of piling up unbounded", async () => {
+    // Two transfers hold the slots and never answer, so every later caller parks.
+    // Refusing the 33rd waiter is what keeps a burst of reads from becoming memory
+    // the app never gets back.
+    const slots = holdSlots();
+    await Promise.resolve();
+    // 32 callers park behind the two running transfers; the next one is refused
+    // before it queues at all.
+    const started = Array.from({ length: 33 }, () => readHistoryTransfer({}).catch(error => (error as Error).message));
+    await Promise.resolve();
+    // The refusal is decided synchronously in `admit`, so it has already settled.
+    await expect(started[32]!).resolves.toBe("history_transfer_queue_full");
+    await slots.finish();
+    // The parked callers all proceed once the slots free up.
+    const outcomes = await Promise.all(started);
+    expect(outcomes.filter(outcome => outcome === "history_transfer_queue_full")).toEqual(["history_transfer_queue_full"]);
+  });
+
+  it("gives up waiting for a slot instead of blocking for ever", async () => {
+    vi.useFakeTimers();
+    try {
+      const slots = holdSlots();
+      await vi.advanceTimersByTimeAsync(1);
+      const waiting = readHistoryTransfer({});
+      const outcome = expect(waiting).rejects.toThrow("history_transfer_admission_timeout");
+      await vi.advanceTimersByTimeAsync(6000);
+      await outcome;
+      await vi.advanceTimersByTimeAsync(1);
+      await slots.finish();
+    }
+    finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refuses a waiter that was cancelled while it queued", async () => {
+    vi.useFakeTimers();
+    try {
+      const slots = holdSlots();
+      await vi.advanceTimersByTimeAsync(1);
+      let current = true;
+      const cancelled = readHistoryTransfer({}, () => current);
+      const outcome = expect(cancelled).rejects.toThrow("stale_history_transfer");
+      current = false;
+      await vi.advanceTimersByTimeAsync(1);
+      await outcome;
+      expect(invokeMock.mock.calls.filter(([command]) => command === "read_session_history_transfer")).toHaveLength(0);
+      await slots.finish();
+    }
+    finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refuses a read that was cancelled before its slot was granted", async () => {
+    // `isCurrent` is asked again after admission: a read cancelled in the window
+    // between queueing and starting must never open a transfer or allocate.
+    invokeMock.mockResolvedValue(undefined);
+    await expect(readHistoryTransfer({}, () => false)).rejects.toThrow("stale_history_transfer");
+    expect(invokeMock.mock.calls.some(([command]) => command === "begin_session_history_transfer")).toBe(false);
+  });
+
+  it("refuses a small remote reply that arrived after the reader was cancelled", async () => {
+    // The reply was small enough to come back inline, but the view that asked for it
+    // has moved on: handing it over would repaint a page nobody is looking at.
+    // Admission says yes (the reader was current when it asked); the cancel lands
+    // while the reply is in flight.
+    let asked = 0;
+    invokeMock.mockResolvedValue({ entries: [], hasMore: false });
+    await expect(requestNativeRead("remote_peer_request", {}, () => asked++ === 0)).rejects.toThrow("stale_history_transfer");
+  });
+
+  it("refuses a descriptor whose id is not an opaque token", async () => {
+    // The id is handed to the next IPC call, so anything that is not a plain token
+    // is refused before it is used as one.
+    invokeMock.mockImplementation(async command => command === "begin_session_history_transfer"
+      ? { chunkBytes, id: "not an id", totalBytes: 12 }
+      : undefined);
+    await expect(readHistoryTransfer({})).rejects.toThrow("invalid_history_transfer");
+    expect(invokeMock.mock.calls.some(([command]) => command === "read_session_history_transfer")).toBe(false);
+  });
+
+  it("refuses a read cancelled after admission but before the first chunk", async () => {
+    // One yes for admission, then the reader is gone: the buffer is never allocated
+    // and no chunk is asked for.
+    let asked = 0;
+    invokeMock.mockImplementation(async command => command === "begin_session_history_transfer"
+      ? { chunkBytes, id: "snapshot", totalBytes: 12 }
+      : undefined);
+    await expect(readHistoryTransfer({}, () => asked++ === 0)).rejects.toThrow("stale_history_transfer");
+    expect(invokeMock.mock.calls.some(([command]) => command === "read_session_history_transfer")).toBe(false);
+  });
+
+  it("refuses a read cancelled between the pre-allocation check and the first chunk", async () => {
+    // The last moment a cancel can be honoured is just before the loop asks for a
+    // chunk; the transfer is released either way.
+    let asked = 0;
+    invokeMock.mockImplementation(async command => command === "begin_session_history_transfer"
+      ? { chunkBytes, id: "snapshot", totalBytes: 12 }
+      : undefined);
+    await expect(readHistoryTransfer({}, () => asked++ < 2)).rejects.toThrow("stale_history_transfer");
+    expect(invokeMock.mock.calls.filter(([command]) => command === "read_session_history_transfer")).toHaveLength(0);
+    expect(invokeMock).toHaveBeenLastCalledWith("release_session_history_transfer", { transferId: "snapshot" });
+  });
 });

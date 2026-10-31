@@ -177,6 +177,99 @@ describe("theme", () => {
   });
 });
 
+describe("the theme when the platform cannot answer", () => {
+  it("falls back to light, and binds no listener, when matchMedia throws", async () => {
+    // A webview whose media-query support is broken, or a non-DOM runner: the app
+    // still has to paint, so an unanswerable preference resolves to light instead of
+    // taking the first render down with it.
+    vi.stubGlobal("matchMedia", () => {
+      throw new Error("matchMedia is not available");
+    });
+    const theme = await import("./theme");
+
+    expect(theme.getThemeMode()).toBe("system");
+    expect(theme.getResolvedTheme()).toBe("light");
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+    // Switching again re-checks the listener; it must stay unbound rather than throw.
+    expect(() => theme.setThemeMode("dark")).not.toThrow();
+    expect(() => theme.setThemeMode("system")).not.toThrow();
+    expect(theme.getResolvedTheme()).toBe("light");
+  });
+
+  it("paints nothing on the window frame when the stylesheet cannot be read", async () => {
+    // No layout engine means no computed tokens; the caption colours are cosmetic, so
+    // the palette change must still land.
+    installMatchMedia(false);
+    const computed = vi.spyOn(window, "getComputedStyle").mockImplementation(() => {
+      throw new Error("no layout engine");
+    });
+    const theme = await import("./theme");
+    vi.mocked(invokeCommand).mockClear();
+
+    expect(() => theme.setThemePalette("gruvbox")).not.toThrow();
+    expect(theme.getThemePalette()).toBe("gruvbox");
+    expect(invokeCommand).not.toHaveBeenCalled();
+    computed.mockRestore();
+  });
+
+  it("ignores a system notification that resolves to the theme already showing", async () => {
+    // The OS re-announces its preference without changing it; repainting and
+    // re-emitting would churn every subscriber for nothing.
+    const media = installMatchMedia(false);
+    const theme = await import("./theme");
+    const listener = vi.fn();
+    theme.subscribeTheme(listener);
+
+    media.setMatches(false);
+
+    expect(listener).not.toHaveBeenCalled();
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+  });
+});
+
+describe("re-reading the system preference after a pin is cleared", () => {
+  it("stops after a few attempts instead of polling for ever", async () => {
+    // `setTheme(null)` does not change what the webview answers within the same tick,
+    // so the re-read is retried — as long as nothing changes, a bounded number of
+    // times and then not again.
+    installMatchMedia(false);
+    const theme = await import("./theme");
+    vi.useFakeTimers();
+    try {
+      theme.setThemeMode("system");
+      expect(theme.getResolvedTheme()).toBe("light");
+      // The 0 ms re-check, then the 120 ms retries. Once the fourth read has said the
+      // same thing, nothing is left scheduled — which is what "stops" means here.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(theme.getResolvedTheme()).toBe("light");
+    }
+    finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lands on the OS's own answer when the retry sees it", async () => {
+    const media = installMatchMedia(false);
+    const theme = await import("./theme");
+    vi.useFakeTimers();
+    try {
+      theme.setThemeMode("system");
+      // The native side applies the change asynchronously, so the second read is the
+      // first one that sees the OS preference.
+      media.setMatches(true);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(theme.getResolvedTheme()).toBe("dark");
+      expect(document.documentElement.classList.contains("dark")).toBe(true);
+    }
+    finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("theme palette", () => {
   it("starts on the app's own palette and puts it on the root before the first render", async () => {
     installMatchMedia(false);
