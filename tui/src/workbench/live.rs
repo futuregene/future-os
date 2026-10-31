@@ -10850,4 +10850,158 @@ mod tests {
         let _ = before;
         live.client.disconnect();
     }
+
+    /// The clipboard reader's answers, one row each: a picture reaches the draft
+    /// as an attachment, a refusal says why, and an empty refusal falls back to
+    /// the plain "nothing on the clipboard" sentence.
+    ///
+    /// `ClipboardCapture::with_runner` is the paste module's own seam (the real
+    /// reader shells out to the platform's tools), so every branch here is driven
+    /// by a fake tool rather than by a broken host — which is what turned this
+    /// from a W3 candidate into an ordinary test.
+    #[tokio::test]
+    async fn the_clipboard_pastes_a_picture_or_says_why_it_cannot() {
+        use crate::paste::ClipboardCapture;
+
+        // A 1x1 PNG: what an image probe would leave in the file it was told to
+        // write. The runner finds that path in the probe's own arguments, the way
+        // the real tool does.
+        const PNG: &[u8] = &[
+            0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, b'I', b'H', b'D', b'R',
+            0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1f, 0x15, 0xc4, 0x89, 0, 0, 0, 0x0a, b'I',
+            b'D', b'A', b'T', 0x78, 0x9c, 0x63, 0, 0, 0, 2, 0, 1, 0x1b, 0x8f, 0x0f, 0x7d, 0, 0, 0,
+            0, b'I', b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82,
+        ];
+
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // An image: the probe writes the file it was handed, and the adapter
+        // attaches it through the same road a dragged-in picture takes.
+        live.clipboard = ClipboardCapture::with_runner(
+            Box::new(|_program: &str, args: &[String]| {
+                // The path may be a bare argument or embedded in a script the
+                // probe runs; find it either way and write there, the way the
+                // real tool does.
+                for arg in args {
+                    if let Some(at) = arg.find(".png") {
+                        let tail = &arg[..at + 4];
+                        let start = tail.rfind(['"', '\'', ' ']).map(|i| i + 1).unwrap_or(0);
+                        std::fs::write(&tail[start..], PNG).map_err(|e| e.to_string())?;
+                    }
+                }
+                Ok((0, String::new(), String::new()))
+            }),
+            dir.path().to_path_buf(),
+        );
+        live.paste_clipboard().await;
+        // The draft carries the attachment marker; the picture itself is in the
+        // pending attachments, the same list a dragged-in file fills.
+        let attachments: Vec<String> = live
+            .draft
+            .editor
+            .pending()
+            .attachments()
+            .iter()
+            .map(|attachment| attachment.path.clone())
+            .collect();
+        assert_eq!(
+            attachments.len(),
+            1,
+            "an image on the clipboard did not attach: {:?}",
+            live.draft.editor.text()
+        );
+        assert!(
+            attachments[0].ends_with(".png"),
+            "the attachment is not the file the probe wrote: {attachments:?}"
+        );
+
+        // A refusal with a reason: the reason is the reader's sentence.
+        live.clipboard = ClipboardCapture::with_runner(
+            Box::new(|_program: &str, _args: &[String]| {
+                Err("no clipboard tool for this host".into())
+            }),
+            dir.path().to_path_buf(),
+        );
+        live.notice = None;
+        live.paste_clipboard().await;
+        let notice = live.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("no clipboard tool"),
+            "a refused paste dropped the reason: {notice:?}"
+        );
+
+        // A refusal with *no* reason: the plain empty-clipboard sentence, never a
+        // blank notice row. (Production's own runner always fills the reason in;
+        // this is the guard for the one that could not.)
+        live.clipboard = ClipboardCapture::with_runner(
+            Box::new(|_program: &str, _args: &[String]| Err(String::new())),
+            dir.path().to_path_buf(),
+        );
+        live.notice = None;
+        live.paste_clipboard().await;
+        assert!(
+            live.notice.is_some(),
+            "a refusal with no reason left the notice row empty"
+        );
+
+        // Nothing usable on the clipboard: the reader is told, not left guessing.
+        live.clipboard = ClipboardCapture::with_runner(
+            Box::new(|_program: &str, _args: &[String]| Ok((1, String::new(), String::new()))),
+            dir.path().to_path_buf(),
+        );
+        live.notice = None;
+        live.paste_clipboard().await;
+        assert!(
+            live.notice.is_some(),
+            "an empty clipboard said nothing at all"
+        );
+        live.client.disconnect();
+    }
+
+    /// Opening a link hands it to the platform's opener, and an opener that
+    /// cannot run is a notice rather than a lost click.
+    ///
+    /// `#[cfg(unix)]`: the stub is a shell script on `PATH`. Windows' opener is a
+    /// `cmd` builtin, so that half is unmeasured here (`platform-unmeasured`, a
+    /// measurement gap — not a waiver).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn opening_a_link_spawns_the_opener_and_reports_a_missing_one() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Both openers a unix host can pick: `open` on macOS, `xdg-open`
+        // elsewhere. The platform chooses inside `open_external`.
+        for name in ["open", "xdg-open"] {
+            let script = dir.path().join(name);
+            std::fs::write(&script, "#!/bin/sh\nexit 0\n").expect("write the stub");
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod the stub");
+        }
+
+        // `PATH` is process-global: take the crate's lock, and put it back with
+        // the guard even if the assertion below panics.
+        let _guard = crate::test_env::lock();
+        let _path = crate::test_env::EnvVarGuard::set("PATH", dir.path());
+        live.notice = None;
+        live.open_url("https://example.com/stub");
+        assert!(
+            live.notice.is_none(),
+            "a link the opener accepted reported an error: {:?}",
+            live.notice
+        );
+
+        // No opener on `PATH` at all.
+        let empty = tempfile::tempdir().expect("tempdir");
+        let _path = crate::test_env::EnvVarGuard::set("PATH", empty.path());
+        live.notice = None;
+        live.open_url("https://example.com/stub");
+        assert!(
+            live.notice.is_some(),
+            "a link with no opener on PATH failed silently"
+        );
+        live.client.disconnect();
+    }
 }
