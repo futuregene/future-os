@@ -7,8 +7,8 @@ summary percentages (istanbul `lines.pct`, llvm-cov "Lines") are not the accepta
 `npx vitest run --coverage --coverage.reporter=lcov` on Node from `rust-toolchain.toml`'s
 neighbour (the desk's Node 24; the suite also passes on 22).
 
-**Result**: `DA:0` = **188** lines in **64** files. **22** of them are waived here
-(22 records, 22 distinct constructs); the other **166** are *reachable and not yet written*
+**Result**: `DA:0` = **181** lines in **63** files. **22** of them are waived here
+(22 records, 22 distinct constructs); the other **159** are *reachable and not yet written*
 — they are work items, listed per file in the campaign's working report, **not** waivers.
 
 ```bash
@@ -289,6 +289,19 @@ condition as the guard.
 - **`RunsPanel.tsx:155`** — the only caller is `disabled={archiving || finishedCount === 0}` (`:182-184`).
 - **`TerminalPanel.tsx:239`** — `ErrorBar` is rendered only under
   `{tabs.createError ? <ErrorBar tabs={tabs} /> : null}` (`:139`).
+
+## Wave 5 (layout group) — no new rows
+
+The layout-and-interaction group's own residual went **76 → 69** in this wave (the lane's total
+188 → 181). Nothing in it was judged unreachable, so this file gains no row. One line was
+examined closely and is recorded here as **reachable**, because the difference matters:
+
+- `desktop/src/features/tasks/TasksView.tsx:376` — `confirmDelete`'s `if (!selected) return`.
+  `selected` is `store.tasks.find(task => task.id === selectedId) ?? null` (`:261-264`), and the
+  dialog that calls this stays up while the store keeps reloading: a task deleted by another
+  client (or by the same schedule finishing) removes the row under an open confirmation. That is
+  a state a test can build by changing the store between opening the dialog and pressing Delete,
+  which is exactly why it is a work item and not a W2 arm.
 
 ## How to retire a row
 
