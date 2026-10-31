@@ -26,13 +26,15 @@ python3 ../coverage/2026-11/tools/lcov-missed.py coverage/lcov.info --json befor
 | after (this branch, `coverage/2026-11/after/web2/after-web-detail.json`) | **142** | **30** |
 
 The whole-lane drop is **−46**, all of it from this group (the sibling worker's
-files were untouched here, so their 112 lines are identical in both legs). Suite:
-**400 files / 5612 tests**, all green; denominator unchanged (no production code
-touched — every change in this branch is a test file).
+files were untouched here and their 112 lines are byte-identical in both legs).
+Suite: **400 files / 5612 tests**, all green; istanbul lines **99.13 %**
+(16189 / 16331) with the denominator unchanged, because this branch touches no
+production code — every changed file is a test or a doc.
 
 Of the 30 lines still reading `DA:0` in this group, **4 were already waived in
 `web.md`** (§0) and **26 are registered here**. That accounts for all 30: the rest
-of the group is at **`DA:0` = 0**.
+of the group is at **`DA:0` = 0**, and the lane's total is 142 = 30 + 112 (the
+out-of-group files of §10).
 
 ## 0. Already registered in `web.md` — deliberately not duplicated
 
@@ -522,13 +524,22 @@ have tests named in the sibling commit.
 
 Every line in `src/features/remote/`, `src/features/remote-peer/`,
 `src/features/settings/` (outside the four rows in §0), `src/lib/` and
-`src/integrations/` is either covered or one of the 26 rows above. The 112 lines
-that remain in the lane's `DA:0` total are the sibling worker's files
-(`components/layout/`, `features/vibe/`, `features/agent/`,
-`features/palette/`, `features/tasks/`) plus the three non-group feature files
-(`artifacts/`, `filetree/`, `terminal/`, `skills/`, `markdown/`,
-`filepreview/`, `runs/`), which are listed in `web.md` as work items and are not
-claimed here as waivers.
+`src/integrations/` is either covered or one of the 26 rows above.
+
+The lane's remaining **112** `DA:0` lines live in **43** files outside this
+group, untouched by this branch (measured identical in both legs), and none of
+them is claimed here as a waiver:
+
+- the sibling worker's files — `components/layout/` (39: `AppShell` 19,
+  `ActivityRail` 12, `hooks/` 8), `features/vibe/` (16), `features/agent/` (23),
+  `features/palette/CommandPalette` (4), `features/tasks/` (5);
+- files neither branch claims yet — `artifacts/` (3), `filepreview/` (1),
+  `filetree/` (2), `markdown/` (1), `runs/RunsPanel` (1), `skills/SkillsView` (2),
+  `terminal/` (4).
+
+Those are work items in the campaign's own bookkeeping (`web.md` counts them as
+"reachable and not yet written"), not waivers, and a reader who adds this file's
+26 to `web.md`'s 22 must still treat the gap between **48** and **142** as work.
 
 ## 11. Re-running this measurement
 
