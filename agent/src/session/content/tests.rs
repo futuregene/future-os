@@ -468,3 +468,82 @@ fn the_registered_sql_projections_agree_with_their_rust_implementations() {
         })
         .unwrap();
 }
+
+/// A shell result on an entry is canonical facts: the object is staged as its
+/// own JSON body, and the `content` text that merely repeats the model summary
+/// is bound to the *summary view* of those facts instead of being copied.
+#[test]
+fn a_shell_result_entry_binds_its_facts_and_summary_as_bodies() {
+    use crate::session::sqlite_store::SqliteStore;
+    use serde_json::json;
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+    store
+        .db
+        .call(|db| {
+            let tx = db.transaction()?;
+            tx.execute("INSERT INTO sessions(id) VALUES('new')", [])?;
+            enable(&tx, "new")?;
+            tx.commit()?;
+            Ok(())
+        })
+        .unwrap();
+    let result = future_rpc::shell_result::ShellResult {
+        command: "printf hi".into(),
+        cwd: "/w".into(),
+        duration_ms: 3,
+        status: future_rpc::shell_result::ShellStatus::Exited,
+        exit_code: Some(0),
+        is_soft_fail: false,
+        is_error: false,
+        attempts: vec![future_rpc::shell_result::ShellAttempt {
+            status: future_rpc::shell_result::ShellStatus::Exited,
+            exit_code: Some(0),
+            duration_ms: 3,
+            output: "hi\n".into(),
+            output_truncated: false,
+            escalated: false,
+        }],
+        approval: None,
+        note: None,
+    };
+    let summary = future_rpc::shell_result::model_summary(&result);
+    let entry = json!({"id":"tool","type":"tool","role":"tool","timestamp":"2026-10-26T00:00:00Z",
+        "meta":{"run_id":"r","shell_result":serde_json::to_value(&result).unwrap()},
+        "content":[{"type":"tool_result","tool_call_id":"t","content":summary,"is_error":false}]});
+    store.append("new", vec![entry.clone()]).unwrap();
+    // The transcript still reads back losslessly, including the facts object.
+    assert_eq!(store.entries("new").unwrap(), vec![entry]);
+    // Both bodies are references: the facts as JSON, the repeated text as the
+    // summary projection of those same facts.
+    store
+        .db
+        .read(|db| {
+            let mut statement = db.prepare(
+                "SELECT field,encoding FROM content_references WHERE session_id='new' AND owner_kind='entry' ORDER BY field",
+            )?;
+            let rows = statement
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(
+                rows,
+                vec![
+                    ("/content/0/content".to_string(), "shell_summary".to_string()),
+                    ("/meta/shell_result".to_string(), "json".to_string()),
+                ]
+            );
+            // Both references point at the same stored facts: the summary view
+            // is a projection, never a second copy of the body.
+            let objects: i64 =
+                db.query_row("SELECT count(*) FROM content_objects", [], |r| r.get(0))?;
+            assert_eq!(objects, 1);
+            let distinct: i64 = db.query_row(
+                "SELECT count(DISTINCT content_id) FROM content_references WHERE session_id='new'",
+                [],
+                |r| r.get(0),
+            )?;
+            assert_eq!(distinct, 1, "one object serves facts and summary");
+            Ok(())
+        })
+        .unwrap();
+}

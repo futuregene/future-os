@@ -3881,3 +3881,96 @@ async fn a_failed_journal_refuses_new_input_with_its_persistence_failure() {
     // Nothing was accepted for that request id.
     assert!(session.scheduler.queued().is_empty());
 }
+
+/// A queued input whose durable receipt cannot be written is not left behind:
+/// the accepted run is cancelled out of the scheduler and the client is told
+/// the store failed, so a retry cannot meet a phantom queue entry.
+#[tokio::test(flavor = "current_thread")]
+async fn a_queue_that_cannot_record_its_receipt_is_not_left_queued() {
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![Script::Stall(vec![text_event("running")])]),
+        "receipt-refused",
+    );
+    let mut session = fixture.session;
+    // The first input takes the lane, so the second one has to be queued —
+    // which is the only path that records a receipt.
+    session
+        .enqueue_prompt(
+            "first",
+            &[],
+            &[],
+            Some("run-first"),
+            "req-first",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    let store = session.session_manager.storage().unwrap().clone();
+    store
+        .db
+        .call(|db| {
+            db.execute_batch(
+                "CREATE TRIGGER refuse_receipt BEFORE INSERT ON queued_run_receipts \
+                 BEGIN SELECT RAISE(ABORT,'injected receipt failure'); END;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let error = session
+        .enqueue_prompt(
+            "second",
+            &[],
+            &[],
+            Some("run-second"),
+            "req-second",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap_err();
+    let text = format!("{error:#}");
+    assert!(text.contains("injected receipt failure"), "{text}");
+    assert!(
+        matches!(
+            error.downcast_ref::<crate::runtime::RunQueueError>(),
+            Some(crate::runtime::RunQueueError::PersistenceUnavailable(_))
+        ),
+        "{text}"
+    );
+    assert!(
+        session.scheduler.queued().is_empty(),
+        "the input whose receipt failed must not stay queued"
+    );
+    assert!(session
+        .session_manager
+        .queued_receipt("s1", "req-second")
+        .unwrap()
+        .is_none());
+    // A store that accepts receipts again admits the same input.
+    store
+        .db
+        .call(|db| {
+            db.execute_batch("DROP TRIGGER refuse_receipt")?;
+            Ok(())
+        })
+        .unwrap();
+    let ack = session
+        .enqueue_prompt(
+            "second",
+            &[],
+            &[],
+            Some("run-second"),
+            "req-second",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    assert_eq!(ack.run_id, "run-second");
+    // A queued input always carries its durable receipt; a running one does not
+    // need one, because the scheduler itself owns it.
+    assert_eq!(
+        session
+            .session_manager
+            .queued_receipt("s1", "req-second")
+            .unwrap()
+            .is_some(),
+        ack.accepted_state == crate::runtime::RunAcceptedState::Queued,
+        "receipt presence must match the accepted state"
+    );
+}
