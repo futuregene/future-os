@@ -3532,7 +3532,7 @@ mod driver_tests {
             live.set_load_sender(load_tx.clone());
             let dir = tempfile::tempdir().expect("tempdir");
             let settings_path = dir.path().join("settings.json");
-            let mut terminal = Terminal::new().expect("terminal");
+            let mut terminal = crate::terminal::driver_terminal();
             terminal.set_mouse_mode(true);
             Self {
                 terminal,

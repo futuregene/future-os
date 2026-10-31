@@ -314,6 +314,32 @@ pub(crate) fn backend_or_skip() -> Option<platform::Backend> {
     }
 }
 
+/// A `Terminal` for the workbench driver's tests.
+///
+/// Those tests drive the real event loop and read the bytes it writes through
+/// `capture`, so the terminal supplies the size and the write path while the
+/// events come from the test — it never needs to reach a console. POSIX builds
+/// one directly (`Backend::new` cannot fail there); Windows takes the backend
+/// with no console behind it, because a runner that redirects stdio (CI, an
+/// IDE, an agent harness) has no console handles to build the real one from.
+/// `columns`/`rows` then answer `COLUMNS`/`LINES`/80×24, which is what the POSIX
+/// backend's zero from a redirected stdout already produces there.
+///
+/// This is not `Terminal::new` relaxed: `run` still reports a console-less
+/// launch, and a test that needs real console behaviour still takes
+/// [`terminal_or_skip`].
+#[cfg(test)]
+pub(crate) fn driver_terminal() -> Terminal {
+    #[cfg(windows)]
+    {
+        Terminal::with_backend(Arc::new(platform::Backend::headless()))
+    }
+    #[cfg(not(windows))]
+    {
+        Terminal::new().expect("a POSIX terminal never fails to build")
+    }
+}
+
 impl Terminal {
     pub fn new() -> io::Result<Self> {
         // Test-only fault injection for the POSIX-infallible Backend::new
@@ -322,7 +348,12 @@ impl Terminal {
         if FORCE_NEW_FAILURE.swap(false, Ordering::SeqCst) {
             return Err(io::Error::other("injected test failure"));
         }
-        let backend = Arc::new(platform::Backend::new()?);
+        Ok(Self::with_backend(Arc::new(platform::Backend::new()?)))
+    }
+
+    /// Assemble a handle around an already-built platform backend. Split out of
+    /// [`Self::new`] for [`driver_terminal`], which needs one without a console.
+    fn with_backend(backend: Arc<platform::Backend>) -> Self {
         let size = Arc::new(Mutex::new(backend.size()));
         // Unit tests construct terminals in a shared `cargo test` process: a
         // redirect there would point the whole suite's stderr at a file. The
@@ -332,7 +363,7 @@ impl Terminal {
         let stderr_log = crate::stderr_log::default_path();
         #[cfg(test)]
         let stderr_log = None;
-        Ok(Self {
+        Self {
             raw_enabled: false,
             size,
             kitty_active: Arc::new(AtomicBool::new(false)),
@@ -350,7 +381,7 @@ impl Terminal {
             exit_signal_cb: Arc::new(Mutex::new(None)),
             mouse: false,
             alternate_screen: false,
-        })
+        }
     }
 
     /// Install a callback invoked from the reader thread when SIGINT/SIGTERM
