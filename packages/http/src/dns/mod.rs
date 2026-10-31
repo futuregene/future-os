@@ -140,7 +140,25 @@ fn tcp_host_port(endpoint: &str) -> Option<(String, u16)> {
 
 fn plan() -> &'static Plan {
     static PLAN: OnceLock<Plan> = OnceLock::new();
-    PLAN.get_or_init(Plan::detect)
+    PLAN.get_or_init(|| {
+        let plan = Plan::detect();
+        announce(&plan);
+        plan
+    })
+}
+
+/// Name the resolution path once per process, on stderr.
+///
+/// Every incident on this code path — the CLI's "network error" that was a
+/// missing `/etc/resolv.conf`, the host that could not sign in while the CLI in
+/// the same environment could — started with two answers being conflated: which
+/// resolver this process actually used. One line at startup makes that
+/// answerable without strace.
+fn announce(plan: &Plan) {
+    match plan {
+        Plan::System => eprintln!("[dns] plan=system (getaddrinfo)"),
+        Plan::Custom(config) => eprintln!("[dns] plan=custom: {}", config.describe()),
+    }
 }
 
 /// Attach this process's resolver to an async client builder.
@@ -548,5 +566,49 @@ mod tests {
     #[test]
     fn windows_without_a_setting_keeps_the_system_resolver() {
         assert_eq!(*plan(), Plan::System);
+    }
+
+    /// A name that only the configured nameserver can answer: with the custom
+    /// plan the request gets **past** resolution (and fails at the connect),
+    /// which is the only way to show the resolver was actually consulted rather
+    /// than the string merely being attached.
+    #[tokio::test]
+    async fn a_custom_plan_resolves_a_name_the_system_cannot() {
+        crate::install_tls_provider();
+        let nameserver = spawn_nameserver(vec!["198.51.100.9".parse().unwrap()]);
+        let config = config_with(None, Some(&nameserver.to_string()), None, &[]);
+        let client = attach_with(reqwest::Client::builder(), leaked(config))
+            .build()
+            .unwrap();
+        // Port 1 on the advertised address is nobody's listener: reaching it at
+        // all means the name resolved.
+        let error = client
+            .get("http://only-here.invalid:1/")
+            .send()
+            .await
+            .expect_err("nothing listens on the resolved address");
+        let text = describe(&error);
+        assert!(
+            !text.contains("cannot resolve"),
+            "the configured nameserver should have answered: {text}"
+        );
+    }
+
+    /// The same name on the system plan goes through `getaddrinfo`, which cannot
+    /// answer it — the pair of tests pins that "no plan" still means "system",
+    /// not "no resolver at all".
+    #[tokio::test]
+    async fn a_system_plan_still_goes_through_getaddrinfo() {
+        crate::install_tls_provider();
+        static SYSTEM: Plan = Plan::System;
+        let client = attach_with(reqwest::Client::builder(), &SYSTEM)
+            .build()
+            .unwrap();
+        let error = client
+            .get("http://only-here.invalid:1/")
+            .send()
+            .await
+            .expect_err("a reserved TLD does not resolve");
+        assert!(error.is_connect() || error.is_request(), "{error}");
     }
 }
