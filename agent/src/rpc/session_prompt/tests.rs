@@ -3633,3 +3633,65 @@ async fn disable_tools_removes_every_tool_from_the_next_run() {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── a run abandoned by persistence must say so ────────────────────────
+
+/// The 2026-10-31 shape: the journal is already failed when the run ends, so
+/// the append path drops every later event — including the `agent_end` the
+/// normal completion path sends. Before this, the run stopped mid-stream with
+/// no terminal at all (`run_ebdcad4959…`: 20:04:58.896Z refusal, 20:04:58.912Z
+/// durability barrier failed, nothing delivered; the client aborted 3.5 s
+/// later). The run stays `persistence_degraded` — its outcome cannot be
+/// recorded durably — but the client is told instead of waiting forever.
+#[tokio::test(flavor = "current_thread")]
+async fn a_run_abandoned_by_persistence_still_sends_a_terminal() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![]), "persistence-abandon");
+    let mut session = fixture.session;
+    assert!(
+        session.broadcaster.uses_segmented_storage(),
+        "the failed-journal terminal is about the segmented run path"
+    );
+    let mut events = session.broadcaster.subscribe();
+    session
+        .prompt("please answer", &[], &[], None, None)
+        .unwrap();
+    // The run's own interrupt flag is what a failed journal sets; install the
+    // failure the way the append path does once it gives up on storage.
+    session.broadcaster.fail_persistence(
+        "event storage backlog exceeded its byte or age limit; generation interrupted",
+    );
+
+    let mut types = Vec::new();
+    let terminal = loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+            .await
+            .expect("the run must not end without a terminal event")
+            .expect("the run still holds a subscriber");
+        types.push(event.event_type.clone());
+        if event.event_type == "agent_end" {
+            break serde_json::from_str::<serde_json::Value>(&event.data).unwrap();
+        }
+    };
+    assert!(
+        types
+            .iter()
+            .any(|event_type| event_type == "persistence_error"),
+        "the client is told what failed before the terminal: {types:?}"
+    );
+    assert_eq!(terminal["state"], crate::session::RUN_STATE_ERROR);
+    assert!(
+        terminal["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("Session persistence failed")),
+        "{terminal}"
+    );
+    assert_eq!(
+        session
+            .runtime
+            .snapshot()
+            .expect("the run is still held")
+            .phase,
+        crate::runtime::RunPhase::PersistenceDegraded,
+        "the outcome was never recorded, so the run must not look settled"
+    );
+}

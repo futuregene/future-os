@@ -1374,14 +1374,31 @@ impl ServerSession {
             // stream cut off) — surfaced on `run_terminal` / `agent_end` when
             // the run ended incomplete.
             let stream_truncation = run_loop.stream_truncation.lock().clone();
+            let abandoned_tokens =
+                (tokens_out.load(std::sync::atomic::Ordering::Relaxed) - out_start).max(0);
+            let abandoned_ms = run_start.elapsed().as_millis() as i64;
             if !is_ephemeral && broadcaster.uses_segmented_storage() {
                 if let Err(error) = broadcaster.flush_journal_async().await {
-                    let _ = runtime.mark_persistence_degraded(&task_lease, &format!("{error:#}"));
+                    abandon_run_for_persistence(
+                        &broadcaster,
+                        &runtime,
+                        &task_lease,
+                        &format!("{error:#}"),
+                        abandoned_tokens,
+                        abandoned_ms,
+                    );
                     return;
                 }
             }
             if let Some(error) = broadcaster.persistence_error() {
-                let _ = runtime.mark_persistence_degraded(&task_lease, &error);
+                abandon_run_for_persistence(
+                    &broadcaster,
+                    &runtime,
+                    &task_lease,
+                    &error,
+                    abandoned_tokens,
+                    abandoned_ms,
+                );
                 return;
             }
             if !runtime.begin_finalizing(&task_lease) {
@@ -1659,28 +1676,21 @@ impl ServerSession {
                 ) => Some(format!("persistence task failed: {reason}")),
             };
             if let Some(error) = persistence_error {
-                let _ = runtime.mark_persistence_degraded(&task_lease, &error);
                 tracing::error!(
                     run_id = %task_lease.run_id,
                     "Session persistence commit failed: {error}"
                 );
-                broadcaster.broadcast_deferred(crate::rpc::SseEvent {
-                    event_type: "persistence_error".to_string(),
-                    data: serde_json::json!({"error": &error}).to_string(),
-                    ..Default::default()
-                });
-                broadcaster.broadcast_deferred(crate::rpc::SseEvent {
-                    event_type: "agent_end".to_string(),
-                    data: serde_json::json!({
-                        "type": "agent_end",
-                        "state": crate::session::RUN_STATE_ERROR,
-                        "error": format!("Session persistence failed: {error}"),
-                        "usage": { "output_tokens": run_output_tokens },
-                        "duration_ms": run_duration_ms
-                    })
-                    .to_string(),
-                    ..Default::default()
-                });
+                // The journal may already be failed, in which case an ordinary
+                // broadcast would be dropped before any subscriber sees it —
+                // the same silent stop as the admission path above.
+                abandon_run_for_persistence(
+                    &broadcaster,
+                    &runtime,
+                    &task_lease,
+                    &error,
+                    run_output_tokens,
+                    run_duration_ms,
+                );
                 return;
             }
 
@@ -2215,6 +2225,48 @@ impl TerminalCommitAbort {
             Self::Panicked(detail)
         }
     }
+}
+
+/// Abandon a run whose journal can no longer accept events, telling the client.
+///
+/// The run stays `persistence_degraded`: a settled outcome has to be recorded
+/// durably, and durability is exactly what failed, so it must not be invented
+/// here. What this fixes is the failure being **silent**. The append path drops
+/// every event once the journal is failed — including the `agent_end` the
+/// normal completion path would send — so a run stopped by storage went quiet
+/// mid-stream and only a client-side timeout noticed. Measured 2026-10-31
+/// 20:04:58Z: `run_ebdcad4959…` hit the admission age limit, its durability
+/// barrier failed 16 ms later, and nothing ever reached the client.
+///
+/// The terminal is published live and explicitly not durable
+/// (`broadcast_unpersisted`); the alternative is a subscriber waiting for an
+/// ending that can never be written.
+fn abandon_run_for_persistence(
+    broadcaster: &crate::rpc::SseBroadcaster,
+    runtime: &crate::runtime::SessionRuntime,
+    lease: &crate::runtime::RunLease,
+    error: &str,
+    output_tokens: i64,
+    duration_ms: i64,
+) {
+    let _ = runtime.mark_persistence_degraded(lease, error);
+    broadcaster.broadcast_unpersisted(crate::rpc::SseEvent {
+        event_type: "persistence_error".to_string(),
+        data: serde_json::json!({"error": error}).to_string(),
+        ..Default::default()
+    });
+    broadcaster.broadcast_unpersisted(crate::rpc::SseEvent {
+        event_type: "agent_end".to_string(),
+        data: serde_json::json!({
+            "type": "agent_end",
+            "state": crate::session::RUN_STATE_ERROR,
+            "error": format!("Session persistence failed: {error}"),
+            "usage": { "output_tokens": output_tokens },
+            "duration_ms": duration_ms
+        })
+        .to_string(),
+        ..Default::default()
+    });
 }
 
 /// Reconcile run identity across a run's final in-memory history before it
