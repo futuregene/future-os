@@ -78,6 +78,11 @@ let catalogTaskFinished: ((session: RemoteSession) => void) | undefined;
 let mockTimelineHandleEvent: jest.Mock = jest.fn();
 let timelineOptions: {
   onSessionState?: (sessionId: string, state: { model?: string; thinkingLevel?: string }) => void;
+  /**
+   * The runtime's own connection recovery, handed to the controller through a
+   * ref: a fatal client can only be replaced by the runtime itself.
+   */
+  recoverConnection?: (reason: string) => Promise<void>;
 } = {};
 
 const mockConversation = {

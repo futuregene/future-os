@@ -13,8 +13,6 @@ import { SessionFilesPanel } from "../components/SessionFilesPanel";
 import { SessionUsageSheet } from "../components/SessionUsageSheet";
 import { RenameModal } from "../components/RenameModal";
 import { ChatScreen } from "../ChatScreen";
-import { ImageViewer } from "../components/ImageViewer";
-import { ImageViewerContext } from "../../../components/imageViewer";
 import { JUMP_VIEW_OFFSET } from "../useQuestionNav";
 import { ComposerDock } from "../components/ComposerDock";
 import type { PendingSuggestion } from "../useSkillRecommendation";

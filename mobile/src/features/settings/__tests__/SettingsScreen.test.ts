@@ -928,7 +928,7 @@ test("limited protection keeps the usual approval choices and only adds the upgr
 // before any desktop is paired — so it is reachable whatever the machines are
 // doing, and it opens in the app's current language.
 test("opens the privacy policy from the phone's own page", async () => {
-  const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+  const open = jest.spyOn(Linking, "openURL").mockResolvedValue(undefined);
   try {
     mockLanguage = "zh-Hans";
     await act(async () => { tree = create(createElement(SettingsScreen, props)); });

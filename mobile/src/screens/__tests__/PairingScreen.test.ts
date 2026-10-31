@@ -301,7 +301,7 @@ test("a screen with no back handler registers no hardware-back listener", () => 
 // user is being asked to hand over a code — so the link is on this screen and
 // opens the same bilingual page the settings screen does.
 test("opens the privacy policy from the pairing screen", async () => {
-  const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+  const open = jest.spyOn(Linking, "openURL").mockResolvedValue(undefined);
   try {
     mockLanguage = "zh-Hans";
     act(() => tree.update(createElement(PairingScreen, { onBack, onPaired })));
