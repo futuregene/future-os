@@ -469,10 +469,14 @@ from that button, so the scenario taps it once and then the `src`, `benches` and
 `src/parser` rows; what it lists is the checkout the conversation is about —
 `parser.rs` and `args.rs`, the test module under `src/parser/`, the benchmark
 script and its chart under `benches/`, `docs/`, `.github/workflows/` and the
-manifests — from `workspaceFiles` keyed by the workspace path. Thirty-six rows of
+manifests — from `workspaceFiles` keyed by the workspace path. Thirty-five rows of
 it, which is what makes the panel read as a tree rather than a stub: with those
-three folders open the list fills its viewport (1018 px) and stops 10 px short of
-the bottom, with the panel's closing hairline under it. One row more and the row is
+three folders open the list fills its viewport (1018 px) and its last row ends
+4 px above the panel's closing hairline. The rows are divided, too — a hairline
+*above* each one, the same token and inset the app's other file lists use
+(`RemoteFilesPanel`, the review list). Above and not below, so the last row carries
+no rule of its own and the panel's edge is the only line under it; the list's own
+top rule stands in for the first row's. One row more and the row is
 cut by the viewport instead — which is a normal scroll, but not what this frame is
 about — so the scenario measures every row's box against the closing edge rather
 than the window's edge, and never against `scrollHeight` (which reports the

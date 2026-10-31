@@ -100,6 +100,22 @@ describe("fileTreePanel closing edge", () => {
     expect(list.lastElementChild).toBe(edge);
   });
 
+  it("divides the rows with the same hairline the other file lists use", async () => {
+    await mount();
+    const rows = [...viewport().querySelectorAll<HTMLElement>("li > div")];
+    expect(rows.length).toBe(3);
+    // Above, not below: the last row must not carry a rule that would double
+    // with the panel's closing edge.
+    for (const row of rows.slice(1)) {
+      expect(row.className).toContain("border-t");
+      expect(row.className).toContain("border-line-soft/50");
+      expect(row.className).not.toContain("border-b");
+    }
+    // The list's own top rule stands in for the first row's.
+    const list = viewport();
+    expect(list.className).toContain("[&>ul>li:first-child>div]:border-t-0");
+  });
+
   it("keeps the rows in the scroller and the edge in the panel", async () => {
     await mount();
     const edge = closingEdge();
