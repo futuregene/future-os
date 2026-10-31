@@ -141,6 +141,12 @@ function addDialog(): HTMLElement | null {
   return container.querySelector("[role='dialog']");
 }
 
+/** The unpair confirm, if it is up: distinguished by the question it asks. */
+function confirmDialog(): HTMLElement | null {
+  return [...container.querySelectorAll<HTMLElement>("[role='dialog']")]
+    .find(dialog => (dialog.textContent ?? "").includes("Unpair this device?")) ?? null;
+}
+
 async function toggleHost(): Promise<void> {
   await act(async () => {
     hostSwitch().click();
@@ -775,5 +781,247 @@ describe("adding a connection", () => {
     finally {
       consoleError.mockRestore();
     }
+  });
+});
+
+/**
+ * What the page does when the backend refuses.
+ *
+ * Every control here is one `invoke` away from a host that can be gone, busy or
+ * mid-restart, and the window that owns the control has to survive that: the
+ * page keeps working, the failure is said in words a user can act on, and no
+ * internal detail (a NATS URL, a Rust variant) reaches the screen. These
+ * assertions are the negative half of the flows above — which is exactly the
+ * half a happy-path test cannot reach.
+ */
+describe("a backend that refuses", () => {
+  /** The floating add-client window's own Copy button. */
+  function dialogCopy(): HTMLButtonElement {
+    return [...addDialog()!.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => (button.textContent ?? "").trim() === "Copy")!;
+  }
+
+  it("says the invitation could not be thrown away, and keeps the page usable", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await mount({
+        remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, invited] }),
+      });
+      await act(async () => buttonByText("Add a device")!.click());
+      await flush();
+      expect(addDialog()).not.toBeNull();
+
+      // The window is already closed as far as the reader is concerned: it is
+      // the *unpair* that fails, after the status read succeeded.
+      getRemoteStatus.mockResolvedValue(
+        status({ pairId: "pair_alpha", phase: "ready", devices: [control, invited] }),
+      );
+      unpairRemoteDevice.mockRejectedValue(new Error("unpair failed"));
+      await act(async () => buttonByText("Cancel")!.click());
+      await flush();
+
+      expect(addDialog()).toBeNull();
+      expect(consoleError).toHaveBeenCalledWith("remote discard invitation failed:", expect.any(Error));
+      expect(container.textContent).toContain("The action could not be completed. Try again later. (LC999)");
+      // Still on: throwing away an invitation is not stopping the desktop, and a
+      // refused discard is not either.
+      expect(hostSwitch().getAttribute("aria-checked")).toBe("true");
+      expect(stopRemote).not.toHaveBeenCalled();
+      expect(refresh).toHaveBeenCalled();
+    }
+    finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("closes the window even when the device list cannot be re-read", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await mount({
+        remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, invited] }),
+      });
+      await act(async () => buttonByText("Add a device")!.click());
+      await flush();
+
+      // Reading the list is what decides *which* invitations to discard; losing
+      // that read must not leave the window open over a code nobody can claim.
+      getRemoteStatus.mockRejectedValue(new Error("status unavailable"));
+      await act(async () => buttonByText("Cancel")!.click());
+      await flush();
+
+      expect(consoleError).toHaveBeenCalledWith(
+        "remote discard invitation: could not read the device list:",
+        expect.any(Error),
+      );
+      expect(addDialog()).toBeNull();
+      // Nothing was discarded on a guess: unpairing is destructive, and the
+      // list that would have named the pair ids never arrived.
+      expect(unpairRemoteDevice).not.toHaveBeenCalled();
+      expect(refresh).toHaveBeenCalled();
+    }
+    finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("reports a refused takeover and leaves the row's device as it was", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await mount({
+        remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, standby] }),
+      });
+      takeoverRemote.mockRejectedValue(new Error("takeover refused"));
+
+      const row = [...container.querySelectorAll<HTMLLIElement>("li")]
+        .find(item => (item.textContent ?? "").includes("studio-imac"))!;
+      const takeover = [...row.querySelectorAll<HTMLButtonElement>("button")]
+        .find(button => (button.textContent ?? "").trim() === "Let this control")!;
+      await act(async () => takeover.click());
+      await flush();
+
+      expect(consoleError).toHaveBeenCalledWith("remote takeover failed:", expect.any(Error));
+      expect(container.textContent).toContain("The action could not be completed. Try again later. (LC999)");
+      expect(container.textContent).not.toContain("takeover refused");
+      // The page is not stuck in its busy state, so the row can be tried again.
+      expect(takeover.disabled).toBe(false);
+      expect(refresh).toHaveBeenCalled();
+    }
+    finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("reports a refused unpair and keeps the connection listed", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await mount({
+        remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, standby] }),
+      });
+      const row = [...container.querySelectorAll<HTMLLIElement>("li")]
+        .find(item => (item.textContent ?? "").includes("studio-imac"))!;
+      const unpair = [...row.querySelectorAll<HTMLButtonElement>("button")]
+        .find(button => (button.textContent ?? "").trim() === "Unpair")!;
+      await act(async () => unpair.click());
+      await flush();
+
+      unpairRemoteDevice.mockRejectedValue(new Error("unpair refused"));
+      await act(async () => buttonByText("Delete")!.click());
+      await flush();
+
+      expect(consoleError).toHaveBeenCalledWith("remote unpair device failed:", expect.any(Error));
+      expect(container.textContent).toContain("The action could not be completed. Try again later. (LC999)");
+      // The confirm does not lie about having removed it: the row is still here.
+      expect(container.textContent).toContain("studio-imac (a computer)");
+      expect(confirmDialog()).toBeNull();
+    }
+    finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("says the pairing code could not be copied instead of claiming it was", async () => {
+    await mount({
+      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, invited] }),
+    });
+    await act(async () => buttonByText("Add a device")!.click());
+    await flush();
+
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn(async () => { throw new Error("clipboard denied"); }) },
+    });
+    await act(async () => dialogCopy().click());
+    await flush();
+
+    expect(container.textContent).toContain("Copy failed — copy the code manually.");
+    expect(dialogCopy().textContent?.trim()).toBe("Copy");
+  });
+
+  it("says this machine's id could not be copied instead of claiming it was", async () => {
+    await mount({
+      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", desktopId: "desktop_ABC123", devices: [control] }),
+    });
+    const idRow = container.querySelector("[data-testid='local-device-id']")!.parentElement!;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn(async () => { throw new Error("clipboard denied"); }) },
+    });
+
+    const copy = [...idRow.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => (button.textContent ?? "").trim() === "Copy")!;
+    await act(async () => copy.click());
+    await flush();
+
+    expect(container.textContent).toContain("Copy failed — copy the code manually.");
+    // The label stays "Copy": the button says what it will do, and the failure is
+    // said in the banner rather than by pretending a copy happened.
+    expect(copy.isConnected).toBe(true);
+    expect(copy.textContent?.trim()).toBe("Copy");
+  });
+
+  it("sends the user to sign-in from the banner that explains the refusal", async () => {
+    const events: string[] = [];
+    const listener = () => events.push("show-onboarding");
+    window.addEventListener("futureos:show-onboarding", listener);
+    try {
+      await mount({ remoteStatus: status({ pairId: "pair_1", phase: "failed", reason: "account_authorization" }) });
+      // The banner is the second place the action lives; the switch is the
+      // first, and a reader who has already read the sentence uses this one.
+      const signIn = buttonByText("Sign in again")!;
+      expect(signIn).toBeTruthy();
+      await act(async () => signIn.click());
+      expect(events).toEqual(["show-onboarding"]);
+      // The banner is not a start button in disguise.
+      expect(startRemote).not.toHaveBeenCalled();
+    }
+    finally {
+      window.removeEventListener("futureos:show-onboarding", listener);
+    }
+  });
+
+  it("closes the invitation window from its own backdrop", async () => {
+    await mount({
+      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, invited] }),
+    });
+    await act(async () => buttonByText("Add a device")!.click());
+    await flush();
+    getRemoteStatus.mockResolvedValue(
+      status({ pairId: "pair_alpha", phase: "ready", devices: [control, invited] }),
+    );
+
+    // The dimmed area is a real button with the shared label; picking the one
+    // that is not inside the dialog frame is the backdrop itself.
+    const backdrop = [...container.querySelectorAll<HTMLButtonElement>("button[aria-label='Close']")]
+      .find(button => !button.querySelector("section"))!;
+    await act(async () => backdrop.click());
+    await flush();
+
+    expect(addDialog()).toBeNull();
+    expect(unpairRemoteDevice).toHaveBeenCalledWith("pair_gamma");
+    expect(stopRemote).not.toHaveBeenCalled();
+  });
+
+  it("backs out of an unpair confirm without cutting the connection", async () => {
+    await mount({
+      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, standby] }),
+    });
+    const row = [...container.querySelectorAll<HTMLLIElement>("li")]
+      .find(item => (item.textContent ?? "").includes("studio-imac"))!;
+    const unpair = [...row.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => (button.textContent ?? "").trim() === "Unpair")!;
+    await act(async () => unpair.click());
+    await flush();
+    expect(confirmDialog()).not.toBeNull();
+
+    // Escape is the dialog framework's own dismissal; it goes through this
+    // window's `onClose` rather than through the Delete button.
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    await flush();
+
+    expect(confirmDialog()).toBeNull();
+    expect(unpairRemoteDevice).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("studio-imac (a computer)");
   });
 });
