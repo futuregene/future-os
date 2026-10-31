@@ -3381,6 +3381,61 @@ describe("app shell keyboard commands", () => {
     view.unmount();
   });
 
+  it("runs a palette row: a conversation here, a host's conversation, a workspace", () => {
+    // The palette's rows are the shell's own handlers, not a second copy of them: a
+    // conversation row selects that conversation, a host's row opens it on that host,
+    // and a workspace row opens the workspace's latest conversation — each through the
+    // same path the rail uses.
+    // Two conversations in the one workspace, listed oldest first, so the workspace
+    // row has to choose: it opens the most recently updated one, not the first in
+    // the store's order.
+    const newest = { ...chatThread, id: "t0", title: "Newest", updatedAt: 200 } as typeof chatThread;
+    mocks.store.threadStore = {
+      ...(mocks.store.threadStore as Record<string, unknown>),
+      threads: [chatThread, newest],
+    };
+    mocks.remotePeers = {
+      catalogs: [{
+        desktopId: "desktop_a",
+        sessions: [{ pinned: false, sessionId: "s1", status: "completed", title: "Remote one" }],
+      }],
+      peers: [{
+        agentAvailable: true, bridgeInstanceId: "bridge_1", connected: true, desktopId: "desktop_a",
+        error: null, features: [], icon: "laptop", name: "Studio iMac", pairId: "pair_1",
+        stopped: false,
+      }],
+    };
+    const view = mount(<AppShell />);
+    press({ code: "KeyP", ctrlKey: true, key: "p" });
+    const targets = (children.commandPalette as {
+      targets: Array<{ key: string; kind: string; run: () => void; title: string }>;
+    }).targets;
+    const row = (key: string) => {
+      const found = targets.find(target => target.key === key);
+      expect(found, key).toBeDefined();
+      return found!;
+    };
+    const setActiveThreadId = (mocks.store.threadStore as { setActiveThreadId: ReturnType<typeof vi.fn> }).setActiveThreadId;
+
+    act(() => row("local:t1").run());
+    expect(setActiveThreadId).toHaveBeenLastCalledWith("t1");
+
+    act(() => row("remote:desktop_a:s1").run());
+    // A host's conversation is opened on the host, which also clears this machine's
+    // selection: the shell is showing one conversation at a time.
+    expect(setActiveThreadId).toHaveBeenLastCalledWith(null);
+    expect(rail().active).toBe("chat");
+
+    // The workspace row carries that workspace's own conversations (newest first), so
+    // it opens the most recent one rather than an empty centre.
+    const workspace = targets.find(target => target.kind === "workspace" && target.key === "workspace:w-t1")!;
+    expect(workspace).toBeDefined();
+    act(() => workspace.run());
+    expect(setActiveThreadId).toHaveBeenLastCalledWith("t0");
+    expect(rail().active).toBe("workspace");
+    view.unmount();
+  });
+
   it("opens the cheat sheet on mod+/, and closes it again", () => {
     const view = mount(<AppShell />);
     press({ code: "Slash", ctrlKey: true, key: "/" });
