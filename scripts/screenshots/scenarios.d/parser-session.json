@@ -1,13 +1,13 @@
 {
   "desktop": {
     "parser-zh": {
-      "note": "The expression-parser session in Chinese, as a normal three-column desktop window in the app's own dark appearance: the session rail on the left, the transcript in the middle, the workspace's files on the right (the Context panel, opened from its own header button, on its Files tab, with `src` expanded). `?theme=dark` pins the appearance the way `?lang=` pins the words — the shipped default palette (`futureos`) in dark, not a variant. The window is a 16-inch laptop's default 1728×1117 at 2×. The transcript stands at the first turn — `上一个问题` lands the reader's previous question just under the header — so the frame carries the question, the folded process and the whole diagnosis (heading, inline code, highlighted rust block, three-row table, closing line) above the composer, with the second turn starting at the fold and continuing below it.",
-      "url": "http://localhost:5299/shot/?thread=th_parser&lang=zh&theme=dark",
+      "note": "The expression-parser session in Chinese, as a normal three-column desktop window in the app's own dark appearance: the session rail on the left, the transcript in the middle, the workspace's files on the right (the Context panel, opened from its own header button, on its Files tab, with `src` and `benches` expanded). `?theme=dark` pins the appearance the way `?lang=` pins the words, and `?settings=approvalTier:sandbox` pins the approval mode, so the frame is the restricted tier rather than full access — the composer says 沙箱保护 and the card below is what that costs the reader. The window is a 16-inch laptop's default 1728×1117 at 2×. The transcript stands on the second turn — the benchmark — because the approval card and the chart take the room two turns do not share: `上一个问题` walks back to that question and an `eval` sets the column so the question sits 8 px under the header (the press alone lands on the reply when the answer grows), and the frame then reads question → folded process → the benchmark table and its trade-off → the throughput chart → the card, with the diagnosis one screen above.",
+      "url": "http://localhost:5299/shot/?thread=th_parser&lang=zh&theme=dark&settings=approvalTier:sandbox",
       "width": 1728,
       "height": 1117,
       "steps": [
         {
-          "wait": 1500
+          "wait": 2200
         },
         {
           "tap": "展开上下文面板"
@@ -19,7 +19,22 @@
           "tap": "src"
         },
         {
-          "wait": 900
+          "wait": 500
+        },
+        {
+          "tap": "benches"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "tap": "parser"
+        },
+        {
+          "wait": 800
+        },
+        {
+          "wait": 800
         },
         {
           "tap": "上一个问题"
@@ -28,7 +43,13 @@
           "wait": 800
         },
         {
-          "eval": "(() => { const text = document.body.innerText; if (text.includes('invalid_history_transfer')) throw new Error(\"the transcript did not load: the history read failed\"); if (!document.documentElement.classList.contains('dark')) throw new Error(\"the frame is not in the dark appearance\"); if (!text.includes('诊断')) throw new Error(\"the Chinese diagnosis is not in the transcript\"); if (text.includes('Diagnosis')) throw new Error(\"the Chinese frame carries the English transcript\"); if (!text.includes('表达式解析器里的 off-by-one')) throw new Error(\"the session list does not name the session in Chinese\"); if (text.includes('Off-by-One in the Expression Parser')) throw new Error(\"the session list carries the English title in the Chinese frame\"); if (text.includes('Files') || text.includes('Expand context panel') || text.includes('Previous question')) throw new Error(\"the Chinese frame carries an English control\"); if (!text.includes('UnexpectedEof')) throw new Error(\"the diagnosis table is missing\"); const aside = [...document.querySelectorAll('aside')].find(a => (a.innerText || '').includes('文件')); if (!aside) throw new Error(\"the right-hand context panel is not open on its Files tab\"); const panel = aside.innerText; for (const name of ['parser.rs', 'args.rs', 'lexer.rs', 'Cargo.toml', 'AGENTS.md']) { if (!panel.includes(name)) throw new Error(\"the files panel does not list \" + name); } const col = [...document.querySelectorAll('div')].find(d => (d.className || '').includes('floating-scrollbar h-full')); if (!col) throw new Error(\"no conversation column\"); const composer = document.querySelector('[contenteditable=\"true\"]'); if (!composer) throw new Error(\"no composer\"); const fold = composer.getBoundingClientRect().top; const ps = [...col.querySelectorAll('p')]; const first = ps[0]; if (!(first.textContent || '').includes('1+2+')) throw new Error(\"the frame does not start at the first question\"); const firstTop = first.getBoundingClientRect().top; if (firstTop > col.getBoundingClientRect().top + 80) throw new Error(\"the first question is not at the top of the transcript: \" + Math.round(firstTop)); const closing = ps.find(p => (p.textContent || '').includes('同一个错误')); if (!closing) throw new Error(\"the diagnosis' closing line is not in the transcript\"); const head = col.querySelector('h3'); const pre = col.querySelector('pre'); const table = col.querySelector('table'); if (!head || !pre || !table) throw new Error(\"the diagnosis is not drawn (heading, code block, table)\"); const below = [head, pre, table, closing].map(e => Math.round(e.getBoundingClientRect().bottom)); if (below.some(b => b > fold - 4)) throw new Error(\"the first turn runs under the composer: blocks end at \" + below.join(', ') + ', the composer starts at ' + Math.round(fold)); if (!text.includes('别处还有同样的写法吗')) throw new Error(\"the second turn does not appear at the fold\"); return 'ok: panel 384px, first turn ends ' + Math.round(fold - Math.max(...below)) + 'px above the composer, second turn below'; })()"
+          "eval": "(() => { const col = [...document.querySelectorAll('div')].find(d => (d.className || '').includes('floating-scrollbar h-full')); const q = [...col.querySelectorAll('p')].find(p => (p.textContent || '').startsWith('别处还有同样的写法吗')); if (!q) throw new Error('the second question is not in the transcript'); col.scrollTop += Math.round(q.getBoundingClientRect().top - (col.getBoundingClientRect().top + 8)); return 'question at ' + Math.round(q.getBoundingClientRect().top); })()"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "eval": "(() => { const text = document.body.innerText; if (text.includes('invalid_history_transfer')) throw new Error('the transcript did not load: the history read failed'); if (!document.documentElement.classList.contains('dark')) throw new Error('the frame is not in the dark appearance'); if (!text.includes('诊断')) throw new Error('the session lost its diagnosis'); if (text.includes('Diagnosis')) throw new Error('the Chinese frame carries the English transcript'); if (text.includes('Files') || text.includes('Expand context panel') || text.includes('Previous question') || text.includes('Allow once') || text.includes('Deny')) throw new Error('the Chinese frame carries an English control'); if (text.includes('完全访问') || text.includes('Full access')) throw new Error('the frame is on full access, not a restricted tier'); if (!text.includes('沙箱保护')) throw new Error('the composer does not name the sandboxed tier: ' + (text.match(/手动审批|沙箱保护|完全访问|自动审批/) || ['none'])[0]); const card = [...document.querySelectorAll('section')].find(s => (s.innerText || '').includes('需要在沙箱外运行此命令')); if (!card) throw new Error('the approval card is not rendered'); const cardText = card.innerText; if (!cardText.includes('git push origin fix/parser-bound')) throw new Error('the card does not show the command it is asking about'); if (!cardText.includes('原因说明') || !cardText.includes('CI')) throw new Error('the card has no reason'); if (!cardText.includes('允许一次') || !cardText.includes('拒绝')) throw new Error('the card has no allow/deny actions'); const img = document.querySelector('article img'); if (!img) throw new Error('the reply has no inline image'); if (!img.complete || img.naturalWidth < 1000) throw new Error('the inline image did not decode: ' + img.naturalWidth + 'x' + img.naturalHeight); const aside = [...document.querySelectorAll('aside')].find(a => (a.innerText || '').includes('文件')); if (!aside) throw new Error('the files panel is not open'); const tree = aside.innerText; for (const name of ['parser.rs', 'args.rs', 'tests.rs', 'parser-throughput.png', 'Cargo.toml', 'AGENTS.md', '.github']) { if (!tree.includes(name)) throw new Error('the file tree does not list ' + name); } const col = [...document.querySelectorAll('div')].find(d => (d.className || '').includes('floating-scrollbar h-full')); if (!col) throw new Error('no conversation column'); const colTop = col.getBoundingClientRect().top; const ps = [...col.querySelectorAll('p')]; const shown = ps.find(p => { const r = p.getBoundingClientRect(); return r.bottom > colTop && r.top < 1117; }); if (!shown) throw new Error('no paragraph is on screen'); const first = shown.getBoundingClientRect(); if (!(shown.textContent || '').includes('别处还有同样的写法吗')) throw new Error('the frame does not start at the second question'); if (first.top < colTop - 1) throw new Error('the second question is not at the top of the frame: ' + Math.round(first.top)); const cardBox = card.getBoundingClientRect(); const imgBox = img.getBoundingClientRect(); if (imgBox.bottom > cardBox.top - 4) throw new Error('the chart runs under the approval card: ends at ' + Math.round(imgBox.bottom) + ', the card starts at ' + Math.round(cardBox.top)); const composer = document.querySelector('[contenteditable=\"true\"]'); if (!composer) throw new Error('no composer'); if (cardBox.bottom > composer.getBoundingClientRect().top + 1) throw new Error('the approval card is not fully above the composer'); return 'ok: card ' + Math.round(cardBox.top) + '..' + Math.round(cardBox.bottom) + ', chart ends ' + Math.round(imgBox.bottom) + ', image ' + img.naturalWidth + 'x' + img.naturalHeight; })()"
         },
         {
           "shot": "desktop-zh.png"
@@ -36,13 +57,13 @@
       ]
     },
     "parser-en": {
-      "note": "The same session in English — the same bug, the same calls, the same table and the same two commits, written in the language of the frame, in the same dark window. `?lang=en` pins both halves (the interface via shot/prefs.ts and the fixture's own session list and transcript) and `?theme=dark` pins the appearance; the taps are the same three controls as the Chinese scenario, by their English names, and the file tree is the repository's own names and is the same in both.",
-      "url": "http://localhost:5299/shot/?thread=th_parser&lang=en&theme=dark",
+      "note": "The same session in English — the same bug, the same benchmark, the same two commits and the same sandboxed push, written in the language of the frame, in the same dark window at the same restricted tier. `?lang=en` pins both halves (the interface via shot/prefs.ts and the fixture's own session list, transcript and approval card) and `?theme=dark` / `?settings=approvalTier:sandbox` pin the appearance and the tier; the taps are the same controls as the Chinese scenario, by their English names.",
+      "url": "http://localhost:5299/shot/?thread=th_parser&lang=en&theme=dark&settings=approvalTier:sandbox",
       "width": 1728,
       "height": 1117,
       "steps": [
         {
-          "wait": 1500
+          "wait": 2200
         },
         {
           "tap": "Expand context panel"
@@ -54,7 +75,22 @@
           "tap": "src"
         },
         {
-          "wait": 900
+          "wait": 500
+        },
+        {
+          "tap": "benches"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "tap": "parser"
+        },
+        {
+          "wait": 800
+        },
+        {
+          "wait": 800
         },
         {
           "tap": "Previous question"
@@ -63,7 +99,13 @@
           "wait": 800
         },
         {
-          "eval": "(() => { const text = document.body.innerText; if (text.includes('invalid_history_transfer')) throw new Error(\"the transcript did not load: the history read failed\"); if (!document.documentElement.classList.contains('dark')) throw new Error(\"the frame is not in the dark appearance\"); if (!text.includes('Diagnosis')) throw new Error(\"the English diagnosis is not in the transcript\"); if (text.includes('诊断')) throw new Error(\"the English frame carries the Chinese transcript\"); if (!text.includes('Off-by-One in the Expression Parser')) throw new Error(\"the session list does not name the session in English\"); if (text.includes('表达式解析器里的 off-by-one')) throw new Error(\"the session list carries the Chinese title in the English frame\"); if (text.includes('文件') || text.includes('展开上下文面板') || text.includes('上一个问题') || text.includes('显示隐藏文件')) throw new Error(\"the English frame carries a Chinese control\"); if (!text.includes('UnexpectedEof')) throw new Error(\"the diagnosis table is missing\"); const aside = [...document.querySelectorAll('aside')].find(a => (a.innerText || '').includes('Files')); if (!aside) throw new Error(\"the right-hand context panel is not open on its Files tab\"); const panel = aside.innerText; for (const name of ['parser.rs', 'args.rs', 'lexer.rs', 'Cargo.toml', 'AGENTS.md']) { if (!panel.includes(name)) throw new Error(\"the files panel does not list \" + name); } const col = [...document.querySelectorAll('div')].find(d => (d.className || '').includes('floating-scrollbar h-full')); if (!col) throw new Error(\"no conversation column\"); const composer = document.querySelector('[contenteditable=\"true\"]'); if (!composer) throw new Error(\"no composer\"); const fold = composer.getBoundingClientRect().top; const ps = [...col.querySelectorAll('p')]; const first = ps[0]; if (!(first.textContent || '').includes('1+2+')) throw new Error(\"the frame does not start at the first question\"); const firstTop = first.getBoundingClientRect().top; if (firstTop > col.getBoundingClientRect().top + 80) throw new Error(\"the first question is not at the top of the transcript: \" + Math.round(firstTop)); const closing = ps.find(p => (p.textContent || '').includes('same mistake')); if (!closing) throw new Error(\"the diagnosis' closing line is not in the transcript\"); const head = col.querySelector('h3'); const pre = col.querySelector('pre'); const table = col.querySelector('table'); if (!head || !pre || !table) throw new Error(\"the diagnosis is not drawn (heading, code block, table)\"); const below = [head, pre, table, closing].map(e => Math.round(e.getBoundingClientRect().bottom)); if (below.some(b => b > fold - 4)) throw new Error(\"the first turn runs under the composer: blocks end at \" + below.join(', ') + ', the composer starts at ' + Math.round(fold)); if (!text.includes('Does the same shape appear')) throw new Error(\"the second turn does not appear at the fold\"); return 'ok: panel 384px, first turn ends ' + Math.round(fold - Math.max(...below)) + 'px above the composer, second turn below'; })()"
+          "eval": "(() => { const col = [...document.querySelectorAll('div')].find(d => (d.className || '').includes('floating-scrollbar h-full')); const q = [...col.querySelectorAll('p')].find(p => (p.textContent || '').startsWith('Does the same shape appear')); if (!q) throw new Error('the second question is not in the transcript'); col.scrollTop += Math.round(q.getBoundingClientRect().top - (col.getBoundingClientRect().top + 8)); return 'question at ' + Math.round(q.getBoundingClientRect().top); })()"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "eval": "(() => { const text = document.body.innerText; if (text.includes('invalid_history_transfer')) throw new Error('the transcript did not load: the history read failed'); if (!document.documentElement.classList.contains('dark')) throw new Error('the frame is not in the dark appearance'); if (!text.includes('Diagnosis')) throw new Error('the session lost its diagnosis'); if (text.includes('诊断')) throw new Error('the English frame carries the Chinese transcript'); if (text.includes('文件') || text.includes('展开上下文面板') || text.includes('上一个问题') || text.includes('允许一次')) throw new Error('the English frame carries a Chinese control'); if (text.includes('完全访问') || text.includes('Full access')) throw new Error('the frame is on full access, not a restricted tier'); if (!text.includes('Sandboxed')) throw new Error('the composer does not name the sandboxed tier'); const card = [...document.querySelectorAll('section')].find(s => (s.innerText || '').includes('This command needs to run outside the sandbox')); if (!card) throw new Error('the approval card is not rendered'); const cardText = card.innerText; if (!cardText.includes('git push origin fix/parser-bound')) throw new Error('the card does not show the command it is asking about'); if (!cardText.includes('CI') || !cardText.includes('main')) throw new Error('the card has no reason: ' + cardText.slice(0, 200)); if (!cardText.includes('Allow once') || !cardText.includes('Deny')) throw new Error('the card has no allow/deny actions'); const img = document.querySelector('article img'); if (!img) throw new Error('the reply has no inline image'); if (!img.complete || img.naturalWidth < 1000) throw new Error('the inline image did not decode: ' + img.naturalWidth + 'x' + img.naturalHeight); const aside = [...document.querySelectorAll('aside')].find(a => (a.innerText || '').includes('Files')); if (!aside) throw new Error('the files panel is not open'); const tree = aside.innerText; for (const name of ['parser.rs', 'args.rs', 'tests.rs', 'parser-throughput.png', 'Cargo.toml', 'AGENTS.md', '.github']) { if (!tree.includes(name)) throw new Error('the file tree does not list ' + name); } const col = [...document.querySelectorAll('div')].find(d => (d.className || '').includes('floating-scrollbar h-full')); if (!col) throw new Error('no conversation column'); const colTop = col.getBoundingClientRect().top; const ps = [...col.querySelectorAll('p')]; const shown = ps.find(p => { const r = p.getBoundingClientRect(); return r.bottom > colTop && r.top < 1117; }); if (!shown) throw new Error('no paragraph is on screen'); const first = shown.getBoundingClientRect(); if (!(shown.textContent || '').includes('Does the same shape appear')) throw new Error('the frame does not start at the second question'); if (first.top < colTop - 1) throw new Error('the second question is not at the top of the frame: ' + Math.round(first.top)); const cardBox = card.getBoundingClientRect(); const imgBox = img.getBoundingClientRect(); if (imgBox.bottom > cardBox.top - 4) throw new Error('the chart runs under the approval card: ends at ' + Math.round(imgBox.bottom) + ', the card starts at ' + Math.round(cardBox.top)); const composer = document.querySelector('[contenteditable=\"true\"]'); if (!composer) throw new Error('no composer'); if (cardBox.bottom > composer.getBoundingClientRect().top + 1) throw new Error('the approval card is not fully above the composer'); return 'ok: card ' + Math.round(cardBox.top) + '..' + Math.round(cardBox.bottom) + ', chart ends ' + Math.round(imgBox.bottom) + ', image ' + img.naturalWidth + 'x' + img.naturalHeight; })()"
         },
         {
           "shot": "desktop-en.png"
