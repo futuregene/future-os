@@ -7,8 +7,8 @@ summary percentages (istanbul `lines.pct`, llvm-cov "Lines") are not the accepta
 `npx vitest run --coverage --coverage.reporter=lcov` on Node from `rust-toolchain.toml`'s
 neighbour (the desk's Node 24; the suite also passes on 22).
 
-**Result**: `DA:0` = **181** lines in **63** files. **22** of them are waived here
-(22 records, 22 distinct constructs); the other **159** are *reachable and not yet written*
+**Result**: `DA:0` = **171** lines in **63** files. **22** of them are waived here
+(22 records, 22 distinct constructs); the other **149** are *reachable and not yet written*
 — they are work items, listed per file in the campaign's working report, **not** waivers.
 
 ```bash
@@ -292,8 +292,8 @@ condition as the guard.
 
 ## Wave 5 (layout group) — no new rows
 
-The layout-and-interaction group's own residual went **76 → 69** in this wave (the lane's total
-188 → 181). Nothing in it was judged unreachable, so this file gains no row. One line was
+The layout-and-interaction group's own residual went **76 → 59** in this wave (the lane's total
+188 → 171). Nothing in it was judged unreachable, so this file gains no row. One line was
 examined closely and is recorded here as **reachable**, because the difference matters:
 
 - `desktop/src/features/tasks/TasksView.tsx:376` — `confirmDelete`'s `if (!selected) return`.
