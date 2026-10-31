@@ -10169,4 +10169,165 @@ mod tests {
         );
         live.client.disconnect();
     }
+
+    /// Entering a worktree from the repository panel is moving the session: the
+    /// worktree the reader is already in is a no-op, and a failure is a notice.
+    #[tokio::test]
+    async fn entering_a_worktree_moves_the_session_or_explains_itself() {
+        let mut live = live_on(&[
+            ("get_state", r#"{"sessionId":"s1","cwd":"/work/main"}"#),
+            ("set_cwd", r#"{"success":true}"#),
+        ])
+        .await;
+
+        // The checkout the session is already in: nothing to move, and nothing
+        // said about it.
+        live.notice = None;
+        live.select_worktree("/work/main").await;
+        assert!(live.notice.is_none(), "re-entering the same checkout spoke");
+
+        live.select_worktree("/work/feature").await;
+        assert_eq!(
+            live.take_workspace_to_remember().as_deref(),
+            Some("/work/feature"),
+            "the worktree the reader entered is not the remembered workspace"
+        );
+
+        // A refused move is the agent's answer on the notice row.
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_failing(
+            &[("get_state", r#"{"sessionId":"s1","cwd":"/work/main"}"#)],
+            "set_cwd",
+            "not a worktree",
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut refused, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the failing mock");
+        refused.select_worktree("/work/gone").await;
+        assert!(
+            refused.notice.is_some(),
+            "a refused worktree move was silent"
+        );
+        refused.client.disconnect();
+        live.client.disconnect();
+    }
+
+    /// Creating a worktree is two steps (create, then move into it) and the
+    /// notice carries the summary — or the reason it did not happen, from either
+    /// step.
+    #[tokio::test]
+    async fn creating_a_worktree_reports_the_summary_or_the_reason() {
+        use crate::worktree::{WorktreeCreated, WorktreePlan};
+
+        let mut live = live_on(&[
+            ("get_state", r#"{"sessionId":"s1","cwd":"/work/main"}"#),
+            ("set_cwd", r#"{"success":true}"#),
+        ])
+        .await;
+
+        let created = WorktreeCreated {
+            plan: WorktreePlan {
+                path: std::path::PathBuf::from("/work/feature-x"),
+                branch: "feature-x".into(),
+                name: "feature-x".into(),
+            },
+            base: Some("main".into()),
+        };
+        let summary = created.summary();
+        live.create_worktree_with(|| Ok(created)).await;
+        assert_eq!(
+            live.notice.as_deref(),
+            Some(summary.as_str()),
+            "the summary of the created worktree is not what the reader sees"
+        );
+
+        // The creation itself failed.
+        live.notice = None;
+        live.create_worktree_with(|| Err("branch already exists".into()))
+            .await;
+        let notice = live.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("branch already exists"),
+            "a failed creation did not report the reason: {notice:?}"
+        );
+
+        // The checkout exists but the session could not move into it.
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_failing(
+            &[("get_state", r#"{"sessionId":"s1"}"#)],
+            "set_cwd",
+            "cannot enter",
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut stuck, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the failing mock");
+        stuck
+            .create_worktree_with(|| {
+                Ok(WorktreeCreated {
+                    plan: WorktreePlan {
+                        path: std::path::PathBuf::from("/work/feature-y"),
+                        branch: "feature-y".into(),
+                        name: "feature-y".into(),
+                    },
+                    base: None,
+                })
+            })
+            .await;
+        let notice = stuck.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("cannot enter"),
+            "a refused move into the new worktree was not reported: {notice:?}"
+        );
+        stuck.client.disconnect();
+        live.client.disconnect();
+    }
+
+    /// Answering an approval with "always allow this" writes the rule the agent
+    /// suggested, then the decision — and a prompt with no rule to write says so
+    /// instead of pretending it saved one.
+    #[tokio::test]
+    async fn answering_with_a_rule_writes_it_before_the_decision() {
+        let with_rule = r#"{"sessionId":"s1","pendingApprovals":[
+            {"approvalRequestId":"a-1","toolName":"bash","kind":"command","riskLevel":"high",
+             "saveSuggestion":{"rules":[{"path":"/work/alpha","access":"read"}]}}]}"#;
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("get_state", with_rule),
+            ("add_session_rule", "{}"),
+            ("approval_decision", "{}"),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the mock agent");
+        assert!(live.approval().is_some(), "the fixture parks an approval");
+
+        live.decide_with_rule(true, true).await;
+        assert!(
+            live.approval().is_none(),
+            "an answered approval is still parked"
+        );
+        let asked = seen.lock().expect("seen").clone();
+        let rule_at = asked.iter().position(|kind| kind == "add_session_rule");
+        let decision_at = asked.iter().position(|kind| kind == "approval_decision");
+        assert!(
+            matches!((rule_at, decision_at), (Some(rule), Some(decision)) if rule < decision),
+            "the rule is written before the decision it belongs to: {asked:?}"
+        );
+        live.client.disconnect();
+
+        // No suggested rule: the reader is told, and nothing is decided.
+        let no_rule = r#"{"sessionId":"s1","pendingApprovals":[
+            {"approvalRequestId":"a-2","toolName":"bash","kind":"command","riskLevel":"high"}]}"#;
+        let mut plain = live_on(&[("get_state", no_rule), ("approval_decision", "{}")]).await;
+        plain.decide_with_rule(true, true).await;
+        assert!(
+            plain.notice.is_some(),
+            "an approval with no rule to save was answered silently"
+        );
+        assert!(
+            plain.approval().is_some(),
+            "a refusal to save a rule still answered the prompt"
+        );
+        plain.client.disconnect();
+    }
 }
