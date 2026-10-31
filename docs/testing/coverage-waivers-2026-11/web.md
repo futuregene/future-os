@@ -7,8 +7,8 @@ summary percentages (istanbul `lines.pct`, llvm-cov "Lines") are not the accepta
 `npx vitest run --coverage --coverage.reporter=lcov` on Node from `rust-toolchain.toml`'s
 neighbour (the desk's Node 24; the suite also passes on 22).
 
-**Result**: `DA:0` = **189** lines in **64** files. **22** of them are waived here
-(22 records, 22 distinct constructs); the other **167** are *reachable and not yet written*
+**Result**: `DA:0` = **188** lines in **64** files. **22** of them are waived here
+(22 records, 22 distinct constructs); the other **166** are *reachable and not yet written*
 — they are work items, listed per file in the campaign's working report, **not** waivers.
 
 ```bash
