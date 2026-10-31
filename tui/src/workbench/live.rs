@@ -10330,4 +10330,678 @@ mod tests {
         );
         plain.client.disconnect();
     }
+
+    /// The file panel's reads run off the loop and land on `poll_tree_read`: a
+    /// rescan installs a tree, and toggling a folder installs the *same* tree
+    /// with that folder's open state flipped.
+    ///
+    /// This is also the positive control for `poll_tree_read`'s `Disconnected`
+    /// arm (see `docs/testing/coverage-waivers-2026-11/tui.md`): the two arms a
+    /// reader can reach are asserted here by name, so the third is the only one
+    /// left — and it needs the spawned thread to die before its unconditional
+    /// `tx.send`.
+    #[tokio::test]
+    async fn the_file_panel_installs_a_scan_and_toggles_a_folder() {
+        let mut live = live_on(&[(
+            "get_state",
+            concat!(
+                r#"{"sessionId":"s1","cwd":""#,
+                env!("CARGO_MANIFEST_DIR"),
+                r#""}"#
+            ),
+        )])
+        .await;
+
+        // The tree is rooted by the workspace read (its children come from the
+        // same listing the 文件 panel shows), so the fixture lands that first.
+        // `local_reads` is cleared to force the scan: `refresh_local` only starts
+        // one when the directory changed, and attach already read this one.
+        live.local_reads = None;
+        live.refresh_local();
+        assert!(
+            settle_local(&mut live).await,
+            "the workspace scan never installed a tree"
+        );
+        assert!(
+            !live.tree.rows().is_empty(),
+            "the crate's own directory has no rows"
+        );
+
+        // A folder in this crate: `src`.
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let was_open = live.tree.is_open(&src);
+        live.toggle_folder(&src.to_string_lossy());
+        assert!(
+            settle_tree(&mut live).await,
+            "the toggle never installed its tree"
+        );
+        assert_eq!(
+            live.tree.is_open(&src),
+            !was_open,
+            "toggling a folder did not flip its open state"
+        );
+        assert!(!live.tree.rows().is_empty(), "the toggle lost the tree");
+
+        // A read that a newer one superseded is dropped, not painted over it.
+        live.refresh_tree();
+        live.refresh_tree();
+        assert!(
+            settle_tree(&mut live).await,
+            "the newest scan never installed, so the superseded one won"
+        );
+        assert!(!live.tree.rows().is_empty());
+        live.client.disconnect();
+    }
+
+    /// Wait until the workspace read has answered and installed its tree.
+    async fn settle_local(live: &mut super::Live) -> bool {
+        for _ in 0..400 {
+            let _ = live.poll_local_reads();
+            if !live.tree.rows().is_empty() {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        false
+    }
+
+    /// Wait until the driver has taken the panel's own scan (`poll_tree_read`
+    /// clears `tree_read` when it installs one, or says it was superseded).
+    async fn settle_tree(live: &mut super::Live) -> bool {
+        for _ in 0..400 {
+            let _ = live.poll_local_reads();
+            if live.tree_read.is_none() {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        false
+    }
+
+    /// Every `WbAction` arm the surface can hand the adapter, one row each.
+    ///
+    /// The arms are one line apiece and a behaviour test would never name them,
+    /// so a table is the only way this stays honest: each row says which mock
+    /// answers the command it dispatches to and what the surface should then see.
+    /// The arms that are deliberately the surface's own (a rectangle, a palette,
+    /// a redraw) must leave the draft and the notice row **alone** — that is
+    /// their assertion, not "it ran".
+    #[tokio::test]
+    async fn every_action_arm_dispatches_to_its_own_effect() {
+        type Check = fn(&mut super::Live) -> bool;
+
+        // (name, mock answers, action, check) — `None` means "an arm the surface
+        // owns: it must leave the draft and the notice row exactly as they were".
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(&str, &[(&str, &str)], WbAction, Option<Check>)> = vec![
+            (
+                "a session step is the surface's own cursor",
+                &[],
+                WbAction::SessionStep(1),
+                None,
+            ),
+            (
+                "a diff selection is the surface's own",
+                &[],
+                WbAction::SelectDiff(0),
+                None,
+            ),
+            (
+                "opening the worktree box does not read anything here",
+                &[],
+                WbAction::OpenWorktree,
+                None,
+            ),
+            (
+                "the attachment preview is the driver's to open",
+                &[],
+                WbAction::PreviewAttachment,
+                None,
+            ),
+            (
+                "the language is the driver's to resolve and persist",
+                &[],
+                WbAction::SetLanguage(super::LanguagePreference::System),
+                None,
+            ),
+            (
+                "preferences are the driver's to persist",
+                &[],
+                WbAction::SetPreferences,
+                None,
+            ),
+            (
+                "the shortcut editor is the driver's too",
+                &[],
+                WbAction::SetKeybindings,
+                None,
+            ),
+            (
+                "a pin lands in this client's settings, not the agent's",
+                &[],
+                WbAction::SetSessionPinned {
+                    id: "s1".into(),
+                    pinned: true,
+                },
+                None,
+            ),
+            (
+                "a focused pane is a layout fact",
+                &[],
+                WbAction::FocusPane(crate::workbench::PaneId::Chat),
+                None,
+            ),
+            (
+                "entering a worktree moves the session and is remembered",
+                &[
+                    ("get_state", r#"{"sessionId":"s1","cwd":"/work/main"}"#),
+                    ("set_cwd", r#"{"success":true}"#),
+                ],
+                WbAction::SelectWorktree("/work/feature".into()),
+                Some(|live| live.take_workspace_to_remember().as_deref() == Some("/work/feature")),
+            ),
+            (
+                "an approval mode the reader picked is applied",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("set_sandbox_policy", r#"{"success":true}"#),
+                ],
+                WbAction::SetApproval("sandbox".into()),
+                Some(|live| live.state.sandbox_tier.as_deref() == Some("sandbox")),
+            ),
+            (
+                "a workspace the reader picked is applied and remembered",
+                &[
+                    ("get_state", r#"{"sessionId":"s1","cwd":"/work/old"}"#),
+                    ("set_cwd", r#"{"success":true}"#),
+                ],
+                WbAction::SelectWorkspace("/work/new".into()),
+                Some(|live| live.take_workspace_to_remember().as_deref() == Some("/work/new")),
+            ),
+            (
+                "the plain chat is a workspace too",
+                &[
+                    ("get_state", r#"{"sessionId":"s1","cwd":"/work/old"}"#),
+                    ("set_cwd", r#"{"success":true}"#),
+                ],
+                WbAction::SelectChatWorkspace,
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "refreshing the files starts a read",
+                &[(
+                    "get_state",
+                    concat!(
+                        r#"{"sessionId":"s1","cwd":""#,
+                        env!("CARGO_MANIFEST_DIR"),
+                        r#""}"#
+                    ),
+                )],
+                WbAction::RefreshFiles,
+                Some(|live| live.tree_read.is_some()),
+            ),
+            (
+                "a preview reads the file off the loop",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                WbAction::PreviewFile("/etc/hosts".into()),
+                Some(|live| live.notice.is_none()),
+            ),
+            (
+                "a picture preview steps through this conversation's pictures",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                WbAction::PreviewChatFile("/tmp/missing.png".into()),
+                Some(|live| live.notice.is_none()),
+            ),
+            (
+                "a tool set is sent, and the notice says so",
+                &[("get_state", r#"{"sessionId":"s1"}"#), ("set_tools", "{}")],
+                WbAction::SetTools(vec!["read".into()]),
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "cancelling a queued prompt goes to the agent",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("cancel_queued_run", "{}"),
+                ],
+                WbAction::CancelQueued("q-1".into()),
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "a model the reader picked is applied",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("set_model", r#"{"model":"future/new"}"#),
+                ],
+                WbAction::SetModel("future/new".into()),
+                // `state.model` comes back from the agent's next `get_state`; the
+                // staged value is what this call installs.
+                Some(|live| live.pending_model() == Some("future/new")),
+            ),
+            (
+                "a level the reader picked is applied",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("set_thinking_level", r#"{"level":"high"}"#),
+                ],
+                WbAction::SetThinking("high".into()),
+                Some(|live| live.pending_effort() == Some("high")),
+            ),
+            (
+                "a compaction the agent refuses is a notice, not a takeover",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("compact", r#"{"accepted":false}"#),
+                ],
+                WbAction::Compact(String::new()),
+                Some(|live| !live.compacting() && live.notice.is_some()),
+            ),
+            (
+                "forking from a row lands on the new conversation",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("fork", r#"{"sessionId":"s-fork"}"#),
+                    ("get_session_entries", r#"{"entries":[]}"#),
+                    ("list_sessions", r#"{"sessions":[]}"#),
+                ],
+                WbAction::ForkAt("e-1".into()),
+                Some(|live| !live.detached()),
+            ),
+            (
+                "loading an older page without a driver reads it here",
+                &[
+                    (
+                        "get_state",
+                        r#"{"sessionId":"s1","activeRun":{"runId":"r","epoch":1,"state":"done"}}"#,
+                    ),
+                    (
+                        "get_session_entries",
+                        r#"{"entries":[],"hasMore":true,"nextOffset":0}"#,
+                    ),
+                    ("session_older_page", r#"{"entries":[]}"#),
+                ],
+                WbAction::LoadOlder,
+                Some(|live| live.notice.is_none()),
+            ),
+        ];
+
+        for (what, pairs, action, check) in rows {
+            let mut live = live_on(pairs).await;
+            // The surface the arm must leave alone, captured before it runs.
+            let before = (live.notice.clone(), live.draft.editor.text().to_string());
+            let outcome = live.apply(action).await;
+            assert!(
+                matches!(outcome, Outcome::Continue),
+                "{what}: this arm must not end the app"
+            );
+            match check {
+                Some(check) => assert!(check(&mut live), "{what}"),
+                None => assert_eq!(
+                    (live.notice.clone(), live.draft.editor.text().to_string()),
+                    before,
+                    "{what}: an arm the surface owns changed the draft or the notice"
+                ),
+            }
+            live.client.disconnect();
+        }
+    }
+
+    /// The typed verbs that reach the adapter (the surface takes the rest before
+    /// they arrive), one row each — the parsing, the list-shaped argument and the
+    /// refusal all have a sentence the reader sees.
+    #[tokio::test]
+    async fn every_adapter_verb_parses_and_answers() {
+        type Check = fn(&mut super::Live) -> bool;
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(&str, &[(&str, &str)], &str, Option<Check>)> = vec![
+            (
+                "`/sessions` re-reads the rail",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("list_sessions", r#"{"sessions":[]}"#),
+                ],
+                "/sessions",
+                None,
+            ),
+            (
+                "`/worktree new x` says it is creating one",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                "/worktree new feat/x",
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "`/worktree` with a name that is not `new` shows the usage line",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                "/worktree feat/x",
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "`/tools a,b` splits the list and sends it",
+                &[("get_state", r#"{"sessionId":"s1"}"#), ("set_tools", "{}")],
+                "/tools read, shell",
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "a refused `/tools` is the failure sentence",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                "/tools read",
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "`/model x` applies the model",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("set_model", r#"{"model":"future/new"}"#),
+                ],
+                "/model future/new",
+                Some(|live| live.pending_model() == Some("future/new")),
+            ),
+            (
+                "`/model` cycles the agent's own order",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("cycle_model", r#"{"model":"future/next"}"#),
+                ],
+                "/model",
+                Some(|live| live.pending_model() == Some("future/next")),
+            ),
+            (
+                "a refused `/export` is a sentence, not a path",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                "/export",
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "`/fork` and `/history` are the surface's own",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                "/history",
+                None,
+            ),
+            (
+                "the choosers the surface opens are not unknown verbs",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                "/thinking",
+                None,
+            ),
+        ];
+
+        for (what, pairs, verb, check) in rows {
+            let mut live = live_on(pairs).await;
+            let before = (live.notice.clone(), live.draft.editor.text().to_string());
+            assert!(
+                matches!(live.command(verb).await, Outcome::Continue),
+                "{what}: a verb must not end the app"
+            );
+            match check {
+                Some(check) => assert!(check(&mut live), "{what}"),
+                None => assert_eq!(
+                    (live.notice.clone(), live.draft.editor.text().to_string()),
+                    before,
+                    "{what}: the adapter spoke about a verb it does not own"
+                ),
+            }
+            live.client.disconnect();
+        }
+    }
+
+    /// The events the transcript turns into rows *within* a run: a streaming tool
+    /// call, its final text, and the three compaction outcomes.
+    #[tokio::test]
+    async fn a_running_turn_updates_its_own_rows() {
+        let mut live = live_on(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            ("get_session_entries", r#"{"entries":[]}"#),
+        ])
+        .await;
+        let current = live.state.session_id.clone();
+        let stamped = |kind: &str, data: serde_json::Value| {
+            let mut event = event(kind, data);
+            event.session_id = Some(current.clone());
+            event
+        };
+
+        // A tool call streaming its arguments keeps one row, not one per delta —
+        // and each of the three events owes a frame (the revision is what the
+        // loop repaints on), which is the surface-visible half of that.
+        let mut revision = live.revision;
+        for (kind, data) in [
+            (
+                "tool_start",
+                json!({"tool_call_id": "t-1", "name": "bash", "phase": "input"}),
+            ),
+            (
+                "tool_delta",
+                json!({"tool_call_id": "t-1", "text": "ls -la"}),
+            ),
+            (
+                "tool_end",
+                json!({"tool_call_id": "t-1", "ok": true, "output": "done"}),
+            ),
+        ] {
+            live.handle_event(stamped(kind, data));
+            assert_ne!(
+                live.revision, revision,
+                "{kind} did not owe the surface a frame"
+            );
+            revision = live.revision;
+        }
+        assert_eq!(
+            live.activity_snapshot().tools,
+            1,
+            "one tool call, counted once"
+        );
+
+        // The three compaction outcomes: committed ends the takeover, unchanged
+        // says nothing changed, failed says why.
+        live.begin_compaction();
+        assert!(live.compacting(), "the probe did not take the session over");
+        live.handle_event(stamped(
+            "compaction_committed",
+            json!({"tokensSaved": 1200}),
+        ));
+        assert!(
+            !live.compacting(),
+            "a committed compaction left the session held"
+        );
+
+        live.notice = None;
+        live.handle_event(stamped("compaction_unchanged", json!({})));
+        assert!(
+            live.notice.is_some(),
+            "an unchanged compaction said nothing at all"
+        );
+
+        live.notice = None;
+        live.handle_event(stamped(
+            "compaction_failed",
+            json!({"error": "the model refused"}),
+        ));
+        let notice = live.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("the model refused"),
+            "a failed compaction dropped the agent's reason: {notice:?}"
+        );
+
+        // An unknown kind is not a panic and not a painted row.
+        live.handle_event(stamped("not_a_kind_at_all", json!({})));
+        live.client.disconnect();
+    }
+
+    /// The launchpad drops stream events: the transcript was cleared on purpose,
+    /// and the previous session's reply must not narrate into it.
+    #[tokio::test]
+    async fn the_launchpad_ignores_stream_events() {
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        let before = live.chat.render_all(100).len();
+        live.to_launchpad();
+        live.handle_event(event(
+            "text_chunk",
+            json!({"text": "from the session I left"}),
+        ));
+        let rows = live.chat.render_all(100).join("\n");
+        assert!(
+            !rows.contains("from the session I left"),
+            "the launchpad painted the conversation the reader left: {rows:?}"
+        );
+        assert!(
+            live.activity_kind() == super::ActivityKind::Idle,
+            "a dropped event still moved the activity row"
+        );
+        let _ = before;
+        live.client.disconnect();
+    }
+
+    /// The clipboard reader's answers, one row each: a picture reaches the draft
+    /// as an attachment, a refusal says why, and an empty refusal falls back to
+    /// the plain "nothing on the clipboard" sentence.
+    ///
+    /// `ClipboardCapture::with_runner` is the paste module's own seam (the real
+    /// reader shells out to the platform's tools), so every branch here is driven
+    /// by a fake tool rather than by a broken host — which is what turned this
+    /// from a W3 candidate into an ordinary test.
+    #[tokio::test]
+    async fn the_clipboard_pastes_a_picture_or_says_why_it_cannot() {
+        use crate::paste::ClipboardCapture;
+
+        // A 1x1 PNG: what an image probe would leave in the file it was told to
+        // write. The runner finds that path in the probe's own arguments, the way
+        // the real tool does.
+        const PNG: &[u8] = &[
+            0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, b'I', b'H', b'D', b'R',
+            0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1f, 0x15, 0xc4, 0x89, 0, 0, 0, 0x0a, b'I',
+            b'D', b'A', b'T', 0x78, 0x9c, 0x63, 0, 0, 0, 2, 0, 1, 0x1b, 0x8f, 0x0f, 0x7d, 0, 0, 0,
+            0, b'I', b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82,
+        ];
+
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // An image: the probe writes the file it was handed, and the adapter
+        // attaches it through the same road a dragged-in picture takes.
+        live.clipboard = ClipboardCapture::with_runner(
+            Box::new(|_program: &str, args: &[String]| {
+                // The path may be a bare argument or embedded in a script the
+                // probe runs; find it either way and write there, the way the
+                // real tool does.
+                for arg in args {
+                    if let Some(at) = arg.find(".png") {
+                        let tail = &arg[..at + 4];
+                        let start = tail.rfind(['"', '\'', ' ']).map(|i| i + 1).unwrap_or(0);
+                        std::fs::write(&tail[start..], PNG).map_err(|e| e.to_string())?;
+                    }
+                }
+                Ok((0, String::new(), String::new()))
+            }),
+            dir.path().to_path_buf(),
+        );
+        live.paste_clipboard().await;
+        // The draft carries the attachment marker; the picture itself is in the
+        // pending attachments, the same list a dragged-in file fills.
+        let attachments: Vec<String> = live
+            .draft
+            .editor
+            .pending()
+            .attachments()
+            .iter()
+            .map(|attachment| attachment.path.clone())
+            .collect();
+        assert_eq!(
+            attachments.len(),
+            1,
+            "an image on the clipboard did not attach: {:?}",
+            live.draft.editor.text()
+        );
+        assert!(
+            attachments[0].ends_with(".png"),
+            "the attachment is not the file the probe wrote: {attachments:?}"
+        );
+
+        // A refusal with a reason: the reason is the reader's sentence.
+        live.clipboard = ClipboardCapture::with_runner(
+            Box::new(|_program: &str, _args: &[String]| {
+                Err("no clipboard tool for this host".into())
+            }),
+            dir.path().to_path_buf(),
+        );
+        live.notice = None;
+        live.paste_clipboard().await;
+        let notice = live.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("no clipboard tool"),
+            "a refused paste dropped the reason: {notice:?}"
+        );
+
+        // A refusal with *no* reason: the plain empty-clipboard sentence, never a
+        // blank notice row. (Production's own runner always fills the reason in;
+        // this is the guard for the one that could not.)
+        live.clipboard = ClipboardCapture::with_runner(
+            Box::new(|_program: &str, _args: &[String]| Err(String::new())),
+            dir.path().to_path_buf(),
+        );
+        live.notice = None;
+        live.paste_clipboard().await;
+        assert!(
+            live.notice.is_some(),
+            "a refusal with no reason left the notice row empty"
+        );
+
+        // Nothing usable on the clipboard: the reader is told, not left guessing.
+        live.clipboard = ClipboardCapture::with_runner(
+            Box::new(|_program: &str, _args: &[String]| Ok((1, String::new(), String::new()))),
+            dir.path().to_path_buf(),
+        );
+        live.notice = None;
+        live.paste_clipboard().await;
+        assert!(
+            live.notice.is_some(),
+            "an empty clipboard said nothing at all"
+        );
+        live.client.disconnect();
+    }
+
+    /// Opening a link hands it to the platform's opener, and an opener that
+    /// cannot run is a notice rather than a lost click.
+    ///
+    /// `#[cfg(unix)]`: the stub is a shell script on `PATH`. Windows' opener is a
+    /// `cmd` builtin, so that half is unmeasured here (`platform-unmeasured`, a
+    /// measurement gap — not a waiver).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn opening_a_link_spawns_the_opener_and_reports_a_missing_one() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Both openers a unix host can pick: `open` on macOS, `xdg-open`
+        // elsewhere. The platform chooses inside `open_external`.
+        for name in ["open", "xdg-open"] {
+            let script = dir.path().join(name);
+            std::fs::write(&script, "#!/bin/sh\nexit 0\n").expect("write the stub");
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod the stub");
+        }
+
+        // `PATH` is process-global: take the crate's lock, and put it back with
+        // the guard even if the assertion below panics.
+        let _guard = crate::test_env::lock();
+        let _path = crate::test_env::EnvVarGuard::set("PATH", dir.path());
+        live.notice = None;
+        live.open_url("https://example.com/stub");
+        assert!(
+            live.notice.is_none(),
+            "a link the opener accepted reported an error: {:?}",
+            live.notice
+        );
+
+        // No opener on `PATH` at all.
+        let empty = tempfile::tempdir().expect("tempdir");
+        let _path = crate::test_env::EnvVarGuard::set("PATH", empty.path());
+        live.notice = None;
+        live.open_url("https://example.com/stub");
+        assert!(
+            live.notice.is_some(),
+            "a link with no opener on PATH failed silently"
+        );
+        live.client.disconnect();
+    }
 }
