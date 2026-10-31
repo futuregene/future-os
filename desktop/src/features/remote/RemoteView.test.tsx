@@ -953,8 +953,10 @@ describe("a backend that refuses", () => {
     await flush();
 
     expect(container.textContent).toContain("Copy failed — copy the code manually.");
-    if (copy.isConnected)
-      expect(copy.textContent?.trim()).toBe("Copy");
+    // The label stays "Copy": the button says what it will do, and the failure is
+    // said in the banner rather than by pretending a copy happened.
+    expect(copy.isConnected).toBe(true);
+    expect(copy.textContent?.trim()).toBe("Copy");
   });
 
   it("sends the user to sign-in from the banner that explains the refusal", async () => {
