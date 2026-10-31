@@ -148,6 +148,21 @@ const historyTransfers = new Map<string, Uint8Array>();
 let historyTransferSeq = 0;
 /** The chunk size `historyTransfer.ts` insists on. */
 const HISTORY_CHUNK_BYTES = 64 * 1024;
+
+/** Directory names a checkout ignores; the demo tree never lists them. */
+const IGNORED_TREE_NAMES = new Set([
+  ".git",
+  ".next",
+  ".nuxt",
+  ".turbo",
+  ".cache",
+  "build",
+  "coverage",
+  "dist",
+  "node_modules",
+  "out",
+  "target",
+]);
 /** How many times each thread's agent state has been read (see the handler). */
 const stateReads = new Map<string, number>();
 
@@ -619,7 +634,19 @@ const handlers: Record<string, (args: any) => unknown> = {
   retry_run_review: () => null,
 
   // ── Files & artifacts ──────────────────────────────────────────────────
-  list_directory: args => workspaceFiles[args?.path] ?? [],
+  /**
+   * A directory of the demo checkout.
+   *
+   * Build output is dropped here rather than kept out of `workspaceFiles` by
+   * hand: `node_modules`, `target`, `.git` and the rest are what a real tree
+   * hides behind its ignore list, and a product screenshot that lists them reads
+   * as an untidy workspace. Filtering in the handler means a fixture entry added
+   * later cannot leak one back into the panel.
+   */
+  list_directory: (args) => {
+    const entries = workspaceFiles[args?.path] ?? [];
+    return entries.filter(entry => !IGNORED_TREE_NAMES.has(entry.name));
+  },
   search_workspace_files: () => [],
   // `validUtf8` and `size` are part of the command's real contract: without
   // `validUtf8` the text preview classifies every file as binary and bails to
