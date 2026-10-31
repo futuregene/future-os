@@ -813,3 +813,37 @@ test("images the model cannot take are called out on the pending row and above t
     supported.unmount();
   }
 });
+
+// What the selector shows is the effort the conversation actually runs at. The
+// host clamps a level the selected model no longer offers, so displaying the
+// stored one would claim an effort the run does not have.
+test("the thinking selector shows the model's own starting level for a stored one it dropped", () => {
+  const props = {
+    message: "", setMessage: jest.fn(), attachments: [], setAttachments: jest.fn(),
+    supportsImages: true, activeModelLabel: "Pro", t: (key: string) => key,
+    remote: {
+      draft: false, selectedSessionId: "s1", desktopOnline: true,
+      connectionPresentation: { level: "connected" },
+      // The model narrowed its levels after "high" was stored for this session.
+      models: [{ id: "pro", provider: "future", thinkingLevels: ["default", "off", "low"], defaultThinkingLevel: "default" }],
+      modelId: "future/pro", thinkingLevel: "high", streaming: false, abort: jest.fn(),
+    },
+    openAttachmentMenu: jest.fn(), send: jest.fn(), atLatest: true, scrollToLatest: jest.fn(),
+    pendingApprovals: [], approvalSubmitting: null, approvalError: null,
+    decideApproval: jest.fn(), selector: null, setSelector: jest.fn(),
+  } as unknown as ComponentProps<typeof ComposerDock>;
+  let tree!: ReactTestRenderer;
+  act(() => { tree = create(createElement(ComposerDock, props as never)); });
+  try {
+    const thinking = () => tree.root.findAll(node => typeof node.props.accessibilityLabel === "string"
+      && node.props.accessibilityLabel.startsWith("chat.thinkingLevel: "))[0]!;
+    expect(thinking().props.accessibilityLabel).toBe("chat.thinkingLevel: default");
+    expect(tree.root.findAllByType(Text).some(node => node.props.children === "thinking.high")).toBe(false);
+
+    // A level the model does offer is shown as itself.
+    act(() => { tree.update(createElement(ComposerDock, { ...props, remote: { ...props.remote, thinkingLevel: "low" } } as never)); });
+    expect(thinking().props.accessibilityLabel).toBe("chat.thinkingLevel: low");
+  } finally {
+    act(() => tree.unmount());
+  }
+});

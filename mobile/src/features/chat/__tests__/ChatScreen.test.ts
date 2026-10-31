@@ -13,6 +13,8 @@ import { SessionFilesPanel } from "../components/SessionFilesPanel";
 import { SessionUsageSheet } from "../components/SessionUsageSheet";
 import { RenameModal } from "../components/RenameModal";
 import { ChatScreen } from "../ChatScreen";
+import { ImageViewer } from "../components/ImageViewer";
+import { ImageViewerContext } from "../../../components/imageViewer";
 import { JUMP_VIEW_OFFSET } from "../useQuestionNav";
 import { ComposerDock } from "../components/ComposerDock";
 import type { PendingSuggestion } from "../useSkillRecommendation";
@@ -1122,3 +1124,23 @@ test("the bar carries the desktop this conversation is on, named the way the lis
     .toEqual({ icon: undefined, label: "desktop" });
 });
 
+
+// A picture opened from the conversation is dismissed back to it. The viewer is
+// the last surface drawn (so it stacks above the file preview a picture can be
+// opened from) and its dismissal is wired to the same state that opens it.
+test("the image viewer sits above every other surface and dismisses to the conversation", () => {
+  const viewer = () => tree.root.findAll(node => typeof node.type === "function"
+    && (node.type as { name?: string }).name === "ImageViewer").at(-1)!;
+  // Nothing is open until a picture is tapped: the viewer is mounted anyway, so
+  // the context it is given is the one that opens it.
+  expect(viewer().props.target).toBeNull();
+
+  // Last of the surfaces, in the same stack as the sheets it must cover.
+  const siblings = viewer().parent!.children;
+  expect(siblings[siblings.length - 1]).toBe(viewer());
+
+  // Dismissing it (the close button, or Android's back gesture through the
+  // modal) puts the screen back to "no picture".
+  act(() => viewer().props.onClose());
+  expect(viewer().props.target).toBeNull();
+});
