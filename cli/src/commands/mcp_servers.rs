@@ -13,7 +13,7 @@
 //! terminal an agent is reading.
 
 use crate::commands::mcp_client::{
-    max_frame_bytes_from_env, ServerProcess, ServerSpec, DEFAULT_TIMEOUT,
+    max_frame_bytes_from_env, Connection, ServerSpec, DEFAULT_TIMEOUT,
 };
 use crate::output::Output;
 use serde::{Deserialize, Serialize};
@@ -96,9 +96,18 @@ pub fn save_config(config: &McpConfig) -> Result<(), String> {
 }
 
 /// The named server, or an error that says what the alternatives are.
+///
+/// A server that is configured but does not say how to reach it is reported here
+/// too: every command that resolves a name is about to connect, and "needs a
+/// command or a url" is the explanation, wherever it is said.
 fn resolve<'config>(config: &'config McpConfig, name: &str) -> Result<&'config ServerSpec, String> {
     match config.servers.get(name) {
-        Some(spec) if spec.enabled => Ok(spec),
+        Some(spec) if spec.enabled => {
+            spec.transport().map_err(|error| {
+                format!("MCP server '{name}' in {} {error}", config_path().display())
+            })?;
+            Ok(spec)
+        }
         Some(_) => Err(format!(
             "MCP server '{name}' is disabled in {} — set \"enabled\": true to use it",
             config_path().display()
@@ -346,7 +355,7 @@ async fn mcp_status(args: &[String], out: &Output) -> Result<(), String> {
             continue;
         }
         let started = std::time::Instant::now();
-        match ServerProcess::start_with_frame_cap(name, spec, timeout, max_frame_bytes).await {
+        match Connection::start(name, spec, timeout, max_frame_bytes).await {
             Err(error) => {
                 failed += 1;
                 reports.push(json!({
@@ -354,12 +363,13 @@ async fn mcp_status(args: &[String], out: &Output) -> Result<(), String> {
                     "state": "failed",
                     "error": error,
                     "handshakeMs": started.elapsed().as_millis() as u64,
-                    "command": spec.command_line(),
+                    "transport": transport_name(spec),
+                    "command": spec.endpoint(),
                 }));
             }
             Ok(mut process) => {
                 let handshaked = started.elapsed();
-                let listed = process.session().list_tools().await;
+                let listed = process.list_tools().await;
                 let stderr = process.stderr_tail();
                 process.shutdown().await;
                 match listed {
@@ -369,7 +379,8 @@ async fn mcp_status(args: &[String], out: &Output) -> Result<(), String> {
                         "toolCount": tools.len(),
                         "handshakeMs": handshaked.as_millis() as u64,
                         "totalMs": started.elapsed().as_millis() as u64,
-                        "command": spec.command_line(),
+                        "transport": transport_name(spec),
+                        "command": spec.endpoint(),
                     })),
                     Err(error) => {
                         failed += 1;
@@ -378,7 +389,8 @@ async fn mcp_status(args: &[String], out: &Output) -> Result<(), String> {
                             "state": "failed",
                             "error": attach_stderr(error, &stderr),
                             "handshakeMs": handshaked.as_millis() as u64,
-                            "command": spec.command_line(),
+                            "transport": transport_name(spec),
+                            "command": spec.endpoint(),
                         }));
                     }
                 }
@@ -475,12 +487,11 @@ async fn mcp_serve_with_stdin<R: tokio::io::AsyncBufRead + Unpin>(
 
     let config = load_config()?;
     let spec = resolve(&config, &name)?;
-    let mut process =
-        ServerProcess::start_with_frame_cap(&name, spec, timeout, max_frame_bytes).await?;
+    let mut process = Connection::start(&name, spec, timeout, max_frame_bytes).await?;
 
     // Announce readiness on stdout, and only then start answering: the caller can
     // block on this line rather than on a timeout.
-    let ready = process.session().list_tools().await;
+    let ready = process.list_tools().await;
     let stderr = process.stderr_tail();
     let tools = match ready {
         Ok(tools) => tools,
@@ -517,7 +528,7 @@ async fn mcp_serve_with_stdin<R: tokio::io::AsyncBufRead + Unpin>(
 /// request with no `tool`, a call the server fails, and ordering are all part of
 /// this contract, and all of them must leave the session running.
 async fn serve_requests<R: tokio::io::AsyncBufRead + Unpin>(
-    process: &mut ServerProcess,
+    process: &mut Connection,
     out: &Output,
     reader: R,
 ) -> Result<(), String> {
@@ -560,7 +571,7 @@ async fn serve_requests<R: tokio::io::AsyncBufRead + Unpin>(
             continue;
         };
         let arguments = request.get("args").cloned().unwrap_or_else(|| json!({}));
-        match process.session().call_tool(tool, arguments).await {
+        match process.call_tool(tool, arguments).await {
             Ok(result) => {
                 let reported = result
                     .get("isError")
@@ -597,11 +608,16 @@ fn mcp_list(args: &[String], out: &Output) -> Result<(), String> {
             .servers
             .iter()
             .map(|(name, spec)| {
+                // Header values are credentials, so only their names are
+                // reported: `list` says what a server is, not what it holds.
                 json!({
                     "name": name,
+                    "transport": transport_name(spec),
                     "command": spec.command,
                     "args": spec.args,
                     "cwd": spec.cwd,
+                    "url": spec.url,
+                    "headers": spec.headers.keys().collect::<Vec<_>>(),
                     "enabled": spec.enabled,
                 })
             })
@@ -618,14 +634,20 @@ fn mcp_list(args: &[String], out: &Output) -> Result<(), String> {
 
     if config.servers.is_empty() {
         out.log(&format!(
-            "No MCP servers are configured.\n\nConfiguration file: {}\nAdd one:            future mcp add rea --command rea --arg --mcp",
+            "No MCP servers are configured.\n\nConfiguration file: {}\nAdd one:            future mcp add rea --command rea --arg --mcp\n                    future mcp add remote --url https://example.com/mcp",
             config_path().display()
         ));
         return Ok(());
     }
     for (name, spec) in &config.servers {
         let state = if spec.enabled { "" } else { "  [disabled]" };
-        out.log(&format!("{name:<16} {}{state}", spec.command_line()));
+        // The transport is named on the row: a `command` and a URL look alike
+        // otherwise, and the difference decides what a failure means.
+        out.log(&format!(
+            "{name:<16} {:<5} {}{state}",
+            transport_name(spec),
+            spec.endpoint()
+        ));
     }
     out.log(&format!(
         "\n{} server(s) configured in {}",
@@ -661,9 +683,8 @@ async fn mcp_tools(args: &[String], out: &Output) -> Result<(), String> {
 
     let config = load_config()?;
     let spec = resolve(&config, &name)?;
-    let mut process =
-        ServerProcess::start_with_frame_cap(&name, spec, timeout, max_frame_bytes).await?;
-    let listed = process.session().list_tools().await;
+    let mut process = Connection::start(&name, spec, timeout, max_frame_bytes).await?;
+    let listed = process.list_tools().await;
     let stderr = process.stderr_tail();
     process.shutdown().await;
     let tools = listed.map_err(|error| attach_stderr(error, &stderr))?;
@@ -778,9 +799,8 @@ async fn mcp_describe(args: &[String], out: &Output) -> Result<(), String> {
 
     let config = load_config()?;
     let spec = resolve(&config, &name)?;
-    let mut process =
-        ServerProcess::start_with_frame_cap(&name, spec, timeout, max_frame_bytes).await?;
-    let listed = process.session().list_tools().await;
+    let mut process = Connection::start(&name, spec, timeout, max_frame_bytes).await?;
+    let listed = process.list_tools().await;
     let stderr = process.stderr_tail();
     process.shutdown().await;
     let tools = listed.map_err(|error| attach_stderr(error, &stderr))?;
@@ -912,16 +932,15 @@ async fn mcp_call(args: &[String], out: &Output) -> Result<(), String> {
 
     let config = load_config()?;
     let spec = resolve(&config, &name)?;
-    let mut process =
-        ServerProcess::start_with_frame_cap(&name, spec, timeout, max_frame_bytes).await?;
-    let called = process.session().call_tool(&tool, arguments).await;
+    let mut process = Connection::start(&name, spec, timeout, max_frame_bytes).await?;
+    let called = process.call_tool(&tool, arguments).await;
 
     // A failed call may simply be a mistyped tool name, which the server reports
     // in its own words. Only then is the tool list fetched, so the happy path
     // pays nothing for the check (REA's list is 3.1 MB).
     let called = match called {
         Ok(result) => Ok(result),
-        Err(error) => match process.session().list_tools().await {
+        Err(error) => match process.list_tools().await {
             Ok(tools) if !tools.iter().any(|entry| tool_name(entry) == tool) => {
                 Err(missing_tool_error(&name, &tool, &tools))
             }
@@ -1041,20 +1060,60 @@ fn truncate_at_char_boundary(text: &str, max_bytes: usize) -> String {
 
 // ── add / remove ───────────────────────────────────────────────────────────
 
-const ADD_USAGE: &str = "Usage: future mcp add <name> --command <program> [--arg <value>]... [--env KEY=VALUE]... [--cwd <dir>]";
+const ADD_USAGE: &str = "Usage: future mcp add <name> --command <program> [--arg <value>]... [--env KEY=VALUE]... [--cwd <dir>]\n       future mcp add <name> --url <endpoint> [--header 'Name: value']...";
 
 fn mcp_add(args: &[String], out: &Output) -> Result<(), String> {
-    let flags = parse_flags(args, &["--command", "--cwd"], &["--arg", "--env"], &[])?;
+    let flags = parse_flags(
+        args,
+        &["--command", "--cwd", "--url"],
+        &["--arg", "--env", "--header"],
+        &[],
+    )?;
     let name = flags.exactly_one_positional("a server name", ADD_USAGE)?;
     if !valid_server_name(&name) {
         return Err(format!(
             "'{name}' is not a usable server name — use letters, digits, '.', '_' or '-'"
         ));
     }
-    let command = flags
-        .value("--command")
-        .ok_or_else(|| format!("missing --command\n\n{ADD_USAGE}"))?
-        .to_string();
+    let command = flags.value("--command").map(str::to_string);
+    let url = flags.value("--url").map(str::to_string);
+    match (&command, &url) {
+        (Some(_), Some(_)) => {
+            return Err(format!(
+                "give either --command (a local process over stdio) or --url (an HTTP endpoint), not both\n\n{ADD_USAGE}"
+            ))
+        }
+        (None, None) => {
+            return Err(format!(
+                "missing --command or --url\n\n{ADD_USAGE}"
+            ))
+        }
+        _ => {}
+    }
+
+    // The two transports take different settings, and a flag that means nothing
+    // for the chosen one is nearly always a mistake (`--cwd` with a URL), so it
+    // is refused rather than stored and silently ignored.
+    let stdio_only = flags.list("--arg").to_vec();
+    if let Some(url) = url.as_ref() {
+        if !stdio_only.is_empty()
+            || !flags.list("--env").is_empty()
+            || flags.value("--cwd").is_some()
+        {
+            return Err(format!(
+                "--arg, --env and --cwd describe a local process; they mean nothing with --url\n\n{ADD_USAGE}"
+            ));
+        }
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Err(format!(
+                "--url must start with http:// or https://, got '{url}'"
+            ));
+        }
+    } else if !flags.list("--header").is_empty() {
+        return Err(format!(
+            "--header describes an HTTP endpoint; it means nothing with --command\n\n{ADD_USAGE}"
+        ));
+    }
 
     let mut env = Map::new();
     for pair in flags.list("--env") {
@@ -1065,6 +1124,18 @@ fn mcp_add(args: &[String], out: &Output) -> Result<(), String> {
             return Err(format!("--env expects KEY=VALUE, got '{pair}'"));
         }
         env.insert(key.to_string(), Value::String(value.to_string()));
+    }
+
+    let mut headers = BTreeMap::new();
+    for pair in flags.list("--header") {
+        let (key, value) = pair
+            .split_once(':')
+            .ok_or_else(|| format!("--header expects 'Name: value', got '{pair}'"))?;
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(format!("--header expects 'Name: value', got '{pair}'"));
+        }
+        headers.insert(key.to_string(), value.trim().to_string());
     }
 
     let mut config = load_config()?;
@@ -1078,9 +1149,19 @@ fn mcp_add(args: &[String], out: &Output) -> Result<(), String> {
         name.clone(),
         ServerSpec {
             command,
-            args: flags.list("--arg").to_vec(),
+            args: if url.is_some() {
+                Vec::new()
+            } else {
+                stdio_only
+            },
             env,
-            cwd: flags.value("--cwd").map(str::to_string),
+            cwd: if url.is_some() {
+                None
+            } else {
+                flags.value("--cwd").map(str::to_string)
+            },
+            url,
+            headers,
             enabled: true,
         },
     );
@@ -1088,8 +1169,9 @@ fn mcp_add(args: &[String], out: &Output) -> Result<(), String> {
 
     let spec = &config.servers[&name];
     out.log(&format!(
-        "Added MCP server '{name}': {}\nWritten to {}",
-        spec.command_line(),
+        "Added MCP server '{name}' ({}): {}\nWritten to {}",
+        transport_name(spec),
+        spec.endpoint(),
         config_path().display()
     ));
     out.log(&format!("Check it: future mcp tools {name}"));
@@ -1126,6 +1208,19 @@ fn valid_server_name(name: &str) -> bool {
 
 // ── Shared helpers ─────────────────────────────────────────────────────────
 
+/// How a configured server is reached, for a list row or a report.
+///
+/// It is read from the entry rather than from [`ServerSpec::transport`] because
+/// the callers here format an entry they have not resolved yet — a disabled one,
+/// or a broken one whose transport is exactly what is wrong with it.
+fn transport_name(spec: &ServerSpec) -> &'static str {
+    if spec.url.is_some() {
+        "http"
+    } else {
+        "stdio"
+    }
+}
+
 /// Append a server's stderr to a failure, when it wrote any. The last lines are
 /// usually the whole explanation (a missing engine, a bad key, a stack trace).
 fn attach_stderr(error: String, stderr: &str) -> String {
@@ -1156,6 +1251,7 @@ fn shorten(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::mcp_client::Transport;
     use crate::output::Output;
 
     fn args(items: &[&str]) -> Vec<String> {
@@ -1357,7 +1453,7 @@ mod tests {
             }"#,
         )
         .unwrap();
-        assert_eq!(config.servers["rea"].command_line(), "rea --mcp");
+        assert_eq!(config.servers["rea"].endpoint(), "rea --mcp");
         assert!(config.servers["rea"].enabled, "enabled defaults to true");
         assert!(!config.servers["off"].enabled);
     }
@@ -1365,10 +1461,10 @@ mod tests {
     #[test]
     fn an_unknown_key_in_the_config_is_an_error_not_a_silent_ignore() {
         let error = serde_json::from_str::<McpConfig>(
-            r#"{ "servers": { "rea": { "command": "rea", "url": "http://x" } } }"#,
+            r#"{ "servers": { "rea": { "command": "rea", "transport": "sse" } } }"#,
         )
         .unwrap_err();
-        assert!(error.to_string().contains("url"), "{error}");
+        assert!(error.to_string().contains("transport"), "{error}");
     }
 
     #[test]
@@ -1398,10 +1494,12 @@ mod tests {
 
     fn a_spec(command: &str) -> ServerSpec {
         ServerSpec {
-            command: command.to_string(),
+            command: Some(command.to_string()),
             args: Vec::new(),
             env: Map::new(),
             cwd: None,
+            url: None,
+            headers: BTreeMap::new(),
             enabled: true,
         }
     }
@@ -1466,7 +1564,7 @@ mod tests {
             let written: McpConfig =
                 serde_json::from_str(&std::fs::read_to_string(home.join("mcp.json")).unwrap())
                     .unwrap();
-            assert_eq!(written.servers["rea"].command, "rea");
+            assert_eq!(written.servers["rea"].command.as_deref(), Some("rea"));
             assert!(
                 !home.join("mcp.json.tmp").exists(),
                 "the temp file is renamed away, not left behind"
@@ -1522,7 +1620,10 @@ mod tests {
         let error = resolve(&config, "off").unwrap_err();
         assert!(error.contains("'off' is disabled"), "{error}");
         assert!(error.contains("mcp.json"), "{error}");
-        assert_eq!(resolve(&config, "live").unwrap().command, "y");
+        assert_eq!(
+            resolve(&config, "live").unwrap().command.as_deref(),
+            Some("y")
+        );
 
         // A typo is answered with the names that do exist, so it can be fixed
         // from the message alone.
@@ -1731,7 +1832,7 @@ mod tests {
         let (stdout, stderr) = rendered(&sink);
         assert_eq!(stderr, "");
         assert!(
-            stdout.contains("Added MCP server 'rea': rea --mcp"),
+            stdout.contains("Added MCP server 'rea' (stdio): rea --mcp"),
             "{stdout}"
         );
         assert!(stdout.contains("future mcp tools rea"), "{stdout}");
@@ -1740,7 +1841,7 @@ mod tests {
         // environment as strings, the working directory, enabled by default.
         let config = load_config().unwrap();
         let spec = &config.servers["rea"];
-        assert_eq!(spec.command_line(), "rea --mcp");
+        assert_eq!(spec.endpoint(), "rea --mcp");
         assert_eq!(spec.env["TOKEN"], json!("secret"));
         assert_eq!(spec.env["EMPTY"], json!(""));
         assert_eq!(spec.cwd.as_deref(), Some("/tmp/work"));
@@ -1751,7 +1852,10 @@ mod tests {
         let error = mcp_add(&args(&["rea", "--command", "other"]), &out).unwrap_err();
         assert!(error.contains("already exists"), "{error}");
         assert!(error.contains("future mcp remove rea"), "{error}");
-        assert_eq!(load_config().unwrap().servers["rea"].command, "rea");
+        assert_eq!(
+            load_config().unwrap().servers["rea"].command.as_deref(),
+            Some("rea")
+        );
     }
 
     #[tokio::test]
@@ -1772,6 +1876,80 @@ mod tests {
 
         // None of the three refusals wrote anything.
         assert!(load_config().unwrap().servers.is_empty());
+    }
+
+    /// `add` writes either kind of entry, and refuses the settings that belong
+    /// to the other kind — those are almost always a mistake, and silently
+    /// storing them would leave a server that looks configured and is not.
+    #[tokio::test]
+    async fn add_stores_an_http_endpoint_and_its_headers() {
+        let _lock = crate::test_env::lock_env().await;
+        let (_home, _env) = home_with_config(None);
+        let (out, sink) = Output::memory();
+
+        mcp_add(
+            &args(&[
+                "remote",
+                "--url",
+                "https://example.com/mcp",
+                "--header",
+                "Authorization: Bearer sk-1",
+                "--header",
+                "X-Trace:on",
+            ]),
+            &out,
+        )
+        .unwrap();
+        let (stdout, _) = rendered(&sink);
+        assert!(
+            stdout.contains("Added MCP server 'remote' (http): https://example.com/mcp"),
+            "{stdout}"
+        );
+
+        let config = load_config().unwrap();
+        let spec = &config.servers["remote"];
+        assert_eq!(spec.transport().unwrap(), Transport::Http);
+        assert_eq!(spec.url.as_deref(), Some("https://example.com/mcp"));
+        assert_eq!(spec.headers["Authorization"], "Bearer sk-1");
+        assert_eq!(spec.headers["X-Trace"], "on");
+        assert!(spec.command.is_none());
+        assert!(spec.enabled);
+
+        let (out, _sink) = Output::memory();
+        for (argv, expected) in [
+            (
+                vec!["both", "--command", "x", "--url", "https://e.com/mcp"],
+                "not both",
+            ),
+            (vec!["none"], "missing --command or --url"),
+            (
+                vec!["env", "--url", "https://e.com/mcp", "--env", "A=1"],
+                "mean nothing with --url",
+            ),
+            (
+                vec!["hdr", "--command", "x", "--header", "A: b"],
+                "it means nothing with --command",
+            ),
+            (
+                vec!["scheme", "--url", "ftp://e.com/mcp"],
+                "must start with http://",
+            ),
+            (
+                vec![
+                    "header",
+                    "--url",
+                    "https://e.com/mcp",
+                    "--header",
+                    "nocolon",
+                ],
+                "--header expects 'Name: value'",
+            ),
+        ] {
+            let error = mcp_add(&args(&argv), &out).unwrap_err();
+            assert!(error.contains(expected), "{argv:?}: {error}");
+        }
+        // Only the first, valid call wrote anything.
+        assert_eq!(load_config().unwrap().servers.len(), 1);
     }
 
     #[tokio::test]
@@ -3003,5 +3181,382 @@ done
             ]);
             (home, guard)
         }
+    }
+
+    // ── End to end against a real HTTP endpoint ────────────────────────────
+
+    /// The Streamable HTTP transport over a real socket, against a mock that
+    /// answers the way the spec describes: a session id on `initialize`, an
+    /// event stream (or plain JSON) per request, and a request log so the
+    /// headers this client sends can be asserted on.
+    mod http {
+        use super::*;
+        use crate::output::Output;
+        use crate::test_server::{spawn_http, spawn_http_recording, HttpRoute};
+
+        /// One JSON-RPC answer as an event-stream body, for request `id`.
+        fn answer(id: u64, result: &str) -> String {
+            format!("data: {{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{result}}}\n\n")
+        }
+
+        /// A mock endpoint answering the client's POSTs in `answers` order —
+        /// one entry per request, notifications included, because that is the
+        /// order they arrive in.
+        async fn endpoint(answers: &[(String, Option<&str>)]) -> String {
+            let route = HttpRoute::sse_sequence(
+                "/mcp",
+                answers
+                    .iter()
+                    .map(|(body, session)| (body.as_str(), *session))
+                    .collect(),
+            );
+            spawn_http(vec![route]).await
+        }
+
+        /// The same, answering `application/json` instead of a stream.
+        async fn json_endpoint(answers: &[(u16, String)]) -> String {
+            let route = HttpRoute::sequence(
+                "/mcp",
+                answers
+                    .iter()
+                    .map(|(status, body)| (*status, body.as_str()))
+                    .collect(),
+            );
+            spawn_http(vec![route]).await
+        }
+
+        /// A throwaway home with one HTTP server configured as `remote`.
+        fn home_with_url(
+            base: &str,
+            headers: Value,
+        ) -> (tempfile::TempDir, crate::test_env::EnvGuard) {
+            let home = tempfile::tempdir().expect("tempdir");
+            let mut server = json!({ "url": format!("{base}/mcp") });
+            if headers.as_object().is_some_and(|object| !object.is_empty()) {
+                server["headers"] = headers;
+            }
+            std::fs::write(
+                home.path().join("mcp.json"),
+                serde_json::to_string(&json!({ "servers": { "remote": server } })).unwrap(),
+            )
+            .unwrap();
+            let guard = crate::test_env::EnvGuard::set(&[(
+                "FUTURE_HOME",
+                home.path().as_os_str().to_owned(),
+            )]);
+            (home, guard)
+        }
+
+        /// The handshake every session starts with.
+        fn handshake(notified: bool) -> Vec<(String, Option<&'static str>)> {
+            let mut answers = vec![(
+                answer(1, r#"{"protocolVersion":"2025-06-18"}"#),
+                Some("sess-1"),
+            )];
+            if notified {
+                answers.push((String::new(), None));
+            }
+            answers
+        }
+
+        #[tokio::test]
+        async fn status_reports_an_http_endpoint_and_what_it_answered() {
+            let _lock = crate::test_env::lock_env().await;
+            let mut answers = handshake(true);
+            answers.push((
+                answer(2, r#"{"tools":[{"name":"plain","description":"works"}]}"#),
+                None,
+            ));
+            answers.push((String::new(), None));
+            let base = endpoint(&answers).await;
+            let (_home, _env) = home_with_url(&base, json!({}));
+
+            let (out, sink) = Output::memory();
+            mcp_status(&args(&["--json"]), &out).await.unwrap();
+            let (stdout, _) = rendered(&sink);
+            let report: Value = serde_json::from_str(&stdout).unwrap();
+            assert_eq!(report["servers"][0]["state"], "ok", "{stdout}");
+            assert_eq!(report["servers"][0]["transport"], "http", "{stdout}");
+            assert_eq!(report["servers"][0]["toolCount"], 1, "{stdout}");
+            assert_eq!(
+                report["servers"][0]["command"],
+                format!("{base}/mcp"),
+                "{stdout}"
+            );
+        }
+
+        /// The four steps of using a server work over HTTP exactly as over
+        /// stdio: page the tools, read one schema, call one tool.
+        #[tokio::test]
+        async fn tools_describe_and_call_reach_an_http_endpoint() {
+            let _lock = crate::test_env::lock_env().await;
+
+            // `tools` and `describe` each open their own session.
+            let mut listed = handshake(true);
+            let tools_body = answer(
+                2,
+                r#"{"tools":[{"name":"full","description":"does a thing","inputSchema":{"type":"object","properties":{"path":{"type":"string"}}}},{"name":"bare"}]}"#,
+            );
+            listed.push((tools_body.clone(), None));
+            listed.push((String::new(), None));
+            let base = endpoint(&listed).await;
+            let (_home, _env) = home_with_url(&base, json!({}));
+            let (out, sink) = Output::memory();
+            mcp_tools(&args(&["remote"]), &out).await.unwrap();
+            let (stdout, _) = rendered(&sink);
+            assert!(stdout.contains("full"), "{stdout}");
+            assert!(stdout.contains("bare"), "{stdout}");
+            assert!(stdout.contains("Showing 2 of 2 tools"), "{stdout}");
+
+            // A second session for `describe`, on a fresh endpoint.
+            let mut described = handshake(true);
+            described.push((tools_body, None));
+            described.push((String::new(), None));
+            let base = endpoint(&described).await;
+            let (_home, _env) = home_with_url(&base, json!({}));
+            mcp_describe(&args(&["remote", "full"]), &out)
+                .await
+                .unwrap();
+            let (stdout, _) = rendered(&sink);
+            assert!(stdout.contains("\"path\""), "{stdout}");
+
+            // A third for `call`.
+            let mut called = handshake(true);
+            called.push((
+                answer(2, r#"{"content":[{"type":"text","text":"fine"}]}"#),
+                None,
+            ));
+            called.push((String::new(), None));
+            let base = endpoint(&called).await;
+            let (_home, _env) = home_with_url(&base, json!({}));
+            mcp_call(&args(&["remote", "plain"]), &out).await.unwrap();
+            let (stdout, _) = rendered(&sink);
+            assert!(stdout.contains("fine"), "{stdout}");
+        }
+
+        /// A server may answer with plain JSON instead of a stream; both are
+        /// the same protocol, and the client has to read either.
+        #[tokio::test]
+        async fn a_json_answer_is_accepted_instead_of_a_stream() {
+            let _lock = crate::test_env::lock_env().await;
+            let base = json_endpoint(&[
+                (
+                    200,
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": { "protocolVersion": "2025-06-18" },
+                    })
+                    .to_string(),
+                ),
+                (202, String::new()),
+                (
+                    200,
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "result": { "tools": [{ "name": "plain" }] },
+                    })
+                    .to_string(),
+                ),
+                (200, String::new()),
+            ])
+            .await;
+            let (_home, _env) = home_with_url(&base, json!({}));
+            let (out, sink) = Output::memory();
+            mcp_tools(&args(&["remote"]), &out).await.unwrap();
+            let (stdout, _) = rendered(&sink);
+            assert!(stdout.contains("plain"), "{stdout}");
+        }
+
+        /// A stream that ends without the blank line that would dispatch its
+        /// last event still carried it, so the answer is read instead of being
+        /// reported as missing.
+        #[tokio::test]
+        async fn a_stream_that_ends_without_a_blank_line_is_still_read() {
+            let _lock = crate::test_env::lock_env().await;
+            let base = endpoint(&[
+                (
+                    format!(
+                        "data: {}\n",
+                        json!({ "jsonrpc": "2.0", "id": 1, "result": { "protocolVersion": "2025-06-18" } })
+                    ),
+                    Some("sess-1"),
+                ),
+                (String::new(), None),
+                (
+                    format!(
+                        "data: {}\n",
+                        json!({ "jsonrpc": "2.0", "id": 2, "result": { "tools": [{ "name": "plain" }] } })
+                    ),
+                    None,
+                ),
+                (String::new(), None),
+            ])
+            .await;
+            let (_home, _env) = home_with_url(&base, json!({}));
+            let (out, sink) = Output::memory();
+            mcp_tools(&args(&["remote"]), &out).await.unwrap();
+            let (stdout, _) = rendered(&sink);
+            assert!(stdout.contains("plain"), "{stdout}");
+        }
+
+        /// What the client sends: the session id the server named, the
+        /// configured credentials, and the protocol revision it negotiated —
+        /// plus a `DELETE` that ends the session instead of just dropping it.
+        #[tokio::test]
+        async fn the_session_id_and_the_configured_headers_are_sent_back() {
+            let _lock = crate::test_env::lock_env().await;
+            let requests: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+                std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let mut answers = handshake(true);
+            answers.push((answer(2, r#"{"tools":[]}"#), None));
+            answers.push((String::new(), None));
+            let route = HttpRoute::sse_sequence(
+                "/mcp",
+                answers
+                    .iter()
+                    .map(|(body, session)| (body.as_str(), *session))
+                    .collect(),
+            );
+            let base = spawn_http_recording(vec![route], Some(requests.clone())).await;
+            let (_home, _env) = home_with_url(&base, json!({ "authorization": "Bearer sk-1" }));
+
+            let (out, _sink) = Output::memory();
+            mcp_tools(&args(&["remote"]), &out).await.unwrap();
+
+            let recorded = crate::test_env::wait_for(|| requests.lock().unwrap().len() >= 4).await;
+            assert!(recorded, "every request must reach the server");
+            // Clone under a short-lived guard: no `MutexGuard` across an await.
+            let recorded = requests.lock().unwrap().clone();
+            let all = recorded.join("\n");
+            assert!(all.contains("authorization: Bearer sk-1"), "{all}");
+            assert!(all.contains("mcp-session-id: sess-1"), "{all}");
+            assert!(all.contains("mcp-protocol-version: 2025-06-18"), "{all}");
+            assert!(
+                all.contains("accept: application/json, text/event-stream"),
+                "{all}"
+            );
+            assert!(
+                recorded
+                    .iter()
+                    .any(|request| request.starts_with("DELETE ")),
+                "the session is ended, not abandoned: {all}"
+            );
+        }
+
+        /// A refused request is reported with the status and what the server
+        /// said, not as an unexplained handshake failure.
+        #[tokio::test]
+        async fn an_error_status_names_the_server_and_the_body() {
+            let _lock = crate::test_env::lock_env().await;
+            let base =
+                json_endpoint(&[(401, json!({ "error": "token expired" }).to_string())]).await;
+            let (_home, _env) = home_with_url(&base, json!({}));
+
+            let (out, sink) = Output::memory();
+            let error = mcp_status(&args(&["remote"]), &out)
+                .await
+                .expect_err("an unreachable server fails the check");
+            assert_eq!(error, crate::HANDLED_EXIT.to_string());
+            // The verdict goes to stdout, one row per server, with the server's
+            // own words indented under it.
+            let (stdout, _) = rendered(&sink);
+            assert!(stdout.contains("FAILED"), "{stdout}");
+            assert!(stdout.contains("HTTP 401"), "{stdout}");
+            assert!(stdout.contains("token expired"), "{stdout}");
+            assert!(stdout.contains("0/1 server(s) reachable"), "{stdout}");
+        }
+
+        /// `serve` holds one session for many calls, and works for an endpoint
+        /// just as it does for a process.
+        #[tokio::test]
+        async fn serve_drives_one_http_session() {
+            let _lock = crate::test_env::lock_env().await;
+            let mut answers = handshake(true);
+            answers.push((answer(2, r#"{"tools":[{"name":"plain"}]}"#), None));
+            answers.push((
+                answer(3, r#"{"content":[{"type":"text","text":"called"}]}"#),
+                None,
+            ));
+            answers.push((String::new(), None));
+            let base = endpoint(&answers).await;
+            let (_home, _env) = home_with_url(&base, json!({}));
+
+            let (out, sink) = Output::memory();
+            mcp_serve_with_stdin(
+                &args(&["remote"]),
+                &out,
+                b"{\"tool\":\"plain\"}\n".as_slice(),
+            )
+            .await
+            .unwrap();
+            let (stdout, _) = rendered(&sink);
+            let lines: Vec<&str> = stdout.lines().collect();
+            let ready: Value = serde_json::from_str(lines[0]).unwrap();
+            assert_eq!(ready["ready"], json!(true), "{stdout}");
+            assert_eq!(ready["toolCount"], json!(1), "{stdout}");
+            let answered: Value = serde_json::from_str(lines[1]).unwrap();
+            assert_eq!(answered["ok"], json!(true), "{stdout}");
+            assert_eq!(answered["result"]["content"][0]["text"], "called");
+        }
+    }
+
+    // ── Configuration of the two transports ────────────────────────────────
+
+    /// Exactly one transport per entry: both keys and neither are mistakes, and
+    /// each is reported rather than obeyed.
+    #[test]
+    fn a_spec_needs_exactly_one_transport() {
+        let http: ServerSpec = serde_json::from_str(r#"{ "url": "https://x/mcp" }"#).unwrap();
+        assert_eq!(http.transport().unwrap(), Transport::Http);
+        assert_eq!(http.endpoint(), "https://x/mcp");
+
+        let stdio: ServerSpec =
+            serde_json::from_str(r#"{ "command": "rea", "args": ["--mcp"] }"#).unwrap();
+        assert_eq!(stdio.transport().unwrap(), Transport::Stdio);
+        assert_eq!(stdio.endpoint(), "rea --mcp");
+
+        let both: ServerSpec =
+            serde_json::from_str(r#"{ "command": "rea", "url": "https://x/mcp" }"#).unwrap();
+        assert!(both.transport().unwrap_err().contains("not both"));
+
+        let neither: ServerSpec = serde_json::from_str("{}").unwrap();
+        assert!(neither.transport().unwrap_err().contains("needs a"));
+
+        // The settings of the other transport are refused, not ignored.
+        let stdio_with_headers: ServerSpec =
+            serde_json::from_str(r#"{ "command": "rea", "headers": { "x-key": "v" } }"#).unwrap();
+        assert!(stdio_with_headers
+            .transport()
+            .unwrap_err()
+            .contains("belongs to an HTTP endpoint"));
+
+        let http_with_args: ServerSpec =
+            serde_json::from_str(r#"{ "url": "https://x/mcp", "args": ["--mcp"] }"#).unwrap();
+        assert!(http_with_args
+            .transport()
+            .unwrap_err()
+            .contains("describe a local process"));
+    }
+
+    /// A configured server that cannot be reached at all is refused by name,
+    /// with the file it came from — before anything is spawned or connected.
+    #[tokio::test]
+    async fn resolve_refuses_an_entry_that_names_no_transport() {
+        let _lock = crate::test_env::lock_env().await;
+        let (_home, _env) = home_with_config(None);
+        let config: McpConfig = serde_json::from_str(r#"{ "servers": { "broken": {} } }"#).unwrap();
+        let error = resolve(&config, "broken").unwrap_err();
+        assert!(error.contains("'broken'"), "{error}");
+        assert!(error.contains("needs a \"command\""), "{error}");
+        assert!(error.contains("mcp.json"), "{error}");
+
+        let config: McpConfig = serde_json::from_str(
+            r#"{ "servers": { "both": { "command": "x", "url": "https://x/mcp" } } }"#,
+        )
+        .unwrap();
+        let error = resolve(&config, "both").unwrap_err();
+        assert!(error.contains("not both"), "{error}");
     }
 }

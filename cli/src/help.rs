@@ -1068,9 +1068,10 @@ Requires authentication: future auth login, or set the FUTURE_API_KEY environmen
 /// `future mcp` group help.
 pub const MCP_GROUP_HELP: &str = r#"future mcp — configure MCP servers and call their tools
 
-Servers are configured in ~/.future/mcp.json and run as local processes
-speaking MCP over stdio. The FutureOS agent has no MCP client, so this CLI is
-how an MCP server is reached from an agent session.
+Servers are configured in ~/.future/mcp.json and are reached one of two ways:
+a local process speaking MCP over stdio, or a Streamable HTTP endpoint. The
+FutureOS agent has no MCP client, so this CLI is how an MCP server is reached
+from an agent session.
 
 Usage:
   future mcp list [--json]
@@ -1080,6 +1081,7 @@ Usage:
   future mcp call <server> <tool> [--args '<json>'] [--out <file>] [--max-bytes <n>]
   future mcp serve <server>
   future mcp add <name> --command <program> [--arg <value>]... [--env KEY=VALUE]...
+  future mcp add <name> --url <endpoint> [--header 'Name: value']...
   future mcp remove <name>
 
 Commands:
@@ -1095,7 +1097,10 @@ Commands:
                            after a {"ok":true,"ready":true,...} ack. Use it when a
                            server's start-up is expensive: `call` starts the server
                            per invocation, `serve` pays that once.
-  add / remove             Change the server list.
+  add / remove             Change the server list. `add` writes either a
+                           `command` (spawned, speaking MCP over stdio) or a
+                           `url` (Streamable HTTP); --header adds a request
+                           header such as an API key to a `url` server.
 
 Two budgets, both tunable per command:
   --max-bytes <n>          How much of a result is *printed* (default 65536). The
