@@ -207,3 +207,26 @@ it("opens this machine with Enter, the row it starts on", async () => {
   expect(view.onPickPeer).not.toHaveBeenCalled();
   await view.unmount();
 });
+
+it("leaves a key it does not claim to whatever else answers it", async () => {
+  const view = await mount([peer(), peer({ desktopId: "desktop_c", name: "Laptop" })]);
+  // A modal claims only what it draws: `j`, `Tab`, ⌘K and the rest still belong
+  // to the page behind it (type-ahead, the palette). Swallowing them here would
+  // make the dialog a keyboard dead end that merely looked modal.
+  let seen: KeyboardEvent | null = null;
+  const observer = (event: Event) => {
+    seen = event as KeyboardEvent;
+  };
+  document.addEventListener("keydown", observer);
+  try {
+    await press("j", document.activeElement);
+    expect(chosen()).toBe("This computer");
+    expect(focused()).toBe("This computer");
+    expect(seen).not.toBeNull();
+    expect(seen!.defaultPrevented).toBe(false);
+  }
+  finally {
+    document.removeEventListener("keydown", observer);
+  }
+  await view.unmount();
+});

@@ -1036,6 +1036,36 @@ it("walks the conversation menu with the arrow keys", async () => {
   await view.unmount();
 });
 
+/**
+ * …and upwards, wrapping at the first row.
+ *
+ * The walk is a ring in both directions: a reader who overshoots the row they
+ * wanted presses Up rather than starting over at the top. Only the downward
+ * half was walked, so the upward arm — and the modulo that keeps it from
+ * landing on `-1` — was never run by a test.
+ */
+it("walks the conversation menu upwards, wrapping at the first row", async () => {
+  const view = await mount({ conversations });
+  await act(async () => view.type("#"));
+
+  const selected = () => menuRows(view).map(node => node.getAttribute("aria-selected"));
+  expect(selected()).toEqual(["true", "false"]);
+
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowUp" }));
+  });
+  // Above the first row is the last one, not a wrap to `-1`.
+  expect(selected()).toEqual(["false", "true"]);
+
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowUp" }));
+  });
+  expect(selected()).toEqual(["true", "false"]);
+  // The draft is untouched by moving the highlight.
+  expect(view.input.value).toBe("#");
+  await view.unmount();
+});
+
 /** A `#` that is not the start of a word is text, never a menu. */
 it("leaves a `#` inside a word or a heading alone", async () => {
   const view = await mount({ conversations });
