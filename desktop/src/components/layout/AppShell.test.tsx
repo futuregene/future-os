@@ -1370,6 +1370,42 @@ describe("app shell workspace handlers", () => {
     view.unmount();
   });
 
+  it("starts a new conversation from the panel's add tile", async () => {
+    // The tile's menu is the keyboard's way into the picker (a remote has four arrows and
+    // OK). Its "new conversation" row is the shell's own: close the panel, open the
+    // composer, and arm the pin so the conversation it creates joins the panel it came
+    // from.
+    mocks.store.threadStore = {
+      ...(mocks.store.threadStore as Record<string, unknown>),
+      threads: [
+        { ...chatThread, id: "t1", pinned: true },
+        { ...chatThread, id: "t2", pinned: true },
+        { ...chatThread, id: "t3", pinned: true },
+      ],
+    };
+    const view = mount(<AppShell />);
+    act(() => runCommand("vibe.toggle"));
+    // Three cells are a 2×2 with one free square, so the tile is drawn and `4` rings it.
+    act(() => runCommand("vibe.cell", { alt: false, code: "Digit4", ctrl: false, mod: false, shift: false }));
+    act(() => runCommand("vibe.open"));
+    const selected = () => document.querySelector("[aria-current=\"true\"]")?.getAttribute("data-vibe-menu-row") ?? null;
+    for (let step = 0; step < 12 && selected() !== "add:new"; step++) {
+      act(() => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, code: "ArrowDown", key: "ArrowDown" }));
+      });
+    }
+    expect(selected()).toBe("add:new");
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, code: "Enter", key: "Enter" }));
+    });
+
+    // The panel gives the screen back, and the composer is up.
+    expect(view.container.querySelector("[data-vibe-layer]")).toBeNull();
+    expect(view.container.querySelector("[data-child='new-conversation']")).not.toBeNull();
+    view.unmount();
+  });
+
   it("unpins a host's cell on the host, through the host's own route", async () => {
     // The panel's per-cell menu is the same menu for both halves, but the write is not:
     // a host's pin goes to that host (by *thread id*, which the catalogue is what turns

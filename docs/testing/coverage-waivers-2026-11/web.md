@@ -7,8 +7,8 @@ summary percentages (istanbul `lines.pct`, llvm-cov "Lines") are not the accepta
 `npx vitest run --coverage --coverage.reporter=lcov` on Node from `rust-toolchain.toml`'s
 neighbour (the desk's Node 24; the suite also passes on 22).
 
-**Result**: `DA:0` = **171** lines in **63** files. **22** of them are waived here
-(22 records, 22 distinct constructs); the other **149** are *reachable and not yet written*
+**Result**: `DA:0` = **168** lines in **63** files. **24** of them are waived here
+(24 records, 24 distinct constructs); the other **144** are *reachable and not yet written*
 — they are work items, listed per file in the campaign's working report, **not** waivers.
 
 ```bash
@@ -56,6 +56,8 @@ exists), and the falsifier. The ledger convention (`docs/testing/waiver-ledger.m
 | 20 | `desktop/src/features/settings/CommunityEditionSection.tsx:27` | **W2** | `handleSwitch`'s `if (selected === communityEdition) return` | *(static: the save button is disabled on that same comparison)* |
 | 21 | `desktop/src/features/runs/RunsPanel.tsx:155` | **W2** | `archiveFinished`'s `if (archiving \|\| finishedCount === 0) return` | `src/features/runs/RunsPanel.test.tsx` :: *renders the first page and appends another page near the bottom* |
 | 22 | `desktop/src/features/terminal/TerminalPanel.tsx:239` | **W2** | `ErrorBar`'s `if (!error) return null` | `src/features/terminal/TerminalPanel.test.tsx` :: *shows a create failure with a retry and no home-fallback shortcut* |
+| 23 | `desktop/src/components/layout/AppShell.tsx:1058` | **W2** | `handlePreviewLeftPanel`'s `if (showLeftPanel) return` | `src/components/layout/AppShell.test.tsx` :: *previews the collapsed rail on hover and drops it again on leave* |
+| 24 | `desktop/src/components/layout/AppShell.tsx:1261` | **W2** | `openRemoteConversation`'s `if (conversation.desktopId === null) return` | `src/components/layout/AppShell.test.tsx` :: *opens a remote conversation on the machine that owns it* |
 
 ## 1. `theme.ts:229` — W2
 
@@ -290,10 +292,12 @@ condition as the guard.
 - **`TerminalPanel.tsx:239`** — `ErrorBar` is rendered only under
   `{tabs.createError ? <ErrorBar tabs={tabs} /> : null}` (`:139`).
 
-## Wave 5 (layout group) — no new rows
+## Wave 5 (layout group) — rows 23-24 added
 
-The layout-and-interaction group's own residual went **76 → 59** in this wave (the lane's total
-188 → 171). Nothing in it was judged unreachable, so this file gains no row. One line was
+The layout-and-interaction group's own residual went **76 → 57** in this wave (the lane's total
+188 → 168), and two of its lines turned out to be guards no caller can reach, so this file gains
+rows **23** and **24** (`AppShell.tsx:1058`, `:1261`) — both proven by their call sites being
+rendered/called only under the opposite condition. One line was
 examined closely and is recorded here as **reachable**, because the difference matters:
 
 - `desktop/src/features/tasks/TasksView.tsx:376` — `confirmDelete`'s `if (!selected) return`.
@@ -302,6 +306,55 @@ examined closely and is recorded here as **reachable**, because the difference m
   client (or by the same schedule finishing) removes the row under an open confirmation. That is
   a state a test can build by changing the store between opening the dialog and pressing Delete,
   which is exactly why it is a work item and not a W2 arm.
+
+## 23. `AppShell.tsx:1058` — W2
+
+The left panel's hover-preview is armed by two elements, and **both are rendered only
+while the panel is collapsed**:
+
+```ts
+1655:               {!showLeftPanel
+1657:                     <div
+1660:                       onMouseEnter={() => handlePreviewLeftPanel(true)}
+1664:               {!showLeftPanel && leftOverlayOpen
+1669:                       onMouseEnter={() => handlePreviewLeftPanel(true)}
+1670| onMouseLeave={() => handlePreviewLeftPanel(false)}
+```
+
+`handlePreviewLeftPanel` (`1056-1060`) starts with `if (showLeftPanel) return;`, so the
+only states that can call it are states where the guard is false by construction. It is
+a guard written for a third caller that does not exist yet.
+
+- **Pinned by** `src/components/layout/AppShell.test.tsx` :: *previews the collapsed rail on
+  hover and drops it again on leave* — the two elements that call it exist only while the
+  panel is collapsed.
+- **Positive control (stated)**: render the hover edge unconditionally (drop the
+  `!showLeftPanel &&` on line 1664) → with the panel shown, a hover reaches line 1058.
+- **Falsifier**: any call site outside a `!showLeftPanel` branch.
+
+## 24. `AppShell.tsx:1261` — W2
+
+The rail's merged-row opener splits the two kinds before it calls this shell handler:
+
+```ts
+ActivityRail.tsx:946:   const openRow = useCallback((row: MergedConversation) => {
+947:     if (row.desktopId === null) {
+948:       const thread = threadById.get(row.id);
+950:         onSelectThread(thread);
+951:       return;                       // ← this machine's rows never leave here
+952:     }
+953| onOpenRemoteConversation?.(row);
+```
+
+and `onOpenRemoteConversation` is only ever fed from that `else` branch (`AppShell.tsx:1474`
+binds it). So `openRemoteConversation` (`1259-1262`) can only be called with a non-null
+`desktopId`.
+
+- **Pinned by** `src/components/layout/AppShell.test.tsx` :: *opens a remote conversation on
+  the machine that owns it* (the positive half: a host's row does reach the shell).
+- **Positive control (stated)**: route `openRow`'s local branch through
+  `onOpenRemoteConversation` as well → a local row reaches line 1261 and returns.
+- **Falsifier**: a second caller of `onOpenRemoteConversation` that can pass a local row.
 
 ## How to retire a row
 
