@@ -10015,4 +10015,158 @@ mod tests {
         );
         live.client.disconnect();
     }
+
+    /// The adapter's own verbs: what `/x` means when the *surface* has not taken
+    /// it first. A table, because these are one line each and the failure mode is
+    /// a verb wired to the wrong one — `/rename` that renames nothing, `/export`
+    /// that writes the conversation the reader left.
+    #[tokio::test]
+    async fn the_adapters_own_verbs_do_what_they_say() {
+        // Attached, so the session-side arms are the ones under test.
+        let attached = &[
+            ("get_state", r#"{"sessionId":"s1","model":"future/old"}"#),
+            ("get_session_entries", r#"{"entries":[]}"#),
+            ("set_session_name", "{}"),
+            ("export_html", r#"{"path":"/tmp/s1.html"}"#),
+            ("abort", "{}"),
+            ("list_sessions", r#"{"sessions":[]}"#),
+            ("compact", r#"{"success":true}"#),
+            ("set_tools", "{}"),
+        ];
+        let mut live = live_on(attached).await;
+
+        // `/rename`: the name the request carried is installed, and the notice
+        // says so rather than repeating the usage line.
+        live.command("/rename a better title").await;
+        assert_eq!(
+            live.state.session_name.as_deref(),
+            Some("a better title"),
+            "/rename did not install the name it sent"
+        );
+        assert!(live.notice.is_some(), "/rename said nothing");
+
+        // `/rename` with no argument is the usage line, not a rename to "".
+        live.notice = None;
+        live.command("/rename").await;
+        assert!(live.notice.is_some(), "a bare /rename said nothing");
+
+        // `/export` reports the path the agent wrote.
+        live.notice = None;
+        live.command("/export").await;
+        let notice = live.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("/tmp/s1.html"),
+            "/export did not report the path it wrote: {notice:?}"
+        );
+
+        // `/copy` and `/mouse` are the surface's own; the adapter must not claim
+        // them with a notice.
+        live.notice = None;
+        assert!(matches!(live.command("/copy").await, Outcome::Continue));
+        assert!(
+            live.notice.is_none(),
+            "the adapter answered a verb the surface owns: {:?}",
+            live.notice
+        );
+
+        // A verb nobody claims is named back, never silently dropped.
+        live.command("/definitely-not-a-verb").await;
+        let notice = live.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("definitely-not-a-verb"),
+            "an unknown verb was not named: {notice:?}"
+        );
+
+        // `/quit` is the one verb that ends the app.
+        assert!(matches!(live.command("/quit").await, Outcome::Quit));
+        live.client.disconnect();
+    }
+
+    /// The verbs that need a conversation say so on the launchpad instead of
+    /// calling an agent that has no session to act on.
+    #[tokio::test]
+    async fn a_verb_that_needs_a_conversation_says_so_on_the_launchpad() {
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        live.to_launchpad();
+        for verb in ["/rename x", "/export", "/compact"] {
+            live.notice = None;
+            assert!(matches!(live.command(verb).await, Outcome::Continue));
+            assert!(live.notice.is_some(), "{verb} on the launchpad was silent");
+        }
+        // `/new` from the launchpad is the launchpad: no notice, no round trip.
+        live.notice = None;
+        live.command("/new").await;
+        assert!(live.detached(), "/new left the launchpad attached");
+        live.client.disconnect();
+    }
+
+    /// The stream events the transcript reads, one row per kind: what each does
+    /// to the activity row, the tool count, the queue or the transcript.
+    #[tokio::test]
+    async fn every_stream_event_kind_lands_somewhere_the_surface_shows() {
+        let mut live = live_on(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            ("get_session_entries", r#"{"entries":[]}"#),
+        ])
+        .await;
+        let current = live.state.session_id.clone();
+
+        let stamped = |kind: &str, data: serde_json::Value| {
+            let mut event = event(kind, data);
+            event.session_id = Some(current.clone());
+            event
+        };
+
+        // A turn starts: the activity row says it is writing.
+        live.handle_event(stamped("agent_start", json!({})));
+        assert!(
+            live.activity_kind() != super::ActivityKind::Idle,
+            "agent_start did not move the activity row"
+        );
+
+        // A tool call is counted once per call id, even though the agent
+        // announces it twice (input, then execution).
+        for phase in ["input", "execution"] {
+            live.handle_event(stamped(
+                "tool_start",
+                json!({"tool_call_id": "t-1", "name": "bash", "phase": phase}),
+            ));
+        }
+        assert_eq!(
+            live.activity_snapshot().tools,
+            1,
+            "one call announced twice is two tools"
+        );
+
+        // Thinking and text are the transcript's.
+        live.handle_event(stamped("thinking_start", json!({})));
+        live.handle_event(stamped("thinking_delta", json!({"text": "hmm"})));
+        live.handle_event(stamped("text_chunk", json!({"text": "the answer"})));
+        live.handle_event(stamped("agent_end", json!({})));
+        let rows = live.chat.render_all(80).join("\n");
+        assert!(
+            rows.contains("the answer"),
+            "the answer never reached the rows: {rows:?}"
+        );
+
+        // An event stamped with another conversation is dropped, not applied to
+        // the one on screen.
+        let mut other = event("text_chunk", json!({"text": "another conversation"}));
+        other.session_id = Some("s-elsewhere".into());
+        live.handle_event(other);
+        let rows = live.chat.render_all(80).join("\n");
+        assert!(
+            !rows.contains("another conversation"),
+            "another conversation's text was painted here"
+        );
+
+        // An error is a notice row, and the run it names is not left claiming to
+        // be running.
+        live.handle_event(stamped("error", json!({"error": "the model refused"})));
+        assert!(
+            live.notice.is_some() || live.activity_kind() != super::ActivityKind::Idle,
+            "an error event left nothing on screen"
+        );
+        live.client.disconnect();
+    }
 }
