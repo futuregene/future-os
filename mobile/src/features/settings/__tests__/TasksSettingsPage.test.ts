@@ -1347,3 +1347,87 @@ test("reports a delete the desktop refused, and stays on the task", async () => 
 
 
 
+// ─── weekdays, a one-off's clock, and the task's own zone ────────────────────
+
+test("toggles a weekday off, and keeps whatever is left in week order", async () => {
+  detail = taskDetail({ trigger: { mode: "weekly", days: ["mon", "fri"], time: "09:00" } });
+  rows = [{ ...rows[0]!, trigger: detail.trigger }];
+  await remount();
+  await openTask();
+  expect(chip("tasks.weekday.mon").props.accessibilityState.selected).toBe(true);
+  expect(chip("tasks.weekday.fri").props.accessibilityState.selected).toBe(true);
+
+  // The seven boxes are a toggle, not a set of one-way switches: pressing a
+  // selected day removes it, and the payload then carries only the rest.
+  await act(async () => chip("tasks.weekday.mon").props.onPress());
+  expect(chip("tasks.weekday.mon").props.accessibilityState.selected).toBe(false);
+  await act(async () => chip("tasks.weekday.tue").props.onPress());
+  await act(async () => button("tasks.form.save").props.onPress());
+  expect(mockRemote.updateTask).toHaveBeenLastCalledWith("tsk_1", expect.objectContaining({
+    // Week order, not tap order: tue was pressed last and still comes first.
+    trigger: { mode: "weekly", days: ["tue", "fri"], time: "09:00" },
+  }));
+});
+
+test("refuses a one-off whose stored clock is not a time, and names it", async () => {
+  // A task written by a client that seeded no time at all. The date is fine, so
+  // the refusal has to reach the clock instead of the first bad field.
+  detail = taskDetail({ trigger: { mode: "once", date: "2026-12-24", time: "" } });
+  rows = [{ ...rows[0]!, trigger: detail.trigger }];
+  await remount();
+  await openTask();
+  expect(texts()).not.toContain("tasks.form.problem.date");
+  expect(texts()).toContain("tasks.form.problem.time");
+  expect(button("tasks.form.save").props.disabled).toBe(true);
+
+  // Picking a time is what clears it.
+  await pickTime("18", "00");
+  expect(texts()).not.toContain("tasks.form.problem.time");
+  expect(button("tasks.form.save").props.disabled).toBe(false);
+});
+
+test("prints a due time on the task's own clock, not the phone's", async () => {
+  const due = 1_700_000_000_000;
+  rows = [taskRow({ nextDueAt: due, timezone: "Asia/Shanghai" })];
+  await remount();
+  const expected = new Intl.DateTimeFormat("en", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Asia/Shanghai",
+  }).format(new Date(due));
+  expect(texts().join(" ")).toContain(expected);
+});
+
+test("falls back on the phone's clock for a zone the runtime does not know", async () => {
+  const due = 1_700_000_000_000;
+  // A zone the desktop accepted but this build's ICU does not carry: the row
+  // still shows a time rather than "Invalid Date" or an empty summary.
+  rows = [taskRow({ nextDueAt: due, timezone: "Mars/Olympus_Mons" })];
+  await remount();
+  const expected = new Intl.DateTimeFormat("en", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(due));
+  expect(texts().join(" ")).toContain(expected);
+  expect(texts().join(" ")).not.toContain("Invalid Date");
+});
+
+test("hands the schedule back to the desktop's own zone", async () => {
+  detail = taskDetail({ timezone: "Asia/Shanghai" });
+  await openTask();
+  expect(zoneValue()).toBe("Asia/Shanghai");
+
+  // "Follow the desktop" is a row in the same picker as the named zones, and
+  // choosing it sends the empty value the desktop resolves itself — the phone
+  // never guesses a zone on the user's behalf.
+  await pickZone("tasks.form.timezoneDesktop");
+  expect(zoneValue()).toBe("tasks.form.timezoneDesktop");
+  await act(async () => button("tasks.form.save").props.onPress());
+  expect(mockRemote.updateTask).toHaveBeenLastCalledWith("tsk_1", expect.objectContaining({ timezone: "" }));
+});

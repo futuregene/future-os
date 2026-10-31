@@ -800,3 +800,30 @@ describe("a `#` conversation reference", () => {
     expect(root.findAllByType(Text).filter(node => paintedText(node) === "#x")).toHaveLength(0);
   });
 });
+
+describe("an image inside a sentence", () => {
+  test("is a chip for the file it names, opened on the machine that holds it", () => {
+    // A standalone picture becomes its own block (`MarkdownImage`); one written
+    // in the middle of a run has to stay inline, and a `file://` source there is
+    // still a path on the sending machine — a chip that names the file and asks
+    // the desktop for it, never a broken image.
+    const onOpenFile = jest.fn();
+    let renderer: ReactTestRenderer | undefined;
+    act(() => {
+      renderer = create(createElement(MarkdownText, {
+        onOpenFile,
+        text: "see ![shot](file:///Users/me/Downloads/shot.png) for the numbers",
+      }));
+    });
+    const root = renderer!.root;
+    expect(paintedText(root)).toContain("see");
+    expect(paintedText(root)).toContain("for the numbers");
+    const chip = root.findAllByType(Text).find(node => typeof node.props.onPress === "function");
+    expect(chip).toBeDefined();
+    // The chip carries the file's name only — the alt text here.
+    expect(paintedText(chip!)).toBe("shot");
+    act(() => chip!.props.onPress());
+    expect(onOpenFile).toHaveBeenCalledWith("/Users/me/Downloads/shot.png");
+    act(() => renderer!.unmount());
+  });
+});

@@ -78,6 +78,11 @@ let catalogTaskFinished: ((session: RemoteSession) => void) | undefined;
 let mockTimelineHandleEvent: jest.Mock = jest.fn();
 let timelineOptions: {
   onSessionState?: (sessionId: string, state: { model?: string; thinkingLevel?: string }) => void;
+  /**
+   * The runtime's own connection recovery, handed to the controller through a
+   * ref: a fatal client can only be replaced by the runtime itself.
+   */
+  recoverConnection?: (reason: string) => Promise<void>;
 } = {};
 
 const mockConversation = {
@@ -428,4 +433,19 @@ test("a captured conversation lifetime follows the client it was taken with", ()
   // A renewal that keeps the same pair and client leaves the step valid.
   ref.current = null;
   expect(capture()).toBe(true);
+});
+
+// A timeline retry asks the runtime to heal the transport, because only the
+// runtime can replace a client whose connection has failed for good. The
+// controller is built before the connection exists, so the call has to work
+// both before that first effect lands and after it.
+test("a timeline retry reaches this machine's own recovery", async () => {
+  mount();
+  // The controller is built before the connection exists, so the retry reaches
+  // it through a ref rather than a captured callback: a fatal client can only be
+  // replaced by the runtime, never by `client.recoverNow`.
+  await act(async () => {
+    await expect(timelineOptions.recoverConnection!("request-failure")).resolves.toBeUndefined();
+  });
+  expect(mockConnection.recover).toHaveBeenCalledWith("request-failure");
 });

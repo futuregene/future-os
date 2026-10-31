@@ -2369,6 +2369,28 @@ describe("useTimelineController", () => {
       errorSpy.mockRestore();
     });
 
+    test("a runtime recovery that fails is logged, and the sync still restarts", async () => {
+      const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        options.selectedRef.current = "s1";
+        options.recoverConnection = jest.fn(async () => { throw new Error("runtime offline"); });
+        render();
+        const restart = jest.spyOn(result.current.syncEngineRef.current!, "restart");
+        await act(async () => {
+          await result.current.retryTimeline();
+        });
+        // The runtime owns the connection's recovery; a failure inside it is a
+        // diagnostic, not a reason to leave the lane stuck.
+        expect(errorSpy).toHaveBeenCalledWith(
+          "[remote] timeline retry transport recovery failed",
+          expect.objectContaining({ error: expect.objectContaining({ message: "runtime offline" }) }),
+        );
+        expect(restart).toHaveBeenCalledWith("s1", "open");
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
     test("clears an existing timeout error before retrying", async () => {
       jest.useFakeTimers();
       try {
@@ -2388,6 +2410,63 @@ describe("useTimelineController", () => {
       } finally {
         jest.useRealTimers();
       }
+    });
+  });
+
+  describe("a lean event body", () => {
+    const contentReads = () => request.mock.calls
+      .map((call) => call[0] as { type: string })
+      .filter((command) => command.type === "get_event_content_range");
+
+    test("is read from the desktop, and a full body is not", async () => {
+      request.mockImplementation(async (command: { type: string }) => {
+        if (command.type === "get_state") return { data: { isCompacting: false } };
+        if (command.type === "get_event_content_range")
+          return {
+            success: true,
+            data: {
+              text: "the question", nextOffset: 12, totalBytes: 12, hasMore: false,
+              encoding: "text", etag: "e1", databaseId: "db1", restoreGeneration: "rg1",
+            },
+          };
+        if (command.type === "get_events_since") return { data: { events: [], hasMore: false } };
+        return { data: { entries: [] } };
+      });
+      render();
+      await establish();
+
+      // A feed that omits bodies carries its text directly; nothing to read.
+      act(() => result.current.handleEvent(evt("user_message", '{"text":"asked"}', "r", 1), "s1"));
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });
+      expect(contentReads()).toHaveLength(0);
+
+      // The same event, this time naming a field instead of carrying it: the
+      // phone has to ask the desktop for that page before the event can be
+      // projected, or the reply would render as empty.
+      act(() => result.current.handleEvent({
+        type: "user_message",
+        runId: "r",
+        idx: 2,
+        data: JSON.stringify({
+          text: "",
+          content_refs: {
+            text: { databaseId: "db1", restoreGeneration: "rg1", epoch: 0, cursor: 3, field: "/data/text" },
+          },
+        }),
+      }, "s1"));
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 120)); });
+      expect(contentReads()).toHaveLength(1);
+      expect(request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "get_event_content_range",
+          sessionId: "s1",
+          // The run the event belongs to travels with the request: the field is
+          // addressed inside that run's stream.
+          runId: "r",
+          contentRequest: expect.objectContaining({ field: "/data/text", databaseId: "db1" }),
+        }),
+        "s1",
+      );
     });
   });
 

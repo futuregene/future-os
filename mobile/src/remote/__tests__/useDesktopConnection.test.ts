@@ -879,6 +879,38 @@ describe("useDesktopConnection", () => {
     } finally { warn.mockRestore(); }
   });
 
+  test("a cleanup that fails after the timeout is logged, not reported as done", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await mountConnected();
+      const c = client();
+      const failure = new Error("connection already gone");
+      // The budget expired, and the observer that was left watching the real
+      // work then sees it fail: the client stays "closing" until it is released
+      // by a success, so the failure has to be said out loud.
+      c.shutdown.mockResolvedValueOnce({ complete: false, pendingTasks: ["connection-close"] });
+      c.waitTasks.mockReturnValueOnce(Promise.reject(failure));
+      await act(async () => { renderer!.unmount(); renderer = null; await drain(); });
+      expect(warn).toHaveBeenCalledWith("remote_cleanup_failed", failure);
+    } finally { warn.mockRestore(); }
+  });
+
+  test("a shutdown that throws is logged once, and the screen still lets go", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await mountConnected();
+      const c = client();
+      const failure = new Error("transport closed");
+      c.shutdown.mockRejectedValueOnce(failure);
+      // Leaving the conversation must not depend on the desktop answering the
+      // goodbye: a local failure is reported and the runtime moves on.
+      act(() => c.callbacks.onPresence({ ...presence, disconnected: true }));
+      await act(async () => { await drain(); });
+      expect(warn).toHaveBeenCalledWith("remote_cleanup_failed", failure);
+      expect(result.current.phase).toBe("stopped");
+    } finally { warn.mockRestore(); }
+  });
+
   test("explicit desktop offline retires the UI before its cleanup budget completes", async () => {
     await mountConnected();
     const c = client();

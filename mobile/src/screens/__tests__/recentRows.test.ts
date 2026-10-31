@@ -315,4 +315,20 @@ describe("child sessions on the recency page", () => {
     expect(ids(recentRows([peer, peerWorker], "", RECENT_PAGE_SIZE, new Set(["desk-b::s1"]), "desk-a")))
       .toEqual(["desk-b::s1", "desk-b::s2"]);
   });
+
+  it("breaks a ring of parents instead of losing every session in it", () => {
+    // Two sessions that each name the other as their parent — what a fork made
+    // from a fork can look like after a session is re-parented. Following the
+    // chain would walk the ring forever, so one edge is cut and the other
+    // session keeps its child: both rows still appear, nested.
+    const a = row("a", { parentSessionId: "b" }, now);
+    const b = row("b", { parentSessionId: "a" }, now - minute);
+    // Opened, so the child is drawn: a ring that lost a row would be invisible
+    // on a folded page and would silently drop the session entirely.
+    const page = recentRows([a, b], "", RECENT_PAGE_SIZE, new Set(["b"]), "desk-a");
+    const sessions = page.rows.filter(item => item.kind === "session");
+    expect(sessions.map(item => (item.kind === "session" ? item.key : ""))).toHaveLength(2);
+    expect(sessions.find(item => item.kind === "session" && item.key === "b")).toMatchObject({ depth: 0 });
+    expect(sessions.find(item => item.kind === "session" && item.key === "a")).toMatchObject({ depth: 1 });
+  });
 });
