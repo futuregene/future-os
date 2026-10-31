@@ -10330,4 +10330,91 @@ mod tests {
         );
         plain.client.disconnect();
     }
+
+    /// The file panel's reads run off the loop and land on `poll_tree_read`: a
+    /// rescan installs a tree, and toggling a folder installs the *same* tree
+    /// with that folder's open state flipped.
+    ///
+    /// This is also the positive control for `poll_tree_read`'s `Disconnected`
+    /// arm (see `docs/testing/coverage-waivers-2026-11/tui.md`): the two arms a
+    /// reader can reach are asserted here by name, so the third is the only one
+    /// left — and it needs the spawned thread to die before its unconditional
+    /// `tx.send`.
+    #[tokio::test]
+    async fn the_file_panel_installs_a_scan_and_toggles_a_folder() {
+        let mut live = live_on(&[(
+            "get_state",
+            concat!(
+                r#"{"sessionId":"s1","cwd":""#,
+                env!("CARGO_MANIFEST_DIR"),
+                r#""}"#
+            ),
+        )])
+        .await;
+
+        // The tree is rooted by the workspace read (its children come from the
+        // same listing the 文件 panel shows), so the fixture lands that first.
+        // `local_reads` is cleared to force the scan: `refresh_local` only starts
+        // one when the directory changed, and attach already read this one.
+        live.local_reads = None;
+        live.refresh_local();
+        assert!(
+            settle_local(&mut live).await,
+            "the workspace scan never installed a tree"
+        );
+        assert!(
+            !live.tree.rows().is_empty(),
+            "the crate's own directory has no rows"
+        );
+
+        // A folder in this crate: `src`.
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let was_open = live.tree.is_open(&src);
+        live.toggle_folder(&src.to_string_lossy());
+        assert!(
+            settle_tree(&mut live).await,
+            "the toggle never installed its tree"
+        );
+        assert_eq!(
+            live.tree.is_open(&src),
+            !was_open,
+            "toggling a folder did not flip its open state"
+        );
+        assert!(!live.tree.rows().is_empty(), "the toggle lost the tree");
+
+        // A read that a newer one superseded is dropped, not painted over it.
+        live.refresh_tree();
+        live.refresh_tree();
+        assert!(
+            settle_tree(&mut live).await,
+            "the newest scan never installed, so the superseded one won"
+        );
+        assert!(!live.tree.rows().is_empty());
+        live.client.disconnect();
+    }
+
+    /// Wait until the workspace read has answered and installed its tree.
+    async fn settle_local(live: &mut super::Live) -> bool {
+        for _ in 0..400 {
+            let _ = live.poll_local_reads();
+            if !live.tree.rows().is_empty() {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        false
+    }
+
+    /// Wait until the driver has taken the panel's own scan (`poll_tree_read`
+    /// clears `tree_read` when it installs one, or says it was superseded).
+    async fn settle_tree(live: &mut super::Live) -> bool {
+        for _ in 0..400 {
+            let _ = live.poll_local_reads();
+            if live.tree_read.is_none() {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        false
+    }
 }
