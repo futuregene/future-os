@@ -10916,6 +10916,37 @@ mod tests {
             "the attachment is not the file the probe wrote: {attachments:?}"
         );
 
+        // Text on the clipboard. The probes are distinguished by what the
+        // *measured* table looks like (2026-11-01, macOS): the image probe is
+        // `osascript` with the output path embedded in its script, the text
+        // command is `pbpaste` with no arguments — so "the arguments name a
+        // .png" is the image probe, and everything else is the text tool.
+        live.clipboard = ClipboardCapture::with_runner(
+            Box::new(|_program: &str, args: &[String]| {
+                if args.iter().any(|arg| arg.contains(".png")) {
+                    Ok((1, String::new(), String::new()))
+                } else {
+                    Ok((0, "clipboard text".to_string(), String::new()))
+                }
+            }),
+            dir.path().to_path_buf(),
+        );
+        live.notice = Some("stale".into());
+        live.paste_clipboard().await;
+        // The draft still carries the picture's marker from the row above; a
+        // paste appends, so the text is what it now ends with.
+        let draft = live.draft.editor.text().to_string();
+        assert!(
+            draft.ends_with("clipboard text"),
+            "the clipboard's text did not reach the draft: {draft:?} (notice: {:?})",
+            live.notice
+        );
+        assert!(
+            live.notice.is_none(),
+            "a successful text paste left a notice: {:?}",
+            live.notice
+        );
+
         // A refusal with a reason: the reason is the reader's sentence.
         live.clipboard = ClipboardCapture::with_runner(
             Box::new(|_program: &str, _args: &[String]| {
