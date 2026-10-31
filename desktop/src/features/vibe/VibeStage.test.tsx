@@ -1692,6 +1692,57 @@ describe("the add tile's menu", () => {
     expect(container.querySelector("[data-add-machine]")).not.toBeNull();
   });
 
+  it("offers a machine's workspaces and filters its conversations by hand", () => {
+    // The dialog is the pointer's way in, and it is three columns: this machine (or a
+    // host), the workspaces of that machine, then the conversations. A host's
+    // workspaces come from the catalogue it already sent — this app has no other list.
+    mount({
+      catalogs: [{
+        desktopId: "desk_1",
+        sessions: [
+          { pinned: false, sessionId: "s1", status: "completed", title: "In a workspace", workspaceId: "ws_remote", workspaceName: "future-os" },
+          { pinned: false, sessionId: "s2", status: "completed", title: "Other two", workspaceId: "ws_remote", workspaceName: "future-os" },
+          { pinned: false, sessionId: "s3", status: "completed", title: "No workspace" },
+        ],
+      } as never],
+      peers: [{ desktopId: "desk_1", name: "Studio" } as never],
+      threads: [thread("a", 100), thread("b", 200)],
+      workspaces: [
+        { id: "ws", kind: "user", name: "future-os", path: "/tmp/future-os" } as unknown as StoredWorkspace,
+        { id: "ws_chat", kind: "chat", name: "Chats", path: "/tmp/chats" } as unknown as StoredWorkspace,
+      ],
+    });
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    walkTo("add");
+    press({ code: "Enter", key: "Enter" });
+
+    // This machine's column: chats, then the user's workspaces (a chat file is not a
+    // workspace the reader can pick).
+    expect(container.querySelector("[data-add-workspace=\"ws\"]")).not.toBeNull();
+    expect(container.querySelector("[data-add-workspace=\"ws_chat\"]")).toBeNull();
+
+    // A host's column: the same shape, named from its own catalogue — and two
+    // conversations in one workspace are one row, not two.
+    act(() => container.querySelector<HTMLElement>("[data-add-machine=\"desk_1\"]")!.click());
+    const remoteWorkspaces = [...container.querySelectorAll("[data-add-workspace]")]
+      .map(node => node.getAttribute("data-add-workspace"));
+    expect(remoteWorkspaces.filter(id => id === "ws_remote")).toHaveLength(1);
+    expect(container.querySelector("[data-add-workspace=\"ws\"]")).toBeNull();
+
+    act(() => container.querySelector<HTMLElement>("[data-add-workspace=\"ws_remote\"]")!.click());
+    expect(container.textContent).toContain("In a workspace");
+    expect(container.textContent).not.toContain("No workspace");
+
+    // And the filter narrows what is left, by title.
+    const filter = container.querySelector<HTMLInputElement>("input")!;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    act(() => {
+      setValue.call(filter, "other");
+      filter.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.textContent).not.toContain("In a workspace");
+  });
+
   it("adds a recent conversation from the tile's list, and rings it", () => {
     const onPinLocal = vi.fn();
     mount({

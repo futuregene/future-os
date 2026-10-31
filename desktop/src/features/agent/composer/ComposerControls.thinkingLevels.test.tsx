@@ -11,6 +11,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { clearCommandHandlers, hasCommandHandler, runCommand } from "../../keyboard/commands";
 import { resetShortcutScopes } from "../../keyboard/scopes";
 import { resetAllCommandBindings } from "../../keyboard/shortcuts";
 import { ComposerControls } from "./ComposerControls";
@@ -29,6 +30,7 @@ let container: HTMLElement;
 let root: ReturnType<typeof createRoot>;
 
 beforeEach(() => {
+  clearCommandHandlers();
   resetAllCommandBindings();
   resetShortcutScopes();
   container = document.createElement("div");
@@ -120,4 +122,61 @@ it("disables the picker when the model offers only the implicit default", async 
 it("enables the picker as soon as there is a second option", async () => {
   await mount([{ ...narrowModel, thinkingLevels: ["default", "off"], defaultThinkingLevel: "default" }], "default");
   expect(thinkingTrigger().disabled).toBe(false);
+});
+
+it("enters the model ring at the end the move comes from when the stored model is gone", async () => {
+  // The stored model was dropped from the catalogue (another machine's, or one this
+  // build no longer ships). Stepping forward must land on the first model and stepping
+  // back on the last — the same rule as a list nobody has selected from yet, in the
+  // direction the hand is moving.
+  const changes: string[] = [];
+  const other = { id: "wide", label: "Wide", provider: "custom" };
+  await act(async () => root.render(
+    <ComposerControls
+      approvalTier="off"
+      attachmentCount={0}
+      futureSessionStatus="ready"
+      handleAttachFiles={async () => {}}
+      inputEmpty
+      modelId="custom/gone"
+      modelOptions={[narrowModel, other]}
+      modelsEmptyReason={undefined}
+      onModelChange={id => changes.push(id)}
+      onThinkingLevelChange={() => {}}
+      sendPending={false}
+      recommendPending={false}
+      compactionPending={false}
+      thinkingLevel="default"
+    />,
+  ));
+
+  act(() => void runCommand("composer.model.next"));
+  act(() => void runCommand("composer.model.previous"));
+
+  expect(changes).toEqual(["custom/narrow", "custom/wide"]);
+});
+
+it("claims no key for a picker with nothing to cycle", async () => {
+  // One level is no choice at all, and an empty model list has nowhere to step to:
+  // the commands stay unregistered rather than swallowing a press for a no-op.
+  await act(async () => root.render(
+    <ComposerControls
+      approvalTier="off"
+      attachmentCount={0}
+      futureSessionStatus="ready"
+      handleAttachFiles={async () => {}}
+      inputEmpty
+      modelId="custom/narrow"
+      modelOptions={[{ ...narrowModel, thinkingLevels: ["default"] }]}
+      modelsEmptyReason={undefined}
+      onThinkingLevelChange={() => {}}
+      sendPending={false}
+      recommendPending={false}
+      compactionPending={false}
+      thinkingLevel="default"
+    />,
+  ));
+
+  expect(hasCommandHandler("composer.thinking.next")).toBe(false);
+  expect(hasCommandHandler("composer.thinking.previous")).toBe(false);
 });
