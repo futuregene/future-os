@@ -1801,3 +1801,21 @@ describe("preview dismissal handoff", () => {
     act(() => h.tree.unmount());
   });
 });
+
+// The desktop refuses some files by naming why, and the phone answers in its own
+// words: "look at it on the desktop" is not a broken transfer, and a GIF that
+// only animates there is not one either. Both used to fall through to the
+// generic failure, which reads like the file was corrupt.
+test("a refusal that points at the desktop is reported as such", async () => {
+  for (const detail of ["animated GIF preview is not supported here — view it on desktop", "GIF preview unavailable"]) {
+    const remote = {
+      cachedAttachment: jest.fn(() => null),
+      prepareAttachment: jest.fn(async () => { throw new Error(detail); }),
+    };
+    const h = await mount(remote);
+    await act(async () => { await h.api.openAttachment({ path: "/anim.gif", name: "anim.gif" }); });
+    expect(Alert.alert).toHaveBeenCalledWith("attachment.title", "attachment.previewOnDesktop");
+    act(() => h.tree.unmount());
+    jest.mocked(Alert.alert).mockClear();
+  }
+});
