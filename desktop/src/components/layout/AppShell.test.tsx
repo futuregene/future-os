@@ -27,7 +27,7 @@ interface HookSpies {
   refreshAuth: () => void;
   refreshBalance: () => void;
   refreshRemote: () => void;
-  refreshRemotePeers: () => void;
+  refreshRemotePeers: ReturnType<typeof vi.fn>;
   refreshSkills: () => void;
   restoreThread: (threadId: string) => Promise<unknown>;
   revalidateAgentState: (threadId: string) => void;
