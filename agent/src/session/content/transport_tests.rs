@@ -145,10 +145,7 @@ fn path_previews_are_bounded_escaped_and_dropped_when_they_are_not_objects() {
     assert_eq!(long["tool_args"], json!({}));
     // JSON-pointer escaping keeps the reference resolvable through RFC 6901.
     let escaped = prepare_wire_data(&json!({"a/b~c": "q".repeat(40_000)}), "provider_fact");
-    assert_eq!(
-        escaped["content_refs"]["a/b~c"]["field"],
-        "/data/a~1b~0c"
-    );
+    assert_eq!(escaped["content_refs"]["a/b~c"]["field"], "/data/a~1b~0c");
 }
 
 #[test]
@@ -165,7 +162,12 @@ fn the_aggregate_budget_references_the_field_that_crosses_it() {
     // body, but the field itself never silently disappears.
     let mut announced = references
         .keys()
-        .chain(wire.as_object().unwrap().keys().filter(|key| *key != "content_refs"))
+        .chain(
+            wire.as_object()
+                .unwrap()
+                .keys()
+                .filter(|key| *key != "content_refs"),
+        )
         .cloned()
         .collect::<Vec<_>>();
     announced.sort();
@@ -212,7 +214,10 @@ fn canonical_facts_page_as_json_and_as_the_model_summary() {
     // The facts body is far larger than one page and is still served whole by
     // the page loop, in order, as the JSON it was stored as.
     assert!(page["totalBytes"].as_i64().unwrap() > READ_BYTES as i64);
-    assert_eq!(page["totalBytes"], json!(serde_json::to_string(&result).unwrap().len() as i64));
+    assert_eq!(
+        page["totalBytes"],
+        json!(serde_json::to_string(&result).unwrap().len() as i64)
+    );
     assert_eq!(page["hasMore"], json!(true));
     assert_eq!(
         collect(&store, &facts_request),
@@ -324,9 +329,13 @@ fn a_page_budget_that_cannot_fit_one_character_is_rejected() {
         1
     );
     request.max_bytes = 0;
-    assert!(store.event_content_range("s", "r", request.clone()).is_err());
+    assert!(store
+        .event_content_range("s", "r", request.clone())
+        .is_err());
     request.max_bytes = READ_BYTES as i64 + 1;
-    assert!(store.event_content_range("s", "r", request.clone()).is_err());
+    assert!(store
+        .event_content_range("s", "r", request.clone())
+        .is_err());
     request.max_bytes = 8;
     request.offset = -1;
     assert!(store.event_content_range("s", "r", request).is_err());
@@ -346,9 +355,7 @@ fn request_validation_rejects_every_out_of_range_scope() {
     let mut broken = valid.clone();
     broken.epoch = -2;
     assert!(store.event_content_range("s", "r", broken).is_err());
-    assert!(store
-        .event_content_range("", "r", valid.clone())
-        .is_err());
+    assert!(store.event_content_range("", "r", valid.clone()).is_err());
     // The uncommitted cursor of a live reference cannot be resolved: the
     // journal must be flushed before a reader asks for it.
     let mut broken = valid.clone();
@@ -414,7 +421,10 @@ fn storage_identity_fails_when_the_metadata_rows_are_missing() {
     store
         .db
         .call(|db| {
-            db.execute("DELETE FROM storage_meta WHERE key='restore_generation'", [])?;
+            db.execute(
+                "DELETE FROM storage_meta WHERE key='restore_generation'",
+                [],
+            )?;
             Ok(())
         })
         .unwrap();

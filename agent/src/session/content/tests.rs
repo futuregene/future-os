@@ -403,3 +403,68 @@ fn revised_final_arguments_do_not_alias_different_streamed_input() {
     )
     .is_err());
 }
+
+/// The projections registered on every application connection are read from
+/// SQL by the reader and the exporter, so each one must agree with the Rust
+/// implementation it wraps — and refuse input it cannot interpret.
+#[test]
+fn the_registered_sql_projections_agree_with_their_rust_implementations() {
+    use crate::session::sqlite_store::SqliteStore;
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+    let result = future_rpc::shell_result::ShellResult {
+        command: "printf hi".into(),
+        cwd: "/w".into(),
+        duration_ms: 3,
+        status: future_rpc::shell_result::ShellStatus::Exited,
+        exit_code: Some(0),
+        is_soft_fail: false,
+        is_error: false,
+        attempts: vec![future_rpc::shell_result::ShellAttempt {
+            status: future_rpc::shell_result::ShellStatus::Exited,
+            exit_code: Some(0),
+            duration_ms: 3,
+            output: "hi\n".into(),
+            output_truncated: false,
+            escalated: false,
+        }],
+        approval: None,
+        note: None,
+    };
+    let raw = serde_json::to_string(&result).unwrap();
+    let expected = future_rpc::shell_result::model_summary(&result);
+    store
+        .db
+        .read(move |db| {
+            let summary: String =
+                db.query_row("SELECT future_shell_summary(?1)", [&raw], |row| row.get(0))?;
+            assert_eq!(summary, expected);
+            assert!(!expected.is_empty());
+            // Uninterpretable facts are an error, never an empty projection.
+            let broken = db.query_row("SELECT future_shell_summary('not facts')", [], |row| {
+                row.get::<_, String>(0)
+            });
+            assert!(broken.is_err());
+
+            // Interrupted tool input is repaired through the same versioned
+            // interpretation the model loop uses; a bare body is preserved.
+            let repaired: String = db.query_row(
+                "SELECT future_tool_args_string_v1('{\"command\":\"pwd\"')",
+                [],
+                |row| row.get(0),
+            )?;
+            // The projection answers the *encoded* repaired body.
+            assert_eq!(
+                serde_json::from_str::<String>(&repaired).unwrap(),
+                "{\"command\":\"pwd\"}"
+            );
+            let empty: String =
+                db.query_row("SELECT future_tool_args_string_v1('')", [], |row| {
+                    row.get(0)
+                })?;
+            assert_eq!(serde_json::from_str::<String>(&empty).unwrap(), "{}");
+            assert_eq!(empty, "\"{}\"");
+            Ok(())
+        })
+        .unwrap();
+}

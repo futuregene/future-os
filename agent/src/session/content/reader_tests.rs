@@ -273,3 +273,76 @@ fn metadata_reads_ignore_ordinary_appends_but_fence_configuration_changes() {
         "changed"
     );
 }
+
+/// Search and recall are the only history reads that walk *every* visible
+/// field, so they own the guarantees that invisible extensions are reported as
+/// omitted and that a byte offset can never split a UTF-8 scalar.
+#[test]
+fn history_search_and_recall_walk_only_the_visible_fields() {
+    let (_dir, store) = store();
+    store.append("s", vec![message("a")]).unwrap();
+
+    // A match in the first bounded page of the first block carries its block
+    // identity, its byte offset inside the entry and a snippet around it.
+    let hits = Snapshot::search(&store, "s", "跨页", 5).unwrap();
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0]["entryId"], "a");
+    assert_eq!(hits[0]["blockIndex"], 0);
+    assert_eq!(hits[0]["kind"], "text");
+    assert_eq!(hits[0]["byteOffset"], 0);
+    assert!(hits[0]["snippet"].as_str().unwrap().starts_with("跨页"));
+
+    // A hit in the tool arguments is reported as arguments, not as text.
+    let hits = Snapshot::search(&store, "s", "正文", 5).unwrap();
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0]["kind"], "tool_call");
+    assert_eq!(hits[0]["toolCallId"], "tool");
+    assert_eq!(hits[0]["toolName"], "edit");
+
+    // Three hits in one entry: a result budget of one stops at the second hit
+    // instead of walking the rest of the entry.
+    store
+        .append(
+            "s",
+            vec![json!({"id":"b","type":"assistant","role":"assistant",
+                "timestamp":"2026-10-26T00:00:02Z","meta":{"run_id":"r"},
+                "content":[{"type":"text","text":"限位一"},
+                    {"type":"text","text":"限位二"},
+                    {"type":"text","text":"限位三"}]})],
+        )
+        .unwrap();
+    assert_eq!(Snapshot::search(&store, "s", "限位", 1).unwrap().len(), 2);
+    assert_eq!(Snapshot::search(&store, "s", "限位", 5).unwrap().len(), 3);
+    // Nothing visible matches the opaque extension text.
+    assert!(Snapshot::search(&store, "s", "opaque", 5)
+        .unwrap()
+        .is_empty());
+
+    // The query and page budgets are refused rather than silently clamped.
+    for query in ["".to_string(), "x".repeat(801)] {
+        assert!(Snapshot::search(&store, "s", &query, 5).is_err());
+    }
+    assert!(Snapshot::search(&store, "s", "跨页", 0).is_err());
+    assert!(Snapshot::search(&store, "s", "跨页", 21).is_err());
+
+    // Recall pages one entry's visible bytes and names what it left out.
+    let recalled = Snapshot::recall(&store, "s", "a", 0, 16).unwrap();
+    assert_eq!(recalled["entryId"], "a");
+    assert_eq!(recalled["offset"], 0);
+    assert_eq!(recalled["chunks"][0]["blockIndex"], 0);
+    assert_eq!(recalled["chunks"][0]["blockByteOffset"], 0);
+    assert_eq!(recalled["chunks"][0]["text"], "跨页🙂跨页");
+    assert_eq!(recalled["hasMore"], true);
+    assert!(recalled["nextOffset"].as_i64().unwrap() > 0);
+    assert_eq!(
+        recalled["omittedKinds"],
+        serde_json::json!(["future_block", "image_url", "reasoning"])
+    );
+    // Offsets are byte offsets into visible text: past the end, or inside a
+    // multi-byte scalar, the read fails instead of guessing.
+    let total = recalled["totalBytes"].as_i64().unwrap();
+    assert!(Snapshot::recall(&store, "s", "a", total + 1, 16).is_err());
+    assert!(Snapshot::recall(&store, "s", "a", 1, 4).is_err());
+    // An unknown entry is named, not silently empty.
+    assert!(Snapshot::recall(&store, "s", "missing", 0, 16).is_err());
+}
