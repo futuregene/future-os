@@ -2072,11 +2072,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "future-relay-endpoint"
+version = "0.1.0"
+dependencies = [
+ "async-nats",
+ "base64 0.23.1",
+ "future-http",
+ "rustls-native-certs",
+ "tempfile",
+ "url",
+]
+
+[[package]]
 name = "future-remote-client"
 version = "0.1.0"
 dependencies = [
  "async-nats",
  "base64 0.23.1",
+ "future-relay-endpoint",
  "future-remote-crypto",
  "future-remote-protocol",
  "futures",
@@ -2146,6 +2159,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "flate2",
+ "future-relay-endpoint",
  "future-remote-crypto",
  "future-remote-protocol",
  "futures",

@@ -1,4 +1,4 @@
-# Shared Rust workspace: core libraries and CLI/Desktop entry points.
+﻿# Shared Rust workspace: core libraries and CLI/Desktop entry points.
 #
 # Remote libraries live in packages/remote-* and are hosted by Desktop/Mobile.
 # tests/remote-interop combines public roles without an application dependency;
@@ -8,11 +8,11 @@
 # default-members keeps GUI dependencies out of ordinary root builds; use
 # -p futureos explicitly (or the Tauri build script) to select Desktop.
 #
-# Versions for dependencies shared by ≥2 members live here, once — bump in
+# Versions for dependencies shared by 鈮? members live here, once 鈥?bump in
 # one place instead of chasing drift across the Cargo.tomls. Members opt in
 # with `{ workspace = true }` and may add features (cargo unifies them).
 [workspace]
-members = ["host", "agent", "channels", "packages/rpc", "packages/remote-crypto", "packages/remote-protocol", "packages/remote-client", "packages/remote-server", "packages/app-settings", "packages/app-workspaces", "packages/config", "packages/http", "orchestration/goal", "orchestration/tasks", "tui", "cli", "desktop/src-tauri", "tests/remote-interop"]
+members = ["host", "agent", "channels", "packages/rpc", "packages/remote-crypto", "packages/remote-protocol", "packages/remote-client", "packages/remote-server", "packages/app-settings", "packages/app-workspaces", "packages/config", "packages/http", "packages/relay-endpoint", "orchestration/goal", "orchestration/tasks", "tui", "cli", "desktop/src-tauri", "tests/remote-interop"]
 default-members = ["agent", "channels", "packages/rpc"]
 resolver = "2"
 
@@ -42,14 +42,14 @@ prost-build = "0.13"
 tonic-build = "0.12"
 tempfile = "3"
 
-# Release profile lives at the workspace root — cargo silently IGNORES
+# Release profile lives at the workspace root 鈥?cargo silently IGNORES
 # [profile.*] sections in member manifests (previously in agent/Cargo.toml).
 [profile.release]
 debug = false
 strip = true
 lto = "thin"
 
-# Local iteration only — NOT a release profile. `release` above sets
+# Local iteration only 鈥?NOT a release profile. `release` above sets
 # `lto = "thin"`, so every edit re-runs whole-graph ThinLTO even though only one
 # crate changed: measured on a 20-thread Windows machine, touching one line of
 # `future-cli` and rebuilding `--release` takes ~137 s, of which the linker is
@@ -64,3 +64,4 @@ lto = false
 incremental = true
 debug = 0
 strip = false
+
