@@ -7031,4 +7031,106 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&session.cwd);
     }
+
+    /// A stop that arrives while the run is still inside startup's recovery
+    /// delay has nothing live to interrupt, so it has to be written down — and a
+    /// stop naming a run that already settled must not write a second terminal.
+    #[tokio::test]
+    async fn a_stop_is_durable_before_recovery_and_a_noop_after_a_settled_run() {
+        let mut session = make_persistent_test_session("stop-before-recovery");
+        std::fs::create_dir_all(&session.cwd).unwrap();
+        session.set_auto_retry(false);
+        // An empty conversation exists on disk; its run began before the crash
+        // and never committed a terminal.
+        session
+            .session_manager
+            .save(&crate::session::Session::snapshot(
+                session.session_id.clone(),
+                session.cwd.clone(),
+                "mock".to_string(),
+                String::new(),
+                String::new(),
+                Vec::new(),
+            ))
+            .unwrap();
+        session
+            .session_manager
+            .append_entries(
+                &session.session_id,
+                &[crate::session::SessionEntry::run_started("crashed-run", 99)],
+            )
+            .unwrap();
+        assert_eq!(
+            session
+                .session_manager
+                .resumable_run_id(&session.session_id)
+                .unwrap(),
+            Some("crashed-run".to_string())
+        );
+        assert!(
+            session.runtime.snapshot().is_none(),
+            "nothing is running yet: the recovery delay owns the run"
+        );
+
+        // The stop is recorded as a cancelled terminal, so recovery can no
+        // longer start the run moments later.
+        session.abort_run(None).unwrap();
+        assert_eq!(
+            session
+                .session_manager
+                .resumable_run_id(&session.session_id)
+                .unwrap(),
+            None,
+            "a stopped run must not be resumable"
+        );
+        let loaded = session.session_manager.load(&session.session_id).unwrap();
+        let terminal = loaded.entries.last().expect("terminal record");
+        assert_eq!(terminal.entry_type, crate::session::ENTRY_TYPE_RUN_TERMINAL);
+        let content = terminal.content.as_ref().expect("terminal content");
+        assert_eq!(content["run_id"], "crashed-run");
+        assert_eq!(content["state"], crate::session::RUN_STATE_CANCELLED);
+        assert_eq!(content["error"], "Stopped by user before recovery");
+        // Only one terminal was written for that run.
+        let terminals = loaded
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.entry_type == crate::session::ENTRY_TYPE_RUN_TERMINAL
+                    && entry
+                        .content
+                        .as_ref()
+                        .is_some_and(|content| content["run_id"] == "crashed-run")
+            })
+            .count();
+        assert_eq!(terminals, 1);
+
+        // A run that already settled needs no marker: the stop is a no-op and
+        // does not append anything.
+        session
+            .prompt("first", &[], &[], Some("run-done"), None)
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while session.runtime.snapshot().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let before = session
+            .session_manager
+            .load(&session.session_id)
+            .unwrap()
+            .entries
+            .len();
+        session.abort_run(Some("run-done")).unwrap();
+        let after = session
+            .session_manager
+            .load(&session.session_id)
+            .unwrap()
+            .entries
+            .len();
+        assert_eq!(before, after, "a settled run gets no second terminal");
+
+        let _ = std::fs::remove_dir_all(&session.cwd);
+    }
 }
