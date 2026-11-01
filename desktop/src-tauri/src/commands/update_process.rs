@@ -255,6 +255,50 @@ mod tests {
             "a refused path must not have created the Agent lock directory"
         );
     }
+
+    /// The refusal the installation depends on: a **live** holder of the Agent instance lock.
+    /// The lock is what stops a swap of program files under a running Agent, so the arm has to
+    /// be observed against a real holder rather than an unusable path — a path-only test would
+    /// pass even if `try_lock_exclusive` never ran.
+    ///
+    /// `flock(2)` locks belong to the open file description, so two descriptors on one file in
+    /// one process are two holders; no child process is needed to model "another Agent".
+    #[test]
+    fn the_agent_lease_refuses_while_another_agent_holds_the_instance_lock() {
+        use fs2::FileExt;
+        let root = tempfile::tempdir().unwrap();
+        let record = root.path().join("app/updates/update-lease/result.json");
+        std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+        std::fs::write(&record, b"{}").unwrap();
+        let lock_path = root.path().join("agent/agent-instance.lock");
+        std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        let holder = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
+        holder.lock_exclusive().unwrap();
+
+        let error = agent_lease(&record).expect_err("a running Agent holds the instance lock");
+        assert_eq!(
+            error,
+            "Another Agent started before installation; no program files were changed"
+        );
+        assert!(
+            std::fs::read_dir(root.path().join("agent"))
+                .unwrap()
+                .any(|entry| entry.unwrap().path() == lock_path),
+            "the refusal is about the lock this path names, not about a path it invented"
+        );
+
+        // The same call succeeds once the holder lets go: the arm above was the lock, not the
+        // fixture.
+        holder.unlock().unwrap();
+        let lease = agent_lease(&record).expect("no holder, so the lease is available");
+        assert_eq!(lease.metadata().unwrap().len(), 0);
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
