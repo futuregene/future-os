@@ -535,7 +535,52 @@ lever is therefore the **schema's own compile cost** — the five-CTE `entry_rec
 siblings — which is a product/schema change with real correctness risk, or a larger budget. It is
 not another caching pass: the prepare_cached sites are now exhausted on the hot paths.
 
-**Still not a 120 s suite.** The floor is now 5322 / 32 = **166 s**, against 194 s before. The
+### Wave 25: the vendored C was built at `-O0`
+
+The remaining cost was still query *compilation* after wave 24's caching, which is absurd for
+SQLite — and the reason is the profile, not the query. `rusqlite` is `bundled`, so `sqlite3.c`
+is compiled by `cc` with the dev/test profile's `opt-level`, which is **0**. One stanza fixes it:
+
+```toml
+[profile.dev.package.libsqlite3-sys]
+opt-level = 3
+
+[profile.test.package.libsqlite3-sys]
+opt-level = 3
+```
+
+Only the vendored C is optimised; every Rust crate stays on the debug profile, so incremental
+builds and debug assertions are untouched.
+
+| measurement | before | after |
+|---|---:|---:|
+| `session::history` (55 tests) | 85.02 s / 644 CPU-s | **57.29 s / 426 CPU-s** |
+| whole `--lib` suite | 298.01 s / 5322 CPU-s | **219.15 s / 4231 CPU-s** |
+| same suite, second run | — | **194.89 s** (host variance) |
+
+Against the wave-23 baseline of 375.44 s / 6206 CPU-s, the suite is now **−42 % wall and −32 %
+CPU**, and `cargo test -p future-agent` is green across every target (lib 2886, `cli_smoke` 25,
+service, sandbox, shutdown; `ALLTESTS rc=0`).
+
+### The gap that is left is scheduling, not arithmetic
+
+4231 CPU-seconds over 32 cores is a **132 s** floor, and the suite runs 195–219 s: an achieved
+parallelism of **19–21× on 32 cores**. So the next 70–90 s is not work — it is cores sitting
+idle. The known cause is structural: `TestHome` holds a **process-global** `HOME_ENV_LOCK` for
+its whole body (it mutates `HOME`/`USERPROFILE`/`FUTURE_HOME`, which are process-wide), and **91
+call sites** use it. Those 91 tests form a serial chain of roughly their own running time, and the
+tail of that chain is the tail of the suite.
+
+Not measured this wave (it needs an instrumented run of its own): the chain's exact length. What
+is measured is the shape — a ~132 s CPU floor against a 195–219 s wall — so the successor's first
+check is to instrument `home_env_lock()`'s wait and hold time, not to hunt CPU again.
+
+The fix, if the chain is long enough to matter, is to stop making `HOME` process-global for tests
+(a thread-local override consulted by the path resolution under `cfg(test)`, or running the
+`TestHome` tests through the existing `reexec_env_test` child-process helper). Both are fixture
+work of real size, and both are the right shape for a separate todo.
+
+**Still not a 120 s suite.** After wave 25 the floor is 4231 / 32 = **132 s** (194 s at wave 23); the wall is 195-219 s, so what is left is mostly cores idling behind the HOME lock, not arithmetic. The
 budget question does not go away by itself; it shrinks. What the fix buys the *product* is real
 too — this is the same class of defect `.future/memory/sqlite-view-prepare-cost.md` records, and
 it was costing every real session the same 26 ms per recompile.
