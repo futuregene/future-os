@@ -253,6 +253,43 @@ Two consequences the lane has to live with, both now recorded:
    else, or the number is a draw from a distribution. The honest target is the named-row ledger
    with every row either covered or exempted, which is what this file already is.
 
+## Wave 38: the noise floor is not a constant — a profiler test moves 100 rows
+
+Two rewrites landed (commit `84c6b37ad`): the text/reasoning label in
+`recovery.rs` is bound before `draft.text(key, label, *range)?`, and the compaction
+fingerprint input in `session_prompt.rs` is bound before `canonical_hash`. Both are strictly
+subtractive and both survive `cargo fmt --check`.
+
+The interesting result is what the measurement did afterwards.
+
+| pair | source | FLAKY | STABLE |
+|---|---|---:|---:|
+| wave 35 vs wave 36 | identical | **10** | 1150 |
+| wave 36 vs wave 38 | different (this wave's edit shifted lines) | 196 | 1142 |
+| wave 38 vs wave 38b | **identical** | **104** | 1157 |
+
+The middle row is the tool working as designed: comparing runs of *different* source compares
+line numbers that no longer mean the same thing, so `stability.py` is only meaningful on a
+like-for-like pair. That is now a stated precondition in its docstring.
+
+The third row is the surprise. Two runs of the *same* binary, minutes apart, disagree about
+**104 rows** — all in concurrency-heavy files: `service/mod.rs` (27), `logfile.rs` (22),
+`service/shutdown.rs` (12), and more. The cause is visible in the run logs: one of the two runs
+wrote a flamegraph (`Flamegraph written: agent-profile.svg`), the other did not — the suite
+contains profiler tests whose success depends on the host, and when one of them actually profiles,
+the run's timing changes enough that startup/shutdown race windows land differently.
+
+**So the lane has no single noise floor.** It is ~10 rows when two runs have the same luck, and
+~100 when they do not, and the extra rows are all **race windows** (W4 class) in service, logfile
+and shutdown code. Two consequences, both now stated rather than implied:
+
+- A per-line claim from one run is worth ±10 at best and ±100 at worst; any "100 %" statement has
+  to be a claim about a *pair* of runs, or about the named-row ledger.
+- The profiler tests are the amplifier. If the lane wants a tight floor, those are the tests to
+  make deterministic — either they always profile (and the cost is paid every run) or never (and
+  the profiling path is a separate lane), but a run that sometimes profiles is a run that
+  sometimes shifts a hundred rows.
+
 ## Wave 37: the lane now measures its own noise, and names two classes it can never cover
 
 Three numbers replace the single one this file used to quote, and each has a tool that produces
