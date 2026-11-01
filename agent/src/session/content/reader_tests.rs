@@ -346,3 +346,39 @@ fn history_search_and_recall_walk_only_the_visible_fields() {
     // An unknown entry is named, not silently empty.
     assert!(Snapshot::recall(&store, "s", "missing", 0, 16).is_err());
 }
+
+/// A page of a small inline entry is a byte range of its text, so it must cut
+/// on character boundaries in both directions: a page that ends inside a
+/// character returns the characters it can serve, and an offset that starts
+/// inside one is refused instead of producing replacement characters.
+#[test]
+fn an_inline_page_never_splits_a_character() {
+    let (_dir, store) = store();
+    store
+        .append(
+            "s",
+            vec![json!({"id":"tiny","type":"user","role":"user",
+                "timestamp":"2026-10-26T00:00:01Z","meta":{"run_id":"r"},
+                "content":"跨页🙂"})],
+        )
+        .unwrap();
+
+    // The text is small enough to stay inline in its message block.
+    let recalled = Snapshot::recall(&store, "s", "tiny", 0, 4).unwrap();
+    assert_eq!(recalled["chunks"][0]["kind"], "text");
+    assert_eq!(recalled["totalBytes"], "跨页🙂".len() as i64);
+    // Four bytes end inside the second character, so only the first is served.
+    assert_eq!(recalled["chunks"][0]["text"], "跨");
+    assert_eq!(recalled["hasMore"], true);
+    assert_eq!(recalled["nextOffset"], 3);
+
+    // The next page continues from the boundary the previous one stopped at.
+    let next = Snapshot::recall(&store, "s", "tiny", 3, 4).unwrap();
+    assert_eq!(next["chunks"][0]["text"], "页");
+
+    // Starting inside a character is refused, never rounded.
+    let error = Snapshot::recall(&store, "s", "tiny", 1, 4).unwrap_err();
+    assert!(format!("{error:#}").contains("UTF-8 boundary"), "{error:#}");
+    let error = Snapshot::recall(&store, "s", "tiny", 4, 4).unwrap_err();
+    assert!(format!("{error:#}").contains("UTF-8 boundary"), "{error:#}");
+}
