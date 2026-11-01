@@ -571,4 +571,291 @@ mod tests {
             .to_string();
         assert!(error.contains("failed to spawn"), "{error}");
     }
+
+    /// The one shape that makes a candidate ignored *between* candidate
+    /// discovery and `stage`'s retry: the failing `git add` itself rewrites the
+    /// ignore rules. A required clean filter writes `.gitignore` and then exits
+    /// non-zero, so the failure and the rule change land inside the same
+    /// deterministic `git add` — the production case is another process editing
+    /// the Workspace's `.gitignore` mid-capture, which no test can schedule.
+    ///
+    /// The script and its arming marker live outside the Workspace so they are
+    /// not candidates themselves; only `.gitattributes` (which routes `z.bin`
+    /// through the filter) is inside it.
+    fn arm_a_staging_that_rewrites_the_ignore_rules(
+        repo: &ShadowRepo,
+        rules: &str,
+    ) -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let script = root.path().join("refuse-clean.sh");
+        let marker = root.path().join("armed");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nif [ -e '{marker}' ]; then\n  rm -f '{marker}'\n  printf '{rules}' > .gitignore\n  exit 1\nfi\ncat\n",
+                marker = marker.display(),
+                rules = rules,
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(&marker, b"").unwrap();
+        repo.git(
+            &[
+                "config",
+                "filter.refuse.clean",
+                &script.display().to_string(),
+            ],
+            None,
+        )
+        .unwrap();
+        repo.git(&["config", "filter.refuse.required", "true"], None)
+            .unwrap();
+        std::fs::write(
+            repo.workspace_path.join(".gitattributes"),
+            "z.bin filter=refuse\n",
+        )
+        .unwrap();
+        root
+    }
+
+    /// A refused `git add` is retried once with whatever the ignore rules now
+    /// exclude. Everything can be excluded: the retry stages nothing, and that
+    /// is reported as "all ignored" rather than as a snapshot failure.
+    #[cfg(unix)]
+    #[test]
+    fn stage_drops_every_path_when_the_retry_finds_them_all_ignored() {
+        let s = setup("stage-retry-all");
+        std::fs::write(s.repo.workspace_path.join("zz.late.log"), "0123456789").unwrap();
+        std::fs::write(s.repo.workspace_path.join("z.bin"), "b").unwrap();
+        let _fixture = arm_a_staging_that_rewrites_the_ignore_rules(&s.repo, "*.log\nz.bin\n");
+        let index = s.repo.prepare_temp_index("stage-retry-all").unwrap();
+
+        let outcome = stage(
+            &s.repo,
+            &index,
+            &["z.bin".to_string(), "zz.late.log".to_string()],
+        )
+        .expect("a candidate that became ignored must not fail the whole staging");
+
+        assert!(outcome.paths.is_empty(), "{:?}", outcome.paths);
+        assert_eq!(outcome.ignored, 2, "both paths are reported as excluded");
+        assert_eq!(
+            s.repo.git(&["ls-files"], Some(&index)).unwrap_or_default(),
+            "",
+            "the retry had nothing left to stage"
+        );
+    }
+
+    /// The retry keeps the paths that are still candidates: one exclusion must
+    /// not cost the snapshot the files beside it.
+    #[cfg(unix)]
+    #[test]
+    fn stage_retries_once_and_keeps_the_paths_that_are_still_candidates() {
+        let s = setup("stage-retry-keep");
+        std::fs::write(s.repo.workspace_path.join("zz.late.log"), "0123456789").unwrap();
+        std::fs::write(s.repo.workspace_path.join("z.bin"), "b").unwrap();
+        let _fixture = arm_a_staging_that_rewrites_the_ignore_rules(&s.repo, "*.log\n");
+        let index = s.repo.prepare_temp_index("stage-retry-keep").unwrap();
+
+        let outcome = stage(
+            &s.repo,
+            &index,
+            &["z.bin".to_string(), "zz.late.log".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(outcome.paths, vec!["z.bin"]);
+        assert_eq!(outcome.ignored, 1);
+        assert_eq!(s.repo.git(&["ls-files"], Some(&index)).unwrap(), "z.bin");
+    }
+
+    /// When staging drops a candidate, the persisted byte total is the size of
+    /// what was actually staged — not of what was offered. A total that keeps
+    /// counting an excluded file would report a snapshot bigger than its tree.
+    #[cfg(unix)]
+    #[test]
+    fn capture_recounts_the_bytes_it_actually_staged() {
+        let s = setup("capture-recount");
+        std::fs::write(s.repo.workspace_path.join("zz.late.log"), "0123456789").unwrap();
+        std::fs::write(s.repo.workspace_path.join("z.bin"), "b").unwrap();
+        let _fixture = arm_a_staging_that_rewrites_the_ignore_rules(&s.repo, "*.log\n");
+
+        let outcome = capture(
+            &s.repo,
+            &s.thread_id,
+            &s.run_id,
+            "before",
+            &Limits::default(),
+        )
+        .unwrap();
+
+        let tree = outcome
+            .snapshot
+            .tree_id
+            .clone()
+            .expect("a tree was written");
+        let listing = s.repo.git(&["ls-tree", "-l", &tree], None).unwrap();
+        let mut staged_bytes = 0u64;
+        let mut names = Vec::new();
+        for line in listing.lines() {
+            let (meta, name) = line.split_once('\t').expect("ls-tree -l names each entry");
+            let size: u64 = meta
+                .split_whitespace()
+                .nth(3)
+                .and_then(|size| size.parse().ok())
+                .unwrap_or_else(|| panic!("no size in {line:?}"));
+            staged_bytes += size;
+            names.push(name.to_string());
+        }
+        assert!(names.contains(&"z.bin".to_string()), "{names:?}");
+        assert!(
+            !names.contains(&"zz.late.log".to_string()),
+            "a path the ignore rules excluded must not reach the tree: {names:?}"
+        );
+        assert_eq!(
+            outcome.snapshot.file_count,
+            names.len() as i64,
+            "the snapshot counts the files it wrote ({names:?})"
+        );
+        assert_eq!(
+            outcome.snapshot.total_bytes, staged_bytes as i64,
+            "the total is the staged tree's size, not the candidate list's ({names:?})"
+        );
+        assert_eq!(
+            outcome.snapshot.status, "complete",
+            "an expected exclusion does not make the snapshot partial"
+        );
+    }
+
+    /// A thread-scoped subscriber that records the events it receives, so a
+    /// warning can be asserted instead of taken on faith.
+    ///
+    /// It carries a measurement note as well: `tracing`'s field expressions
+    /// (`paths = paths.len()` in `try_stage`) are evaluated only when a
+    /// registered subscriber is interested in the callsite, so a lib test with
+    /// no subscriber never runs that line at all.
+    #[derive(Default)]
+    struct CapturedEvents(std::sync::Mutex<Vec<(String, Option<u64>)>>);
+
+    impl CapturedEvents {
+        fn push(&self, message: String, paths: Option<u64>) {
+            self.0.lock().unwrap().push((message, paths));
+        }
+
+        fn take(&self) -> Vec<(String, Option<u64>)> {
+            std::mem::take(&mut *self.0.lock().unwrap())
+        }
+    }
+
+    struct Recorded<'a>(&'a mut String, &'a mut Option<u64>);
+
+    impl tracing::field::Visit for Recorded<'_> {
+        fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+            if field.name() == "paths" {
+                *self.1 = Some(value);
+            }
+        }
+
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                *self.0 = format!("{value:?}");
+            }
+        }
+    }
+
+    impl tracing::Subscriber for CapturedEvents {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, _attributes: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut message = String::new();
+            let mut paths = None;
+            event.record(&mut Recorded(&mut message, &mut paths));
+            self.push(message, paths);
+        }
+
+        fn enter(&self, _span: &tracing::span::Id) {}
+
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    /// A pathspec that matches nothing is skipped with a warning that names how
+    /// many candidates were dropped. The warning is the only trace a skipped
+    /// path leaves, so it is asserted rather than assumed: an operator reading
+    /// the log must be able to tell a no-op capture from a partial one.
+    #[test]
+    fn stage_warns_with_the_candidate_count_when_a_pathspec_matches_nothing() {
+        let s = setup("stage-warn");
+        let index = s.repo.prepare_temp_index("stage-warn").unwrap();
+        let events = std::sync::Arc::new(CapturedEvents::default());
+        let guard = tracing::subscriber::set_default(Shared(events.clone()));
+
+        stage(
+            &s.repo,
+            &index,
+            &[
+                "gone-a.txt".to_string(),
+                "gone-b.txt".to_string(),
+                "gone-c.txt".to_string(),
+            ],
+        )
+        .unwrap();
+        drop(guard);
+
+        let recorded = events.take();
+        assert_eq!(recorded.len(), 1, "{recorded:?}");
+        assert_eq!(
+            recorded[0].0, "skipped paths that no longer exist",
+            "the warning keeps its message"
+        );
+        assert_eq!(
+            recorded[0].1,
+            Some(3),
+            "the warning names every path the add refused"
+        );
+    }
+
+    /// `set_default` takes a `Subscriber` by value, so the recorder is shared.
+    struct Shared(std::sync::Arc<CapturedEvents>);
+
+    impl tracing::Subscriber for Shared {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            self.0.enabled(metadata)
+        }
+
+        fn new_span(&self, attributes: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            self.0.new_span(attributes)
+        }
+
+        fn record(&self, span: &tracing::span::Id, values: &tracing::span::Record<'_>) {
+            self.0.record(span, values)
+        }
+
+        fn record_follows_from(&self, span: &tracing::span::Id, follows: &tracing::span::Id) {
+            self.0.record_follows_from(span, follows)
+        }
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            self.0.event(event)
+        }
+
+        fn enter(&self, span: &tracing::span::Id) {
+            self.0.enter(span)
+        }
+
+        fn exit(&self, span: &tracing::span::Id) {
+            self.0.exit(span)
+        }
+    }
 }
