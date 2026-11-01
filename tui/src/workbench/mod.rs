@@ -14183,4 +14183,46 @@ mod tests {
             "a click on the patch handed the keys to the file list"
         );
     }
+
+    /// The two preference rows that are menus behave like the key: the click
+    /// lands the highlight on the row it hit and then opens what it names, so
+    /// closing the menu leaves the reader where the pointer left them — back in
+    /// `/preferences`, on that row, not back on the conversation.
+    #[test]
+    fn a_click_on_a_preference_row_opens_the_menu_it_names() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.open_preferences();
+        workbench.render(&data, 120, 38);
+
+        let actions = click_region(&mut workbench, &data, 120, 38, "preferences.language");
+        assert!(
+            actions.contains(&WbAction::Redraw),
+            "the language row answered {actions:?}"
+        );
+        assert_eq!(
+            workbench.overlay,
+            Some(Overlay::Picker(PickerKind::Language)),
+            "the language row did not open the chooser"
+        );
+        assert_eq!(
+            workbench.preferences_index,
+            preferences::PreferenceRow::Language.index(),
+            "the row under the pointer is not the row the menu closed back to"
+        );
+        // `esc` leaves the chooser and lands on `/preferences`, not the chat.
+        workbench.handle(WbEvent::Key("escape".into()), &data);
+        assert_eq!(workbench.overlay, Some(Overlay::Preferences));
+
+        let actions = click_region(&mut workbench, &data, 120, 38, "preferences.theme");
+        assert!(
+            actions.contains(&WbAction::Redraw),
+            "the theme row answered {actions:?}"
+        );
+        assert_eq!(workbench.overlay, Some(Overlay::Picker(PickerKind::Theme)));
+        assert_eq!(
+            workbench.preferences_index,
+            preferences::PreferenceRow::Theme.index()
+        );
+    }
 }
