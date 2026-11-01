@@ -1278,10 +1278,16 @@ mod tests {
         tokio::fs::create_dir_all(&bin_dir).await.unwrap();
         let written = dir.path().join("written.txt");
         let desktop = bin_dir.join("future-desktop");
+        // The hang only has to outlast the probe: the armer below hands the
+        // probe a zero budget as soon as the marker appears, so what this sleep
+        // buys is "the child is still there when the deadline fires". Thirty
+        // seconds made the test wait for the grandchild's own exit and put this
+        // crate's `--lib` gate over the 120 s a supervisor run allows; eight
+        // still cannot elapse before the deadline it is there to lose against.
         tokio::fs::write(
             &desktop,
             format!(
-                "#!/bin/sh\necho \"FutureOS: agent already reachable at 127.0.0.1:50051\"\ntouch '{}'\nsleep 30\n",
+                "#!/bin/sh\necho \"FutureOS: agent already reachable at 127.0.0.1:50051\"\ntouch '{}'\nsleep 8\n",
                 written.display()
             ),
         )
