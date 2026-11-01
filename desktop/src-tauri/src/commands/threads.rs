@@ -246,6 +246,20 @@ mod tests {
                     "get_session_entries_page",
                     serde_json::json!({ "threadId": "t", "before": null }),
                 ),
+                // The paged reader's last argument is an `Option`, which a
+                // missing key legitimately fills with `None`, so the body above
+                // fails earlier — on `limit`. A *wrong-typed* last argument is
+                // what reaches the wrapper's final `?`, the arm the macro
+                // attributes to the `#[tauri::command]` line.
+                (
+                    "get_session_entries_page",
+                    serde_json::json!({
+                        "threadId": "t",
+                        "before": null,
+                        "limit": 20,
+                        "historySource": 5,
+                    }),
+                ),
             ],
         );
     }
