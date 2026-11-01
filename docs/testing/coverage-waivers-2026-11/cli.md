@@ -10,26 +10,21 @@ target), rust **1.99.1** pinned by `rust-toolchain.toml`. The relay lane also ru
 `coverage/2026-11/after/cli/measure14.sh` is the whole thing, `cli-lcov-14.info` the artifact.
 
 **This file's status: 18 rows / 57 lines registered, and it is not a claim of per-line 100 %.** The
-lane reads **260 `DA:0`** out of 55 051 lines (99.53 %): 77 of those are one class
-(closing tokens, below), 53 are statements registered here, **122 are work items** with a
+lane reads **257 `DA:0`** out of 55 033 lines (99.53 %): 77 of those are one class
+(closing tokens, below), 53 are statements registered here, **119 are work items** with a
 falsifier each, and **8 await a product decision** (a section of their own, below). Nothing
-in the 260 is silently missing — the section *Not waived* exists so that "not covered" and
+in the 257 is silently missing — the section *Not waived* exists so that "not covered" and
 "cannot be covered" are never the same sentence, and the decision block exists so that
 "reachable in principle" and "reachable today" are not either.
 
-Wave 14 closes four statements and two closing tokens in `headless/mod.rs` (24 → 18) with two
-**launch** arms rather than any lib test: a `--relay` run, and a model-catalogue refresh the
-*Agent* refuses (§*Two launch arms that had never run*, below). Both are integration
-targets, so they add no instrumented lines of their own — the denominator is unchanged
-(55 051) and every one of the six is a line a product path now really executes.
-
-Wave 13's own number went the other way for a real reason, kept here because it is the
-shape this lane keeps meeting: `browser/safari/safari_manager.rs` reads 14 `DA:0` instead
-of 9, because the launch test's failure diagnosis was ported from its sibling (5 test-side
-panic arms; §*The launch test that could not say why it failed*). `test_server.rs` went
-3 → 14 (+11) from **another lane's** commits (`9fdabcb03` platform-gates an fd diagnostic);
-those eleven are that lane's test-side arms, listed here only so the total is not read as
-this lane's doing.
+Wave 14 closes six lines of `headless/mod.rs` (24 → 18) with two **launch** arms rather than
+any lib test: a `--relay` run, and a model-catalogue refresh the *Agent* refuses
+(§*Two launch arms that had never run*, below). Both are integration targets, so they add no
+instrumented lines of their own — every one of the six is a line a product path now really
+executes. Three more come off `browser/safari/safari_manager.rs` (14 → 11) from **another
+lane's** rewrite of the two launch tests (`0900e710c`, merged into the base this wave was
+finally measured on); those three are that lane's test-side arms, and this file lists them
+only so the total is not read as this wave's doing.
 
 ## Headline
 
@@ -42,11 +37,11 @@ this lane's doing.
 | wave 11 (`cli-lcov-11.info`) | **288** | 54 892 |
 | wave 12 (`cli-lcov-12.info`) | **284** | 54 893 |
 | wave 13 (`cli-lcov-13.info`) | **266** | 55 051 |
-| **this wave (`cli-lcov-14.info`)** | **260** | 55 051 |
+| **this wave (`cli-lcov-14.info`)** | **257** | 55 033 |
 | — closing tokens (one class, see below) | 77 | |
-| — statements | 183 | |
+| — statements | 180 | |
 | — of those, registered as waivers (18 rows, this file; 53 of the 57 are statements, 4 are closing tokens) | **53** | |
-| — of those, work items named below (not waived) | 122 | |
+| — of those, work items named below (not waived) | 119 | |
 | — of those, awaiting a product decision (below) | 8 | |
 
 Per file, wave 13 → this wave (top of the list only; `delta.py cli-lcov-13.info
@@ -55,15 +50,24 @@ cli-lcov-14.info w13 w14` prints the whole table and both totals):
 ```
 file                                    w13    w14   delta
 headless/mod.rs                           24     18      -6   (302/306, 656-657; closing tokens 456, 658)
-commands/remote.rs                        31     31      +0
 commands/remote_peers.rs                  20     20      +0   (4 more lines registered, 0 work items left)
+browser/safari/safari_manager.rs          14     11      -3   (another lane's rewrite, 0900e710c)
+commands/remote.rs                        31     31      +0
 commands/data.rs                          21     21      +0
-relay/cli.rs                              15     15      +0
+relay/cli.rs                              15     15      +0   (another lane's fixes, 3f996ba5d)
 prompt.rs                                 15     15      +0
-browser/safari/safari_manager.rs          14     14      +0
 headless/agent.rs                         14     14      +0
 test_server.rs                            14     14      +0   (another lane's)
 ```
+
+This wave was measured **twice**, and the base moved by ~80 commits between the two: on
+wave 13's base it read **260 / 55 051**, and on the base the hand-off is against
+(`origin/dev-huichen` at `00a0d8178`) it reads **257 / 55 033**. None of the seven-line
+difference below is this wave's product code: `0900e710c` rewrote both Safari launch tests
+(−3 `DA:0`, −20 instrumented lines) and `3f996ba5d`/`c83e988a1` touched `relay/cli.rs` and
+`commands/data.rs` (+2 lines). The six `headless/mod.rs` lines closed here are the same six
+on both bases, and all 57 registered lines were re-checked against the second report
+(`checked=57 stale=0`), not left describing the first.
 
 Wave 13 was measured twice, because the integration branch moved by twelve commits between
 the first report and the hand-off: on wave 12's base the lane read **254 / 55 028**, and on
@@ -113,12 +117,13 @@ first on `PATH` (Homebrew's rustup shim shadows it otherwise). It must be run as
 bit, and `./measure14.sh` then fails in milliseconds with no output at all — which reads
 exactly like "the measurement finished instantly".
 
-The wave-14 report was measured once, at load average **38 → 61** from other sessions on
-this box: `1543 passed; 0 failed` in **102.66 s** for the lib target, every integration
-target green, and the nats-only pass `2 passed`. No run of this wave had to be re-taken,
-which is itself the first observation of the safari question (§*The launch test that could
-not say why it failed*, wave 13): the diagnostic is in place, and this measurement did not
-produce the red it is for.
+The wave-14 report was first taken at load average **38**, and then re-taken after the
+integration branch moved ~80 commits (load **45–80**): `1543 passed; 0 failed` in
+**102.66 s** and then **173.75 s** for the lib target, every integration target green both
+times, and the nats-only pass `2 passed`. No run of this wave had to be re-taken for a
+failure, which is itself part of the answer to the safari question: the wave-13 diagnostic
+is in place, and six runs of this wave (two measured, four hunted) did not produce the red
+it is for — see `cli-safari-gate-flake.md` §7.
 
 ## Rows registered as waivers
 
@@ -159,8 +164,8 @@ measurement, `79` at wave 13, `86` at wave 10, `97` at wave 3, `119` at wave 2.
 All 57 registered lines were re-read against `cli-lcov-14.info` when this wave landed
 (`waiver_check.py`, `checked=57 stale=0`), so no row is stale. Four of them
 (`relay/cli.rs:245`, `relay/cli.rs:522`, `commands/remote.rs:2631`, `commands/remote.rs:2810`)
-are also closing tokens, which is why the class count is 77 of the 260, the registered
-statements are 53 and not 57, and 77 + 53 + 122 + 8 = 260.
+are also closing tokens, which is why the class count is 77 of the 257, the registered
+statements are 53 and not 57, and 77 + 53 + 119 + 8 = 257.
 
 Rows 17 and 18 are the last unregistered lines of `commands/remote_peers.rs`: with them the
 file's 20 `DA:0` lines divide exactly into **11 closing tokens** (`411`, `671`, `692`, `806`,
@@ -230,6 +235,16 @@ reports `safari_start failed before spawning a driver: Safari is only available 
 in **0.04 s**; before the change the same input printed the marker-wait sentence after the
 full 20 s. That is the diagnostic's positive control, and the reason this wave's per-file
 count for the file went *up* by five while the lane's went down by thirty.
+
+**Where that landed (wave 14).** The flake workstream closed the item on a different branch
+(`0900e710c`, in this wave's final base): the 20 s wait is gone, the wait now ends when the
+fixture's record appears *or* when the launch task finishes, and its bound is the product's
+probe budget — a count, not a duration. Its injected control (a driver that sleeps 25 s
+before touching its marker) was **2/2 red** with the old shape and green with the new one, so
+the arm was (e), `/bin/sh` starved past the test's own clock, and never a foreign listener.
+The `DA:0` lines this section counted moved with that rewrite: the file reads 11, not 14, on
+the base this wave is measured against, and they remain test-side arms. `$2` was therefore
+not ported — see `cli-safari-gate-flake.md` §7.
 
 
 
@@ -407,8 +422,8 @@ PhaseAction::NeedsAccount => {            // Failed(AccountAuthorization) && !se
    narrower — "no CLI input exists *today*".
 
 For the arithmetic: these 8 lines are neither in the 53 registered nor in the work items
-below; they are the third category (77 closing tokens + 53 registered + 122 work items +
-8 decision-pending = 260).
+below; they are the third category (77 closing tokens + 53 registered + 119 work items +
+8 decision-pending = 257).
 
 ### `supervise` — the wave-3 plan, executed in wave 10
 
@@ -470,9 +485,9 @@ this lane):
 
 ## What this file cannot claim
 
-- **Not per-line 100 %.** 260 lines read 0. The lane's compliance statement is the one
+- **Not per-line 100 %.** 257 lines read 0. The lane's compliance statement is the one
   `docs/testing/coverage-waivers-2026-11/README.md` makes for the web lane: no silent gap
-  (77 one-class + 53 registered statements + 122 work items + 8 decision-pending = 260), no
+  (77 one-class + 53 registered statements + 119 work items + 8 decision-pending = 257), no
   stale row (all 57 registered lines re-read against `cli-lcov-14.info` by
   `waiver_check.py`, `stale=0`), no product change made for coverage (no seam, no `pub`, no
   signature — the `test-support` decision is a dev-dependency this crate already had, and its
