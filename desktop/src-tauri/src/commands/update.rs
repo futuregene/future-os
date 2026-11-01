@@ -1547,16 +1547,23 @@ mod tests {
         INSTALL_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
     }
 
-    /// `#[tauri::command]` attributes the generated wrapper to the *attribute* line, so
-    /// that line only reads as covered once the command is reached through Tauri's own
-    /// dispatch rather than called as a function.
+    /// The frontend calls this command with no `language` at all, so the absent-optional
+    /// path through the generated wrapper — deserialize the missing key, then reach the
+    /// body — is the shape that ships, and it is not what the direct-call fixture covers.
     ///
-    /// Only `install_app_update` can be dispatched offline: `check_app_update` resolves
-    /// its manifest URL from the build channel inside the command, so invoking it — by
-    /// any route — makes a live request to `dl.future-os.cn`. Measured, not assumed: an
-    /// earlier version of this fixture dispatched it and came back with a real
-    /// `0.0.2-104+nightly` manifest, which is the reason that line stays in the table
-    /// instead of being covered here.
+    /// This is **not** an attribute-line test, and measuring said so: the attribute owns
+    /// the wrapper only for the argument-error arm (`InvokeBody::Raw` was refused with
+    /// "expected a value for key language but the IPC call used a bytes payload" — the
+    /// arm the `history_transfer` module relies on). A dispatch that reaches the body
+    /// leaves the attribute line at `DA:0`; it is in the waiver table, not covered here.
+    /// The handler is also this fixture's own `generate_handler!`, so it says nothing
+    /// about the product's registration in `run_with` — that list is only reachable on a
+    /// real `Wry` builder.
+    ///
+    /// `check_app_update` has no offline dispatch at all: it resolves its manifest URL
+    /// from the build channel *inside* the command, so any invocation makes a live
+    /// request to `dl.future-os.cn`. Measured, not assumed: an earlier version of this
+    /// fixture dispatched it and came back with a real `0.0.2-104+nightly` manifest.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn the_install_command_refuses_a_manual_only_build_over_ipc() {
