@@ -673,6 +673,10 @@ mod tests {
     /// coverage counter (`docs/testing/module-cli.md` §4b), and waiting for the
     /// task is also the assertion that the mock finished its work.
     async fn serve_webdriver(port: i64) -> WebdriverMock {
+        // The mock holds a listener and one connection per WebDriver call, in a
+        // process shared with every other test in this binary
+        // (see `crate::test_env::ensure_fd_headroom`).
+        crate::test_env::ensure_fd_headroom();
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", port as u16))
             .await
             .expect("the resolved port is still free");
