@@ -65,7 +65,7 @@ The working copies (`ledger-gen.py`, `ledger.md`, the lcov files) live under the
 `coverage/2026-11/after/agent/`, which is why this file exists in `docs/`: the numbers above
 are reproducible from the commands shown, with nothing but the lcov file.
 
-## Waived (98 lines)
+## Waived (108 lines)
 
 Category names follow `.future/memory/coverage-llvm-cov.md` (W1 cfg(windows) · W2 defensive
 dead arm · W3 OS failure injection · W4 race window · W5 attribution artifact · W6 ghost line
@@ -83,6 +83,12 @@ it needs.
 | 6 | `rpc/commands/settings.rs:21-24,43-46,53-56,548-552,555-562,570-571` | 23 | **W3** (host capability) | the probe **error** arms, the Windows-only reset arm, and the "sandbox tier unavailable → Manual" fallback | the macOS probe body always returns `Ok` (`sandbox/mod.rs:1082-1100`: `available` is `/usr/bin/sandbox-exec`'s existence), so the error arms need a host whose probe fails and the fallback needs a host without that binary; falsify by running these settings tests on either |
 | 7 | `rpc/session_prompt.rs:306-314` | 9 | **W2** (candidate) | the non-segmented transcript scan for a duplicate `run_id` | only reachable when a session is **not** ephemeral yet its broadcaster is **not** segmented, which the constructor cannot produce unless `configure_journal` failed (`rpc/session.rs:288` swallows that error); the same store then answers `ensure_execution_allowed` first (`session_prompt.rs:260-266`) with `PersistenceUnavailable`, so the scan is never reached. Falsified by a fixture that makes `configure_journal` fail while the store still accepts execution |
 | 8 | `session/content/reader_recall.rs:51-59` | 9 | **W2** (candidate) | `Field::page`'s `Source::Inline` arm (slice straight from the `message_blocks` column) | reachable only for a **format-2** entry whose block text stayed inline, i.e. whose reference did not resolve when it was written (`entry_records.rs:302-315` sets `text = NULL` exactly when the reference resolves). A pre-canonical conversation does keep inline text, but the canonical reader refuses it outright — measured: `Snapshot::recall` on a `bind_legacy_events` session answers `wrong transcript reader format`. Falsified by finding a writer path that stores inline text in a format-2 session while staging is skipped |
+| 9 | `rpc/commands/providers.rs:370-375,389-391` | 9 | **W6** (attribution) | the `.map(|levels| …collect())` that stringifies a provider's or model's declared thinking-level list | the value it produces is asserted by `list_models_sends_each_models_thinking_levels_and_starting_level`, and that test **passes** while these rows record `DA=0` when it runs alone; a second identical run of the same binary records `DA=2`. A record that disagrees with a passing assertion about its own output is wrong about the line. Falsified by an instrumented build in which the closure body's region lands on the source line in every run |
+| 10 | `llm/mod.rs:439` | 1 | **W4** (race window) | `return;` after `if tx.is_closed()` — the stream stops when the receiver has gone | whether the receiver is observed closed at that instant is a timing property: `stability.py` shows the row flipping between runs of the same binary. Covered whenever the consumer disconnects before the next frame, which no ordering guarantee forces |
+
+Rows 9 and 10 were found by the lane's own stability check (`stability.py`, wave 36): two
+instrumented runs of identical code differ by exactly these ten rows, and by no others. That is
+the measurement noise floor this file's totals have to be read against.
 
 ### 1. `execution.rs:716-745` — the bubblewrap helper-report block
 
