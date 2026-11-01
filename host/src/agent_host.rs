@@ -805,7 +805,6 @@ mod block_fixtures {
     }
 
     /// An owned service that never publishes `finished` inside the stop window:
-
     /// `recover` must not claim the cleanup half-done, and must say the process
     /// is what has to be restarted.
     #[test]
