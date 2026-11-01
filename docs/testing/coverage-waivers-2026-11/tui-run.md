@@ -189,7 +189,9 @@ are each one line later than `r9`'s, and every figure below is `r10`'s).
 
 Eighteen of the twenty `run.rs` lines `r9` closed are the four cases below (`python3 exact.py
 tui2-r8.info tui2-r9.info workbench/run.rs`); `run.rs:1280` (the review's `SelectDiff` re-read)
-and `:1772` (the panel's row detail) closed in the sibling half. Nothing opened in either pass.
+and `:1772` (the panel's row detail) closed in the sibling half. Nothing opened in either pass,
+and `r11` — the same lane re-run on the committed tree — repeats `113`/`221` (lane `1317`), so the
+wave's number is reproducible rather than one lucky pass.
 
 | arm | the read that fails | probe |
 |---|---|---|
