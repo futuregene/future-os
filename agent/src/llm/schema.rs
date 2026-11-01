@@ -2070,6 +2070,17 @@ mod tests {
         model.thinking_levels = vec!["turbo".into()];
         let vocabulary = vocab(json!({"values": ["low"]}));
         assert_eq!(vocabulary.mapping("turbo"), EffortMapping::None);
+        // Run the report with an enabled subscriber, so the event it raises is
+        // actually constructed rather than dropped by the callsite guard. It is
+        // idempotent per provider/model/level: the second resolution of the same
+        // model must not log again.
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .with_max_level(tracing::Level::TRACE)
+                .finish(),
+        );
+        report_unexpressible_levels(&model, &vocabulary);
         report_unexpressible_levels(&model, &vocabulary);
     }
 
