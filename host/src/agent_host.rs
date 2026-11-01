@@ -795,7 +795,17 @@ mod block_fixtures {
         run_case("recover-stopping");
     }
 
+    /// The refusal must come from `recover`'s *entry*, not from the second guard
+    /// inside its closure: over an owned service those are different behaviours —
+    /// the later one has already stopped the service and moves the stop's own
+    /// deadline into the answer. This fixture is the difference between them.
+    #[test]
+    fn a_refused_recovery_never_stops_an_owned_agent() {
+        run_case("recover-stopping-owned");
+    }
+
     /// An owned service that never publishes `finished` inside the stop window:
+
     /// `recover` must not claim the cleanup half-done, and must say the process
     /// is what has to be restarted.
     #[test]
@@ -949,6 +959,32 @@ mod block_fixtures {
             // apart — a one-space change to either arm has to fail this test.
             assert_eq!(error, "Desktop is stopping");
             assert_eq!(host.phase(), Phase::Idle, "nothing was repaired");
+            return;
+        }
+        if case == "recover-stopping-owned" {
+            // The same refusal, against a host that *owns* a finished service.
+            // `recover` answers "Desktop is stopping" from two places — the guard
+            // at its entry, and a second one inside the closure after the owned
+            // service has been stopped — so a fixture over an unowned host cannot
+            // tell them apart: removing the entry guard only moves the sentence
+            // later. Here it cannot move: with an owned, finished service in a
+            // `Ready` phase, dropping the entry guard lets `recover` reach its
+            // restart-requirement arm (its retirement is not complete), so the
+            // sentence and the untouched phase both change.
+            {
+                let mut state = host.0.state();
+                state.phase = Phase::Ready;
+                state.owned = true;
+                state.finished = true;
+            }
+            crate::request_scope::close_admission();
+            let error = host.recover("auto".into()).unwrap_err().to_string();
+            assert_eq!(error, "Desktop is stopping");
+            assert_eq!(
+                host.phase(),
+                Phase::Ready,
+                "the refusal must land before anything touches the owned service"
+            );
             return;
         }
         if case == "recover-unfinished" {
