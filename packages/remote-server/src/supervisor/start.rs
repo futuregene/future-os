@@ -272,7 +272,7 @@ impl Supervisor {
                     .commit(epoch, || {
                         *self.last_error_code.lock().unwrap() = None;
                         if let Some(line) = self.start_failures.recovered() {
-                            eprintln!("{line}");
+                            future_remote_protocol::remote_log!("{line}");
                         }
                         self.start_retry_attempts.store(0, Ordering::Release);
                         self.start_retry_since.store(0, Ordering::Release);
@@ -432,7 +432,7 @@ impl Supervisor {
             if creds.handshake_version != 2 || creds.secure.is_none() {
                 // Credentials created before the signed mutual handshake have no
                 // QR-bound peer identity. They cannot be upgraded safely in place.
-                eprintln!("remote: replacing legacy pairing [PA003]");
+                future_remote_protocol::remote_log!("remote: replacing legacy pairing [PA003]");
                 self.forget_slot(&pair_id)?;
                 continue;
             }
@@ -443,7 +443,7 @@ impl Supervisor {
                     // someone revoked it. It is not this machine's device any more,
                     // and leaving it on disk would make every start retry a
                     // credential that can never succeed.
-                    eprintln!("remote: a pairing was revoked [PA001 invalid_remote_credential]; forgetting that device");
+                    future_remote_protocol::remote_log!("remote: a pairing was revoked [PA001 invalid_remote_credential]; forgetting that device");
                     self.forget_slot(&pair_id)?;
                     // Only the first one is kept: one reason names the event, and
                     // a machine whose book held several revoked devices has the
@@ -616,7 +616,9 @@ impl Supervisor {
                     surface.lan_url,
                 ),
                 Err(error) => {
-                    eprintln!("remote: web client bind failed [LC002]: {error}");
+                    future_remote_protocol::remote_log!(
+                        "remote: web client bind failed [LC002]: {error}"
+                    );
                     (None, None, None)
                 }
             }
@@ -754,7 +756,7 @@ impl Supervisor {
         }
 
         let attempt = self.record_runtime_failure(unix_millis());
-        eprintln!(
+        future_remote_protocol::remote_log!(
             "remote: critical task stopped [RT001]; rebuilding generation ({attempt}/{MAX_RUNTIME_RECONNECT_ATTEMPTS})"
         );
         if attempt > MAX_RUNTIME_RECONNECT_ATTEMPTS {
@@ -772,7 +774,9 @@ impl Supervisor {
                     Ok(status) if retryable_start_status(&status) => server.spawn_start_retry(),
                     Ok(_) => server.rearm_generation_watch(&pair_id, generation_id),
                     Err(error) => {
-                        eprintln!("remote: automatic bridge reconnect failed [RT001]: {error}");
+                        future_remote_protocol::remote_log!(
+                            "remote: automatic bridge reconnect failed [RT001]: {error}"
+                        );
                         *server.last_error_code.lock().unwrap() =
                             Some("reconnect_required".to_string());
                         server.rearm_generation_watch(&pair_id, generation_id);
@@ -858,7 +862,9 @@ impl Supervisor {
             Err(error) if pairing::is_invalid_or_revoked_error(&error) => {
                 // Only the classified, fixed code is logged, never a platform
                 // response body/message that could reflect credentials.
-                eprintln!("remote: invalid_remote_credential; forgetting that device");
+                future_remote_protocol::remote_log!(
+                    "remote: invalid_remote_credential; forgetting that device"
+                );
                 self.forget_slot(pair_id)?;
                 return Ok(self.empty());
             }
@@ -905,7 +911,7 @@ impl Supervisor {
         }
         let epoch = self.access.current();
         let attempt = self.web_reconnect_attempts.fetch_add(1, Ordering::AcqRel) + 1;
-        eprintln!(
+        future_remote_protocol::remote_log!(
             "remote: local web listener unavailable; retrying ({attempt}/{MAX_WEB_RECONNECT_ATTEMPTS})"
         );
         self.spawn({
@@ -930,7 +936,9 @@ impl Supervisor {
                             state.web_url = web_url;
                             state.web_lan_url = web_lan_url;
                             server.web_reconnect_attempts.store(0, Ordering::Release);
-                            eprintln!("remote: local web listener reconnected [LC002]");
+                            future_remote_protocol::remote_log!(
+                                "remote: local web listener reconnected [LC002]"
+                            );
                             true
                         });
                         if installed == Some(true) {
@@ -938,7 +946,9 @@ impl Supervisor {
                         }
                     }
                     Err(error) => {
-                        eprintln!("remote: local web listener reconnect failed [LC002]: {error}")
+                        future_remote_protocol::remote_log!(
+                            "remote: local web listener reconnect failed [LC002]: {error}"
+                        )
                     }
                 }
                 let _ = server.access.commit(epoch, || {
@@ -955,7 +965,7 @@ impl Supervisor {
         match pairing::error_code(&error) {
             Some(code) => {
                 if let Some(line) = self.start_failures.record(code, &error) {
-                    eprintln!("{line}");
+                    future_remote_protocol::remote_log!("{line}");
                 }
                 *self.last_error_code.lock().unwrap() = Some(code.to_string());
                 Ok(RemoteStatus {
