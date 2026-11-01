@@ -134,13 +134,15 @@ impl Supervisor {
         };
         // Said out loud: this removes a device row the user may remember
         // pairing, and the log is the only place that explains why.
-        eprintln!(
+        future_remote_protocol::remote_log!(
             "remote: the same device is already paired [{older}]; dropping that pairing instead of serving it twice [PA001]"
         );
         let server = self.clone();
         self.spawn(async move {
             if let Err(error) = server.unpair_slot(&older).await {
-                eprintln!("remote: could not drop the duplicate pairing [{older}]: {error}");
+                future_remote_protocol::remote_log!(
+                    "remote: could not drop the duplicate pairing [{older}]: {error}"
+                );
             }
         });
     }
@@ -163,7 +165,7 @@ impl Supervisor {
             loop {
                 if let Err(error) = host.retry_revokes().await {
                     if let Some(line) = failures.record("local", error) {
-                        eprintln!("{line}");
+                        future_remote_protocol::remote_log!("{line}");
                     }
                 }
                 tokio::time::sleep(Duration::from_secs(30)).await;

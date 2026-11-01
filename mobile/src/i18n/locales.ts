@@ -660,6 +660,7 @@ export const resources = {
         allowing: "Allowing",
       },
       share: {
+        chooseDevice: "Choose a device",
         chooseDestination: "Share to a conversation",
         newConversation: "New conversation",
         existingConversation: "Existing conversation",
@@ -1634,6 +1635,7 @@ export const resources = {
         allowing: "允许中",
       },
       share: {
+        chooseDevice: "选择设备",
         chooseDestination: "分享到会话",
         newConversation: "新会话",
         existingConversation: "已有会话",

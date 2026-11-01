@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
  * Loading KaTeX on demand.
@@ -9,36 +9,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  * missing chunk would leave every formula in the conversation blank for the rest of the
  * session, with no way to retry.
  */
+const state = vi.hoisted(() => ({ failNext: true }));
+
+vi.mock("katex", () => {
+  if (state.failNext)
+    throw new Error("chunk unavailable");
+  return { default: { renderToString: (code: string) => `<span class="katex">${code}</span>` } };
+});
 
 beforeEach(() => {
   vi.resetModules();
-});
-
-/**
- * Arrange the next `import("katex")` to fail or to succeed.
- *
- * Registered per test with `vi.doMock` rather than one hoisted factory gated on a
- * mutable flag: a mock factory whose evaluation already succeeded is cached, and
- * `vi.resetModules()` does not re-run it (measured — flipping a flag afterwards
- * still resolved). A factory that *throws* is not cached, which is exactly the
- * asymmetry this file is about, so the arrangement has to happen before the
- * import rather than inside the factory.
- */
-function mockKatex(available: boolean) {
-  vi.doMock("katex", () => {
-    if (!available)
-      throw new Error("chunk unavailable");
-    return { default: { renderToString: (code: string) => `<span class="katex">${code}</span>` } };
-  });
-}
-
-afterEach(() => {
-  vi.doUnmock("katex");
+  state.failNext = true;
 });
 
 describe("loadKatex", () => {
   it("forgets a failed load so the next formula retries", async () => {
-    mockKatex(false);
     const lazy = await import("./lazyKatex");
     const first = lazy.loadKatex();
     await expect(first).rejects.toThrow();
@@ -49,14 +34,14 @@ describe("loadKatex", () => {
     await expect(second).rejects.toThrow();
 
     // And a chunk that does arrive is the one every later caller gets.
-    mockKatex(true);
+    state.failNext = false;
     const third = lazy.loadKatex();
     await expect(third).resolves.toHaveProperty("renderToString");
     expect(lazy.loadKatex()).toBe(third);
   });
 
   it("shares the one load between callers", async () => {
-    mockKatex(true);
+    state.failNext = false;
     const lazy = await import("./lazyKatex");
     const a = lazy.loadKatex();
     const b = lazy.loadKatex();
@@ -70,7 +55,7 @@ describe("loadKatex", () => {
 
 describe("mathHtml", () => {
   it("paints the formula through KaTeX", async () => {
-    mockKatex(true);
+    state.failNext = false;
     const lazy = await import("./lazyKatex");
     const katex = await lazy.loadKatex();
     expect(lazy.mathHtml(katex, "x^2", true)).toContain("x^2");

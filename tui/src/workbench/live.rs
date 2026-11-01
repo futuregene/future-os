@@ -11654,25 +11654,46 @@ mod tests {
     /// — which is the branch a launchpad first message takes, and the one that
     /// measured zero because every fixture so far staged a directory.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // FUTURE_HOME is process-global and must stay pinned across awaits.
     async fn a_chat_session_creates_its_own_directory() {
+        let _guard = crate::test_env::lock();
+        // A home of its own: this test is about the directory `new_session`
+        // creates, and the shared one would make it pass on a directory a
+        // sibling test happened to leave behind.
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_env::EnvVarGuard::set("FUTURE_HOME", home.path());
         // A workspace that is **not** a repository: the point here is the chat
         // directory, and a `git` read in the shared worktree would put this test
         // in the same repository as the `/git` panel's tests — measured: two of
         // four full-suite runs then failed there on a read that had contended.
         let workspace = tempfile::tempdir().expect("workspace");
-        let get_state = format!(
-            r#"{{"sessionId":"s1","cwd":"{}"}}"#,
-            workspace.path().display()
-        );
-        let (mut live, seen) = live_with_seen(&[
+        // `serde_json`, never `format!`: a Windows path is spelled with `\`
+        // separators, and dropping them into a JSON string literal raw makes
+        // escapes JSON does not have (`C:\Users\…` → `\U`). The state then fails
+        // to decode on *every* read, `refresh_state` keeps the empty one, and the
+        // surface never learns a session id — which is how this test went red on
+        // Windows alone, while every POSIX spelling of the same path passed.
+        let get_state = serde_json::json!({
+            "sessionId": "s1",
+            "cwd": workspace.path(),
+        })
+        .to_string();
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
             ("get_state", &get_state),
             ("get_session_entries", r#"{"entries":[]}"#),
             ("new_session", r#"{"sessionId":"s-chat"}"#),
             ("set_sandbox_policy", r#"{"success":true}"#),
             ("set_tools", "{}"),
-        ])
-        .await;
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock.clone()).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the mock agent");
+
         live.to_launchpad();
+        // `/new` inherits the workspace the last conversation ran in; a plain
+        // chat stages none, and staging none *is* the branch this test is about.
+        live.pending_cwd = None;
         // Nothing staged: the launchpad's own defaults, and a tool set to spend.
         live.pending_tools = Some(vec!["read".into()]);
 
@@ -11700,18 +11721,27 @@ mod tests {
         );
         assert!(!live.detached(), "a fresh chat is not the launchpad");
 
-        // The directory the client named is a real one under this home.
-        let chat_root = super::chat_root();
+        // A chat is filed where the desktop app files its own: under the app's
+        // chat tree, named after the session id this client minted — the agent
+        // minting one itself would leave the session running where this client
+        // never filed it.
+        let request = crate::rpc::grpc_client::tests::last_request_of(&mock, "new_session");
         assert!(
-            chat_root.is_dir(),
-            "the chat directory root was never created: {}",
-            chat_root.display()
+            !request.session_id.is_empty(),
+            "a chat mints its session id"
+        );
+        let directory = home
+            .path()
+            .join("workspaces")
+            .join("chat")
+            .join(&request.session_id);
+        assert_eq!(
+            request.cwd,
+            directory.to_string_lossy(),
+            "the chat did not run in the directory named after it"
         );
         assert!(
-            std::fs::read_dir(&chat_root)
-                .expect("the chat root")
-                .next()
-                .is_some(),
+            directory.is_dir(),
             "a chat session left no directory of its own"
         );
         live.client.disconnect();

@@ -152,3 +152,86 @@ async fn forgetting_a_slot_removes_it_from_the_book() {
     assert_eq!(slots.len(), 1, "{slots:?}");
     assert_eq!(slots[0].pair_id, "pair_kept");
 }
+
+/// A spent burst budget buys a cooldown, not silence.
+///
+/// Before this, the third fast rebuild exhausted the budget and the watcher then
+/// idled out the rest of the ten-minute failure window: nothing was attempted
+/// again until the whole window elapsed, so a relay blip that the very next
+/// attempt would have healed kept the device unreachable for minutes and it came
+/// back only when the window expired. The decision is pure, so the cadence is
+/// asserted here without a clock.
+#[test]
+fn a_spent_burst_budget_cools_down_instead_of_idling_the_window() {
+    let now = 1_000_000;
+    // Inside the burst: attempt at once.
+    assert_eq!(reconnect_step(0, now - 1, now), ReconnectStep::Attempt);
+    assert_eq!(
+        reconnect_step(MAX_RUNTIME_RECONNECT_ATTEMPTS - 1, now - 1, now),
+        ReconnectStep::Attempt
+    );
+    // Spent, still inside the window: wait one cooldown, then attempt.
+    assert_eq!(
+        reconnect_step(MAX_RUNTIME_RECONNECT_ATTEMPTS, now - 1, now),
+        ReconnectStep::Wait(RUNTIME_COOLDOWN_BASE)
+    );
+    assert_eq!(
+        reconnect_step(u8::MAX, now - 1, now),
+        ReconnectStep::Wait(RUNTIME_COOLDOWN_MAX)
+    );
+    // Past the window the budget is forgiven, so the burst is available again.
+    assert_eq!(
+        reconnect_step(
+            MAX_RUNTIME_RECONNECT_ATTEMPTS,
+            now,
+            now + RUNTIME_FAILURE_WINDOW_MS + 1
+        ),
+        ReconnectStep::Attempt
+    );
+}
+
+/// The cooldown doubles per attempt and saturates at the ceiling, so a credential
+/// the relay keeps refusing settles at one attempt per ten minutes instead of
+/// retrying a dead grant in a tight loop.
+#[test]
+fn the_cooldown_doubles_per_attempt_and_saturates() {
+    assert_eq!(
+        cooldown_delay(MAX_RUNTIME_RECONNECT_ATTEMPTS),
+        RUNTIME_COOLDOWN_BASE
+    );
+    assert_eq!(
+        cooldown_delay(MAX_RUNTIME_RECONNECT_ATTEMPTS + 1),
+        RUNTIME_COOLDOWN_BASE * 2
+    );
+    assert_eq!(
+        cooldown_delay(MAX_RUNTIME_RECONNECT_ATTEMPTS + 5),
+        RUNTIME_COOLDOWN_MAX
+    );
+    assert_eq!(cooldown_delay(u8::MAX), RUNTIME_COOLDOWN_MAX);
+    // Never shorter than the base, whatever the count.
+    assert!(cooldown_delay(0) >= RUNTIME_COOLDOWN_BASE);
+}
+
+/// The attempt counter saturates instead of wrapping: slow retries now push it
+/// past the burst budget, so `fetch_add(1) + 1` on a `u8` would wrap to zero and
+/// silently shorten the cooldown back to the base.
+#[test]
+fn the_attempt_counter_saturates_instead_of_wrapping() {
+    let supervisor = Supervisor::new(Arc::new(MemoryHost::default()), Arc::new(TokioExecutor));
+    // An open window, or the first call forgives the counter instead of growing it.
+    supervisor
+        .runtime_failure_window_started
+        .store(1_000, Ordering::Release);
+    supervisor
+        .runtime_reconnect_attempts
+        .store(u8::MAX - 1, Ordering::Release);
+    assert_eq!(supervisor.record_runtime_failure(2_000), u8::MAX);
+    assert_eq!(supervisor.record_runtime_failure(3_000), u8::MAX);
+    assert_eq!(
+        supervisor
+            .runtime_reconnect_attempts
+            .load(Ordering::Acquire),
+        u8::MAX,
+        "a saturated counter stays saturated"
+    );
+}
