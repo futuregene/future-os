@@ -1,17 +1,17 @@
 {
  "lane": "host/rust-lib",
- "measurement_commit": "0f0ea589c",
+ "measurement_commit": "cc2f93d42",
  "toolchain": "1.99.1",
  "scope_prefix": "/host/src/",
  "command": "cargo llvm-cov -p future-host --lib --no-report && cargo llvm-cov report --lcov",
- "da0_total": 2379,
+ "da0_total": 2370,
  "switch_lane": 2016,
  "waived": 97,
- "open": 266,
- "before_da0": 2394,
- "artifact": "coverage/2026-11/after/host/round12-lcov.info",
- "inventory": "coverage/2026-11/after/host/round12-missed.json",
+ "open": 257,
+ "before_da0": 2379,
+ "artifact": "coverage/2026-11/after/host/round13b-lcov.info",
+ "inventory": "coverage/2026-11/after/host/round13b-missed.json",
  "doc": "docs/testing/coverage-waivers-2026-11/host.md",
- "buckets": "coverage/2026-11/after/host/buckets12.py",
- "earlier_passes": "round11-D (2378 at 79050bbd6, buckets11d.py, round11-D-open.json); round11-C (2378, pre-rebase, buckets11c.py); round11-A/B (2375/2377 at c6b7b4979, buckets11.py); round11-base (2394 at d3b2c58fd). Round 12's red instrumented passes are kept beside the artifact (round12-run-failed-shell*.log) and are not the record: round12-run-green.log is, at 1984 passed / 0 failed."
+ "buckets": "coverage/2026-11/after/host/buckets13.py",
+ "earlier_passes": "round13 pass A (round13-lcov-red.info, 9m06s) is kept but is not the record: it went red on remote_peer/testing.rs:70, a pairing fixture this round does not touch, and the test passes in isolation and beside the new fixtures (§13.4). Earlier: round12 (2379 at 0f0ea589c), round11-D (2378 at 79050bbd6), round11-C (2378, pre-rebase), round11-A/B (2375/2377), round11-base (2394), round9-A/B (2392). Round 12's doc and record were dropped by the merge that landed its code and are restored in this round's first commit (§13.1)."
 }
