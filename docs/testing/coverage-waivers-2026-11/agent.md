@@ -3,25 +3,26 @@
 **Metric A** — a line counts as uncovered iff its LCOV record is `DA:<line>,0`. The
 llvm-cov *summary* percentage is not the acceptance number.
 
-**Last measurement**: `test/cov-agent` at `a5537aa30` (cut from `origin/dev-huichen@79bd2bd37`),
-Rust **1.99.1** (`rust-toolchain.toml`), macOS arm64.
+**Last measurement**: `test/cov-agent` at `f167b3349` (cut from `origin/dev-huichen@79bd2bd37`),
+Rust **1.99.1** (`rust-toolchain.toml`), macOS arm64, lcov
+`coverage/2026-11/after/agent/lcov-after18.info`, run log `after18.log`.
 
-**Result**: `DA:0` = **1400** lines in **131** files under `agent/src` (83 014 executable,
-98.31 % per-line). This wave cleared **273** of the 1673 it started from. Of the 1416:
+**Result**: `DA:0` = **1321** lines in **131** files under `agent/src` (83 509 executable,
+98.42 % per-line). Two waves have cleared **352** of the 1673 this branch started from. Of the
+1321:
 
 | state | lines |
 |---|---:|
 | **waived** (mechanism + falsifier named below) | **98** |
-| `open` — **no test and no justification yet** | **1309** |
+| `open` — **no test and no justification yet** | **1223** |
 
-Reconciliation with the generated ledger (which must sum to 1416): waived 24
-(`glob_scan.rs` ignored acceptance, class `lane`) + 24 (`execution.rs` Linux helper block,
-class `open` there because the line text carries no attribute) + 1 (`transport.rs:212`, class
-`open`) + 2 (Windows candidates, class `W1`) + 6 (`settings.rs` serialization fallbacks, class
-`open`) + 23 (`settings.rs` probe-error / host-capability arms, class `open`) = **80**; the
-remaining **1336** are `open`; the duplicate-run scan row adds 9 and the inline-page row 9 more, so today it is **98** waived / **1309** open.
-The ledger's own class totals are `open` 966, `a` 214, `W6` 173, `W5` 26, `W7` 8, `W1` 5,
-`lane` 24 — those hints *subdivide* the 1309 open lines, they do not reduce them.
+Reconciliation (the rows below sum to the measured total): waived 24 (`glob_scan.rs` ignored
+acceptance, class `lane`) + 24 (`execution.rs` Linux helper block, class `open` there because
+the line text carries no attribute) + 1 (`transport.rs:212`, class `open`) + 2 (Windows
+candidates, class `W1`) + 6 (`settings.rs` serialization fallbacks, class `open`) + 23
+(`settings.rs` probe-error / host-capability arms, class `open`) = **98** waived, and the
+remaining **1223** are `open`. The generated ledger's class column (`open`, `a`, `W6`, `W5`,
+`W7`, `W1`, `lane`) *subdivides* those open lines; it does not reduce them.
 
 The class column of the generated ledger is a first-cut reading of each line's own text
 (`?` tails, lone `}`, `tracing::`, `assert`, platform attributes). **It is not a waiver.**
@@ -104,25 +105,29 @@ A stream content range can never carry `tool_args_string_v1`:
 (`session/content/transport_tests.rs`), which asserts both refusals. Falsified by finding any
 writer or schema path that can store that encoding for a stream range — the test would fail.
 
-## Open (1337 lines) — no waiver claimed
+## Open (1223 lines) — no waiver claimed
 
-These need tests, not classification. Ranked by size, with the mechanism already identified:
+Raw `DA:0` counts from `lcov-after18.info`; the 98 waived lines above are **inside** these
+counts, so a row's open share is its count minus its waiver row (e.g. `execution.rs` 41 − 24).
 
 | file | `DA:0` | mechanism |
 |---|---:|---|
-| `rpc/session_prompt.rs` | 52 | injected persistence failures on the admission path (`PersistenceUnavailable` arms around 1111-1120 and 1394-1402), and the deferred-input restore arms |
-| `rpc/commands/settings.rs` | 12 | what is left after the 29 waived lines: `332-338` (thread-spawn failure, W3) and the per-arm refusals |
-| `rpc/session.rs` | 33 | the stop-before-recovery edge and the scheduler-pause diagnostics |
+| `rpc/session_prompt.rs` | 61 | injected persistence failures on the admission path (`PersistenceUnavailable` arms around 1111-1120 and 1394-1402), and the deferred-input restore arms |
+| `rpc/commands/settings.rs` | 41 | 29 of these are the waived serialization/probe rows; the rest are `332-338` (thread-spawn failure, W3) and the per-arm refusals |
 | `tools/shell/execution.rs` | 41 | 24 of these are the waived Linux helper block; the other 17 are the exit-status edge and the timeout drain |
-| `session/content/reader_recall.rs` | 32 | `find()`'s cross-page carry tail and the snippet arms |
 | `session/content/recovery.rs` | 38 | recovery of partially committed message drafts |
 | `agent/run_loop.rs` | 36 | tool-approval denial arms and the truncation reporter |
 | `rpc/commands/session_lifecycle.rs` | 36 | clone/fork failure arms |
 | `session/content/reader.rs` | 35 | the remaining header/column arms around the targeted read |
 | `compaction/semantic/evidence.rs` | 33 | evidence summariser arms that need a real compaction transcript |
+| `rpc/session.rs` | 33 | the stop-before-recovery edge and the scheduler-pause diagnostics |
 | `session/content/entries.rs` | 33 | staged-reset placeholders and the extension staging loop |
-| `llm/schema.rs` | 32 | model-registry validation arms |
-| rest (≈ 119 files) | 949 | mostly single `?` error edges; the generated ledger names each line |
+| `session/content/reader_recall.rs` | 32 | `find()`'s cross-page carry tail and the snippet arms |
+| `sandbox/linux/glob_scan.rs` | 28 | 24 waived (ignored acceptance); the walk's own edges are open |
+| `session/content/mod.rs` | 22 | `seal`/`seal_json` conflicting-digest guards and the `?` tails |
+| `session/content/reader_summary.rs` | 21 | the batch/summary preview fallbacks |
+| `compaction/durable.rs` | 20 | the idempotent-replay arm and the checkpoint arms |
+| rest (≈ 116 files) | 703 | mostly single `?` error edges; the generated ledger names each line |
 
 ### Open defect behind two of those lines
 
@@ -133,8 +138,29 @@ no journal failure. Reproduction is in `coverage/2026-11/after/agent/report.md` 
 They stay `open` here on purpose — a waiver would hide it, and the fix should be verified
 against that reproduction.
 
-Honest summary: the lane is at **98.29 %** per line, and the remaining 1337 lines are one
+Honest summary: the lane is at **98.42 %** per line, and the remaining 1223 lines are one
 mechanism away (a store-fault seam, a probe seam or a fixture) rather than one line away.
+
+## What waves 17–18 cleared (1321 left of 1372)
+
+Two files were **wholly untested on the paths this wave measured**, so both are real tests
+rather than line padding; a third change is an attribution fix whose behaviour is unchanged.
+
+| file | before | after | how |
+|---|---:|---:|---|
+| `rpc/export_html.rs` | 29 | **1** | 12 tests: a picture with no source, a remote URL (link, never `<img>`), a plain path, a picture inside an answer card, a whitespace-only block, a user prompt carrying tool/reasoning blocks, arguments as a JSON string / as a non-object, the 96-character one-line hint with its ellipsis, an orphan error result, a result with no output, and a picture attachment that must not repeat as a chip |
+| `llm/adapters/openai_chat.rs` | 25 | **5** | 8 tests: the non-chat-target refusal, tools + `tool_stream` + `temperature` + `max_completion_tokens` + DeepSeek reasoning in one body, a request that sends none of them, the gateway token encodings (string / float / unparseable / string credit cost), `is_stream_complete` before and after the `[DONE]` marker, a marker that arrives first, a wrong-typed state, and the error-chunk path with and without a message |
+| `llm/schema.rs` | 4 | **2** | no new test: the two values inside the `tracing::warn!` are built as statements first, because a **method call** written directly in a macro's field list lands in a region that never counts while a plain identifier there is attributed to the call site. The report itself is covered by `report_unexpressible_levels`'s own test. |
+
+### The one line left in `export_html.rs`
+
+`export_html.rs:248` is the closing brace of the `if let ContentBlock::Text { … }` body inside
+`render_other_turn` — taxonomy (c): the block's brace only counts when the *pattern arm*
+completes, and the nested `if !text.trim().is_empty()` takes that completion. The tests already
+drive this branch with non-empty text (`an_unknown_role_gets_its_own_labelled_card`), so this is
+an **attribution** row, not a behaviour row. The rustfmt-stable fixes are a `let … else`
+restructure or a `match` with an explicit empty arm; neither is claimed here because neither was
+measured, and `cargo fmt` after the change would need its own measurement pass.
 
 ## Measurement-lane notes: the four `cli_smoke` timeouts
 
