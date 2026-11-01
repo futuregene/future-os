@@ -582,6 +582,15 @@ mod tests {
     /// The script and its arming marker live outside the Workspace so they are
     /// not candidates themselves; only `.gitattributes` (which routes `z.bin`
     /// through the filter) is inside it.
+    ///
+    /// Unix-only, like the three callers: the fixture is a `#!/bin/sh` script
+    /// made executable through `PermissionsExt::from_mode`, and neither the
+    /// interpreter nor the mode bits exist on Windows — there the same premise
+    /// would need a `.cmd` filter, which git runs under a different shell. The
+    /// gate has to sit on the helper as well as on the callers: without it this
+    /// module's test code fails to compile on Windows, taking every crate that
+    /// depends on `future-host`'s lib tests with it.
+    #[cfg(unix)]
     fn arm_a_staging_that_rewrites_the_ignore_rules(
         repo: &ShadowRepo,
         rules: &str,
