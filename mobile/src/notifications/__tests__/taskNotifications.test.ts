@@ -33,13 +33,28 @@ afterEach(() => {
 });
 
 test("Android creates a high-importance channel before requesting permission, coalescing preparation", async () => {
-  Object.defineProperty(Platform, "OS", { configurable: true, value: "android" });
-  permission.mockResolvedValue({ granted: false, canAskAgain: true } as Awaited<ReturnType<typeof Notifications.getPermissionsAsync>>);
-  const first = prepareTaskNotifications();
-  expect(prepareTaskNotifications()).toBe(first);
-  await first;
-  expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledWith("task-completion", expect.objectContaining({ importance: 4 }));
-  expect(Notifications.requestPermissionsAsync).toHaveBeenCalledTimes(1);
+  // `preparation` is memoised for the life of the module, so "the first caller"
+  // is only observable on a fresh instance — which is exactly what one launch
+  // gets. Sharing this file's instance would make the result depend on whether
+  // an earlier test had already prepared.
+  const { module: notifications, notif } = freshModule();
+  // The re-import rebuilt react-native too, and the module reads the platform
+  // from that instance, not from this file's import.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- the fresh instance the module above reads
+  const fresh = require("react-native") as typeof import("react-native");
+  const previous = fresh.Platform.OS;
+  Object.defineProperty(fresh.Platform, "OS", { configurable: true, value: "android" });
+  fresh.AppState.currentState = "active";
+  try {
+    notif.getPermissionsAsync.mockResolvedValue({ granted: false, canAskAgain: true });
+    const first = notifications.prepareTaskNotifications();
+    expect(notifications.prepareTaskNotifications()).toBe(first);
+    await first;
+    expect(notif.setNotificationChannelAsync).toHaveBeenCalledWith("task-completion", expect.objectContaining({ importance: 4 }));
+    expect(notif.requestPermissionsAsync).toHaveBeenCalledTimes(1);
+  } finally {
+    Object.defineProperty(fresh.Platform, "OS", { configurable: true, value: previous });
+  }
 });
 
 test.each(["android", "ios"])("%s delivers a local completion notification naming the machine and the conversation", async os => {
