@@ -3962,8 +3962,20 @@ impl Live {
     /// Read the clipboard: an image becomes a draft attachment (the same
     /// `[Image #N]` marker a pasted image path produces), text is pasted.
     pub async fn paste_clipboard(&mut self) {
+        self.paste_clipboard_on(std::env::consts::OS).await;
+    }
+
+    /// The same paste with the platform's tool table named explicitly.
+    ///
+    /// `os` is what [`paste::ClipboardCapture::capture`] resolves the probes
+    /// from, and it is a parameter there for the same reason it is one here: the
+    /// tables differ in *shape*, not just in program names (macOS' and Windows'
+    /// image probes write the file their script names, Linux' print base64 on
+    /// stdout), so a test that let the production call site read the host would
+    /// be a different test on each runner — and on Linux it was a failing one.
+    /// Production still calls [`Self::paste_clipboard`].
+    pub(crate) async fn paste_clipboard_on(&mut self, os: &'static str) {
         let capture = self.clipboard.clone();
-        let os = std::env::consts::OS;
         let pid = std::process::id();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -9550,6 +9562,21 @@ mod tests {
         assert_eq!(request.created_by, "tui");
     }
 
+    /// A `get_state` answer that names `dir` as the session's workspace.
+    ///
+    /// The path goes through `serde_json`, not into the literal by hand: a
+    /// Windows workspace (`D:\a\future-os\…`) inside a hand-written string is an
+    /// invalid `\a` escape, so the whole reply failed to parse, the fixture
+    /// silently had no `cwd`, and the scan it was meant to exercise never
+    /// started. POSIX paths happen not to contain a backslash, which is why only
+    /// the Windows runner noticed.
+    fn state_in(dir: &str) -> String {
+        format!(
+            r#"{{"sessionId":"s1","cwd":{}}}"#,
+            serde_json::to_string(dir).expect("a path is a JSON string")
+        )
+    }
+
     /// Attach to a mock agent that answers `pairs`, for the tables below.
     async fn live_on(pairs: &[(&str, &str)]) -> Live {
         let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(pairs);
@@ -10397,15 +10424,8 @@ mod tests {
     /// `tx.send`.
     #[tokio::test]
     async fn the_file_panel_installs_a_scan_and_toggles_a_folder() {
-        let mut live = live_on(&[(
-            "get_state",
-            concat!(
-                r#"{"sessionId":"s1","cwd":""#,
-                env!("CARGO_MANIFEST_DIR"),
-                r#""}"#
-            ),
-        )])
-        .await;
+        let state = state_in(env!("CARGO_MANIFEST_DIR"));
+        let mut live = live_on(&[("get_state", &state)]).await;
 
         // The tree is rooted by the workspace read (its children come from the
         // same listing the 文件 panel shows), so the fixture lands that first.
@@ -10485,6 +10505,11 @@ mod tests {
     async fn every_action_arm_dispatches_to_its_own_effect() {
         type Check = fn(&mut super::Live) -> bool;
 
+        let here = state_in(env!("CARGO_MANIFEST_DIR"));
+        // The row below answers with `here`, so its slice needs a binding of its
+        // own: a `&[..]` written inline is a temporary that dies at the end of
+        // this `let`.
+        let here_answers = [("get_state", here.as_str())];
         // (name, mock answers, action, check) — `None` means "an arm the surface
         // owns: it must leave the draft and the notice row exactly as they were".
         #[allow(clippy::type_complexity)]
@@ -10584,14 +10609,7 @@ mod tests {
             ),
             (
                 "refreshing the files starts a read",
-                &[(
-                    "get_state",
-                    concat!(
-                        r#"{"sessionId":"s1","cwd":""#,
-                        env!("CARGO_MANIFEST_DIR"),
-                        r#""}"#
-                    ),
-                )],
+                &here_answers,
                 WbAction::RefreshFiles,
                 Some(|live| live.tree_read.is_some()),
             ),
@@ -10914,6 +10932,14 @@ mod tests {
     /// reader shells out to the platform's tools), so every branch here is driven
     /// by a fake tool rather than by a broken host — which is what turned this
     /// from a W3 candidate into an ordinary test.
+    ///
+    /// The platform is pinned to macOS' table: the runner below is a *file*
+    /// probe (the tool is told a path and writes the picture there), which is
+    /// the shape macOS and Windows share. Linux' probes answer with base64 on
+    /// stdout instead (`paste.rs` tests each table on its own), so a test that
+    /// inherited the host would be a different test per runner — and on the
+    /// Linux runner a failing one, from an image probe that never had a file to
+    /// write.
     #[tokio::test]
     async fn the_clipboard_pastes_a_picture_or_says_why_it_cannot() {
         use crate::paste::ClipboardCapture;
@@ -10949,7 +10975,7 @@ mod tests {
             }),
             dir.path().to_path_buf(),
         );
-        live.paste_clipboard().await;
+        live.paste_clipboard_on("macos").await;
         // The draft carries the attachment marker; the picture itself is in the
         // pending attachments, the same list a dragged-in file fills.
         let attachments: Vec<String> = live
@@ -10987,7 +11013,7 @@ mod tests {
             dir.path().to_path_buf(),
         );
         live.notice = Some("stale".into());
-        live.paste_clipboard().await;
+        live.paste_clipboard_on("macos").await;
         // The draft still carries the picture's marker from the row above; a
         // paste appends, so the text is what it now ends with.
         let draft = live.draft.editor.text().to_string();
@@ -11010,7 +11036,7 @@ mod tests {
             dir.path().to_path_buf(),
         );
         live.notice = None;
-        live.paste_clipboard().await;
+        live.paste_clipboard_on("macos").await;
         let notice = live.notice.clone().unwrap_or_default();
         assert!(
             notice.contains("no clipboard tool"),
@@ -11025,7 +11051,7 @@ mod tests {
             dir.path().to_path_buf(),
         );
         live.notice = None;
-        live.paste_clipboard().await;
+        live.paste_clipboard_on("macos").await;
         assert!(
             live.notice.is_some(),
             "a refusal with no reason left the notice row empty"
@@ -11037,7 +11063,7 @@ mod tests {
             dir.path().to_path_buf(),
         );
         live.notice = None;
-        live.paste_clipboard().await;
+        live.paste_clipboard_on("macos").await;
         assert!(
             live.notice.is_some(),
             "an empty clipboard said nothing at all"
@@ -11693,25 +11719,46 @@ mod tests {
     /// — which is the branch a launchpad first message takes, and the one that
     /// measured zero because every fixture so far staged a directory.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // FUTURE_HOME is process-global and must stay pinned across awaits.
     async fn a_chat_session_creates_its_own_directory() {
+        let _guard = crate::test_env::lock();
+        // A home of its own: this test is about the directory `new_session`
+        // creates, and the shared one would make it pass on a directory a
+        // sibling test happened to leave behind.
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_env::EnvVarGuard::set("FUTURE_HOME", home.path());
         // A workspace that is **not** a repository: the point here is the chat
         // directory, and a `git` read in the shared worktree would put this test
         // in the same repository as the `/git` panel's tests — measured: two of
         // four full-suite runs then failed there on a read that had contended.
         let workspace = tempfile::tempdir().expect("workspace");
-        let get_state = format!(
-            r#"{{"sessionId":"s1","cwd":"{}"}}"#,
-            workspace.path().display()
-        );
-        let (mut live, seen) = live_with_seen(&[
+        // `serde_json`, never `format!`: a Windows path is spelled with `\`
+        // separators, and dropping them into a JSON string literal raw makes
+        // escapes JSON does not have (`C:\Users\…` → `\U`). The state then fails
+        // to decode on *every* read, `refresh_state` keeps the empty one, and the
+        // surface never learns a session id — which is how this test went red on
+        // Windows alone, while every POSIX spelling of the same path passed.
+        let get_state = serde_json::json!({
+            "sessionId": "s1",
+            "cwd": workspace.path(),
+        })
+        .to_string();
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
             ("get_state", &get_state),
             ("get_session_entries", r#"{"entries":[]}"#),
             ("new_session", r#"{"sessionId":"s-chat"}"#),
             ("set_sandbox_policy", r#"{"success":true}"#),
             ("set_tools", "{}"),
-        ])
-        .await;
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock.clone()).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the mock agent");
+
         live.to_launchpad();
+        // `/new` inherits the workspace the last conversation ran in; a plain
+        // chat stages none, and staging none *is* the branch this test is about.
+        live.pending_cwd = None;
         // Nothing staged: the launchpad's own defaults, and a tool set to spend.
         live.pending_tools = Some(vec!["read".into()]);
 
@@ -11739,18 +11786,27 @@ mod tests {
         );
         assert!(!live.detached(), "a fresh chat is not the launchpad");
 
-        // The directory the client named is a real one under this home.
-        let chat_root = super::chat_root();
+        // A chat is filed where the desktop app files its own: under the app's
+        // chat tree, named after the session id this client minted — the agent
+        // minting one itself would leave the session running where this client
+        // never filed it.
+        let request = crate::rpc::grpc_client::tests::last_request_of(&mock, "new_session");
         assert!(
-            chat_root.is_dir(),
-            "the chat directory root was never created: {}",
-            chat_root.display()
+            !request.session_id.is_empty(),
+            "a chat mints its session id"
+        );
+        let directory = home
+            .path()
+            .join("workspaces")
+            .join("chat")
+            .join(&request.session_id);
+        assert_eq!(
+            request.cwd,
+            directory.to_string_lossy(),
+            "the chat did not run in the directory named after it"
         );
         assert!(
-            std::fs::read_dir(&chat_root)
-                .expect("the chat root")
-                .next()
-                .is_some(),
+            directory.is_dir(),
             "a chat session left no directory of its own"
         );
         live.client.disconnect();

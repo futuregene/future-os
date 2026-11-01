@@ -24,6 +24,16 @@ import { ActionMenu } from "../../components/ActionMenu";
 import type { DesktopCommands } from "../../remote/desktopCommands";
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView", useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 
+/** The catalogue every test starts from: tests repoint it freely, so the
+ *  `beforeEach` below has to put it back. */
+function defaultSessions(): RemoteSession[] {
+  return [
+    { sessionId: "s1", threadId: "t1", title: "First", streaming: false },
+    { sessionId: "s2", threadId: "t2", title: "Second", streaming: false },
+    { sessionId: "child", threadId: "tc", title: "Child", parentSessionId: "s1", streaming: false },
+  ];
+}
+
 const mockRemote: {
   sessions: RemoteSession[];
   workspaces: RemoteWorkspace[];
@@ -43,11 +53,7 @@ const mockRemote: {
   newConversation: jest.Mock;
   newConversationOn: jest.Mock;
 } = {
-  sessions: [
-    { sessionId: "s1", threadId: "t1", title: "First", streaming: false },
-    { sessionId: "s2", threadId: "t2", title: "Second", streaming: false },
-    { sessionId: "child", threadId: "tc", title: "Child", parentSessionId: "s1", streaming: false },
-  ],
+  sessions: defaultSessions(),
   workspaces: [],
   unreadSessions: new Set<string>(),
   desktopOnline: true,
@@ -264,6 +270,14 @@ const rowInset = (title: string) =>
 const FIXTURE_TIMEOUT_MS = 30_000;
 beforeEach(async () => {
   jest.clearAllMocks();
+  // The catalogue is a mutable fixture, and most tests repoint or re-pin it:
+  // put the starting rows back so each test reads the list it declares.
+  mockRemote.sessions = defaultSessions();
+  mockRemote.workspaces = [];
+  mockRemote.unreadSessions = new Set<string>();
+  mockRemote.desktopOnline = true;
+  mockRemote.capabilities = new Set(["workspace_pinning_v1"]);
+  mockRemote.desktops = [{ desktopId: "desk-a", pairId: "p1", name: "Studio" }];
   machinesAnswer = true;
   unreachableMachines.clear();
   activeCommands.capabilities = new Set(["workspace_pinning_v1"]);

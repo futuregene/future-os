@@ -215,6 +215,12 @@ beforeEach(async () => {
   await AsyncStorage.clear();
   mockLanguage = "en";
   mockRemote.capabilities = new Set(["tasks_v1"]);
+  // Two cases repoint the workspaces (one unnamed, one empty) to see what the
+  // form offers; the page reads them from here, so restore the pair every test.
+  mockRemote.workspaces = [
+    { id: "ws_1", name: "future-os", path: "/Users/me/future-os" },
+    { id: "ws_2", name: "notes", path: "/Users/me/notes" },
+  ];
   rows = [taskRow()];
   detail = taskDetail();
   runs = [{ id: "trn_1", kind: "main", origin: "schedule", status: "completed", threadId: "thr_1", startedAt: 1, finishedAt: 2, resultSummary: "all good", errorMessage: null }];

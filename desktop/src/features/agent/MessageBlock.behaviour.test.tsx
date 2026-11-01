@@ -288,7 +288,13 @@ it("keeps a streaming reply's tail unhighlighted when only activity is growing",
 });
 
 it("shows the author and a formatted timestamp", () => {
-  render(message({ createdAt: new Date("2026-03-04T05:06:07Z").toISOString() }));
+  // Built from local wall-clock parts rather than a UTC instant: the label is
+  // rendered on the viewer's clock (`MM-dd HH:mm`), so a hardcoded `…T05:06:07Z`
+  // reads 03-04 in UTC and 03-03 in anything west of it — the test passed only
+  // because CI and this machine sit at/after UTC. Same construction as
+  // `lib/date.test.ts`, which is why that file is timezone-neutral too.
+  const createdAt = new Date(2026, 2, 4, 5, 6, 7).toISOString();
+  render(message({ createdAt }));
   expect(container.textContent).toContain("03-04");
 });
 

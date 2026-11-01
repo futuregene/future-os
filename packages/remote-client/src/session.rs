@@ -1353,7 +1353,9 @@ pub async fn connect(
             // valid. `IK` proves the same local identity against the pinned
             // key; it is not a TOFU or plaintext fallback.
             Err(error) => {
-                eprintln!("remote_peer: pairing handshake failed ({error}); retrying with IK");
+                future_remote_protocol::remote_log!(
+                    "remote_peer: pairing handshake failed ({error}); retrying with IK"
+                );
             }
         }
     }

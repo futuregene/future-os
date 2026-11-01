@@ -25,7 +25,7 @@ impl NatsHealth {
                 self.authorization_rejection_logged
                     .store(false, Ordering::Release);
                 if let Some(line) = self.event_episode.recovered() {
-                    eprintln!("{line}");
+                    future_remote_protocol::remote_log!("{line}");
                 }
             }
             // The server is retiring this connection: a relay rolling restart,
@@ -67,7 +67,7 @@ impl NatsHealth {
                     .event_episode
                     .record("network", "NATS reconnect budget exhausted")
                 {
-                    eprintln!("{line}");
+                    future_remote_protocol::remote_log!("{line}");
                 }
             }
             Event::Closed => {
@@ -79,22 +79,22 @@ impl NatsHealth {
             }
             Event::SlowConsumer(subscription) => {
                 if let Some(line) = self.event_episode.record("slow_consumer", subscription) {
-                    eprintln!("{line}");
+                    future_remote_protocol::remote_log!("{line}");
                 }
             }
             Event::ServerError(ServerError::SlowConsumer(subscription)) => {
                 if let Some(line) = self.event_episode.record("slow_consumer", subscription) {
-                    eprintln!("{line}");
+                    future_remote_protocol::remote_log!("{line}");
                 }
             }
             Event::ServerError(error) => {
                 if let Some(line) = self.event_episode.record("remote_server", error) {
-                    eprintln!("{line}");
+                    future_remote_protocol::remote_log!("{line}");
                 }
             }
             Event::ClientError(error) => {
                 if let Some(line) = self.event_episode.record("network", error) {
-                    eprintln!("{line}");
+                    future_remote_protocol::remote_log!("{line}");
                 }
             }
         }
@@ -130,7 +130,7 @@ impl NatsHealth {
                 .authorization_rejection_logged
                 .swap(true, Ordering::AcqRel)
             {
-                eprintln!(
+                future_remote_protocol::remote_log!(
                     "remote: freshly refreshed NATS credential was rejected [AU001]; rebuilding the generation with a new mint"
                 );
             }
@@ -141,7 +141,7 @@ impl NatsHealth {
             .authorization_rejection_logged
             .swap(true, Ordering::AcqRel)
         {
-            eprintln!(
+            future_remote_protocol::remote_log!(
                 "remote: NATS authorization rejected [AU002]; rebuilding the generation with a renewed credential"
             );
         }
