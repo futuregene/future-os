@@ -47,7 +47,7 @@ the previous round's measured tree (`31f46778d`), which is what this round's wor
 | **lane total** (`host/src/**`) | 2505 | **2464** | **−41** |
 | switch-lane files (§2.1) | 1884 | 1884 | 0 |
 | **inside in-scope files, switch lane only** (§2.2, §2.3) | 132 | 132 | 0 |
-| **in-scope** (lane total − §2.1 files − §2.2/§2.3 lines) | 537 | **448** | **−41** |
+| **in-scope** (lane total − §2.1 files − §2.2/§2.3 lines) | 489 | **448** | **−41** |
 
 Every one of the 2464 remaining lines is in exactly one bucket (`buckets7.py` prints this; the
 four numbers sum to the total):
