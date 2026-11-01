@@ -5232,6 +5232,7 @@ mod tests {
             vec!["remote", "devices", "add", "--help"],
             vec!["remote", "devices", "remove", "--help"],
             vec!["remote", "devices", "use", "--help"],
+            vec!["remote", "status", "--help"],
         ] {
             let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
             let (out, captured) = Output::memory();
@@ -5789,6 +5790,31 @@ mod tests {
         );
         // Nothing is said about a credential deadline the Desktop did not report.
         assert!(!stdout.contains("Relay credential"), "{stdout}");
+    }
+
+    /// The two states that are a *reason* rather than a phase to wait out are
+    /// named in the headline: a failed or revoked bridge is not "connecting".
+    #[tokio::test]
+    async fn status_names_a_bridge_that_failed_and_one_that_was_revoked() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let _desktop = RunningDesktop::claim(&home);
+
+        for (phase, expected) in [
+            ("failed", "Remote desktop: off — failed"),
+            ("revoked", "Remote desktop: off — revoked"),
+        ] {
+            let mut status = serving_status();
+            status
+                .as_object_mut()
+                .unwrap()
+                .insert("phase".into(), json!(phase));
+            answer_requests(&home, json!({ "status": status }));
+            let (code, stdout, stderr) = run(&["remote", "status"]).await;
+            assert_eq!(code, 0, "{stderr}");
+            assert!(stdout.contains(expected), "{phase}: {stdout}");
+        }
     }
 
     /// A bridge that retries without counting the attempts still says it is

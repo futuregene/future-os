@@ -15,6 +15,8 @@
 //!   stray key is not an answer, and the deciding one still is.
 //! * [`enter_alone_is_a_no`] — Enter, no `y`: the documented default, and the
 //!   book is untouched.
+//! * [`enter_alone_cancels_the_all_question_too`] — the same answer to the
+//!   `--all` question: neither device is unpaired, and the command says so.
 //!
 //! The home each child gets holds a two-device book and no `auth.json`, so the
 //! revoke is queued instead of delivered: nothing here touches the real
@@ -474,6 +476,41 @@ fn enter_alone_is_a_no() {
     assert!(
         terminal.success(),
         "a cancelled removal is not a failure; transcript:\n{}",
+        terminal.text()
+    );
+    let transcript = terminal.text();
+    assert!(
+        transcript.contains("Cancelled. Nothing was changed."),
+        "transcript:\n{transcript}"
+    );
+    assert_eq!(
+        paired_devices(&home),
+        vec![FIRST.to_string(), SECOND.to_string()],
+        "no device may be unpaired by a default answer"
+    );
+}
+
+/// The `--all` question takes the same answer and leaves the same evidence: one
+/// Enter unpairs nothing, and the sentence says exactly that rather than
+/// reporting an empty book.
+#[test]
+fn enter_alone_cancels_the_all_question_too() {
+    let home = isolated_home("pressed-enter-all");
+    let mut terminal = Terminal::spawn(home.clone(), &["remote", "devices", "remove", "--all"]);
+    assert!(
+        terminal.wait_for("[y/N]", BUDGET),
+        "the prompt must appear; transcript:\n{}",
+        terminal.text()
+    );
+    assert!(
+        terminal.text().contains("Unpair all 2 devices"),
+        "the question names its scope: {}",
+        terminal.text()
+    );
+    terminal.press(b"\r");
+    assert!(
+        terminal.success(),
+        "a cancelled `--all` is not a failure; transcript:\n{}",
         terminal.text()
     );
     let transcript = terminal.text();
