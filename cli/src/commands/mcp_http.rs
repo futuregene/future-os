@@ -640,6 +640,382 @@ mod tests {
         assert!(error.contains("header 'x-key'"), "{error}");
     }
 
+    // ── a whole session, against a real HTTP server ─────────────────────────
+
+    /// The configuration for a server that is an endpoint, as `mcp_http` takes it.
+    fn spec_for(url: &str) -> super::super::mcp_client::ServerSpec {
+        super::super::mcp_client::ServerSpec {
+            command: None,
+            args: Vec::new(),
+            env: serde_json::Map::new(),
+            cwd: None,
+            url: Some(url.to_string()),
+            headers: Default::default(),
+            enabled: true,
+        }
+    }
+
+    fn answer(id: u64, result: Value) -> String {
+        json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string()
+    }
+
+    /// The plain transport: one JSON body per POST, a 202 for the notification,
+    /// and a tool call whose answer is the MCP envelope rather than the payload.
+    #[tokio::test]
+    async fn a_json_answered_session_handshakes_lists_and_calls() {
+        let initialize = answer(
+            1,
+            json!({ "protocolVersion": PROTOCOL_VERSION, "capabilities": {} }),
+        );
+        let tools = answer(
+            2,
+            json!({ "tools": [{ "name": "echo" }, { "name": "other" }] }),
+        );
+        let called = answer(3, json!({ "content": [{ "type": "text", "text": "hi" }] }));
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::sequence(
+            "/mcp",
+            vec![
+                (200, initialize.as_str()),
+                // A notification is acknowledged with no body at all.
+                (202, ""),
+                (200, tools.as_str()),
+                (200, called.as_str()),
+            ],
+        )])
+        .await;
+
+        let mut session = HttpSession::start(
+            "fake",
+            &spec_for(&format!("{base}/mcp")),
+            Duration::from_secs(5),
+            1 << 20,
+        )
+        .await
+        .expect("the handshake completes");
+        let listed = session.list_tools().await.expect("tools/list answers");
+        assert_eq!(listed.len(), 2, "{listed:?}");
+        assert_eq!(listed[0]["name"], "echo");
+        let result = session
+            .call_tool("echo", json!({ "text": "hi" }))
+            .await
+            .expect("tools/call answers");
+        assert_eq!(result["content"][0]["text"], "hi");
+        // No session was named, so there is nothing to end: the drop is silent.
+        session.shutdown().await;
+    }
+
+    /// The streaming transport: the session id arrives in a response header and
+    /// every later request echoes it back.
+    #[tokio::test]
+    async fn an_sse_answered_session_keeps_the_header_the_server_named() {
+        let initialize = format!(
+            "data: {}\n\n",
+            answer(1, json!({ "protocolVersion": PROTOCOL_VERSION }))
+        );
+        let called = format!(
+            "data: {}\n\n",
+            answer(
+                2,
+                json!({ "content": [{ "type": "text", "text": "streamed" }] })
+            )
+        );
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let base = crate::test_server::spawn_http_recording(
+            vec![crate::test_server::HttpRoute::sse_sequence(
+                "/mcp",
+                vec![
+                    (initialize.as_str(), Some("sess-7")),
+                    ("", None),
+                    (called.as_str(), None),
+                ],
+            )],
+            Some(requests.clone()),
+        )
+        .await;
+
+        let mut session = HttpSession::start(
+            "fake",
+            &spec_for(&format!("{base}/mcp")),
+            Duration::from_secs(5),
+            1 << 20,
+        )
+        .await
+        .expect("the handshake completes over a stream");
+        let result = session
+            .call_tool("echo", json!({}))
+            .await
+            .expect("the streamed answer is read");
+        assert_eq!(result["content"][0]["text"], "streamed");
+        let posed = requests.lock().unwrap();
+        assert!(
+            posed
+                .iter()
+                .any(|text| text.to_ascii_lowercase().contains("mcp-session-id: sess-7")),
+            "the named session is echoed on later requests: {posed:?}"
+        );
+        drop(posed);
+        session.shutdown().await;
+    }
+
+    /// A stream that closes without ever carrying our answer is an error that
+    /// says so, rather than an answer of `null`.
+    #[tokio::test]
+    async fn a_stream_that_never_carries_the_answer_says_so() {
+        let notification = json!({ "jsonrpc": "2.0", "method": "notifications/message" });
+        let body = format!("data: {notification}\n\n");
+        let base =
+            crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::sse_sequence(
+                "/mcp",
+                vec![(body.as_str(), None)],
+            )])
+            .await;
+
+        let error = HttpSession::start(
+            "fake",
+            &spec_for(&format!("{base}/mcp")),
+            Duration::from_secs(5),
+            1 << 20,
+        )
+        .await
+        .err()
+        .expect("a stream with only a notification answers nothing");
+        assert!(
+            error.contains("closed its response before answering 'initialize'"),
+            "{error}"
+        );
+    }
+
+    /// A stream that ends mid-event still carried that event: it is read, and
+    /// since it is not the answer, the failure is the same one.
+    #[tokio::test]
+    async fn a_stream_that_ends_mid_event_reads_its_last_event() {
+        let notification = json!({ "jsonrpc": "2.0", "method": "notifications/message" });
+        // No trailing blank line: the event is finished only by the stream's end.
+        let body = format!("data: {notification}");
+        let base =
+            crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::sse_sequence(
+                "/mcp",
+                vec![(body.as_str(), None)],
+            )])
+            .await;
+
+        let error = HttpSession::start(
+            "fake",
+            &spec_for(&format!("{base}/mcp")),
+            Duration::from_secs(5),
+            1 << 20,
+        )
+        .await
+        .err()
+        .expect("a dangling notification is not the answer");
+        assert!(
+            error.contains("closed its response before answering 'initialize'"),
+            "{error}"
+        );
+    }
+
+    /// The error object a server answers with is described, not printed raw.
+    #[tokio::test]
+    async fn an_error_answer_names_the_method_and_the_jsonrpc_error() {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": { "code": -32601, "message": "no such method" },
+        })
+        .to_string();
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/mcp", 200, &body,
+        )])
+        .await;
+
+        let error = HttpSession::start(
+            "fake",
+            &spec_for(&format!("{base}/mcp")),
+            Duration::from_secs(5),
+            1 << 20,
+        )
+        .await
+        .err()
+        .expect("an error envelope is not a result");
+        assert!(error.contains("MCP 'initialize' failed"), "{error}");
+        assert!(error.contains("code=-32601"), "{error}");
+        assert!(error.contains("no such method"), "{error}");
+    }
+
+    /// A body that is not JSON at all is an unreadable frame, and it names the
+    /// method it was answering.
+    #[tokio::test]
+    async fn an_answer_that_is_not_json_is_an_unreadable_frame() {
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/mcp", 200, "not json",
+        )])
+        .await;
+
+        let error = HttpSession::start(
+            "fake",
+            &spec_for(&format!("{base}/mcp")),
+            Duration::from_secs(5),
+            1 << 20,
+        )
+        .await
+        .err()
+        .expect("a non-JSON body answers nothing");
+        assert!(error.contains("unreadable frame"), "{error}");
+        assert!(error.contains("answering 'initialize'"), "{error}");
+    }
+
+    /// A batch is legal: the answer is the element carrying our id, and a batch
+    /// without it is an error rather than a guess at which one was meant.
+    #[tokio::test]
+    async fn a_batch_answer_is_searched_for_our_id() {
+        let batch = json!([
+            { "jsonrpc": "2.0", "id": 99, "result": { "not": "ours" } },
+            { "jsonrpc": "2.0", "id": 1, "result": { "protocolVersion": PROTOCOL_VERSION } },
+        ])
+        .to_string();
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/mcp", 200, &batch,
+        )])
+        .await;
+        HttpSession::start(
+            "fake",
+            &spec_for(&format!("{base}/mcp")),
+            Duration::from_secs(5),
+            1 << 20,
+        )
+        .await
+        .expect("the element with our id is the answer");
+
+        let without = json!([{ "jsonrpc": "2.0", "id": 99, "result": {} }]).to_string();
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/mcp", 200, &without,
+        )])
+        .await;
+        let error = HttpSession::start(
+            "fake",
+            &spec_for(&format!("{base}/mcp")),
+            Duration::from_secs(5),
+            1 << 20,
+        )
+        .await
+        .err()
+        .expect("a batch without our id answers nothing");
+        assert!(
+            error.contains("no answer to 'initialize' in its batch response"),
+            "{error}"
+        );
+    }
+
+    /// The read budget is the one the caller set, and the error says what to
+    /// raise — the print cap cannot rescue a frame that will not fit in memory.
+    #[tokio::test]
+    async fn a_body_over_the_read_budget_is_refused() {
+        let body = answer(
+            1,
+            json!({ "protocolVersion": PROTOCOL_VERSION, "padding": "x".repeat(64) }),
+        );
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/mcp", 200, &body,
+        )])
+        .await;
+
+        let error = HttpSession::start(
+            "fake",
+            &spec_for(&format!("{base}/mcp")),
+            Duration::from_secs(5),
+            8,
+        )
+        .await
+        .err()
+        .expect("an answer past the budget is refused");
+        assert!(error.contains("8 bytes"), "{error}");
+        assert!(error.contains("--max-frame-bytes"), "{error}");
+    }
+
+    /// A server that refuses the notification fails the handshake with its own
+    /// status, because a session nobody acknowledged was not opened.
+    #[tokio::test]
+    async fn a_refused_notification_fails_the_handshake() {
+        let initialize = answer(1, json!({ "protocolVersion": PROTOCOL_VERSION }));
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::sequence(
+            "/mcp",
+            vec![(200, initialize.as_str()), (500, "boom")],
+        )])
+        .await;
+
+        let error = HttpSession::start(
+            "fake",
+            &spec_for(&format!("{base}/mcp")),
+            Duration::from_secs(5),
+            1 << 20,
+        )
+        .await
+        .err()
+        .expect("HTTP 500 to a notification is an error");
+        assert!(
+            error.contains("answered HTTP 500 to 'notifications/initialized'"),
+            "{error}"
+        );
+        assert!(error.contains("boom"), "the body is quoted: {error}");
+    }
+
+    /// A request budget is per request: a server slower than it fails with the
+    /// budget named, for a request and for a notification alike.
+    #[tokio::test]
+    async fn a_slow_server_is_reported_as_a_timeout_with_the_budget() {
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::slow(
+            "/mcp",
+            Duration::from_secs(2),
+        )])
+        .await;
+        let error = HttpSession::start(
+            "fake",
+            &spec_for(&format!("{base}/mcp")),
+            Duration::from_millis(100),
+            1 << 20,
+        )
+        .await
+        .err()
+        .expect("a slow initialize is a timeout");
+        assert!(error.contains("MCP 'initialize' timed out"), "{error}");
+        assert!(error.contains("--timeout"), "{error}");
+
+        // The same budget applies to the notification behind the handshake: the
+        // answer is immediate, the acknowledgement is not.
+        let initialize = answer(1, json!({ "protocolVersion": PROTOCOL_VERSION }));
+        let mut route = crate::test_server::HttpRoute::sequence(
+            "/mcp",
+            vec![(200, initialize.as_str()), (202, "")],
+        );
+        route.responses[1].delay = Duration::from_secs(2);
+        let base = crate::test_server::spawn_http(vec![route]).await;
+        let error = HttpSession::start(
+            "fake",
+            &spec_for(&format!("{base}/mcp")),
+            Duration::from_millis(100),
+            1 << 20,
+        )
+        .await
+        .err()
+        .expect("a slow acknowledgement is a timeout too");
+        assert!(
+            error.contains("MCP 'notifications/initialized' timed out"),
+            "{error}"
+        );
+    }
+
+    /// A decoder that holds several data lines already reads the running total
+    /// against the budget, so an event assembled from under-limit lines is still
+    /// refused before it is handed on.
+    #[test]
+    fn an_event_assembled_from_small_lines_is_still_bounded() {
+        let mut decoder = EventStreamDecoder::default();
+        let error = decoder
+            .feed(b"data: 1234\ndata: 1234\ndata: 1234\n\n", 10, "tools/call")
+            .unwrap_err();
+        assert!(error.contains("larger than 10 bytes"), "{error}");
+    }
+
     /// Nothing listens there: the failure names the endpoint and the cause.
     #[tokio::test]
     async fn an_unreachable_endpoint_is_reported_with_its_url() {
