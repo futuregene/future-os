@@ -2169,6 +2169,64 @@ mod tests {
         );
     }
 
+    /// A client-role request arriving on the host's own queue takes the peer
+    /// path: a terminal's `future remote peers` must work whether or not a
+    /// window is running, and routing it into `perform` would answer "unknown
+    /// request" to a question this process can answer.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn serve_one_answers_a_client_role_request_through_the_peer_path() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("control-serve-peer");
+        let root = Root::new();
+        let reply_path = root.dir.path().join("reply.json");
+        let placed = root.write_request(
+            &terminal_name(SystemTime::now()),
+            &request(OP_PEER_STATE, &reply_path, None),
+        );
+
+        serve_one(&placed).await;
+
+        assert!(!placed.exists(), "the claim must take the request away");
+        let reply = read_reply(&reply_path).expect("an answer was written");
+        assert_eq!(
+            reply.error, None,
+            "a read of the peer list is not a refusal"
+        );
+        assert_eq!(
+            reply.peers.len(),
+            crate::remote_peer::runtime::list().await.unwrap().len(),
+            "the answer is this process's own view"
+        );
+    }
+
+    /// An answer that cannot be written is reported, and the request is still
+    /// consumed: the asker times out with its own message, while the queue keeps
+    /// moving instead of re-serving a request whose reply path cannot be made.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn serve_one_still_consumes_a_request_it_cannot_answer() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("control-serve-unwritable");
+        let root = Root::new();
+        // A regular file where the reply's parent directory would go: the
+        // atomic write cannot create it, so the answer has nowhere to land.
+        let blocker = root.dir.path().join("blocked");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let reply_path = blocker.join("reply.json");
+        let placed = root.write_request(
+            &terminal_name(SystemTime::now()),
+            &request(OP_STATUS, &reply_path, None),
+        );
+
+        serve_one(&placed).await;
+
+        assert!(!placed.exists(), "the request is consumed");
+        assert!(
+            reply_path.parent().unwrap().is_file(),
+            "no directory was made"
+        );
+        assert!(!reply_path.exists());
+    }
+
     /// A request nobody can parse has no reply path, so it is dropped rather
     /// than retried forever.
     #[tokio::test]

@@ -637,6 +637,196 @@ mod tests {
         assert!(!table_names(&conn).unwrap().contains("artifacts"));
     }
 
+    /// A database at the current version whose identity row is gone has no
+    /// provenance to restore from: the run paths could never tell which Agent
+    /// database it mirrors. It is refused before any write, not repaired with a
+    /// fresh identity that would silently re-admit every historical row.
+    #[test]
+    fn a_current_database_without_its_identity_is_refused_not_repaired() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        let version = admit(&conn).unwrap();
+        conn.execute_batch("DELETE FROM app_database_identity")
+            .unwrap();
+        let error = initialize(&conn).unwrap_err().to_string();
+        assert!(error.contains("identity is missing"), "{error}");
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            version,
+            "the refusal writes nothing"
+        );
+        // An identity row with empty values is the same refusal: nothing to
+        // compare an Agent database against.
+        conn.execute_batch(
+            "INSERT INTO app_database_identity(id,database_id,restore_generation) VALUES('main','','')",
+        )
+        .unwrap();
+        assert!(admit(&conn).is_err());
+    }
+
+    /// The mirror image: a version header of zero beside a ledger that already
+    /// has rows. Reading that as a fresh install would replay the contract over
+    /// live data, so it is refused.
+    #[test]
+    fn a_ledger_with_rows_and_no_version_header_is_refused() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE app_schema_migrations(version INTEGER PRIMARY KEY, checksum TEXT, applied_at INTEGER);
+            INSERT INTO app_schema_migrations VALUES(1,'x',1);",
+        )
+        .unwrap();
+        let error = initialize(&conn).unwrap_err().to_string();
+        assert!(
+            error.contains("version header disagrees with its migration ledger"),
+            "{error}"
+        );
+        assert_eq!(
+            table_names(&conn).unwrap(),
+            ["app_schema_migrations".to_string()].into_iter().collect(),
+            "no schema write happened"
+        );
+    }
+
+    /// An upgrade that fails leaves the pre-upgrade snapshot behind and says
+    /// where it is, so the operator's next step is a path rather than a hunt.
+    #[test]
+    fn a_failed_upgrade_names_the_snapshot_it_left_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = Connection::open(dir.path().join("app.db")).unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        legacy(&conn);
+        conn.execute_batch(CONTRACT_SQL).unwrap();
+        conn.execute_batch("CREATE TRIGGER refuse_contract BEFORE INSERT ON app_schema_migrations BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+
+        let error = initialize(&conn).unwrap_err().to_string();
+        assert!(
+            error.starts_with("Desktop database upgrade failed"),
+            "{error}"
+        );
+        let marker = "Pre-upgrade snapshot: ";
+        let start = error
+            .find(marker)
+            .unwrap_or_else(|| panic!("the failure must name its snapshot: {error}"))
+            + marker.len();
+        let end = error
+            .find(". Keep both databases")
+            .unwrap_or_else(|| panic!("the failure must say what to keep: {error}"));
+        let snapshot = std::path::Path::new(&error[start..end]);
+        assert!(snapshot.is_file(), "{snapshot:?} was named but not written");
+        let backup =
+            Connection::open_with_flags(snapshot, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        assert_eq!(
+            backup
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "the snapshot is the pre-upgrade state, not the half-migrated one"
+        );
+        let body: String = backup
+            .query_row("SELECT content FROM messages WHERE id='u'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(body, "保留历史");
+    }
+
+    /// Optional run metadata is applied after the core contract and its failure
+    /// is swallowed: the Desktop still opens, and because the recording INSERT is
+    /// rolled back with the column change, the next open retries from the same
+    /// place instead of believing itself migrated.
+    #[test]
+    fn optional_metadata_that_cannot_be_applied_does_not_block_the_open() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        conn.execute_batch(
+            "DELETE FROM schema_migrations WHERE version='v1.1.9-thread-asset-root';
+            CREATE TRIGGER refuse_metadata BEFORE INSERT ON schema_migrations BEGIN SELECT RAISE(ABORT,'injected'); END;",
+        )
+        .unwrap();
+
+        initialize(&conn).expect("optional metadata must not block the open");
+        assert_eq!(
+            admit(&conn).unwrap(),
+            future_app_settings::APP_DB_SCHEMA_VERSION
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM schema_migrations WHERE version='v1.1.9-thread-asset-root'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0,
+            "a refused migration is not recorded as applied"
+        );
+        initialize(&conn).unwrap();
+    }
+
+    /// A table whose foreign key names a table that is no longer there (a
+    /// restored or partially copied database) is refused: every join through it
+    /// would fail at read time, and the missing target is the one fact the
+    /// recovery copy needs.
+    #[test]
+    fn a_foreign_key_with_no_target_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            initialize(&conn).unwrap();
+        }
+        {
+            // The column set stays intact; only the reference dangles.
+            let conn = Connection::open(&path).unwrap();
+            conn.pragma_update(None, "writable_schema", true).unwrap();
+            conn.execute(
+                "UPDATE sqlite_schema SET sql = replace(sql, 'REFERENCES threads(id)', 'REFERENCES threads_gone(id)') WHERE type='table' AND name='runs'",
+                [],
+            )
+            .unwrap();
+            conn.pragma_update(None, "writable_schema", false).unwrap();
+        }
+        let conn = Connection::open(&path).unwrap();
+        let error = initialize(&conn).unwrap_err().to_string();
+        assert!(error.contains("missing foreign-key target"), "{error}");
+        assert!(error.contains("threads_gone"), "{error}");
+    }
+
+    /// The conversation binding must stay unique across the whole database: a
+    /// missing index (or one of the same name that is not unique) lets two
+    /// threads claim one Agent session, and every read that resolves a thread by
+    /// session silently picks one of them.
+    #[test]
+    fn a_database_without_its_unique_conversation_index_is_refused() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        conn.execute_batch("DROP INDEX idx_threads_agent_session_unique")
+            .unwrap();
+        let error = initialize(&conn).unwrap_err().to_string();
+        assert!(
+            error.contains("unique conversation binding index"),
+            "{error}"
+        );
+
+        conn.execute_batch(
+            "CREATE INDEX idx_threads_agent_session_unique ON threads(agent_session_id)",
+        )
+        .unwrap();
+        let error = initialize(&conn).unwrap_err().to_string();
+        assert!(
+            error.contains("unique conversation binding index"),
+            "an index of the right name is not enough: {error}"
+        );
+
+        conn.execute_batch(&format!(
+            "DROP INDEX idx_threads_agent_session_unique; {};",
+            super::super::schema::UNIQUE_AGENT_SESSION_INDEX
+        ))
+        .unwrap();
+        initialize(&conn).expect("the contract index lets the database open again");
+    }
+
     #[test]
     fn restored_original_tables_are_retained_and_rejected() {
         let conn = Connection::open_in_memory().unwrap();
