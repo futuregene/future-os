@@ -5706,4 +5706,577 @@ mod tests {
         assert!(!is_serving_phase("stopped"));
         assert!(!is_serving_phase("enabled"));
     }
+
+    // ── the prose a reader gets for each shape of answer ────────────────────
+
+    /// A bridge that lost its transport says what it is doing, why, and which
+    /// retry it is on — and every row says what the device is, which build is on
+    /// the other end and where its sync is stuck. Those four facts are what
+    /// decides whether waiting is the right move.
+    #[tokio::test]
+    async fn status_reads_a_reconnecting_bridge_and_its_retry_budget() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let mut status = serving_status();
+        let object = status.as_object_mut().unwrap();
+        object.insert("phase".into(), json!("reconnecting"));
+        object.insert("reason".into(), json!("transport_lost"));
+        object.insert("recovery".into(), json!({ "attempt": 3, "maxAttempts": 5 }));
+        object.insert("agentAvailable".into(), json!(false));
+        object.insert("invitationExpiresAt".into(), json!(4_102_444_800_i64));
+        object.insert("credentialExpiresAt".into(), Value::Null);
+        // Neither row is in control: the Desktop says so, and the book's pointer
+        // is not recomputed over it. The third is a device the Desktop serves but
+        // the book has not written yet — a claimed invitation.
+        object.insert(
+            "devices".into(),
+            json!([
+                {
+                    "pairId": "pair_AAAA",
+                    "control": "standby",
+                    "connected": true,
+                    "present": false,
+                    "client": {
+                        "name": "MacBook",
+                        "kind": "",
+                        "version": "0.1.0",
+                        "syncStage": "backlog",
+                    },
+                },
+                {
+                    "pairId": "pair_BBBB",
+                    "control": "standby",
+                    "connected": false,
+                    "present": false,
+                    "client": { "name": "iPhone 15", "kind": "phone" },
+                },
+                {
+                    "pairId": "pair_PENDING",
+                    "control": "standby",
+                    "connected": false,
+                    "present": false,
+                    "client": Value::Null,
+                },
+            ]),
+        );
+        let _desktop = RunningDesktop::claim(&home);
+        answer_requests(&home, json!({ "status": status }));
+
+        let (code, stdout, stderr) = run(&["remote", "status"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.contains("Remote desktop: on — reconnecting (transport lost) (retry 3/5)"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Agent: unavailable"), "{stdout}");
+        assert!(
+            stdout.contains("Devices: 3 paired, none in control"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("MacBook, build 0.1.0, sync stuck at backlog"),
+            "a device with no kind is named by its name alone: {stdout}"
+        );
+        assert!(stdout.contains("iPhone 15 (phone)"), "{stdout}");
+        assert!(
+            stdout.contains("unpaired invitation"),
+            "a row the book has not written yet says so: {stdout}"
+        );
+        assert!(
+            stdout.contains("An invitation is printed on the Remote page and lapses at"),
+            "{stdout}"
+        );
+        // Nothing is said about a credential deadline the Desktop did not report.
+        assert!(!stdout.contains("Relay credential"), "{stdout}");
+    }
+
+    /// A bridge that retries without counting the attempts still says it is
+    /// retrying, and a Desktop that does not report the agent leaves the line
+    /// saying "unknown" rather than guessing.
+    #[tokio::test]
+    async fn status_says_retrying_when_the_bridge_counts_no_attempts() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let mut status = serving_status();
+        let object = status.as_object_mut().unwrap();
+        object.insert("phase".into(), json!("reconnecting"));
+        object.insert("recovery".into(), json!({ "since": 1_700_000_000 }));
+        object.remove("agentAvailable");
+        let _desktop = RunningDesktop::claim(&home);
+        answer_requests(&home, json!({ "status": status }));
+
+        let (code, stdout, stderr) = run(&["remote", "status"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.contains("Remote desktop: on — reconnecting (retrying)"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Agent: unknown"), "{stdout}");
+    }
+
+    // ── branches a single argument reaches ──────────────────────────────────
+
+    /// The group's actions are a closed list, and a word outside it is a typo
+    /// rather than a filter — refused with the usage it belongs to.
+    #[tokio::test]
+    async fn an_unknown_devices_action_is_a_usage_error() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        let (code, _, stderr) = run(&["remote", "devices", "bogus"]).await;
+        assert_eq!(code, 1);
+        assert!(stderr.contains("Unknown argument: bogus"), "{stderr}");
+        assert!(
+            stderr.contains("Usage:"),
+            "the usage comes with it: {stderr}"
+        );
+    }
+
+    /// An empty book with the switch off has one thing to say beyond "nothing is
+    /// paired": the next start will not serve either.
+    #[tokio::test]
+    async fn list_with_no_devices_and_the_switch_off_names_both_facts() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        crate::commands::desktop::store("autoConnectRemote", "false").unwrap();
+
+        let (code, stdout, stderr) = run(&["remote", "devices"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.contains("No devices are paired to this machine."),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("the next start will not serve either"),
+            "{stdout}"
+        );
+        let _ = home;
+    }
+
+    /// With the switch on and a Desktop holding the lock, the listing does not
+    /// claim to know whether it is serving: it names the command that asks.
+    #[tokio::test]
+    async fn list_says_a_running_desktop_is_where_serving_is_answered() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let _desktop = RunningDesktop::claim(&home);
+
+        let (code, stdout, stderr) = run(&["remote", "devices"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.contains(
+                "A Desktop is running here; `future remote status` reports whether it is serving."
+            ),
+            "{stdout}"
+        );
+    }
+
+    /// A Desktop that answers with something other than a status answered
+    /// nothing: the silence is named, and the exit code says the runtime half is
+    /// missing while the half read from disk is still printed.
+    #[tokio::test]
+    async fn a_desktop_that_answers_without_a_status_is_unknown_too() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let _desktop = RunningDesktop::claim(&home);
+        answer_requests(&home, json!({ "ok": true }));
+
+        let (code, stdout, stderr) = run(&["remote", "status"]).await;
+        assert_eq!(code, 1);
+        assert!(stdout.contains("Remote desktop: unknown"), "{stdout}");
+        assert!(
+            stderr.contains("answered without a status"),
+            "the silence is named exactly: {stderr}"
+        );
+    }
+
+    /// A book that predates slots is a book with no devices in it, not a broken
+    /// file: the shape is what a `remove --all` leaves when it kept the version.
+    #[tokio::test]
+    async fn a_book_without_a_slots_key_reads_as_empty() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, r#"{"version": 2, "active": null}"#);
+
+        let (code, stdout, stderr) = run(&["remote", "devices"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.contains("No devices are paired to this machine."),
+            "{stdout}"
+        );
+    }
+
+    /// A path with no parent cannot be written beside anything, and the message
+    /// says that rather than reporting a create that was never attempted.
+    #[test]
+    fn write_json_names_a_path_it_cannot_place() {
+        let error = write_json(Path::new("/"), &json!({})).expect_err("a root has no parent");
+        assert!(error.contains("it has no parent directory"), "{error}");
+    }
+
+    /// A lock file this process cannot even open proves nothing about a Desktop,
+    /// so it is "not running" — the answer that skips no work.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_lock_this_process_cannot_open_is_not_a_running_desktop() {
+        use std::os::unix::fs::PermissionsExt;
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let app = home.future().join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        let path = app.join(DESKTOP_LOCK_FILE);
+        std::fs::write(&path, b"").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        assert!(!desktop_running(), "an unreadable lock proves nothing");
+        // Restored so the temporary directory can be removed on every platform.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    /// No home directory means no data directory to be owned, so no Desktop can
+    /// be holding it.
+    #[tokio::test]
+    async fn with_no_home_there_is_no_directory_a_desktop_could_hold() {
+        let _guard = crate::test_env::lock_env().await;
+        let _env = EnvGuard::remove(&["HOME", "USERPROFILE", "FUTURE_HOME"]);
+        assert!(!desktop_running());
+    }
+
+    // ── the switch when the Desktop is there but silent ─────────────────────
+
+    /// A Desktop that holds the lock and never answers leaves the switch stored
+    /// and the machine `unknown` — exit 1, with the silence on stderr rather
+    /// than a headline claiming something it cannot know.
+    #[tokio::test]
+    async fn enable_reports_a_desktop_that_never_answered_for_the_switch() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        sign_in();
+        let _desktop = RunningDesktop::claim(&home);
+
+        let (code, stdout, stderr) = run(&["remote", "enable"]).await;
+        assert_eq!(code, 1);
+        assert!(stdout.contains("Remote desktop: unknown"), "{stdout}");
+        // The preference is stored all the same: the next start reads it.
+        assert!(
+            stdout.contains("Saved switch (autoConnectRemote): on"),
+            "{stdout}"
+        );
+        assert!(
+            stderr.contains("No Desktop picked the request up"),
+            "{stderr}"
+        );
+    }
+
+    // ── the add path's rare shapes ──────────────────────────────────────────
+
+    /// A file system that will not lock at all is not another `add`: the command
+    /// carries on and says out loud that the one-at-a-time guarantee is missing.
+    #[tokio::test]
+    async fn add_says_so_when_the_file_system_will_not_lock_it() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        sign_in();
+        let directory = home.future().join("run").join(CONTROL_DIRECTORY);
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(ADD_LOCK_FILE);
+        let fifo = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: mkfifo only reads the path built above; a failure is asserted.
+        let created = unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) };
+        // Hoisted: `assert_eq!` formats its arguments only when it fails.
+        let mkfifo_error = format!(
+            "mkfifo {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        );
+        assert_eq!(created, 0, "{mkfifo_error}");
+        let _desktop = RunningDesktop::claim(&home);
+        answer_requests(
+            &home,
+            json!({ "link": "futureos://pair?code=x", "pairId": "pair_NEW" }),
+        );
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "add"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stderr.contains("would not give `add` its one-at-a-time lock"),
+            "{stderr}"
+        );
+        assert!(stdout.contains("PAIRING INVITATION"), "{stdout}");
+    }
+
+    /// An invitation without a pair id or a deadline is still an invitation: the
+    /// header names no device, and the sentence drops the deadline instead of
+    /// inventing one.
+    #[tokio::test]
+    async fn add_without_a_pair_id_or_a_deadline_still_prints_an_invitation() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        sign_in();
+        let _desktop = RunningDesktop::claim(&home);
+        answer_requests(&home, json!({ "link": "futureos://pair?code=x" }));
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "add"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.contains("PAIRING INVITATION - open the FutureOS app"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("INVITATION for"), "{stdout}");
+        assert!(
+            stdout.contains(
+                "Single-use. The Desktop keeps serving the new device as soon as a phone scans it."
+            ),
+            "{stdout}"
+        );
+    }
+
+    // ── unpairing: the answers that are not "done" ──────────────────────────
+
+    /// A Desktop that answers "not removed" is not a failure: the book is
+    /// edited here, the document reports what is left, and the revoke warning
+    /// goes to stderr so a script's document stays parseable.
+    #[tokio::test]
+    async fn remove_json_reports_the_book_a_declining_desktop_left() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let _desktop = RunningDesktop::claim(&home);
+        answer_requests(&home, json!({ "removed": false }));
+
+        let (code, stdout, stderr) =
+            run(&["remote", "devices", "remove", "AAAA", "--yes", "--json"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        let value: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(value["desktopRunning"], true, "{stdout}");
+        assert_eq!(value["devices"].as_array().unwrap().len(), 1, "{stdout}");
+        assert_eq!(value["devices"][0]["pairId"], "pair_BBBB", "{stdout}");
+        // The pointer named the removed device, so nothing holds it — and with
+        // one device left the book's own rule makes it the controller.
+        assert_eq!(value["active"], "pair_BBBB", "{stdout}");
+        assert_eq!(value["devices"][0]["control"], "active", "{stdout}");
+        // Signed out, so the platform cannot be told — and that is a warning on
+        // stderr, not a failure of the command.
+        assert!(stderr.contains("not signed in to Future OS"), "{stderr}");
+    }
+
+    /// Three devices, one removed: the count that stays is spelled out, because
+    /// "unpaired" alone leaves the reader guessing what is left.
+    #[tokio::test]
+    async fn remove_counts_the_devices_that_stay() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(
+            BOOK_FILE,
+            &json!({
+                "version": 2,
+                "active": null,
+                "slots": [
+                    { "pairId": "pair_AAA", "nkeySeed": "S" },
+                    { "pairId": "pair_BBB", "nkeySeed": "S" },
+                    { "pairId": "pair_CCC", "nkeySeed": "S" },
+                ]
+            })
+            .to_string(),
+        );
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "remove", "AAA", "--yes"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.contains("Unpaired AAA. 2 devices remain paired."),
+            "{stdout}"
+        );
+        let book: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
+        assert_eq!(book["slots"].as_array().unwrap().len(), 2);
+    }
+
+    /// `remove --all` on one device: a Desktop that declines, and one that
+    /// errors, both leave the book unpairing here — and a Desktop that is still
+    /// running is told what it will keep serving until its next refresh.
+    #[tokio::test]
+    async fn remove_all_reports_a_desktop_that_declined_or_failed() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let _desktop = RunningDesktop::claim(&home);
+
+        // Declined: the work happens here, and the sentence about the running
+        // Desktop is the "stops serving the rest" one.
+        home.write(
+            BOOK_FILE,
+            &json!({ "version": 2, "active": null, "slots": [{ "pairId": "pair_ONE", "nkeySeed": "S" }] })
+                .to_string(),
+        );
+        answer_requests(&home, json!({ "removed": false }));
+        let (code, stdout, stderr) = run(&["remote", "devices", "remove", "--all", "--yes"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("Unpaired all 1 device"), "{stdout}");
+        assert!(
+            stdout.contains("it stops serving the rest at their next credential refresh"),
+            "{stdout}"
+        );
+        assert!(!home.exists(BOOK_FILE), "the book goes with the device");
+
+        // Errored: the same fallback, and the refusal is named per device.
+        home.write(
+            BOOK_FILE,
+            &json!({ "version": 2, "active": null, "slots": [{ "pairId": "pair_TWO", "nkeySeed": "S" }] })
+                .to_string(),
+        );
+        answer_requests(&home, json!({ "error": "superseded" }));
+        let (code, stdout, stderr) = run(&["remote", "devices", "remove", "--all", "--yes"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("Unpaired all 1 device"), "{stdout}");
+        assert!(
+            stderr.contains("note: the running Desktop did not remove TWO (superseded)"),
+            "{stderr}"
+        );
+        assert!(!home.exists(BOOK_FILE));
+    }
+
+    /// The question a removal asks counts what stays, in the plural it needs —
+    /// and the refusal quotes the question it refused to answer.
+    #[tokio::test]
+    async fn the_removal_question_counts_the_devices_that_stay() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(
+            BOOK_FILE,
+            &json!({
+                "version": 2,
+                "active": null,
+                "slots": [
+                    { "pairId": "pair_AAA", "nkeySeed": "S" },
+                    { "pairId": "pair_BBB", "nkeySeed": "S" },
+                    { "pairId": "pair_CCC", "nkeySeed": "S" },
+                ]
+            })
+            .to_string(),
+        );
+
+        STDIN_IS_NOT_A_TERMINAL.store(true, std::sync::atomic::Ordering::SeqCst);
+        let (code, _, stderr) = run(&["remote", "devices", "remove", "AAA"]).await;
+        STDIN_IS_NOT_A_TERMINAL.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(code, 1);
+        assert!(stderr.contains("2 devices stay paired."), "{stderr}");
+        assert_eq!(home.read(BOOK_FILE).matches("pair_").count(), 3);
+    }
+
+    /// A retry queue that cannot be read is reported, never replaced: dropping it
+    /// would lose the revokes queued for other devices.
+    #[tokio::test]
+    async fn a_retry_queue_that_cannot_be_read_is_reported_not_replaced() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let queue = home.future().join(PENDING_REVOKES_FILE);
+        std::fs::create_dir_all(&queue).unwrap();
+        home.write(
+            BOOK_FILE,
+            &json!({ "version": 2, "active": null, "slots": [{ "pairId": "pair_ONE", "nkeySeed": "S" }] })
+                .to_string(),
+        );
+
+        let (code, _, stderr) = run(&["remote", "devices", "remove", "ONE", "--yes"]).await;
+        assert_eq!(code, 0);
+        assert!(
+            stderr.contains("and the retry could not be queued either"),
+            "{stderr}"
+        );
+        assert!(queue.is_dir(), "the queue it could not read is still there");
+        assert!(!home.exists(BOOK_FILE));
+    }
+
+    /// A platform that refuses *and* a queue that cannot be written: both are
+    /// said in one warning, so the reader knows the revoke exists nowhere.
+    #[tokio::test]
+    async fn a_platform_failure_with_an_unreadable_queue_names_both() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/remote/pair/revoke",
+            500,
+            "not json",
+        )])
+        .await;
+        let auth = auth_file();
+        std::fs::create_dir_all(auth.parent().unwrap()).unwrap();
+        std::fs::write(
+            &auth,
+            json!({ "future": { "key": "sk-test", "base_url": base } }).to_string(),
+        )
+        .unwrap();
+        home.write(PENDING_REVOKES_FILE, "{ broken");
+        home.write(
+            BOOK_FILE,
+            &json!({ "version": 2, "active": null, "slots": [{ "pairId": "pair_ONE", "nkeySeed": "S" }] })
+                .to_string(),
+        );
+
+        let (code, _, stderr) = run(&["remote", "devices", "remove", "ONE", "--yes"]).await;
+        assert_eq!(code, 0);
+        assert!(stderr.contains("HTTP 500"), "{stderr}");
+        assert!(
+            stderr.contains("and the retry could not be queued either"),
+            "{stderr}"
+        );
+        assert_eq!(home.read(PENDING_REVOKES_FILE), "{ broken");
+    }
+
+    // ── taking control ──────────────────────────────────────────────────────
+
+    /// An answer that does not name this device as the new controller is not a
+    /// handover: the choice is on record, the machine did not change hands, and
+    /// the exit code says which of the two happened.
+    #[tokio::test]
+    async fn use_reports_an_answer_that_did_not_hand_the_machine_over() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let _desktop = RunningDesktop::claim(&home);
+        answer_requests(&home, json!({ "status": { "active": "pair_BBBB" } }));
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "use", "AAAA"]).await;
+        assert_eq!(code, 1);
+        assert!(
+            stderr.contains("answered without handing it the machine"),
+            "{stderr}"
+        );
+        assert!(
+            stdout.contains("AAAA is now the controller on record."),
+            "{stdout}"
+        );
+        // The book is what the next start reads, and it holds the choice.
+        let book: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
+        assert_eq!(book["active"], "pair_AAAA");
+    }
+
+    /// `use --json` prints the document the desktop app consumes, including the
+    /// handover that happened.
+    #[tokio::test]
+    async fn use_json_is_the_document_the_app_uses() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let _desktop = RunningDesktop::claim(&home);
+        answer_requests(
+            &home,
+            json!({
+                "status": {
+                    "phase": "ready",
+                    "active": "pair_AAAA",
+                    "devices": [{ "pairId": "pair_AAAA", "present": true }],
+                }
+            }),
+        );
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "use", "AAAA", "--json"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        let value: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(value["desktopRunning"], true);
+        assert_eq!(value["active"], "pair_AAAA");
+        assert_eq!(value["devices"][0]["control"], "active");
+        assert!(stderr.is_empty(), "{stderr}");
+    }
 }
