@@ -3,25 +3,25 @@
 **Metric A** — a line counts as uncovered iff its LCOV record is `DA:<line>,0`. The
 llvm-cov *summary* percentage is not the acceptance number.
 
-**Last measurement**: `test/cov-agent` at `f167b3349` (cut from `origin/dev-huichen@79bd2bd37`),
+**Last measurement**: `test/cov-agent` at `ab47cf8b2` (cut from `origin/dev-huichen@79bd2bd37`),
 Rust **1.99.1** (`rust-toolchain.toml`), macOS arm64, lcov
-`coverage/2026-11/after/agent/lcov-after18.info`, run log `after18.log`.
+`coverage/2026-11/after/agent/lcov-after20.info`, run log `after20.log`.
 
-**Result**: `DA:0` = **1321** lines in **131** files under `agent/src` (83 509 executable,
-98.42 % per-line). Two waves have cleared **352** of the 1673 this branch started from. Of the
-1321:
+**Result**: `DA:0` = **1267** lines in **130** files under `agent/src` (83 550 executable,
+98.48 % per-line). Three waves have cleared **406** of the 1673 this branch started from. Of the
+1267:
 
 | state | lines |
 |---|---:|
 | **waived** (mechanism + falsifier named below) | **98** |
-| `open` — **no test and no justification yet** | **1223** |
+| `open` — **no test and no justification yet** | **1169** |
 
 Reconciliation (the rows below sum to the measured total): waived 24 (`glob_scan.rs` ignored
 acceptance, class `lane`) + 24 (`execution.rs` Linux helper block, class `open` there because
 the line text carries no attribute) + 1 (`transport.rs:212`, class `open`) + 2 (Windows
 candidates, class `W1`) + 6 (`settings.rs` serialization fallbacks, class `open`) + 23
 (`settings.rs` probe-error / host-capability arms, class `open`) = **98** waived, and the
-remaining **1223** are `open`. The generated ledger's class column (`open`, `a`, `W6`, `W5`,
+remaining **1169** are `open`. The generated ledger's class column (`open`, `a`, `W6`, `W5`,
 `W7`, `W1`, `lane`) *subdivides* those open lines; it does not reduce them.
 
 The class column of the generated ledger is a first-cut reading of each line's own text
@@ -105,9 +105,9 @@ A stream content range can never carry `tool_args_string_v1`:
 (`session/content/transport_tests.rs`), which asserts both refusals. Falsified by finding any
 writer or schema path that can store that encoding for a stream range — the test would fail.
 
-## Open (1223 lines) — no waiver claimed
+## Open (1169 lines) — no waiver claimed
 
-Raw `DA:0` counts from `lcov-after18.info`; the 98 waived lines above are **inside** these
+Raw `DA:0` counts from `lcov-after20.info`; the 98 waived lines above are **inside** these
 counts, so a row's open share is its count minus its waiver row (e.g. `execution.rs` 41 − 24).
 
 | file | `DA:0` | mechanism |
@@ -117,17 +117,21 @@ counts, so a row's open share is its count minus its waiver row (e.g. `execution
 | `tools/shell/execution.rs` | 41 | 24 of these are the waived Linux helper block; the other 17 are the exit-status edge and the timeout drain |
 | `session/content/recovery.rs` | 38 | recovery of partially committed message drafts |
 | `agent/run_loop.rs` | 36 | tool-approval denial arms and the truncation reporter |
-| `rpc/commands/session_lifecycle.rs` | 36 | clone/fork failure arms |
 | `session/content/reader.rs` | 35 | the remaining header/column arms around the targeted read |
 | `compaction/semantic/evidence.rs` | 33 | evidence summariser arms that need a real compaction transcript |
 | `rpc/session.rs` | 33 | the stop-before-recovery edge and the scheduler-pause diagnostics |
 | `session/content/entries.rs` | 33 | staged-reset placeholders and the extension staging loop |
 | `session/content/reader_recall.rs` | 32 | `find()`'s cross-page carry tail and the snippet arms |
 | `sandbox/linux/glob_scan.rs` | 28 | 24 waived (ignored acceptance); the walk's own edges are open |
+| `service/mod.rs` | 23 | `AgentService` accessors and the models-synced callback, which needs a live service |
 | `session/content/mod.rs` | 22 | `seal`/`seal_json` conflicting-digest guards and the `?` tails |
+| `service/shutdown.rs` | 21 | shutdown drain arms |
 | `session/content/reader_summary.rs` | 21 | the batch/summary preview fallbacks |
 | `compaction/durable.rs` | 20 | the idempotent-replay arm and the checkpoint arms |
-| rest (≈ 116 files) | 703 | mostly single `?` error edges; the generated ledger names each line |
+| `rpc/broadcaster/mod.rs` | 20 | admission/close arms |
+| `session/content/journal.rs` | 20 | the batch commit tail and the string-argument repair |
+| `rpc/commands/session_lifecycle.rs` | 17 | fork/clone failure arms and the legacy-history scan |
+| rest (≈ 111 files) | 594 | mostly single `?` error edges; the generated ledger names each line |
 
 ### Open defect behind two of those lines
 
@@ -138,8 +142,21 @@ no journal failure. Reproduction is in `coverage/2026-11/after/agent/report.md` 
 They stay `open` here on purpose — a waiver would hide it, and the fix should be verified
 against that reproduction.
 
-Honest summary: the lane is at **98.42 %** per line, and the remaining 1223 lines are one
+Honest summary: the lane is at **98.48 %** per line, and the remaining 1169 lines are one
 mechanism away (a store-fault seam, a probe seam or a fixture) rather than one line away.
+
+## What wave 20 cleared (1267 left of 1311)
+
+| file | before | after | how |
+|---|---:|---:|---|
+| `rpc/commands/test_support.rs` | 25 | **0** | `assert_json_eq`'s `difference` only ran when an assertion was about to fail, so all of it was dark. Eight tests drive it through a failing comparison and assert the path it names: nested field, array index, a key only one side carries, one document written two ways (an encoding difference, not a value difference), two different JSON strings compared as documents, a non-JSON string, and a root-type mismatch. |
+| `rpc/commands/session_lifecycle.rs` | 36 | **17** | a store that **cannot be opened at all** (`agent.db` is a directory) now reaches the sessionless surfaces: journal stats, storage health, storage format, presence, the reclaim sweep and `new_session` each answer with their own refusal (code, message, `error_data.sessionId`) instead of panicking or reporting empty data. The reclaim sweep also refuses a mode marker it does not recognise without reclaiming anything, and `dryRun` is pinned as a plan: no run reclaimed, `hasMore` false, `quickCheck` null. |
+
+Writing the "key on one side only" case found a defect **in the helper**:
+`difference` indexed the left object with `&a[key]` for a key it may not carry, which
+panics `no entry found for key` and throws away the path the function exists to
+produce. The absent side is now a JSON null. This is test-only code
+(`rpc/commands/test_support.rs` is `#[cfg(test)]`), so no product behaviour moved.
 
 ## What waves 17–18 cleared (1321 left of 1372)
 
