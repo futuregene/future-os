@@ -930,6 +930,103 @@ mod tests {
         script_mock_agent(MockScript::default());
     }
 
+    /// An Agent that cannot be reached is `offline`, not an empty conversation:
+    /// the UI shows retry, and the read fails rather than reporting "no history".
+    #[tokio::test]
+    async fn an_unreachable_agent_reads_as_offline_history() {
+        let _lock = mock_agent_lock();
+        let home = init("cmd_entries_offline");
+        let thread = make_thread(&home, Some("sess_offline"));
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            transport_fail: ["get_session_presence".to_string()].into_iter().collect(),
+            ..Default::default()
+        });
+
+        let error = get_session_entries_page(thread.id.clone(), None, 10, None)
+            .await
+            .expect_err("a transport failure is not an answer about the conversation");
+        assert!(
+            error.to_string().contains("Session catalogue query failed"),
+            "the presence probe's own failure reaches the caller: {error}"
+        );
+        script_mock_agent(MockScript::default());
+    }
+
+    /// A page cursor names the source it was read from. Handing one back after
+    /// the source moved would splice two conversations together, so the read is
+    /// refused instead.
+    #[tokio::test]
+    async fn a_page_from_another_source_is_refused() {
+        let _lock = mock_agent_lock();
+        let home = init("cmd_entries_foreign_source");
+        let thread = make_thread(&home, Some("sess_foreign"));
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript::default());
+
+        let error = get_session_entries_page(
+            thread.id.clone(),
+            Some(5),
+            10,
+            Some("agent:another-database:generation:instance".into()),
+        )
+        .await
+        .expect_err("paging across a source change must be refused");
+        assert!(error.to_string().contains("source changed"), "{error}");
+        script_mock_agent(MockScript::default());
+    }
+
+    /// The same refusal on the recovery side: a legacy cursor that names a
+    /// different archive cannot page this thread's preserved history.
+    #[tokio::test]
+    async fn an_archive_page_from_another_source_is_refused() {
+        let _lock = mock_agent_lock();
+        let home = init("cmd_entries_archive_source");
+        let thread = make_thread(&home, Some("missing-archive"));
+        let path = store::app_data_path().unwrap().db_path;
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute_batch("CREATE TABLE legacy_messages(id TEXT,thread_id TEXT,run_id TEXT,role TEXT,content TEXT,created_at INTEGER);").unwrap();
+        conn.execute(
+            "INSERT INTO legacy_messages VALUES('u',?1,NULL,'user','preserved question',1)",
+            [&thread.id],
+        )
+        .unwrap();
+        drop(conn);
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            errors: HashMap::from([(
+                "get_session_entries".to_string(),
+                "session not found".to_string(),
+            )]),
+            ..Default::default()
+        });
+
+        let error =
+            get_session_entries_page(thread.id.clone(), None, 1, Some("legacy:other".into()))
+                .await
+                .expect_err("a recovery from another archive is refused");
+        assert!(error.to_string().contains("source changed"), "{error}");
+        script_mock_agent(MockScript::default());
+    }
+
+    /// A legacy cursor on a thread that never had a preserved archive is refused
+    /// too — there is nothing behind that cursor to page.
+    #[tokio::test]
+    async fn a_legacy_cursor_without_an_archive_is_refused() {
+        let _lock = mock_agent_lock();
+        let home = init("cmd_entries_legacy_cursor");
+        let thread = make_thread(&home, None);
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript::default());
+
+        let error =
+            get_session_entries_page(thread.id.clone(), None, 10, Some("legacy:abc".into()))
+                .await
+                .expect_err("there is no archive behind that cursor");
+        assert!(error.to_string().contains("source changed"), "{error}");
+        script_mock_agent(MockScript::default());
+    }
+
     #[tokio::test]
     async fn rename_thread_maps_transport_errors() {
         let _lock = mock_agent_lock();
