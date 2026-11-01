@@ -4849,4 +4849,32 @@ mod driver_tests {
             );
         }
     }
+
+    mod bursts {
+        use super::*;
+
+        /// What the composer holds right now, read the way the surface reads it.
+        fn draft_text(driver: &mut Driver) -> String {
+            let frame = driver.frame();
+            driver.live.data(&frame).input.editor.text().to_string()
+        }
+
+        /// A **signal** in the middle of a burst discards the rest of it: the
+        /// loop leaves on the spot, so a keystroke read in the same burst is not
+        /// applied. That is the measured behaviour — the burst is drained before
+        /// it is processed, and the signal returns from inside the drain.
+        #[tokio::test]
+        async fn a_signal_inside_a_burst_leaves_before_the_keys_are_applied() {
+            let mut driver = Driver::attach_conversation().await;
+            driver.data("half typed");
+            driver.signal();
+            let (outcome, _painted) = driver.run().await;
+            assert!(outcome.is_ok(), "a signal is a clean exit: {outcome:?}");
+            assert_eq!(
+                draft_text(&mut driver),
+                "",
+                "a key from a burst that ended in a signal was applied anyway"
+            );
+        }
+    }
 }
