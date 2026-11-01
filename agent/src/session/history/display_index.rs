@@ -199,7 +199,7 @@ pub(crate) fn update_display_index_from(
         )?
     };
     let start = if ordinal == 0 { 0 } else { start };
-    let mut stmt = db.prepare(
+    let mut stmt = db.prepare_cached(
         "SELECT position,payload FROM history_shapes WHERE session_id=?1 AND position>=?2 ORDER BY position",
     )?;
     let rows = stmt
@@ -218,7 +218,7 @@ pub(crate) fn update_display_index_from(
     repair::dedupe_tool_entries(&mut entries);
     repair::repair_dangling_tool_calls(&mut entries);
     let projected = project_entries(&entries);
-    let mut upsert = db.prepare("INSERT INTO history_display(session_id,ordinal,source_position,is_user,payload) VALUES (?1,?2,?3,?4,?5)
+    let mut upsert = db.prepare_cached("INSERT INTO history_display(session_id,ordinal,source_position,is_user,payload) VALUES (?1,?2,?3,?4,?5)
         ON CONFLICT(session_id,ordinal) DO UPDATE SET source_position=excluded.source_position,is_user=excluded.is_user,payload=excluded.payload
         WHERE history_display.source_position IS NOT excluded.source_position OR history_display.payload<>excluded.payload")?;
     for (index, payload) in projected.iter().enumerate() {
@@ -251,13 +251,13 @@ fn append_segmented_index(db: &Connection, session: &str, start: i64) -> Result<
         [&stored_session],
         |row| row.get(0),
     )?;
-    let mut query=db.prepare("SELECT h.position,h.payload FROM history_shapes h WHERE h.session_id=?1 AND h.position>=?2 AND NOT EXISTS(SELECT 1 FROM history_display d WHERE d.session_id=h.session_id AND d.source_position=h.position) ORDER BY h.position")?;
+    let mut query=db.prepare_cached("SELECT h.position,h.payload FROM history_shapes h WHERE h.session_id=?1 AND h.position>=?2 AND NOT EXISTS(SELECT 1 FROM history_display d WHERE d.session_id=h.session_id AND d.source_position=h.position) ORDER BY h.position")?;
     let rows = query
         .query_map(params![&stored_session, start], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut insert=db.prepare("INSERT INTO history_display(session_id,ordinal,source_position,is_user,payload) VALUES (?1,?2,?3,?4,?5)")?;
+    let mut insert=db.prepare_cached("INSERT INTO history_display(session_id,ordinal,source_position,is_user,payload) VALUES (?1,?2,?3,?4,?5)")?;
     for (position, raw) in rows {
         let entry: SessionEntry = serde_json::from_str(&raw)?;
         if let Some(payload) = project_entries(&[entry]).pop() {

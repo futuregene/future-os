@@ -423,7 +423,7 @@ impl Manager {
         self.storage()?.db.call(|db| {
             let tx = crate::session::database::begin_write_transaction(db)?;
             let ids = {
-                let mut statement = tx.prepare("SELECT DISTINCT e.session_id FROM entries e JOIN runs r ON r.session_id=e.session_id AND r.run_id=e.run_id WHERE e.entry_type='run_stop_requested' AND r.status IN ('running','interrupted') AND NOT EXISTS(SELECT 1 FROM session_formats f WHERE f.session_id=e.session_id AND f.format=2)")?;
+                let mut statement = tx.prepare_cached("SELECT DISTINCT e.session_id FROM entries e JOIN runs r ON r.session_id=e.session_id AND r.run_id=e.run_id WHERE e.entry_type='run_stop_requested' AND r.status IN ('running','interrupted') AND NOT EXISTS(SELECT 1 FROM session_formats f WHERE f.session_id=e.session_id AND f.format=2)")?;
                 let ids = statement.query_map([], |row| row.get::<_, String>(0))?
                     .collect::<std::result::Result<Vec<_>, _>>()?;
                 ids

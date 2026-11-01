@@ -36,6 +36,15 @@ fn initialize_connection(
     cancellation: &crate::service::StartupCancellation,
 ) -> Result<()> {
     crate::session::content::install_functions(connection)?;
+    // Compiling this schema's read paths is dominated by the deep views
+    // (`entry_records`, `entry_header_records`, `history_shapes`): measured on
+    // this connection, `SELECT … FROM entry_records` costs **26 ms to prepare
+    // and 0.2 ms to execute** — a 130:1 ratio — and a trivial table read costs
+    // 20 µs. rusqlite's cache holds 16 statements; this crate prepares ~130
+    // distinct ones, so an LRU of 16 evicts the hot views between calls and
+    // pays the 26 ms again. The cache is per connection and per statement, so
+    // the ceiling only has to cover one connection's working set.
+    connection.set_prepared_statement_cache_capacity(256);
     connection.busy_timeout(Duration::from_secs(5))?;
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     let application: i64 =

@@ -81,7 +81,7 @@ fn search_session_matches(
     limit: i64,
 ) -> Result<Vec<Value>> {
     let session = BoundIdentity::session(db, session)?;
-    let mut stmt = db.prepare(
+    let mut stmt = db.prepare_cached(
         "WITH hits AS (
             SELECT e.entry_id,e.position,e.role,e.run_id,e.timestamp_ms,b.ordinal,b.kind,b.tool_call_id,b.tool_name,
             coalesce(CASE WHEN b.kind='tool_call' THEN b.arguments_json ELSE b.text END,'') AS body
@@ -167,7 +167,7 @@ impl Manager {
         }
         let store = self.storage()?;
         let mut sessions: Vec<(String, Option<String>, i64)> = store.db.read(move |db| {
-            let mut stmt=db.prepare("SELECT s.id,s.title,coalesce(f.format,1) FROM sessions s
+            let mut stmt=db.prepare_cached("SELECT s.id,s.title,coalesce(f.format,1) FROM sessions s
                 LEFT JOIN session_formats f ON f.session_id=s.id
                 WHERE s.revision>=0 AND NOT EXISTS(SELECT 1 FROM legacy_imports li WHERE li.session_id=s.id AND li.status='skipped')
                 ORDER BY s.updated_at_ms DESC,s.id DESC LIMIT ?1")?;
@@ -258,7 +258,7 @@ impl Manager {
                 params![session,position], |r| r.get(0),
             )?;
             if offset > total { bail!("offset is beyond the entry's {total} readable bytes"); }
-            let mut stmt = tx.prepare(
+            let mut stmt = tx.prepare_cached(
                 "SELECT ordinal,kind,tool_call_id,tool_name,is_error,length(CAST(CASE WHEN kind='tool_call' THEN arguments_json ELSE text END AS BLOB)) FROM resolved_message_blocks WHERE session_id=?1 AND entry_position=?2 AND kind IN ('text','tool_call','tool_result') ORDER BY ordinal"
             )?;
             let mut rows = stmt.query(params![session,position])?;
@@ -293,7 +293,7 @@ impl Manager {
             }
             let next=offset+consumed;
             if next<total && consumed==0 { bail!("offset must be on a UTF-8 character boundary"); }
-            let omitted: Vec<String> = tx.prepare("SELECT DISTINCT kind FROM resolved_message_blocks WHERE session_id=?1 AND entry_position=?2 AND kind NOT IN ('text','tool_call','tool_result') ORDER BY kind")?
+            let omitted: Vec<String> = tx.prepare_cached("SELECT DISTINCT kind FROM resolved_message_blocks WHERE session_id=?1 AND entry_position=?2 AND kind NOT IN ('text','tool_call','tool_result') ORDER BY kind")?
                 .query_map(params![session,position],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
             Ok(json!({"sessionId":session,"entryId":entry,"entryPosition":position,"entryType":kind,
                 "role":role,"runId":run,"timestampMs":time,"offset":offset,"maxBytes":limit,
