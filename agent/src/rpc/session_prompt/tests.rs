@@ -4229,3 +4229,78 @@ async fn a_legacy_transcript_answers_a_replayed_run_id_without_a_journal() {
     // Nothing was admitted: no run started and the script is untouched.
     assert!(session.runtime.snapshot().is_none());
 }
+
+/// A run whose event journal dies while it is in flight is **abandoned as
+/// failed**: the runtime leaves `Running` for `PersistenceDegraded`, the live
+/// client is told persistence failed, and the terminal frame says `error` — on
+/// the unpersisted path, because a journal that just refused a commit would
+/// drop an ordinary broadcast before any subscriber saw it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_run_whose_event_journal_dies_mid_way_is_abandoned_as_failed() {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let provider = ScriptedProvider::new(vec![Script::Gated(
+        gate.clone(),
+        vec![text_event("late answer"), finish_event()],
+    )]);
+    let mut fixture = run_fixture_legacy(provider, "journal-dies", "leg-journal");
+    let session = &mut fixture.session;
+    let mut receiver = session.broadcaster.subscribe();
+    session
+        .prompt("hello", &[], &[], Some("run-journal"), None)
+        .unwrap();
+
+    // The run is parked before the body it will send, so the damage lands after
+    // admission and before the batch that carries the answer.
+    session
+        .session_manager
+        .test_execute("DROP TABLE run_events");
+    gate.notify_one();
+
+    let mut degraded = false;
+    for _ in 0..300 {
+        if session
+            .runtime
+            .snapshot()
+            .is_some_and(|snapshot| snapshot.phase == crate::runtime::RunPhase::PersistenceDegraded)
+        {
+            degraded = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        degraded,
+        "a run that cannot persist must leave Running, not hold it: {:?}",
+        session.runtime.snapshot().map(|snapshot| snapshot.phase)
+    );
+
+    let events: Vec<_> = std::iter::from_fn(|| receiver.try_recv().ok()).collect();
+    let kinds: Vec<&str> = events
+        .iter()
+        .map(|event| event.event_type.as_str())
+        .collect();
+    let failure = events
+        .iter()
+        .find(|event| event.event_type == "persistence_error")
+        .unwrap_or_else(|| panic!("no persistence_error frame in {kinds:?}"));
+    let reported: serde_json::Value = serde_json::from_str(&failure.data).unwrap();
+    assert!(reported["error"].is_string(), "{reported}");
+
+    let terminal = events
+        .iter()
+        .rev()
+        .find(|event| event.event_type == "agent_end")
+        .unwrap_or_else(|| panic!("no terminal frame in {kinds:?}"));
+    let data: serde_json::Value = serde_json::from_str(&terminal.data).unwrap();
+    assert_eq!(data["state"], crate::session::RUN_STATE_ERROR, "{data}");
+    assert!(
+        data["error"]
+            .as_str()
+            .is_some_and(|text| text.starts_with("Session persistence failed:")),
+        "{data}"
+    );
+    assert!(
+        session.broadcaster.persistence_error().is_some(),
+        "the broadcaster keeps the failure the client was told about"
+    );
+}
