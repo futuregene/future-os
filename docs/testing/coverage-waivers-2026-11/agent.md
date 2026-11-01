@@ -3,25 +3,25 @@
 **Metric A** — a line counts as uncovered iff its LCOV record is `DA:<line>,0`. The
 llvm-cov *summary* percentage is not the acceptance number.
 
-**Last measurement**: `test/cov-agent` at `ab47cf8b2` (cut from `origin/dev-huichen@79bd2bd37`),
+**Last measurement**: `test/cov-agent` at `08a47ebd5` (cut from `origin/dev-huichen@79bd2bd37`),
 Rust **1.99.1** (`rust-toolchain.toml`), macOS arm64, lcov
-`coverage/2026-11/after/agent/lcov-after20.info`, run log `after20.log`.
+`coverage/2026-11/after/agent/lcov-after21.info`, run log `after21.log`.
 
-**Result**: `DA:0` = **1267** lines in **130** files under `agent/src` (83 550 executable,
-98.48 % per-line). Three waves have cleared **406** of the 1673 this branch started from. Of the
-1267:
+**Result**: `DA:0` = **1264** lines in **130** files under `agent/src` (83 550 executable,
+98.49 % per-line). This wave cleared **409** of the 1673 the branch started from. Of the
+1264:
 
 | state | lines |
 |---|---:|
 | **waived** (mechanism + falsifier named below) | **98** |
-| `open` — **no test and no justification yet** | **1169** |
+| `open` — **no test and no justification yet** | **1166** |
 
 Reconciliation (the rows below sum to the measured total): waived 24 (`glob_scan.rs` ignored
 acceptance, class `lane`) + 24 (`execution.rs` Linux helper block, class `open` there because
 the line text carries no attribute) + 1 (`transport.rs:212`, class `open`) + 2 (Windows
 candidates, class `W1`) + 6 (`settings.rs` serialization fallbacks, class `open`) + 23
 (`settings.rs` probe-error / host-capability arms, class `open`) = **98** waived, and the
-remaining **1169** are `open`. The generated ledger's class column (`open`, `a`, `W6`, `W5`,
+remaining **1166** are `open`. The generated ledger's class column (`open`, `a`, `W6`, `W5`,
 `W7`, `W1`, `lane`) *subdivides* those open lines; it does not reduce them.
 
 The class column of the generated ledger is a first-cut reading of each line's own text
@@ -105,9 +105,9 @@ A stream content range can never carry `tool_args_string_v1`:
 (`session/content/transport_tests.rs`), which asserts both refusals. Falsified by finding any
 writer or schema path that can store that encoding for a stream range — the test would fail.
 
-## Open (1169 lines) — no waiver claimed
+## Open (1166 lines) — no waiver claimed
 
-Raw `DA:0` counts from `lcov-after20.info`; the 98 waived lines above are **inside** these
+Raw `DA:0` counts from `lcov-after21.info`; the 98 waived lines above are **inside** these
 counts, so a row's open share is its count minus its waiver row (e.g. `execution.rs` 41 − 24).
 
 | file | `DA:0` | mechanism |
@@ -128,10 +128,10 @@ counts, so a row's open share is its count minus its waiver row (e.g. `execution
 | `service/shutdown.rs` | 21 | shutdown drain arms |
 | `session/content/reader_summary.rs` | 21 | the batch/summary preview fallbacks |
 | `compaction/durable.rs` | 20 | the idempotent-replay arm and the checkpoint arms |
-| `rpc/broadcaster/mod.rs` | 20 | admission/close arms |
+| `rpc/broadcaster/mod.rs` | 16 | admission/close arms and the live-delta split tail |
 | `session/content/journal.rs` | 20 | the batch commit tail and the string-argument repair |
 | `rpc/commands/session_lifecycle.rs` | 17 | fork/clone failure arms and the legacy-history scan |
-| rest (≈ 111 files) | 594 | mostly single `?` error edges; the generated ledger names each line |
+| rest (≈ 111 files) | 593 | mostly single `?` error edges; the generated ledger names each line |
 
 ### Open defect behind two of those lines
 
@@ -142,15 +142,22 @@ no journal failure. Reproduction is in `coverage/2026-11/after/agent/report.md` 
 They stay `open` here on purpose — a waiver would hide it, and the fix should be verified
 against that reproduction.
 
-Honest summary: the lane is at **98.48 %** per line, and the remaining 1169 lines are one
+Honest summary: the lane is at **98.49 %** per line, and the remaining 1166 lines are one
 mechanism away (a store-fault seam, a probe seam or a fixture) rather than one line away.
 
-## What wave 20 cleared (1267 left of 1311)
+## What wave 20 cleared (1264 left of 1311)
 
 | file | before | after | how |
 |---|---:|---:|---|
 | `rpc/commands/test_support.rs` | 25 | **0** | `assert_json_eq`'s `difference` only ran when an assertion was about to fail, so all of it was dark. Eight tests drive it through a failing comparison and assert the path it names: nested field, array index, a key only one side carries, one document written two ways (an encoding difference, not a value difference), two different JSON strings compared as documents, a non-JSON string, and a root-type mismatch. |
 | `rpc/commands/session_lifecycle.rs` | 36 | **17** | a store that **cannot be opened at all** (`agent.db` is a directory) now reaches the sessionless surfaces: journal stats, storage health, storage format, presence, the reclaim sweep and `new_session` each answer with their own refusal (code, message, `error_data.sessionId`) instead of panicking or reporting empty data. The reclaim sweep also refuses a mode marker it does not recognise without reclaiming anything, and `dryRun` is pinned as a plan: no run reclaimed, `hasMore` false, `quickCheck` null. |
+| `rpc/broadcaster/mod.rs` | 20 | **16** | a canonical event whose payload is not JSON is refused before the stamping lock: the journal records `invalid event data`, and the subscriber gets only the healthy frame that preceded it. |
+
+(`llm/mod.rs` moved 14 → 15 in the same run; that is a test-order effect on a shared arm, not
+work, and is not claimed. The run itself reported one failure in
+`session_reset_tests::a_reset_that_applies_but_cannot_be_reloaded_reports_reload_failed` —
+pre-existing, in a file this wave did not touch, and green when run alone; see
+`report.md` § *A pre-existing parallel flake*. Its own lines still counted.)
 
 Writing the "key on one side only" case found a defect **in the helper**:
 `difference` indexed the left object with `&a[key]` for a key it may not carry, which
