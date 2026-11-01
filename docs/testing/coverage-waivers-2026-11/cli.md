@@ -7,18 +7,36 @@ llvm-cov *summary* percentages are not the acceptance number.
 target), rust **1.99.1** pinned by `rust-toolchain.toml`. The relay lane also runs
 `--test relay_nats_auth -- --ignored` against a real `nats-server`
 (`FUTURE_RELAY_NATS_SERVER`), and the profile of both passes is merged into one report —
-`coverage/2026-11/after/cli/measure15.sh` is the whole thing, `cli-lcov-15.info` the artifact.
+`coverage/2026-11/after/cli/measure16.sh` is the whole thing, `cli-lcov-16.info` the artifact
+(wave 15 kept its own: `measure15.sh`, `cli-lcov-15.info`).
 
-**This file's status: 19 rows / 62 lines registered, and it is not a claim of per-line 100 %.** The
-lane reads **250 `DA:0`** out of 55 163 lines (99.55 %): 62 are registered here, **8 await a
-product decision** (a section of their own, below), and **180 are work items** with a
-falsifier each. By line shape the 250 divide into **76 closing tokens** (one class, below: 5 of
-them sit inside registered rows, 2 in the decision block, 69 in work items) and **174
-statements** (57 registered, 6 decision, 111 work items). Nothing in the 250 is silently
+**This file's status: 23 rows / 71 lines registered, and it is not a claim of per-line 100 %.** The
+lane reads **242 `DA:0`** out of 55 250 lines (99.56 %): 71 are registered here, **8 await a
+product decision** (a section of their own, below), and **163 are work items** with a
+falsifier each. By line shape the 242 divide into **75 closing tokens** (one class, below: 9 of
+them sit inside registered rows, 2 in the decision block, 64 in work items) and **167
+statements** (62 registered, 6 decision, 99 work items). Nothing in the 242 is silently
 missing — the section *Not waived* exists so that "not covered" and "cannot be covered" are
 never the same sentence.
 
-Wave 15 closes **nine** lines with tests, registers **five** as a dead accessor, and inherits
+Wave 16 closes **eight** lines with tests and registers **nine** more placements in four rows:
+
+| what | lines | how |
+|---|---:|---|
+| `commands/session_wait.rs` **5 → 1** | 202, 215, 231, 238 | two mock-agent waits: a stream that ends with no `agent_end` at all (the text that arrived is a prefix, so the run is `interrupted`), and an `agent_end` that carries an error whatever `state` it also names (`error`) — the two `finish_of` returns and the `token()`/`detail()` arms they print |
+| `commands/mcp_client.rs` **8 → 5** | 473-475 (474 and 475 are the statement and its closing token) | `ServerProcess::start` on an HTTP-endpoint spec: the refusal that names the transport instead of exec'ing an empty program name |
+| `commands/mcp_servers.rs` **5 → 4** | 1136 | a `--header ': value'` pair — a colon but no name — refused, and the message quotes the pair so this arm is distinguishable from the no-colon one beside it |
+| `commands/session_wait.rs` **row 20** | 208 | `detail()`'s `Answer` arm: the only caller is the non-`Answer` arm of the match that prints it |
+| `commands/mcp_client.rs` **row 21** | 320-322 | `impl Rpc for Session`'s `notify` — every handshake that notifies holds a concrete `Session`, where the inherent method wins |
+| `commands/mcp_http.rs` **row 22** | 314-317 | "acknowledged without answering": `exchange` answers `None` only on the notification path, and `request` never takes it |
+| `commands/mcp_servers.rs` **row 23** | 351 | `mcp status`'s `let Some(spec) = … else { continue }`: `targets` is a name `resolve` has just accepted or the key list itself |
+
+The arithmetic is therefore −8 covered by this wave: 250 → 242. `commands/configure.rs` is
+**not** in the work-item table any more either, but it closed nothing — its two remaining
+`DA:0` braces are the closing-token class and the other five are a test's assertion messages;
+§*A brace that executes and still reads zero* below is the measurement behind that sentence.
+
+Wave 15 closed **nine** lines with tests, registered **five** as a dead accessor, and inherited
 **two** from another lane:
 
 | what | lines | how |
@@ -30,7 +48,7 @@ Wave 15 closes **nine** lines with tests, registers **five** as a dead accessor,
 | `relay/jwt.rs` **5, now registered** | 45-48, 50 | `Role::as_str` has no caller in this tree — row 19, a W8 row, not a test |
 | `browser/safari/safari_manager.rs` **11 → 13** | 287, 357, 460-469, 625, 1110-1111, 1117, 1132 | **another lane's**: the flake workstream's rewrite (`5b6b574f5`, `4887e65fb`) landed after wave 14's report was taken, and every added line is a diagnostic arm that runs only when a launch has already failed |
 
-The arithmetic is therefore −9 covered by this wave, +2 inherited, −1 closing token that the
+Wave 15's arithmetic was −9 covered by that wave, +2 inherited, −1 closing token that the
 long-home restore also re-enters: 257 → 250.
 
 Wave 14 closes six lines of `headless/mod.rs` (24 → 18) with two **launch** arms rather than
@@ -54,32 +72,29 @@ only so the total is not read as this wave's doing.
 | wave 12 (`cli-lcov-12.info`) | **284** | 54 893 |
 | wave 13 (`cli-lcov-13.info`) | **266** | 55 051 |
 | **wave 14 (`cli-lcov-14.info`)** | **257** | 55 033 |
-| **this wave (`cli-lcov-15.info`)** | **250** | 55 163 |
-| — registered here (19 rows, 62 lines) | 62 | |
-| — of those 62, closing tokens | 5 | |
+| wave 15 (`cli-lcov-15.info`) | 250 | 55 163 |
+| **this wave (`cli-lcov-16.info`)** | **242** | 55 250 |
+| — registered here (23 rows, 71 lines) | 71 | |
+| — of those 71, closing tokens | 9 | |
 | — awaiting a product decision (below) | 8 | |
-| — work items named below (69 of them closing tokens) | 180 | |
+| — work items named below (64 of them closing tokens) | 163 | |
 
-Per file, wave 13 → this wave (top of the list only; `delta.py cli-lcov-14.info
-cli-lcov-15.info w14 w15` prints the whole table and both totals):
+Per file, wave 15 → this wave (`delta.py cli-lcov-15.info cli-lcov-16.info w15 w16` prints the
+whole table and both totals; every file not listed here is +0):
 
 ```
-file                                    w14    w15   delta
-commands/remote.rs                        31     31      +0
-commands/remote_peers.rs                  20     20      +0
-commands/data.rs                          21     19      -2   (the restore work directory + one closing token)
-headless/mod.rs                           18     17      -1   (451, the login adopted while the switch is off)
-browser/safari/safari_manager.rs           11     13      +2   (another lane's rewrite, 5b6b574f5/4887e65fb)
-relay/config.rs                             4      0      -4   (three validate() tests)
-relay/sign.rs                               2      0      -2   (the two codes on the wire)
+file                                    w15    w16   delta
+commands/mcp_client.rs                     8      5      -3   (an HTTP endpoint handed to the stdio starter)
+commands/session_wait.rs                   5      1      -4   (the error and closed-stream finishes)
+commands/mcp_servers.rs                    5      4      -1   (a --header pair with no name)
 ```
 
-This wave was measured **once**, on the base wave 14 merged into (`origin/dev-huichen` at
-`2b9e9ef36`). The `DA:0` count moved 257 → 250 and the instrumented total 55 033 → 55 163:
-the 130 extra lines are the new tests' own bodies (they live inside the lib, so they are
-instrumented) plus the Safari rewrite named above. The net **−7** is **−9** this wave's own and
-**+2** inherited from the other lane; no line of this wave's product code was written, and no
-line of it was renumbered.
+This wave was measured **once**, on the base wave 15 merged into (`origin/dev-huichen` at
+`a3201a7eb`). The `DA:0` count moved 250 → 242 and the instrumented total 55 163 → 55 250:
+the 87 extra lines are the three new tests' own bodies plus the one new case inside an
+existing test (105 inserted source lines, 18 of them doc comments and blank lines, which are
+not instrumented). No line of this wave's product code was written, and no line of it was
+renumbered.
 
 Wave 13 was measured twice, because the integration branch moved by twelve commits between
 the first report and the hand-off: on wave 12's base the lane read **254 / 55 028**, and on
@@ -108,34 +123,44 @@ row on the left. It now keys on the path inside `cli/src/`.
 
 ```bash
 cd coverage/2026-11/after/cli
-./measure15.sh                                # lib + every integration target, then the nats-only pass
-python3 perfile.py cli-lcov-15.info           # per file, highest first
-python3 missed.py cli-lcov-15.info "cli/src/headless/mod.rs"
+./measure16.sh                                # lib + every integration target, then the nats-only pass
+python3 perfile.py cli-lcov-16.info           # per file, highest first
+python3 missed.py cli-lcov-16.info "cli/src/headless/mod.rs"
                                               # the DA:0 lines of one file
-python3 classify.py cli-lcov-15.info          # closing-token class vs statements
-python3 delta.py cli-lcov-14.info cli-lcov-15.info w14 w15   # per-file movement between two waves
-python3 waiver_check.py cli-lcov-15.info "relay/cli.rs:519-522,526-528,530,532,584,588-590,421,245" \
+python3 classify.py cli-lcov-16.info          # closing-token class vs statements
+python3 shape16.py cli-lcov-16.info           # the same split for registered / decision / work items
+python3 delta.py cli-lcov-15.info cli-lcov-16.info w15 w16   # per-file movement between two waves
+python3 waiver_check.py cli-lcov-16.info "relay/cli.rs:519-522,526-528,530,532,584,588-590,421,245" \
     "relay/server.rs:239" "relay/room.rs:168-170" "prompt.rs:37,59,67-74,104,127,140,151" \
     "relay/jwt.rs:45-48,50" \
     "commands/remote.rs:533,1341,1578,2474,2432-2433,2807,2809-2810,2627-2631" \
-    "commands/remote_peers.rs:684,687-690,692,985-987,991"
+    "commands/remote_peers.rs:684,687-690,692,985-987,991" \
+    "commands/session_wait.rs:208" "commands/mcp_client.rs:320-322" \
+    "commands/mcp_http.rs:314-317" "commands/mcp_servers.rs:351"
                                               # every registered row, re-read against this report
 ./safari-load-repro.sh 3 8                    # the gate flake's reproduction (see cli-safari-gate-flake.md)
 ```
 
-`measure15.sh` pins `HOME` to `target/test-home`, clears `CARGO_BUILD_TARGET`/
+`measure16.sh` pins `HOME` to `target/test-home`, clears `CARGO_BUILD_TARGET`/
 `CARGO_TARGET_DIR` (they leak from other sessions' shells) and puts the 1.99.1 toolchain
 first on `PATH` (Homebrew's rustup shim shadows it otherwise). It must be run as
-`sh ./measure15.sh` (or after `chmod +x`): the file is checked in without the executable
-bit, and `./measure15.sh` then fails in milliseconds with no output at all — which reads
+`sh ./measure16.sh` (or after `chmod +x`): the file is checked in without the executable
+bit, and `./measure16.sh` then fails in milliseconds with no output at all — which reads
 exactly like "the measurement finished instantly".
 
-The wave-15 report was taken on the base wave 14 merged into (`2b9e9ef36`): `1549 passed;
-0 failed` in **179.13 s** for the lib target, every integration target green
+The wave-16 report was taken on the base wave 15 merged into (`a3201a7eb`): `1552 passed;
+0 failed` in **114.70 s** for the lib target, every integration target green
 (`bin` 28, `headless_cli` 18, `remote_start_refusal` 14, `remote_unpair_prompt` 5,
-`relay_serve` 4, and six single- or zero-test targets), and the nats-only pass `2 passed`.
-The previous wave's numbers are kept below rather than replaced, because the two runs are
-the record of a lane that was measured across a moving base.
+`relay_serve` 4, `event_wire_contract` 2, and five single-test targets), and the nats-only
+pass `2 passed`. The wave was measured twice: the first report also carried a fourth test
+(a unit test over the two numeric prompts in `commands/configure.rs`), and §*A brace that
+executes and still reads zero* below is why it was dropped rather than kept — the first
+report read 244, the re-measure 242.
+
+The wave-15 report was taken on the base wave 14 merged into (`2b9e9ef36`): `1549 passed;
+0 failed` in **179.13 s** for the lib target, every integration target green, and the
+nats-only pass `2 passed`. Its predecessor waves' numbers are kept below rather than
+replaced, because the runs are the record of a lane measured across a moving base.
 
 The wave-14 report was first taken at load average **38**, and then re-taken after the
 integration branch moved ~80 commits (load **45–80**): `1543 passed; 0 failed` in
@@ -171,6 +196,10 @@ line, W7 mock closure, W8 dead producer.
 | 16 | `commands/remote_peers.rs:684, 687-690, 692` | **W2** | `add`'s `Some(live) => "The pairing is stored, but the connection did not come up{…}"`. `peer.live.connected` is `PeerSummary.connected` as `pair_with_emitter` returned it, and the only assignment to that field on an `Ok` path is `summary.connected = true` (`packages/remote-client/src/runtime.rs:1806`); every failed connection returns `Err` (1765-1789), which `add` turns into `describe_pairing_error` and a failed command instead of this arm. The arm reports a state the runtime cannot produce. | a runtime that returns an `Ok` summary with `connected == false` — i.e. stores the pairing and answers before the first connect, which is the contract this arm was written for | the connected arm is driven twice, by `add_says_which_machine_it_paired_and_who_connects_it` (text) and `add_json_prints_the_machine_it_paired_and_who_keeps_it_connected` (JSON, `cli/tests/`) |
 | 17 | `commands/remote_peers.rs:985-987` | **W4** | `rename`'s `return Err("{desktop_id} is no longer paired with this machine: the book changed while this ran.")` inside `book.edit`'s closure. The id is read from a book loaded at 967 (`book.position(&selector)`), and the closure re-reads the same file; nothing between the two reads awaits — `Book::load` and `edit` are both file I/O — so the row has to be *removed* by another process in that microsecond window. The line is then the one arm `edit` cannot avoid reaching if it did. | a concurrent `remote peers remove` (or an editor, or a Desktop round trip inserted between the reads) landing between `Book::load()` and `book.edit`'s re-read, which no test can place without a seam | `rename_writes_the_label_and_keeps_the_credential` and `rename_clear_goes_back_to_the_machine_id` take the closure's success arm — the row is found, written or cleared, and the credential is read back; `an_ambiguous_prefix_asks_for_a_longer_one` pins the selector refusal that is the *other* way this arm could have been reached, and it happens in `position` before the closure runs || 18 | `commands/remote_peers.rs:991` | **W2** | `record.as_object_mut().ok_or_else(|| "The pairing book holds an entry that is not a JSON object.")` — the *entry* the `find` above returned is by construction an object: the predicate is `peer.get("desktopId").and_then(Value::as_str) == Some(id)`, and `Value::get` with a string key answers `None` for an array, a string, a number, a bool and null alike. So the row that satisfied `find` has an object at its root, and `as_object_mut` cannot be `None`. | a `find` predicate widened to something `Value::get` does not bound (e.g. matching a nested path, or `== Value::String(id)` on the peer itself) | every test in `remote_peers/tests.rs` goes through this closure: `rename_writes_the_label_and_keeps_the_credential` and `rename_clear_goes_back_to_the_machine_id` both take the `Some` side of the same `ok_or_else`, and the entries they carry came from the product's own writers |
 | 19 | `relay/jwt.rs:45-48, 50` | **W8** | `Role::as_str`, the render direction of the role vocabulary. Nothing in this tree calls it: `Role::parse` is the only direction a token request uses (`server.rs` parses `role` and never renders one), and no log line, claim or error message formats a `Role`. The role string that crosses the wire is written by the *clients*, not by this crate. | a second consumer that renders a role — a log line, a JWT claim, or an error message naming the caller's role. If the honest answer is "there will never be one", the accessor is dead code and deleting it is the fix, not covering it. | `a_correctly_signed_request_verifies_and_reports_its_key` and `sign_user`'s claim assertions pin the *parse* direction and the permissions each role gets; nothing asserts the string back because nothing produces one |
+| 20 | `commands/session_wait.rs:208` | **W2** | `Finish::detail`'s `Finish::Answer => "the run answered"`. The only caller of `detail()` is the `other => Err(format!("run {target_run} ended as {}: {}", other.token(), other.detail()))` arm of the match one screen below, and that arm is taken when `finish != Answer` — so the `Answer` sentence is unreachable from the one place it could be printed. | a caller that prints `detail()` for a run that *succeeded* (a `--verbose` summary, or a log line that reports every finish) — a product change, not an input | the same `match` reports `EmptyAnswer`, `Interrupted` and `Error` (all three are asserted by the three finish tests); `token()`'s `Answer` arm is covered, because the JSON document writes `finishReason` for every outcome including the successful one |
+| 21 | `commands/mcp_client.rs:320-322` | **W8** | `impl Rpc for Session`'s `notify`. The trait's other verb, `request`, is live — `list_tools`/`call_tool` take `T: Rpc` and every stdio command goes through them — but `notify` is not: `Session::initialize` calls `self.notify(..)` on a **concrete** `Session`, where the inherent method wins over the trait's method, and the only `Rpc::notify` call in the tree is `HttpSession`'s own handshake (`mcp_http.rs:127`). `Connection` dispatches `list_tools`/`call_tool` through inherent methods too. | a handshake written once for both transports — a free `async fn initialize<T: Rpc>(rpc: &mut T)`, the shape `list_tools`/`call_tool` already have, or simply `Session::initialize` delegating through `Rpc::notify` as its HTTP twin does. That is one line of product change (and arguably the fix, since the duplication is what makes the arm dead), not an input a test can supply. | `Rpc::notify` for the HTTP transport is exercised by every HTTP handshake test (the `202` acknowledgement); `Session`'s inherent `notify` is exercised by every stdio handshake test, including the one that fails it |
+| 22 | `commands/mcp_http.rs:314-317` | **W2** | `request`'s "the MCP server '{}' acknowledged '{method}' without answering it". `exchange` returns `Ok(None)` from exactly one place — the `let Some(id) = id else` notification branch, where nothing is awaited and the body is dropped — and `request` always calls it with `Some(id)`. On that path the answer is either `Some` (`read_json_answer`, `read_event_stream` → `Ok(Some(..))`) or an `Err`; a `202` with an empty body to a *request* leaves through `read_json_answer`'s "sent an unreadable frame" instead. | an `exchange` that answers `None` for a request — i.e. a transport that reports "accepted, no answer" as a *state* rather than an error, which is the reading this message was written for. Today the same wire shape is a parse error one frame later, so the sentence this arm prints can never be the operator's explanation. | the notification path that produces the `None` is pinned by `a_json_answered_session_handshakes_lists_and_calls` (its route table answers the notification `202` with no body); `read_event_stream`'s "closed its response before answering" and `read_json_answer`'s unreadable-frame error are what a request-shaped `202` actually produces |
+| 23 | `commands/mcp_servers.rs:351` | **W2** | `mcp status`'s `let Some(spec) = config.servers.get(name) else { continue; }`. `targets` has two producers (331-337): a listed name, which `resolve(&config, name)?` has just accepted — and `resolve` is an exact lookup that errors for an unknown name *and* for a disabled one — or `config.servers.keys().cloned()`, i.e. the keys of the same map. The lookup therefore cannot miss, and `resolve`'s own refusal is what a caller naming a server that is not there actually gets. | `resolve` learning prefixes or aliases (it would then accept a name that is not a key, and this `continue` would silently report nothing for it — a defect, not a feature), or `targets` being built from anything else, e.g. a `--all` that also lists disabled entries. | `resolve_reports_a_disabled_server_and_names_the_alternatives` and the unknown-name test pin the two refusals that keep the key set honest; `mcp status` over a config with a disabled entry asserts the `disabled` report that the *earlier* branch produces |
 
 > A line whose text is nothing but a closing token (`}`, `})`, `});`, `))`, `));`, `)?;`,
 > `}),`, `],`) reads `DA:0` whenever the *construct it closes* is not re-entered on the last
@@ -178,19 +207,53 @@ line, W7 mock closure, W8 dead producer.
 > statement whose only execution is "fall through to the brace" has no counter to increment.
 
 Nothing is lost by excluding it from the numerator's accounting **as a class** — and nothing
-is gained by waiving it line by line, which would turn 76 measurements into 76 assertions.
-The count is printed by `classify.py` on every run so it cannot grow silently: `76` at this
-measurement, `77` at wave 14, `79` at wave 13, `86` at wave 10, `97` at wave 3, `119` at
-wave 2.
+is gained by waiving it line by line, which would turn 75 measurements into 75 assertions.
+The count is printed by `classify.py` on every run so it cannot grow silently: `75` at this
+measurement, `76` at wave 15, `77` at wave 14, `79` at wave 13, `86` at wave 10, `97` at
+wave 3, `119` at wave 2. The one that left the class this wave is
+`commands/mcp_client.rs:475` — the `));` of the `format!` a new test now reaches.
 
-All 62 registered lines were re-read against `cli-lcov-15.info` when this wave landed
-(`waiver_check.py`, `checked=62 stale=0`), so no row is stale. Five of them
+All 71 registered lines were re-read against `cli-lcov-16.info` when this wave landed
+(`waiver_check.py`, `checked=71 stale=0`), so no row is stale. Nine of them
 (`relay/cli.rs:245`, `relay/cli.rs:522`, `commands/remote.rs:2631`,
-`commands/remote.rs:2810`, `relay/jwt.rs:50`) are also closing tokens, which is why the
-class count is 76 of the 250 and the registered statements are 57 and not 62. Two more of
-the 76 are the decision block's (`headless/mod.rs:494-495`), so the 250 divides as
-**62 registered + 8 decision + 180 work items**, and the 180 work items carry **111
-statements and 69 closing tokens**.
+`commands/remote.rs:2810`, `prompt.rs:74`, `relay/room.rs:170`, `relay/jwt.rs:50`, and this
+wave's `commands/mcp_client.rs:322` and `commands/mcp_http.rs:317`) are also closing tokens,
+which is why the class count is 75 of the 242 and the registered statements are 62 and not
+71. Two more of the 75 are the decision block's (`headless/mod.rs:494-495`), so the 242
+divides as **71 registered + 8 decision + 163 work items**, and the 163 work items carry
+**99 statements and 64 closing tokens**.
+
+That reading corrects the previous wave's arithmetic in two places, both of which the same
+`shape16.py` now prints on every run: wave 15's 62 registered lines divide as **7 closing
+tokens and 55 statements**, not the five and 57 written there (it counted `prompt.rs:74` and
+`relay/room.rs:170` as statements), and its 180 work items were 113 statements and 67
+closing tokens, not 111 and 69. The totals those two waves reported — 250 and 76/174 — were
+right; only the split inside the registered rows was off by two.
+
+### A brace that executes and still reads zero
+
+`commands/configure.rs:660` and `:804` are the `}` of `if let Ok(number) = …` in
+`ask_non_negative_f64` and `ask_positive_i32`. Their text says "closing token", so
+`classify.py` files them in the class — but the class rule is an *attribution* rule, and it
+was not obvious here that the lines are unreachable, because the fallthrough that reaches
+them is a real input: a price that parses and is negative.
+
+It is already exercised. `unusable_answers_are_refused_and_the_next_one_is_taken`
+(`configure.rs:2066`) feeds `-1` as the input price and `0` as the context window, and
+asserts both refusal sentences — `out.log_err` sits on the line *after* each brace, so on
+every run of that test the source position is walked through and the counters still read 0.
+
+Measured rather than assumed: this wave first added a dedicated unit test over the two
+prompts (`FakePrompter` answering `-1` then `2.5`, and `0` then `16384`), falsified both
+halves (each red on its own assertion when the input is made valid), and re-measured. The
+first report was **244**: the braces were still `DA:0`, and the only lines the new test
+added were two of its own assertion messages. The test was dropped and the report re-taken
+(**242**), because the refusal it pinned is already pinned one function away, and paying two
+permanent `DA:0` lines for no product line is the wrong trade.
+
+So the class holds for a line whose body `return`s: llvm-cov gives the closing brace no
+counter of its own, and no input can change that. What the experiment bought is the certainty
+that these two are in it for that reason and not because the path is never taken.
 
 Rows 17 and 18 are the last unregistered lines of `commands/remote_peers.rs`: with them the
 file's 20 `DA:0` lines divide exactly into **11 closing tokens** (`411`, `671`, `692`, `806`,
@@ -236,6 +299,19 @@ They are left uncovered on purpose: making them `DA:1` would mean writing assert
 fail (to evaluate their messages) or a host with no CA store — both worse than the
 measurement they would buy. `classify.py` prints them as ordinary statements, so they stay
 visible in this file rather than disappearing into a class.
+
+### The six test-side lines outside `commands/remote.rs`
+
+The same rule applies to two other files, and they are listed here for the same reason — a
+`DA:0` inside `#[cfg(test)]` is instrumented, so it has to be counted somewhere:
+
+| lines | what they are | why 0 |
+|---|---|---|
+| `commands/configure.rs:1068-1072` | the `seeded.len()` / `serde_json::from_str(..).and_then(..)` / `auth_json_path() == auth_path` arguments of `existing_future_token_can_keep_current_login`'s "seed replaced before configure" message | an assertion's message arguments are evaluated only when the assertion fails; this one passes on every run, and the *value* it protects (the seed surviving `configure`) is asserted right below by the file's contents |
+| `commands/mcp_client.rs:1296` | `process.stderr_tail()` as the argument of `the tail never reached the last line: {}` in the stderr-ring test | same rule: the assertion is the `settled` flag, which the test then proves independently by reading the tail and comparing its first and last line |
+
+Both were re-read against `cli-lcov-16.info`; neither can be moved by an input, and making
+them `DA:1` would mean writing an assertion that fails on purpose.
 
 ## The launch test that could not say why it failed (5 test-side lines, wave 13)
 
@@ -326,6 +402,9 @@ names the input that reaches it:
 
 | was | now covered by |
 |---|---|
+| `commands/session_wait.rs` **5 → 1** (wave 16): `finish_of`'s `let Some(terminal) = … else { return Finish::Interrupted }` (231) and its `error` return (238), plus the `Finish::Error` arms of `token()` (202) and `detail()` (215) whose sentences those returns produce | `a_stream_that_closes_without_an_end_is_reported_as_interrupted` and `an_error_terminal_is_reported_as_an_error` — two `MockAgent` runs: one whose event list ends after a `text_chunk` (no `agent_end` at all), one whose `agent_end` carries `"error": "the model refused"` *and* `"state": "completed"`. The first asserts the token, the detail sentence and that the partial text is still printed; the second asserts the error token wins over the completed state. Both falsified first: giving the first run a terminal event, and dropping the `error` field from the second, each turned the same test red on its `expect_err`. |
+| `commands/mcp_client.rs` **8 → 5** (wave 16): `ServerProcess::start_with_frame_cap`'s "server … has no \"command\" — it is configured as an HTTP endpoint" (473-475; 475 is the `));` of its `format!`) | `an_http_endpoint_is_not_started_as_a_stdio_server`: a `ServerSpec` whose only transport setting is `url`, handed to the stdio starter. Falsified: with a `command` in the spec the same call answers "could not start the MCP server …: No such file or directory", so the assertion is about the transport and not about a missing binary. |
+| `commands/mcp_servers.rs` **5 → 4** (wave 16): `mcp_add`'s empty-key `--header` refusal (1136) | one more row in `add_stores_an_http_endpoint_and_its_headers`'s table: `--header ': value'`, asserted with the offending pair in the message (`got ': value'`) so it cannot be the no-colon arm beside it answering. Falsified: with the empty-key guard removed the same call stores a header with an empty name, i.e. the row panics on `unwrap_err()` of an `Ok`. |
 | `relay/config.rs` **4 → 0** (wave 15): the seed refusal (116), the two TTL refusals (119, 127), and the empty certificate field (132) | `an_account_seed_nobody_generated_is_refused_by_name`, `a_ttl_that_has_already_elapsed_is_refused`, `a_certificate_field_that_is_set_but_empty_is_refused` — three tests over `validate()`, each asserting the sentence *and* the field it names, because an operator reads the sentence and greps for the field. None of them is a new rule: the four refusals existed and had never been run. |
 | `relay/sign.rs` **2 → 0** (wave 15): `VerifyError::code`'s `Malformed` (80) and `BadSignature` (82) arms | `an_unreadable_or_foreign_signature_is_named_on_the_wire` — two requests to the roster route: a signature header that is not base64, and a genuine signature made by a key other than the one the header names. `Missing` and `Stale` were already on the wire; these two were the codes no test had asked for. The same test then takes the host's own signature and gets `200`, so both refusals are about the signature and not the request. |
 | `commands/data.rs` **21 → 19** (wave 15): `work`'s `symlink_metadata` error arm (638) and one closing token | `a_restore_work_directory_the_filesystem_cannot_name_is_an_error_not_an_absence` — a restore target home nested to 985 bytes, so `<home>/.restore-work-<id>` (46 bytes below it) is the one path the filesystem refuses while the home, its `app`/`agent` children and the pending marker all still resolve. Falsified before it was kept: at 300 bytes the same test panics on `unwrap_err()` of an `Ok`, i.e. the restore really succeeds and the assertion is not vacuous. |
@@ -400,6 +479,47 @@ off it starts nothing (see observation 5 below). The test therefore does not ass
 it asserts the two effects that distinguish the arms (no token request now, a token request after
 the switch returns). A message can lie about which line ran; the platform's request log cannot.
 
+## Eight lines in three files, and a fourth test that was thrown away (wave 16)
+
+The group this wave was handed was "one or two refusal/report arms per place" — `configure.rs`,
+`mcp_client.rs`, `session_wait.rs`, `mcp_http.rs`, `mcp_servers.rs`, 30 lines between them.
+By shape they are 21 statements and 9 closing tokens, and each line is now in exactly one
+bucket: of the statements, **8 run under a test** and **7 became rows 20-23**; **6 are test-side**
+(5 of them `configure.rs`'s assertion arguments, 1 in `mcp_client.rs`); and of the 9 closing
+tokens, 2 are inside the new rows and the other 7 are the class. What is left of `configure.rs`
+— 2 closing tokens and 5 test-side lines — is written down in two paragraphs below and in
+§*A brace that executes and still reads zero*, which is the measurement behind the first two.
+
+**`session_wait`'s two dead finishes were the real gap.** `finish_of` returns
+`Interrupted` for a stream that closed with no `agent_end` and `Error` for a terminal event
+carrying an error; the whole three-state vocabulary around them (`token()`'s `error`,
+`detail()`'s `error`) existed for those two returns, and every existing test streamed an
+`agent_end` with `{}` or a `state`, which is the `Answer`/`EmptyAnswer`/`Interrupted` path.
+Two `MockAgent` runs closed it — the event list is a *replay*, so "the stream ends here" is
+written by simply not appending a terminal event, which is what makes the arm reachable
+without a seam.
+
+**`mcp_client`'s refusal and `mcp_servers`'s header pair were one refusal each.** The first is
+the transport mix-up a user actually makes (`--url` entry, stdio starter); the second is a
+`--header ': value'` pair, which is the *second* refusal in that loop — the no-colon one
+already had a test, so the new row asserts the message *including* the offending pair, which
+is the only way to tell the two arms apart from outside.
+
+**`mcp_http`'s "acknowledged without answering" is a message nothing can print.** It reads
+like the right thing to say when a server answers `202` to a request, and that is exactly why
+it was worth checking rather than waiving on sight: `exchange` returns `Ok(None)` from the
+notification branch alone, and `request` always passes an id, so the arm is dead — while a
+`202` to a request really leaves through `read_json_answer`'s "sent an unreadable frame"
+one frame later. Row 22 records both halves, because the interesting finding is that the
+sentence an operator would want is unreachable *and* something else is what they get.
+
+**`mcp_client`'s `impl Rpc for Session` is half live** (row 21), the same shape one level
+down: the trait exists so stdio and HTTP share one handshake, the HTTP side goes through
+`Rpc::notify`, and the stdio side calls the inherent method on a concrete `Session`, where
+the trait's method can never win. One line (`Rpc::notify(self, …)` in `Session::initialize`,
+as its twin already writes) would make it live; that is a product edit this lane does not
+make for a counter, so it is written down as the falsifier instead.
+
 ## The `future-host/test-support` decision — taken, in this wave
 
 Wave 10 left this open and framed it as a lane decision. It is settled:
@@ -456,7 +576,21 @@ row 16 and 4 in rows 17-18 — every one of them named above.
 | `relay/jwt.rs` | 5 | registered above (row 19), `Role::as_str`: a dead accessor, not a work item |
 | `relay/config.rs`, `relay/sign.rs` | 0 + 0 | at metric A's floor since wave 15 (both were work items with no row: a validation refusal never run and two error codes never asked for) |
 | `commands/session.rs`, `models.rs` | 1 + 0 | both are now at metric A's floor (`session.rs` has one closing brace left) — no work item remains in either |
-| `commands/configure.rs`, `mcp_*`, `browser/*`, `headless/agent.rs` | 7+18+14+14 | one refusal/report arm each. `headless/agent.rs`'s 14 are named in the `supervise` section below. |
+| `browser/*`, `headless/agent.rs` | 14 + 14 | one refusal/report arm each. `headless/agent.rs`'s 14 are named in the `supervise` section below. Wave 16 took `commands/configure.rs` and the three `mcp_*` files out of this row — see the paragraph below and rows 20-23. |
+
+Wave 16 finishes the group that shared that row. `commands/session_wait.rs` (1), the three
+`mcp_*` files (5 + 5 + 4) and `commands/configure.rs` (7) now divide exactly, with nothing
+left as a work item: 4 registered statements and 1 registered closing token plus 4 covered
+lines in `session_wait.rs`; 2 registered statements, 1 registered closing token, 1 covered
+line and 1 test-side line in `mcp_client.rs`; 4 registered statements and 1 closing token in
+`mcp_http.rs`; 1 registered statement, 1 covered statement and 3 closing tokens in
+`mcp_servers.rs`; and in `configure.rs` **2 closing tokens** (660, 804 — the braces of the two
+numeric prompts, whose fall-through input an existing test already supplies; §*A brace that
+executes and still reads zero* is the measurement) and **5 test-side lines** (1068-1072, an
+assertion's message arguments).
+
+`browser/*` keeps its 14 because they are another lane's diagnostic arms (the sitemap and
+Chromium-manager report paths), and `headless/agent.rs`'s 14 stay named in `supervise` below.
 
 ### A product decision, not a waiver: `headless/mod.rs:488-495`
 
@@ -511,9 +645,9 @@ PhaseAction::NeedsAccount => {            // Failed(AccountAuthorization) && !se
    a W2 row: a W2 row would claim "the input does not exist", and what is measured is
    narrower — "no CLI input exists *today*".
 
-For the arithmetic: these 8 lines are neither in the 62 registered nor in the 180 work items
-above; they are the third category (**62 registered + 8 decision-pending + 180 work items =
-250**), and two of them (`494`, `495`) are closing tokens.
+For the arithmetic: these 8 lines are neither in the 71 registered nor in the 163 work items
+above; they are the third category (**71 registered + 8 decision-pending + 163 work items =
+242**), and two of them (`494`, `495`) are closing tokens.
 
 ### `supervise` — the wave-3 plan, executed in wave 10
 
@@ -584,15 +718,15 @@ this lane):
 
 ## What this file cannot claim
 
-- **Not per-line 100 %.** 250 lines read 0. The lane's compliance statement is the one
+- **Not per-line 100 %.** 242 lines read 0. The lane's compliance statement is the one
   `docs/testing/coverage-waivers-2026-11/README.md` makes for the web lane: no silent gap
-  (62 registered + 8 decision-pending + 180 work items = 250, of which 76 are closing
-  tokens), no stale row (all 62 registered lines re-read against `cli-lcov-15.info` by
-  `waiver_check.py`, `checked=62 stale=0`), no product change made for coverage (no seam, no
+  (71 registered + 8 decision-pending + 163 work items = 242, of which 75 are closing
+  tokens), no stale row (all 71 registered lines re-read against `cli-lcov-16.info` by
+  `waiver_check.py`, `checked=71 stale=0`), no product change made for coverage (no seam, no
   `pub`, no signature — the `test-support` decision is a dev-dependency this crate already
   had, and its whole diff is test code: the four integration targets added in waves 12 and 14,
-  one more test inside the existing `headless_cli.rs` in wave 15, and five unit tests inside
-  the lib in wave 15).
+  one more test inside the existing `headless_cli.rs` in wave 15, five unit tests inside the
+  lib in wave 15, and three tests plus one case inside an existing test in wave 16).
 - **No stale exemptions.** If a later wave covers a registered line, the row is wrong rather
   than old and must be deleted, not reworded: `classify.py` prints the registered lines'
   current counts on every run, so the check is one command.
