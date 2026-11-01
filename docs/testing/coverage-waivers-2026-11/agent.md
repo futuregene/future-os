@@ -8,15 +8,22 @@ SQLite at `-O3` in dev/test), Rust **1.99.1** (`rust-toolchain.toml`), macOS arm
 `coverage/2026-11/after/agent/lcov-wave34.info`, run log `wave34-cov.log`. The ledger below was
 regenerated from that lcov and passes its own check.
 
-**Result**: `DA:0` = **1154** lines in **129** files under `agent/src` (wave 34 measurement,
-`lcov-wave34.info`, 2892 tests). This branch has cleared **519** of the 1673 it started from
-(waves 23, 26, 27, 30, 31, 32, 33 and 34; waves 24-25 changed the suite's speed, not which lines
-it reaches). Of the 1154:
+**Result**: `DA:0` = **1160** lines in **129** files under `agent/src` (wave 35 measurement,
+`lcov-wave35.info`, 2893 tests). This branch has cleared **513** of the 1673 it started from
+(waves 23, 26, 27, 30, 31, 32, 33, 34 and 35; waves 24-25 changed the suite's speed, not which
+lines it reaches). Of the 1160:
+
+> **The total went up by 6 with no regression in it.** Wave 35 covered three new rows
+> (`recovery.rs` 277-278, `compact.rs` 381) and lost nine it had no business losing:
+> `rpc/commands/providers.rs:370-375, 389-391` flipped from covered to missed between two runs of
+> the same tree. Those rows only execute when a provider **declares `thinkingLevels`** — so their
+> coverage depends on ambient model data, not on the code under test. Nine state-dependent lines
+> is the width of this metric's run-to-run noise, and it is larger than most waves' gains.
 
 | state | lines |
 |---|---:|
 | **waived** (mechanism + falsifier named below) | **98** |
-| `open` — **no test and no justification yet** | **1086** |
+| `open` — **no test and no justification yet** | **1092** |
 
 Reconciliation (the rows below describe the 98 waived lines; they were written against the
 1231-line measurement and their line numbers were re-checked against the 1211 one in wave 29):
@@ -177,6 +184,62 @@ Writing the "key on one side only" case found a defect **in the helper**:
 panics `no entry found for key` and throws away the path the function exists to
 produce. The absent side is now a JSON null. This is test-only code
 (`rpc/commands/test_support.rs` is `#[cfg(test)]`), so no product behaviour moved.
+
+## Wave 35's measurement is the important part: ±9 lines of ambient noise
+
+Wave 35 added three covered rows and the aggregate **rose by six**. The per-file diff says why:
+
+| direction | rows |
+|---|---|
+| newly covered | `recovery.rs` 277, 278; `session/content/compact.rs` 381 |
+| newly **missed** | `rpc/commands/providers.rs` 370-375 and 389-391 (nine rows) |
+
+Nothing in this wave touched `providers.rs`. Those nine lines are inside
+`.map(|levels| levels.iter()…collect())` for a provider that declares **`thinkingLevels`**, and
+whether such a provider is in the catalogue during a run depends on ambient model data rather
+than on the code. That makes them **state-dependent coverage**: covered in one run, dark in the
+next.
+
+Two consequences the lane has to live with, both now recorded:
+
+1. **A wave's total is not its own work.** Gains smaller than ~9 lines cannot be read off the
+   aggregate; they have to be read off the named rows (`wave29-classes.py`, or the `--check` diff
+   per file). This wave's real gain is 3 rows.
+2. **"Per-line 100 % measured once" is not a property of this suite yet.** Whatever eventually
+   claims 100 % will have to show the `providers.rs` rows covered in the same run as everything
+   else, or the number is a draw from a distribution. The honest target is the named-row ledger
+   with every row either covered or exempted, which is what this file already is.
+
+## Wave 35: fault injection, and the two walls the schema puts in front of it
+
+The last technique this lane had not used: corrupt the store so a recovery path *fails*, and
+assert what recovery does with the failure (commit `9707650a4`). Two walls had to be found first,
+and both are design properties rather than obstacles:
+
+1. **Invalid JSON cannot be stored.** `stream_contexts.descriptor_json` is JSON-checked, so
+   `'{not json'` is refused at the boundary with `malformed JSON / SQL logic error`.
+2. **The stream context is immutable.** Even a *valid* but wrong-shaped descriptor (`'[]'`) is
+   refused by a trigger: `stream contexts are immutable / constraint failed`.
+
+So the fault goes in the one row the schema leaves writable — the change's own metadata:
+
+```sql
+UPDATE stream_changes SET metadata_json='{}' WHERE stream_id IN (SELECT id FROM stream_runs …)
+```
+
+`{}` is valid JSON with no `data` field, so `decode()` fails on `missing change data` and
+recovery isolates the run. The test asserts three things: the run settles to **`recovery_failed`**
+(not "recovered"), the **recorded reason** names the decode, and the unreadable stream is still
+there (1 change row) — isolating is not deleting.
+
+Verified: `recovery.rs:277-278` (the decode's `with_context`) are reached by this test.
+
+**What it did not reach, and why.** The page-read wrappers (`272-273`) need
+`read_encoded_changes` itself to fail, and that does not happen for any corruption the schema
+admits: a missing stream row is a *normal* empty page, and the query's other inputs are already
+validated. Those two rows are therefore **defensive arms for disk corruption** (W2), not
+behaviours a test can drive — the same class as the `ensure!` messages around them, and they
+should be itemised as such rather than chased.
 
 ## Wave 34: the second fixture, and the largest single-wave drop so far
 
