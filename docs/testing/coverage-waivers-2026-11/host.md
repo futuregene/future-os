@@ -341,22 +341,22 @@ panic arm and one closing brace, judged instead of left in §4 (§11.8). The lin
 for the total:
 4+1+0+2+8+3+3+19+11+8+7+7+1+3+1+5+6+1+1+4+1+1 = **97**.
 
-## 4. Open residual — 265 lines in 64 files
+## 4. Open residual — 266 lines in 64 files
 
 **Not waived.** Every row is the measurement plus whatever has actually been read; "not yet
 read" means exactly that. Rows are `DA:0` line numbers in the tree this file records
-(`8213cd62c`, round 12); `buckets12.py` writes them as `round12-open.json`, and `sec4-drift.py`
+(`0f0ea589c`, round 12); `buckets12.py` writes them as `round12-open.json`, and `sec4-drift.py`
 re-parses this table against that file so a typed row cannot drift from the artifact. Round 11's
 pair (`buckets11d.py` / `round11-D-open.json`) is kept as the record of what pass D produced.
 
-Round 12 changed four rows and added one, all in §12: `tasks.rs` 15 → 14 (its `328` — the drop
-guard's `record_cleanup_error` — is executed now that the fixture drives that arm instead of
-waiting for a stopping neighbour), `agent_host.rs` 19 → 20 (its own fixtures moved every line
-below `800` and below `954`, and `565` flipped to 0 this pass), `runtime.rs` keeps 4 under +12
-(the accessor §12.1 added above them), `agent_bridge/presence.rs` drops to 1 because its `112`
-flipper read >0, and `agent_bridge/global_loop.rs` gains a row because its `65` (`previous.stop()`,
-the arm only a second `spawn` on a live loop takes) flipped the other way. Two flippers moving in
-opposite directions is why the lane total did not move.
+Round 12 changed four rows, all in §12.3: `tasks.rs` 15 → 14 (its `328` — the drop guard's
+`record_cleanup_error` — is executed now that the fixture drives that arm instead of waiting for a
+stopping neighbour), `shutdown/services.rs` 16 → 17 and `agent_bridge/global_loop.rs` 0 → 1 (its `20`
+and `65` are §1.2's movers, reading `0` this pass after reading `>0` in pass D), and `agent_host.rs`
+keeps 19 under new numbers (`+10` below `800`, `+36` below `954` — this round's own fixtures).
+`runtime.rs` keeps 4 under `+12` (the accessor §12.1 added above them). The lane total is therefore
+2379, one more than pass D, and none of that one is a new gap: it is two movers landing on their
+uncovered side.
 
 Round 11 changed six rows here. Two were closed by its own tests and are re-pointed from 17-26
 lines down to 6 and 19 (`remote/trust.rs`, `agent_host.rs`); `shutdown/services.rs` is down to 16
@@ -370,10 +370,10 @@ that pair. `cli_tool.rs` (22) is still another lane's change in the same tree, a
 
 | file | open lines | `DA:0` | mechanism |
 |---|---:|---|---|
-| `agent_host.rs` | 20 | 243,377-379,514,550,565-566,594,602,728,868-870,872-873,921,1082,1219-1220 | the closure's own `is_stopping()` read (`243` — `177` in the old numbering; it is unreachable while the first guard above it refuses, and §11.4's M2 is what shows it: remove that first guard and this one answers instead, with the same sentence. Round 12 pinned the *first* guard with an owned-service fixture — `recover-stopping-owned`, M6 — which is what makes that reading final rather than provisional), `Stopped` with no yield reason (`514`, old `451` — the attach-only refusal's last arm; `363`, `435` and `443` were closed in round 9, §10.3), worker-spawn failure (`377-379`, old `311-313`), the stop/serve precedence arms (`550`, `565-566`, `594`, `602`, `728` — old `487`, `502`, `531`, `539`, `665`; `565` is the `"Agent cleanup failed"` argument, §1.2's mover class, 0 in this pass and >0 in pass D), the fixture harness's own failure arms (`868-870`, `872-873`, `921`, `1082`, `1219-1220` — old `858-863`, `911`, `1046`, `1183-1184`, moved by round 12's two fixtures: `+10` below `800` and `+36` below `954`). The numbers moved three times: round 11's fixtures added 66 lines at old `111`, §11.7's seam added 63 more below old `365`, and round 12's fixtures 46 below the fixture module |
+| `agent_host.rs` | 19 | 243,377-379,514,550,566,594,602,728,867-869,871-872,920,1081,1218-1219 | the closure's own `is_stopping()` read (`243` — `177` in the old numbering; it is unreachable while the first guard above it refuses, and §11.4's M2 is what shows it: remove that first guard and this one answers instead, with the same sentence. Round 12 pinned the *first* guard with an owned-service fixture — `recover-stopping-owned`, M6 — which is what makes that reading final rather than provisional), `Stopped` with no yield reason (`514`, old `451` — the attach-only refusal's last arm; `363`, `435` and `443` were closed in round 9, §10.3), worker-spawn failure (`377-379`, old `311-313`), the stop/serve precedence arms (`550`, `566`, `594`, `602`, `728` — old `487`, `503`, `531`, `539`, `665`; `565`, the first `"Agent cleanup failed"` argument, and `602`, the last one, are §1.2's movers and both read `0` in this pass), the fixture harness's own failure arms (`867-872`, `920`, `1081`, `1218-1219` — old `911`, `1046`, `1183-1184` plus `858-863`, moved by round 12's two fixtures: `+10` below `800` and `+36` below `954`). The numbers moved three times: round 11's fixtures added 66 lines at old `111`, §11.7's seam added 63 more below old `365`, and round 12's fixtures 46 below the fixture module |
 | `cli_tool.rs` | 22 | 84,93,100,105,255-257,268-270,339-341,346,358,413-415,430,733,760,860 | **not this lane's work.** The cli lane's wave 16 (`d3fde9dcd`, `b5f1e7c89`, `9a1a89a87`) landed in `dev-huichen` between this lane's two measurements: it closed twelve of round 7's rows here (326-328, 333, 345, 385-387, 402, 705, 732, 832) and added fifteen new ones — the probe deadline's per-thread override (268-270), the discovery child's kill-and-report arms (339-341, 346), the two output-limit refusals (358), the discovery failure report (413-415), the pre-start report (430) and four message arguments (733, 760, 860). Measured here, read by that lane |
 | `remote/trust.rs` | 6 | 169-174 | only `load_platform_certs`'s error collection is left: the `bundle_with_extra` arms behind its `OnceLock` (old 64-93) and the trailing-newline guard (old 87) were all closed by round 11's one-process-per-case fixtures (§11.3), which is why this row fell from 17 |
-| `shutdown/services.rs` | 16 | 47-49,68,70-71,73,75-76,81,93,96,98-99,280,321 | service shutdown error arms and two closing braces. `20` — `return Err(error.into())` when `super::failure()` already holds a recorded failure — is the mover §1.2 describes (`DA:0` in the base probe and in C, `>0` in A, B and D), so it is not in this pass's set |
+| `shutdown/services.rs` | 17 | 20,47-49,68,70-71,73,75-76,81,93,96,98-99,280,321 | service shutdown error arms and two closing braces. `20` — `return Err(error.into())` when `super::failure()` already holds a recorded failure — is the mover §1.2 describes: `DA:0` in the base probe and in C, `>0` in A, B and D, and `0` again in round 12, which is why this row is 17 rather than pass D's 16 |
 | `tasks.rs` | 14 | 126-128,228-230,234,439,476,482,572-573,1859,2176 | store-open / delete / thread-load failure logs. Round 12's `328` — the drop guard's `record_cleanup_error` — left this row: the fixture now borrows the stop flag and takes its ledger entry back (§12.1), so the arm is executed by the test that means to execute it instead of by whichever stopping neighbour happened to overlap |
 | `remote_platform.rs` | 10 | 49-53,225,233,246,326,392 | the `from_pem_bundle` error arm (measured unreachable by `remote_platform::tests::a_relay_ca_that_cannot_be_used_is_named`) plus fixture arms |
 | `remote_host/read_pages.rs` | 9 | 70,377-384 | one `break` in the page loop plus a fixture sink that must never be used |
@@ -432,8 +432,8 @@ that pair. `cli_tool.rs` (22) is still another lane's change in the same tree, a
 | `error.rs` | 1 | 106 | a remote-client error → `host::Error` conversion arm |
 | `build_info.rs` | 1 | 171 | not yet read |
 | `auth_store.rs` | 1 | 281 | not yet read |
-| `agent_bridge/global_loop.rs` | 1 | 65 | `previous.stop()` in `spawn` — the arm only a second `spawn` on a live loop takes, and whether some other test leaves one behind is order, not this file's business. It reads >0 in pass D and 0 here (§1.2's mover class, with §3's W21/W22 sitting above it) |
-| `agent_bridge/presence.rs` | 1 | 86 | `86` is not yet read; `112` — the `}` closing the attach-presence block, which reads whatever the last test to publish a presence event left behind — read >0 in this pass, so it is out of this table and stays a mover (§1.2) |
+| `agent_bridge/global_loop.rs` | 1 | 65 | `previous.stop()` in `spawn` — the arm only a second `spawn` on a live loop takes, and whether some other test leaves one behind is order, not this file's business. It reads `>0` in pass D and `0` here (§1.2's mover class, with §3's W21/W22 sitting above it) |
+| `agent_bridge/presence.rs` | 2 | 86,112 | `86` is not yet read; `112` is the `}` closing the attach-presence block, which reads whatever the last test to publish a presence event left behind — `>0` in round 12's first pass, `0` in its fourth, with no change to the tree in between (§1.2) |
 
 ### 4.1 The `spawn_host` block: measured, not waived
 
@@ -1155,23 +1155,25 @@ entry guard instead of an assumption.
 
 ### 12.3 What the measurement moved
 
-`round12.sh` is round 11 pass D's recipe at `8213cd62c`; the lcov is `round12-lcov.info`, the
+`round12.sh` is round 11 pass D's recipe at `0f0ea589c`; the lcov is `round12-lcov.info`, the
 inventory `round12-missed.json` (`round12-missed.py`), the buckets `round12-open.json`
-(`buckets12.py`). Against pass D, four rows changed and one appeared, and the honest reading is:
+(`buckets12.py`). Against pass D:
 
 | file | pass D | round 12 | what happened |
 |---|---:|---:|---|
 | `tasks.rs` | 15 | 14 | `328` closed — the drop's `record_cleanup_error` arm is now executed by the fixture that means to execute it (§12.1) |
-| `agent_host.rs` | 19 | 20 | `+10` below `800` and `+36` below `954` from this round's two fixtures; `565` (the `"Agent cleanup failed"` argument) read `>0` in pass D and `0` here |
+| `shutdown/services.rs` | 16 | 17 | `20` is a mover (§1.2): `0` in the base probe and in C, `>0` in A, B and D, and `0` again here |
+| `agent_bridge/global_loop.rs` | — (2 waived) | 1 | `65` (`previous.stop()` on a live loop) flipped the other way and enters §4 |
+| `agent_host.rs` | 19 | 19 | renumbered: `+10` below `800` and `+36` below `954` for this round's two fixtures; `565` and `602` — the two `"Agent cleanup failed"` arguments — are movers reading `0` this pass |
 | `runtime.rs` | 4 | 4 | same four lines, `+12`, below §12.1's accessor |
-| `agent_bridge/presence.rs` | 2 | 1 | `112`, a mover §1.2 already names, read `>0` this pass |
-| `agent_bridge/global_loop.rs` | — | 1 | `65` (`previous.stop()` on a live loop) flipped the other way, so it enters §4 |
+| `agent_bridge/presence.rs` | 2 | 2 | `112`, a mover §1.2 already names, moved *between this round's own passes* — `>0` in the first, `0` in the fourth (§12.6) |
 
-**One line closed, three moved, and the lane total is 2378 again** — the same coincidence §11.8 was
-careful to label as one: this round's fixtures did not shrink the lane, they replaced a race with a
-measurement and pinned a guard. For a coverage goal that distinction matters more than the number:
-a line that reads `>0` because a neighbour happened to overlap is not coverage, it is luck that
-resolves the same way twice in a row.
+**One line closed by this round's work (`tasks.rs:328`), five movers, and the lane total is 2379** —
+one more than pass D, and entirely explicable without a new gap: two movers landed on their
+uncovered side (`services.rs:20`, `global_loop.rs:65`) while one landed on its covered side
+(`tasks.rs:328`). For a coverage goal that distinction matters more than the number: a line that
+reads `>0` because a neighbour happened to overlap is not coverage, it is luck resolving the same
+way twice in a row, and this round is what says so out loud instead of harvesting it.
 
 The chain is self-checking, and all three checks were run:
 
@@ -1180,8 +1182,9 @@ The chain is self-checking, and all three checks were run:
 - `buckets12.py round11-D-lcov.info round11-D-missed.json` reproduces
   **2378 = 2016 switch lane + 97 waived + 265 open**, so the bucket tables are still the round-11
   ones after this round's edits;
-- `sec4-drift.py round12-open.json` reads §4's table against the new artifact: **64 rows, 0 drift,
-  265 lines on both sides**.
+- `sec4-drift.py` reads §4's table against `round12-open.json`: **64 rows, 0 drift, 266 lines on
+  both sides**, and `scripts/coverage/lane-check.py …/host-lane.json` agrees with the lcov, the
+  inventory and the doc at **2379 = 2016 + 97 + 266**.
 
 ### 12.4 `cli_tool.rs`: read, then left to its lane
 
@@ -1214,3 +1217,41 @@ this lane cannot claim. What the reading itself produced, for that lane:
   per-round edit. It was not taken here because this round's job was to make the gate honest first.
 - `cli_tool.rs` (§12.4) and the four files §4 still marks "not yet read"
   (`shadow_review/repository.rs`, `remote/commands.rs`, `test_support/agent.rs`, `store/cleanup.rs`).
+- The `"Agent cleanup failed"` movers (`565`, `602`) as coverage: they stay at `0` on purpose. A
+  stop whose journal acknowledgement is lost covers them by failing (§12.6), and that is the one
+  way this record will not take them.
+
+### 12.6 Four instrumented passes, one flaky stop, and why the artifact is the green one
+
+Four `round12.sh` passes ran on this tree, and they did not all agree:
+
+| pass | log | result |
+|---|---|---|
+| 1 | (overwritten — its derived artifacts are `round12-missed.json`'s first draft) | green, 1984 passed |
+| 2 | `round12-run-failed-shell.log` | **red**: `agent_host::tests::a_cli_shell_is_cancelled_by_the_embedded_owner` |
+| 3 | `round12-run-failed-shell2.log` | **red**: the same test |
+| 4 | `round12-run-green.log` | green, 1984 passed / 0 failed / 11 ignored, 425 s |
+
+The red passes both panicked at `agent_host/tests.rs:592` on
+
+```
+Message("Agent failed to stop: event journal: event shutdown acknowledgement lost:
+         Agent failed to stop: event journal: event shutdown acknowledgement lost")
+```
+
+from `journal_writer::shutdown` (`agent/src/rpc/broadcaster/journal_writer.rs:250`): `queue_shutdown()`
+succeeded, and then the reply channel was closed before the persistence worker answered. It is not
+the fixture's fault and not a coverage question: the plain suite runs green (1983→1984 passing twice,
+§12.1 and the final gate below), and the single test passes 3/3 alone in 0.16 s. The window is the
+instrumented worker's latency.
+
+Both red lcovs are kept beside the artifact (`round12-lcov-failed-shell.info`,
+`round12-lcov-failed-shell2.info`) because they are evidence, not debris: in a red pass the failsafe
+stop *covers* `agent_host.rs:565` and `602` and reads `presence.rs:112` at `0`. A failing run that
+scores better than a passing one is exactly the trap a coverage campaign walks into, so the record
+takes the green pass and the red ones stay visible next to it.
+
+The race itself is reported, not patched here: it is a product arm (a stop whose persistence worker
+is slow can turn into `Phase::Failed("Agent failed to stop: …")` with no journal), it is neither an
+uncovered line nor this lane's product surface, and fixing it by widening a timeout is the move this
+goal forbids. It needs its own fixture and its own todo.
