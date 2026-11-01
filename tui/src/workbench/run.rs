@@ -3513,6 +3513,32 @@ mod driver_tests {
     /// stopped reading its input.
     const RUN_BUDGET: Duration = Duration::from_secs(20);
 
+    /// Held across a test that waits on a **product** read of the repository.
+    ///
+    /// `open_git_panel` spawns `git` by name, so the read resolves through
+    /// `PATH` — and `PATH` is process-global. A peer test swaps it for a
+    /// directory of opener stubs and an empty one, to prove that a missing
+    /// opener is reported rather than swallowed
+    /// (`live::tests::opening_a_link_spawns_the_opener_and_reports_a_missing_one`).
+    /// A repository test running beside that window fails with
+    /// `failed to spawn git: No such file or directory`, which says nothing
+    /// about the code under test. Every test that mutates an environment
+    /// variable holds this lock (that is what it is for, see
+    /// `crate::test_env::lock`), so holding it here is what makes "the log
+    /// installed" a fact about this test instead of about the scheduler.
+    ///
+    /// Only the tests whose *loop* spawns `git` take it: a fixture resolves
+    /// its own git absolutely (`test_env::absolute_tool`) and needs none.
+    ///
+    /// The tests hold it across their awaits on purpose, which is what
+    /// `clippy::await_holding_lock` warns about: the *loop* is what spawns
+    /// the read, so the guard has to outlive those awaits, and nothing the
+    /// loop runs takes this lock — the deadlock the lint is built for cannot
+    /// happen here, while releasing it early reopens the race.
+    fn a_peer_may_not_swap_the_environment() -> std::sync::MutexGuard<'static, ()> {
+        crate::test_env::lock()
+    }
+
     /// A workbench loop wired exactly as `run` wires it: a mock agent, a terminal,
     /// the two channels the loop reads, and the settings file it writes.
     pub(super) struct Driver {
@@ -4376,8 +4402,10 @@ mod driver_tests {
         /// The repository browser's own keys: the tabs are numbered, `tab` moves
         /// between the list and the patch, and the horizontal pan is the pane's —
         /// the cursor does not move out from under the reader while they pan.
+        #[allow(clippy::await_holding_lock)]
         #[tokio::test]
         async fn the_repository_tabs_focus_and_pan_are_its_own_keys() {
+            let _env = a_peer_may_not_swap_the_environment();
             let mut driver = Driver::attach_conversation().await;
             assert!(!driver.quit_key("ctrl+g").await);
             assert!(
@@ -4464,8 +4492,10 @@ mod driver_tests {
 
         /// A section with nothing to list still opens: the panel is a view of the
         /// repository, and "no stashes" is an answer, not an error.
+        #[allow(clippy::await_holding_lock)]
         #[tokio::test]
         async fn every_repository_section_opens_without_an_error() {
+            let _env = a_peer_may_not_swap_the_environment();
             let sections = crate::workbench::state::GitSection::ALL;
             for (index, section) in sections.iter().enumerate() {
                 let mut driver = Driver::attach_conversation().await;
@@ -4557,8 +4587,10 @@ mod driver_tests {
         /// that whole path measured zero before this test. The repository is the
         /// fixture's own, so "the log of a repository with history" is a fact of
         /// the test rather than of the checkout it runs in.
+        #[allow(clippy::await_holding_lock)]
         #[tokio::test]
         async fn the_repository_panel_reads_the_session_workspace() {
+            let _env = a_peer_may_not_swap_the_environment();
             let repo = repo_with_two_commits();
             let mut driver = Driver::attach_conversation_in(repo.path()).await;
             assert!(!driver.quit_key("ctrl+g").await, "ctrl+g does not leave");
@@ -4606,8 +4638,10 @@ mod driver_tests {
         /// The repository is the fixture's own (`repo_with_two_commits`): the log
         /// has to have a second row to move onto, and that is a property of this
         /// test's repository rather than of wherever the sources were checked out.
+        #[allow(clippy::await_holding_lock)]
         #[tokio::test]
         async fn moving_in_the_repository_panel_reads_the_row_under_the_cursor() {
+            let _env = a_peer_may_not_swap_the_environment();
             let repo = repo_with_two_commits();
             let mut driver = Driver::attach_conversation_in(repo.path()).await;
             assert!(!driver.quit_key("ctrl+g").await);
@@ -4714,8 +4748,10 @@ mod driver_tests {
 
         /// A session with no workspace takes the panel's "nothing to read" door:
         /// the box still opens, and it does not run git in an empty path.
+        #[allow(clippy::await_holding_lock)]
         #[tokio::test]
         async fn the_repository_panel_without_a_workspace_says_so() {
+            let _env = a_peer_may_not_swap_the_environment();
             let mut driver = Driver::attach(&[
                 ("get_state", r#"{"sessionId":"s1","model":"future/old"}"#),
                 ("get_session_entries", r#"{"entries":[]}"#),
@@ -4729,6 +4765,430 @@ mod driver_tests {
                 "a workspace-less session read a repository"
             );
             assert!(frames(&painted) >= 1);
+        }
+    }
+
+    mod loop_edges {
+        use super::*;
+        use crate::workbench::Overlay;
+
+        fn draft(driver: &mut Driver) -> String {
+            let frame = driver.frame();
+            driver.live.data(&frame).input.text.clone()
+        }
+
+        /// An agent event of `kind`, on `session`, carrying `data`.
+        fn event(kind: &str, data: serde_json::Value, session: &str, run: &str) -> AgentEvent {
+            AgentEvent {
+                r#type: kind.into(),
+                data,
+                session_id: Some(session.into()),
+                run_id: Some(run.into()),
+                ..Default::default()
+            }
+        }
+
+        /// A resize and a focus report can arrive in the same read as the keys
+        /// around them. The burst drain unwraps each into its own event — the
+        /// resize becomes the size the frame is composed for, and a focus report
+        /// is answered by the notifier rather than typed into the draft.
+        #[tokio::test]
+        async fn a_resize_and_a_focus_report_inside_a_burst_are_not_text() {
+            let mut driver = Driver::attach_conversation().await;
+            driver.data("a");
+            let _ = driver.input_tx.send(TerminalEvent::Resize);
+            driver.data("\x1b[I");
+            driver.data("\x1b[O");
+            let _ = driver.pump(Duration::from_millis(400)).await;
+            assert_eq!(
+                draft(&mut driver),
+                "a",
+                "the keys around the resize were lost or the focus reports were typed"
+            );
+        }
+
+        /// A conversation stepped away from is filed for the way back, and the
+        /// step onto one is a step: it names the conversation it lands on and
+        /// paints it.
+        ///
+        /// The rail's cursor starts on the first row while the conversation on
+        /// screen is whatever the agent's state named, so the answer to
+        /// `get_state` has to be moved by hand between the steps: a static one
+        /// reports the conversation it started on and undoes the step that just
+        /// landed.
+        #[tokio::test]
+        async fn stepping_away_files_the_conversation_for_the_way_back() {
+            let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+                ("get_state", r#"{"sessionId":"s1","model":"future/old"}"#),
+                (
+                    "list_sessions",
+                    r#"{"sessions":[
+                    {"id":"s1","cwd":"/tmp","updatedAtMs":1700000002000,"model":"future/old"},
+                    {"id":"s2","cwd":"/tmp","updatedAtMs":1700000001000,"model":"future/old"}
+                ]}"#,
+                ),
+                ("get_session_entries", r#"{"entries":[]}"#),
+                (
+                    "list_models",
+                    r#"{"models":[{"id":"old","label":"old","provider":"future",
+                    "thinkingLevel":"default","thinkingLevels":["default"],
+                    "defaultThinkingLevel":"default","isDefault":true}]}"#,
+                ),
+            ]);
+            let answers = mock.data_by_type.clone();
+            let seen_sessions = mock.seen_sessions.clone();
+            let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+            let mut driver = Driver::attach_at(&addr).await;
+            driver.seen = seen;
+            driver.seen_sessions = seen_sessions;
+            assert_eq!(
+                driver.session_id(),
+                "s1",
+                "the fixture did not start on the rail's first row"
+            );
+
+            // One step down: `s2` is not cached, so the read starts now (a tap
+            // does not pay the settle window) and the conversation it left
+            // behind is filed when that answer lands.
+            answers.lock().expect("answers").insert(
+                "get_state".into(),
+                r#"{"sessionId":"s2","model":"future/old"}"#.into(),
+            );
+            driver.data("\x1b[1;2B");
+            assert!(
+                driver
+                    .wait_for(Duration::from_secs(20), |driver| driver
+                        .live
+                        .is_cached("s1"))
+                    .await,
+                "the conversation stepped away from was not kept: the way back is a read"
+            );
+
+            // …and the step back opens it, naming the conversation it lands on
+            // and filing the one it leaves (the same bookkeeping, the other way).
+            answers.lock().expect("answers").insert(
+                "get_state".into(),
+                r#"{"sessionId":"s1","model":"future/old"}"#.into(),
+            );
+            driver.data("\x1b[1;2A");
+            assert!(
+                driver
+                    .wait_for(Duration::from_secs(20), |driver| driver
+                        .live
+                        .is_cached("s2"))
+                    .await,
+                "the step back never opened the conversation it landed on"
+            );
+            assert_eq!(
+                driver.session_id(),
+                "s1",
+                "the step back landed on the wrong conversation"
+            );
+            assert!(
+                driver
+                    .seen_sessions
+                    .lock()
+                    .expect("seen")
+                    .iter()
+                    .any(|(command, session)| command == "get_state" && session == "s1"),
+                "the step back asked the agent nothing about the conversation it opened"
+            );
+        }
+
+        /// A key pressed while a step is still settling lands the step first, so
+        /// the key belongs to the conversation the reader is now looking at.
+        #[tokio::test]
+        async fn a_key_pressed_while_a_step_settles_lands_the_step_first() {
+            let mut driver = Driver::attach_sessions().await;
+            driver.data("\x1b[1;2B");
+            // Queued from beside the loop: it arrives inside `OPEN_SETTLE`, in a
+            // later pass of the *same* run, which is the window the loop has to
+            // close by landing the step.
+            let tx = driver.input_tx.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                let _ = tx.send(TerminalEvent::Data("x".into()));
+            });
+            let _ = driver.pump(Duration::from_millis(700)).await;
+            let asked = driver.seen_sessions.lock().expect("seen").clone();
+            assert!(
+                asked
+                    .iter()
+                    .any(|(command, session)| command == "get_state" && session == "s2"),
+                "the key was applied without landing the step before it: {asked:?}"
+            );
+            assert_eq!(draft(&mut driver), "x", "the key did not reach the draft");
+        }
+
+        /// A step that follows another inside [`STEP_TAP_GAP`] is a *hold*: it
+        /// waits out the settle window instead of opening at once, and the key
+        /// that follows it lands the step first — so the key belongs to the
+        /// conversation the reader is now looking at, not to the one they left.
+        ///
+        /// The second step is sent when the *first one's read is on the wire*
+        /// rather than after a fixed sleep: a sleep long enough to be safe under
+        /// load is longer than the gap, and would make the step a tap (which is
+        /// the branch next door).
+        #[tokio::test]
+        async fn a_held_step_lands_before_the_key_that_follows_it() {
+            let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+                ("get_state", r#"{"sessionId":"s1","model":"future/old"}"#),
+                (
+                    "list_sessions",
+                    r#"{"sessions":[
+                    {"id":"s1","cwd":"/tmp","updatedAtMs":1700000003000,"model":"future/old"},
+                    {"id":"s2","cwd":"/tmp","updatedAtMs":1700000002000,"model":"future/old"},
+                    {"id":"s3","cwd":"/tmp","updatedAtMs":1700000001000,"model":"future/old"}
+                ]}"#,
+                ),
+                ("get_session_entries", r#"{"entries":[]}"#),
+                (
+                    "list_models",
+                    r#"{"models":[{"id":"old","label":"old","provider":"future",
+                    "thinkingLevel":"default","thinkingLevels":["default"],
+                    "defaultThinkingLevel":"default","isDefault":true}]}"#,
+                ),
+            ]);
+            // The answer to `get_state` names the conversation it was asked
+            // about, so the table moves by hand between the steps: the rail's
+            // cursor follows whatever the answer names, and a static `s1` would
+            // put it back on the first row after every step.
+            let answers = mock.data_by_type.clone();
+            let seen_sessions = mock.seen_sessions.clone();
+            let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+            let mut driver = Driver::attach_at(&addr).await;
+            driver.seen = seen;
+            driver.seen_sessions = seen_sessions;
+
+            // The first step is a tap: it opens `s2` at once, which is what the
+            // read named in the log means.
+            answers.lock().expect("answers").insert(
+                "get_state".into(),
+                r#"{"sessionId":"s2","model":"future/old"}"#.into(),
+            );
+            driver.data("\x1b[1;2B");
+            let steering_answers = answers.clone();
+            let steering_seen = driver.seen_sessions.clone();
+            let tx = driver.input_tx.clone();
+            let steering = tokio::spawn(async move {
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+                while tokio::time::Instant::now() < deadline {
+                    let opened = steering_seen
+                        .lock()
+                        .expect("seen")
+                        .iter()
+                        .any(|(command, session)| command == "get_state" && session == "s2");
+                    if opened {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                // The repeat step, then a key: both inside one run of the loop,
+                // because the settle window is state the loop holds. The answer
+                // moves to `s3` first, the conversation this step lands on.
+                steering_answers.lock().expect("answers").insert(
+                    "get_state".into(),
+                    r#"{"sessionId":"s3","model":"future/old"}"#.into(),
+                );
+                let _ = tx.send(TerminalEvent::Data("\x1b[1;2B".into()));
+                tokio::time::sleep(Duration::from_millis(15)).await;
+                let _ = tx.send(TerminalEvent::Data("x".into()));
+            });
+            let _ = driver.pump(Duration::from_millis(1500)).await;
+            steering.await.expect("the steering task finishes");
+
+            let asked = driver.seen_sessions.lock().expect("seen").clone();
+            assert!(
+                asked
+                    .iter()
+                    .any(|(command, session)| command == "get_state" && session == "s3"),
+                "the held step never landed on the conversation it stopped at: {asked:?}"
+            );
+            // The key went to the conversation the held step landed on. Had it
+            // been applied first it would be `s2`'s draft, and the box that
+            // replaced it would be empty.
+            assert_eq!(
+                draft(&mut driver),
+                "x",
+                "the key was typed before the held step landed: it belongs to the conversation left behind"
+            );
+        }
+
+        /// `n` is the decline half of a parked approval's `y`/`n`: the card is
+        /// answered, so it stops being parked.
+        #[tokio::test]
+        async fn a_parked_approval_is_declined_by_n() {
+            let mut driver = Driver::attach_conversation().await;
+            let session = driver.session_id();
+            let _ = driver.agent_tx.send(event(
+                "approval_request",
+                serde_json::json!({"approval_request_id": "ap-1", "title": "run it?"}),
+                &session,
+                "run-1",
+            ));
+            let _ = driver.pump(Duration::from_millis(400)).await;
+            assert!(
+                driver.live.approval().is_some(),
+                "the request never parked an approval"
+            );
+            assert!(
+                !driver.quit_key("n").await,
+                "the decline left the workbench"
+            );
+            assert!(
+                driver.live.approval().is_none(),
+                "the decline did not answer the parked request"
+            );
+        }
+
+        /// A run this client started, ending on its own, is announced; the
+        /// transcript is complete and the activity row stops.
+        #[tokio::test]
+        async fn a_completed_run_is_announced_and_the_activity_row_stops() {
+            let mut driver = Driver::attach_conversation().await;
+            assert!(!driver.type_text("hello").await);
+            assert!(!driver.quit_key("enter").await);
+            let _ = driver.pump(Duration::from_millis(300)).await;
+            let session = driver.session_id();
+            let _ =
+                driver
+                    .agent_tx
+                    .send(event("agent_start", serde_json::json!({}), &session, "r-1"));
+            let _ = driver.agent_tx.send(event(
+                "text_chunk",
+                serde_json::json!({"text": "finished answer"}),
+                &session,
+                "r-1",
+            ));
+            let _ = driver.agent_tx.send(event(
+                "agent_end",
+                serde_json::json!({"state": "completed"}),
+                &session,
+                "r-1",
+            ));
+            let painted = driver.pump(Duration::from_millis(700)).await;
+            assert!(
+                text_of(&painted).contains("finished answer"),
+                "the finished run's text is not on screen: {painted:?}"
+            );
+            assert!(
+                !driver.live.activity_animating(),
+                "a finished run still animates the activity row"
+            );
+            assert!(
+                driver.live.queue_is_empty(),
+                "the completion was raised with a queued follow-up on the agent"
+            );
+        }
+
+        /// A run that ends in an error is announced as a failure, and the run is
+        /// over either way: the activity row stops.
+        #[tokio::test]
+        async fn a_failed_run_is_announced_as_failed() {
+            let mut driver = Driver::attach_conversation().await;
+            assert!(!driver.type_text("hello").await);
+            assert!(!driver.quit_key("enter").await);
+            let _ = driver.pump(Duration::from_millis(300)).await;
+            let session = driver.session_id();
+            let _ =
+                driver
+                    .agent_tx
+                    .send(event("agent_start", serde_json::json!({}), &session, "r-1"));
+            let _ = driver.agent_tx.send(event(
+                "agent_end",
+                serde_json::json!({"state": "failed"}),
+                &session,
+                "r-1",
+            ));
+            let painted = driver.pump(Duration::from_millis(700)).await;
+            assert!(frames(&painted) >= 1, "the failure painted nothing");
+            assert!(
+                !driver.live.activity_animating(),
+                "a failed run still animates the activity row"
+            );
+        }
+
+        /// An `error` event is an attention alert, not a completion: the loop
+        /// raises it through the notifier and the transcript keeps its place.
+        #[tokio::test]
+        async fn an_error_event_is_alerted_rather_than_treated_as_an_answer() {
+            let mut driver = Driver::attach_conversation().await;
+            let session = driver.session_id();
+            let _ = driver.agent_tx.send(event(
+                "error",
+                serde_json::json!({"message": "the provider refused"}),
+                &session,
+                "r-1",
+            ));
+            let painted = driver.pump(Duration::from_millis(500)).await;
+            assert!(frames(&painted) >= 1, "the error painted no frame");
+            assert!(
+                !driver.live.activity_animating(),
+                "an error left the activity row spinning"
+            );
+        }
+
+        /// The approval card is re-opened by a state refresh: the request is
+        /// still parked, so the box that shows it comes back rather than staying
+        /// closed with nothing on screen saying why.
+        #[tokio::test]
+        async fn a_state_refresh_brings_the_parked_approval_back() {
+            let mut driver = Driver::attach_conversation().await;
+            let session = driver.session_id();
+            let _ = driver.agent_tx.send(event(
+                "approval_request",
+                serde_json::json!({"approval_request_id": "ap-1", "title": "run it?"}),
+                &session,
+                "run-1",
+            ));
+            let _ = driver.pump(Duration::from_millis(400)).await;
+            assert_eq!(driver.workbench.overlay, Some(Overlay::Approval));
+            // The reader closes the card; the request is still parked.
+            assert!(!driver.quit_key("escape").await);
+            assert_eq!(driver.workbench.overlay, None);
+            driver.live.begin_state_refresh();
+            let _ = driver.pump(Duration::from_millis(600)).await;
+            assert_eq!(
+                driver.workbench.overlay,
+                Some(Overlay::Approval),
+                "a state refresh left a parked approval with no card on screen"
+            );
+        }
+
+        /// A picture read from a panel steps through the pictures beside it: the
+        /// list arrives with the decoded image, on the loop's own wake-up.
+        #[tokio::test]
+        async fn a_preview_publishes_the_pictures_beside_it() {
+            let dir = tempfile::tempdir().expect("a temp directory");
+            for name in ["one.png", "two.png"] {
+                let image = image::RgbImage::from_pixel(4, 4, image::Rgb([200, 40, 40]));
+                image.save(dir.path().join(name)).expect("write a picture");
+            }
+            let mut driver = Driver::attach_conversation_in(dir.path()).await;
+            // The workspace listing lands on a tick; `/files` re-reads the tree
+            // the client already has, so the box waits for it first.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+            loop {
+                let frame = driver.frame();
+                if !driver.live.data(&frame).tree.is_empty() {
+                    break;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "the workspace tree never arrived"
+                );
+                let _ = driver.pump(Duration::from_millis(300)).await;
+            }
+            assert!(!driver.command("/files").await, "/files left");
+            let _ = driver.pump(Duration::from_millis(300)).await;
+            assert!(!driver.quit_key("enter").await);
+            let _ = driver.pump(Duration::from_millis(600)).await;
+            assert_eq!(
+                driver.workbench.preview_siblings.len(),
+                2,
+                "the picture's neighbours were not published to the box: {:?}",
+                driver.workbench.preview_siblings
+            );
         }
     }
 
@@ -4944,8 +5404,10 @@ mod driver_tests {
         /// The repository browser's verbs land on the driver: `y` copies the
         /// row, `d` opens the working-tree review, `enter` selects a file there
         /// and filters the log by a ref.
+        #[allow(clippy::await_holding_lock)]
         #[tokio::test]
         async fn the_repository_verbs_are_answered_by_the_driver() {
+            let _env = a_peer_may_not_swap_the_environment();
             let repo = super::workspace_panel::repo_with_two_commits();
             // A working-tree change, so the review has a file to show.
             std::fs::write(repo.path().join("a.txt"), "three\n").expect("write the change");
@@ -5025,8 +5487,10 @@ mod driver_tests {
 
         /// A worktree row is a place: `enter` moves the session there and the
         /// panel re-reads from the new checkout.
+        #[allow(clippy::await_holding_lock)]
         #[tokio::test]
         async fn entering_a_worktree_moves_the_session_to_it() {
+            let _env = a_peer_may_not_swap_the_environment();
             let repo = super::workspace_panel::repo_with_two_commits();
             let mut driver = Driver::attach_conversation_in(repo.path()).await;
             assert!(!driver.command("/worktree new cov-move").await);
