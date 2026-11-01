@@ -1070,3 +1070,55 @@ mod thinking_projection {
         }
     }
 }
+#[cfg(test)]
+mod recovered_projection {
+    use super::*;
+    use crate::session::SessionEntry;
+    use crate::types::ContentBlock;
+
+    /// A run cut short by a restart leaves reasoning with no provider state to
+    /// replay. Projecting it as reasoning would hand the provider a block it
+    /// cannot resume, so it is announced as interrupted text instead — while a
+    /// reasoning block that still carries its provider state is left alone.
+    #[test]
+    fn a_recovered_partial_reasoning_block_is_announced_as_interrupted_text() {
+        let mut entry = SessionEntry::new_assistant(
+            serde_json::Value::Array(vec![serde_json::to_value(ContentBlock::reasoning(
+                "thought so far",
+                Default::default(),
+            ))
+            .unwrap()]),
+            vec![],
+        );
+        entry.meta = Some(serde_json::json!({"recovered_partial": true}));
+        let messages = entries_to_agent_messages(std::slice::from_ref(&entry), false);
+        match &messages[0].content[0] {
+            ContentBlock::Text { text } => assert_eq!(
+                text,
+                "[Reasoning interrupted by agent restart]\nthought so far"
+            ),
+            other => panic!("expected the interrupted text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_recovered_partial_reasoning_block_that_keeps_its_state_stays_reasoning() {
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("openai".to_string(), serde_json::json!({"item_id": "rs_1"}));
+        let mut entry = SessionEntry::new_assistant(
+            serde_json::Value::Array(vec![serde_json::to_value(ContentBlock::reasoning(
+                "thought so far",
+                metadata,
+            ))
+            .unwrap()]),
+            vec![],
+        );
+        entry.meta = Some(serde_json::json!({"recovered_partial": true}));
+        let messages = entries_to_agent_messages(std::slice::from_ref(&entry), false);
+        assert!(
+            matches!(&messages[0].content[0], ContentBlock::Reasoning { .. }),
+            "{:?}",
+            messages[0].content
+        );
+    }
+}

@@ -1103,6 +1103,16 @@ mod tests {
         }
     }
 
+    /// A segmented stream still reports the run-level events: the segmented
+    /// vocabulary adds entry boundaries, it does not replace the run's own
+    /// events, so anything the entry layer does not name must fall through.
+    #[test]
+    fn a_segmented_stream_passes_run_level_events_through() {
+        let sse = run_event_to_sse_for_storage(RunEvent::StreamResumed, true)
+            .expect("stream_resumed survives segmentation");
+        assert_eq!(sse.event_type, "stream_resumed");
+    }
+
     /// A stream that carries no initial arguments must still report the tool
     /// call — as the empty JSON string a client already understands as "not yet
     /// streamed", never as a missing field.
