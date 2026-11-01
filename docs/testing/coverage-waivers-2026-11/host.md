@@ -225,6 +225,12 @@ Waived total: **90** (21 in rows W1-W7, 20 in W8, 33 in W9-W12, 1 in W13, 15 in 
 claimed as waived. W14-W17 are this round's: the lines that were counted as *open* last round and
 are executed-but-unreachable from this lane for the reasons in their rows.
 
+Round 8 proposes one more, and does not move the number: `agent_bridge/observer.rs:1049` is the
+closing brace of the hydration refusal's `if let Err` block, whose only statement is `return false;`
+— no input can execute it, and its neighbours (1047-1048) are covered, which is W8's own test. It
+moves into §3 as W18 on the next full pass, when `waived` 90 → 91 and `open` 358 → 357 can be
+re-measured together (§9.1).
+
 ## 4. Open residual — 358 lines in 63 files
 
 **Not waived.** Every row is the measurement plus whatever has actually been read; "not yet read"
@@ -232,9 +238,9 @@ means exactly that. Rows are `DA:0` line numbers in the tree this file records (
 
 | file | open lines | `DA:0` | mechanism |
 |---|---:|---|---|
-| `remote/control.rs` | 29 | 939-941,945-946,951-952,960-966,970-975,981-987,997-998 | the client role's **changing half** (`perform_peer`'s connect / disconnect / takeover / remove). Judged and attempted: the fixture that drives it is order-dependent in the full suite (§4.1), so these stay open rather than ship as a one-in-N red test |
+| `remote/control.rs` | 29 | 939-941,945-946,951-952,960-966,970-975,981-987,997-998 | the client role's **changing half** (`perform_peer`'s connect / disconnect / takeover / remove). **Closed in round 8** (§9.2): the fixture's blocker was a `suspended` host role that outlived its own fixture, not the pairing; the focused run measures all 29 as covered |
 | `agent_host.rs` | 29 | 144,173-174,177,216-217,311-313,334,363,435,443,451,487,502-503,531,539,665,762-764,766-767,815,890,1027-1028 | `is_stopping()` arms (144, 177 — closing the process-wide admission is one-way for the test binary), the recovery closure's unfinished-retirement arm (173-174), the handle-level idle admission (216-217, needs a live `AgentHandle`), worker-spawn failure (311-313), `Stopped` with no yield reason (334), the external-mode validation (363), attach-only refusals (435, 443, 451), the stop/serve precedence arms (487, 503, 531, 539, 665), the fixture harness's own failure arms (762-767, 815, 890, 1027-1028), and the race-attributed `502` (§1.2) |
-| `agent_bridge/observer.rs` | 29 | 369-376,398-403,790-796,806-812,1049 | the discovery pass's `Ok(n)`/`Err` arms for the three reconciles (369-376, 398-403 — the pass is a spawned loop reached through `TEST_DISCOVERY_STOP`), the source-verification refusal and its backoff (790-796), the re-verified-source reset (806-812), and `1049`, the brace after the hydration refusal's `return` (same class as `run_control.rs:141-142`: attribution, not a statement) |
+| `agent_bridge/observer.rs` | 29 | 369-376,398-403,790-796,806-812,1049 | the discovery pass's `Ok(n)`/`Err` arms for the three reconciles (369-376, 398-403), the source-verification refusal and its backoff (790-796), the re-verified-source reset (806-812), and `1049`, the brace after the hydration refusal's `return`. **28 of the 29 are closed in round 8** (§9.3) by driving one real discovery tick and two real attach cycles; `1049` is the one left, and it is attribution, not a statement (W18, §3) |
 | `remote_host/pairing.rs` | 22 | 292-293,372,490-492,503-505,540-541,770-776,831-833,1682 | leftover refusal arms around the platform calls |
 | `cli_tool.rs` | 19 | 84,93,100,105,255-257,326-328,333,345,385-387,402,705,732,832 | the `cfg(windows)` executable name (84, W1-shaped but left open: the falsifier is a Windows lane, not a waiver), the `"bundled"`/`"development"` source labels (93, 100 — the second is produced only by the `cfg(not(test))` candidate that this lane compiles out), the 5 s failed-probe cache renewal (105), the deadline-free constructor no test calls (255-257), the probe's own error and post-exit limit arms (326-328, 333, 345), the discovery-failure path (385-387), a closing brace (402), and two fixture asserts' message arguments (705, 732, 832) |
 | `remote/trust.rs` | 17 | 64,66,68,70-71,73,75,87,91-93,169-174 | `bundle_with_extra`'s arms behind a `OnceLock` (64-93 — one closure execution per process, so at most one arm per run), and `load_platform_certs`'s error collection (169-174) |
@@ -531,3 +537,104 @@ deterministic, and red when the numbers stop matching the tree. It ties three th
 cd .worktrees/cov-host
 python3 scripts/coverage/lane-check.py docs/testing/coverage-waivers-2026-11/host-lane.json
 ```
+
+## 9. Round 8 — the client role's change half, the discovery pass, and a stack overflow that stops the full pass
+
+Round 8 closes the two §4 rows this file called most specific: `remote/control.rs`'s client-role
+changing half (**29 lines → 0**) and `agent_bridge/observer.rs`'s discovery/source arms (**28 of 29**;
+the last one moves to §3, W18). **It does not move the lane's total, waived or open figures**, because
+the whole-crate pass could not be taken on this machine: see "the blocker" below. The §1 numbers stay
+the round-7 measurement until a full pass runs; what changed is recorded here, per line, from a
+*focused* instrumented run.
+
+### 9.1 What the focused run measures
+
+`round8-focused.sh` cleans, rebuilds instrumented and runs the two families this round touched —
+`remote::control` and `agent_bridge::observer` — then writes
+`coverage/2026-11/after/host/round8-focused-lcov.info`. **120 passed / 0 failed in 13.95 s**, rc 0 for
+both the run and the report.
+
+`python3 coverage/2026-11/after/host/round8-lines.py round8-focused-lcov.info <file> <lines…>`
+reads the per-line verdicts out of it:
+
+| file | the §4 lines | result in the focused lcov |
+|---|---|---|
+| `host/src/remote/control.rs` | 939-941,945-946,951-952,960-966,970-975,981-987,997-998 (29) | **29 / 29 covered** |
+| `host/src/agent_bridge/observer.rs` | 369-376,398-403,790-796,806-812 (28) | **28 / 28 covered** |
+| `host/src/agent_bridge/observer.rs` | 1049 (1) | still `DA:0` — §3, W18 |
+
+This is a *focused* run: it proves the tests reach those lines, not what the lane's whole-file totals
+are. The lane record keeps round 7's `da0_total` / `waived` / `open` for that reason, and
+`lane-check.py` still recomputes them from `round7-A-lcov.info`.
+
+### 9.2 How the client role's change half was reached
+
+Two things were in the way, and only one of them was about pairing.
+
+1. **`suspended` outlived its fixture.** It is process-global, and the per-fixture reset
+   (`remote::reset_after_shutdown_for_test`) only resets a server that was *closed*. The switch
+   round's own suspend test clears `start_requested` before it ends, leaving `suspended` set for the
+   rest of the process — so every later `start` took `start_generation`'s
+   `!start_requested || suspended` arm and answered an **empty** status: no bridge, no invitation.
+   The paired-machine fixture then failed on `host shows an invitation`, which names nothing about
+   the pairing. `cleanup_host` now stops the host role before it resets it (the same rule the rest of
+   that list already followed), and `start_host` reports the whole status instead of the missing
+   field.
+2. **The guard.** `remote::tests::runtime_tests::a_suspension_does_not_outlive_the_fixture_that_set_it`
+   suspends a machine, drops its `HomeGuard`, acquires the next one and asserts `suspended` is clear
+   and `start_requested` is false. Falsified once: with the `cleanup_host` drain removed the test
+   fails at the second assertion, with it restored it passes.
+
+With the machine drained, `remote::control::tests::serving::a_client_role_change_runs_against_the_paired_machine`
+drives all four operations of `perform_peer` against a real host bridge on the in-process broker —
+connect (the answer reads the list back), takeover (the host answers `changed: false` for a machine
+it already drives, and a silent field is a result, not a refusal), disconnect (the pairing survives)
+and remove (with the platform scripted to refuse the revoke: the row is gone locally and the note is
+the only place the operator learns the cleanup is owed).
+
+### 9.3 The discovery pass and the observer's source arms
+
+`agent_bridge/observer.rs`'s four silent arms are driven through one tick of the real
+`spawn_session_discovery` loop, with the real store and a scripted Agent:
+
+| test | arm | what it prints, and therefore what it asserts |
+|---|---|---|
+| `a_discovery_tick_releases_a_deletion_intent_no_client_can_deliver` | 369-374 | `released 1 undeliverable deletion intent(s)` |
+| `a_missing_delete_outbox_is_reported_and_the_loop_keeps_ticking` | 375-376 | `undeliverable delete reconcile failed: no such table: agent_delete_outbox` |
+| `a_discovery_tick_removes_a_conversation_the_agent_confirmed_deleted` | 398-403 | `removed 1 conversation(s) deleted outside the GUI` |
+
+Each fixture is scripted so the loop's own question is the only one the Agent is asked (one presence
+answer shape, no ordering): the release test has no mirrored conversation at all, and the deletion
+test has no fence. The first attempt put both in one tick and failed — `session_presence` requires
+the answer to name *exactly* the ids asked for, and the two passes ask about different batches.
+
+The observer's attach loop gets 790-796 and 806-812:
+
+- `run_observer_defers_an_attach_whose_source_it_cannot_verify` scripts a `deleted` presence answer,
+  so the source check refuses, the observer names the check, backs off and re-attaches; the
+  assertion is that it asks at least twice and that **nothing is replayed before the source is
+  verified**.
+- `run_observer_resets_its_cursors_when_the_source_changes` re-attaches onto a new restore generation
+  of the *same* database (a different database id is refused one layer earlier, by the same source
+  check — measured, not assumed) and asserts the run binding is gone. Falsified once: with the
+  generation unchanged the assertion fails, because the first attach's `agent_start` is what sets the
+  flag. The second cycle's stream is `StreamScript::Hang`, so the loop parks there instead of
+  starting a third attach and re-setting it.
+
+### 9.4 The blocker: the full `--lib` pass overflows a tokio worker's stack
+
+A whole-crate pass cannot be completed on this machine right now, so §1's totals stand:
+
+| run | filter | result |
+|---|---|---|
+| `round8-full-lib-run.log` | none | parked at 0 % CPU in `agent_bridge::import`, 23 threads queued on `TEST_HOME_LOCK` and 7 on `MOCK_LOCK`, no holder running (`sample` → `park-holders-round8.py`); discarded, never read |
+| `round8-remote-module.log` | `remote::` | `thread 'tokio-rt-worker' has overflowed its stack` |
+| `round8-verify-e2e.log` | `remote::verify_e2e` | same, at `the_baseline_monitor_reading_runs_before_the_traffic` |
+| `round8-verify-e2e-baseline.log` | same, **this round's changes stashed** | same overflow → **not this round's** |
+| `round8-remote-peer-baseline.log` | `remote_peer::`, changes stashed | same overflow → **not this round's** |
+
+The stack overflow is reproducible on a tree with this round's work stashed and reproduces under the
+env round 7 used (`HOME` at the worktree's `target/test-home`, `ulimit -n 8192`), so it is not an fd
+limit and not a fixture this round added. It is the reason the lane reads round 7's numbers: a pass
+that dies mid-run has no verdict to report, and a report written from partial profraw is exactly the
+"complete but almost all zero" shape §7.3 warns about.
