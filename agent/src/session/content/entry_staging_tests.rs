@@ -104,3 +104,91 @@ fn a_staged_error_reference_keeps_its_message_truncated_to_512_characters() {
     );
     assert!(error.starts_with("eeee"), "{error}");
 }
+
+/// The state an interrupted earlier attempt leaves behind: a body holding a
+/// **prefix** of one field and never sealed, bound to an entry whose header has
+/// not been written yet. `stage_named` sees exactly this when a process dies
+/// between the append loop and the seal.
+fn staged_prefix(prefix: &str) -> (tempfile::TempDir, SqliteStore, i64) {
+    let root = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&root.path().join("agent.db")).unwrap();
+    store.reserve_segmented("s").unwrap();
+    store
+        .replace(
+            "s",
+            vec![json!({"id":"info","type":"session_info","timestamp":"2026-10-26T00:00:00Z","content":{}})],
+        )
+        .unwrap();
+    let piece = prefix.to_owned();
+    let body = store
+        .db
+        .call(move |db| {
+            let tx = crate::session::database::begin_write_transaction(db)?;
+            let id = create(&tx)?;
+            let range = append(&tx, id, 0, &piece)?;
+            super::super::bind(&tx, "s", "entry", "a", "/content/0/text", range)?;
+            tx.commit()?;
+            Ok(id)
+        })
+        .unwrap();
+    (root, store, body)
+}
+
+fn body_of(store: &SqliteStore, body: i64) -> super::super::ContentPage {
+    store
+        .db
+        .call(move |db| super::super::read(db, body, 0, 4096))
+        .unwrap()
+}
+
+/// A retry of an unsealed staging verifies the bytes an earlier attempt left
+/// and then finishes the field.
+///
+/// Without the verification the retry would append from its own remembered
+/// offset and publish bytes that never agree with what is stored — the failure
+/// mode is a body that reads as two different texts depending on which page you
+/// look at. So the assertion is on the *content* of the finished body, not on
+/// the fact that the call returned.
+#[test]
+fn a_retry_of_an_unsealed_staging_verifies_the_prefix_and_finishes_it() {
+    let (_root, store, body) = staged_prefix("partial");
+    let range = stage_named(
+        &store,
+        "s",
+        "entry",
+        "a",
+        "/content/0/text",
+        "partial and the rest",
+        false,
+    )
+    .unwrap();
+    assert_eq!(range.length, 20);
+    let page = body_of(&store, body);
+    assert_eq!(page.text, "partial and the rest");
+    assert!(page.sealed, "the retry seals the body the first attempt left open");
+}
+
+/// The same retry with a prefix that disagrees is refused, and refuses before
+/// writing anything.
+#[test]
+fn a_retry_whose_staged_prefix_disagrees_is_refused_without_appending() {
+    let (_root, store, body) = staged_prefix("partial");
+    let error = stage_named(
+        &store,
+        "s",
+        "entry",
+        "a",
+        "/content/0/text",
+        "different and the rest",
+        false,
+    )
+    .unwrap_err();
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("conflicting staged entry prefix"),
+        "{message}"
+    );
+    let page = body_of(&store, body);
+    assert_eq!(page.text, "partial", "the refused retry appended nothing");
+    assert!(!page.sealed, "and it left the body as it found it");
+}
