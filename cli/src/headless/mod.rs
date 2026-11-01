@@ -960,6 +960,28 @@ mod tests {
         assert!(!completed.load(std::sync::atomic::Ordering::Relaxed));
     }
 
+    /// The other way the select ends: the serving loop itself returns.
+    ///
+    /// That is not a signal, and the cleanup has to record it as such — the
+    /// three signal causes each name their own signal in the log the operator
+    /// reads afterwards, and inventing one of them here would send them looking
+    /// for a `systemctl stop` that never happened. The pair is asserted both
+    /// ways: the reason the log gets, and the words the terminal gets, which are
+    /// the two places this value is ever read.
+    #[tokio::test]
+    async fn a_loop_that_returns_is_its_own_stop_cause() {
+        let (result, cause) =
+            until_shutdown(std::future::pending::<StopCause>(), async { Ok(()) }).await;
+        result.expect("a loop that returned successfully is a success");
+        assert_eq!(cause, StopCause::Session);
+        assert_eq!(cause.reason(), "headless_exit");
+        assert_eq!(cause.describe(), "an internal stop");
+        // Named apart from every signal cause on purpose: "an internal stop" is
+        // what tells a reader not to go looking for a signal.
+        #[cfg(unix)]
+        assert_ne!(cause.describe(), StopCause::Interrupt.describe());
+    }
+
     /// A cleanup failure must not erase why the serving loop ended.
     ///
     /// Both statements are needed to act: the loop's reason says what stopped the
