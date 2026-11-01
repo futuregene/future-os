@@ -32,6 +32,17 @@ pub fn app_handle() -> Option<&'static tauri::AppHandle> {
 #[cfg(feature = "gui")]
 pub use crate::commands::prepare_image_preview;
 
+/// The macOS update-preparation chain, end to end, with `helper` standing in for the
+/// privileged worker.
+///
+/// `tests/gui_main_thread_drive` is its only caller: the chain's *successful* half needs a
+/// cooperating helper (a test binary has none — `current_exe()` is itself) **and** a process
+/// that is not spawning a few hundred instrumented libtest cases at the same time (`probe`
+/// gives each candidate executable 10 s; see `coverage/2026-11/tauri/wave3.md` §4, where the
+/// libtest version of this case failed 2 of 4 rounds on exactly that).
+#[cfg(all(feature = "gui", target_os = "macos"))]
+pub use crate::commands::prepare_update_bundle_for_tests;
+
 /// How long a fixture waits for a fact about **another process**, and the seam that decides
 /// it.
 ///

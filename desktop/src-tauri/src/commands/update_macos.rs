@@ -94,6 +94,32 @@ impl Prepared {
         operation: &journal::Operation,
         target: PathBuf,
     ) -> Result<Self, String> {
+        Self::prepare_with(bytes, operation, target, None)
+    }
+    /// [`Self::prepare_at`] with the program the prepared bundle is handed to injected.
+    ///
+    /// `None` is production: this executable with the worker subcommand. A **test target** has
+    /// no worker — `current_exe()` there is the test binary itself — so the chain's *successful*
+    /// half (the executable identity, both `probe` calls, `sync_tree`, the hand-off) could not
+    /// be reached from a test at all, and the case that tried was withdrawn
+    /// (`coverage/2026-11/tauri/wave3.md` §4). A caller that can supply a cooperating program
+    /// leaves every step above the hand-off — and the hand-off itself — on the real path; only
+    /// the child is a stand-in, and the child is not what this file is about.
+    #[cfg(any(test, feature = "test-support"))]
+    fn prepare_with_helper(
+        bytes: &[u8],
+        operation: &journal::Operation,
+        target: PathBuf,
+        helper: &Path,
+    ) -> Result<Self, String> {
+        Self::prepare_with(bytes, operation, target, Some(helper))
+    }
+    fn prepare_with(
+        bytes: &[u8],
+        operation: &journal::Operation,
+        target: PathBuf,
+        helper: Option<&Path>,
+    ) -> Result<Self, String> {
         if target.extension().and_then(|s| s.to_str()) != Some("app") {
             return Err(
                 "Install the application in a writable Applications folder before updating".into(),
@@ -152,7 +178,11 @@ impl Prepared {
             probe(&candidate.join("Contents/MacOS").join(name))?;
             probe(&candidate.join("Contents/MacOS/future"))?;
             sync_tree(&directory)?;
-            let mut command = Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
+            let program = match helper {
+                Some(helper) => helper.to_path_buf(),
+                None => std::env::current_exe().map_err(|e| e.to_string())?,
+            };
+            let mut command = Command::new(program);
             command
                 .arg("--app-update-macos-worker")
                 .arg(&target)
@@ -198,6 +228,29 @@ impl Drop for Prepared {
             let _ = std::fs::remove_dir_all(&self.directory);
         }
     }
+}
+/// The whole preparation chain, end to end, for a caller that can supply the helper.
+///
+/// Differs from the product path in one thing only — *who* the helper is, see
+/// [`Prepared::prepare_with_helper`]. Returns the child's completion serialized, the same text
+/// `process::complete` prints, so a test target can assert on it without the `Completion`
+/// type, which is `pub(super)` to this module's parent.
+///
+/// The caller must be a process with no parallel suite of its own: `probe` gives each
+/// candidate executable a 10 s budget, which this host cannot meet while a few hundred
+/// instrumented libtest cases are spawning children (`wave3.md` §4). That is why
+/// `tests/gui_main_thread_drive` is the only caller.
+#[cfg(any(test, feature = "test-support"))]
+pub(super) fn prepare_and_commit(
+    version: &str,
+    bytes: &[u8],
+    target: PathBuf,
+    helper: &Path,
+) -> Result<String, String> {
+    let operation = journal::Operation::begin(version).map_err(|e| e.to_string())?;
+    let prepared = Prepared::prepare_with_helper(bytes, &operation, target, helper)?;
+    let completion = prepared.commit()?;
+    serde_json::to_string(&completion).map_err(|e| e.to_string())
 }
 fn exchange(a: &Path, b: &Path) -> Result<(), String> {
     use std::os::unix::ffi::OsStrExt;

@@ -458,6 +458,16 @@ pub fn main() {
     let _ = ISOLATED.set(isolated);
     OWNS_ROOT.store(owns_root, std::sync::atomic::Ordering::Relaxed);
 
+    // The update-preparation chain runs here: after the data root is isolated (it writes this
+    // process's own transaction under it) and before the app starts. See
+    // `exercise_update_preparation` for why it can live nowhere else.
+    #[cfg(all(feature = "test-support", target_os = "macos"))]
+    if !is_companion {
+        if let Some(root) = ISOLATED.get() {
+            exercise_update_preparation(root);
+        }
+    }
+
     // The macOS menu, built on the main thread — the one thing `build_macos_menu` actually
     // needs, and the reason the shell record's `host-state-blocked` label was wrong for it
     // (`docs/testing/module-tauri-shell.md` §S12.6): `muda` panics when a child is created
@@ -538,4 +548,201 @@ pub fn main() {
              skipped rather than failed"
         )),
     }
+}
+
+/// The update-preparation chain (`commands::update_macos`), end to end, reported rather than
+/// asserted — this target's contract is that it never adds a red to a suite whose subject is
+/// not its own code (see the module docs).
+///
+/// **Why here and nowhere else.** The chain's successful half — the bundle's executable
+/// identity, both `probe` calls, `sync_tree`, the hand-off to the privileged helper — was
+/// written as a libtest case and **withdrawn**: `probe` gives each candidate executable a 10 s
+/// budget, and this host does not create that process within 10 s while a few hundred
+/// instrumented libtest cases are doing the same (measured 2 of 4 rounds, both fixtures tried;
+/// `coverage/2026-11/tauri/wave3.md` §4). The budget is a property of production, not of the
+/// host, so it stays — the case moves to a process with no parallel suite instead. This one.
+///
+/// Two things it needs that a test target does not have, both supplied from outside and
+/// neither of them a change to the path under test:
+///
+/// * a **cooperating helper** — preparation hands the bundle to `current_exe()` with
+///   `--app-update-macos-worker` and requires `READY` back, and here `current_exe()` is this
+///   driver, so the helper is a fixture script speaking the same three lines;
+/// * a **payload and a target** — a real ad-hoc-signed `.app` in a temporary directory, tarred
+///   the way an update carries it, because the signature and identity steps are code under
+///   test too.
+fn exercise_update_preparation(root: &std::path::Path) {
+    // Beside each other on purpose: "preparation left nothing behind" must be a question about
+    // the case directory, and a payload tree inside it would answer for it.
+    let case = root.join("update-case");
+    let payload = root.join("update-payload");
+    let helper = root.join("update-helper");
+    let built = build_update_payload(&payload);
+    let mut checks: Vec<(&str, bool, String)> = Vec::new();
+
+    let bundle = match built {
+        Ok(bytes) => {
+            checks.push((
+                "the fixture bundle is ad-hoc signed and tarred",
+                true,
+                format!("{} bytes", bytes.len()),
+            ));
+            Some(bytes)
+        }
+        Err(error) => {
+            checks.push(("the fixture bundle is ad-hoc signed and tarred", false, error));
+            None
+        }
+    };
+
+    if let Some(bytes) = bundle {
+        match write_helper(&helper) {
+            Err(error) => checks.push(("the fixture helper speaks the worker protocol", false, error)),
+            Ok(()) => {
+                checks.push((
+                    "the fixture helper speaks the worker protocol",
+                    true,
+                    helper.display().to_string(),
+                ));
+                let target = case.join("FutureOS.app");
+                // Preparation stages *beside* the target, so the directory it would be
+                // installed into has to exist — the same precondition a real Applications
+                // folder provides.
+                if let Err(error) = std::fs::create_dir_all(&case) {
+                    checks.push((
+                        "the case directory exists for the staging directory to sit in",
+                        false,
+                        error.to_string(),
+                    ));
+                }
+                let outcome = futureos_lib::test_support::prepare_update_bundle_for_tests(
+                    "9.9.9", &bytes, target, &helper,
+                );
+                let reported = match &outcome {
+                    Ok(completion) => completion.clone(),
+                    Err(error) => error.clone(),
+                };
+                // Derived, not the string: the chain's verdict is the helper's completion, and
+                // a refusal names where the chain stopped.
+                let completion: Option<serde_json::Value> =
+                    outcome.as_ref().ok().and_then(|text| serde_json::from_str(text).ok());
+                checks.push((
+                    "the chain reaches the helper and the helper's completion comes back",
+                    completion.as_ref().is_some_and(|value| value["ok"] == true),
+                    reported.clone(),
+                ));
+                checks.push((
+                    "the completion says the bundle was restored, so commit removed the staging",
+                    completion
+                        .as_ref()
+                        .is_some_and(|value| value["restored"] == true),
+                    reported,
+                ));
+                let leftovers = directory_entries(&case);
+                checks.push((
+                    "preparation left nothing beside the bundle",
+                    leftovers.is_empty(),
+                    format!("{leftovers:?}"),
+                ));
+            }
+        }
+    }
+
+    let failed: Vec<&str> = checks
+        .iter()
+        .filter(|(_, ok, _)| !ok)
+        .map(|(name, _, detail)| {
+            eprintln!("gui_main_thread_drive: update preparation MISMATCH: {name} ({detail})");
+            *name
+        })
+        .collect();
+    eprintln!(
+        "gui_main_thread_drive: update preparation ran end to end against a temporary bundle \
+         ({}/{}) derived values match{}",
+        checks.len() - failed.len(),
+        checks.len(),
+        if failed.is_empty() {
+            String::new()
+        } else {
+            format!("; failed: {}", failed.join(", "))
+        }
+    );
+    // Under the driver's isolated root, so `finish` removes it; stated so nobody adds a
+    // second cleanup that would then race it.
+    let _ = std::fs::remove_dir_all(&payload);
+}
+
+/// A `.app` shaped the way an update carries it, ad-hoc signed (the same signature a locally
+/// built bundle gets) and returned as a gzip'd tar with one `FutureOS.app` entry.
+///
+/// The executable is a shell script, not a copied Mach-O: a re-signed copy of a system binary
+/// has a signature macOS has never seen, so its first exec goes through `amfid`, and that is
+/// the cost `probe`'s budget was being spent on in the libtest version of this case.
+fn build_update_payload(root: &std::path::Path) -> Result<Vec<u8>, String> {
+    let app = root.join("FutureOS.app");
+    let macos = app.join("Contents/MacOS");
+    std::fs::create_dir_all(&macos).map_err(|e| format!("create the fixture bundle: {e}"))?;
+    let main = macos.join("future");
+    std::fs::write(&main, "#!/bin/sh\nexit 0\n").map_err(|e| e.to_string())?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&main, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| e.to_string())?;
+    std::fs::write(
+        app.join("Contents/Info.plist"),
+        "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict>\
+         <key>CFBundleExecutable</key><string>future</string>\
+         <key>CFBundleIdentifier</key><string>com.futureos.driver</string></dict></plist>",
+    )
+    .map_err(|e| e.to_string())?;
+    let status = std::process::Command::new("/usr/bin/codesign")
+        .args(["--force", "--deep", "--sign", "-"])
+        .arg(&app)
+        .status()
+        .map_err(|e| format!("run codesign: {e}"))?;
+    if !status.success() {
+        return Err(format!("the fixture bundle could not be ad-hoc signed: {status}"));
+    }
+    let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    let mut archive = tar::Builder::new(encoder);
+    archive
+        .append_dir_all("FutureOS.app", &app)
+        .map_err(|e| e.to_string())?;
+    let encoder = archive.into_inner().map_err(|e| e.to_string())?;
+    encoder.finish().map_err(|e| e.to_string())
+}
+
+/// The privileged helper, as far as preparation can tell it apart: `READY` on start, a
+/// `COMMIT` line to authorize the install, one completion line back. The parent's side of this
+/// — building the command, opening the worker log, requiring `READY`, reading the completion —
+/// is the code under test.
+///
+/// `restored: true` is chosen, not incidental: `Prepared::commit` removes the staging directory
+/// when the helper reports a restore, which is what makes "nothing left beside the bundle"
+/// answerable after a *successful* chain.
+fn write_helper(path: &std::path::Path) -> Result<(), String> {
+    std::fs::write(
+        path,
+        "#!/bin/sh\n\
+         printf 'READY\\n'\n\
+         IFS= read -r request || exit 0\n\
+         test \"$request\" = COMMIT || exit 1\n\
+         printf '{\"ok\":true,\"restored\":true,\"diagnostic\":\"driver fixture\"}\\n'\n",
+    )
+    .map_err(|e| e.to_string())?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())
+}
+
+/// The names in `directory`, sorted, so a mismatch names what is there instead of only that
+/// something is. A missing directory reads as empty: preparation never has to create it.
+fn directory_entries(directory: &std::path::Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
 }

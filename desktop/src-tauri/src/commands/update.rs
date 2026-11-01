@@ -97,6 +97,20 @@ pub fn dispatch_update_helper(args: &[String]) -> Option<Result<(), String>> {
         _ => None,
     }
 }
+/// Run the macOS update-preparation chain end to end against a bundle in a temporary
+/// directory, with `helper` standing in for the privileged worker.
+///
+/// Re-exported through [`crate::test_support`]. See `macos::prepare_and_commit` for why the
+/// helper is a parameter, and why the caller must be a process without a parallel suite.
+#[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
+pub fn prepare_update_bundle_for_tests(
+    version: &str,
+    bytes: &[u8],
+    target: std::path::PathBuf,
+    helper: &std::path::Path,
+) -> Result<String, String> {
+    macos::prepare_and_commit(version, bytes, target, helper)
+}
 #[cfg(not(target_os = "windows"))]
 fn helper_result(result: Result<(), String>) -> Result<(), String> {
     if let Err(error) = &result {
