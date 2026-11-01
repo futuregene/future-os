@@ -6,31 +6,35 @@ summary's `Lines` column is not the acceptance number (it adds ghost lines).
 **Lane** — `future-host`'s **lib** unit tests only. The integration-test binaries and the
 `#[ignore]`d real-network legs are measured by their own lanes; this file is about the lib.
 
-**Last measurement**: `test/cov-host` at `0bf7f96d9`, rustc **1.99.1** (`rust-toolchain.toml`),
-`HOME=target/test-home`, `ulimit -n 8192`. Artifacts (gitignored) are in
-`coverage/2026-11/after/host/`: `round11-C-lcov.info` (pass C — the tree the branch is at, and the
-numbers quoted below), `round11-C-run.log`, the per-line inventory `round11-C-missed.json`, the
-open-line dump `round11-C-open.json` and the bucket arithmetic in `buckets11c.py`. The pair that
-measures the tree before §11.7's seam fix is `round11-A-*` / `round11-B-*` (an independent repeat,
-§1.1) with `buckets11.py` and `round11-open.json`; `round11-falsify.log`
-(`round11-falsify-run.log` for its restore) is the round's mutation log. `round11-base-*` is the
-same-recipe probe this round started from (`d3b2c58fd`, **2394**). Superseded by this round:
-`round9-A/B-*` and `round9-tip-A-*` (2392 / 2394), `round7-A/B-*` (2464), `round6-A/B-*` (2505),
-`round5-A/B2-*` (2553), `base3-*` (2589) and `final-*` (2589).
+**Last measurement**: `test/cov-host` at `79050bbd6`, rustc **1.99.1** (`rust-toolchain.toml`),
+`HOME=target/test-home`, `ulimit -n 8192`. `79050bbd6` is the code commit; the doc commit above it
+changes no measured file. It sits on `dev-huichen`'s `57bf84ccb`. Artifacts (gitignored) are in
+`coverage/2026-11/after/host/`: `round11-D-lcov.info` (pass D — the rebased tree the branch is at,
+and the numbers quoted below), `round11-D-run.log`, the per-line inventory `round11-D-missed.json`,
+the open-line dump `round11-D-open.json` and the bucket arithmetic in `buckets11d.py`. Earlier
+passes on this branch: `round11-C-*` on `0bf7f96d9` (the seam fix, before the rebase) with
+`buckets11c.py`, and the pair `round11-A-*` / `round11-B-*` (an independent repeat, §1.1) with
+`buckets11.py` and `round11-open.json`; `round11-falsify.log` (`round11-falsify-run.log` for its
+restore) is the round's mutation log. `round11-base-*` is the same-recipe probe this round started
+from (`d3b2c58fd`, **2394**). Superseded by this round: `round9-A/B-*` and `round9-tip-A-*`
+(2392 / 2394), `round7-A/B-*` (2464), `round6-A/B-*` (2505), `round5-A/B2-*` (2553), `base3-*`
+(2589) and `final-*` (2589).
 
 `compare11c.py` is the pass-A-to-pass-C check: it recomputes both line sets from the two lcov files
 and asserts that C's `agent_host.rs` rows are A's under the two whole-line shifts §11.7's edit makes,
-and that no other file moved except on the three lines §1.2 already names as movers.
+and that no other file moved except on the three lines §1.2 already names as movers. `open-cd.py`
+does the same for C→D and `base-d.py` for base→D.
 
 The lane record beside this file — `host-lane.json` — carries the same numbers, and
 `scripts/coverage/lane-check.py` fails when the record, this doc and the lcov artifact disagree
 (§8). Run it after every re-measurement; it is the cheap gate this lane can actually carry.
 
-**The numbers in §1–§4 are pass C's** (`0bf7f96d9`, **2378**), measured on the tree that carries
-§11.7's seam fix. The pair measured on the tree before that fix is `c6b7b4979`'s: **2375** (A) and
-**2377** (B), two lines apart, both named (§1.1). Round 9's record was `b50efdb55` (2392) and the
-tip it landed on read 2394; round 10 added no fixture to this lane, so 2394 is the number this
-round started from (`round11-base-*`).
+**The numbers in §1–§4 are pass D's** (`79050bbd6`, **2378**), measured on the rebased tree that
+carries §11.7's seam fix. The same tree before the rebase is pass C (`0bf7f96d9`, 2378, §1.1.1);
+the pair measured before the seam fix is `c6b7b4979`'s: **2375** (A) and **2377** (B), two lines
+apart, both named (§1.1). Round 9's record was `b50efdb55` (2392) and the tip it landed on read
+2394; round 10 added no fixture to this lane, so 2394 is the number this round started from
+(`round11-base-*`).
 
 ```bash
 export PATH=/Users/geilige/.rustup/toolchains/1.99.1-aarch64-apple-darwin/bin:$PATH
@@ -56,11 +60,12 @@ The run is also the gate: **1979 passed, 0 failed, 11 ignored** in 438.66 s (A),
 
 Both columns are `DA:0` over `host/src/`, same lane, same recipe. "before" is `round11-base-lcov.info`
 — a probe at this round's starting tree (`d3b2c58fd`), which is round 9's 2392 plus the two lines
-§10.6 named; "after" is pass C at `0bf7f96d9`; the pass-A column is the same tree as C minus
-§11.7's seam, so the two can be read against each other; and the round-9 record
-(`round9-A-lcov.info`, `b50efdb55`) is quoted last.
+§10.6 named; "after" is pass D at `79050bbd6` (the rebased tree); the pass-A column is round 11's
+measurement before §11.7's seam, round 9's record (`round9-A-lcov.info`, `b50efdb55`) is quoted
+last, and `round11-C` — the seam fix on the pre-rebase tree — reads **2378**, the same total as D,
+by the arithmetic §1.1.1 gives.
 
-| | before (`round11-base`, `d3b2c58fd`) | after (pass C, `0bf7f96d9`) | Δ | pass A (`round11-A`, `c6b7b4979`) | round 9 (`round9-A`, `b50efdb55`) |
+| | before (`round11-base`, `d3b2c58fd`) | after (pass D, `79050bbd6`) | Δ | pass A (`round11-A`, `c6b7b4979`) | round 9 (`round9-A`, `b50efdb55`) |
 |---|---:|---:|---:|---:|---:|
 | **lane total** (`host/src/**`) | 2394 | **2378** | **−16** | 2375 | 2392 |
 | switch-lane files (§2.1) | 1884 | 1884 | 0 | 1884 | 1884 |
@@ -73,20 +78,24 @@ three numbers sum to the total):
 | bucket | lines | what it is |
 |---|---:|---|
 | **switch lane** | **2016** | §2.1 — 1884 in five files only the network legs execute — plus §2.2/§2.3 above |
-| **waived** | **95** | §3 rows W1-W20: 76 lines in named rows plus 19 closing edges |
-| **open** | **267** | §4 — real gaps. **Not waived.** |
+| **waived** | **97** | §3 rows W1-W22: 78 lines in named rows plus 19 closing edges |
+| **open** | **265** | §4 — real gaps. **Not waived.** |
 
-So the campaign figure for this lane today is **267 open**, not 0. This round's tests closed **17
+So the campaign figure for this lane today is **265 open**, not 0. This round's tests closed **17
 in-scope lines by execution** — six in `agent_host.rs` (`144`, `173-174`, `216-217`, `334`) and
 eleven in `remote/trust.rs` (the `bundle_with_extra` block and the newline guard, §11.2/§11.3) — and
-the base probe's 2394 → pass C's 2378 is **−16**: those 17, less the one line that is covered in the
-base probe and in pass A but `DA:0` in C, the race-attributed `agent_host.rs:565` (old `502`,
-§1.2). `buckets11c.py` departs from `buckets11.py` in exactly one place: `buckets11.py`'s
-closing-edge rule would absorb `agent_bridge/presence.rs:112` into W8 (that rule's answer for this
-pass is 266 open / 96 waived), while §1.2's rule keeps a line that flips between passes in §4 — so
-W8 stays at its 19 lines and that line is one of the 267.
+the base probe's 2394 → pass D's 2378 is **−16**, from four parts: those 17 closed, one mover
+(`shutdown/services.rs:20`) covered where the base probe read it 0 (`−1`), and two uncovered lines
+in `agent_bridge/global_loop.rs` (`+2`), a file `dev-huichen` added after the base probe was taken
+(`17 + 1 − 2 = 16`). The two other movers read 0 in the base probe and in D alike and are carried in
+§4 (§1.2).
 
-`buckets11c.py` asserts, before it counts, that every §3 waiver line and every §2.3 fixture arm is
+`buckets11d.py` departs from `buckets11.py` in one place: `buckets11.py`'s closing-edge rule would
+absorb `agent_bridge/presence.rs:112` into W8 (that rule's answer for this pass is 264 open / 98
+waived), while §1.2's rule keeps a line that flips between passes in §4 — so W8 stays at its 19
+lines and that line is one of the 265.
+
+`buckets11d.py` asserts, before it counts, that every §3 waiver line and every §2.3 fixture arm is
 still `DA:0` — a waiver this measurement would have falsified, or an arm it would have covered,
 fails the run instead of being silently retired — and that every closing-edge line it does accept
 has a covered neighbour. The same assertions fired once during this round, on
@@ -100,15 +109,17 @@ waived lines of the same file):
 
 | file | before | after | what closed it |
 |---|---:|---:|---|
-| `agent_host.rs` | 25 | **20** | round 11 (§11.2): the recovery refusal, the incomplete-cleanup arm, the cancelled-start answer and the owned idle reservation, each driven in a process of its own — six lines closed, and §11.4 records that `144` is executed but not mutation-pinned. The nine that moved line numbers (`762-767, 815, 890, 1027-1028` → `858-860, 862-863, 911, 1046, 1183-1184`) are the same fixture failure arms, shifted by this round's insertions and again by §11.7's seam; `565` (the race-attributed old `502`) reads 0 in this pass, which is why this row is 20 and not 19 |
+| `agent_host.rs` | 25 | **19** | round 11 (§11.2): the recovery refusal, the incomplete-cleanup arm, the cancelled-start answer and the owned idle reservation, each driven in a process of its own — six lines closed, and §11.4 records that `144` is executed but not mutation-pinned. The nine that moved line numbers (`762-767, 815, 890, 1027-1028` → `858-860, 862-863, 911, 1046, 1183-1184`) are the same fixture failure arms, shifted by this round's insertions and again by §11.7's seam; `565` (the race-attributed old `502`) reads covered in D, so this row is 19 and not 20 (pass C read it 0, §1.1.1) |
 | `remote/trust.rs` | 17 | **6** | round 11 (§11.3): the three refusal arms of `bundle_with_extra` and the trailing-newline guard, one process each. The six left are `load_platform_certs`'s error collection (`169-174`), which only a failed platform read reaches |
-| `shutdown/services.rs` | 17 | 17 | unchanged in this column: `20` reads `DA:0` in the base probe as well, and it takes different values across passes (§1.2) |
-| `agent_bridge/presence.rs` | 2 | 2 | unchanged in this column for the same reason — `112` is a mover, and pass C reads it 0 like the base probe did (§1.2) |
+| `shutdown/services.rs` | 17 | **16** | `20` is the mover: `DA:0` in the base probe and in C, covered in A, B and D (§1.2) |
+| `remote_host/session_events.rs` *(not in §1's row set; see §1.1.1)* | 6 | 6 | the same six lines, renumbered by `dev-huichen`'s `+78` in the file |
+| `agent_bridge/presence.rs` | 2 | 2 | unchanged in this column: `112` is a mover and reads 0 in the base probe and in D alike (§1.2) |
 
-Every line this column moves is named: **17** were closed by this round's new tests, and **1** of
-§1.2's three movers (`agent_host.rs:565`) is `DA:0` in C where the base probe read it covered —
-17 − 1 = **16**. The other two movers read 0 on both sides of this column, so they change nothing
-here and are carried in §4.
+Every line this column moves is named: **17** were closed by this round's new tests, **1** mover
+(`shutdown/services.rs:20`) reads covered here where the base probe read it 0, and **2** new lines in
+`agent_bridge/global_loop.rs` appear because `dev-huichen` added that file — 17 + 1 − 2 = **16**.
+The other two movers read 0 on both sides of this column, so they change nothing here and are
+carried in §4.
 
 Earlier passes, for the record: `shadow_review/snapshot.rs` 24 → 1,
 `store/migrations.rs` 17 → 3, `agent_bridge/observer.rs` 39 → 29, `remote/control.rs` 88 → 86
@@ -145,32 +156,48 @@ behind (`agent_bridge/presence.rs:112`), so the pair is still a reproduction of 
 2-line band, not a drifting number. `perfile11.py round11-A-missed.json round11-B-missed.json`
 prints it.
 
-#### 1.1.1 Pass C — the tree after §11.7's seam, and why it is the record
+#### 1.1.1 Passes C and D — the seam fix, then the rebase — and which tree the record describes
 
-`round11-C-lcov.info` repeats the identical recipe on `0bf7f96d9`, the commit that replaces the
-`set_var` start-mode test with a thread-local seam (§11.7). It is the artifact of record because it
-is the tree the branch is at: **1979 passed / 0 failed / 11 ignored in 432.61 s**, `run_rc=0`,
-`report_rc=0`.
+`round11-C-lcov.info` repeated the recipe on `0bf7f96d9`, the commit that replaces the `set_var`
+start-mode test with a thread-local seam (§11.7), on the tree as it stood before this branch was
+rebased. `round11-D-lcov.info` repeats it again on `79050bbd6`, which is that same content rebased
+onto `dev-huichen`'s `57bf84ccb` — **D is the artifact of record**, because it is the tree the
+branch is at.
 
-| | pass A (`c6b7b4979`) | pass C (`0bf7f96d9`) | Δ |
+| | pass A (`c6b7b4979`, pre-seam) | pass C (`0bf7f96d9`, pre-rebase) | pass D (`79050bbd6`, rebased) |
 |---|---:|---:|---:|
-| lane total `DA:0` | 2375 | **2378** | **+3** |
-| files the difference touches | — | **3** | |
+| lane total `DA:0` | 2375 | **2378** | **2378** |
+| suite | 1979 / 0 / 11 ignored | 1979 / 0 / 11 | **1983 / 0 / 11** |
+| run time | 438.66 s | 432.61 s | 426.54 s |
 
-Those three lines are exactly §1.2's three movers, each on its `DA:0` side in C:
-`agent_bridge/presence.rs:112`, `shutdown/services.rs:20` and `agent_host.rs:565`. Nothing was
-closed and nothing new was opened, and `compare11c.py` proves it rather than asserting it: it
-recomputes both line sets from the two lcov files and checks that A's 19 `agent_host.rs` rows map
-onto C's 20 by the two whole-line shifts the edit makes — **+66** for old lines above `365` and
-**+63** below, because the new seam adds 66 lines at old `111` and the four-line mode check at old
-`361-364` becomes one line — and that no row appears or vanishes in any other file.
+**A → C** is the seam (§11.7) and nothing else: the only three lines that change value are §1.2's
+three movers, each on its `DA:0` side in C — `agent_bridge/presence.rs:112`,
+`shutdown/services.rs:20`, `agent_host.rs:565`. `compare11c.py` recomputes both line sets from the
+two lcov files and checks that A's 19 `agent_host.rs` rows map onto C's 20 by the two whole-line
+shifts the edit makes — **+66** for old lines above `365` and **+63** below, because the seam adds
+66 lines at old `111` and the four-line mode check at old `361-364` becomes one line — and that no
+row appears or vanishes in another file.
 
-What the pass had to prove is the other half — that the new lines are covered, so the seam does not
-buy a test-fix with uncovered product lines. Every line of `start_mode`, `launch_mode`, the
-thread-local slot and `StartModeGuard`'s `set`/`drop` reads `DA>0` in C: the two `select` tests
-between them take `launch_mode`'s armed arm (`a_start_mode_the_entry_does_not_understand…`), its
-fall-through arm and `start_mode`'s `Ok` path (`a_local_start_permission_is_honoured_only_…`), and
-`start_mode`'s `Err` arm. The `DA:0` count moved by the three movers alone.
+What that pair had to prove is the half a green suite hides: that the seam's own lines are covered.
+Every line of `start_mode`, `launch_mode`, the thread-local slot and `StartModeGuard`'s `set`/`drop`
+reads `DA>0` in C: the two `select` tests between them take `launch_mode`'s armed arm
+(`a_start_mode_the_entry_does_not_understand…`), its fall-through arm and `start_mode`'s `Ok` path
+(`a_local_start_permission_is_honoured_only_…`), and `start_mode`'s `Err` arm.
+
+**C → D** is the rebase, and it is not a no-op even though the total is the same number
+(`open-cd.py` prints it):
+
+| file | C (pre-rebase) | D (rebased) | why |
+|---|---|---|---|
+| `agent_host.rs` | 20 | **19** | `565` (old `502`) reads **covered** here: the race landed on its other side |
+| `shutdown/services.rs` | 17 | **16** | `20` likewise reads covered |
+| `agent_bridge/session_events.rs` | `195-197,212-214` | `210-212,227-229` | `57bf84ccb` inserted 78 lines in the file; same six lines, new numbers |
+| `test_support/agent.rs` | `145,492,766,915` | `145,500,774,923` | `+8` lines in the file; same four lines, new numbers |
+| `agent_bridge/global_loop.rs` | — | *waived, not open* | a file `dev-huichen` added after the base probe: its two `DA:0` lines are §3's new W21/W22 |
+
+Two movers landing covered and two new test-side lines appearing in a new file keep the total at
+2378 — arithmetic, not a claim that the rebase covered anything. The suite count rising 1979 → 1983
+is `dev-huichen`'s four tests, not this branch's.
 
 **Three passes were discarded rather than read this round**, and none of them is a number:
 
@@ -196,9 +223,9 @@ measurement.**
 
 | line | what it is |
 |---|---|
-| `agent_host.rs:565` (old `502`) | `server.as_mut().await?` in the shutdown-report arm of the start loop. `DA:0` in B and in C, `>0` in A and in the base probe: whether the serve future is awaited after the shutdown report depends on which of two ready futures the select sees first. The number moved by §11.7's seam (`+63`). §4 keeps it as an open row and this table keeps it named |
-| `agent_bridge/presence.rs:112` | the `}` closing the attach-presence block. `DA:0` in the base probe, `>0` in A, `DA:0` in B and in C: it reads whatever the last test to publish a presence event left behind. It was W8's closing-edge row in round 9 and is **not** claimed as covered here — `buckets11c.py` deliberately does not offer it the closing-edge waiver (§1) |
-| `shutdown/services.rs:20` | `return Err(error.into())` when `super::failure()` already holds a recorded failure. `DA:0` in the base probe and in C, `>0` in both A and B: an earlier test in the binary decides whether the process-global failure is still set. It reads 0 in some runs, so §4 keeps it |
+| `agent_host.rs:565` (old `502`) | `server.as_mut().await?` in the shutdown-report arm of the start loop. `DA:0` in B and in C, `>0` in A, in the base probe and in D: whether the serve future is awaited after the shutdown report depends on which of two ready futures the select sees first. The number moved by §11.7's seam (`+63`). When it reads 0 it is a §4 row — that is what pass C's row 20 was — and pass D reads it covered, which is why §4's `agent_host.rs` row is 19 |
+| `agent_bridge/presence.rs:112` | the `}` closing the attach-presence block. `DA:0` in the base probe, `>0` in A, `DA:0` in B, C and D: it reads whatever the last test to publish a presence event left behind. It was W8's closing-edge row in round 9 and is **not** claimed as covered here — `buckets11c.py`/`buckets11d.py` deliberately do not offer it the closing-edge waiver (§1) |
+| `shutdown/services.rs:20` | `return Err(error.into())` when `super::failure()` already holds a recorded failure. `DA:0` in the base probe and in C, `>0` in A, B and D: an earlier test in the binary decides whether the process-global failure is still set. It reads 0 in some runs, so §4 keeps it whenever it does |
 
 The rule this table carries: a line that takes different values in two passes of the same tree is
 **not** a closure and **not** a waiver. It is a line whose input is another test's leftovers, and it
@@ -262,7 +289,7 @@ block that always returns.
 these seven lines executes; the fixture-mode arm it replaces then reads 0 instead. This is why the
 lines are reported as another lane's rather than waived: a lane exists that measures them.
 
-## 3. Waived constructs — 95 lines
+## 3. Waived constructs — 97 lines
 
 Each row names the mechanism, the test that pins the neighbouring covered lines (the positive
 control), and a falsifier. A waiver that cannot name its falsifier is not evidence
@@ -293,9 +320,11 @@ W8 dead producer/deliberately-unexecuted line.
 | W18 | `host/src/agent_bridge/observer.rs:1049` | 1 | W8 | the closing brace of the hydration refusal's `if let Err` block, whose only statement is `return false` — no input can execute the brace | `…::run_observer_defers_an_attach_whose_source_it_cannot_verify` drives the same `if let Err` on its refusal path, and its neighbours 1047-1048 are covered in this measurement (`round9-A-missed.json` lists only 1049 for the file) | make the block's last statement fall through instead of `return`: the brace then executes with no test change |
 | W19 | `host/src/remote_host/pairing.rs:372` | 1 | W8 | the closing error edge of `PairingIdentity::new(code_expires_at)?` — `future_remote_crypto::generate_identity()` is the call inside it, and it fails only when the OS RNG fails | `…::create_pairing_success` runs the same `PairingIdentity::new` on its success path and `…::a_pairing_code_without_an_expiry_is_refused_by_name` covers the `ok_or_else` one line above, so 369-371 read `DA>0` in this measurement while 372 reads 0 | make `generate_identity` fail (a wrapper that returns `Err` once): 372 executes and the invitation is refused |
 | W20 | `host/src/remote_host/pairing.rs:1352,1404,1451,1477` | 4 | W2/W5 | round 9's own test-side lines: the catch-all `other => panic!("expected the platform refusal…")` of two `match error` blocks (a passing test never takes it), and two hoisted `Path::display()` message arguments (`legacy.display()`, `pending.display()`) that an `assert!` evaluates only on failure | each of the two tests fails at the arm assertion the moment the platform's refusal stops arriving — measured in `round9-falsify.log` (T1, T2 for the catch-alls; T3, T5 for the assertions next to the hoisted arguments) | make the platform answer a non-`Remote` error in the first two tests, or make the unlink succeed in `removing_the_last_slot…`: the catch-all and the message argument both execute |
+| W21 | `host/src/agent_bridge/global_loop.rs:121` | 1 | W2 | `LiveTask::stop`'s `panic!("a process-global agent loop did not stop before the next test scripted")` — the arm a green suite never takes, because a test's loop does stop inside the 5 s window | the two arms around it are covered in this measurement (`116` `DA:6`, `119` `DA:1`), and `agent_bridge`'s tests reach `stop` through the fixture teardown that makes the loop stop | give the loop a future that ignores the abort (an `async { … std::future::pending().await }` after its first poll): the 5 s window is reached and 121 answers |
+| W22 | `host/src/agent_bridge/global_loop.rs:58` | 1 | W6 | the `});` closing `crate::runtime::spawn(async move { … })` in `GlobalLoop::spawn` — the report leaves the brace at 0 while the statement runs | lines `54-57` and `59` read `DA:6,6,3,3` and `6` in this measurement, i.e. the call and its body executed | put the spawn call on one line (it fits rustfmt's width without the `async move` block) and the row disappears from the next report with no test change — the same falsifier W8 carries |
 
-Waived total: **95** (18 in rows W1-W7, 19 in W8, 33 in W9-W12, 1 in W13, 15 in W14-W17, 1 in W18,
-1 in W19, 4 in W20, and **0** in the retired W3). Nothing else in §4 is claimed as waived. W14-W17 were round 7's: the lines
+Waived total: **97** (18 in rows W1-W7, 19 in W8, 33 in W9-W12, 1 in W13, 15 in W14-W17, 1 in W18,
+1 in W19, 4 in W20, 1 in each of W21 and W22, and **0** in the retired W3). Nothing else in §4 is claimed as waived. W14-W17 were round 7's: the lines
 that had been counted as *open* and are executed-but-unreachable from this lane for the reasons in
 their rows. W18 and W19 are the two round 8 flagged for the next full pass — `observer.rs:1049` and
 `pairing.rs:372` — and this measurement is that pass: `waived` 90 → 96, `open` 358 → 280. W20 is
@@ -307,29 +336,34 @@ other: **W3 is retired** — its three ghost lines read `>0` in every pass this 
 A `4`, B `4`), so the row described a report that no longer exists (§11.6) — and **W8 loses one of
 its twenty**: `agent_bridge/presence.rs:112` reads `>0` in pass A and `DA:0` in pass B, which makes
 it a line decided by what an earlier test left behind, so §1.2 keeps it named instead of §3 keeping
-it waived. The line sums still account for the total: 4+1+0+2+8+3+3+19+11+8+7+7+1+3+1+5+6+1+1+4 = **95**.
+it waived. W21 and W22 are the rebase's: `dev-huichen`'s new `global_loop.rs` carries one test-side
+panic arm and one closing brace, judged instead of left in §4 (§11.8). The line sums still account
+for the total:
+4+1+0+2+8+3+3+19+11+8+7+7+1+3+1+5+6+1+1+4+1+1 = **97**.
 
-## 4. Open residual — 267 lines in 63 files
+## 4. Open residual — 265 lines in 63 files
 
 **Not waived.** Every row is the measurement plus whatever has actually been read; "not yet
 read" means exactly that. Rows are `DA:0` line numbers in the tree this file records
-(`0bf7f96d9`, pass C); `buckets11c.py` writes them as `round11-C-open.json`, and `sec4-drift.py`
+(`79050bbd6`, pass D); `buckets11d.py` writes them as `round11-D-open.json`, and `sec4-drift.py`
 re-parses this table against that file so a typed row cannot drift from the artifact.
 
-Round 11 changed five rows here. Two were closed by its own tests and are re-pointed from 17-26
-lines down to 6 and 20 (`remote/trust.rs`, `agent_host.rs`); `shutdown/services.rs` and
-`agent_bridge/presence.rs` gained back the two lines §1.2 names as movers, which read `DA:0` in
-this pass; and `remote/test_support.rs` appears for the first time with the two lines §10.6 had
-left unassigned (`1119`, `2602`) — §10.6 said they could not be bucketed without a re-measured
-pair, and this pass is that pair. `cli_tool.rs` (22) is still another lane's change in the same
-tree, and `remote_peer/testing.rs` (1) is still round 8's regression guard.
+Round 11 changed six rows here. Two were closed by its own tests and are re-pointed from 17-26
+lines down to 6 and 19 (`remote/trust.rs`, `agent_host.rs`); `shutdown/services.rs` is down to 16
+because its mover `20` reads covered in this pass, while `agent_bridge/presence.rs` keeps its
+mover `112` at 0; `agent_bridge/session_events.rs` and `test_support/agent.rs` keep their lines
+under new numbers (the rebase added 78 and 8 lines to those files, §1.1.1); and
+`remote/test_support.rs` appears for the first time with the two lines §10.6 had left unassigned
+(`1119`, `2602`) — §10.6 said they could not be bucketed without a re-measured pair, and pass C is
+that pair. `cli_tool.rs` (22) is still another lane's change in the same tree, and
+`remote_peer/testing.rs` (1) is still round 8's regression guard.
 
 | file | open lines | `DA:0` | mechanism |
 |---|---:|---|---|
-| `agent_host.rs` | 20 | 243,377-379,514,550,565-566,594,602,728,858-860,862-863,911,1046,1183-1184 | the closure's own `is_stopping()` read (`243` — `177` in the old numbering; it is unreachable while the first guard above it refuses, and §11.4's M2 is what shows it: remove that first guard and this one answers instead, with the same sentence), `Stopped` with no yield reason (`514`, old `451` — the attach-only refusal's last arm; `363`, `435` and `443` were closed in round 9, §10.3), worker-spawn failure (`377-379`, old `311-313`), the stop/serve precedence arms (`550`, `566`, `594`, `602`, `728` — old `487`, `503`, `531`, `539`, `665`), the fixture harness's own failure arms (`858-860`, `862-863`, `911`, `1046`, `1183-1184` — old `795-800`, `848`, `983`, `1120-1121`), and the race-attributed `565` (old `502`, §1.2). The numbers moved twice: round 11's fixtures added 66 lines at old `111`, and §11.7's seam added 63 more below old `365` |
+| `agent_host.rs` | 19 | 243,377-379,514,550,566,594,602,728,858-860,862-863,911,1046,1183-1184 | the closure's own `is_stopping()` read (`243` — `177` in the old numbering; it is unreachable while the first guard above it refuses, and §11.4's M2 is what shows it: remove that first guard and this one answers instead, with the same sentence), `Stopped` with no yield reason (`514`, old `451` — the attach-only refusal's last arm; `363`, `435` and `443` were closed in round 9, §10.3), worker-spawn failure (`377-379`, old `311-313`), the stop/serve precedence arms (`550`, `566`, `594`, `602`, `728` — old `487`, `503`, `531`, `539`, `665`), the fixture harness's own failure arms (`858-860`, `862-863`, `911`, `1046`, `1183-1184` — old `795-800`, `848`, `983`, `1120-1121`), and the race-attributed `565` (old `502`, §1.2) — which reads covered in pass D, so this row is 19 and the line is not listed here. The numbers moved twice: round 11's fixtures added 66 lines at old `111`, and §11.7's seam added 63 more below old `365` |
 | `cli_tool.rs` | 22 | 84,93,100,105,255-257,268-270,339-341,346,358,413-415,430,733,760,860 | **not this lane's work.** The cli lane's wave 16 (`d3fde9dcd`, `b5f1e7c89`, `9a1a89a87`) landed in `dev-huichen` between this lane's two measurements: it closed twelve of round 7's rows here (326-328, 333, 345, 385-387, 402, 705, 732, 832) and added fifteen new ones — the probe deadline's per-thread override (268-270), the discovery child's kill-and-report arms (339-341, 346), the two output-limit refusals (358), the discovery failure report (413-415), the pre-start report (430) and four message arguments (733, 760, 860). Measured here, read by that lane |
 | `remote/trust.rs` | 6 | 169-174 | only `load_platform_certs`'s error collection is left: the `bundle_with_extra` arms behind its `OnceLock` (old 64-93) and the trailing-newline guard (old 87) were all closed by round 11's one-process-per-case fixtures (§11.3), which is why this row fell from 17 |
-| `shutdown/services.rs` | 17 | 20,47-49,68,70-71,73,75-76,81,93,96,98-99,280,321 | service shutdown error arms and two closing braces, plus `20` — `return Err(error.into())` when `super::failure()` already holds a recorded failure, which reads whatever an earlier test in the binary left set (§1.2: `DA:0` in the base probe and in C, `>0` in A and B) |
+| `shutdown/services.rs` | 16 | 47-49,68,70-71,73,75-76,81,93,96,98-99,280,321 | service shutdown error arms and two closing braces. `20` — `return Err(error.into())` when `super::failure()` already holds a recorded failure — is the mover §1.2 describes (`DA:0` in the base probe and in C, `>0` in A, B and D), so it is not in this pass's set |
 | `tasks.rs` | 15 | 126-128,228-230,234,328,439,476,482,572-573,1859,2176 | store-open / delete / thread-load failure logs |
 | `remote_platform.rs` | 10 | 49-53,225,233,246,326,392 | the `from_pem_bundle` error arm (measured unreachable by `remote_platform::tests::a_relay_ca_that_cannot_be_used_is_named`) plus fixture arms |
 | `remote_host/read_pages.rs` | 9 | 70,377-384 | one `break` in the page loop plus a fixture sink that must never be used |
@@ -338,12 +372,12 @@ tree, and `remote_peer/testing.rs` (1) is still round 8's regression guard.
 | `remote_host/business/prompt.rs` | 7 | 148-154 | the `accepted_rx.await` `Err` arm — the acknowledgement channel closed before the prompt was accepted; no fixture drops that sender yet |
 | `agent_client.rs` | 7 | 177-178,192,208-209,397,556 | the two `JoinError` arms (a panicking verify/connect task), plus the deliberate `panic!` inside a test's losing-installer closure and one `matches!` line |
 | `remote/pairing.rs` | 6 | 53,55,62,75-77 | conversion arms and the `load_creds_checked` delegation |
-| `agent_bridge/session_events.rs` | 6 | 195-197,212-214 | deletion-source verification and session-removal failure logs |
+| `agent_bridge/session_events.rs` | 6 | 210-212,227-229 | deletion-source verification and session-removal failure logs (same six lines as before the rebase, renumbered by `dev-huichen`'s `+78` in the file — §1.1.1) |
 | `store/legacy_history.rs` | 5 | 131,145,164,218,229 | legacy recovery arms |
 | `skills.rs` | 5 | 75-79 | the skill-guide fetch's success path (needs an HTTP fixture for the platform call) |
 | `remote/commands.rs` | 5 | 1503,1508-1509,1583,1602 | not yet read |
 | `crash_log.rs` | 5 | 161,464,472-474 | the child-process fixture's broken-stderr variant (`161` is the `path.parent()` `None` arm) |
-| `test_support/agent.rs` | 4 | 145,492,766,915 | not yet read |
+| `test_support/agent.rs` | 4 | 145,500,774,923 | not yet read (three of the four renumbered by the rebase's `+8`; `145` is unchanged) |
 | `test_support.rs` | 4 | 67,83-85 | `configure_entry_fixture()` (83-85) is the switch the entry lane turns on; calling it from a lib test would assert a `cfg!(test)` constant that is already true, so it is left open rather than covered by an assertion that cannot fail. `67` is an assert's message argument |
 | `store/reconcile.rs` | 4 | 60-62,149 | the `record_thread_source` failure log, and the legacy-history skip |
 | `store/cleanup.rs` | 4 | 440,444,466-467 | not yet read |
@@ -881,8 +915,9 @@ measurement, so the two lines stay exactly where the report put them.
 ### 11.1 What round 11 measured
 
 Three whole-`--lib` passes, all green: the base probe (`d3b2c58fd`, **2394**), the pair A/B on the
-tree that carries the round's two new blocks (`c6b7b4979`, **2375** / **2377**, §1.1), and pass C
-on the tree that carries §11.7's seam (`0bf7f96d9`, **2378**, §1.1.1). **1971 tests** at the base
+tree that carries the round's two new blocks (`c6b7b4979`, **2375** / **2377**, §1.1), and the two
+passes after the seam — C on the pre-rebase tree (`0bf7f96d9`) and D on the rebased one
+(`79050bbd6`), both **2378** (§1.1.1). **1971 tests** at the base
 probe and **1979** in all three passes after it, 11 `#[ignore]`d, 0 failed in every one (the eight
 new suite entries are round 11's four `agent_host` cases plus the `trust` side's three assertions
 and the child entry they run). Against the base probe the
@@ -1001,3 +1036,35 @@ on this path resolves `HOME` or opens a socket, so the test holds no fixture loc
 
 The measurement question the edit raised is answered by pass C (§1.1.1): the seam's lines are all
 covered, and the only rows that changed value are the three §1.2 movers.
+
+### 11.8 After the rebase: `dev-huichen` moved under the measurement, so it was re-taken
+
+The branch was cut from `origin/dev-huichen` at `d3b2c58fd` and, by the time pass C had been
+measured, the integration branch had moved: `57bf84ccb` differs from the merge base in 13 files,
+five of them inside `host/src/` (`agent_bridge/config_observer.rs` +81,
+`agent_bridge/session_events.rs` +78, a new `agent_bridge/global_loop.rs` +170,
+`agent_bridge/mod.rs` +14, `test_support/agent.rs` +8). A record whose line numbers describe a tree
+the branch is not on is exactly the drift this file exists to catch, so the four commits were
+rebased onto `57bf84ccb` (clean: none of the 13 files is one this round touched) and the lane was
+measured again — pass D.
+
+What D changes against C is arithmetic and is printed by `open-cd.py` (§1.1.1): two movers land on
+their covered side (`agent_host.rs:565`, `shutdown/services.rs:20`), and two files' rows are
+renumbered without gaining or losing a line. The total staying at 2378 is a coincidence worth
+stating plainly — **the rebase covered nothing and closed nothing**; it moved the numbers the record
+quotes.
+
+The one judgement the rebase forced: `global_loop.rs` arrives with two `DA:0` lines, and they are
+not gaps:
+
+- `121` is `LiveTask::stop`'s panic for a loop that does not stop inside its 5 s window — a green
+  suite never takes it. W21 (W2).
+- `58` is the `});` closing the `spawn(async move { … })` call in `GlobalLoop::spawn`: `54-57` and
+  `59` all read `>0` in D, so the statement ran and the brace is the report's attribution, not a
+  missing input. W22 (W6).
+
+With them waived, the buckets close: **2016 switch lane + 97 waived + 265 open = 2378**, and
+`lane-check.py` recomputes all three from `round11-D-lcov.info` and `round11-D-missed.json`.
+
+`dev-huichen` can move again while this branch waits; the next round's base probe is whatever
+`dev-huichen` is when it starts, and this file's rows are `79050bbd6`'s until then.
