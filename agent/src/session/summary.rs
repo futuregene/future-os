@@ -321,6 +321,70 @@ mod tests {
         );
     }
 
+    /// A first message whose text never left the entries row.
+    ///
+    /// Canonical writers externalize a long body into `content_references` and
+    /// blank the block text, so the listing reads the title page by page. But a
+    /// row written before that externalization (or restored from one) carries
+    /// the text inline in `entries.content_json`, and the listing has to read
+    /// that shape too — otherwise an old session loses its preview entirely.
+    #[test]
+    fn bulk_listing_reads_a_first_message_stored_inline_in_its_entries_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Manager::new(dir.path().join("sessions"));
+        let store = manager.storage().unwrap();
+        store.reserve_segmented("inline-title").unwrap();
+        store
+            .replace(
+                "inline-title",
+                vec![
+                    serde_json::json!({"id":"info","type":"session_info","timestamp":"2026-10-26T00:00:00Z","content":{"cwd":"/bulk","model":"mock"}}),
+                    serde_json::json!({"id":"u","type":"user","role":"user","timestamp":"2026-10-26T00:00:01Z","content":"where is the log?"}),
+                ],
+            )
+            .unwrap();
+        // The pre-externalization shape: the text is in the entries row itself,
+        // with no reference and no block text beside it.
+        store
+            .db
+            .call(|db| {
+                let changed = db.execute(
+                    "UPDATE entries SET content_json=?1 WHERE entry_type='user'",
+                    [serde_json::json!("where is the log?").to_string()],
+                )?;
+                db.execute(
+                    "DELETE FROM content_references WHERE owner_kind='entry' AND field LIKE '/content/%/text'",
+                    [],
+                )?;
+                db.execute("UPDATE message_blocks SET text=NULL", [])?;
+                Ok(changed)
+            })
+            .unwrap();
+
+        let exact =
+            super::super::content::reader::Snapshot::summary(store, "inline-title").unwrap();
+        assert_eq!(exact.first_message.as_deref(), Some("where is the log?"));
+        let (batch, legacy) = super::super::content::reader::Snapshot::batch_summaries(
+            store,
+            store.ids(false).unwrap(),
+        )
+        .unwrap();
+        assert!(legacy.is_empty());
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].summary.first_message, exact.first_message);
+        assert!(
+            !batch[0].needs_preview_fallback,
+            "inline text is the preview; nothing is left for the caller to resolve"
+        );
+        let listed = manager
+            .list_all()
+            .unwrap()
+            .into_iter()
+            .find(|summary| summary.id == "inline-title")
+            .unwrap();
+        assert_eq!(listed.first_message.as_deref(), Some("where is the log?"));
+    }
+
     fn temp_manager(tag: &str) -> (std::path::PathBuf, Manager) {
         let dir = std::env::temp_dir().join(format!("future-{tag}-{}", generate_id()));
         let manager = Manager::new(dir.clone());
