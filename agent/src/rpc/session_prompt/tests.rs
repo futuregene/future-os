@@ -3974,3 +3974,53 @@ async fn a_queue_that_cannot_record_its_receipt_is_not_left_queued() {
         "receipt presence must match the accepted state"
     );
 }
+
+/// A provider failure ends the run as an `error` terminal, and that terminal is
+/// announced on the same frame that carries the state, the token usage and the
+/// duration — clients that joined late still learn how the run ended.
+///
+/// The separate `error` *event* is not part of this path: a provider failure is
+/// folded into the terminal state, so the contract asserted here is "exactly one
+/// terminal frame, no error frame".
+#[tokio::test(flavor = "current_thread")]
+async fn a_failed_run_broadcasts_a_single_terminal_frame_with_its_usage() {
+    let provider = ScriptedProvider::new(vec![Script::Fail("upstream is down".to_string())]);
+    let fixture = run_fixture(provider, "error-events");
+    let mut session = fixture.session;
+    session.set_auto_retry(false);
+    let mut receiver = session.broadcaster.subscribe();
+    let _ = session.prompt("hi", &[], &[], None, None);
+    wait_for_run_end(&session).await;
+
+    let events: Vec<_> = std::iter::from_fn(|| receiver.try_recv().ok()).collect();
+    let terminals: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == "agent_end")
+        .collect();
+    assert_eq!(
+        terminals.len(),
+        1,
+        "one terminal frame: {:?}",
+        kinds(&events)
+    );
+    let data: serde_json::Value = serde_json::from_str(&terminals[0].data).unwrap();
+    assert_eq!(data["state"], crate::session::RUN_STATE_ERROR);
+    assert!(data["usage"]["output_tokens"].is_number(), "{data}");
+    assert!(data["duration_ms"].is_number(), "{data}");
+    // The run started and was announced before it failed.
+    let kinds = kinds(&events);
+    assert_eq!(kinds.first().map(String::as_str), Some("user_message"));
+    assert!(kinds.contains(&"agent_start".to_string()), "{kinds:?}");
+    assert!(
+        !kinds.contains(&"error".to_string()),
+        "a provider failure is folded into the terminal state: {kinds:?}"
+    );
+}
+
+/// The event kinds of a captured stream, for failure messages.
+fn kinds(events: &[crate::rpc::SseEvent]) -> Vec<String> {
+    events
+        .iter()
+        .map(|event| event.event_type.clone())
+        .collect()
+}
