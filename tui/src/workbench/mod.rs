@@ -4684,23 +4684,114 @@ mod tests {
         format!("\x1b]8;;{href}\x1b\\{text}\x1b]8;;\x1b\\")
     }
 
-    /// The one action of the shape a case expects, out of what the surface
-    /// answered.
+    /// The editor an event handed back, if it handed one back.
     ///
-    /// A `let … else { panic!(..) }` puts its message on a line no passing test
-    /// can reach, which the measurement counts as missed however many times the
-    /// case passes (taxonomy (e)/(c)). The message here is built on the
-    /// **passing** path and the narrowing is a closure, whose non-matching arm
-    /// runs for every action that is not the expected one.
-    fn one<T>(actions: &[WbAction], pick: impl Fn(&WbAction) -> Option<T>) -> T {
-        let answered = format!("{actions:?}");
-        let mut taken: Vec<T> = actions.iter().filter_map(pick).collect();
-        let found = taken.len();
-        assert_eq!(
-            found, 1,
-            "expected exactly one matching action; the surface answered {answered}"
+    /// These four extractors replace the per-case `match` each of these shapes
+    /// used to write: a `let … else { panic!(..) }`, or a fresh closure with a
+    /// `_ => …` arm, puts its non-matching arm on a line no passing case can
+    /// reach — the case exists precisely to see the arm that *does* match
+    /// (taxonomy (e)/(c)). One extractor per shape, shared by every case, puts
+    /// the non-matching arm on the road a refusal takes:
+    /// `a_refusal_hands_back_no_edit_no_draft_and_no_switch` asks all four
+    /// about a surface that answered a repaint, which is what a refusal is.
+    fn edited(actions: &[WbAction]) -> Option<Box<editor::EditorState>> {
+        actions.iter().find_map(|action| match action {
+            WbAction::EditEditor(state) => Some(state.clone()),
+            _ => None,
+        })
+    }
+
+    /// The draft edit an event made, as the text and the cursor it leaves.
+    fn drafted(actions: &[WbAction]) -> Option<(String, usize)> {
+        actions.iter().find_map(|action| match action {
+            WbAction::EditInput { text, cursor } => Some((text.clone(), *cursor)),
+            _ => None,
+        })
+    }
+
+    /// The conversation an action list switches to, if it switches one.
+    fn switched_to(actions: &[WbAction]) -> Option<String> {
+        actions.iter().find_map(|action| match action {
+            WbAction::SwitchSession(id) => Some(id.clone()),
+            _ => None,
+        })
+    }
+
+    /// The workspace path a rail row heads, if the row is a heading.
+    fn heading_of(row: &panels::Row, data: &WorkbenchData) -> Option<String> {
+        match row {
+            panels::Row::Workspace(index) => data
+                .workspaces
+                .get(*index)
+                .map(|workspace| workspace.path.clone()),
+            _ => None,
+        }
+    }
+
+    /// The four extractors answer `None` for a surface that did not do their
+    /// thing — which is what a refusal is: nothing to do, or at most a repaint.
+    ///
+    /// This is the road the extractors' non-matching arms take. Every other
+    /// case that uses one exists to see the arm that *does* match, so without a
+    /// case like this the other arm would read `DA:0` however many times the
+    /// suite passes.
+    #[test]
+    fn a_refusal_hands_back_no_edit_no_draft_and_no_switch() {
+        let data = demo::chat();
+        let mut workbench = workbench();
+        workbench.render(&data, 120, 38);
+        // A chord nothing on the surface claims is nothing at all.
+        assert!(
+            workbench.handle(WbEvent::Key("f13".into()), &data).is_empty(),
+            "an unclaimed chord answered something"
         );
-        taken.pop().expect("one matching action")
+        // The keys that answer with a repaint and only a repaint: moving the
+        // transcript cursor changes nothing a reader can copy, type or switch.
+        let refused = ["tab", "down", "pageup", "end"]
+            .iter()
+            .map(|key| workbench.handle(WbEvent::Key((*key).into()), &data))
+            .find(|actions| {
+                !actions.is_empty() && actions.iter().all(|action| matches!(action, WbAction::Redraw))
+            })
+            .expect("a repaint-only refusal exists on the base surface");
+        assert!(
+            edited(&refused).is_none(),
+            "a refusal is not an edit: {refused:?}"
+        );
+        assert!(
+            drafted(&refused).is_none(),
+            "a refusal changes no draft: {refused:?}"
+        );
+        assert!(
+            switched_to(&refused).is_none(),
+            "a refusal leaves the reader where they were: {refused:?}"
+        );
+        // A conversation row heads no workspace; a heading names the one under
+        // it, which is the same string the panel's own row carried. The rail
+        // that holds both is the workspaces one: the chat rail lists
+        // conversations alone.
+        let railed = demo::workspaces();
+        let (mut railed_panel, _rows) = frame(&railed, 120, 38);
+        railed_panel.panel = PanelId::Workspaces;
+        let rows = railed_panel.panel_rows(&railed);
+        let conversation = rows
+            .iter()
+            .position(|row| row.session().is_some())
+            .expect("the demo lists a conversation");
+        assert!(
+            heading_of(&rows[conversation], &railed).is_none(),
+            "a conversation is not a heading: {:?}",
+            rows[conversation]
+        );
+        let heading = rows
+            .iter()
+            .position(|row| matches!(row, panels::Row::Workspace(_)))
+            .expect("a workspace heading above it");
+        let path = heading_of(&rows[heading], &railed).expect("a heading names its workspace");
+        assert!(
+            railed.workspaces.iter().any(|workspace| workspace.path == path),
+            "the heading named {path:?}, which is no workspace of this rail"
+        );
     }
 
     fn plain(rows: &[String]) -> String {
@@ -4952,18 +5043,12 @@ mod tests {
         data.input.text = "one".into();
         let mut wb = workbench();
         let actions = wb.handle(WbEvent::Key("alt+enter".into()), &data);
-        let editor = one(&actions, |action| match action {
-            WbAction::EditEditor(editor) => Some(editor.clone()),
-            _ => None,
-        });
+        let editor = edited(&actions).expect("alt+enter is an edit");
         data.input.editor = editor.as_ref().clone();
         data.input.text = editor.text().into();
         assert_eq!(data.input.text, "one\n");
         let actions = wb.handle(WbEvent::Paste("two".into()), &data);
-        let editor = one(&actions, |action| match action {
-            WbAction::EditEditor(editor) => Some(editor.clone()),
-            _ => None,
-        });
+        let editor = edited(&actions).expect("a paste is an edit");
         data.input.editor = editor.as_ref().clone();
         data.input.text = editor.text().into();
         assert_eq!(data.input.text, "one\ntwo");
@@ -5882,10 +5967,10 @@ mod tests {
             .iter()
             .map(|row| crate::utils::strip_ansi_codes(row))
             .collect();
+        let after = data.messages.len();
         assert!(
-            data.messages.len() > before.len(),
-            "the work really opened: {} rows before, {} after",
-            data.messages.len(),
+            after > before.len(),
+            "the work really opened: {} rows before, {after} after",
             before.len()
         );
 
@@ -5978,17 +6063,17 @@ mod tests {
         messages.extend((0..80).map(|n| format!("line {n}")));
         data.messages = messages.into();
         let (mut workbench, rows) = frame(&data, 120, 30);
+        let above = plain(&rows);
         assert!(
-            !plain(&rows).contains("the oldest link"),
-            "the link starts above the window: {}",
-            plain(&rows)
+            !above.contains("the oldest link"),
+            "the link starts above the window: {above}"
         );
         workbench.handle(WbEvent::Key("tab".into()), &data);
         let rows = workbench.render(&data, 60, 24);
+        let followed = plain(&rows);
         assert!(
-            plain(&rows).contains("the oldest link"),
-            "the window followed the cursor: {}",
-            plain(&rows)
+            followed.contains("the oldest link"),
+            "the window followed the cursor: {followed}"
         );
     }
     /// Showing the rail puts its cursor on the conversation that is on screen: a
@@ -6193,10 +6278,7 @@ mod tests {
         workbench.sidebar_index = first;
         let beside = workbench.session_beside(&data, 1);
         let landed = workbench.step_session(1, &data);
-        let switched = landed.iter().find_map(|action| match action {
-            WbAction::SwitchSession(id) => Some(id.clone()),
-            _ => None,
-        });
+        let switched = switched_to(&landed);
         assert_eq!(beside, switched, "the same row a step would open");
         assert_eq!(
             workbench.sidebar_index,
@@ -6249,16 +6331,24 @@ mod tests {
             .expect("a heading is followed by its conversations");
         workbench.sidebar_index = conversation;
 
-        // Down from a conversation: the next one, switched.
+        // Down from a conversation: the next group's heading. This rail holds
+        // one conversation per workspace, so the step stops on a heading and
+        // switches nothing — the step onto a *conversation* is
+        // `the_conversation_beside_the_cursor_is_the_one_a_step_would_reach`,
+        // whose rail is all conversations.
         let actions = workbench.step_session(1, &data);
         let landed = workbench.sidebar_index;
-        if let Some(session) = workbench.panel_rows(&data)[landed].session() {
-            assert_eq!(
-                actions,
-                vec![WbAction::SwitchSession(data.sessions[session].id.clone())],
-                "a step onto a conversation switches it"
-            );
-        }
+        assert_eq!(
+            actions,
+            vec![WbAction::Redraw],
+            "a step onto a heading moves the cursor and switches nothing"
+        );
+        assert_eq!(landed, conversation + 1, "the row below the conversation");
+        assert!(
+            workbench.panel_rows(&data)[landed].session().is_none(),
+            "the row below it is the next group's heading: {:?}",
+            workbench.panel_rows(&data)[landed]
+        );
         // Up, then up again: the second step lands on a heading, and nothing
         // switches — a reader walking the tree asked to look, not to leave.
         workbench.sidebar_index = conversation;
@@ -6270,10 +6360,8 @@ mod tests {
             "a heading is a stop, not a switch: {landing:?}"
         );
         assert_eq!(workbench.sidebar_index, heading, "the heading above it");
-        let group = match workbench.panel_rows(&data)[heading] {
-            panels::Row::Workspace(index) => data.workspaces[index].path.clone(),
-            other => panic!("a workspace heading: {other:?}"),
-        };
+        let group = heading_of(&workbench.panel_rows(&data)[heading], &data)
+            .expect("the row above a conversation heads its workspace");
         // An empty draft gives `enter` to that row, and it folds.
         let folded_rows = workbench.panel_rows(&data).len();
         let actions = workbench.handle(WbEvent::Key("enter".into()), &data);
@@ -6307,10 +6395,8 @@ mod tests {
             .position(|row| matches!(row, panels::Row::Workspace(_)))
             .expect("the tab lists workspaces");
         workbench.sidebar_index = at;
-        let heading = match workbench.panel_rows(&data)[workbench.sidebar_index] {
-            panels::Row::Workspace(index) => data.workspaces[index].path.clone(),
-            other => panic!("the cursor is on a workspace heading: {other:?}"),
-        };
+        let heading = heading_of(&workbench.panel_rows(&data)[workbench.sidebar_index], &data)
+            .expect("the cursor is on a workspace heading");
         let actions = workbench.handle(WbEvent::Key("enter".into()), &data);
         assert!(
             actions.contains(&WbAction::SetPreferences),
@@ -7113,11 +7199,11 @@ mod tests {
                 )),
                 "an empty picker answered {key} with {answered}"
             );
+            let stays_word = if stays { "kept open" } else { "closed" };
             assert_eq!(
                 matches!(workbench.overlay, Some(Overlay::Picker(_))),
                 stays,
-                "an empty picker was {} on {key}: {answered}",
-                if stays { "closed" } else { "left open" }
+                "an empty picker was {stays_word} on {key}: {answered}"
             );
         }
     }
@@ -7279,11 +7365,11 @@ mod tests {
         assert_eq!(workbench.session_beside(&data, 0), None);
         // The ends answer none, in both directions.
         workbench.sidebar_index = last;
+        let total = rows.len();
         assert_eq!(
             workbench.session_beside(&data, 1),
             None,
-            "a step past the last row named a conversation: {last} of {}",
-            rows.len()
+            "a step past the last row named a conversation: {last} of {total}"
         );
         workbench.sidebar_index = first;
         assert_eq!(
@@ -7405,17 +7491,11 @@ mod tests {
         data.input.editor.paste("one two");
         data.input.text = "one two".into();
         let actions = workbench.handle(WbEvent::Key("ctrl+a".into()), &data);
-        let editor = one(&actions, |action| match action {
-            WbAction::EditEditor(editor) => Some(editor.clone()),
-            _ => None,
-        });
+        let editor = edited(&actions).expect("ctrl+a is an edit");
         assert_eq!(editor.cursor(), 0, "ctrl+a is the line's start");
         data.input.editor = editor.as_ref().clone();
         let actions = workbench.handle(WbEvent::Key("ctrl+e".into()), &data);
-        let editor = one(&actions, |action| match action {
-            WbAction::EditEditor(editor) => Some(editor.clone()),
-            _ => None,
-        });
+        let editor = edited(&actions).expect("ctrl+e is an edit");
         assert_eq!(editor.cursor(), 7, "ctrl+e is the line's end");
     }
 
@@ -7425,10 +7505,7 @@ mod tests {
         let (mut workbench, _rows) = frame(&data, 120, 38);
         for key in ["h", "i"] {
             let actions = workbench.handle(WbEvent::Key(key.into()), &data);
-            let editor = one(&actions, |action| match action {
-                WbAction::EditEditor(editor) => Some(editor.clone()),
-                _ => None,
-            });
+            let editor = edited(&actions).expect("a letter is an edit");
             assert_eq!((editor.text(), editor.cursor()), (key, 1), "{key}");
         }
         // The app applies the edit; the next frame sees it. Emulate that.
@@ -7592,9 +7669,17 @@ mod tests {
         }
         let rows = workbench.palette_rows(&data);
         assert!(rows.iter().any(|row| row.command() == "/queue"), "{rows:?}");
+        // The description is read for every row, not only for the ones whose
+        // label already answered: a short-circuit would leave half the premise
+        // unmeasured.
+        let described: Vec<(String, String)> = rows
+            .iter()
+            .map(|row| (row.label().to_string(), row.description().to_lowercase()))
+            .collect();
         assert!(
-            rows.iter().all(|row| row.label().contains("que")
-                || row.description().to_lowercase().contains("que")),
+            described
+                .iter()
+                .all(|(label, description)| label.contains("que") || description.contains("que")),
             "only matches are listed: {rows:?}"
         );
         let chosen = workbench.palette_selection(&data).expect("a selection");
@@ -8153,11 +8238,11 @@ mod tests {
         let (mut workbench, _rows) = frame(&data, w, h);
         workbench.overlay = Some(Overlay::FilePreview);
         let short = workbench.render(&data, w, h);
+        let filled = plain(&short);
         assert_eq!(
             bottom_row(&short),
             last_box_row,
-            "a three-line file still fills the box:\n{}",
-            plain(&short)
+            "a three-line file still fills the box:\n{filled}"
         );
 
         // The same file, long enough to scroll, opened at the very bottom.
@@ -8171,11 +8256,11 @@ mod tests {
         });
         workbench.preview_scroll = 10_000;
         let end = workbench.render(&data, w, h);
+        let last = plain(&end);
         assert_eq!(
             bottom_row(&end),
             last_box_row,
-            "the last page fills the box too:\n{}",
-            plain(&end)
+            "the last page fills the box too:\n{last}"
         );
 
         // And the document that is rendered rather than parsed: markdown's own
@@ -8190,21 +8275,19 @@ mod tests {
         });
         workbench.preview_scroll = 10_000;
         let markdown = workbench.render(&data, w, h);
+        let page = plain(&markdown);
         assert_eq!(
             bottom_row(&markdown),
             last_box_row,
-            "the last page of markdown fills the box:\n{}",
-            plain(&markdown)
+            "the last page of markdown fills the box:\n{page}"
         );
         // And the margin around the box is the surface's, not the page's: a
         // preview leaves no row of the conversation beside its own.
         for y in [0, last_box_row + 1] {
+            let margin = crate::utils::strip_ansi_codes(&markdown[y]);
             assert!(
-                crate::utils::strip_ansi_codes(&markdown[y])
-                    .trim()
-                    .is_empty(),
-                "row {y} is the margin and holds no page text: {:?}",
-                crate::utils::strip_ansi_codes(&markdown[y])
+                margin.trim().is_empty(),
+                "row {y} is the margin and holds no page text: {margin:?}"
             );
         }
     }
@@ -9183,10 +9266,7 @@ mod tests {
         }
         let chosen = workbench.palette_selection(&data).expect("a row");
         let actions = workbench.handle(WbEvent::Key("tab".into()), &data);
-        let (text, cursor) = one(&actions, |action| match action {
-            WbAction::EditInput { text, cursor } => Some((text.clone(), *cursor)),
-            _ => None,
-        });
+        let (text, cursor) = drafted(&actions).expect("tab fills the row in");
         let filled = chosen.fill();
         assert_eq!(text, filled);
         assert_eq!(cursor, text.len(), "the caret is after the command");
@@ -9262,10 +9342,7 @@ mod tests {
         assert_eq!(rows[0].label, "tui/src/workbench/screen.rs");
         // Enter replaces the token and nothing else.
         let actions = workbench.handle(WbEvent::Key("enter".into()), &data);
-        let (text, cursor) = one(&actions, |action| match action {
-            WbAction::EditInput { text, cursor } => Some((text.clone(), *cursor)),
-            _ => None,
-        });
+        let (text, cursor) = drafted(&actions).expect("enter fills the row in");
         assert_eq!(text, "看 @tui/src/workbench/screen.rs ");
         assert_eq!(cursor, text.len());
         assert!(workbench.mention.is_none(), "inserting closes the menu");
@@ -9279,10 +9356,7 @@ mod tests {
         let data = with_input(&data, "read @my");
         workbench.render(&data, 120, 38);
         let actions = workbench.handle(WbEvent::Key("enter".into()), &data);
-        let (text, ..) = one(&actions, |action| match action {
-            WbAction::EditInput { text, cursor } => Some((text.clone(), *cursor)),
-            _ => None,
-        });
+        let (text, ..) = drafted(&actions).expect("enter fills the row in");
         assert_eq!(text, "read @\"docs/my note.md\" ");
     }
 
@@ -9344,10 +9418,7 @@ mod tests {
         assert!(!rows.is_empty(), "the demo has conversations");
         assert!(rows[0].insert.contains("futureos://session/"), "{rows:?}");
         let actions = workbench.handle(WbEvent::Key("tab".into()), &data);
-        let (text, ..) = one(&actions, |action| match action {
-            WbAction::EditInput { text, cursor } => Some((text.clone(), *cursor)),
-            _ => None,
-        });
+        let (text, ..) = drafted(&actions).expect("tab fills the row in");
         assert!(
             text.starts_with(&format!(
                 "[{}](futureos://session/{})",
@@ -9433,10 +9504,7 @@ mod tests {
         assert!(rows < input_top, "{rows} < {input_top}");
         // A click on a candidate inserts it, the way `enter` does.
         let actions = click_region(&mut workbench, &data, 120, 38, "mention.row.1");
-        let (text, ..) = one(&actions, |action| match action {
-            WbAction::EditInput { text, cursor } => Some((text.clone(), *cursor)),
-            _ => None,
-        });
+        let (text, ..) = drafted(&actions).expect("a click on a candidate fills it in");
         assert_eq!(text, "read @src/lib.rs ");
     }
 
@@ -9684,10 +9752,10 @@ mod tests {
         assert_eq!(rect.x + rect.w, 120, "it sits on the rail's outer edge");
         // Row 2: straight under the two-row header (title + hairline).
         assert_eq!((rect.y, rect.h), (2, 1), "on the tab-strip row");
+        let strip = crate::utils::strip_ansi_codes(&rows[2]);
         assert!(
-            crate::utils::strip_ansi_codes(&rows[2]).ends_with('›'),
-            "{}",
-            crate::utils::strip_ansi_codes(&rows[2])
+            strip.ends_with('›'),
+            "the collapse button is on the tab-strip row: {strip:?}"
         );
 
         // One click closes it, and it asks the driver to remember that.
@@ -9742,10 +9810,10 @@ mod tests {
             .cloned()
             .expect("the expand button");
         assert_eq!((rect.x, rect.w), (0, 1), "{rect:?}");
+        let strip = crate::utils::strip_ansi_codes(&rows[2]);
         assert!(
-            crate::utils::strip_ansi_codes(&rows[2]).starts_with('›'),
-            "{}",
-            crate::utils::strip_ansi_codes(&rows[2])
+            strip.starts_with('›'),
+            "the expand button is on the tab-strip row: {strip:?}"
         );
     }
     /// The page keys and the arrows are the transcript's, with the rail on
@@ -11432,10 +11500,7 @@ mod tests {
         let data = demo::launchpad();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         let actions = workbench.handle(WbEvent::Paste("粘贴的文本".into()), &data);
-        let editor = one(&actions, |action| match action {
-            WbAction::EditEditor(editor) => Some(editor.clone()),
-            _ => None,
-        });
+        let editor = edited(&actions).expect("a paste is an edit");
         assert_eq!(editor.text(), "粘贴的文本");
         assert_eq!(editor.cursor(), "粘贴的文本".len());
     }
@@ -11761,11 +11826,10 @@ mod tests {
                 painted.push(y);
             }
             for pair in painted.windows(2) {
+                let step = pair[1] - pair[0];
                 assert_eq!(
-                    pair[1] - pair[0],
-                    1,
-                    "{overlay:?}: one `down` moved the highlight {} rows (rows {painted:?})",
-                    pair[1] - pair[0]
+                    step, 1,
+                    "{overlay:?}: one `down` moved the highlight {step} rows (rows {painted:?})"
                 );
             }
         }
@@ -11816,10 +11880,10 @@ mod tests {
                 .iter()
                 .map(|row| crate::utils::strip_ansi_codes(row))
                 .collect();
+            let bottom = &painted[37];
             assert!(
-                painted[37].trim_start().starts_with('╰'),
-                "{section:?}: the bottom rule owns the last row: {:?}",
-                painted[37]
+                bottom.trim_start().starts_with('╰'),
+                "{section:?}: the bottom rule owns the last row: {bottom:?}"
             );
             assert!(
                 !painted.iter().any(|row| row.contains("41 个用例都过了")),
@@ -11852,10 +11916,10 @@ mod tests {
             .iter()
             .map(|row| crate::utils::strip_ansi_codes(row))
             .collect();
+        let bottom = &painted[37];
         assert!(
-            painted[37].trim_start().starts_with('╰'),
-            "the bottom rule owns the last row: {:?}",
-            painted[37]
+            bottom.trim_start().starts_with('╰'),
+            "the bottom rule owns the last row: {bottom:?}"
         );
         assert!(
             !painted.iter().any(|row| row.contains("41 个用例都过了")),
