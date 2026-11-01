@@ -4417,6 +4417,7 @@ mod driver_tests {
 
     mod repository_keys {
         use super::*;
+        use crate::workbench::run::driver_tests::workspace_panel::repo_with_two_commits;
 
         /// The repository browser's own keys: the tabs are numbered, `tab` moves
         /// between the list and the patch, and the horizontal pan is the pane's —
@@ -4511,13 +4512,24 @@ mod driver_tests {
 
         /// A section with nothing to list still opens: the panel is a view of the
         /// repository, and "no stashes" is an answer, not an error.
+        ///
+        /// The repository is the fixture's own, not wherever the sources are
+        /// checked out. It used to be `attach_conversation()` — a session rooted
+        /// at `CARGO_MANIFEST_DIR` — which made the 改动 section's *rows* a fact
+        /// about the machine: a clean checkout painted a box with nothing to
+        /// list and a dirty one painted a working-tree patch, so two lines of
+        /// `screen.rs` (`git_box`'s "select an entry" placeholder and the
+        /// metadata colour of git's own lines) were covered by whichever state
+        /// the tree happened to be in. Measured: with one tracked file edited,
+        /// `screen.rs:2491` reads 1 from this test alone; clean, it reads 0.
         #[allow(clippy::await_holding_lock)]
         #[tokio::test]
         async fn every_repository_section_opens_without_an_error() {
             let _env = a_peer_may_not_swap_the_environment();
             let sections = crate::workbench::state::GitSection::ALL;
             for (index, section) in sections.iter().enumerate() {
-                let mut driver = Driver::attach_conversation().await;
+                let repo = repo_with_two_commits();
+                let mut driver = Driver::attach_conversation_in(repo.path()).await;
                 assert!(!driver.quit_key("ctrl+g").await);
                 assert!(
                     driver
@@ -4860,14 +4872,25 @@ mod driver_tests {
             }
         }
 
-        /// A session opened in a subdirectory of a repository lists the whole
-        /// tree — `git status` names paths from the repository root — but a
-        /// patch is read from the session's own workspace. A change outside it
-        /// has no patch to show, and the pane says that rather than painting a
-        /// blank box beside a row the reader can see.
+        /// The detail pane is a box that always says something: a selected row
+        /// whose read produced no body paints "select an entry" rather than
+        /// leaving the pane blank beside a row the reader can see.
+        ///
+        /// The empty body is a **defect worth writing down rather than a state to
+        /// be proud of**: `diff_review::load` is handed the path
+        /// `git status --porcelain` printed, which is relative to the
+        /// *repository root*, and passes it to `git diff -- <path>` whose
+        /// pathspec is relative to the *session's* directory. At the root the two
+        /// agree; from a subdirectory nothing matches, so every 改动 row reads as
+        /// "no patch" (measured below: one row listed, `detail` empty). The
+        /// control is the same tab read from the root — same repository, same
+        /// code — which paints the patch. Importing the path against the root
+        /// turns this case into that one, and leaves the placeholder reachable
+        /// only through a section whose rows carry no object at all; this test
+        /// then fails on `detail.is_empty()`, which is the intent.
         #[allow(clippy::await_holding_lock)]
         #[tokio::test]
-        async fn a_change_outside_the_session_s_own_directory_has_nothing_to_show() {
+        async fn a_row_with_no_body_keeps_the_detail_pane_a_box() {
             let _env = a_peer_may_not_swap_the_environment();
             let repo = tempfile::tempdir().expect("a temp directory");
             let git_program = crate::test_env::absolute_tool("git");
@@ -4885,13 +4908,13 @@ mod driver_tests {
             git(&["config", "user.name", "TUI test"]);
             std::fs::write(repo.path().join("a.txt"), "one\n").expect("write a file");
             std::fs::create_dir(repo.path().join("sub")).expect("a subdirectory");
+            std::fs::write(repo.path().join("sub").join("b.txt"), "inner\n")
+                .expect("write a file under the workspace");
             git(&["add", "."]);
             git(&["commit", "-qm", "first commit"]);
-            // The change is one level *above* where the session is rooted.
             std::fs::write(repo.path().join("a.txt"), "two\n").expect("edit the file");
 
-            let mut driver =
-                Driver::attach_conversation_in(&repo.path().join("sub")).await;
+            let mut driver = Driver::attach_conversation_in(&repo.path().join("sub")).await;
             assert!(!driver.quit_key("ctrl+g").await, "ctrl+g left the app");
             assert!(
                 driver
@@ -4941,6 +4964,44 @@ mod driver_tests {
             assert!(
                 text.contains(placeholder),
                 "the detail pane painted nothing at all: {text}"
+            );
+
+            // The control: the same repository read from its root. There the
+            // session's directory *is* the one the paths are relative to, so the
+            // same tab paints the patch — which is what makes the empty body
+            // above a mismatch of roots rather than a read that never happens.
+            let mut root = Driver::attach_conversation_in(repo.path()).await;
+            assert!(!root.quit_key("ctrl+g").await, "ctrl+g left the app");
+            assert!(
+                root.wait_for(Duration::from_secs(20), |driver| driver
+                    .live
+                    .git()
+                    .is_some())
+                    .await,
+                "the log never installed"
+            );
+            assert!(!root.quit_key("3").await, "3 left the app");
+            assert!(
+                root.wait_for(Duration::from_secs(20), |driver| driver
+                    .live
+                    .git()
+                    .is_some_and(|view| view
+                        .detail
+                        .iter()
+                        .any(|line| line.starts_with("diff --git"))))
+                    .await,
+                "the same tab from the root read no patch: {:?}",
+                root.live.git().map(|view| view.detail.clone())
+            );
+            assert!(!root.quit_key("tab").await, "tab left the app");
+            let painted = text_of(&root.pump(Duration::from_millis(300)).await);
+            assert!(
+                painted.contains("diff --git") && painted.contains("+two"),
+                "the pane dropped the patch it read: {painted}"
+            );
+            assert!(
+                !painted.contains(placeholder),
+                "the pane asks for a selection with one selected: {painted}"
             );
         }
     }
