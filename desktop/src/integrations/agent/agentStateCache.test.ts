@@ -39,6 +39,13 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 beforeEach(() => {
   invokeMock.mockReset();
+  // Delivery of agent events is opt-in: production installs the one-time Tauri
+  // listener when AppShell mounts. There is no AppShell in this harness, so the
+  // harness installs it instead of relying on an earlier test to have done so —
+  // without it `emit` delivers to nobody and every event test reads an
+  // untouched cache. The module's `eventListenerInstalled` flag makes the call
+  // idempotent, and the mock below captures the handler this file drives.
+  installAgentEventListener();
 });
 
 function statePayload(overrides: Record<string, unknown> = {}) {
