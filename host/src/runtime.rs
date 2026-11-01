@@ -66,6 +66,18 @@ pub fn record_cleanup_error(error: String) {
         .push(error);
 }
 
+/// Remove and return the cleanup errors recorded so far.
+///
+/// The ledger is process-global, and while it holds anything
+/// [`cancel_test_tasks`] refuses the next HOME change. A fixture that
+/// deliberately exercises a recording arm therefore has to hand its own entry
+/// back instead of leaving it for whatever test runs next.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn take_cleanup_errors() -> Vec<String> {
+    std::mem::take(&mut TASKS.lock().unwrap_or_else(|p| p.into_inner()).errors)
+}
+
 struct TaskCompletion(std::sync::mpsc::Sender<()>);
 
 impl Drop for TaskCompletion {
