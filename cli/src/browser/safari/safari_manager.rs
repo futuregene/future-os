@@ -66,11 +66,11 @@ static READINESS_BUDGET_OVERRIDE: std::sync::Mutex<Option<u32>> = std::sync::Mut
 /// Sets [`READINESS_BUDGET_OVERRIDE`] and restores it on drop, so a panicking
 /// test cannot leak a probe budget into the rest of the binary.
 #[cfg(test)]
-struct ReadinessBudgetGuard;
+pub(crate) struct ReadinessBudgetGuard;
 
 #[cfg(test)]
 impl ReadinessBudgetGuard {
-    fn set(max_probes: u32) -> Self {
+    pub(crate) fn set(max_probes: u32) -> Self {
         *READINESS_BUDGET_OVERRIDE.lock().unwrap() = Some(max_probes);
         ReadinessBudgetGuard
     }

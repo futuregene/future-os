@@ -3361,6 +3361,11 @@ mod tests {
     #[tokio::test]
     async fn start_with_browser_safari_dispatches_to_the_safari_manager() {
         let (_g, _e, _d) = isolated_home().await;
+        // The dispatch is the claim; how long the manager's own readiness poll
+        // runs is not. The wall-clock arm of that poll keeps its own test
+        // (`safari_manager::start_launch_never_ready_times_out`), so this one
+        // runs under the probe budget rather than adding ten seconds here.
+        let _budget = crate::browser::safari::safari_manager::ReadinessBudgetGuard::set(1);
         let err = browser_start(&args(&[
             ("browser", json!("safari")),
             ("port", json!(free_port())),
@@ -3368,9 +3373,9 @@ mod tests {
         .await
         .map(|_| ())
         .unwrap_err();
-        // Off macOS the manager refuses before any probe; on macOS it would
-        // probe a real safaridriver. Either way the *dispatch* is what is
-        // asserted, so the platform-specific text is not pinned.
+        // Off macOS the manager refuses before any probe; on macOS it probes a
+        // real safaridriver. Either way the *dispatch* is what is asserted, so
+        // the platform-specific text is not pinned.
         assert!(!err.is_empty(), "the safari path reported nothing");
     }
 
@@ -3855,6 +3860,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn start_default_profile_dir_uses_scanned_port() {
         let (_g, _e, _d) = isolated_home().await;
+        // The launch below can never become reachable (`/bin/true` exits), and
+        // the claim here is the resolved port and profile directory, not the
+        // length of the poll: the 10 s wall-clock window keeps its own test
+        // (`start_launch_never_reachable_reports_starting`). This one runs under
+        // the probe budget so it cannot add ten seconds to the crate's gate.
+        let _budget = ReadinessBudgetGuard::set(2);
         // Occupied requested port + no explicit profileDir → profile-N dir.
         let holder = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let taken = holder.local_addr().unwrap().port() as i64;
