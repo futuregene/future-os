@@ -177,3 +177,26 @@ impl FileHost for DesktopHost {
         files::clear_preview_cache();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use future_remote_server::services::StateHost;
+
+    /// Taking control raises the GUI's claim hook. A headless host has no
+    /// presentation, so the hook must return without installing one: the
+    /// window activation belongs to the windowed entry point, and a backend
+    /// that attached a sink here would make every later `publish_to_gui` in
+    /// this process try to reach it.
+    #[test]
+    fn the_claim_hook_raises_the_event_without_attaching_a_presentation() {
+        assert!(
+            !crate::events::has_presentation(),
+            "a lib test must start headless"
+        );
+        StateHost::on_control_claimed(&super::DesktopHost);
+        assert!(
+            !crate::events::has_presentation(),
+            "the backend hook must not install a presentation sink"
+        );
+    }
+}

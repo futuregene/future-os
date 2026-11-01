@@ -173,6 +173,23 @@ mod tests {
         publish_to_gui(Event::ControlClaimed);
     }
 
+    /// The producer side of that gate: raising a control claim goes through
+    /// `publish_to_gui`, so a headless host drops it *at the gate* instead of
+    /// reaching a presentation that does not exist — and raising one never
+    /// attaches a sink of its own (the sink is the entry point's to install).
+    #[test]
+    fn raising_a_control_claim_goes_through_the_presentation_gate() {
+        assert!(
+            !has_presentation(),
+            "a lib test must not attach a presentation sink"
+        );
+        emit_control_claimed();
+        assert!(
+            !has_presentation(),
+            "raising the claim must not attach a sink"
+        );
+    }
+
     #[test]
     fn presentation_receives_the_activity_stamp_it_must_patch() {
         publish_to(
