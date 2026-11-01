@@ -109,6 +109,72 @@ pub fn host() -> &'static AgentHost {
     &HOST
 }
 
+/// What this launch may do with the Agent: `FUTURE_DESKTOP_AGENT_MODE`, whose
+/// only accepted values are `auto` and `external`.
+///
+/// A value outside that set is refused here, before any probe, so a typo neither
+/// starts an embedded service nor silently attaches to whatever happened to
+/// answer.
+fn start_mode() -> Result<String, crate::Error> {
+    let mode = launch_mode();
+    if !matches!(mode.as_str(), "auto" | "external") {
+        return Err("FUTURE_DESKTOP_AGENT_MODE must be auto or external".into());
+    }
+    Ok(mode)
+}
+
+/// The raw value: the operator's environment, defaulting to `auto`.
+fn launch_mode() -> String {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(mode) = START_MODE_OVERRIDE.with(|cell| cell.borrow().clone()) {
+        return mode;
+    }
+    std::env::var("FUTURE_DESKTOP_AGENT_MODE").unwrap_or_else(|_| "auto".into())
+}
+
+// Test-only replacement for the `FUTURE_DESKTOP_AGENT_MODE` read, so a test can
+// drive an unreadable mode through `select` without writing the *process*
+// environment. `set_var` would be a window in which every other test in this
+// binary observes another fixture's launch policy: libtest runs them in parallel,
+// `environment::start_logging` logs this very value, and a wrong-enough value in
+// flight would make an unrelated test's `select` refuse to start. That is the
+// leak class `docs/testing/flaky-tauri.md` item 27 records, and the reason
+// `HomeGuard` has to serialize its own `HOME` swap on `TEST_HOME_LOCK`; a
+// thread-local cannot leak because libtest gives each test its own thread.
+//
+// `test-support` is part of the gate, not just `test`, for the same reason as
+// `cli_tool::PROBE_DEADLINE_OVERRIDE`: an entry crate compiles this crate as a
+// dependency of its own test binary, where `cfg(test)` is false. An unarmed slot
+// falls through to the environment, so a product build that unifies the feature
+// behaves exactly as it does today.
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static START_MODE_OVERRIDE: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Arms [`START_MODE_OVERRIDE`] and clears it on drop, so even a panicking test
+/// cannot hand its launch mode to the next test on the same thread.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use = "the override is cleared when the guard is dropped; bind it to a variable"]
+pub struct StartModeGuard;
+
+#[cfg(any(test, feature = "test-support"))]
+impl StartModeGuard {
+    /// The mode [`start_mode`] reads until this guard drops.
+    pub fn set(mode: &str) -> Self {
+        START_MODE_OVERRIDE.with(|cell| *cell.borrow_mut() = Some(mode.to_string()));
+        StartModeGuard
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for StartModeGuard {
+    fn drop(&mut self) {
+        START_MODE_OVERRIDE.with(|cell| *cell.borrow_mut() = None);
+    }
+}
+
 impl AgentHost {
     pub fn phase(&self) -> Phase {
         self.0.state().phase.clone()
@@ -358,10 +424,7 @@ impl AgentHost {
     /// the opaque result back to `run_selected`.
     pub async fn select(&self, configured: &str) -> Result<StartSelection, crate::Error> {
         crate::install_rustls_provider();
-        let mode = std::env::var("FUTURE_DESKTOP_AGENT_MODE").unwrap_or_else(|_| "auto".into());
-        if !matches!(mode.as_str(), "auto" | "external") {
-            return Err("FUTURE_DESKTOP_AGENT_MODE must be auto or external".into());
-        }
+        let mode = start_mode()?;
         let (cancel, probe_cancel, starting) = {
             let state = self.0.state();
             (

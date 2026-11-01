@@ -954,21 +954,20 @@ fn probe_block_on<T>(future: impl std::future::Future<Output = T>) -> T {
 /// do. A value the entry does not understand is refused before any probe, so a
 /// typo neither starts an embedded service nor silently attaches to whatever
 /// happened to answer.
+///
+/// The mode arrives through [`StartModeGuard`] rather than `set_var`: the
+/// process environment is shared with every test libtest runs beside this one,
+/// and nothing on this path resolves `HOME` or opens a socket, so the test needs
+/// neither the fixture lock nor a home of its own.
 #[test]
 fn a_start_mode_the_entry_does_not_understand_is_refused_before_any_probe() {
-    let _home = crate::remote::test_support::HomeGuard::new("agent-host-mode");
     let host = AgentHost::default();
     {
         let mut state = host.0.state();
         state.phase = Phase::Starting;
     }
-    let previous = std::env::var_os("FUTURE_DESKTOP_AGENT_MODE");
-    std::env::set_var("FUTURE_DESKTOP_AGENT_MODE", "embedded");
+    let _mode = StartModeGuard::set("embedded");
     let error = probe_block_on(host.select("auto")).map(|_| ()).unwrap_err();
-    match previous {
-        Some(value) => std::env::set_var("FUTURE_DESKTOP_AGENT_MODE", value),
-        None => std::env::remove_var("FUTURE_DESKTOP_AGENT_MODE"),
-    }
     assert_eq!(
         error.to_string(),
         "FUTURE_DESKTOP_AGENT_MODE must be auto or external"
