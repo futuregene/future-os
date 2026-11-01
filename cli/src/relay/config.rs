@@ -246,6 +246,66 @@ mod tests {
         assert!(config.terminates_tls());
     }
 
+    /// A seed that is only whitespace is not a seed. The refusal names the
+    /// command that writes one, because "empty" is what an operator sees after
+    /// copying the example file and forgetting this field.
+    #[test]
+    fn an_account_seed_nobody_generated_is_refused_by_name() {
+        for seed in ["", "  ", "\t"] {
+            let mut config = config();
+            config.account_seed = seed.into();
+            let error = config.validate().unwrap_err().to_string();
+            assert!(error.contains("account_seed"), "{error}");
+            assert!(error.contains("future-relay init"), "{error}");
+        }
+    }
+
+    /// A TTL of zero does not mean "forever": it means a credential that has
+    /// expired at the instant it is issued, which `serve` would spend a broker
+    /// round trip discovering. The invitation and room windows are refused for
+    /// the same reason, in one sentence because they are one decision.
+    #[test]
+    fn a_ttl_that_has_already_elapsed_is_refused() {
+        let mut jwt = config();
+        jwt.jwt_ttl_seconds = 0;
+        let error = jwt.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("jwt_ttl_seconds must be positive"),
+            "{error}"
+        );
+
+        for (invitation, room) in [(0, 90 * 24 * 60 * 60), (300, 0)] {
+            let mut windows = config();
+            windows.invitation_ttl_seconds = invitation;
+            windows.room_ttl_seconds = room;
+            let error = windows.validate().unwrap_err().to_string();
+            assert!(
+                error.contains("invitation_ttl_seconds and room_ttl_seconds must be positive"),
+                "{error}"
+            );
+        }
+    }
+
+    /// Both halves set is not the same as a certificate: `terminates_tls` reads
+    /// the fields' presence, so an empty path there promises a TLS origin the
+    /// handshake then cannot deliver.
+    #[test]
+    fn a_certificate_field_that_is_set_but_empty_is_refused() {
+        for (cert, key) in [(" ", "key.pem"), ("cert.pem", "\t")] {
+            let mut config = config();
+            config.public_url = "https://relay.example.com".into();
+            config.tls_cert = Some(cert.into());
+            config.tls_key = Some(key.into());
+            // The promise the refusal is about: presence alone says TLS.
+            assert!(config.terminates_tls());
+            let error = config.validate().unwrap_err().to_string();
+            assert!(
+                error.contains("tls_cert and tls_key must not be empty when either is set"),
+                "{error}"
+            );
+        }
+    }
+
     /// Half a certificate can only fail later — either at startup or, worse, by
     /// silently serving plaintext while the operator believes TLS is on.
     #[test]

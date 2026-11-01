@@ -883,6 +883,60 @@ mod tests {
         assert_eq!(roster["hostPublicKey"], host.public_key());
     }
 
+    /// Two signature failures that are *not* "no signature": one the relay
+    /// cannot even decode, and one it decodes and finds belongs to another key.
+    /// Both leave through `VerifyError::code`, so the client is told which of the
+    /// two it has to fix instead of the generic "not signed by its caller".
+    #[tokio::test]
+    async fn an_unreadable_or_foreign_signature_is_named_on_the_wire() {
+        let relay = relay();
+        let host = KeyPair::new_user();
+        let (status, _) = register(&relay, &host).await;
+        assert_eq!(status, StatusCode::OK, "the room exists before the case");
+        let path = room_path();
+
+        // A signature header that is not the base64 it is documented to be.
+        let mut headers = signed(&host, "GET", &path, b"");
+        headers.insert("x-future-signature", "not base64!".parse().unwrap());
+        let (status, answer) = describe_room(
+            State(relay.clone()),
+            Path(PAIR.to_string()),
+            headers,
+            path.parse().unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(answer["error"], "signature_malformed");
+        assert_eq!(
+            answer["message"],
+            "This request is not signed by its caller."
+        );
+
+        // A well-formed header naming the host's key, signed by a stranger's:
+        // the signature is genuine and simply not the one the header promises.
+        let stranger = KeyPair::new_user();
+        let mut headers = signed(&stranger, "GET", &path, b"");
+        headers.insert("x-future-public-key", host.public_key().parse().unwrap());
+        let (status, answer) = describe_room(
+            State(relay.clone()),
+            Path(PAIR.to_string()),
+            headers,
+            path.parse().unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(answer["error"], "signature_invalid");
+        assert_eq!(
+            answer["message"],
+            "This request is not signed by its caller."
+        );
+
+        // The host's own signature over the same path still opens the roster, so
+        // the two refusals above are about the signature and not the request.
+        let (status, _) = describe(&relay, &host, PAIR).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
     /// The roster is the desktop's business: an unsigned read, a read by another
     /// key, and a read of a room that is not there are three different answers.
     #[tokio::test]
