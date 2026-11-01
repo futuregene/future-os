@@ -564,12 +564,13 @@ pub fn main() {
         ));
     });
 
-    // The real entry point, on this process's main thread.
-    let outcome = futureos_lib::run_with();
+    // The real entry point, on this process's main thread — the same `run()` `src/main.rs` calls,
+    // so this leg covers the production entry and not only its inner `run_with`.
+    let outcome = futureos_lib::run();
     match outcome {
-        Ok(()) => finish("driver completed after run_with returned"),
+        Ok(()) => finish("driver completed after run returned"),
         Err(error) => finish(&format!(
-            "run_with could not start the graphical runtime on this host ({error}); \
+            "run could not start the graphical runtime on this host ({error}); \
              skipped rather than failed"
         )),
     }
