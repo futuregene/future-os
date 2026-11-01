@@ -7133,4 +7133,74 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&session.cwd);
     }
+
+    /// The idle-history release is a 30 s sleep, so it is driven on a paused
+    /// clock: a session with no work and no subscribers drops its in-memory
+    /// history, and a session that is still busy keeps it.
+    #[tokio::test(start_paused = true)]
+    async fn an_idle_session_releases_its_history_after_the_delay() {
+        let session = make_persistent_test_session("idle-release");
+        session
+            .messages
+            .write()
+            .push(crate::types::AgentMessage::new_user(
+                "user",
+                serde_json::json!("hi"),
+            ));
+        assert_eq!(session.messages.read().len(), 1);
+        let shared = Arc::new(parking_lot::RwLock::new(session));
+        schedule_idle_history_release(Arc::downgrade(&shared));
+        // Let the spawned task reach its sleep before the clock moves: a timer
+        // that has not been registered cannot be woken by .
+        tokio::task::yield_now().await;
+        tokio::time::advance(IDLE_HISTORY_RELEASE + std::time::Duration::from_secs(1)).await;
+        for _ in 0..64 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            shared.read().messages.read().is_empty(),
+            "an idle session must release its in-memory history"
+        );
+        assert!(!shared.read().history_loaded, "and mark it stale");
+
+        // A session that is still active keeps its history.
+        let busy = make_persistent_test_session("idle-release-busy");
+        busy.messages
+            .write()
+            .push(crate::types::AgentMessage::new_user(
+                "user",
+                serde_json::json!("hi"),
+            ));
+        // A live SSE client is what "in use" means here.
+        let _subscriber = busy.broadcaster.subscribe();
+        let shared = Arc::new(parking_lot::RwLock::new(busy));
+        schedule_idle_history_release(Arc::downgrade(&shared));
+        tokio::task::yield_now().await;
+        tokio::time::advance(IDLE_HISTORY_RELEASE + std::time::Duration::from_secs(1)).await;
+        for _ in 0..64 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            shared.read().messages.read().len(),
+            1,
+            "a session with a started run must keep its history"
+        );
+
+        // Without a runtime the scheduling call is a no-op instead of a panic.
+        let idle = make_persistent_test_session("idle-release-sync");
+        idle.messages
+            .write()
+            .push(crate::types::AgentMessage::new_user(
+                "user",
+                serde_json::json!("hi"),
+            ));
+        let shared = Arc::new(parking_lot::RwLock::new(idle));
+        std::thread::spawn({
+            let weak = Arc::downgrade(&shared);
+            move || schedule_idle_history_release(weak)
+        })
+        .join()
+        .unwrap();
+        assert_eq!(shared.read().messages.read().len(), 1);
+    }
 }
