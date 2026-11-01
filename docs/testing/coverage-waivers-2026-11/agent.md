@@ -65,7 +65,7 @@ The working copies (`ledger-gen.py`, `ledger.md`, the lcov files) live under the
 `coverage/2026-11/after/agent/`, which is why this file exists in `docs/`: the numbers above
 are reproducible from the commands shown, with nothing but the lcov file.
 
-## Waived (108 lines)
+## Waived (134 lines)
 
 Category names follow `.future/memory/coverage-llvm-cov.md` (W1 cfg(windows) · W2 defensive
 dead arm · W3 OS failure injection · W4 race window · W5 attribution artifact · W6 ghost line
@@ -85,6 +85,38 @@ it needs.
 | 8 | `session/content/reader_recall.rs:51-59` | 9 | **W2** (candidate) | `Field::page`'s `Source::Inline` arm (slice straight from the `message_blocks` column) | reachable only for a **format-2** entry whose block text stayed inline, i.e. whose reference did not resolve when it was written (`entry_records.rs:302-315` sets `text = NULL` exactly when the reference resolves). A pre-canonical conversation does keep inline text, but the canonical reader refuses it outright — measured: `Snapshot::recall` on a `bind_legacy_events` session answers `wrong transcript reader format`. Falsified by finding a writer path that stores inline text in a format-2 session while staging is skipped |
 | 9 | `rpc/commands/providers.rs:370-375,389-391` | 9 | **W6** (attribution) | the `.map(|levels| …collect())` that stringifies a provider's or model's declared thinking-level list | the value it produces is asserted by `list_models_sends_each_models_thinking_levels_and_starting_level`, and that test **passes** while these rows record `DA=0` when it runs alone; a second identical run of the same binary records `DA=2`. A record that disagrees with a passing assertion about its own output is wrong about the line. Falsified by an instrumented build in which the closure body's region lands on the source line in every run |
 | 10 | `llm/mod.rs:439` | 1 | **W4** (race window) | `return;` after `if tx.is_closed()` — the stream stops when the receiver has gone | whether the receiver is observed closed at that instant is a timing property: `stability.py` shows the row flipping between runs of the same binary. Covered whenever the consumer disconnects before the next frame, which no ordering guarantee forces |
+| 11 | 26 rows, listed below | 26 | **W2** (assertion-failure arms) | the `panic!` / `unreachable!` arm of an assertion inside `#[cfg(test)]`: it runs only when the test is *already failing* | none possible by design: a green suite never executes them. `testside.py --rows <lcov>` re-derives the list from any measurement; every row spot-checked on this tree reads `panic!(…)` / `unreachable!()` |
+
+### 11. The 26 assertion-failure arms
+
+`testside.py --rows` on `lcov-wave36-repeat.info`, spot-checked by reading the source line of
+each (the samples below are quoted verbatim from the tree):
+
+```
+cli/shutdown.rs: 261
+console.rs: 401                     panic!("the fixture's stderr ended without its line; saw:\n{seen}");
+llm/adapters/anthropic.rs: 1165
+llm/adapters/openai_chat.rs: 792,810,825
+llm/adapters/openai_responses.rs: 1239,1290
+llm/mod.rs: 2058
+rpc/commands/skills.rs: 27          _ => unreachable!(),
+rpc/mod.rs: 1423,1428,1432,1469,1474,1478
+sandbox/linux/glob_scan.rs: 624,633
+sandbox/linux/plan.rs: 807,817
+session/history/fragment_cache.rs: 251   panic!("must spill")
+session/projection.rs: 1100
+skill_reco/mod.rs: 872,1496         other => panic!("expected a failure, got {other:?}"),
+```
+
+Each is the arm an assertion takes when it *fails*. They are not open work and not behaviour
+gaps: covering them would mean making the assertion fail, which is the opposite of the suite's
+job. The class is structural — every `match … other => panic!(…)` in a test costs one such row —
+so the right response is to name them once (here) and exclude them from the campaign's
+denominator, not to restructure tests whose assertions are already correct.
+
+**The exclusion changes the goal's arithmetic:** of 1150 stable rows, 26 are this class, so the
+real work is **1124**. Any future wave should subtract these before reporting a "remaining"
+number, or it will keep rediscovering that ~2 % of the lane cannot move.
 
 Rows 9 and 10 were found by the lane's own stability check (`stability.py`, wave 36): two
 instrumented runs of identical code differ by exactly these ten rows, and by no others. That is
