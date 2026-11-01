@@ -219,10 +219,18 @@ pub fn reserved_port() -> i64 {
         })
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    for _ in 0..(RESERVED_PORT_BAND.1 - RESERVED_PORT_BAND.0) {
+    free_port_in(&mut next, RESERVED_PORT_BAND)
+}
+
+/// Walk `band` from `next`, wrapping at its end, and hand back the first port
+/// that can actually be bound. The band is a parameter so the walk itself can be
+/// tested at both edges: a full band is the one case a caller cannot construct
+/// from the real band without holding nine thousand sockets.
+fn free_port_in(next: &mut u16, band: (u16, u16)) -> i64 {
+    for _ in 0..(band.1 - band.0) {
         let candidate = *next;
-        *next = if candidate + 1 >= RESERVED_PORT_BAND.1 {
-            RESERVED_PORT_BAND.0
+        *next = if candidate + 1 >= band.1 {
+            band.0
         } else {
             candidate + 1
         };
@@ -231,10 +239,7 @@ pub fn reserved_port() -> i64 {
             return i64::from(candidate);
         }
     }
-    panic!(
-        "no free port in the reserved band {}..{}",
-        RESERVED_PORT_BAND.0, RESERVED_PORT_BAND.1
-    );
+    panic!("no free port in the reserved band {}..{}", band.0, band.1);
 }
 
 /// The band [`reserved_port`] hands out from: entirely below every supported
@@ -309,6 +314,20 @@ mod tests {
             "{second} is outside the reserved band {low}..{high}"
         );
         assert_ne!(first, second, "a reserved port must not repeat");
+    }
+
+    /// A band with nothing free is reported rather than handed out, and the
+    /// message names both ends so the reader knows which range was searched.
+    ///
+    /// A one-port band also walks the wrap arm: that band's first port *is* its
+    /// last, so the walk's very first step goes back to the band's start.
+    #[test]
+    #[should_panic(expected = "no free port in the reserved band")]
+    fn a_band_with_nothing_free_is_reported() {
+        let held = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a port to hold");
+        let port = held.local_addr().unwrap().port();
+        let mut next = port;
+        super::free_port_in(&mut next, (port, port + 1));
     }
 
     #[tokio::test]
