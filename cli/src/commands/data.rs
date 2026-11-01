@@ -1299,4 +1299,189 @@ mod tests {
         assert!(text.contains("will not lock"), "{text}");
         assert!(text.contains(&path.display().to_string()), "{text}");
     }
+
+    /// Drive `future data …` the way a user runs it, through the real
+    /// dispatcher. The wrapper is the contract: which forms are accepted, what
+    /// each prints, and that a refused one leaves the data alone.
+    async fn run(args: &[&str]) -> (i32, String, String) {
+        let mut argv = vec!["data".to_string()];
+        argv.extend(args.iter().map(|argument| argument.to_string()));
+        let (out, captured) = Output::memory();
+        let code = crate::dispatch(&argv, &out).await;
+        let stdout = String::from_utf8(captured.out.lock().unwrap().clone()).unwrap();
+        let stderr = String::from_utf8(captured.err.lock().unwrap().clone()).unwrap();
+        (code, stdout, stderr)
+    }
+
+    #[tokio::test]
+    async fn every_documented_form_runs_through_the_dispatcher() {
+        let _guard = crate::test_env::lock_env().await;
+        let root = tempfile::tempdir().unwrap();
+        let home = fixture(root.path());
+        let archive = root.path().join("archive");
+        let _env = crate::test_env::EnvGuard::set(&[
+            ("HOME", root.path().as_os_str().to_owned()),
+            ("FUTURE_HOME", home.as_os_str().to_owned()),
+        ]);
+
+        // `--help` anywhere wins over the action, and the bare form is the same
+        // page rather than an error.
+        let (code, help, stderr) = run(&["--help"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            help.starts_with("future data — offline history backup"),
+            "{help}"
+        );
+        let (code, bare, stderr) = run(&[]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(bare, help);
+        // The same page answers an action that was asked for help rather than
+        // run: `--help` anywhere in the arguments is a question about the group.
+        let (code, asked, stderr) = run(&["backup", "--help"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(asked, help);
+        assert!(
+            !archive.exists(),
+            "a help request must not back anything up"
+        );
+
+        // An action this build does not have is refused, not guessed at, and
+        // the refusal carries the usage so the next attempt can be the right one.
+        let (code, stdout, stderr) = run(&["frobnicate"]).await;
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        assert!(stderr.contains("Invalid data command."), "{stderr}");
+        assert!(stderr.contains("future data backup"), "{stderr}");
+
+        // backup writes a directory it has verified, and says so.
+        let (code, stdout, stderr) = run(&["backup", archive.to_str().unwrap()]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.contains(&format!("Verified backup: {}", archive.display())),
+            "{stdout}"
+        );
+        assert!(archive.join("manifest.json").is_file());
+
+        // verify re-reads that directory and names it with its file count.
+        let (code, stdout, stderr) = run(&["verify", archive.to_str().unwrap()]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("Verified backup "), "{stdout}");
+        assert!(stdout.contains(" files"), "{stdout}");
+
+        // Without `--yes` a restore is refused, and nothing has moved: the
+        // confirmation is what stands between a typo and a rewritten history.
+        change_current(&home);
+        let (code, _, stderr) = run(&["restore", archive.to_str().unwrap()]).await;
+        assert_eq!(code, 1);
+        assert!(stderr.contains("Invalid data command."), "{stderr}");
+        assert_title(&home, "new title");
+
+        // With it, both databases and the managed files come back.
+        let (code, stdout, stderr) = run(&["restore", archive.to_str().unwrap(), "--yes"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("Restore completed."), "{stdout}");
+        assert_title(&home, "old title");
+        assert_eq!(
+            fs::read(home.join("app/images/t/original.png")).unwrap(),
+            b"old image"
+        );
+
+        // `resume` completes one that stopped after its preparation...
+        change_current(&home);
+        with_stopped_home(&home, || prepare_restore(&home, &archive)).unwrap();
+        let (code, stdout, stderr) = run(&["resume"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.contains("Recovery operation completed; startup is available again."),
+            "{stdout}"
+        );
+        assert_title(&home, "old title");
+
+        // ...and `rollback` is the other way out of the same fence: the data
+        // that was there before the restore is what remains.
+        change_current(&home);
+        with_stopped_home(&home, || prepare_restore(&home, &archive)).unwrap();
+        let (code, stdout, stderr) = run(&["rollback"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.contains("Recovery operation completed; startup is available again."),
+            "{stdout}"
+        );
+        assert_title(&home, "new title");
+        assert_eq!(
+            fs::read(home.join("app/images/t/original.png")).unwrap(),
+            b"new image"
+        );
+        assert!(!pending(&home).exists());
+    }
+
+    /// A restore rotates the restore generation in both databases. The
+    /// generation is what tells a restored copy apart from the database it
+    /// replaced; a restore that left it behind would hand out a copy claiming to
+    /// be the original.
+    #[test]
+    fn restore_rotates_the_generation_in_both_databases() {
+        let root = tempfile::tempdir().unwrap();
+        let home = fixture(root.path());
+        Connection::open(home.join("app/app.db"))
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE app_database_identity (
+                     id TEXT PRIMARY KEY NOT NULL,
+                     database_id TEXT NOT NULL,
+                     restore_generation TEXT NOT NULL);
+                 INSERT INTO app_database_identity VALUES ('main','database-1','restore-1');",
+            )
+            .unwrap();
+        Connection::open(home.join("agent/agent.db"))
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO storage_meta(key,value) VALUES ('restore_generation','restore-1')
+                     ON CONFLICT(key) DO UPDATE SET value=excluded.value;",
+            )
+            .unwrap();
+
+        let archive = root.path().join("archive");
+        backup(&home, &archive).unwrap();
+        prepare_restore(&home, &archive).unwrap();
+
+        let journal: RestoreJournal =
+            serde_json::from_slice(&fs::read(pending(&home)).unwrap()).unwrap();
+        let incoming = work(&home, &journal.id).unwrap().join("incoming");
+        let app: String = Connection::open(incoming.join("app/app.db"))
+            .unwrap()
+            .query_row(
+                "SELECT restore_generation FROM app_database_identity WHERE id='main'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            app, journal.id,
+            "the app database takes the restore identity"
+        );
+        let agent: String = Connection::open(incoming.join("agent/agent.db"))
+            .unwrap()
+            .query_row(
+                "SELECT value FROM storage_meta WHERE key='restore_generation'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            agent, journal.id,
+            "the agent database is rotated by the same restore"
+        );
+        // The backed-up copy itself is untouched: a restore never rewrites the
+        // archive it is restoring from.
+        let archived: String = Connection::open(archive.join("app/app.db"))
+            .unwrap()
+            .query_row(
+                "SELECT restore_generation FROM app_database_identity WHERE id='main'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(archived, "restore-1");
+    }
 }
