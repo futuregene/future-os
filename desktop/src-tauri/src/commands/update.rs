@@ -634,6 +634,75 @@ mod tests {
         );
     }
 
+    /// Only the initialisation subcommand is an update helper. Any other argv is
+    /// left to the ordinary desktop startup, which is what keeps this dispatch
+    /// from swallowing a normal launch.
+    #[test]
+    fn an_argv_that_is_not_an_update_helper_subcommand_is_not_consumed() {
+        assert!(dispatch_update_helper(&[]).is_none());
+        assert!(dispatch_update_helper(&["--version".to_string()]).is_none());
+        assert!(dispatch_update_helper(&["--app-update-worker".to_string()]).is_none());
+    }
+
+    /// The helper dispatch reports the worker's failure instead of hiding it, and
+    /// passes success through untouched. The `Err` arm also writes the `ERROR`
+    /// diagnostics line through `console::`; that line cannot be asserted here
+    /// because `console` writes straight to the process's stdout rather than
+    /// through `std`'s captured printer (see `agent/src/console.rs`), so the
+    /// observable contract is the returned result.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn helper_result_passes_the_result_through_and_reports_a_failure() {
+        assert_eq!(helper_result(Ok(())), Ok(()));
+        assert_eq!(
+            helper_result(Err("installer refused".into())),
+            Err("installer refused".to_string())
+        );
+    }
+
+    /// The worker subcommand is consumed and its refusal is dispatched: with no
+    /// plan arguments the macOS worker stops before it opens the bundle, so this
+    /// reaches the dispatch arm without an installer.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_update_helper_argv_is_consumed_and_the_workers_refusal_is_reported() {
+        let outcome = dispatch_update_helper(&["--app-update-macos-worker".to_string()])
+            .expect("the worker subcommand is consumed");
+        assert_eq!(
+            outcome.unwrap_err(),
+            "Invalid macOS update worker arguments"
+        );
+    }
+
+    /// Every native update dialog resolves its text from the bundled settings
+    /// translations, in the language the window asks for. A missing key or a
+    /// language that fell through to the wrong dictionary would surface here
+    /// rather than as an untranslated dialog at install time.
+    #[test]
+    fn every_native_update_dialog_has_its_own_text_in_both_languages() {
+        const KEYS: [&str; 8] = [
+            "installTitle",
+            "installConfirmation",
+            "installConfirm",
+            "installDefer",
+            "repairTitle",
+            "repairConfirmation",
+            "repairConfirm",
+            "repairCancel",
+        ];
+        for key in KEYS {
+            let english = update_dialog_text(None, key);
+            let chinese = update_dialog_text(Some("zh-CN"), key);
+            assert!(!english.is_empty(), "{key} has no English text");
+            assert!(!chinese.is_empty(), "{key} has no Chinese text");
+            assert_ne!(chinese, english, "{key} was not translated");
+            // Only a `zh*` tag selects Chinese; every other tag gets English.
+            assert_eq!(update_dialog_text(Some("zh-TW"), key), chinese);
+            assert_eq!(update_dialog_text(Some("en-US"), key), english);
+            assert_eq!(update_dialog_text(Some("de"), key), english);
+        }
+    }
+
     #[test]
     fn cleanup_failure_never_enters_installation() {
         let mut installed = false;
