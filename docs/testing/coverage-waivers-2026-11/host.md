@@ -6,14 +6,14 @@ summary's `Lines` column is not the acceptance number (it adds ghost lines).
 **Lane** — `future-host`'s **lib** unit tests only. The integration-test binaries and the
 `#[ignore]`d real-network legs are measured by their own lanes; this file is about the lib.
 
-**Last measurement**: `test/cov-host` at `31f46778d`, rustc **1.99.1** (`rust-toolchain.toml`),
+**Last measurement**: `test/cov-host` at `deb03ec4a`, rustc **1.99.1** (`rust-toolchain.toml`),
 `HOME=target/test-home`, `ulimit -n 8192`. Artifacts (gitignored) are in
-`coverage/2026-11/after/host/`: `round6-A-lcov.info` (pass A, the numbers quoted below),
-`round6-B-lcov.info` (an independent repeat, §1.1), `round6-run.log` / `round6-B-run.log`, the
-per-line inventories `round6-A-missed.json` / `round6-B-missed.json`, the bucket arithmetic in
-`buckets6.py`, the per-file deltas in `delta5.py` / `perfile6.py`, the §4 rows in
-`open-ranges6.py`, and the run-to-run line diff in `flaky-lines.py`. Superseded by this round:
-`round5-A/B2-*` (2553), `base3-*` (2589) and `final-*` (2589).
+`coverage/2026-11/after/host/`: `round7-A-lcov.info` (pass A, the numbers quoted below),
+`round7-B-lcov.info` (an independent repeat, §1.1), `round7-run.log` / `round7-B-run.log`, the
+per-line inventories `round7-A-missed.json` / `round7-B-missed.json`, the bucket arithmetic in
+`buckets7.py`, the §4 rows in `open-ranges7.py`, the closing-edge list in
+`closing-edges-round7.txt` and the run-to-run line diff in `flaky-lines.py`. Superseded by this
+round: `round6-A/B-*` (2505), `round5-A/B2-*` (2553), `base3-*` (2589) and `final-*` (2589).
 
 The lane record beside this file — `host-lane.json` — carries the same numbers, and
 `scripts/coverage/lane-check.py` fails when the record, this doc and the lcov artifact disagree
@@ -34,54 +34,56 @@ awk '/^SF:/{f=substr($0,4)} /^DA:[0-9]+,0$/{split(substr($0,4),a,","); print f":
   /tmp/host-lcov.info | grep '/host/src/' | wc -l
 ```
 
-The run is also the gate: **1948 passed, 0 failed, 11 ignored** in 418.97 s, then `report rc=0`
-(`round6-run.log`).
+The run is also the gate: **1955 passed, 0 failed, 11 ignored** in 435.26 s, then `report rc=0`
+(`round7-run.log`).
 
 ## 1. Before / after, and where every remaining line sits
 
-Both columns are `DA:0` over `host/src/`, same lane, same recipe. "before" is `round5-A-lcov.info` —
-the previous round's measured tree (`b4b8f605e`), which is what this round's work started from.
+Both columns are `DA:0` over `host/src/`, same lane, same recipe. "before" is `round6-A-lcov.info` —
+the previous round's measured tree (`31f46778d`), which is what this round's work started from.
 
-| | before (`round5-A-lcov.info`) | after (`round6-A-lcov.info`) | Δ |
+| | before (`round6-A-lcov.info`) | after (`round7-A-lcov.info`) | Δ |
 |---|---:|---:|---:|
-| **lane total** (`host/src/**`) | 2553 | **2505** | **−48** |
+| **lane total** (`host/src/**`) | 2505 | **2464** | **−41** |
 | switch-lane files (§2.1) | 1884 | 1884 | 0 |
 | **inside in-scope files, switch lane only** (§2.2, §2.3) | 132 | 132 | 0 |
-| **in-scope** (lane total − §2.1 files − §2.2/§2.3 lines) | 537 | **489** | **−48** |
+| **in-scope** (lane total − §2.1 files − §2.2/§2.3 lines) | 537 | **448** | **−41** |
 
-Every one of the 2505 remaining lines is in exactly one bucket (`buckets6.py` prints this; the
+Every one of the 2464 remaining lines is in exactly one bucket (`buckets7.py` prints this; the
 four numbers sum to the total):
 
 | bucket | lines | what it is |
 |---|---:|---|
 | **switch lane: their own files** | **1884** | §2.1 — five files only the network legs execute |
 | **switch lane: inside in-scope files** | **132** | §2.2 (125: `tasks.rs`'s two `#[ignore]`d tests, 83; `remote/test_support.rs`'s `reconnect_secure_channel`, 42) plus §2.3 (7: the `fixture_mode()` arms that `cfg!(test)` makes constant) |
-| **waived** | **75** | §3 rows W1-W7 (21), W8's closing edges (20), W9-W12 (33) and W13 (1) |
-| **open** | **414** | §4 — real gaps. **Not waived.** |
+| **waived** | **90** | §3 rows W1-W7 (21), W8's closing edges (20), W9-W12 (33) and W13-W17 (16) |
+| **open** | **358** | §4 — real gaps. **Not waived.** |
 
-So the campaign figure for this lane today is **414 open**, not 0: this pass closed 49 in-scope
-lines and added 17 tests (1931 → 1948), and 2016 of the residual are another lane's to measure.
-One line moved the other way (§1.2).
+So the campaign figure for this lane today is **358 open**, not 0: this pass closed 41 in-scope lines
+by measurement and re-judged 15 more into §3 (below), and 2016 of the residual are another lane's to
+measure. The two are different moves and the arithmetic keeps them apart: `414 − 358 = 56`, of which
+**41 were executed** and **15 were already executed but mis-attributed to §4** (W14-W17).
 
-`buckets6.py` asserts, before it counts, that every §3 waiver line and every §2.3 fixture arm is
+`buckets7.py` asserts, before it counts, that every §3 waiver line and every §2.3 fixture arm is
 still `DA:0` — a waiver this measurement would have falsified, or an arm it would have covered,
-fails the run instead of being silently retired. All 75 waived lines and all 7 arms held.
+fails the run instead of being silently retired. All 90 waived lines and all 7 arms held.
 
-Where this pass's 49 closed lines came from (per file, before → after, `perfile6.py`):
+Where this pass's 41 closed lines came from (per file, before → after, raw `DA:0` including the
+waived lines of the same file):
 
 | file | before | after | what closed it |
 |---|---:|---:|---|
-| `shadow_review/snapshot.rs` | 24 | **1** | `de46de229` — a required **clean filter** writes `.gitignore` and then exits non-zero, so the rule change and the refused `git add` land inside one call: the retry drops the candidate that became ignored (or all of them, and `204`-style "all ignored" is reported rather than failed), and `capture` recounts its byte total from what actually reached the tree. Worth 23 lines: the retry's two outcomes and `capture`'s recount block. The remaining line is W13 (§3) |
-| `store/migrations.rs` | 17 | 3 | `9653062e3` — six damaged-database fixtures: no identity row, a populated ledger beside a zero version header, a failed upgrade that names its pre-upgrade snapshot (asserted by opening that file and reading the pre-upgrade rows and header), optional metadata whose recording INSERT is refused, a foreign key whose target table is gone, and a missing/non-unique conversation binding index. All 14 open lines close; the 3 that remain are W8's closing edges (`39,76,139`) |
-| `agent_bridge/observer.rs` | 39 | 29 | `2e8130686` — the projection's refusal arms, five of them, each asserting both "refused" and "no cursor moved" (§1.3) |
-| `remote/control.rs` | 88 | 86 | `31f46778d` — the control channel's **peer path** (a client-role request on the host's own queue is answered by `perform_peer`, not refused as an unknown host operation) and a request whose reply path cannot be created (reported, and still consumed so the queue moves) |
-| `agent_host.rs` | 28 | 29 | +1, no test: `502` is the race-attributed line §1.2 names |
+| `remote/control.rs` | 86 | **45** | `497236b94` — the control channel driven by the crate's own service fixtures: `spawn_host`'s loop started for real (directory created, abandoned request swept, live request answered off disk, aborted through the task registry), a Desktop that is *on* minting an invitation from a scripted platform, a removal through `unpair_slot`, a takeover answered and a takeover refused, the terminal switch stored both ways (§4.1). Its open share goes **85 → 29**, all of it the client role's changing half (§4.1), and **15** lines of it move to §3 |
 
-Earlier passes, for the record: `remote_host/business/mod.rs` 11 → 0, `store/test_support.rs` 5 → 0,
-`tasks/service.rs` 5 → 1, `events.rs` 5 → 2, `remote_host/mod.rs` 3 → 0, `remote_peer/host.rs` 5 → 2,
-`runtime.rs` 7 → 4, `startup.rs` 7 → 4, `store/threads.rs` 3 → 1, `scheduler.rs` 2 → 3,
-`shutdown/services.rs` 17 → 16, `store/migrations.rs` 16 → 17 (`…/a8d871797`, `5859070e1`,
-`b4b8f605e`, `929a4a798`, `ae228f549`); `agent_bridge/queries.rs` 12 → 0, `remote/mod.rs` 14 → 0,
+No other file moved this round (the per-file diff printed exactly one row).
+
+Earlier passes, for the record: `shadow_review/snapshot.rs` 24 → 1,
+`store/migrations.rs` 17 → 3, `agent_bridge/observer.rs` 39 → 29, `remote/control.rs` 88 → 86
+(`de46de229`, `9653062e3`, `2e8130686`, `31f46778d`); `remote_host/business/mod.rs` 11 → 0,
+`store/test_support.rs` 5 → 0, `tasks/service.rs` 5 → 1, `events.rs` 5 → 2, `remote_host/mod.rs` 3 →
+0, `remote_peer/host.rs` 5 → 2, `runtime.rs` 7 → 4, `startup.rs` 7 → 4, `store/threads.rs` 3 → 1,
+`scheduler.rs` 2 → 3, `shutdown/services.rs` 17 → 16 (`a8d871797`, `5859070e1`, `b4b8f605e`,
+`929a4a798`, `ae228f549`); `agent_bridge/queries.rs` 12 → 0, `remote/mod.rs` 14 → 0,
 `agent_host.rs` 58 → 28, `agent_bridge/run_control.rs` 14 → 2 and `agent_bridge/stream.rs` 14 → 4
 (`188e08161`); `agent_bridge/reconciliation.rs` 39 → 2, `application/threads.rs` 15 → 3 and
 `agent_client.rs` 16 → 7 (`f5b44775a`); `store/reconcile.rs` 13 → 4 and
@@ -93,47 +95,44 @@ Earlier passes, for the record: `remote_host/business/mod.rs` 11 → 0, `store/t
 
 ### 1.1 Same-number reproduction: the measurement, run twice
 
-Pass B (`round6-B.sh`) runs the identical recipe on the same instrumented build with its
+Pass B (`round7-B.sh`) runs the identical recipe on the same instrumented build with its
 `.profraw` files deleted first, into an independent lcov file. Both passes are green:
-**1948 passed / 0 failed / 11 ignored** in 418.97 s (A) and 455.80 s (B, a re-run: the first attempt parked, §5.16).
+**1955 passed / 0 failed / 11 ignored** in 435.26 s (A) and 426.38 s (B).
 
-| | pass A (`round6-A-lcov.info`) | pass B (`round6-B-lcov.info`) |
+| | pass A (`round7-A-lcov.info`) | pass B (`round7-B-lcov.info`) |
 |---|---:|---:|
-| lane total `DA:0` | **2505** | **2505** |
+| lane total `DA:0` | **2464** | **2464** |
 | switch-lane files | 1884 | 1884 |
-| in-scope | 489 | 489 |
-| lines that differ between the runs | — | **0** |
+| in-scope | 448 | 448 |
+| lines that differ between the runs | — | **2**, both named in §1.2 |
 
-`flaky-lines.py` (which prints the source of every line that differs) printed **nothing**: this
-pair agreed line for line, as the previous round's did. It is not the general case and this file
-does not claim it is: the pair before that moved by three lines, all in `agent_host.rs`, and
-`agent_host.rs:502` is the one line that moved *between* rounds this time (§1.2). The honest claim
-stays: **the measurement is stable to a couple of named lines, and every line that moves is
-named.**
+Two lines moved and the total did not, because they swapped (§1.2). The pair before this one
+agreed line for line; the honest claim is unchanged: **the measurement is stable to a couple of
+named lines, and every line that moves is named.**
 
-Two passes in this round were **discarded rather than read**, both kept on disk under
+Three passes in this round were **discarded rather than read**, all kept on disk under
 `-DISCARDED` names so the discard is auditable:
 
-- `round6-B-DISCARDED-superseded-*` measured a tree this round then changed — the first version of
-  the `tracing` fixture left five unexercised `Subscriber` methods (§5.14), so it measured code that
-  no longer exists.
-- `round6-B-DISCARDED-hang-*` is the pass that **parked at 0 % CPU** (§5.16). A parked pass is the
-  same trap as a killed one: the tests that never ran leave their lines `DA:0` and the report looks
-  complete. Its `sample` is kept as `host-lock-parks-2026-11-01.txt`.
-
-The same rule applied in earlier rounds: `round5-B-DISCARDED-sigkill` (partial profraws from a
-`SIGKILL`) and `round4-A-DISCARDED-two-failures` (a green-looking lcov from a run in which two new
-tests failed at their first assertion).
+- `round7-A-DISCARDED-parked-*` is the pass that **parked at 0 % CPU** after twelve tests (§5.17).
+  Its `sample`, classified this round rather than only kept, is
+  `round7-park-sample-2026-11-01.txt`. A parked pass is the same trap as a killed one: the tests
+  that never ran leave their lines `DA:0` and the report looks complete.
+- `round7-A-DISCARDED-red-*` is a **red** pass — `1955 passed / 1 failed` — from the
+  `remote_peer::testing` fixture that was dropped afterwards (§4.1). A green-looking lcov that had
+  one failing test in it is not a measurement.
+- `round6-B-DISCARDED-*` and `round5-B-DISCARDED-sigkill`, `round4-A-DISCARDED-two-failures` from
+  earlier rounds are the same rule applied before: a killed pass, a superseded tree, and a
+  green-looking lcov from a run in which two new tests failed at their first assertion.
 
 ### 1.2 Lines that move between passes, named
 
 | line | what it is |
 |---|---|
-| `agent_host.rs:502` | read covered in the previous round, `DA:0` in this one's pass A and both of the round before that. It is the `matches!` on a retention decision in a test's fixture; named in every round it has moved. Not a waiver — §4 keeps it |
+| `agent_host.rs:502` | `server.as_mut().await?` in the shutdown-report arm of the start loop. Covered in pass B, `DA:0` in A — and in every round where it has moved. A race between the worker's shutdown report and the teardown it then awaits; named, not waived, and §4 keeps it |
+| `shutdown/services.rs:20` | `return Err(error.into())` when `super::failure()` already holds a recorded failure. `DA:0` in pass B, covered in A: it depends on whether an earlier test in the same binary left a failure recorded, which is exactly the kind of line a whole-suite run cannot pin |
 
 The honest claim stays: **the measurement is stable to a couple of named lines, and every line that
-moves is named.** This round's pair agreed line for line (§1.1), so the only movement is round over
-round.
+moves is named.**
 
 ### 1.3 The five refusal arms of the projection, and why the assertion is the cursor
 
@@ -200,30 +199,35 @@ W8 dead producer/deliberately-unexecuted line.
 | # | file:line | lines | class | construct | positive control | falsifier |
 |---|---|---:|---|---|---|---|
 | W1 | `host/src/remote/relay.rs:469,587,594,597` | 4 | W2 | the test fixture's own failure arms: `Ok(_) => panic!("{what}")` in `a_refused_grant`, the mock relay's socket-read `expect`, and the `continue` for a buffer that never held a request head | `remote::relay::tests::register_signs_the_room_request_and_mints_a_grant` and `…::a_relay_that_is_not_listening_is_a_transport_failure` run the same fixture on its success and error paths | hand the helper an `Ok(_)`, or open a connection that writes nothing: 469 and 597 are taken |
-| W2 | `host/src/remote/control.rs:2134` | 1 | W2 | `Ok(_) => panic!("{what}")` in `a_refused_peer_request` | `remote::control::tests::perform_peer_reads_the_list_and_asks_which_machine` uses the same helper on its `Err` arm | call it with an `Ok(PeerOutcome)` — the suite fails there |
+| W2 | `host/src/remote/control.rs:2135` | 1 | W2 | `Ok(_) => panic!("{what}")` in `a_refused_peer_request` (the line moved +1 when the control tests module took a `use` line) | `remote::control::tests::perform_peer_reads_the_list_and_asks_which_machine` uses the same helper on its `Err` arm | call it with an `Ok(PeerOutcome)` — the suite fails there |
 | W3 | `host/src/remote/trust.rs:96-98` | 3 | W6 | `#[cfg(not(test))] fn bundle_path()`: the body has no executing caller in a `--lib` build; its `DA:0` record comes from the crate's second (dependency) compilation, the "lib 双编译合并" shape in the memory note | `bundle_at`'s own tests cover the same snapshot-and-fallback logic | an integration-test binary calling it — another lane |
 | W4 | `host/src/remote/test_support.rs:784,789` | 2 | W1/W6 | the `else` arms of `cfg!(target_os = "macos")` in the mock's `probe_sandbox` answer (`"unsupported_platform"`, `"none"`) — this machine is macOS, so the other platform's text never executes | `agent_bridge::queries::probe_tests::the_sandbox_probes_ask_the_agent_and_map_its_answer` covers the same answer's mapping | run the suite on Linux: those two lines execute and the macOS ones read 0 |
 | W5 | `host/src/remote/test_support.rs:801-808` | 8 | W8 | the mock's default `probe_thinking_level` answer — evaluated only when a test leaves the command unscripted | `agent_bridge::config::tests::a_thinking_level_probe_forwards_the_request_and_keeps_a_refusal_as_an_answer` owns that command via a script, so the default is bypassed on purpose | drop one `probe_thinking_level` script from any test: the default arm runs |
 | W6 | `host/src/remote/test_support.rs:356-358` | 3 | W8 | `RecordingSink::is_empty` / `len` — accessors no handler test currently calls | the same type's `push`/`drain` are used by the handler tests | one assertion in any handler test covers all three |
 | W7 | `host/src/remote/test_support.rs:1963,2193,2710` | 3 | W2 | failure arms inside tests: a `violations.push(…)` for a doc-contract breach, its `join` in the assert message, and `Err(error) => panic!(…)` in a deferred-arm matcher | the same tests pass, so their happy paths execute | break the doc contract the test checks, or answer the deferred call with a failure |
-| W8 | 20 lines, listed in `coverage/2026-11/after/host/closing-edges.txt` (`store/legacy_history.rs:24,81,212,260,265`, `store/migrations.rs:39,76,139`, `agent_bridge/stream.rs:318,388`, `agent_bridge/import.rs:632`, `agent_bridge/presence.rs:112`, `application/threads.rs:420`, `store/cleanup.rs:456`, `store/deletions.rs:26`, `store/managed_cleanup.rs:28,38`, `store/review_snapshots.rs:203`, `store/runs.rs:184`, `store/approval_assessments.rs:63`) | 20 | W6 | a line that holds **nothing but** a call's closing error edge (`)?;`, `})?;`, `)?`) — "多行调用把 `)?;` 单独落一行 → 该行只有错误臂 → `DA:0`" (`.future/memory/coverage-llvm-cov.md`) | the statement itself ran: the line directly above each of these 20 reads `DA>0` (checked mechanically by `buckets6.py`). The closing-edge lines whose neighbour is *also* uncovered stay in §4 (`agent_bridge/config.rs:202`, `agent_client.rs:178,209`, `remote/web_server.rs:61`, `remote_host/pairing.rs:293`, `remote_platform.rs:53`, `remote/test_support.rs:67`, `agent_bridge/observer.rs:1049`) | put one of these calls on a single line (shrink its argument list into rustfmt's 60-column `fn_call_width`) and the line disappears from the next report with no test change; conversely a caller that actually forces the error edge — a closed store, an unreadable file — covers it |
+| W8 | 20 lines, listed in `coverage/2026-11/after/host/closing-edges-round7.txt` (`store/legacy_history.rs:24,81,212,260,265`, `store/migrations.rs:39,76,139`, `agent_bridge/stream.rs:318,388`, `agent_bridge/import.rs:632`, `agent_bridge/presence.rs:112`, `application/threads.rs:420`, `store/cleanup.rs:456`, `store/deletions.rs:26`, `store/managed_cleanup.rs:28,38`, `store/review_snapshots.rs:203`, `store/runs.rs:184`, `store/approval_assessments.rs:63`) | 20 | W6 | a line that holds **nothing but** a call's closing error edge (`)?;`, `})?;`, `)?`) — "多行调用把 `)?;` 单独落一行 → 该行只有错误臂 → `DA:0`" (`.future/memory/coverage-llvm-cov.md`) | the statement itself ran: the line directly above each of these 20 reads `DA>0` (checked mechanically by `buckets7.py`). The closing-edge lines whose neighbour is *also* uncovered stay in §4 (`agent_bridge/config.rs:202`, `agent_client.rs:178,209`, `remote/web_server.rs:61`, `remote_host/pairing.rs:293`, `remote_platform.rs:53`, `remote/test_support.rs:67`, `agent_bridge/observer.rs:1049`) | put one of these calls on a single line (shrink its argument list into rustfmt's 60-column `fn_call_width`) and the line disappears from the next report with no test change; conversely a caller that actually forces the error edge — a closed store, an unreadable file — covers it |
 | W9 | `host/src/remote_host/business/catalog.rs:104-106,122-130` | 11 | W2 | the two "the fork produced nothing usable" arms of the phone's `fork_session`, plus the `get_thread` failure beside them. All three sit behind one invariant: `agent_bridge::fork_agent_session` refuses a fork whose session id came back empty (`agent_bridge/session.rs:316-318`) and *creates* the thread itself, with that session id bound, before returning its id (`session.rs:373-384`, `get_or_create_thread_for_agent_session(… agent_session_id: Some(new_session_id))`) | `business::catalog::dispatch_tests::fork_session_creates_and_reports_the_child_conversation` and `…::a_refused_fork_is_reported_with_the_agents_reason` drive the same call on the success path and the refusal path, and both read the child back through the same `get_thread` | make `fork_agent_session` return an id it did not persist (a session the Agent forked on another machine, or a fork that returns the parent's id) — then 122-128 answers and all eleven lines execute |
 | W10 | `host/src/remote_host/business/settings.rs:148-150,177-181` | 8 | W1 | the sandbox probe's non-answer arms: `product_sandbox_status()`'s `Err` (148-150, 179-181) and `product_sandbox_available()`'s `Ok(false)` (177-178). On macOS that function is `#[cfg(target_os = "macos")] { Ok((true, None)) }` (`settings.rs:301-310`): the sandbox is a constant there, so neither the `Err` nor a `false` availability has an input in this lane | `business::settings` tests drive `get_settings` and the settings write through `product_sandbox_available()`, so the macOS arm itself is covered | run the lane on Linux or Windows, where the answer comes from `agent_bridge::probe_sandbox()`: a probe failure reaches 148-150 and 179-181, and a host without a sandbox reaches 177-178 |
 | W11 | `host/src/shutdown.rs:186-187,204-208` | 7 | W3 | the two `std::thread::Builder::new().spawn(…)` failures of the stop path: the cleanup watchdog (186-187) and the cleanup worker (204-208). Thread creation fails only when the OS refuses it | `shutdown`'s tests run the same `stop()` to completion, including the worker's finish/progress reporting that the arms surround | exhaust the process's thread budget (lower `RLIMIT_NPROC`/`ulimit -u` to what is already in use) and call `stop()`: `pthread_create` fails, `spawn` returns `Err`, and both arms answer |
 | W12 | `host/src/remote_host/business/providers.rs:58-64` | 7 | W2 | `serde_json::to_value(view)` in `reply_view`, where `view: agent_providers::ProvidersView` is `Vec<BuiltinProvider>` + `Vec<CustomProvider>` of `String`/`bool`/`usize` fields (`agent_providers/mod.rs:59-76`). `to_value` fails only on a non-string map key or a non-finite float, and neither type occurs in the view | every provider test answers through `reply_view`, so the same `to_value` succeeds on the same types | add a field whose `Serialize` can fail (an `f64` that can be NaN, or a map keyed by a struct) — the arm then has an input and answers |
-| W13 | `host/src/shadow_review/snapshot.rs:266` | 1 | W6 | the `paths = paths.len(),` field value of `try_stage`'s "skipped paths that no longer exist" warning. `tracing`'s field expressions are evaluated only inside the callsite's enabled block, and this one has **no hit counter of its own**: the region belongs to the callsite construction on `264` | `shadow_review::snapshot::tests::stage_warns_with_the_candidate_count_when_a_pathspec_matches_nothing` installs a thread-scoped subscriber and **asserts the recorded value** (`paths = 3`) — so the expression runs, on a line the report calls 0. The same walk through `enabled`/`new_span`/`record`/`record_follows_from`/`enter`/`exit` leaves the fixture itself with no unexercised method | `cargo llvm-cov -p future-host --lib` with that test present still prints `266` as `DA:0` while the assertion passes (measured, `round6-A-missed.json`); delete the assertion and the run fails at `Some(3) != None` — the line is *executed*, so this is attribution, not reachability |
+| W13 | `host/src/shadow_review/snapshot.rs:266` | 1 | W6 | the `paths = paths.len(),` field value of `try_stage`'s "skipped paths that no longer exist" warning. `tracing`'s field expressions are evaluated only inside the callsite's enabled block, and this one has **no hit counter of its own**: the region belongs to the callsite construction on `264` | `shadow_review::snapshot::tests::stage_warns_with_the_candidate_count_when_a_pathspec_matches_nothing` installs a thread-scoped subscriber and **asserts the recorded value** (`paths = 3`) — so the expression runs, on a line the report calls 0. The same walk through `enabled`/`new_span`/`record`/`record_follows_from`/`enter`/`exit` leaves the fixture itself with no unexercised method | `cargo llvm-cov -p future-host --lib` with that test present still prints `266` as `DA:0` while the assertion passes (measured again this round, `round7-A-missed.json`); delete the assertion and the run fails at `Some(3) != None` — the line is *executed*, so this is attribution, not reachability |
+| W14 | `host/src/remote/control.rs:584-586` | 3 | W3 | `directory()`'s failure arm: `Err(error) => { eprintln!(…); return }`. It answers only when the FutureOS data root cannot be resolved at all — no `HOME`, no `USERPROFILE`, no passwd home — which no fixture can arrange without breaking every other test in the same binary | `…::the_control_loop_creates_its_directory_and_answers_what_it_finds` and `…::the_control_loop_gives_up_on_a_directory_it_cannot_create` run the same `directory()` call on its `Ok` path, and the second drives a **refused** `create_dir_all` into its own report-and-return | start the loop in a process whose home cannot be resolved (`env -u HOME -u USERPROFILE` with no passwd entry): `future_dir()` fails and 584-586 answer |
+| W15 | `host/src/remote/control.rs:839` | 1 | W2 | the takeover match's catch-all `Err(error) => Err(error)`. `Supervisor::takeover` has exactly two outcomes — `device_offline` when this process holds no runtime for the device, and the status it just took | `…::a_takeover_hands_the_machine_over_or_names_a_device_with_no_bridge` drives both of those, and asserts the `device_offline` arm's own sentence | add a third failure to `Supervisor::takeover` (a status that cannot be projected, a `publish_control` that fails): the catch-all then has an input |
+| W16 | `host/src/remote/control.rs:989-993` | 5 | W2 | the client role's unknown-op refusal, behind the router's own decision: `serve_one` sends a request to `perform_peer` only when `is_peer_op` accepts it, and `perform_peer` answers all five operations that function accepts | `remote::control::tests::the_client_role_operations_are_told_apart_from_the_host_ones` pins `is_peer_op`'s membership — the two sets agreeing is what makes this arm unreachable | add an op to `is_peer_op` without an arm for it (say `OP_ENABLE`): the router forwards it and 989-993 answer instead of the request reaching `perform` |
+| W17 | `host/src/remote/control.rs:1238-1243` | 6 | W8 | the operation future inside `an_unknown_operation_is_refused_without_performing_anything`: the test hands `answer` a future that would set `performed = true` and return a status, and its whole point is that the future is **never polled** | the neighbouring `answer` tests hand the same shape to the same call and it does execute — `a_status_without_an_invitation_is_an_error_reply` runs `async { Ok(refused) }` to its own assertion | poll it: give that test a *known* op (`OP_STATUS`) and all six lines execute — which is exactly what its `assert!(!performed)` exists to prevent |
 
-Waived total: **75** (21 in rows W1-W7, 20 in W8, 33 in W9-W12, 1 in W13). Nothing else in §4 is
-claimed as waived.
+Waived total: **90** (21 in rows W1-W7, 20 in W8, 33 in W9-W12, 1 in W13, 15 in W14-W17). Nothing else in §4 is
+claimed as waived. W14-W17 are this round's: the lines that were counted as *open* last round and
+are executed-but-unreachable from this lane for the reasons in their rows.
 
-## 4. Open residual — 414 lines in 63 files
+## 4. Open residual — 358 lines in 63 files
 
 **Not waived.** Every row is the measurement plus whatever has actually been read; "not yet read"
-means exactly that. Rows are `DA:0` line numbers in the tree this file records (`31f46778d`).
+means exactly that. Rows are `DA:0` line numbers in the tree this file records (`deb03ec4a`).
 
 | file | open lines | `DA:0` | mechanism |
 |---|---:|---|---|
-| `remote/control.rs` | 85 | 580-586,589-590,592,594-595,602,606-609,612-613,615,617-618,623,767,776-777,792,815,825,831-837,839,847-851,854-856,939-941,945-946,951-952,960-966,970-975,981-987,989-993,997-998,1237-1242 | `spawn_host`'s poll loop and the supervisor-backed `perform` arms — **judged, not waived** (§4.1) |
+| `remote/control.rs` | 29 | 939-941,945-946,951-952,960-966,970-975,981-987,997-998 | the client role's **changing half** (`perform_peer`'s connect / disconnect / takeover / remove). Judged and attempted: the fixture that drives it is order-dependent in the full suite (§4.1), so these stay open rather than ship as a one-in-N red test |
 | `agent_host.rs` | 29 | 144,173-174,177,216-217,311-313,334,363,435,443,451,487,502-503,531,539,665,762-764,766-767,815,890,1027-1028 | `is_stopping()` arms (144, 177 — closing the process-wide admission is one-way for the test binary), the recovery closure's unfinished-retirement arm (173-174), the handle-level idle admission (216-217, needs a live `AgentHandle`), worker-spawn failure (311-313), `Stopped` with no yield reason (334), the external-mode validation (363), attach-only refusals (435, 443, 451), the stop/serve precedence arms (487, 503, 531, 539, 665), the fixture harness's own failure arms (762-767, 815, 890, 1027-1028), and the race-attributed `502` (§1.2) |
 | `agent_bridge/observer.rs` | 29 | 369-376,398-403,790-796,806-812,1049 | the discovery pass's `Ok(n)`/`Err` arms for the three reconciles (369-376, 398-403 — the pass is a spawned loop reached through `TEST_DISCOVERY_STOP`), the source-verification refusal and its backoff (790-796), the re-verified-source reset (806-812), and `1049`, the brace after the hydration refusal's `return` (same class as `run_control.rs:141-142`: attribution, not a statement) |
 | `remote_host/pairing.rs` | 22 | 292-293,372,490-492,503-505,540-541,770-776,831-833,1682 | leftover refusal arms around the platform calls |
@@ -287,37 +291,52 @@ means exactly that. Rows are `DA:0` line numbers in the tree this file records (
 | `auth_store.rs` | 1 | 269 | not yet read |
 | `agent_bridge/presence.rs` | 1 | 86 | not yet read |
 
-### 4.1 The `spawn_host` block: a supervisor fixture, not a waiver
+### 4.1 The `spawn_host` block: measured, not waived
 
-This round's brief was to judge `remote/control.rs`'s 38-line block rather than leave it as an
-implicit waiver. It is judged **OPEN**, and §4 now holds 85 lines of that file plus the reasons:
+Round 6 judged this block **OPEN** and named a supervisor fixture as what would measure it. Round 7
+builds the fixture; the block is now measured except for three lines, and §4 holds no part of
+`remote/control.rs`'s loop at all.
 
-- **What is left.** `spawn_host`'s prologue and poll loop (`580-586, 589-590, 592, 594-595, 602,
-  606-609, 612-613, 615, 617-618, 623`) and the host-role `perform` arms that need a *running*
-  supervisor (`767, 776-777` = a mint that runs only with the remote switch on and a live
-  supervisor; `792` = `unpair_slot`, which queues a platform revoke and stops serving the device;
-  `815, 825, 831-837, 839, 847-851, 854-856, 939-941, 945-946, 951-952, 960-966, 970-975, 981-987,
-  989-993, 997-998` = the `serve_one`/`perform` arms reached only from those operations).
-- **Two lines of that block are *not* in it any more.** `743` (the peer-op branch of `serve_one`)
-  and `748` (a reply that cannot be written) are covered by `31f46778d`, because neither needs a
-  supervisor — only a request file. That is the honest boundary: the block's remaining lines all
-  name `crate::remote::pair_new_device` / `unpair_slot` / the supervisor's own projection.
-- **Why a lib test cannot stand in.** `spawn_host` has exactly two callers, both host entry points —
-  `desktop/src-tauri/src/lib.rs:1422` and `cli/src/headless/mod.rs:402` — and the task it spawns has
-  **no cancel path**: `pub fn spawn_host()` returns `()`, the loop is `loop { for … ; sleep(POLL) }`
-  with `POLL = 200 ms`, and nothing but process exit ends it. A lib test that called it would leave a
-  process-lifetime poll loop behind for every later test in the binary, polling a directory whose
-  home the next test replaces. That is the same reason §5.7 rejected a "cover `spawn_host` by
-  asserting its log lines" test; the difference here is that the judgement is written down instead of
-  being implied by absence.
-- **What would measure it.** A **supervisor fixture**: a test process that owns the data directory
-  and a live host bridge, drops a request file into `run/remote-control`, waits one poll interval,
-  and reads the reply — the desktop/headless lane's own shape, not this lane's. Until that exists the
-  lines stay here, counted as open, not waived.
+- **The loop itself.** `the_control_loop_creates_its_directory_and_answers_what_it_finds` starts the
+  real `spawn_host()` with the data directory **not yet created**, one abandoned request already on
+  disk beside a live `status` request, waits for the reply file a terminal would poll, reads it back
+  with `read_reply`, and asserts the projection came back — then that the sweep removed the request
+  nobody can be waiting for, that the served one was consumed, and (on unix) that the directory is
+  `0700`. It aborts the loop through the task registry the shutdown paths use
+  (`crate::runtime::cancel_test_tasks`), which is the only cancel path a process-lifetime loop has.
+- **The failure arm.** `…_gives_up_on_a_directory_it_cannot_create` puts a *file* at `run/`, starts
+  the loop, asserts the directory was never created, then frees the path and leaves a request: nothing
+  answers it, which is what proves the loop returned instead of polling a directory it never made.
+  `a_directory_that_cannot_be_read_lists_no_requests` covers `requests()`'s unreadable-directory arm.
+- **The `perform` arms.** `an_invitation_from_a_desktop_that_is_on_reaches_the_platform` (767-777),
+  `a_removal_reaches_the_running_supervisor_and_the_book` (792),
+  `a_takeover_hands_the_machine_over_or_names_a_device_with_no_bridge` (831-837) and
+  `the_terminal_switch_turns_the_desktop_off_and_on_and_stores_it` (847-856) drive the host role
+  through a real supervisor over `FakeNats`, a scripted `MockPlatform` and a pairing book on disk —
+  the services the arm *is* glue to, not a stub for `perform`.
+- **What is left of the file — 16 lines, all §3 rows.** The `directory()` failure (W14: no
+  `HOME`, no `USERPROFILE`, no passwd home), the takeover match's catch-all (W15), the client role's
+  unknown-op refusal behind `is_peer_op` (W16), the operation a refused request proves is never
+  polled (W17) and the fixture's own `Ok(_) => panic!` (W2).
+- **Not measured, and why: the client role's changing half.** `perform_peer`'s connect / disconnect /
+  takeover / remove arms were written against `remote_peer::testing::fixture` (a real host bridge on
+  the in-process broker) and **measured red once in a full parallel run**: the fixture's `start_host`
+  took its invitation while `remote::verify_e2e`'s driver body was stopping this process's
+  supervisor, so the start was refused at the access epoch and answered `Stopped` — no code, panic at
+  `remote_peer/testing.rs:68`. Green in isolation and in the whole `remote*` subset (647 tests), red
+  at the end of the full suite. A one-in-N test is worse than fifteen uncovered lines, so the test was
+  dropped rather than retried, and the hazard is named here instead: **the `verify_e2e` driver
+  fixtures start and stop the process-global supervisor without taking `TEST_HOME_LOCK`**, which any
+  remote-host test can lose against. That is the next thing to fix in this crate's test
+  infrastructure — not a product seam, and not this lane's call.
+
+Removed from the block this round (and now §3 rows rather than open): `767`, `776` (macro-attributed
+condition and the brace after its `return`, both executed by the switch-off test above them),
+`989-993`, `1238-1243`.
 
 ### What needs a product seam (judged OPEN, not waived)
 
-Three blocks cannot be measured without changing product code to make themselves observable, or
+Two blocks cannot be measured without changing product code to make themselves observable, or
 without a parallel process. They stay open and the missing piece is named:
 
 - `remote_host/business/prompt.rs:148-154` — the `accepted_rx.await` `Err` arm. Needs a way for a
@@ -326,8 +345,9 @@ without a parallel process. They stay open and the missing piece is named:
 - `remote/trust.rs:64-93` — `bundle_with_extra`'s four arms inside one `OnceLock` closure, of which
   at most one runs per process. Needs the body extracted from the closure, which is product code
   written for the measurement (§5.8).
-- `remote/control.rs:580-998` — `spawn_host` and the supervisor-backed `perform` arms. Needs the
-  supervisor fixture described in §4.1.
+
+`remote/control.rs`'s supervisor block used to be the third: round 7's loop fixture measures it
+(§4.1).
 
 ## 5. Rejected approaches (this lane)
 
@@ -402,6 +422,29 @@ without a parallel process. They stay open and the missing piece is named:
     do not have; it is the one thing an operator should look at first if the suite ever stalls in
     CI.
 
+17. **Calling the park "just the lock serializing the suite", and speeding the fixtures up.** Round 7
+    parked again — one pass of two — on the same five families, and this time the dump was classified
+    rather than only kept (`round7-park-sample-2026-11-01.txt`, `park-locks.py`): 100 threads, 0 % CPU
+    for the whole 5 s window, **30 threads waiting to *take* a fixture and none of them holding one**
+    (12 in `mock_agent_with_cleanup` = `MOCK_LOCK`, 18 in `TestHome::with_cleanup`/`HomeGuard` =
+    `TEST_HOME_LOCK`), 63 in a tokio `park_condvar`, 4 in `kevent`, and the harness's main thread
+    waiting for a completed test. The two readings that follow are different and must not be
+    conflated:
+
+    - **The suite's ~430 s is serialization, by design** (§8): a fixture holds `TEST_HOME_LOCK` for
+      its whole lifetime because a test publishes `HOME` as a real environment variable. That is
+      slow, not broken, and there is nothing to optimize in `approval`/`config`/`headless`/`import`.
+    - **A park is not that.** Every thread that could make progress is queued behind a fixture whose
+      holder is not on a CPU, so the holder is either a task **parked inside a tokio runtime while
+      holding the guard** — the shape these tests deliberately have, `#[allow(clippy::await_holding_lock)]`
+      is on the very tests that parked — or a lost wakeup in the mock's runtime. This file records
+      that shape and the frequency; it does **not** claim the mechanism.
+
+    For the next operator: do not add `#[ignore]`, do not "optimize" those families for speed, and
+    do not read a parked lcov. The check that would name it is a fixture that logs acquire/release
+    with the task id around `mock_agent_with_cleanup` / `TestHome::new` and re-runs the five families
+    alone: a guard acquired by a task that never resumes is the signature.
+
 ## 6. The pending §359 question: `relay.rs` + `pairing.rs` + `control.rs`
 
 **Answered by measurement: they were real gaps, not a classification artifact.**
@@ -410,34 +453,34 @@ without a parallel process. They stay open and the missing piece is named:
 |---|---:|---:|---:|---:|---:|
 | `remote_host/pairing.rs` | 120 | 22 | 0 | 0 | 22 |
 | `remote/relay.rs` | 124 | 4 | 0 | 4 | 0 |
-| `remote/control.rs` | 138 | 86 | 0 | 1 | 85 |
-| **total** | **382** | **112** | **0** | **5** | **107** |
+| `remote/control.rs` | 138 | 45 | 0 | 16 | 29 |
+| **total** | **382** | **71** | **0** | **20** | **51** |
 
 The "has `mod tests`" heuristic happened to point at the right files for the wrong reason: the
 lines were genuinely missed, and 270 of the 382 closed as soon as each file's protocol was driven
-with a real fixture. What remains is not "the file is untestable" — it is enumerated in §4, and
-most of it needs a running remote supervisor (§4.1).
+with a real fixture (round 5), then another 41 in round 7 (§1). What remains is not "the file is
+untestable" — it is enumerated in §4: the client role's changing half, which needs a fixture that
+this suite's own end-to-end drivers currently race (§4.1).
 
 ## 7. Gates run on this branch
 
 - `cargo fmt -p future-host --check` — clean (the measurement is post-fmt).
-- `cargo clippy -p future-host --all-targets -- -D warnings` — clean. Two fixups landed with the
-  tests themselves, not after the measurement: `contains_key` instead of `get(..).is_none()` (five
-  `unnecessary_get_then_check` hits in the new projection tests), and the `Subscriber` fixture
-  reshaped per §5.14. One landed *after* it: `CapturedEvents`'s payload became
-  `type Captured = Vec<(String, Option<u64>)>` for `clippy::type_complexity`. It sits at line 741+,
-  i.e. **after** this file's only `DA:0` line (`266`), and adds a doc comment, a `type` alias and a
-  struct line — none of which carries a `DA` record at all (`git_review.rs:48-49`, `startup.rs:40`
-  and `runtime.rs:34` are the same shape and have no record in this very report). No number in this
-  file moves; the record's `measurement_commit` stays the tree the lcov came from.
-- `cargo test -p future-host` — lib **1948 passed / 0 failed / 11 ignored**, twice (§1.1).
+- `cargo clippy -p future-host --all-targets -- -D warnings` — clean. The one fixup this round was
+  `cargo fmt` reflowing the new fixtures' call sites; nothing after the measurement changed a line
+  the report records.
+- `cargo test -p future-host` — lib **1955 passed / 0 failed / 11 ignored**, twice (§1.1), plus
+  two discarded passes accounted for in §1.1.
 - `python3 scripts/coverage/lane-check.py docs/testing/coverage-waivers-2026-11/host-lane.json` —
-  `ok: host/rust-lib at 31f46778d — 2505 uncovered (2016 switch lane / 75 waived / 414 open)`,
+  `ok: host/rust-lib at deb03ec4a — 2464 uncovered (2016 switch lane / 90 waived / 358 open)`,
   with the artifact recomputed (`lcov agrees`).
+- The 7 new tests are: 4 in `remote::control::tests::serving` (invitation from a Desktop that is on,
+  a removal through the supervisor, a takeover answered and one refused, the terminal switch stored
+  both ways) and 3 loop/fixture tests (`spawn_host` answering and sweeping, `spawn_host` giving up on
+  a `run` path it cannot create, `requests()` on an unreadable directory).
 
 ## 8. The lane's suite runtime, and why a 120 s check cannot pass
 
-The lib suite takes **419-456 s** (this round's two measured passes). The 2× that used to sit on top of that
+The lib suite takes **426-435 s** (this round's two measured passes). The 2× that used to sit on top of that
 came from one fixture, and the measurement is worth keeping because every host verification pays
 it:
 
@@ -453,6 +496,11 @@ What is left is structural and deliberate: `test_support::agent::TestHome` **hol
 process-wide `TEST_HOME_LOCK` for its whole lifetime** (`host/src/test_support/agent.rs:686`,
 because a test publishes `HOME`/`FUTURE_HOME` as real environment variables). Tests therefore run
 essentially one at a time — 1948 tests × ~0.22 s ≈ 430 s.
+
+**This serialization is the runtime, not the stall.** A pass that stops making progress does so at
+0 % CPU with every fixture thread queued behind a holder that is not running — a different thing with
+a different cause, recorded in §5.17. Nothing in this section is an optimization target for the
+`approval`/`config`/`headless`/`import` families.
 
 **So the machine check `cd .worktrees/cov-host && cargo test -p future-host --lib` exits 0 but needs
 ~7 minutes of budget.** A 120 s timeout reports a validator failure on a suite that is green: the
