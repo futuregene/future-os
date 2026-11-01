@@ -181,8 +181,10 @@ Wave 10 left this open and framed it as a lane decision. It is settled:
    "changing the product for a test". The whole diff is test code.
 2. **It works, and it was worth 49 lines** in `remote_peers.rs` alone — `add`'s claim and
    handshake cannot be faked, and a mocked platform answers only the HTTP half. In wave 12 it
-   was worth 6 more (`add --json`, and the running-Desktop sentence), reached from two
-   **integration** targets that share a copy of the fixture in `cli/tests/support/mod.rs`.
+   was worth 5 more `DA:0` lines off the count (`add --json`'s document and the
+   running-Desktop sentence — six lines of code, one of which is a closing token that stays 0),
+   reached from two **integration** targets that share a copy of the fixture in
+   `cli/tests/support/mod.rs`.
 3. **Three properties of the fixture cost real time and are now recorded** where a reader
    will hit them (`cli/src/commands/remote_peers/tests.rs`, above `Served`, and
    `cli/tests/support/mod.rs`):
