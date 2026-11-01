@@ -281,4 +281,54 @@ mod tests {
         assert!(staging.is_dir(), "the failing staging path is left alone");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
+
+    /// The operator's own relay CA is handed to async-nats *together with* the
+    /// platform store, in one file: async-nats loads one bundle per connection,
+    /// so a private root has to travel inside the snapshot rather than replace
+    /// it. This is the branch that only runs when `FUTURE_RELAY_CA` names a file,
+    /// and it is also the only path that reads the platform store here.
+    #[test]
+    fn an_operator_relay_ca_is_bundled_with_the_platform_store() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("relay-ca-bundle");
+        let dir = std::env::temp_dir().join(unique("relay-ca-extra"));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let ca = dir.join("relay-ca.pem");
+        // The bundle code only looks for the marker; the bytes are the TLS
+        // backend's business (see `bundle_with_extra`).
+        std::fs::write(
+            &ca,
+            "-----BEGIN CERTIFICATE-----\nZGVyaXZlZA==\n-----END CERTIFICATE-----\n",
+        )
+        .expect("write the operator CA");
+
+        std::env::set_var("FUTURE_RELAY_CA", &ca);
+        let bundle = root_bundle().expect("a bundle is produced from the extra CA");
+        let text = std::fs::read_to_string(&bundle).expect("the bundle is readable");
+
+        assert!(
+            text.contains("-----BEGIN CERTIFICATE-----"),
+            "the operator CA is in the bundle"
+        );
+        assert!(
+            text.ends_with('\n'),
+            "the bundle ends on a line boundary so a strict PEM reader accepts it"
+        );
+        // The file is named after this process and lives in the temp directory:
+        // it is derived public material, not part of the app's data directory.
+        assert_eq!(
+            bundle.file_name().and_then(|name| name.to_str()),
+            Some(format!("future-relay-ca-{}.pem", std::process::id()).as_str())
+        );
+
+        std::env::remove_var("FUTURE_RELAY_CA");
+        let _ = std::fs::remove_file(&bundle);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The refusal arm (`bundle_with_extra`'s "holds no certificate") is NOT
+    // exercised here on purpose: the bundle is a `OnceLock`, so only one
+    // construction happens per process and whichever test runs first decides
+    // which arm executes. Measured — a second test asserting the refusal in the
+    // same run saw the cached bundle from the first. An integration-test binary
+    // (its own process, another lane) is where that arm belongs.
 }

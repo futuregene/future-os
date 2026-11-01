@@ -954,6 +954,17 @@ mod tests {
             !crate::store::seed_thread_auto_title(&thread.id, "another title").unwrap(),
             "only the title the importer saw may be seeded"
         );
+        // A blank title is not a seed at all: the guard runs before the row is
+        // read, so an importer that carries no title leaves the thread exactly
+        // as it found it (an empty `title_seed` would whitelist the empty name).
+        assert!(
+            !crate::store::seed_thread_auto_title(&thread.id, "   ").unwrap(),
+            "a blank title must not seed"
+        );
+        assert!(
+            !crate::store::reseed_thread_auto_title(&thread.id, "").unwrap(),
+            "a blank title must not re-seed"
+        );
         assert_eq!(
             crate::store::get_thread(&thread.id)
                 .unwrap()

@@ -1836,6 +1836,19 @@ mod tests {
             .is_none());
     }
 
+    /// A session the desktop never mirrored reconciles to "nothing removed": the
+    /// Agent can announce an id before any conversation claimed it, and that
+    /// must not read as a deletion that happened.
+    #[tokio::test]
+    async fn an_unowned_session_reconciles_to_nothing_removed() {
+        let _home = TestHome::new("observer-unowned");
+        let _mock = crate::agent_bridge::test_support::mock_agent();
+        assert!(
+            !super::reconcile_deleted_session("s-never-imported").expect("reconcile"),
+            "no local conversation was removed"
+        );
+    }
+
     #[tokio::test]
     async fn missed_head_on_first_sight_forces_reattach() {
         let shared = Arc::new(ObserverShared::new("thread-order"));

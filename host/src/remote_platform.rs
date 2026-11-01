@@ -329,4 +329,69 @@ op9Y9tWQWw2IDo18bVpjmN8=";
         server.abort();
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// `--relay-ca` names an operator-supplied root. Every way that file can be
+    /// wrong is an error naming the file, because the alternative is a handshake
+    /// failure several layers down that says nothing about the flag: a path that
+    /// does not exist, a file that is not a certificate, and a PEM bundle with
+    /// no certificate in it.
+    #[test]
+    fn a_relay_ca_that_cannot_be_used_is_named() {
+        let previous = std::env::var_os("FUTURE_RELAY_CA");
+        std::env::remove_var("FUTURE_RELAY_CA");
+        assert_eq!(
+            relay_trust_anchors().expect("no CA configured").len(),
+            0,
+            "the platform store is used unchanged when no relay CA is named"
+        );
+
+        let dir = std::env::temp_dir().join(format!("future-relay-ca-arms-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+
+        let absent = dir.join("absent.pem");
+        std::env::set_var("FUTURE_RELAY_CA", &absent);
+        let error = relay_trust_anchors().expect_err("a missing file is an error");
+        assert!(
+            error.to_string().contains("Cannot read the relay CA")
+                && error.to_string().contains("absent.pem"),
+            "{error}"
+        );
+
+        // A file with no certificate marker at all is the "holds none" arm: the
+        // operator pointed `--relay-ca` at the wrong file.
+        let text = dir.join("notes.pem");
+        std::fs::write(&text, "this is not a certificate").expect("write");
+        std::env::set_var("FUTURE_RELAY_CA", &text);
+        let error = relay_trust_anchors().expect_err("a file with no cert is an error");
+        assert!(
+            error.to_string().contains("holds no certificate"),
+            "{error}"
+        );
+
+        // A marker whose body is not a certificate is NOT refused here — the
+        // parser hands the bytes on and the TLS backend checks them, which is
+        // what the `from_pem_bundle` comment above says. Pinned so a future
+        // "validate it here" change is a decision, not an accident.
+        let handoff = dir.join("handoff.pem");
+        std::fs::write(
+            &handoff,
+            "-----BEGIN CERTIFICATE-----\naGVsbG8=\n-----END CERTIFICATE-----\n",
+        )
+        .expect("write");
+        std::env::set_var("FUTURE_RELAY_CA", &handoff);
+        assert_eq!(
+            relay_trust_anchors()
+                .expect("a marked block is handed to the backend")
+                .len(),
+            1,
+            "one block in, one certificate out — the DER is the backend's business"
+        );
+
+        match previous {
+            Some(value) => std::env::set_var("FUTURE_RELAY_CA", value),
+            None => std::env::remove_var("FUTURE_RELAY_CA"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

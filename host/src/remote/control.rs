@@ -2100,4 +2100,260 @@ mod tests {
         assert!(value.get("version").is_none(), "{value}");
         assert!(value.get("syncStage").is_none(), "{value}");
     }
+
+    // ---------------------------------------------------------------------
+    // The half the injected-`answer` tests cannot reach: `serve_one` reading a
+    // real request file, and `perform` against this process's own state.
+    // ---------------------------------------------------------------------
+
+    /// A retrying Desktop reports the attempt it is on, not just "not ready":
+    /// a terminal that cannot see attempt 3 of 5 cannot say whether waiting is
+    /// still the right advice.
+    #[test]
+    fn a_recovering_desktop_reports_the_attempt_it_is_on() {
+        let mut recovering = status(RemotePhase::Connecting, None);
+        recovering.recovery = Some(future_remote_server::types::RecoveryProgress {
+            attempt: 3,
+            max_attempts: Some(5),
+            since: 1_700_000_000,
+            next_retry_at: Some(1_700_000_030),
+        });
+        let value = serde_json::to_value(StatusSnapshot::of(&recovering)).unwrap();
+        assert_eq!(value["recovery"]["attempt"], 3);
+        assert_eq!(value["recovery"]["maxAttempts"], 5);
+        assert_eq!(value["recovery"]["since"], 1_700_000_000_i64);
+        assert_eq!(value["recovery"]["nextRetryAt"], 1_700_000_030_i64);
+    }
+
+    /// `PeerOutcome` carries no `Debug`, so a failed `Result` is unwrapped here.
+    fn a_refused_peer_request(
+        result: Result<PeerOutcome, crate::Error>,
+        what: &str,
+    ) -> crate::Error {
+        match result {
+            Ok(_) => panic!("{what}"),
+            Err(error) => error,
+        }
+    }
+
+    fn request(op: &str, reply: &Path, pair_id: Option<&str>) -> Request {
+        Request {
+            op: op.into(),
+            reply: reply.display().to_string(),
+            desktop_id: None,
+            pair_id: pair_id.map(str::to_string),
+        }
+    }
+
+    /// The whole file protocol in one call: claim by rename, run the operation,
+    /// write the answer where the asker polls, drop the claimed file.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn serve_one_answers_a_status_request_and_takes_the_file_with_it() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("control-serve-status");
+        let root = Root::new();
+        let reply_path = root.dir.path().join("reply.json");
+        let placed = root.write_request(
+            &terminal_name(SystemTime::now()),
+            &request(OP_STATUS, &reply_path, None),
+        );
+
+        serve_one(&placed).await;
+
+        assert!(!placed.exists(), "the claim must take the request away");
+        let reply = read_reply(&reply_path).expect("an answer was written");
+        assert_eq!(reply.error, None);
+        assert_eq!(
+            reply.status.as_ref().map(|snapshot| snapshot.phase.clone()),
+            Some(wire_name(crate::remote::status().phase).unwrap_or_default())
+        );
+    }
+
+    /// A request nobody can parse has no reply path, so it is dropped rather
+    /// than retried forever.
+    #[tokio::test]
+    async fn serve_one_drops_a_request_it_cannot_read() {
+        let root = Root::new();
+        let placed = root.control().join(terminal_name(SystemTime::now()));
+        std::fs::write(&placed, "{ this is not a request").unwrap();
+
+        serve_one(&placed).await;
+
+        assert!(!placed.exists(), "an unreadable request is removed");
+        let leftovers: Vec<PathBuf> = std::fs::read_dir(root.control())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into())
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    /// A request that cannot be claimed is left for the process that can: the
+    /// answer must never be "probably served".
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn serve_one_leaves_a_request_it_cannot_claim() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = Root::new();
+        let sealed = root.control().join("sealed");
+        std::fs::create_dir_all(&sealed).unwrap();
+        let reply_path = root.dir.path().join("reply.json");
+        let placed = sealed.join(terminal_name(SystemTime::now()));
+        std::fs::write(
+            &placed,
+            serde_json::to_string(&request(OP_STATUS, &reply_path, None)).unwrap(),
+        )
+        .unwrap();
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        serve_one(&placed).await;
+
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(placed.exists(), "an unclaimed request is not consumed");
+        assert!(!reply_path.exists(), "and nothing was answered");
+    }
+
+    /// A Desktop with the remote switch off serves nobody, so the invitation is
+    /// refused with the switch named rather than with a link that could not work.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn perform_refuses_an_invitation_while_the_switch_is_off() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("control-perform-off");
+        let root = Root::new();
+        let reply_path = root.dir.path().join("reply.json");
+
+        let error = perform(&request(OP_ADD_DEVICE, &reply_path, None))
+            .await
+            .expect_err("a stopped desktop mints nothing");
+
+        assert!(
+            error.to_string().contains("the remote desktop is off"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn perform_takeover_names_the_device_it_was_not_given() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("control-takeover-empty");
+        let root = Root::new();
+        let reply_path = root.dir.path().join("reply.json");
+
+        let missing = perform(&request(OP_TAKEOVER, &reply_path, None))
+            .await
+            .expect_err("a takeover names a device");
+        assert!(
+            missing.to_string().contains("`pairId` is missing"),
+            "{missing}"
+        );
+
+        let blank = perform(&request(OP_TAKEOVER, &reply_path, Some("   ")))
+            .await
+            .expect_err("a blank pairId is the same as none");
+        assert!(blank.to_string().contains("`pairId` is missing"), "{blank}");
+    }
+
+    /// With the switch off there is no bridge to hand the machine to, and the
+    /// cause is named instead of the `device_offline` symptom.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn perform_refuses_a_takeover_while_the_switch_is_off() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("control-takeover-off");
+        let root = Root::new();
+        let reply_path = root.dir.path().join("reply.json");
+
+        let error = perform(&request(OP_TAKEOVER, &reply_path, Some("pair_AAAA")))
+            .await
+            .expect_err("nothing is being served to hand over");
+
+        assert!(
+            error
+                .to_string()
+                .contains("nobody is being served to hand the machine to"),
+            "{error}"
+        );
+    }
+
+    /// A terminal newer than this Desktop gets a sentence, not a silent no-op.
+    #[tokio::test]
+    async fn perform_names_an_operation_it_does_not_know() {
+        let root = Root::new();
+        let reply_path = root.dir.path().join("reply.json");
+
+        let error = perform(&request("dance", &reply_path, None))
+            .await
+            .expect_err("an unknown operation is a refusal");
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not know the `dance` request"),
+            "{error}"
+        );
+    }
+
+    /// The client role's read half answers with this process's own view, and its
+    /// changing half refuses a request that names no machine.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn perform_peer_reads_the_list_and_asks_which_machine() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("control-peer");
+        let root = Root::new();
+        let reply_path = root.dir.path().join("reply.json");
+        let mut listing = request(OP_PEER_STATE, &reply_path, None);
+
+        let listed = perform_peer(&listing)
+            .await
+            .expect("the read half needs no pairing");
+        assert!(listed.took_over.is_none());
+        assert_eq!(
+            listed.peers.len(),
+            crate::remote_peer::runtime::list().await.unwrap().len()
+        );
+
+        listing.op = OP_PEER_CONNECT.into();
+        let unnamed =
+            a_refused_peer_request(perform_peer(&listing).await, "a connect names a machine");
+        assert!(
+            unnamed
+                .to_string()
+                .contains("names no remote desktop (`desktopId` is missing)"),
+            "{unnamed}"
+        );
+
+        listing.desktop_id = Some("   ".into());
+        let blank = a_refused_peer_request(
+            perform_peer(&listing).await,
+            "a blank desktopId is the same as none",
+        );
+        assert!(blank.to_string().contains("desktopId"), "{blank}");
+
+        // A terminal with a stale book hears which machine it asked about and
+        // what the operation would have meant.
+        listing.desktop_id = Some("desktop_absent".into());
+        for (op, verb) in [
+            (OP_PEER_CONNECT, "connect"),
+            (OP_PEER_DISCONNECT, "disconnect"),
+            (OP_PEER_TAKEOVER, "take control of"),
+        ] {
+            listing.op = op.into();
+            let unknown = a_refused_peer_request(
+                perform_peer(&listing).await,
+                "an unpaired machine is refused by name",
+            );
+            assert!(
+                unknown.to_string().contains(&format!("nothing to {verb}")),
+                "{unknown}"
+            );
+        }
+
+        listing.op = OP_PEER_REMOVE.into();
+        let unknown = a_refused_peer_request(
+            perform_peer(&listing).await,
+            "an unpaired machine is refused by name",
+        );
+        assert!(
+            unknown.to_string().contains("nothing to remove"),
+            "{unknown}"
+        );
+    }
 }

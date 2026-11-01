@@ -177,3 +177,26 @@ impl FileHost for DesktopHost {
         files::clear_preview_cache();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use future_remote_server::services::StateHost;
+
+    /// Taking control raises the GUI's claim hook. A headless host has no
+    /// presentation, so the hook must return without installing one: the
+    /// window activation belongs to the windowed entry point, and a backend
+    /// that attached a sink here would make every later `publish_to_gui` in
+    /// this process try to reach it. `events::attach` is process-global and
+    /// one-shot and another test may already have attached one, so what the
+    /// hook is held to is that it never changes whether one exists.
+    #[test]
+    fn the_claim_hook_does_not_attach_a_presentation() {
+        let attached = crate::events::has_presentation();
+        StateHost::on_control_claimed(&super::DesktopHost);
+        assert_eq!(
+            crate::events::has_presentation(),
+            attached,
+            "the backend hook must not install a presentation sink"
+        );
+    }
+}
