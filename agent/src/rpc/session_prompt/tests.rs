@@ -3488,6 +3488,7 @@ async fn an_automatic_reviewer_policy_reviews_a_sandboxed_run_without_asking_the
         return;
     }
     let home = crate::test_support::TestHome::new();
+    crate::test_support::ensure_fd_headroom();
     // A reviewer that is reachable and answers "server error" at once, so the
     // review completes fast (and fails: no verdict is reachable).
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

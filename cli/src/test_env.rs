@@ -5,12 +5,73 @@
 //! that reads or writes them must hold the single shared [`ENV_LOCK`] so
 //! they never race each other (e.g. `future doctor` tests repointing PATH
 //! while `which` tests look up `sh`).
+//!
+//! The same single-process fact decides how many descriptors the suite may
+//! hold at once — see [`ensure_fd_headroom`].
 
 /// The one lock every env-sensitive test acquires. `tokio::sync::Mutex` is
 /// used so the guard can be held across `.await` points inside `#[tokio::test]`
 /// bodies without tripping `clippy::await_holding_lock`; it also never
 /// poisons (a panicking test can't break every later test).
 pub static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// How many file descriptors this test binary may hold.
+///
+/// `cargo test` runs every test of a binary in threads of **one process**, and
+/// this crate's tests are descriptor-hungry together: each browser/agent mock
+/// holds a listener plus a connection per call, every `#[tokio::test]` builds
+/// its own runtime (and its reactor descriptor), and the SQLite-backed
+/// `commands::data` tests open a database file each. Measured on this commit:
+/// the whole `--lib` suite peaks at **413** open descriptors, while the
+/// platform default soft limit is **256** unless the shell raised it — so the
+/// suite failed *as a whole*, not one test in it.
+///
+/// Measured 2026-11-01, `ulimit -n` left at the default 256, default test
+/// parallelism (32 threads), three consecutive runs of
+/// `cargo test -p future-cli --lib`: **69 of 1437 tests failed** — 62 with
+/// `TooManyOpenFiles` (a `#[tokio::test]` runtime that could not be built, a
+/// mock listener that could not bind, a socket that could not connect), 3 with
+/// SQLite's `unable to open database file` (which is the same `EMFILE`, surfaced
+/// through SQLite), and only then the headless-bootstrap pair (F1 in
+/// `coverage/flaky/rust.md`, a separate defect). With `ulimit -n 8192` the same
+/// binary passed **1437 of 1437** twice at the same parallelism.
+///
+/// So the suite raises its own budget rather than depending on whoever's shell
+/// started it. The raise is bounded by the hard limit, only ever upward, and
+/// idempotent, which matters because a spawned child inherits whatever is set
+/// when it starts: no test may lower the ceiling for a sibling. `4096` is ~10×
+/// the measured peak and still well under the hard limit here (`unlimited`).
+#[cfg(unix)]
+pub fn ensure_fd_headroom() {
+    // No `Once`: a child process can be pointed at a lower limit and this is
+    // two cheap syscalls, so re-checking beats a one-shot guard that latches
+    // whatever it happened to see first.
+    const WANT: libc::rlim_t = 4096;
+    let mut limits = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: both calls pass a valid `rlimit` for `RLIMIT_NOFILE`; failure is
+    // reported by the return value and only means "keep the current budget".
+    unsafe {
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limits) != 0 {
+            return;
+        }
+        if limits.rlim_cur >= WANT {
+            return;
+        }
+        let raised = libc::rlimit {
+            rlim_cur: WANT.min(limits.rlim_max),
+            rlim_max: limits.rlim_max,
+        };
+        let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &raised);
+    }
+}
+
+/// Windows has no `RLIMIT_NOFILE`: a process is limited by memory and the
+/// handle table rather than by a number a test can raise, so nothing to do.
+#[cfg(not(unix))]
+pub fn ensure_fd_headroom() {}
 
 /// Acquire [`ENV_LOCK`] for the duration of a test body.
 pub struct EnvironmentGuard {
@@ -20,6 +81,10 @@ pub struct EnvironmentGuard {
 }
 
 pub async fn lock_env() -> EnvironmentGuard {
+    // Every env-isolated test in the suite comes through here, which makes it
+    // the earliest single point that can raise the descriptor budget before the
+    // process reaches the cliff (see `ensure_fd_headroom`).
+    ensure_fd_headroom();
     let cli = ENV_LOCK.lock().await;
     // Shared Host/entry tests use this same process environment after migration.
     let host = future_host::TEST_HOME_LOCK
@@ -157,6 +222,9 @@ pub async fn wait_for(mut cond: impl FnMut() -> bool) -> bool {
 /// spread by pid so concurrently running test binaries differ) and each
 /// candidate is proved free by binding it first.
 pub fn reserved_port() -> i64 {
+    // Binding a candidate needs a descriptor, and every port fixture in the
+    // suite comes through here (see `ensure_fd_headroom`).
+    ensure_fd_headroom();
     use std::sync::{Mutex, OnceLock};
     static NEXT: OnceLock<Mutex<u16>> = OnceLock::new();
     let mut next = NEXT
@@ -195,6 +263,8 @@ pub const RESERVED_PORT_BAND: (u16, u16) = (20_000, 29_000);
 /// so the collision-retry arm runs deterministically; a genuine transient
 /// collision simply retries with a fresh base.
 pub fn reserve_consecutive_ports(n: i64) -> (i64, Vec<std::net::TcpListener>) {
+    // Holds `n` descriptors at once: the fixture that needs the most headroom.
+    ensure_fd_headroom();
     fn free_port() -> i64 {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind :0");
         let port = listener.local_addr().expect("local_addr").port() as i64;

@@ -1024,6 +1024,7 @@ fn probe_spec(base_url: &str, level: &str) -> crate::llm::probe::ThinkingLevelPr
 /// server: the point here is the command's contract, not the wire shape (that
 /// lives in `llm::probe`'s own tests).
 fn closed_endpoint() -> String {
+    crate::test_support::ensure_fd_headroom();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     drop(listener);

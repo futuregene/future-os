@@ -177,6 +177,10 @@ impl FutureAgent for MockAgent {
 /// moment this returns (the OS backlog holds the handshake until the server
 /// task first polls accept) — no fixed startup sleep to race under load.
 pub async fn spawn_mock(agent: MockAgent) -> String {
+    // Every gRPC mock in the crate comes through here: make sure the process
+    // can hold the listener and one connected socket per calling test
+    // (see `test_env::ensure_fd_headroom`).
+    crate::test_env::ensure_fd_headroom();
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("local_addr");
     listener.set_nonblocking(true).expect("nonblocking");
@@ -376,6 +380,9 @@ async fn spawn_http_impl(
     routes: Vec<HttpRoute>,
     requests: Option<Arc<Mutex<Vec<String>>>>,
 ) -> (String, HttpShutdown) {
+    // One listener and one connection per request here, on top of every other
+    // mock this binary runs in parallel (see `test_env::ensure_fd_headroom`).
+    crate::test_env::ensure_fd_headroom();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");

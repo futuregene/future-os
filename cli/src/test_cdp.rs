@@ -166,6 +166,10 @@ impl MockCdp {
 
     /// Start with explicit initial targets and a Browser identity string.
     pub async fn start_with(initial_targets: Vec<MockTarget>, browser: &str) -> Self {
+        // Every chromium test in the crate starts its browser through here: the
+        // mock holds a WebSocket listener plus the HTTP responder, and dozens of
+        // these run in one process (see `test_env::ensure_fd_headroom`).
+        crate::test_env::ensure_fd_headroom();
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind ws");
         let ws_addr = listener.local_addr().expect("local_addr");
         let ws_url = format!("ws://{ws_addr}/devtools/browser/mock");
