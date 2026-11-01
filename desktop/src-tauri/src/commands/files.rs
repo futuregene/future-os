@@ -422,4 +422,154 @@ mod tests {
         let err = open_path(ghost.to_string()).unwrap_err();
         assert!(!err.to_string().is_empty());
     }
+
+    /// A tiny real PNG: the thumbnail and image-validation commands refuse to
+    /// guess from a file extension, so the fixture has to be a decodable image.
+    #[cfg(feature = "gui")]
+    fn png_bytes() -> Vec<u8> {
+        let rgba = image::RgbaImage::from_raw(2, 2, vec![0u8; 16]).expect("rgba buffer");
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(rgba)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .expect("encode png");
+        png.into_inner()
+    }
+
+    /// The attachment commands the composer and the transcript actually call,
+    /// each against its own fixture. Every assertion reads a property of the
+    /// file the caller named, so a wrapper that lost an argument answers about a
+    /// different file (or refuses) instead of passing.
+    #[cfg(feature = "gui")]
+    #[test]
+    fn the_attachment_commands_forward_the_paths_they_are_given() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("files_attachment_commands");
+        crate::store::initialize_app_store().expect("init store");
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".into(),
+            title: Some("Attachments".into()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: None,
+        })
+        .expect("create thread");
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let note = root.join("note.txt");
+        fs::write(&note, b"hello attachment").unwrap();
+        let note_path = note.display().to_string();
+
+        let inspected =
+            serde_json::to_value(inspect_attachment(note_path.clone()).expect("inspect"))
+                .expect("serialize");
+        assert_eq!(inspected["isDir"], serde_json::json!(false));
+        assert_eq!(inspected["size"], serde_json::json!(16));
+        assert_eq!(inspected["isBinary"], serde_json::json!(false));
+        // A directory is the *other* classification, so the flag is read from
+        // the path rather than fixed.
+        let as_dir = serde_json::to_value(
+            inspect_attachment(root.display().to_string()).expect("inspect dir"),
+        )
+        .expect("serialize");
+        assert_eq!(as_dir["isDir"], serde_json::json!(true));
+        assert_eq!(as_dir["size"], serde_json::json!(0));
+
+        let preview = serde_json::to_value(
+            read_text_file_preview(note_path.clone(), Some(5)).expect("preview"),
+        )
+        .expect("serialize");
+        assert_eq!(preview["content"], serde_json::json!("hello"));
+        assert_eq!(preview["truncated"], serde_json::json!(true));
+        assert_eq!(preview["size"], serde_json::json!(16));
+
+        let entries = list_directory(root.display().to_string()).expect("list directory");
+        assert_eq!(
+            entries.len(),
+            1,
+            "the directory holds exactly the note file"
+        );
+        let entry = serde_json::to_value(&entries[0]).expect("serialize entry");
+        assert_eq!(entry["name"], serde_json::json!("note.txt"));
+        assert_eq!(entry["isDir"], serde_json::json!(false));
+
+        // A relative target is resolved against the base file the transcript
+        // handed over, not against the process cwd.
+        let resolved =
+            resolve_preview_link_path(note_path.clone(), "linked.png".into()).expect("resolve");
+        assert_eq!(
+            serde_json::to_value(&resolved).expect("serialize link"),
+            serde_json::json!({"name": "linked.png", "path": root.join("linked.png").display().to_string()})
+        );
+
+        // The image commands refuse a text file and accept a real PNG.
+        let rejected = validate_image_attachment(note_path.clone())
+            .expect_err("a text file is not an attachment image");
+        assert!(!rejected.to_string().is_empty());
+        let image = root.join("dot.png");
+        fs::write(&image, png_bytes()).unwrap();
+        let image_path = image.display().to_string();
+        validate_image_attachment(image_path.clone()).expect("a PNG is an attachment image");
+
+        let thumbnail =
+            generate_image_thumbnail(thread.id.clone(), image_path.clone()).expect("thumbnail");
+        assert!(Path::new(&thumbnail).is_file(), "{thumbnail}");
+        let imported = import_ephemeral_attachment(thread.id.clone(), image_path, "dot.png".into())
+            .expect("import");
+        assert!(
+            imported.ends_with("dot.png"),
+            "the copy keeps the requested file name: {imported}"
+        );
+        assert!(Path::new(&imported).is_file());
+
+        // Inline content and a source-file copy are the two export arms.
+        let inline = root.join("inline.txt");
+        export_artifact_file(inline.display().to_string(), None, Some("inline!".into()))
+            .expect("export inline content");
+        assert_eq!(fs::read_to_string(&inline).unwrap(), "inline!");
+        let copied = root.join("copied.txt");
+        export_artifact_file(copied.display().to_string(), Some(note_path.clone()), None)
+            .expect("export a source file");
+        assert_eq!(fs::read_to_string(&copied).unwrap(), "hello attachment");
+
+        // Pasted bytes land in the temp attachment directory, and only a file
+        // inside it can be deleted again.
+        let pasted_image = serde_json::to_value(
+            save_pasted_image(png_bytes(), Some("png".into())).expect("save pasted image"),
+        )
+        .expect("serialize");
+        let pasted_image_path = pasted_image["path"].as_str().expect("path").to_string();
+        assert!(pasted_image["name"]
+            .as_str()
+            .expect("name")
+            .ends_with(".png"));
+        assert!(Path::new(&pasted_image_path).is_file());
+        delete_temp_attachment(pasted_image_path.clone()).expect("delete the temp image");
+        assert!(!Path::new(&pasted_image_path).exists());
+        assert!(
+            delete_temp_attachment(pasted_image_path).is_err(),
+            "the deletion is guarded to FutureOS's own temp attachments"
+        );
+
+        let pasted_file = serde_json::to_value(
+            save_pasted_file(b"pasted bytes".to_vec(), "notes.txt".into())
+                .expect("save pasted file"),
+        )
+        .expect("serialize");
+        assert_eq!(pasted_file["name"], serde_json::json!("notes.txt"));
+        delete_temp_attachment(pasted_file["path"].as_str().expect("path").to_string())
+            .expect("delete the pasted file");
+
+        // On the platforms that hand a clipboard image to the page as a `File`
+        // this fallback has nothing to read, and the stub says so; Linux is the
+        // one that decodes arboard's RGBA. The command must answer on every
+        // platform, so it is called unconditionally here.
+        let clipboard_image = read_native_clipboard_image();
+        #[cfg(not(target_os = "linux"))]
+        assert!(
+            clipboard_image.is_none(),
+            "this platform delivers a clipboard image as a File, not through arboard"
+        );
+        #[cfg(target_os = "linux")]
+        let _ = clipboard_image;
+    }
 }
