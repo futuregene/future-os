@@ -6,7 +6,7 @@ summary's `Lines` column is not the acceptance number (it adds ghost lines).
 **Lane** — `future-host`'s **lib** unit tests only. The integration-test binaries and the
 `#[ignore]`d real-network legs are measured by their own lanes; this file is about the lib.
 
-**Last measurement**: `test/cov-host` at `2ea0389dd` (cut from `origin/dev-huichen@12b89ee7e`),
+**Last measurement**: `test/cov-host` at `84adc9e8e` (cut from `origin/dev-huichen@12b89ee7e`),
 rustc **1.99.1** (`rust-toolchain.toml`), `HOME=target/test-home`, `ulimit -n 8192`.
 Artifacts (gitignored) are in `coverage/2026-11/after/host/`: `final-lcov.info`, `final-run.log`,
 `final-missed.json`, and the bucket arithmetic in `buckets.py`.
@@ -30,7 +30,7 @@ awk '/^SF:/{f=substr($0,4)} /^DA:[0-9]+,0$/{split(substr($0,4),a,","); print f":
   /tmp/host-lcov.info | grep '/host/src/' | wc -l
 ```
 
-The run is also the gate: **1888 passed, 0 failed, 11 ignored** in 423 s, then `report rc=0`
+The run is also the gate: **1889 passed, 0 failed, 11 ignored** in 426 s, then `report rc=0`
 (`final-run.log`).
 
 ## 1. Before / after, and where every remaining line sits
@@ -39,22 +39,22 @@ Both columns are `DA:0` over `host/src/`, same lane, same recipe.
 
 | | before (`before-lcov.info`) | after (`final-lcov.info`) | Δ |
 |---|---:|---:|---:|
-| **lane total** (`host/src/**`) | 3265 | **2798** | **−467** |
+| **lane total** (`host/src/**`) | 3265 | **2767** | **−498** |
 | switch-lane files (§2.1) | 1884 | 1884 | 0 |
-| **in-scope** (lane total − switch-lane files) | 1381 | **914** | **−467** |
+| **in-scope** (lane total − switch-lane files) | 1381 | **883** | **−498** |
 
-Every one of the 2798 remaining lines is in exactly one bucket (`buckets.py` prints this; the four
+Every one of the 2767 remaining lines is in exactly one bucket (`buckets.py` prints this; the four
 numbers sum to the total):
 
 | bucket | lines | what it is |
 |---|---:|---|
 | **switch lane** | **2009** | covered only by legs this lane does not run: the five files below (1884) plus 125 lines inside in-scope files that only those legs execute (`tasks.rs`'s two `#[ignore]`d tests, 83; `remote/test_support.rs`'s `reconnect_secure_channel`, 42) |
-| **waived** | **24** | §3 rows W1-W7 — each with a mechanism, a positive control and a falsifier |
+| **waived** | **21** | §3 rows W1-W7 — each with a mechanism, a positive control and a falsifier |
 | **waived: closing-edge attribution** | **20** | §3 row W8 — mechanically detected (`buckets.py`), not judged by eye |
-| **open** | **745** | §4 — real gaps. **Not waived.** |
+| **open** | **717** | §4 — real gaps. **Not waived.** |
 
-So the campaign figure for this lane today is **745 open**, not 0: this pass closed 467 lines and
-waived 44, and 2009 of the residual are another lane's to measure.
+So the campaign figure for this lane today is **717 open**, not 0: this pass closed 498 lines and
+waived 41, and 2009 of the residual are another lane's to measure.
 
 Four lines move between runs, and they are worth naming rather than smoothing over:
 `agent_host.rs:502` and `shutdown/services.rs:319-320` are arms **inside tests** (a `select!`
@@ -63,7 +63,7 @@ landed — `319-320` read uncovered in the 2822 measurement and covered in this 
 −17 there and −15 from new tests). They are counted as open either way. A third pair, `startup.rs`
 365-367, moved only because this pass added 28 lines to its test module.
 
-Where the 467 closed lines came from (per file, before → after):
+Where the 498 closed lines came from (per file, before → after):
 
 | file | before | after | commit |
 |---|---:|---:|---|
@@ -116,9 +116,9 @@ W8 dead producer.
 
 | W8 | 20 lines, listed in `coverage/2026-11/after/host/closing-edges.txt` (`store/legacy_history.rs:24,81,212,260,265`, `store/migrations.rs:39,76,139`, `agent_bridge/stream.rs:318,388`, `agent_bridge/import.rs:632`, `agent_bridge/presence.rs:112`, `application/threads.rs:420`, `store/cleanup.rs:456`, `store/deletions.rs:26`, `store/managed_cleanup.rs:28,38`, `store/review_snapshots.rs:203`, `store/runs.rs:184`, `store/approval_assessments.rs:63`) | 20 | W6 | a line that holds **nothing but** a call's closing error edge (`)?;`, `})?;`, `)?`) — the pattern the campaign's own note describes: "多行调用把 `)?;` 单独落一行 → 该行只有错误臂 → `DA:0`" (`.future/memory/coverage-llvm-cov.md`) | the statement itself ran: the line directly above each of these 20 reads `DA>0` (checked mechanically, `coverage/2026-11/after/host/closing-edges.txt`). The 7 closing-edge lines whose neighbour is *also* uncovered were **rejected** from this row and left in §4 (`agent_bridge/config.rs:202`, `agent_bridge/headless.rs:164`, `agent_client.rs:178,209`, `remote/web_server.rs:61`, `remote_host/pairing.rs:293`, `remote_platform.rs:53`) | put one of these calls on a single line (shrink its argument list into rustfmt's 60-column `fn_call_width`) and the line disappears from the next report with no test change; conversely a caller that actually forces the error edge — a closed store, an unreadable file — covers it |
 
-Waived total: **44** (24 in rows W1-W7, 20 in W8). Nothing else in §4 is claimed as waived.
+Waived total: **41** (21 in rows W1-W7, 20 in W8). Nothing else in §4 is claimed as waived.
 
-## 4. Open residual — 745 lines in 77 files
+## 4. Open residual — 717 lines in 77 files
 
 **Not waived.** Every row is the measurement plus whatever has actually been read; "not yet read"
 means exactly that.
@@ -127,7 +127,6 @@ means exactly that.
 |---|---:|---|---|
 | `remote/control.rs` | 87 | 580-586, 589-590, 592, 594-595, 602, 606-609, 612-613, 615, 617-618, 623, 743, 748, 767, 776-777, 792, 815, 825, 831-837, 839, 847-851, 854-856, 939-941, 945-946, 951-952, 960-966, 970-975, 981-987, 989-993, 997-998, 1237-1242 | `spawn_host`'s poll loop (its only caller is `desktop/src-tauri/src/lib.rs:1422`), the peer-op branch of `serve_one`, and the `perform`/`perform_peer` arms that need a running supervisor (`pair_new_device`, `unpair_slot`, `takeover`, `enable`, `disable`, peer connect/disconnect/remove) |
 | `agent_host.rs` | 57 | 117-119, 141, 144, 149, 152, 155, 173-174, 177, 196-204, 207-218, 311-313, 317-319, 334, 363, 435, 443, 451, 487, 503, 531, 539, 665, 762-764, 766-767, 815, 890, 1027-1028 | supervisor guard/refusal arms (`recover`, `detach_attached`, `reserve_idle_update`, `activity`); each needs a specific `AgentHost` state, `502`/`319-320` are race arms inside tests |
-| `remote/trust.rs` | 45 | 46, 57, 59-62, 64, 66, 68, 70-71, 73, 75, 78-93, 166-181 | `root_bundle`'s extra-CA bundle and `load_platform_certs`: reachable through `FUTURE_RELAY_CA`, but the `OnceLock` makes it one-shot per process and it reads the platform store |
 | `agent_bridge/observer.rs` | 40 | 369-376, 398-403, 446, 790-796, 806-812, 1040-1041, 1043-1045, 1047-1049, 1108, 1115, 1234 | reconcile result logs, source-verification backoff, required-content hydration failures |
 | `agent_bridge/reconciliation.rs` | 39 | 409-411, 454-479, 481-485, 487-491 | an orphaned run's settle path, and the abort-then-read reconciliation against the Agent |
 | `shadow_review/snapshot.rs` | 24 | 81-91, 234-245, 266 | not yet read |
@@ -135,6 +134,7 @@ means exactly that.
 | `remote_host/business/history.rs` | 22 | 39-51, 54-57, 59, 61-62, 305, 325 | the `get_event_content_range` dispatch arm and its failure paths |
 | `application/threads.rs` | 21 | 117, 147, 396-399, 401, 405-406, 421, 423-426, 458-460, 474-476, 490 | `update_thread_*`'s agent-propagation arms and `get_thread_history`'s availability branches (`deleted` / `import_failed` / `different_database` / `offline`) |
 | `cli_tool.rs` | 19 | 84, 93, 100, 105, 255-257, 326-328, 333, 345, 385-387, 402, 705, 732, 832 | not yet read |
+| `remote/trust.rs` | 17 | 64, 66, 68, 70-71, 73, 75, 87, 91-93, 169-174 | `root_bundle`'s extra-CA bundle and `load_platform_certs`: reachable through `FUTURE_RELAY_CA`, but the `OnceLock` makes it one-shot per process and it reads the platform store |
 | `shutdown/services.rs` | 16 | 47-49, 68, 70-71, 73, 75-76, 81, 93, 96, 98-99, 280, 321 | service shutdown error arms |
 | `agent_client.rs` | 16 | 177-178, 192, 208-209, 257-259, 262-264, 318-320, 397, 526 | connection-readiness arms |
 | `tasks.rs` | 15 | 126-128, 228-230, 234, 328, 439, 476, 482, 572-573, 1859, 2176 | store-open / delete / thread-load failure logs |
@@ -254,7 +254,7 @@ enumerated in §4, and most of it needs a running remote supervisor.
 
 - `cargo fmt -p future-host --check` — clean (the measurement is post-fmt).
 - `cargo clippy -p future-host --all-targets -- -D warnings` — clean.
-- `cargo test -p future-host` — lib **1888 passed / 0 failed / 11 ignored** under instrumentation
+- `cargo test -p future-host` — lib **1889 passed / 0 failed / 11 ignored** under instrumentation
   (`final-run.log`) and the non-instrumented package suite green (`target/gate-test2.log`).
 
 ## 8. The lane's suite runtime, and why a 120 s check cannot pass
@@ -277,7 +277,7 @@ verification pays it:
 What is left is structural and deliberate: `test_support::agent::TestHome` **holds the
 process-wide `TEST_HOME_LOCK` for its whole lifetime** (`host/src/test_support/agent.rs:676`, because
 a test publishes `HOME`/`FUTURE_HOME` as real environment variables). Tests therefore run
-essentially one at a time — 1888 tests × ~0.23 s ≈ 435 s — and the per-test fixture cost is spread
+essentially one at a time — 1889 tests × ~0.23 s ≈ 435 s — and the per-test fixture cost is spread
 across `remote_peer` (208 s / 130 tests), `remote` (108 s / 296) and `agent_bridge` (61 s / 395).
 Getting under a 120 s budget would mean replacing process-global env isolation with parameter
 injection across the crate: a harness refactor, not a coverage change, and one that this pass did not
