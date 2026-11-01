@@ -11622,4 +11622,100 @@ mod tests {
         );
         live.client.disconnect();
     }
+
+    /// A *chat* has no workspace of its own: `new_session` mints the id, creates
+    /// the directory the desktop also files chats under, and tells the agent both
+    /// — which is the branch a launchpad first message takes, and the one that
+    /// measured zero because every fixture so far staged a directory.
+    #[tokio::test]
+    async fn a_chat_session_creates_its_own_directory() {
+        let (mut live, seen) = live_with_seen(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            ("get_session_entries", r#"{"entries":[]}"#),
+            ("new_session", r#"{"sessionId":"s-chat"}"#),
+            ("set_sandbox_policy", r#"{"success":true}"#),
+            ("set_tools", "{}"),
+        ])
+        .await;
+        live.to_launchpad();
+        // Nothing staged: the launchpad's own defaults, and a tool set to spend.
+        live.pending_tools = Some(vec!["read".into()]);
+
+        live.new_session().await;
+
+        let asked = seen.lock().unwrap().clone();
+        assert!(
+            asked.iter().any(|kind| kind == "new_session"),
+            "the agent was never asked for a session: {asked:?}"
+        );
+        // The approval mode is a second call, because `new_session` has no
+        // argument for it.
+        assert!(
+            asked.iter().any(|kind| kind == "set_sandbox_policy"),
+            "the session was created without being told its approval mode: {asked:?}"
+        );
+        // The staged tool set is spent on the session that exists now.
+        assert!(
+            asked.iter().any(|kind| kind == "set_tools"),
+            "the staged tool set was not sent: {asked:?}"
+        );
+        assert!(
+            live.pending_tools.is_none(),
+            "the staged tool set survived the session it described"
+        );
+        assert!(!live.detached(), "a fresh chat is not the launchpad");
+
+        // The directory the client named is a real one under this home.
+        let chat_root = super::chat_root();
+        assert!(
+            chat_root.is_dir(),
+            "the chat directory root was never created: {}",
+            chat_root.display()
+        );
+        assert!(
+            std::fs::read_dir(&chat_root)
+                .expect("the chat root")
+                .next()
+                .is_some(),
+            "a chat session left no directory of its own"
+        );
+        live.client.disconnect();
+    }
+
+    /// The plain-chat row of the workspace picker: on the launchpad it is
+    /// "stage nothing"; in a session already on a chat directory it is a no-op;
+    /// otherwise it moves the session into a chat of its own.
+    #[tokio::test]
+    async fn picking_the_plain_chat_stages_nothing_or_moves_into_one() {
+        // Launchpad: staging no workspace *is* the plain chat.
+        let mut live =
+            live_on(&[("get_state", r#"{"sessionId":"s1","cwd":"/work/project"}"#)]).await;
+        live.to_launchpad();
+        live.pending_cwd = Some("/work/project".into());
+        live.select_chat_workspace().await;
+        assert!(
+            live.pending_cwd.is_none(),
+            "the plain chat staged a directory: {:?}",
+            live.pending_cwd
+        );
+        live.client.disconnect();
+
+        // Already a chat: the row the reader would leave is the row they are on.
+        let chat = super::chat_dir_for("s1");
+        std::fs::create_dir_all(&chat).expect("the chat directory");
+        let get_state = format!(r#"{{"sessionId":"s1","cwd":"{chat}"}}"#);
+        let mut live = live_on(&[
+            ("get_state", &get_state),
+            ("get_session_entries", r#"{"entries":[]}"#),
+        ])
+        .await;
+        live.notice = Some("stale".into());
+        live.select_chat_workspace().await;
+        assert!(
+            live.notice.is_none(),
+            "re-picking the chat already in force spoke: {:?}",
+            live.notice
+        );
+        live.client.disconnect();
+    }
 }
