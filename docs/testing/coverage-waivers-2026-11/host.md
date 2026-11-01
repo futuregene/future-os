@@ -330,18 +330,25 @@ stay open and the missing piece is named here rather than waived:
 11. **Two passes in one shell call.** The suite needs ~7 minutes per pass and a sandbox call is
     capped at 600 s: a killed pass leaves partial `.profraw` files that look like a measurement.
     Both passes run detached, each with its own log.
-12. **Writing the capability-gate tests against the agent mock and a `TestHome`.** That is what the
-    first attempt of this round did, and the full-suite run **deadlocked**: those four tests took
-    the home fixture (process-wide `TEST_HOME_LOCK`) and then the bridge mock's lock, while every
-    other mock-driving test in this module takes the mock lock (`remote::test_support::
-    mock_agent_lock`) first and then a home. Two families, two locks, opposite order. A sample of
-    the hung binary (`sample`, all test threads parked on `test_support/agent.rs:423`) is what
-    named it. The fix was not a lock-order exemption but using the module's own fixture family
-    (`mock_agent_lock` + `HomeGuard` + `ensure_mock_agent` + `script_for`), which also removed a
-    cross-family race: the two mocks re-point the process-wide `FUTURE_AGENT_GRPC_ADDR` at their
-    own server, so a bridge-mock test and a remote-mock test running in parallel answer each
-    other's commands. Measured: with the mixed fixture the module's 67 tests failed 4 times out of
-    67 depending on scheduling; with one family they pass line for line in every run so far.
+12. **Writing the capability-gate tests against the bridge mock and a `TestHome`.** That is what the
+    first attempt of this round did, and it produced two failures that are worth separating, because
+    only one of them is proven:
+    - **Proven, deterministic**: a bridge-mock test (`crate::test_support::agent::mock_agent`) and a
+      remote-mock test (`remote::test_support::ensure_mock_agent`) must not run in the same module.
+      The two mocks each re-point the process-wide `FUTURE_AGENT_GRPC_ADDR` at *their own* server
+      (`test_support/agent.rs:400-410`), so a test in one family can have its command answered by
+      the other's default script: four of the module's 67 tests failed with "handler unexpectedly
+      succeeded" and "the page must not be served to this peer" — i.e. a scripted refusal was never
+      honoured — and every one of them passed alone. Rewriting them onto the module's own family
+      (`mock_agent_lock` + `HomeGuard` + `ensure_mock_agent` + `script_for`) made the module green
+      in every run since, and removed the cross-family window entirely.
+    - **Not proven**: the first *full-suite* run with those bridge-mock tests in this module
+      deadlocked — every test thread parked at `test_support/agent.rs:423` (the bridge mock's lock)
+      at 0 % CPU for 20 minutes, with the mock's runtime idle. `sample` named the park but not the
+      cycle, and the machine was carrying two other sessions' suites (load average 46-56). The
+      rewrite removed the condition; the two green full passes do not prove which lock pair cycled,
+      so this file does not claim a mechanism it cannot show. What it does claim is the rule: one
+      mock family per module.
 13. **Asserting that a lib test binary has no presentation sink.** `events::attach` is a
     process-global `OnceLock` and `agent_bridge/observer.rs:2501` attaches one, so
     `has_presentation()` depends on which test ran first. The first version of the two claim-hook
