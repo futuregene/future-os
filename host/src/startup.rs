@@ -309,6 +309,34 @@ mod tests {
     }
 
     #[test]
+    fn a_step_is_reported_again_once_its_repeat_has_passed() {
+        let tracker = Tracker::new();
+        tracker.enter("window build");
+        let (tx, rx) = std::sync::mpsc::channel();
+        tracker.arm(
+            move |message| {
+                let _ = tx.send(message.to_string());
+            },
+            Duration::from_millis(20),
+            Duration::from_millis(20),
+        );
+        // The same step reports on its repeat, not only that it is still there:
+        // a launch that hangs in one step for an hour must keep appearing in a
+        // log nobody was watching when the first line was written.
+        let first = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the stall report");
+        let repeat = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the same step reports again on its repeat");
+        for message in [&first, &repeat] {
+            assert!(message.contains("window build"), "{message}");
+            assert!(message.contains("startup"), "{message}");
+        }
+        tracker.ready();
+    }
+
+    #[test]
     fn a_new_step_is_reported_even_after_stalling_in_the_previous_one() {
         let tracker = Tracker::new();
         tracker.enter("app store");
