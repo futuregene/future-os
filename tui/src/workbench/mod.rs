@@ -13844,4 +13844,112 @@ mod tests {
         );
         assert_eq!(workbench.overlay, None, "a box opened naming nothing");
     }
+
+    /// The `@`/`#` menu owns four keys and hands every other one back: a letter
+    /// still edits the draft under it, `tab` with nothing matching inserts
+    /// nothing, `↑` on the first row stays on it, a click on the box's own frame
+    /// is not a dismissal — and a click past the menu is.
+    #[test]
+    fn the_mention_menu_gives_back_every_key_and_every_click_it_does_not_own() {
+        let mut data = demo::chat();
+        data.files = vec!["src/main.rs".into(), "src/lib.rs".into()];
+        let data = with_input(&data, "@src");
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.render(&data, 120, 38);
+        let index = |workbench: &Workbench| workbench.mention.as_ref().map(|m| m.index);
+        assert_eq!(
+            index(&workbench),
+            Some(0),
+            "the menu opens on its first row"
+        );
+
+        // `↑` at the top: the list does not wrap, so the press is a repaint and
+        // the highlight stays where the reader can see it.
+        assert_eq!(
+            workbench.handle(WbEvent::Key("up".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(index(&workbench), Some(0), "the menu wrapped to its tail");
+
+        // A letter the menu does not own still edits the draft: the menu is a
+        // reading of that draft, so a key it swallowed would leave the query and
+        // the list disagreeing.
+        let typed = workbench.handle(WbEvent::Key("a".into()), &data);
+        assert!(
+            drafted(&typed).is_some() || edited(&typed).is_some(),
+            "a letter under the menu did not reach the draft: {typed:?}"
+        );
+
+        // Nothing matches: `tab` must not insert a token that names nothing.
+        let mut none = with_input(&demo::chat(), "@zzz");
+        none.files.clear();
+        let (mut workbench, _rows) = frame(&none, 120, 38);
+        workbench.render(&none, 120, 38);
+        assert!(workbench.mention.is_some());
+        assert!(
+            workbench.mention_rows(&none).is_empty(),
+            "the query matched a file"
+        );
+        assert!(
+            workbench
+                .handle(WbEvent::Key("tab".into()), &none)
+                .is_empty(),
+            "`tab` on an empty list inserted a token"
+        );
+        assert!(
+            workbench.mention.is_some(),
+            "`tab`, which the menu owns, closed it"
+        );
+
+        // The box's own frame is not a choice and not a dismissal.
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.render(&data, 120, 38);
+        let body = click_region(&mut workbench, &data, 120, 38, "mention.body");
+        assert!(
+            body.is_empty(),
+            "a click on the menu's frame answered {body:?}"
+        );
+        assert!(
+            workbench.mention.is_some(),
+            "a click on the menu's own frame closed it"
+        );
+    }
+
+    /// A click past the open menu closes it and then takes effect normally: the
+    /// reader aimed at something else. Here that something is the row that says
+    /// new output is waiting, which is one press back to the tail.
+    #[test]
+    fn a_click_past_the_mention_menu_closes_it_and_still_lands() {
+        let mut data = scrollable_chat(100);
+        let mut workbench = workbench();
+        workbench.render(&data, 120, 38);
+        workbench.handle(WbEvent::Key("pageUp".into()), &data);
+        assert!(!workbench.following_latest());
+        data.revision += 1;
+
+        // The draft names a mention, so the menu is up over the conversation.
+        data = with_input(&data, "@src");
+        data.files = vec!["src/main.rs".into()];
+        workbench.render(&data, 120, 38);
+        assert!(workbench.mention.is_some(), "the menu is not up");
+
+        let actions = click_region(&mut workbench, &data, 120, 38, "chat.latest");
+        assert_eq!(
+            actions,
+            vec![WbAction::Redraw],
+            "the click past the menu did not land"
+        );
+        assert!(
+            workbench.mention.is_none(),
+            "the menu stayed up over a conversation the reader scrolled back to"
+        );
+        assert!(
+            workbench.following_latest(),
+            "the click on the newest-output row did not return to the tail"
+        );
+        assert_eq!(
+            workbench.chat_scroll, 0,
+            "the transcript is not at its tail"
+        );
+    }
 }
