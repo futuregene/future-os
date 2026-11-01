@@ -221,6 +221,35 @@ Two consequences the lane has to live with, both now recorded:
    else, or the number is a draw from a distribution. The honest target is the named-row ledger
    with every row either covered or exempted, which is what this file already is.
 
+## Wave 37: the lane now measures its own noise, and names two classes it can never cover
+
+Three numbers replace the single one this file used to quote, and each has a tool that produces
+it:
+
+| number | tool | result on the current tree |
+|---|---|---|
+| rows that are **stable work** | `stability.py A.info B.info` | **1150** missed in both runs |
+| rows that are **measurement noise** | same | **10** flaky (9 `providers.rs` W6 + `llm/mod.rs:439` W4) |
+| rows that are **test-side failure arms** | `testside.py lcov` | **26** — cannot run while the test passes |
+
+`stability.py` is the important one. It takes two instrumented runs of the same tree and reports
+`FLAKY` separately from `STABLE`, so a wave can no longer quote a total that is partly a draw.
+Its first use is what turned wave 35's "state-dependent" guess into the attribution finding in the
+previous section — and the ten rows it names are now waiver rows 9 and 10, not open work.
+
+`testside.py` answers a different question: how much of what is left *could not be covered by a
+passing test at all*? A line inside `#[cfg(test)]` whose text is `panic!`/`assert!`/`expect(` is
+an assertion's failure message; it runs only when an assertion fails, and a green suite will
+never touch it. The heuristic is crude (file suffix or "after the last `#[cfg(test)]`"), which is
+why the script prints the per-file breakdown: 26 rows across 13 files, largest `rpc/mod.rs` (6),
+`llm/adapters/openai_chat.rs` (3), `session/history/fragment_cache.rs` (3).
+
+**What that means for the goal's 100 %.** Of 1150 stable rows, 26 are structurally uncoverable
+while the suite is green, and 10 more cannot be measured stably. So the honest ceiling for
+"`DA:0` = 0" is **1150 - 26 = 1124 rows of real work**, plus a waiver table that must name the
+26 and the 10. Neither number is large, but neither was visible before this wave, and a campaign
+that chases them would have burned waves on rows no test can reach.
+
 ## Wave 36: the "state-dependent" rows are an attribution artifact, proven three ways
 
 Wave 35 hypothesised that `providers.rs:370-375, 389-391` were **state-dependent** (a provider
