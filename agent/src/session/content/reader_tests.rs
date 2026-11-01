@@ -638,3 +638,44 @@ fn a_projected_shell_body_is_paged_through_its_summary() {
     );
     assert_eq!(recalled["hasMore"], true);
 }
+
+/// Anything the reader cannot interpret is treated as **displayed**, not hidden.
+/// That fail-open direction is deliberate: hiding a field it merely failed to
+/// classify would drop content from a transcript, while showing one it could not
+/// place is recoverable. The four shapes below are exactly the ones where
+/// classification gives up.
+#[test]
+fn a_pointer_the_reader_cannot_place_is_still_displayed() {
+    let blocks = json!({"content": [
+        {"type": "text", "text": "answer"},
+        {"type": "tool_call", "args": "{}"},
+    ]});
+
+    // Whole content, and every meta pointer, are displayed outright.
+    assert!(super::display_field(&blocks, "/content"));
+    assert!(super::display_field(&blocks, "/meta"));
+    assert!(super::display_field(&blocks, "/meta/run_id"));
+
+    // An entry whose content is not a block array: any /content/… path is shown.
+    // (A pre-block-array journal stored content as one value.)
+    assert!(super::display_field(
+        &json!({"content": "legacy"}),
+        "/content/0/text"
+    ));
+
+    // Too few components to name a block: nothing to classify, so show it.
+    assert!(super::display_field(&blocks, "/content/0"));
+
+    // An ordinal that is not a number, and one past the end: both unplaceable.
+    assert!(super::display_field(&blocks, "/content/not-a-number/text"));
+    assert!(super::display_field(&blocks, "/content/9/text"));
+
+    // The classification it *can* make still hides what is not a display field.
+    // Both block kinds expose exactly two members each, and a path outside
+    // /content is not a content field at all.
+    assert!(super::display_field(&blocks, "/content/0/text"));
+    assert!(super::display_field(&blocks, "/content/1/args"));
+    assert!(!super::display_field(&blocks, "/content/0/other"));
+    assert!(!super::display_field(&blocks, "/content/1/other"));
+    assert!(!super::display_field(&json!({"content": []}), "/prompt"));
+}
