@@ -1078,8 +1078,61 @@ struct NatsState {
 pub struct FakeNats {
     url: String,
     state: Arc<Mutex<NatsState>>,
-    tap: tokio::sync::broadcast::Sender<Published>,
+    publishes: PublishLog,
     accept_task: tokio::task::JoinHandle<()>,
+}
+
+/// What the server records about the messages it accepted.
+///
+/// [`FakeNats::tap`] is the streaming view: a 256-slot broadcast ring, so a
+/// reader that is not scheduled for a moment loses its oldest packets. That is
+/// the right shape for "what arrived while I was watching" and the wrong shape
+/// for an assertion, because the catalog publisher is *change-driven* — a lost
+/// `state.sessions` is never sent again, and the test then waits out its whole
+/// budget for a packet the server did receive.
+///
+/// Measured on this fixture: an observer that stops reading for 3 s (an ordinary
+/// descheduling in the 1955-test `future-host` binary) loses the one-shot
+/// `state.sessions` packet 5 times out of 5, with the publisher alive, in
+/// control, and still publishing presence 100 times a second.
+///
+/// `entries` is that record and `seq` is the wake-up: a watch value cannot be
+/// missed by a reader that was busy, only coalesced.
+#[derive(Clone)]
+pub(crate) struct PublishLog {
+    tap: tokio::sync::broadcast::Sender<Published>,
+    entries: Arc<Mutex<std::collections::VecDeque<Published>>>,
+    seq: tokio::sync::watch::Sender<u64>,
+}
+
+/// How many accepted publishes the record keeps (the oldest go first). At the
+/// fixture's fastest cadence — a 10 ms presence tick — that is twenty seconds of
+/// one publisher, against observation windows measured in single seconds.
+const RECORDED_PUBLISHES: usize = 2_048;
+
+impl PublishLog {
+    fn record(&self, published: Published) {
+        let _ = self.tap.send(published.clone());
+        {
+            let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+            if entries.len() == RECORDED_PUBLISHES {
+                entries.pop_front();
+            }
+            entries.push_back(published);
+        }
+        // Bumped after the entry is visible, so a waiter woken by this bump
+        // always finds the packet that woke it.
+        self.seq.send_modify(|tick| *tick = tick.wrapping_add(1));
+    }
+
+    fn find(&self, mut matches: impl FnMut(&Published) -> bool) -> Option<Published> {
+        self.entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .find(|published| matches(published))
+            .cloned()
+    }
 }
 
 impl FakeNats {
@@ -1090,8 +1143,13 @@ impl FakeNats {
         let port = listener.local_addr().expect("fake nats addr").port();
         let state = Arc::new(Mutex::new(NatsState::default()));
         let (tap, _) = tokio::sync::broadcast::channel(256);
+        let publishes = PublishLog {
+            tap,
+            entries: Arc::new(Mutex::new(std::collections::VecDeque::new())),
+            seq: tokio::sync::watch::channel(0_u64).0,
+        };
         let accept_state = state.clone();
-        let accept_tap = tap.clone();
+        let accept_publishes = publishes.clone();
         let accept_task = tokio::spawn(async move {
             loop {
                 if let Ok((stream, _)) = listener.accept().await {
@@ -1118,7 +1176,7 @@ impl FakeNats {
                         stream,
                         rx,
                         accept_state.clone(),
-                        accept_tap.clone(),
+                        accept_publishes.clone(),
                     ));
                 }
             }
@@ -1126,7 +1184,7 @@ impl FakeNats {
         FakeNats {
             url: format!("nats://127.0.0.1:{port}"),
             state,
-            tap,
+            publishes,
             accept_task,
         }
     }
@@ -1137,7 +1195,64 @@ impl FakeNats {
 
     /// Observe every message published through the server (client or injected).
     pub fn tap(&self) -> tokio::sync::broadcast::Receiver<Published> {
-        self.tap.subscribe()
+        self.publishes.tap.subscribe()
+    }
+
+    /// Wait for the first publish on `subject` this server *accepted*, ending on
+    /// one of the two signals that actually answer the question — the record, or
+    /// the producer finishing — instead of on the clock.
+    ///
+    /// Use this instead of the free `await_publish` wait against the tap whenever
+    /// the producer is **change-driven** (it publishes when something moved, not
+    /// on a timer): a packet the tap's 256-slot ring dropped is not going to be
+    /// published again, so a wall-clock wait over a lossy view fails for a reason
+    /// that has nothing to do with the product — measured at 5/5 with a 3 s
+    /// observer stall, publisher alive throughout. A repeated packet (a presence
+    /// heartbeat) can still be observed through the tap.
+    ///
+    /// `producer_finished` answers whether the task that should publish it has
+    /// finished (`TaskHandle::is_finished`, wrapped by the caller): when it has,
+    /// the packet is never coming and the failure names that instead of waiting
+    /// out a budget. `hang_guard` is not a budget for the work — it only stops a
+    /// wedged fixture from hanging the whole suite, and it fires only when
+    /// neither the record nor the producer has moved.
+    pub async fn await_publish<F, G>(
+        &self,
+        subject: &str,
+        mut accepts: F,
+        producer_finished: G,
+        hang_guard: std::time::Duration,
+    ) -> Published
+    where
+        F: FnMut(&Published) -> bool,
+        G: Fn() -> bool,
+    {
+        let deadline = std::time::Instant::now() + hang_guard;
+        // Subscribed before the first scan: a publish that lands between the two
+        // leaves the sequence newer than this receiver, which `changed` reports
+        // as ready rather than swallowing.
+        let mut changes = self.publishes.seq.subscribe();
+        loop {
+            if let Some(found) = self
+                .publishes
+                .find(|published| published.subject == subject && accepts(published))
+            {
+                return found;
+            }
+            assert!(
+                !producer_finished(),
+                "the publisher exited before publishing {subject}"
+            );
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "no publish on {subject} within the {hang_guard:?} hang guard, and the producer is still running"
+            );
+            // Woken by the record; the short cap is only how often the
+            // producer's own completion is re-read, never how long the work has.
+            let poll = remaining.min(std::time::Duration::from_millis(5));
+            let _ = tokio::time::timeout(poll, changes.changed()).await;
+        }
     }
 
     /// Every JWT presented in a `CONNECT`, in arrival order.
@@ -1195,7 +1310,7 @@ impl FakeNats {
     pub fn inject(&self, subject: &str, reply: Option<&str>, payload: Vec<u8>) {
         deliver(
             &self.state,
-            &self.tap,
+            &self.publishes,
             subject,
             reply.map(str::to_string),
             payload,
@@ -1357,12 +1472,12 @@ fn subject_matches(pattern: &str, subject: &str) -> bool {
 
 fn deliver(
     state: &Arc<Mutex<NatsState>>,
-    tap: &tokio::sync::broadcast::Sender<Published>,
+    publishes: &PublishLog,
     subject: &str,
     reply: Option<String>,
     payload: Vec<u8>,
 ) {
-    let _ = tap.send(Published {
+    publishes.record(Published {
         subject: subject.to_string(),
         reply: reply.clone(),
         payload: payload.clone(),
@@ -1423,7 +1538,7 @@ async fn serve_conn(
     stream: tokio::net::TcpStream,
     mut rx: tokio::sync::mpsc::UnboundedReceiver<Out>,
     state: Arc<Mutex<NatsState>>,
-    tap: tokio::sync::broadcast::Sender<Published>,
+    publishes: PublishLog,
 ) {
     let (read_half, mut write_half) = stream.into_split();
     let writer = tokio::spawn(async move {
@@ -1565,7 +1680,7 @@ async fn serve_conn(
                 if reader.read_exact(&mut crlf).await.is_err() {
                     break;
                 }
-                deliver(&state, &tap, subject, reply, payload);
+                deliver(&state, &publishes, subject, reply, payload);
             }
             _ => {}
         }
@@ -2463,6 +2578,56 @@ mod tests {
             "presence",
             std::time::Duration::from_millis(30),
             |published| published.json()["online"] == serde_json::json!(false),
+        )
+        .await;
+    }
+
+    /// The record answers for a packet the tap dropped, which is why the catalog
+    /// waits use it: the tap is a 256-slot ring and the catalog publisher is
+    /// change-driven, so a reader that stops for a moment never sees the packet
+    /// again. Both halves are asserted — the tap really does lose it, and the
+    /// record still has it.
+    #[tokio::test]
+    async fn the_publish_record_keeps_a_packet_the_tap_ring_dropped() {
+        let nats = FakeNats::start().await;
+        // The reader is attached first and then does not read, which is the
+        // shape under test: a publisher that keeps sending to an observer that
+        // is not running. The ring overflows behind it.
+        let mut tap = nats.tap();
+        for index in 0..300 {
+            nats.inject("p.x.presence", None, format!("{index}").into_bytes());
+        }
+        let dropped = tap.recv().await;
+        assert!(
+            matches!(
+                dropped,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_))
+            ),
+            "the tap must be the lossy view this helper exists to replace"
+        );
+        let first = nats
+            .await_publish(
+                "p.x.presence",
+                |published| published.payload == b"0".to_vec(),
+                || false,
+                std::time::Duration::from_secs(1),
+            )
+            .await;
+        assert_eq!(first.payload, b"0".to_vec());
+    }
+
+    /// A producer that dies before publishing is named as such, rather than
+    /// waited out: this is the arm that keeps the helper from hiding a real
+    /// failure behind a budget.
+    #[tokio::test]
+    #[should_panic(expected = "the publisher exited before publishing")]
+    async fn the_publish_record_names_a_producer_that_died_first() {
+        let nats = FakeNats::start().await;
+        nats.await_publish(
+            "p.x.state.sessions",
+            |_| true,
+            || true,
+            std::time::Duration::from_secs(5),
         )
         .await;
     }
