@@ -11,9 +11,11 @@ binaries beyond the driver.
 
 **Last measurement**: `test/tauri-cov2` (waves 6-11), rustc **1.99.1** (`rust-toolchain.toml`),
 `ulimit -n 8192`, raw profiles deleted first (`--no-report` accumulates). Artifacts
-(gitignored) in `coverage/2026-11/tauri/`: `wave13-lcov.info` (the numbers quoted below; wave 13
-re-measures wave 11's tests on the base that landed under them, `d3b2c58fd`),
-`wave13-lib.log` / `wave13-driver.log` / `wave13-report.log`, the run script `wave13.sh`, the
+(gitignored) in `coverage/2026-11/tauri/`: `wave14-lcov.info` (the numbers quoted below; wave 13
+re-measures wave 11's tests on the base that landed under them, `d3b2c58fd`, and wave 14 is the
+same run repeated after the rebase onto `9f6722e22` — identical per file and for the lane, and no
+`desktop/src-tauri` source changed between the two bases),
+`wave14-lib.log` / `wave14-driver.log` / `wave14-report.log`, the run script `wave14.sh`, the
 per-wave records `wave6.md` (waves 6-7), `wave9.md` (waves 8-9) and `wave11.md` (waves 10-11), the
 classification `classification.md`, and the diff tools `diff_lane.py` / `da0_lane.py` /
 `da0_lines.py` / `da0_file.py`.
@@ -24,9 +26,9 @@ silently unions `desktop/src-tauri/src/lib.rs` with `host/src/lib.rs` and `packa
 
 ```bash
 # One measurement, both legs, fresh profiles (the script does the rm for you).
-coverage/2026-11/tauri/wave13.sh
-python3 coverage/2026-11/tauri/da0_lane.py  coverage/2026-11/tauri/wave13-lcov.info           # lane total
-python3 coverage/2026-11/tauri/da0_file.py  coverage/2026-11/tauri/wave13-lcov.info \
+coverage/2026-11/tauri/wave14.sh
+python3 coverage/2026-11/tauri/da0_lane.py  coverage/2026-11/tauri/wave14-lcov.info           # lane total
+python3 coverage/2026-11/tauri/da0_file.py  coverage/2026-11/tauri/wave14-lcov.info \
         desktop/src-tauri/src/lib.rs                                                         # per line, one file
 cargo test -p futureos --lib                                  # gate: 423 passed, ulimit -n 8192
 cargo test -p futureos --test gui_main_thread_drive --features test-support
@@ -159,7 +161,7 @@ groups below sum to 191.
 | 1689, 2005 | 2 | `T4` | closing braces of `install_app_update_impl` and `restart_after_app_update_with`. Every statement inside both blocks is `DA>0` in the same run, so the record is the block end, not an arm | — |
 | 1716-1723, 1726-1727, 1729-1751 | 33 | `T1` | `acknowledge_update_repair` takes `app: tauri::AppHandle`, i.e. `AppHandle<Wry>` — the runtime parameter is not generic, so there is nothing to substitute, and `tauri::test` only ever builds `AppHandle<MockRuntime>`. The body then opens a blocking native dialog | `journal::acknowledge_repair`, the only thing the body changes, is covered by the `update_journal.rs` cases |
 | 1973, 1975-1977 | 4 | `T1` | `restart_after_app_update`: same concrete handle, and its body calls `app.restart()`, which re-execs the process | the injectable body `restart_after_app_update_with` has four cases |
-| 1802-1867, 1872-1962, 1968 | 129 | **product decision** | §2.8.1 | — |
+| 1802-1867 (6 runs, 58 lines), 1872-1962 (13 runs, 70), 1968 (1) | 129 | **product decision** | §2.8.1 — the `DA:0` set is not contiguous inside these blocks, so the counts are the runs, not the spans | — |
 
 #### 2.8.1 The 129 lines behind `download` — a product decision, not a test-writing problem
 
@@ -183,9 +185,9 @@ the decision rather than changing the product to raise a number:
 
 | seam | would cover | shape |
 |---|---|---|
-| a `download` injection point beside the existing `prepare_with_helper` / `confirm_at` | 1802-1817 (+1816-1817), 1820-1835 | the idiom this lane already uses: `#[cfg(any(test, feature = "test-support"))]` facade, production path unchanged |
-| a `confirm` answer beside it | 1837-1867 incl. the cancel arm | same |
-| a `commit` injection point | 1872-1956, 1957-1962, 1968 | same, and the riskiest of the three |
+| a `download` injection point beside the existing `prepare_with_helper` / `confirm_at` | 31 lines (1802-1817, 1820-1835) | the idiom this lane already uses: `#[cfg(any(test, feature = "test-support"))]` facade, production path unchanged |
+| a `confirm` answer beside it | 23 lines (1837-1856, 1859-1861) plus the 4 at 1864-1867 | same |
+| a `commit` injection point | 71 lines (1872-1962, 1968) | same, and the riskiest of the three |
 
 Until one exists these 129 lines are unreachable **by construction**, and no amount of test
 writing moves them. That is the honest reading of a 191-line gap in a 2 000-line file whose second
