@@ -978,6 +978,50 @@ mod tests {
         restore_env("FUTURE_HOME", previous_future_home);
     }
 
+    /// A half-finished restore blocks every writer, and says how to finish it.
+    ///
+    /// `future data restore` leaves a marker in the data root while the two
+    /// databases are swapped; a process that starts in that window must not
+    /// write into the half-swapped pair, and the reader's message is the only
+    /// thing that tells them which command to run.
+    #[test]
+    fn a_database_under_an_unfinished_restore_is_refused_with_the_resume_hint() {
+        // Serialized: these tests mutate process environment.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let previous_future_home = std::env::var_os("FUTURE_HOME");
+        std::env::remove_var("FUTURE_HOME");
+        let previous_home = std::env::var_os("HOME");
+        let root = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("HOME", root.path());
+
+        // A readable database exists, so the refusal below is about the marker
+        // and not about a missing file.
+        let conn = connect().expect("create");
+        drop(conn);
+        let marker = root.path().join(".future").join(".restore-incomplete.json");
+        std::fs::write(&marker, b"{}").expect("marker");
+
+        let refused = connect_existing().expect_err("refused while a restore is incomplete");
+        let message = refused.to_string();
+        assert!(
+            message.contains("restore is incomplete") && message.contains("future data resume"),
+            "unexpected message: {message}"
+        );
+        // Creating a fresh database is refused by the same check, not only
+        // reading the existing one.
+        let refused_write = connect().expect_err("writes are refused too");
+        assert!(refused_write.to_string().contains("restore is incomplete"));
+
+        // Finishing the restore clears the marker and the database opens again.
+        std::fs::remove_file(&marker).expect("clear marker");
+        assert!(connect_existing()
+            .expect("open after the restore finished")
+            .is_some());
+
+        restore_env("HOME", previous_home);
+        restore_env("FUTURE_HOME", previous_future_home);
+    }
+
     #[test]
     fn app_dir_and_db_path_follow_home_then_userprofile() {
         // Serialized: these tests mutate process environment.
