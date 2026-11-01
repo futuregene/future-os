@@ -6663,23 +6663,37 @@ mod driver_tests {
             std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
                 .expect("chmod the git stub");
 
-            let mut driver = Driver::attach_conversation().await;
+            // A repository of the test's own, not this one. The panel's read
+            // carries a three-second query budget, and a checkout this size can
+            // miss it under a parallel suite — which reads as "the panel read
+            // nothing" and hides the arm this case is about, exactly the kind of
+            // measurement the ledger refuses to call a measurement.
+            let repo = tempfile::tempdir().expect("tempdir");
+            let quiet = |args: &[&str]| {
+                let output = std::process::Command::new(&git)
+                    .args(args)
+                    .current_dir(repo.path())
+                    .envs([
+                        ("GIT_AUTHOR_NAME", "tui"),
+                        ("GIT_AUTHOR_EMAIL", "tui@example.invalid"),
+                        ("GIT_COMMITTER_NAME", "tui"),
+                        ("GIT_COMMITTER_EMAIL", "tui@example.invalid"),
+                    ])
+                    .output()
+                    .expect("spawn the real git");
+                assert!(
+                    output.status.success(),
+                    "git {args:?} failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            };
+            quiet(&["init", "--quiet"]);
+            std::fs::write(repo.path().join("a.txt"), "one line\n").expect("write the file");
+            quiet(&["add", "a.txt"]);
+            quiet(&["commit", "--quiet", "-m", "the only commit"]);
+
+            let mut driver = Driver::attach_conversation_in(repo.path()).await;
             let _path = crate::test_env::EnvVarGuard::set("PATH", tools.path());
-            {
-                let probe = crate::workbench::git_panel::read(
-                    std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
-                    crate::workbench::state::GitSection::Commits,
-                    None,
-                    0,
-                    crate::workbench::i18n::Language::En,
-                );
-                eprintln!(
-                    "PROBE error={:?} rows={} repo={:?}",
-                    probe.error,
-                    probe.rows.len(),
-                    probe.repo
-                );
-            }
             assert!(!driver.quit_key("ctrl+g").await, "ctrl+g left the app");
             assert!(
                 driver
