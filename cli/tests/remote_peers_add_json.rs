@@ -24,7 +24,8 @@ async fn add_json_prints_the_machine_it_paired_and_who_keeps_it_connected() {
     let served = support::Served::start("cli-peers-add-json").await;
     let invitation = served.invitation("refresh-token-add-json");
 
-    let (code, stdout, stderr) = support::run(&["remote", "peers", "add", &invitation, "--json"]).await;
+    let (code, stdout, stderr) =
+        support::run(&["remote", "peers", "add", &invitation, "--json"]).await;
 
     assert_eq!(code, 0, "{stderr}");
     assert!(stderr.is_empty(), "{stderr}");
@@ -35,7 +36,11 @@ async fn add_json_prints_the_machine_it_paired_and_who_keeps_it_connected() {
 
     assert_eq!(document["desktopRunning"], Value::Bool(false), "{document}");
     let paired = &document["paired"];
-    assert_eq!(paired["desktopId"], Value::String(served.desktop_id.clone()), "{document}");
+    assert_eq!(
+        paired["desktopId"],
+        Value::String(served.desktop_id.clone()),
+        "{document}"
+    );
     assert_eq!(paired["connected"], Value::Bool(true), "{document}");
     // The pairing the claim granted is the one on disk, so the row a script
     // stores is the row the next start reads.

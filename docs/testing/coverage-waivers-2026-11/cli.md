@@ -98,7 +98,7 @@ line, W7 mock closure, W8 dead producer.
 | 12 | `commands/remote.rs:1578` | **W2** | `switch`'s `out.log_err(silence)` inside `"off" if on =>`. `silence` is set only on the paths where `reported` stays `None` (1523, 1534), and a running Desktop whose state is `"off"` must have answered with `phase: "stopped"` (1054) — i.e. `reported` is `Some`. With no Desktop running `silence` is never set at all (1517). The two conditions are mutually exclusive by construction, so the arm is entered (`DA:26` on 1576) and its body never is. | an answer that carries a status *and* an error, or a `state_of` that maps a missing status to `"off"` | `a_desktop_that_refuses_the_switch_still_stores_it_and_exits_one` takes the `"unknown"` arm above it (1521-1526 → 1570-1574); `enable_without_a_desktop_stores_the_switch_and_says_it_is_not_serving` takes `"off"` with no silence |
 | 13 | `commands/remote.rs:2446` | **W2** | `queue_pending_revoke`'s `None => return Err(… "is not a JSON object")` on `pending.as_object_mut()`. `pending` has exactly two producers: `json!({})` for a missing file, and the document that survived `.filter(Value::is_object)` (2434-2438) — a third shape would have to be constructed below that filter. | a third way to build `pending` that is not an object (e.g. reading the queue through a helper that returns `Value`) | `an_undeliverable_platform_revoke_is_queued_for_the_next_desktop` writes the queue through this function, taking the `Some` arm, and reads the file back as an object |
 | 14 | `commands/remote.rs:2404-2405, 2779, 2781-2782` | **W4** | `platform_api_key`'s `NotFound` and other-I/O arms, and `revoke`'s arm that queues the revoke for that error. The caller has already proved this file readable: `future_api_key()` (2390) returned the key out of `<home>/agent/auth.json` through `auth_store::read`, and `platform_api_key()` resolves the *same* path (`future_agent::utils::default_config_dir()` = `future_home()/agent`, the same root as `auth_store::agent_dir()`) and reads it again microseconds later, with no `await` in between. Any of these five lines needs the file to be deleted, replaced or emptied exactly in that window. | a concurrent `future auth logout` (or an editor) landing between the two reads — which a test cannot place without a seam — or the two functions resolving different paths, which would be a defect of its own rather than a line to cover | `an_undeliverable_platform_revoke_is_queued_for_the_next_desktop` pins the guard's own outcome: the "not signed in" warning is what a machine with no `auth.json` gets, and it is produced at 2391-2400, before either read can differ |
-| 15 | `commands/remote.rs:2599-2603` | **W4** | `take_control`'s "no longer paired to this machine: the pairing book changed while this ran" — `book.edit`'s closure finding the wanted device gone. The book is read twice in this function (`Book::load()` at 2580, `Self::load()` inside `edit`), and nothing between them awaits: `desktop_running()` and `switch_is_on()` are file reads, so another process cannot be placed in that gap by a test. | an `await` between the two reads (the Desktop round trip moved before the write, which the comment at 2593-2595 says is deliberate), or a load seam | `use_persists_the_controller_and_keeps_unmodelled_fields` takes the `Ok` arm of the same closure; `the_controller_is_named_by_row_number_and_by_prefix` reaches the edit for a book whose row is still there |
+| 15 | `commands/remote.rs:2599-2603` | **W4** | `take_control`'s "no longer paired to this machine: the pairing book changed while this ran" — `book.edit`'s closure finding the wanted device gone. The book is read twice in this function (`Book::load()` at 2580, `Self::load()` inside `edit`), and nothing between them awaits: `desktop_running()` and `switch_is_on()` are file reads, so another process cannot be placed in that gap by a test. | an `await` between the two reads (the Desktop round trip moved before the write, which the comment at 2593-2595 says is deliberate), or a load seam | `use_persists_the_controller_and_keeps_unmodelled_fields` takes the `Ok` arm of the same closure — `book.edit` writing a controller that is still there; `use_accepts_a_stripped_or_partial_id` reaches the same write by prefix |
 | 16 | `commands/remote_peers.rs:684, 687-690, 692` | **W2** | `add`'s `Some(live) => "The pairing is stored, but the connection did not come up{…}"`. `peer.live.connected` is `PeerSummary.connected` as `pair_with_emitter` returned it, and the only assignment to that field on an `Ok` path is `summary.connected = true` (`packages/remote-client/src/runtime.rs:1806`); every failed connection returns `Err` (1765-1789), which `add` turns into `describe_pairing_error` and a failed command instead of this arm. The arm reports a state the runtime cannot produce. | a runtime that returns an `Ok` summary with `connected == false` — i.e. stores the pairing and answers before the first connect, which is the contract this arm was written for | the connected arm is driven twice, by `add_says_which_machine_it_paired_and_who_connects_it` (text) and `add_json_prints_the_machine_it_paired_and_who_keeps_it_connected` (JSON, `cli/tests/`) |
 
 > A line whose text is nothing but a closing token (`}`, `})`, `});`, `))`, `));`, `)?;`,
@@ -117,7 +117,7 @@ All 53 registered lines were re-read against `cli-lcov-12.info` when this wave l
 are also closing tokens, which is why the class count is 80 of the 284, the registered
 statements are 49 and not 53, and 80 + 49 + 147 + 8 = 284.
 
-Three of this wave's seven new rows were written *after* trying to cover them, and each of
+Four of this wave's seven new rows were written *after* trying to cover them, and each of
 them names the measurement that changed the answer rather than a guess:
 
 * row 16 was assigned as "add's disconnected arm, build it a second bridge". The arm cannot
@@ -131,7 +131,7 @@ them names the measurement that changed the answer rather than a guess:
   reads of one file in one function with nothing awaiting between them, which is a race
   window, not a scenario.
 
-The eleven lines still in `commands/remote.rs`'s work-item row at wave 11 were therefore
+The lines that were in `commands/remote.rs`'s work-item row at wave 11 were therefore
 **mis-classified as reachable-with-a-live-session**, and the wave-10 sentence that the
 `host::remote_peer::testing` bridge "is what supplies one" was wrong about them: it supplies
 the *pairing* (`add`), which is a different file. The file's 31 `DA:0` lines now divide
@@ -245,8 +245,9 @@ PhaseAction::NeedsAccount => {            // Failed(AccountAuthorization) && !se
      (388-396), and when a pinned account disappears mid-run `account_action` answers
      `Close`, which exits the entry with its own sentence (433-437) rather than looping on
      this one.
-   * `docs/guide/desktop-host.md` (§ "Signing in comes first") states the same model: "a
-     switch that is on but unsigned-in serves nobody", which is *why* `enable` refuses.
+   * `docs/guide/desktop-host.md` states the same model, in the paragraph that begins
+     **Signing in comes first** (line 268): "a switch that is on but unsigned-in serves
+     nobody" — which is *why* `enable` refuses.
 3. **What does produce it.** A **window** Desktop, which can switch the remote desktop on
    while signed out and then sits on `Failed(AccountAuthorization)`; its status is the one
    this loop prints only when that window's process owns the data directory, which is not
@@ -264,8 +265,9 @@ PhaseAction::NeedsAccount => {            // Failed(AccountAuthorization) && !se
    concretely the author of `future remote enable`'s refusal and of the window's Remote page
    (`desktop/src/features/remote/`), which is the only producer. There is no `CODEOWNERS`
    entry for this; the confirmation route is to state the conflict in the next remote or
-   headless PR (and against `docs/guide/desktop-host.md`'s "Signing in comes first"
-   subsection, which is the document that would have to change) rather than to register a
+   headless PR (and against the **Signing in comes first** paragraph of
+   `docs/guide/desktop-host.md`, which is the document that would have to change) rather than
+   to register a
    waiver here that presumes the answer. Recorded as a decision so it cannot quietly become
    a W2 row: a W2 row would claim "the input does not exist", and what is measured is
    narrower — "no CLI input exists *today*".
