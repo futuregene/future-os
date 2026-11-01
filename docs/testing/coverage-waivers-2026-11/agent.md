@@ -8,9 +8,9 @@ llvm-cov *summary* percentage is not the acceptance number.
 `coverage/2026-11/after/agent/lcov-wave26.info`, run log `wave26-cov.log`. The ledger below was
 regenerated from that lcov and passes its own check (wave 29).
 
-**Result**: `DA:0` = **1186** lines in **129** files under `agent/src` (wave 30 measurement,
-`lcov-wave30.info`). This branch has cleared **487** of the 1673 it started from (waves 23, 26,
-27 and 30; waves 24-25 changed the suite's speed, not which lines it reaches). Of the 1186:
+**Result**: `DA:0` = **1181** lines in **129** files under `agent/src` (wave 31 measurement,
+`lcov-wave31.info`). This branch has cleared **492** of the 1673 it started from (waves 23, 26,
+27, 30 and 31; waves 24-25 changed the suite's speed, not which lines it reaches). Of the 1181:
 
 | state | lines |
 |---|---:|
@@ -176,6 +176,46 @@ Writing the "key on one side only" case found a defect **in the helper**:
 panics `no entry found for key` and throws away the path the function exists to
 produce. The absent side is now a JSON null. This is test-only code
 (`rpc/commands/test_support.rs` is `#[cfg(test)]`), so no product behaviour moved.
+
+## Wave 31: five more rows, and where the cheap rewrites run out
+
+The same subtractive shape, on `session/content/recovery.rs` and one line of
+`session/content/entries.rs` (commit `b7dcc5039`), verified on the `session::content` lane:
+
+| row | rewrite | hits after |
+|---|---|---:|
+| `recovery.rs` run-epoch query | `db.prepare(LIVE_RUN_EPOCHS)?` — the call was five rows | 41 |
+| `recovery.rs` contiguity guard | the predicate hoists into `let contiguous`, so `anyhow::ensure!(contiguous, CONTENT_RANGE_GAP)` fits one line | 3 108 |
+| `recovery.rs` start/delta identity guards | `MISSING_START` / `MISSING_DELTA` consts keep each `.context(…)?` on one line | 28 / 3 138 |
+| `entries.rs` sealed digest | `OBJECT_SHA` const | 39 |
+
+**A named predicate works where a const cannot.** `anyhow::ensure!(<long condition>, <reason>)`
+has no string to hoist; what fits it on one line is binding the *condition* first. That is the
+second reusable shape this campaign has found (the first is the one-statement const), and both
+are strictly subtractive: the `let`/const lines carry no `DA` record.
+
+Re-measured on `b7dcc5039` (`lcov-wave31.info`, whole lane, 2890 tests):
+
+```
+DA:0 = 1181 lines in 129 files    (was 1186)
+rows = 821   open 766 · a 196 · W6 157 · W5 24 · lane 24 · W1 11 · W7 3
+ledger=clean
+```
+
+### What is left is no longer rewritable, and that is now measurable
+
+The last two waves took the rows whose *text* could be moved. What remains in the same files is of
+two kinds, and both need a decision rather than a rewrite:
+
+- **Deeply-indented multi-argument calls** — `stage_named(store, session, owner_kind, &entry,
+  "/meta/shell_result", &shell.to_string(), true)?` at indent 12–16 (`entries.rs:222,246,323`).
+  No const or `let` makes that fit one line; moving the row needs the arguments restructured into
+  a struct or the helper's signature changed — a product refactor, not a fmt rewrite.
+- **Arms that need a fixture, not a rewrite** — `recovery.rs`'s `tool_input_end` (384-429) and
+  `message_end` (430-437) arms only run when a recovered event carries **content-bound bodies**
+  (`change.bodies` with `/data/tool_args`), and the existing `Writer::persist` fixture writes raw
+  `data` JSON with no body references. Reaching them means building that fixture, which is a
+  test-writing task of a different size to this wave's dozen-line edits.
 
 ## Wave 30: ten `)?;` tails, and a full re-measurement at 1186
 
