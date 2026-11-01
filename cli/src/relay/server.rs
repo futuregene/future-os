@@ -652,9 +652,17 @@ mod tests {
 
     /// A relay with a freshly minted account key and an in-memory registry.
     fn relay() -> Arc<Relay> {
+        relay_with_room_ttl(7_776_000)
+    }
+
+    /// The same relay, but rooms live `room_ttl_seconds` — the knob a test
+    /// shortens so a room can expire inside a test instead of in 90 days.
+    fn relay_with_room_ttl(room_ttl_seconds: i64) -> Arc<Relay> {
         let account = KeyPair::new_account();
         let seed = account.seed().expect("a new account key has a seed");
-        Arc::new(Relay::new(config(seed), None).expect("a fresh relay"))
+        let mut config = config(seed);
+        config.room_ttl_seconds = room_ttl_seconds;
+        Arc::new(Relay::new(config, None).expect("a fresh relay"))
     }
 
     /// The three headers a signed call carries, at `timestamp`.
@@ -1027,6 +1035,63 @@ mod tests {
         let (status, answer) = client_revoke(State(relay.clone()), Bytes::from(revoke)).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(answer["ok"], true);
+    }
+
+    /// A room that reaches its TTL is gone for the client too: the revoke is
+    /// answered with the room error rather than with the "already gone" success,
+    /// and the registry drops the credential with the room instead of keeping a
+    /// device that can never authenticate again.
+    ///
+    /// **The one wall-clock assumption in this file, and why it is sound.** The
+    /// room is registered with `room_ttl_seconds: 1`, which makes
+    /// `expires_at = t + 1` for the whole second `t` the registration happens
+    /// in, and `authorize_refresh` refuses once `now >= expires_at`. `now()` is
+    /// whole UNIX seconds, so waiting 1.1 s is not a race against the clock:
+    /// 1.1 >= 1 means `floor(t + 1.1) >= floor(t) + 1` for every `t`, i.e. the
+    /// refusal condition is already true when the sleep returns. The sleep is
+    /// also a lower bound (tokio never returns early), so a loaded machine or a
+    /// stalled scheduler only adds slack to an assertion that is on the correct
+    /// side of it. Nothing here retries or polls, so there is no window in which
+    /// a slower run flips the result.
+    #[tokio::test]
+    async fn a_revoke_against_an_expired_room_says_the_room_is_gone() {
+        let relay = relay_with_room_ttl(1);
+        let host = KeyPair::new_user();
+        let (status, _) = register(&relay, &host).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let phone = KeyPair::new_user();
+        let body = format!(
+            r#"{{"nonce":"{JOIN}","device_id":"phone1","device_public_key":"{}","device_name":"Phone"}}"#,
+            phone.public_key()
+        );
+        let (status, answer) = claim(State(relay.clone()), Bytes::from(body)).await;
+        assert_eq!(status, StatusCode::OK);
+        let refresh = answer["refresh_token"]
+            .as_str()
+            .expect("the long-lived half of the credential")
+            .to_string();
+        assert_eq!(relay.rooms.len(), 1, "the room exists inside its TTL");
+
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+
+        let revoke = format!(
+            r#"{{"pair_id":"{PAIR}","device_id":"phone1","public_key":"{}","refresh_token":"{refresh}"}}"#,
+            phone.public_key()
+        );
+        let (status, answer) = client_revoke(State(relay.clone()), Bytes::from(revoke)).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "an expired room outlives no credential, including its own revoke: {answer:?}"
+        );
+        assert_eq!(answer["error"], "room_expired");
+        assert_eq!(answer["message"], "This room has expired.");
+        assert_eq!(
+            relay.rooms.len(),
+            0,
+            "the registry dropped the room, and the device credential went with it"
+        );
     }
 
     /// A claim that cannot be read, cannot name the device key, or names no
