@@ -5722,10 +5722,13 @@ mod tests {
 
         let id = session.session_id.clone();
         session.switch_session(&id).unwrap();
+        // Read the split before the assertion: the message is built only on
+        // failure, so an argument written inline is never evaluated by a run
+        // that passes.
+        let replayed = *(session.cumulative_cost_split.lock());
         assert!(
-            (session.cumulative_cost_split.lock().input - 1.0).abs() < 1e-9,
-            "the readable request must still be priced: {:?}",
-            *session.cumulative_cost_split.lock()
+            (replayed.input - 1.0).abs() < 1e-9,
+            "the readable request must still be priced: {replayed:?}"
         );
     }
 
@@ -5759,10 +5762,10 @@ mod tests {
         session
             .switch_session(&id)
             .expect("a failed cache write must not fail the session open");
+        let replayed = *(session.cumulative_cost_split.lock());
         assert!(
-            (session.cumulative_cost_split.lock().input - 101.0).abs() < 1e-9,
-            "the replayed split applies even when it cannot be cached: {:?}",
-            *session.cumulative_cost_split.lock()
+            (replayed.input - 101.0).abs() < 1e-9,
+            "the replayed split applies even when it cannot be cached: {replayed:?}"
         );
         // Nothing was cached: the store still has no split for this session, so
         // the next open replays the journal again rather than trusting a row that
@@ -5895,10 +5898,10 @@ mod tests {
 
         let id = session.session_id.clone();
         session.switch_session(&id).unwrap();
+        let replayed = *(session.cumulative_cost_split.lock());
         assert!(
-            (session.cumulative_cost_split.lock().input - 101.0).abs() < 1e-9,
-            "the journal covers the whole session: {:?}",
-            *session.cumulative_cost_split.lock()
+            (replayed.input - 101.0).abs() < 1e-9,
+            "the journal covers the whole session: {replayed:?}"
         );
         // Marked complete, so the next load keeps it instead of replaying again.
         let stored = session.session_manager.load(&id).unwrap();
@@ -6174,10 +6177,10 @@ mod tests {
             100,
             "the unpriced request's tokens must still be charged"
         );
+        let charged = *session.cumulative_cost.lock();
         assert!(
-            (*session.cumulative_cost.lock() - expected).abs() < 1e-12,
-            "the request was not priced from the model rates: {}",
-            *session.cumulative_cost.lock()
+            (charged - expected).abs() < 1e-12,
+            "the request was not priced from the model rates: {charged}"
         );
         let split = *session.cumulative_cost_split.lock();
         assert!((split.input - 0.01).abs() < 1e-12, "{split:?}");

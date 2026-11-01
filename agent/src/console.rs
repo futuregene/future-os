@@ -330,6 +330,8 @@ mod tests {
                 Err(std::io::Error::other("gone"))
             }
         }
+        // `Write::flush` has no default body, so a mock must carry one even
+        // though `write_line` never flushes: the trait requires it.
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
@@ -576,5 +578,159 @@ mod tests {
         let redirected = redirect_windowless_standard_streams(&path).expect("inspect the streams");
         assert!(!redirected, "a captured stream must keep its destination");
         ::std::eprintln!("the caller still sees this line");
+    }
+
+    /// Counts the bytes a `tracing` subscriber writes, so a test can tell "the
+    /// note was logged" from "nothing was logged" — a sink drains both.
+    #[derive(Clone, Default)]
+    struct Written(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl Write for Written {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.fetch_add(bytes.len(), Ordering::SeqCst);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Written {
+        fn bytes(&self) -> usize {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    /// A stream that is gone is reported **once**, not once per failed write.
+    ///
+    /// The gate is the whole point of `note_once`: a process whose terminal has
+    /// gone away keeps writing to it (every diagnostic, every log line), and an
+    /// unguarded note would put one warning per write into the host log. So the
+    /// assertion is not "a warning was logged" but "the second failure logs
+    /// nothing while the first one does" — a gate that never closes passes the
+    /// weaker form and fails this one.
+    #[test]
+    fn an_unusable_stream_is_reported_once() {
+        let written = Written::default();
+        let sink = written.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || sink.clone())
+            .with_max_level(tracing::Level::TRACE)
+            .finish();
+        // Per-thread default, so the other tests in this binary keep their own.
+        let _subscriber = tracing::subscriber::set_default(subscriber);
+        static REPORTED: AtomicBool = AtomicBool::new(false);
+        let error = std::io::Error::other("the terminal went away");
+
+        note_once(&REPORTED, "stdout", &error);
+        let after_first = written.bytes();
+        note_once(&REPORTED, "stdout", &error);
+        let after_second = written.bytes();
+
+        // Each condition is hoisted to a short binding: a multi-line `assert!`
+        // builds its message on its own lines, which then only evaluate when
+        // the assertion fails.
+        let gate_closed = REPORTED.load(Ordering::Relaxed);
+        assert!(gate_closed, "the gate closes on the first failure");
+        assert!(after_first > 0, "the first failure is logged");
+        assert_eq!(after_second, after_first, "the second failure is silent");
+
+        // A different stream has its own gate, so it is still reportable.
+        static OTHER_STREAM: AtomicBool = AtomicBool::new(false);
+        note_once(&OTHER_STREAM, "stderr", &error);
+        let after_other = written.bytes();
+        assert!(after_other > after_second, "each stream gates separately");
+    }
+
+    /// Environment naming the child half of [`a_write_to_a_dead_stream_survives`].
+    const FIXTURE_DEAD_STREAM: &str = "FUTURE_CONSOLE_DEAD_STREAM_FIXTURE";
+
+    /// A write to a stream nobody reads is dropped, not fatal.
+    ///
+    /// This is the contract of the whole module: every `console::*` write
+    /// tolerates a failed write, because a launch whose output stopped being
+    /// read — a caller that exited, a pipe whose reader closed, the `NUL` device
+    /// behind a windowless launch — must not lose the rest of its work to a
+    /// panic. The child below replaces **both** of its standard streams with the
+    /// write ends of pipes whose read ends are already closed, so every write to
+    /// either fails with `EPIPE`; it then makes one call per writer and reports
+    /// on a file, which is the only channel left. It exits 0 only by reaching
+    /// the end: a panic is caught by the test harness, which reports the failure
+    /// instead.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_to_a_dead_stream_survives() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("survived");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "console::tests::the_dead_stream_fixture",
+                "--test-threads=1",
+            ])
+            .env(FIXTURE_DEAD_STREAM, &marker)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("run the dead-stream fixture");
+        let written = std::fs::read_to_string(&marker).unwrap_or_default();
+        assert!(status.success(), "status={status:?} marker={written:?}");
+        assert!(
+            written.contains("survived-a-dead-stream"),
+            "the process kept running past the failed writes: {written:?}"
+        );
+        assert!(
+            written.contains("four-writes-returned"),
+            "every one of the four writers returned instead of unwinding: {written:?}"
+        );
+    }
+
+    /// The child half of [`a_write_to_a_dead_stream_survives`]: point the
+    /// standard streams at pipes with no reader, write through each of the four
+    /// writers, then leave a marker in a file.
+    #[cfg(unix)]
+    #[test]
+    fn the_dead_stream_fixture() {
+        let Some(marker) = std::env::var_os(FIXTURE_DEAD_STREAM) else {
+            return;
+        };
+        for stream in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+            let mut fds = [0 as libc::c_int; 2];
+            // SAFETY: `fds` is a live, correctly sized array; on success both
+            // descriptors own a fresh pipe.
+            let opened = unsafe { libc::pipe(fds.as_mut_ptr()) };
+            let pipe_error = std::io::Error::last_os_error();
+            assert_eq!(opened, 0, "create a pipe: {pipe_error}");
+            // Close the read end first: with no reader left, a write to the
+            // write end fails with `EPIPE` instead of buffering the text.
+            // SAFETY: `fds[0]` came from the `pipe` above and is closed once.
+            unsafe { libc::close(fds[0]) };
+            // SAFETY: `fds[1]` is a live descriptor and `stream` is one of the
+            // two standard descriptor numbers, which this process may replace.
+            let moved = unsafe { libc::dup2(fds[1], stream) };
+            assert_eq!(moved, stream, "move the pipe onto descriptor {stream}");
+        }
+        crate::console::println!("this line has no reader");
+        crate::console::print!("neither does this one");
+        crate::console::eprintln!("this one is equally unread");
+        crate::console::eprint!("and so is this");
+        std::fs::write(&marker, "four-writes-returned survived-a-dead-stream")
+            .expect("leave the marker");
+        // Leave before the harness writes its own summary to the dead streams.
+        std::process::exit(0);
+    }
+
+    /// A platform whose standard streams are file descriptors has nothing to
+    /// repair: a `/dev/null` or a pipe accepts writes, so the answer is "not
+    /// redirected" and the tolerant writers above are the whole answer. Windows
+    /// is the platform that needs the repair, and its test is
+    /// [`a_windowless_launch_writes_its_standard_streams_to_a_file`].
+    #[cfg(not(windows))]
+    #[test]
+    fn a_stream_repair_is_not_offered_where_streams_are_descriptors() {
+        let path = std::path::Path::new("/nonexistent/future-stdio.log");
+        assert!(!redirect_windowless_standard_streams(path).unwrap());
+        assert!(!path.exists(), "a refused repair must not create the file");
     }
 }
