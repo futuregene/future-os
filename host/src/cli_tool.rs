@@ -255,6 +255,19 @@ impl ProbeDeadlineGuard {
     pub fn without_deadline() -> Self {
         Self::set(None)
     }
+
+    /// What this thread has armed, so a caller that hands the probe to another
+    /// thread can re-arm it there. `spawn_blocking` carries no thread-locals
+    /// across the hop, and the seam is deliberately thread-local (see
+    /// [`PROBE_DEADLINE_OVERRIDE`]), so an async command that offloads
+    /// discovery would otherwise decide such a test by the production budget:
+    /// measured 2026-11-01, `commands::update::tests::
+    /// app_maintenance_status_reports_the_cli_it_discovered` red under the full
+    /// parallel suite with `CLI discovery timed out` while passing alone.
+    /// `Some(None)` = armed without a deadline; `None` = nothing armed here.
+    pub fn inherited() -> Option<Option<Duration>> {
+        PROBE_DEADLINE_OVERRIDE.with(|cell| *cell.borrow())
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
