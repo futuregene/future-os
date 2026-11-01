@@ -746,14 +746,18 @@ mod tests {
             .await
             .expect("the streamed answer is read");
         assert_eq!(result["content"][0]["text"], "streamed");
-        let posed = requests.lock().unwrap();
-        assert!(
-            posed
-                .iter()
-                .any(|text| text.to_ascii_lowercase().contains("mcp-session-id: sess-7")),
-            "the named session is echoed on later requests: {posed:?}"
-        );
-        drop(posed);
+        // Scoped so the guard is released before the session is shut down: a
+        // lock held across an await would make the fake server's recorder a
+        // bottleneck for the test's own cleanup.
+        {
+            let posed = requests.lock().unwrap();
+            assert!(
+                posed
+                    .iter()
+                    .any(|text| text.to_ascii_lowercase().contains("mcp-session-id: sess-7")),
+                "the named session is echoed on later requests: {posed:?}"
+            );
+        }
         session.shutdown().await;
     }
 
