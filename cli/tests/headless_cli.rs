@@ -179,7 +179,7 @@ fn a_relay_launch_serves_without_a_future_account() {
     // platform account to get there. The *file* says nothing — the embedded
     // Agent writes its own placeholder `auth.json` on startup — but a key in it
     // would: only the account branch stores one.
-    let auth = std::fs::read_to_string(home.path().join(".future/agent/auth.json"))
+    let auth = std::fs::read_to_string(home.path().join(".future").join("agent").join("auth.json"))
         .expect("the embedded Agent writes its own credential file");
     let stored: serde_json::Value = serde_json::from_str(&auth).expect("auth.json is JSON");
     assert!(

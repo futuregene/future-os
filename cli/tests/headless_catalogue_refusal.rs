@@ -116,7 +116,7 @@ mod unix {
     /// The state one interactive setup leaves behind, minus the pairing: a
     /// signed-in account whose platform is this test's loopback listener.
     fn signed_in_home(home: &Path, platform: &str) -> std::path::PathBuf {
-        let agent_dir = home.join(".future/agent");
+        let agent_dir = home.join(".future").join("agent");
         std::fs::create_dir_all(&agent_dir).unwrap();
         let auth = agent_dir.join("auth.json");
         std::fs::write(
@@ -219,7 +219,7 @@ mod unix {
         let platform = ProfileOnlyPlatform::start();
         let home = tempfile::tempdir().unwrap();
         let auth = signed_in_home(home.path(), &platform.url);
-        let written = std::fs::read_to_string(&auth).unwrap();
+        let written = std::fs::read_to_string(&auth).expect("the fixture wrote the account file");
 
         // A live Agent that answers every other command and refuses this one.
         let mock = future_host::test_support::agent::mock_agent();
@@ -287,7 +287,7 @@ mod unix {
         // The failure was a property of the Agent's answer, not of this run's
         // own state: the credential the test wrote is still exactly there.
         assert_eq!(
-            std::fs::read_to_string(&auth).unwrap(),
+            std::fs::read_to_string(&auth).expect("the account file is still readable"),
             written,
             "a refused catalogue refresh must not rewrite the account file"
         );
