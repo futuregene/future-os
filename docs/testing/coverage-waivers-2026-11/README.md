@@ -13,7 +13,9 @@
 |---|---|---:|---|---|
 | [web.md](web.md) | web（desktop vitest），布局与交互组 | 37（33 `W2` + 4 `W8`） | `desktop/src/components/layout/`、`features/vibe/`、`features/agent/`、`features/palette/`、`features/tasks/`、`terminal/`、`artifacts/`… | lane 102，其中 37 条在此 |
 | [web-remote.md](web-remote.md) | web（desktop vitest），远端 / 设置组 + 收口批次 2-3 采纳的 16 条 | 42（38 `W2` + 2 `W5` + 2 `W8`） | `desktop/src/features/remote/`、`features/remote-peer/`、`features/settings/`；行 27-42 来自 lane 审计（见文件内说明） | 42 条在此 |
+| [host.md](host.md) | host（rust, llvm-cov） | 90（21 `W1`-`W7` + 20 `W8` + 33 `W9`-`W12` + 1 `W13` + 15 `W14`-`W17`） | `host/src/**` 的 lib lane（`cargo llvm-cov -p future-host --lib`） | lane 2464，其中 90 条在此；**358 OPEN**（`spawn_host` 与其 `perform` 臂已由实测关闭，剩客户端角色的一半，见 §4.1） |
 | [tui.md](tui.md) | tui（rust, llvm-cov） | 2 | `tui/src/workbench/live.rs` 的两处 | 见该文件头部 |
+| [cli.md](cli.md) | cli（rust, llvm-cov） | 53（16 行登记 + 79 行一类关闭符） | `relay/`（cli、server、room 的 HTTP 与注册表）、`prompt` 的行回退与 OS 失败臂、`commands/remote_peers` 的 add/list/rename、`commands/remote` 的报告与面板臂、`headless/agent` 的 `supervise` | **266**（49 行登记、130 行工作项、8 行待产品决定，均不是豁免）；另见 [cli-safari-gate-flake.md](cli-safari-gate-flake.md) |
 | [mobile.md](mobile.md) | mobile（jest） | 8 | `mobile/src` | 见该文件头部 |
 
 `mobile.md` 与 `tui.md` 的权威数字在各自文件头部，本索引不复述——复述过的数字迟早会不一致。

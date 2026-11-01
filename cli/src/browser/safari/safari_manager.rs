@@ -20,66 +20,144 @@ const SAFARIDRIVER_PATH: &str = "/usr/bin/safaridriver";
 static SAFARIDRIVER_PATH_OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 /// Test-only: point `safaridriver_path()` at a path the test owns, with a guard
-/// that restores it. Module-level (not inside `mod tests`) so the launch tests
-/// below can use it on every platform — the unix-only `set_driver_override`
-/// variant exists only because its callers spawn real fixtures.
+/// that restores the previous value.
+///
+/// The slot is **process-wide on purpose**, and the shape is not negotiable: the
+/// launch reads it from a `tokio::spawn`ed task (`safari_start` runs as its own
+/// task in the two launch tests below), and libtest gives each test its own
+/// thread while a multi-thread runtime hands that task to a *worker* thread — a
+/// thread-local would be `None` exactly where it is read. Measured 2026-11-01:
+/// with this slot written as a thread-local, `launch_then_become_reachable_reports_started`
+/// spawns `/bin/sh` (the `cfg(test)` default) instead of the fixture and fails
+/// with "the driver was never spawned".
+///
+/// What keeps two tests from clobbering each other is therefore **`ENV_LOCK`**:
+/// every user of this seam holds it for its whole body (`lock_env`), so the
+/// slot is only ever set by the test that is running. Restoring the previous
+/// value instead of `None` keeps the guard composable (nested guards, a seam
+/// wrapper that sets its own fixture) and keeps a leaked value from being
+/// silently replaced by the next test's reset.
 #[cfg(test)]
 fn set_driver_path_for_tests(path: &str) -> DriverPathReset {
-    *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() = Some(path.to_string());
-    DriverPathReset
+    DriverPathReset {
+        previous: (*SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap()).replace(path.to_string()),
+    }
 }
 
 /// Guard returned by [`set_driver_path_for_tests`].
 #[cfg(test)]
-struct DriverPathReset;
+struct DriverPathReset {
+    previous: Option<String>,
+}
 
 #[cfg(test)]
 impl Drop for DriverPathReset {
     fn drop(&mut self) {
-        *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() = None;
+        *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() = self.previous.take();
     }
 }
 
-/// What ends the readiness poll: `None` is production (the 10 s wall-clock
-/// window), `Some(max)` is the test seam (stop after `max` probes).
+/// What ends the readiness poll while a test is running: production has no
+/// override, so the poll ends on the product's own 10 s window.
 ///
 /// The seam exists because a test that asserts "the driver is launched and the
 /// poll then finds it" would otherwise be a race between the product's 10 s
 /// window and the host: the endpoint cannot be up before the spawn (an endpoint
 /// that answered earlier takes the `already_running` arm), so an external
 /// process — the test's mock, or a driver script of its own — has to start
-/// inside the window. With a probe-count budget the outcome is decided by the
-/// retry loop noticing the answer, not by the host's scheduler; the wall-clock
+/// inside the window.
+///
+/// The seam used to be a **probe count** (`set(200)` → 200 probes, 250 ms
+/// apart). That is a duration in disguise — 50 s whose length the test neither
+/// chose nor could observe — so on a host that needed longer than that to get
+/// the fixture's child as far as its first write, the count itself became the
+/// verdict. It is now an object the **test owns** ([`ReadinessWindow`]): while a
+/// window is held open the poll has neither a deadline nor a count, and it ends
+/// when the answer arrives or when the test closes the window. The product's own
 /// window keeps its own test (`start_launch_never_ready_times_out`, which
-/// asserts the 10 s wait and the `did not respond … within 10s` error).
-fn readiness_budget() -> Option<u32> {
-    #[cfg(test)]
-    if let Some(max) = *READINESS_BUDGET_OVERRIDE.lock().unwrap() {
-        return Some(max);
-    }
-    None
+/// asserts the 10 s wait and the `did not respond … within 10s` error), and the
+/// closed-early arm has one too
+/// (`start_stops_polling_when_the_test_closes_its_window`).
+#[cfg(test)]
+fn readiness_window() -> Option<std::sync::Arc<ReadinessWindow>> {
+    READINESS_WINDOW.lock().unwrap().clone()
 }
 
 #[cfg(test)]
-static READINESS_BUDGET_OVERRIDE: std::sync::Mutex<Option<u32>> = std::sync::Mutex::new(None);
+static READINESS_WINDOW: std::sync::Mutex<Option<std::sync::Arc<ReadinessWindow>>> =
+    std::sync::Mutex::new(None);
 
-/// Sets [`READINESS_BUDGET_OVERRIDE`] and restores it on drop, so a panicking
-/// test cannot leak a probe budget into the rest of the binary.
+/// A readiness window a test holds in its own hand. Open means "keep probing":
+/// the poll has no deadline of its own while it lasts, so nothing about the
+/// host's scheduling can end it — only the answer, or [`Self::close`].
 #[cfg(test)]
-struct ReadinessBudgetGuard;
+pub(crate) struct ReadinessWindow {
+    open: std::sync::atomic::AtomicBool,
+}
 
 #[cfg(test)]
-impl ReadinessBudgetGuard {
-    fn set(max_probes: u32) -> Self {
-        *READINESS_BUDGET_OVERRIDE.lock().unwrap() = Some(max_probes);
-        ReadinessBudgetGuard
+impl ReadinessWindow {
+    fn is_open(&self) -> bool {
+        self.open.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// Puts a [`ReadinessWindow`] in the slot for as long as it lives and restores
+/// the previous value on drop, so a panicking test cannot leave a window open
+/// for the rest of the binary and a nested guard gives its caller back what it
+/// found.
+///
+/// Its users hold `ENV_LOCK` (see [`set_driver_path_for_tests`] for why the slot
+/// cannot be thread-local: the poll runs on a runtime worker thread, not on the
+/// test's own).
+#[cfg(test)]
+pub(crate) struct ReadinessWindowGuard {
+    window: std::sync::Arc<ReadinessWindow>,
+    previous: Option<std::sync::Arc<ReadinessWindow>>,
+}
+
+#[cfg(test)]
+impl ReadinessWindowGuard {
+    /// A window that is open: the poll keeps probing until this guard is
+    /// dropped or [`Self::close`]d, so a fixture that takes its time is never
+    /// outrun by a deadline or a count.
+    pub(crate) fn open() -> Self {
+        Self::holding(true)
+    }
+
+    /// A window that is already closed: the poll ends before its first probe.
+    /// This is the "no answer is coming, do not spend the window on it" arm the
+    /// probe budget used to express as `set(1)`.
+    pub(crate) fn closed() -> Self {
+        Self::holding(false)
+    }
+
+    fn holding(open: bool) -> Self {
+        let window = std::sync::Arc::new(ReadinessWindow {
+            open: std::sync::atomic::AtomicBool::new(open),
+        });
+        ReadinessWindowGuard {
+            previous: READINESS_WINDOW.lock().unwrap().replace(window.clone()),
+            window,
+        }
+    }
+
+    /// Ends the poll the window was holding open. The test owns this decision,
+    /// which is the whole point of the seam: nothing about the host ends it.
+    pub(crate) fn close(&self) {
+        self.window
+            .open
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
 #[cfg(test)]
-impl Drop for ReadinessBudgetGuard {
+impl Drop for ReadinessWindowGuard {
     fn drop(&mut self) {
-        *READINESS_BUDGET_OVERRIDE.lock().unwrap() = None;
+        // Close before restoring: a poll that re-reads the slot between these
+        // two statements must not see `None` and start a fresh 10 s window.
+        self.close();
+        *READINESS_WINDOW.lock().unwrap() = self.previous.take();
     }
 }
 
@@ -116,18 +194,29 @@ static SAFARI_PLATFORM_OVERRIDE: std::sync::Mutex<Option<bool>> = std::sync::Mut
 /// Windows and Linux too.
 #[cfg(test)]
 pub(crate) fn force_macos_gate() -> MacosGate {
-    *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
-    MacosGate
+    set_macos_gate_for_tests(true)
 }
 
-/// Guard returned by [`force_macos_gate`]; restores the platform on drop.
+/// The same seam with the other answer, so a test that asserts the *refusal*
+/// arm uses the guard instead of writing the slot itself (a bare write is not
+/// restored if the test panics, and the next test on this binary inherits it).
 #[cfg(test)]
-pub(crate) struct MacosGate;
+fn set_macos_gate_for_tests(value: bool) -> MacosGate {
+    MacosGate {
+        previous: (*SAFARI_PLATFORM_OVERRIDE.lock().unwrap()).replace(value),
+    }
+}
+
+/// Guard returned by [`force_macos_gate`]; restores the previous answer on drop.
+#[cfg(test)]
+pub(crate) struct MacosGate {
+    previous: Option<bool>,
+}
 
 #[cfg(test)]
 impl Drop for MacosGate {
     fn drop(&mut self) {
-        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = None;
+        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = self.previous.take();
     }
 }
 
@@ -180,24 +269,25 @@ pub async fn safari_start(
         .map_err(|e| format!("Failed to launch safaridriver: {e}"))?;
     let pid = child.id().unwrap_or(0) as i64;
 
-    // Wait for it to be ready.
-    let budget = readiness_budget();
+    // Wait for it to be ready. What ends the poll is the answer, the product's
+    // own 10 s window — or, in a test, the window that test holds (see
+    // [`readiness_window`]): re-read on every probe, so a test that closes its
+    // window (or unwinds out of the test body and drops the guard) hands the
+    // loop back to the product's window instead of leaving it with nothing to
+    // stop on. There is no probe count: a count would be a duration the test
+    // did not choose, which is the race this seam exists to avoid.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let mut probes: u32 = 0;
     loop {
-        match budget {
-            None => {
-                if std::time::Instant::now() >= deadline {
-                    break;
-                }
-            }
-            Some(max) => {
-                if probes >= max {
-                    break;
-                }
-            }
+        #[cfg(test)]
+        let poll_on = match readiness_window() {
+            Some(window) => window.is_open(),
+            None => std::time::Instant::now() < deadline,
+        };
+        #[cfg(not(test))]
+        let poll_on = std::time::Instant::now() < deadline;
+        if !poll_on {
+            break;
         }
-        probes += 1;
         if endpoint_reachable(&driver_endpoint).await {
             let session_id = create_session_with_translation(&driver_endpoint).await?;
             return Ok(SafariStartResult {
@@ -341,14 +431,42 @@ mod tests {
     use super::*;
     use crate::test_server::{spawn_http, HttpRoute};
 
-    /// Reset the driver-path override after a test. Its users (the
-    /// safaridriver launch tests) are unix-only.
-    #[cfg(unix)]
-    struct OverrideReset;
-    #[cfg(unix)]
-    impl Drop for OverrideReset {
-        fn drop(&mut self) {
-            *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() = None;
+    /// The launch task answered before the fake driver got as far as recording
+    /// itself: the product's own answer is the failure text — a spawn error, a
+    /// port error, a refusal — never this test's wait. Returns `!`, so a wait
+    /// loop cannot fall through to another poll after reporting.
+    /// How long the fixture's own record may take before the *fixture* is
+    /// declared broken.
+    ///
+    /// This is the fixture's liveness, not the product's verdict, and the
+    /// difference is the whole point: 120 s is ~8x what this group costs on an
+    /// idle host (12-15 s) and 2.7x the worst case measured under load 47 with a
+    /// 25 s artificial child delay (44 s of probing). It is reachable only when
+    /// the child the product forked was never scheduled at all — the one thing
+    /// neither the product nor the test can observe — and reaching it fails
+    /// with that name instead of hanging the binary. It can never turn a healthy
+    /// run red, because a run that gets its fixture record does not wait on it.
+    const FIXTURE_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
+
+    /// Fails with the fixture's own name when its child made no progress at all
+    /// inside [`FIXTURE_BUDGET`] — the arm that used to be "the product's probe
+    /// budget ran out", which reported a product answer for a fixture problem.
+    fn assert_fixture_progress(record: &std::path::Path, started_at: std::time::Instant) {
+        assert!(
+            started_at.elapsed() < FIXTURE_BUDGET,
+            "the fixture's driver never recorded {} within {:?}: the child it was \
+             launched as was never scheduled, so no product answer exists to report \
+             (the readiness window is still open)",
+            record.display(),
+            FIXTURE_BUDGET
+        );
+    }
+
+    fn report_early_launch<T>(joined: Result<Result<T, String>, tokio::task::JoinError>) -> ! {
+        match joined {
+            Ok(Ok(_)) => panic!("safari_start answered without spawning a driver"),
+            Ok(Err(error)) => panic!("safari_start failed before spawning a driver: {error}"),
+            Err(join) => panic!("the safari_start task panicked: {join}"),
         }
     }
 
@@ -365,12 +483,6 @@ mod tests {
                     .status();
             }
         }
-    }
-
-    #[cfg(unix)]
-    fn set_driver_override(path: &str) -> OverrideReset {
-        *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() = Some(path.to_string());
-        OverrideReset
     }
 
     /// A port this test owns for its whole body. Not `bind("127.0.0.1:0")` +
@@ -473,10 +585,9 @@ mod tests {
     /// 48 burners. The 10 s window keeps its own test
     /// (`start_launch_never_ready_times_out`).
     ///
-    /// A 12 s driver is deliberately *not* kept here: it would sit on this
-    /// test's own marker wait (a 20 s bound), which is exactly the
-    /// load-sensitive construction the workstream forbids (measured 8/24 at 8
-    /// concurrent streams under 48 burners).
+    /// A 12 s driver is still deliberately *not* kept here: it would slow the
+    /// suite down for nothing this test asserts. The point is only that a slow
+    /// driver can no longer *fail* it — see the wait below.
     #[tokio::test(flavor = "multi_thread")]
     async fn launch_then_become_reachable_reports_started() {
         let _guard = crate::test_env::lock_env().await;
@@ -485,31 +596,43 @@ mod tests {
         let marker = dir.path().join("driver-ran.txt");
         let script = driver_script(dir.path(), &marker);
         let _driver = set_driver_path_for_tests(&script.display().to_string());
-        // Enough probes for the spawn → mock-up → answer sequence, none of them
-        // charged against the product's 10 s. The outcome is then decided by the
-        // poll noticing the answer, not by the host starting the test's mock
-        // inside the window (a driver that took 12 s to touch its marker used to
-        // make this test report `did not respond … within 10s`, 5/5 red).
-        let _budget = ReadinessBudgetGuard::set(200);
+        // The poll is held open by a window this test owns, so neither a
+        // deadline nor a probe count decides the outcome: what ends it is the
+        // poll noticing the answer below. (Measured 2026-11-01: a driver that
+        // took 12 s to touch its marker made this test report `did not respond
+        // … within 10s` 5/5 under the product's window, and the 20 s deadline
+        // that replaced it failed 2/2 under a 25 s child delay.)
+        let _window = ReadinessWindowGuard::open();
 
         let port = free_port();
-        let started = tokio::spawn(async move { safari_start(port, None).await });
+        let mut started = tokio::spawn(async move { safari_start(port, None).await });
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        // No clock of this test's own decides the outcome. The marker is what
+        // puts the mock's appearance *after* the spawn (an endpoint answering
+        // earlier takes the `already_running` branch), and the wait for it ends
+        // on two events only: the fixture's own record, or the product's answer
+        // (the launch finishing says why it will never be reached).
+        //
+        // Measured 2026-11-01: with a 20 s deadline here (the previous shape),
+        // a driver script that sleeps 25 s before touching its marker failed
+        // **2/2** — both launch tests, both with "the driver was never spawned,
+        // so the poll was never reached" — which is exactly the message the
+        // full suite produced on a host at load 47.5 (1 of 11 runs,
+        // `coverage/flaky/raw/cli-lib-clean-6.log`).
+        let fixture_started = std::time::Instant::now();
         while !marker.exists() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the driver was never spawned, so the poll was never reached"
-            );
+            if started.is_finished() {
+                report_early_launch((&mut started).await);
+            }
+            assert_fixture_progress(&marker, fixture_started);
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
 
         let server = serve_webdriver(port).await;
-        let result = tokio::time::timeout(std::time::Duration::from_secs(30), started)
+        let result = started
             .await
-            .expect("safari_start is bounded by its own 10 s window")
             .expect("the task does not panic")
-            .expect("a driver that answers in the window is a success");
+            .expect("a driver that answers inside the probe budget is a success");
         let answered = server.stop().await;
 
         assert_eq!(result.status, "started");
@@ -673,6 +796,10 @@ mod tests {
     /// coverage counter (`docs/testing/module-cli.md` §4b), and waiting for the
     /// task is also the assertion that the mock finished its work.
     async fn serve_webdriver(port: i64) -> WebdriverMock {
+        // The mock holds a listener and one connection per WebDriver call, in a
+        // process shared with every other test in this binary
+        // (see `crate::test_env::ensure_fd_headroom`).
+        crate::test_env::ensure_fd_headroom();
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", port as u16))
             .await
             .expect("the resolved port is still free");
@@ -756,8 +883,7 @@ mod tests {
     #[tokio::test]
     async fn start_already_running_creates_session() {
         let _guard = crate::test_env::lock_env().await;
-        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
-        let _reset = PlatformReset;
+        let _reset = force_macos_gate();
         let base = spawn_http(vec![
             HttpRoute::json("/status", 200, r#"{"ready":true}"#),
             HttpRoute::json("/session", 200, r#"{"sessionId":"sid-1","value":{}}"#),
@@ -782,8 +908,7 @@ mod tests {
     #[tokio::test]
     async fn start_translates_permission_errors() {
         let _guard = crate::test_env::lock_env().await;
-        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
-        let _reset = PlatformReset;
+        let _reset = force_macos_gate();
         for body in [
             r#"{"value":{"error":"session not created","message":"boom"}}"#,
             r#"{"value":{"error":"unknown error","message":"You must Allow Remote Automation first"}}"#,
@@ -802,8 +927,7 @@ mod tests {
     #[tokio::test]
     async fn start_passthrough_other_session_errors() {
         let _guard = crate::test_env::lock_env().await;
-        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
-        let _reset = PlatformReset;
+        let _reset = force_macos_gate();
         let base = spawn_http(vec![
             HttpRoute::json("/status", 200, r#"{"ready":true}"#),
             HttpRoute::json(
@@ -824,9 +948,8 @@ mod tests {
     #[tokio::test]
     async fn start_launch_spawn_failure() {
         let _guard = crate::test_env::lock_env().await;
-        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
-        let _reset_platform = PlatformReset;
-        let _reset = set_driver_override("/nonexistent/safaridriver");
+        let _reset_platform = force_macos_gate();
+        let _reset = set_driver_path_for_tests("/nonexistent/safaridriver");
         let err = safari_start(free_port(), None).await.err().unwrap();
         assert!(err.contains("Failed to launch safaridriver"), "{err}");
     }
@@ -835,8 +958,7 @@ mod tests {
     #[tokio::test]
     async fn start_launch_never_ready_times_out() {
         let _guard = crate::test_env::lock_env().await;
-        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
-        let _reset = PlatformReset;
+        let _reset = force_macos_gate();
         // No driver-path override: the cfg(test) default is /bin/sh, which
         // spawns fine but never serves → 10 s wait → error.
         let started = std::time::Instant::now();
@@ -848,18 +970,51 @@ mod tests {
         assert!(started.elapsed().as_secs() >= 10);
     }
 
-    /// The budgeted twin of the test above: the poll is stopped by the probe
-    /// budget rather than by the product's 10 s window. The driver spawns and
-    /// never answers (the `cfg(test)` default driver is `/bin/sh`), so the loop
-    /// leaves through `probes >= max` — the arm every fast launch test relies on
-    /// but none takes, because their endpoint answers first.
+    /// The twin of the test above: the poll is ended by the **test's own
+    /// window**, not by the product's 10 s one and not by a probe count. The
+    /// driver spawns and never answers (the `cfg(test)` default driver is
+    /// `/bin/sh`, which exits without serving), so the poll keeps probing for as
+    /// long as the window is open — that is the arm every fast launch test
+    /// relies on to survive a host that schedules its child late, and no other
+    /// test takes it, because their endpoint answers first.
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
-    async fn start_stops_polling_when_the_probe_budget_runs_out() {
+    async fn start_stops_polling_when_the_test_closes_its_window() {
         let _guard = crate::test_env::lock_env().await;
-        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
-        let _reset = PlatformReset;
-        let _budget = ReadinessBudgetGuard::set(2);
+        let _reset = force_macos_gate();
+        let window = ReadinessWindowGuard::open();
+        let port = free_port();
+        let started = tokio::spawn(async move { safari_start(port, Some("https://x")).await });
+
+        // Left alone, an open window outlives any probe count and the product's
+        // window: three seconds in, nothing has ended the poll but the test.
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        assert!(
+            !started.is_finished(),
+            "an open window keeps the poll going: no deadline and no probe count ends it"
+        );
+
+        // Closing it is what ends the poll — the answer the product then gives
+        // is "did not respond", because the window is not the readiness answer.
+        window.close();
+        let err = started
+            .await
+            .expect("the task does not panic")
+            .err()
+            .unwrap();
+        assert!(err.contains("did not respond"), "{err}");
+    }
+
+    /// A window that is already closed ends the poll before its first probe:
+    /// the "no answer is coming, do not spend a window on it" arm (what the
+    /// probe budget used to express as `set(1)`), reachable for other modules'
+    /// tests through [`ReadinessWindowGuard::closed`].
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_closed_window_ends_the_poll_before_its_first_probe() {
+        let _guard = crate::test_env::lock_env().await;
+        let _reset = force_macos_gate();
+        let _window = ReadinessWindowGuard::closed();
         let started = std::time::Instant::now();
         let err = safari_start(free_port(), Some("https://x"))
             .await
@@ -867,8 +1022,8 @@ mod tests {
             .unwrap();
         assert!(err.contains("did not respond"), "{err}");
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(5),
-            "the probe budget ended the poll, not the 10 s window: {:?}",
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "a closed window costs no probe at all: {:?}",
             started.elapsed()
         );
     }
@@ -902,8 +1057,16 @@ mod tests {
     #[tokio::test]
     async fn start_launch_success_against_fake_driver() {
         let _guard = crate::test_env::lock_env().await;
-        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
-        let _reset_platform = PlatformReset;
+        // The mock endpoint can only appear after the spawn records its port, so
+        // what decides this test must be the poll *noticing* the answer, not the
+        // host scheduling the mock quickly enough for the product's 10 s window —
+        // that is the same load-sensitive construction the neighbouring
+        // `launch_then_become_reachable_reports_started` was fixed for (measured
+        // 5/5 red with a slow driver). The window this test owns, not a probe
+        // count, is what keeps the poll alive until then; the product's window
+        // keeps its own test (`start_launch_never_ready_times_out`).
+        let _window = ReadinessWindowGuard::open();
+        let _reset_platform = force_macos_gate();
         // Fake safaridriver: a POSIX shell script that records the port it was
         // launched with (`$2`) and then stays alive (`exec`, so the pid the CLI
         // reports is exactly the process this test kills) — a real driver is a
@@ -924,16 +1087,21 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&sh, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let _reset = set_driver_override(&sh.to_string_lossy());
+        let _reset = set_driver_path_for_tests(&sh.to_string_lossy());
 
         let requested = free_port();
-        let started = tokio::spawn(async move { safari_start(requested, Some("http://x/")).await });
+        let mut started =
+            tokio::spawn(async move { safari_start(requested, Some("http://x/")).await });
 
         // The spawn is behind us once the driver has recorded its port; only
         // then does the endpoint appear, so the poll — not a lucky first probe —
         // is what witnesses the driver answering. The port is the CLI's own
         // resolved one, never an assumption about `requested`.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        //
+        // Same rule as its twin above: the wait ends on the fixture's own record
+        // or on the product's answer (the launch finishing), and its budget is
+        // the fixture's liveness — never the product's probe count.
+        let fixture_started = std::time::Instant::now();
         let port: i64 = loop {
             if let Ok(raw) = std::fs::read_to_string(&port_file) {
                 if let Ok(port) = raw.trim().parse::<i64>() {
@@ -942,18 +1110,20 @@ mod tests {
                     }
                 }
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the driver was never spawned, so the poll was never reached"
-            );
+            // A `safari_start` that returned before spawning never writes that
+            // file, and its own answer is the only thing that explains why —
+            // the product's error, never this test's wait.
+            if started.is_finished() {
+                report_early_launch((&mut started).await);
+            }
+            assert_fixture_progress(&port_file, fixture_started);
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         };
         let server = serve_webdriver(port).await;
-        let result = tokio::time::timeout(std::time::Duration::from_secs(30), started)
+        let result = started
             .await
-            .expect("safari_start is bounded by its own 10 s window")
             .expect("the task does not panic")
-            .expect("a driver that answers in the window is a success");
+            .expect("a driver that answers while the fixture's window is open is a success");
         let answered = server.stop().await;
 
         // Reap the fake-driver child this test spawned on exit (even on panic).
@@ -999,20 +1169,11 @@ mod tests {
         );
     }
 
-    /// Reset the platform override after a test.
-    struct PlatformReset;
-    impl Drop for PlatformReset {
-        fn drop(&mut self) {
-            *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = None;
-        }
-    }
-
     #[tokio::test]
     async fn start_rejected_off_macos() {
         // Platform override forces the non-macOS gate on any host.
         let _guard = crate::test_env::lock_env().await;
-        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(false);
-        let _reset = PlatformReset;
+        let _reset = set_macos_gate_for_tests(false);
         let err = safari_start(free_port(), None).await.err().unwrap();
         assert_eq!(err, "Safari is only available on macOS.");
     }
@@ -1022,8 +1183,7 @@ mod tests {
         // All 50 candidate ports occupied → resolve_port error propagates
         // through safari_start (before any launch attempt).
         let _guard = crate::test_env::lock_env().await;
-        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
-        let _reset = PlatformReset;
+        let _reset = force_macos_gate();
         let (first, holders) = crate::test_env::reserve_consecutive_ports(50);
         let err = safari_start(first, None).await.err().unwrap();
         assert!(err.contains("No available port found near"), "{err}");
@@ -1088,13 +1248,19 @@ mod tests {
     #[tokio::test]
     async fn the_driver_path_override_wins_over_the_test_default() {
         let _guard = crate::test_env::lock_env().await;
-        // Reset first: the override is process-global, so a value left by an
-        // earlier test in this binary is not this test's starting state.
-        *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() = None;
+        // No test holds the seam here, and every guard restores the value it
+        // found, so the `cfg(test)` default is the starting state — a leaked
+        // override fails this assertion instead of being quietly reset away.
         assert_eq!(safaridriver_path(), "/bin/sh");
-        *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() = Some("X".to_string());
-        assert_eq!(safaridriver_path(), "X");
-        *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() = None;
+        {
+            let _driver = set_driver_path_for_tests("X");
+            assert_eq!(safaridriver_path(), "X");
+        }
+        assert_eq!(
+            safaridriver_path(),
+            "/bin/sh",
+            "the guard restored the default"
+        );
         // The launcher reported on success is the real constant, not the
         // test default — one is the binary that runs, the other what the
         // caller is told about it.
@@ -1103,15 +1269,19 @@ mod tests {
 
     /// The macOS gate is driven by the override, so both answers are reachable
     /// on a non-macOS host — and with no override it is this host's own
-    /// `cfg!(target_os = "macos")`.
+    /// `cfg!(target_os = "macos")`. Both answers come from the same seam, and
+    /// leaving the guarded block restores what the block found.
     #[tokio::test]
     async fn the_platform_override_decides_the_macos_gate() {
         let _guard = crate::test_env::lock_env().await;
-        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
-        assert!(is_macos());
-        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(false);
-        assert!(!is_macos());
-        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = None;
+        {
+            let _macos = force_macos_gate();
+            assert!(is_macos());
+        }
+        {
+            let _macos = set_macos_gate_for_tests(false);
+            assert!(!is_macos());
+        }
         assert_eq!(is_macos(), cfg!(target_os = "macos"));
     }
 
@@ -1128,24 +1298,24 @@ mod tests {
     #[tokio::test]
     async fn launch_failure_and_readiness_timeout_are_both_reported() {
         let _guard = crate::test_env::lock_env().await;
-        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
-        let _reset = PlatformReset;
+        let _reset = force_macos_gate();
 
         // 1. The driver does not exist → the spawn error is reported. (The
         //    message is the OS error; Windows' `CreateProcess` failure does not
         //    carry the missing path, so only the launcher is named.)
-        *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() =
-            Some("C:\\future-clitui-no-such-driver.exe".to_string());
-        let err = safari_start(free_port(), None)
-            .await
-            .map(|_| ())
-            .expect_err("a missing driver cannot start");
-        assert!(err.contains("Failed to launch safaridriver"), "{err}");
+        {
+            let _missing = set_driver_path_for_tests("C:\\future-clitui-no-such-driver.exe");
+            let err = safari_start(free_port(), None)
+                .await
+                .map(|_| ())
+                .expect_err("a missing driver cannot start");
+            assert!(err.contains("Failed to launch safaridriver"), "{err}");
+        }
 
         // 2. The driver starts but never serves → the 10 s readiness budget
         //    expires with the endpoint named. `where` exists on every Windows
         //    host and exits immediately on an unknown option.
-        *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() = Some("where".to_string());
+        let _where_driver = set_driver_path_for_tests("where");
         let port = free_port();
         let err = safari_start(port, None)
             .await
@@ -1154,6 +1324,5 @@ mod tests {
         assert!(err.contains("did not respond"), "{err}");
         assert!(err.contains(&format!("127.0.0.1:{port}")), "{err}");
         assert!(err.contains("within 10s"), "{err}");
-        *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() = None;
     }
 }

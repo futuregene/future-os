@@ -200,9 +200,15 @@ pub(crate) fn assert_json_eq(left: &serde_json::Value, right: &serde_json::Value
     fn difference(left: &serde_json::Value, right: &serde_json::Value, path: &str) -> String {
         match (left, right) {
             (serde_json::Value::Object(a), serde_json::Value::Object(b)) => {
+                // A key only one side carries has no member to index: `&a[key]`
+                // panics ("no entry found for key") and throws away the path this
+                // function exists to report, so the absent side is `Null`.
+                let absent = serde_json::Value::Null;
                 for key in a.keys().chain(b.keys()) {
                     if a.get(key) != b.get(key) {
-                        return difference(&a[key], &b[key], &format!("{path}/{key}"));
+                        let left = a.get(key).unwrap_or(&absent);
+                        let right = b.get(key).unwrap_or(&absent);
+                        return difference(left, right, &format!("{path}/{key}"));
                     }
                 }
             }
@@ -233,4 +239,86 @@ pub(crate) fn assert_json_eq(left: &serde_json::Value, right: &serde_json::Value
         "JSON differs at {}",
         difference(left, right, "")
     );
+}
+
+/// The diff behind [`assert_json_eq`]'s message. It only runs when an assertion
+/// is about to fail, so these tests drive it directly through a failing
+/// comparison and assert the *path it names* — that path is the whole reason the
+/// helper exists (a megabyte of body text tells a reader nothing).
+#[cfg(test)]
+mod assert_json_eq_tests {
+    use super::assert_json_eq;
+
+    #[test]
+    fn equal_documents_pass_without_a_message() {
+        assert_json_eq(
+            &serde_json::json!({"a": [1, {"b": "c"}]}),
+            &serde_json::json!({"a": [1, {"b": "c"}]}),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "JSON differs at /tool/arguments/budget")]
+    fn a_nested_object_difference_names_the_field_path() {
+        assert_json_eq(
+            &serde_json::json!({"tool": {"arguments": {"budget": 1}}, "ok": true}),
+            &serde_json::json!({"tool": {"arguments": {"budget": 2}}, "ok": true}),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "JSON differs at /blocks/1/kind")]
+    fn an_array_difference_names_the_index_then_the_field() {
+        assert_json_eq(
+            &serde_json::json!({"blocks": [{"kind": "text"}, {"kind": "tool"}]}),
+            &serde_json::json!({"blocks": [{"kind": "text"}, {"kind": "image"}]}),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "JSON differs at /entries/0/detail")]
+    fn a_field_present_on_one_side_only_is_reported_below_its_key() {
+        // An absent key reads back as `Null`, so the mismatch is named at the
+        // member that actually differs, not at the object holding it.
+        assert_json_eq(
+            &serde_json::json!({"entries": [{"status": "ok"}]}),
+            &serde_json::json!({"entries": [{"status": "ok", "detail": "x"}]}),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "JSON differs at /args (JSON encoding differs)")]
+    fn one_document_written_two_ways_is_named_as_an_encoding_difference() {
+        // The values differ (the strings are not equal) but the documents they
+        // carry are identical: reporting a field path here would send the reader
+        // looking for a value that is not wrong.
+        assert_json_eq(
+            &serde_json::json!({"args": "{\"a\":1}"}),
+            &serde_json::json!({"args": "{\"a\": 1}"}),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "JSON differs at /args:json/k")]
+    fn two_different_json_strings_are_compared_as_documents() {
+        assert_json_eq(
+            &serde_json::json!({"args": "{\"k\":1}"}),
+            &serde_json::json!({"args": "{\"k\":2}"}),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "JSON differs at /args")]
+    fn a_string_that_is_not_json_is_reported_where_it_sits() {
+        assert_json_eq(
+            &serde_json::json!({"args": "not json"}),
+            &serde_json::json!({"args": "also not json"}),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "JSON differs at ")]
+    fn differing_root_types_are_reported_at_the_root() {
+        assert_json_eq(&serde_json::json!(1), &serde_json::json!("1"));
+    }
 }

@@ -63,6 +63,27 @@ fn conflict(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::AddrInUse, message.into())
 }
 
+/// How long a connect probe may take before the endpoint is preserved as
+/// unclassified. A listener that is merely slow to accept would otherwise be
+/// replaced under it.
+const CONNECT_PROBE: Duration = Duration::from_millis(250);
+
+/// Name the outcome that preserved the endpoint, because the three cases are
+/// three different defects: a listener answered (an active endpoint, correctly
+/// preserved), a connect failed with a kind that is not a refusal, or the probe
+/// never got to run before its own budget elapsed — a loaded host, which says
+/// nothing about the endpoint. Reporting one string for all three is what made
+/// the first measurement of the lease flake ambiguous.
+fn probe_outcome(
+    outcome: &Result<io::Result<tokio::net::UnixStream>, tokio::time::error::Elapsed>,
+) -> String {
+    match outcome {
+        Ok(Ok(_)) => "a listener accepted the connection".to_string(),
+        Ok(Err(error)) => format!("connect failed with {:?}: {error}", error.kind()),
+        Err(_) => format!("the connect probe exceeded {CONNECT_PROBE:?}"),
+    }
+}
+
 impl LocalEndpointReservation {
     pub(super) async fn acquire(path: PathBuf) -> io::Result<Self> {
         let parent = path.parent().ok_or_else(|| {
@@ -145,18 +166,16 @@ impl LocalEndpointReservation {
                 "refusing to replace untrusted local endpoint",
             ));
         }
-        match tokio::time::timeout(
-            Duration::from_millis(250),
-            tokio::net::UnixStream::connect(&self.path),
-        )
-        .await
-        {
+        let outcome =
+            tokio::time::timeout(CONNECT_PROBE, tokio::net::UnixStream::connect(&self.path)).await;
+        match outcome {
             Ok(Err(error)) if error.kind() == io::ErrorKind::ConnectionRefused => {
                 Ok(Some(identity(&metadata)))
             }
-            _ => Err(conflict(format!(
-                "local endpoint is active or cannot be classified as stale: {}",
-                self.path.display()
+            outcome => Err(conflict(format!(
+                "local endpoint is active or cannot be classified as stale: {} ({})",
+                self.path.display(),
+                probe_outcome(&outcome)
             ))),
         }
     }
@@ -491,6 +510,14 @@ mod tests {
     /// rather than a 50/50. The drive is the module's own entry point,
     /// `acquire`+`bind`, on this test's private path — no environment variable,
     /// no other process.
+    ///
+    /// A note for whoever fixes this next: the churn has to keep running through
+    /// `acquire`, not start after it. Acquiring on a quiet socket first is the
+    /// obvious way to take the production classification out of the setup, and it
+    /// costs two orders of magnitude of hit rate — measured 2026-11-01, first hit
+    /// at drive 93..817 of the budget instead of 8..59 — because the replacements
+    /// only line up with `bind`'s two-syscall window while the churners have
+    /// already been spinning through the probe.
     #[tokio::test]
     async fn a_socket_replaced_between_the_probe_and_the_cleanup_is_refused() {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

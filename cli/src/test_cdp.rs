@@ -166,6 +166,11 @@ impl MockCdp {
 
     /// Start with explicit initial targets and a Browser identity string.
     pub async fn start_with(initial_targets: Vec<MockTarget>, browser: &str) -> Self {
+        // The CDP fixtures are the first sockets some test batches open (they
+        // sort before `commands::`), so the descriptor ceiling is lifted here as
+        // well as in `test_server`: whichever fixture a run reaches first, the
+        // process has the budget the suite needs.
+        crate::test_env::ensure_fd_headroom();
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind ws");
         let ws_addr = listener.local_addr().expect("local_addr");
         let ws_url = format!("ws://{ws_addr}/devtools/browser/mock");

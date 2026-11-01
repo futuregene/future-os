@@ -956,6 +956,7 @@ mod cut_short_drain_tests {
             let held: std::sync::Arc<std::sync::Mutex<Vec<std::net::TcpStream>>> =
                 Default::default();
             if platform_stalls {
+                crate::test_support::ensure_fd_headroom();
                 let stalling =
                     std::net::TcpListener::bind("127.0.0.1:0").expect("stalling endpoint");
                 let stalling_addr = stalling.local_addr().expect("stalling address");
@@ -989,6 +990,7 @@ mod cut_short_drain_tests {
                 .expect("settings.json");
             }
 
+            crate::test_support::ensure_fd_headroom();
             let port = std::net::TcpListener::bind("127.0.0.1:0")
                 .expect("probe a free port")
                 .local_addr()

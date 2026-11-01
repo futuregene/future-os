@@ -262,6 +262,24 @@ mod tests {
         super::cancel_test_tasks();
     }
 
+    /// Shutdown asks the registry whether it is frozen before it spawns what is
+    /// left of the work: freezing must be visible, and releasing the registry in
+    /// the fixture must clear it again, or the next test would spawn into a
+    /// closed registry and silently lose its job.
+    #[test]
+    fn a_frozen_registry_reports_itself_and_a_released_one_does_not() {
+        let _registry = RegistryGuard::new();
+        assert!(
+            !super::tasks_frozen(),
+            "the fixture releases the registry before handing it out"
+        );
+        super::freeze_tasks();
+        assert!(
+            super::tasks_frozen(),
+            "freezing has to be observable by the shutdown paths"
+        );
+    }
+
     #[test]
     fn frozen_registry_never_polls_late_work_or_starts_native_jobs() {
         let _registry = RegistryGuard::new();

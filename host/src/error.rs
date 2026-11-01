@@ -304,4 +304,46 @@ mod tests {
         assert!(matches!(workspaces_io, Error::Io(_)));
         assert!(workspaces_io.to_string().contains("workspaces io"));
     }
+
+    /// The relay and remote-client layers wrap a host error in a boxed `dyn
+    /// Error`; the conversion is what puts it back. A payload that is ours keeps
+    /// its variant (so a caller matching `NotSignedIn` still sees it), and one
+    /// that is not ours becomes a message instead of being lost.
+    #[test]
+    fn a_boxed_remote_error_is_unwrapped_only_when_it_is_ours() {
+        use future_remote_client::Error as ClientError;
+        use future_remote_server::Error as ServerError;
+
+        // server → host: a host payload survives, a foreign one becomes a message.
+        let ours: Error = ServerError::Host(Box::new(Error::NotSignedIn)).into();
+        assert!(matches!(ours, Error::NotSignedIn), "{ours:?}");
+        let foreign: Error = ServerError::Host(Box::new(std::io::Error::other("not ours"))).into();
+        assert!(
+            matches!(&foreign, Error::Message(text) if text.contains("not ours")),
+            "{foreign:?}"
+        );
+        let account: Error =
+            ServerError::AccountAuthorization(Box::new(std::io::Error::other("signed out"))).into();
+        assert!(
+            matches!(&account, Error::Message(text) if text.contains("signed out")),
+            "{account:?}"
+        );
+
+        // client → host: the same unwrapping, plus the JSON kind kept as itself
+        // so a settings writer can still tell "corrupt file" from "transport".
+        let ours: Error = ClientError::Host(Box::new(Error::NotSignedIn)).into();
+        assert!(matches!(ours, Error::NotSignedIn), "{ours:?}");
+        let foreign: Error = ClientError::Host(Box::new(std::io::Error::other("not ours"))).into();
+        assert!(
+            matches!(&foreign, Error::Message(text) if text.contains("not ours")),
+            "{foreign:?}"
+        );
+
+        let invalid = serde_json::from_str::<i32>("not json").expect_err("invalid json");
+        let server_json: Error = ServerError::Json(invalid).into();
+        assert!(matches!(server_json, Error::Json(_)), "{server_json:?}");
+        let invalid = serde_json::from_str::<i32>("not json").expect_err("invalid json");
+        let client_json: Error = ClientError::Json(invalid).into();
+        assert!(matches!(client_json, Error::Json(_)), "{client_json:?}");
+    }
 }

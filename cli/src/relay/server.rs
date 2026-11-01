@@ -622,6 +622,830 @@ mod tests {
         assert!(display_host(&"x".repeat(200)).len() <= 64);
     }
 
+    // ── The HTTP surface ─────────────────────────────────────────────────────
+    //
+    // The handlers are called directly rather than through `Router`, so each
+    // test names the one thing that decides its answer: the signature headers,
+    // the body, and the room registry. `Router` itself is a route table with no
+    // logic to get wrong.
+
+    const PAIR: &str = "PAIR1";
+    const JOIN: &str = "join_token_for_the_handler_tests";
+
+    fn config(account_seed: String) -> RelayConfig {
+        RelayConfig {
+            listen: "127.0.0.1:8099".into(),
+            public_url: "http://127.0.0.1:8099".into(),
+            nats_url: "nats://127.0.0.1:4222".into(),
+            nats_ws_url: "ws://127.0.0.1:9090".into(),
+            account_seed,
+            jwt_ttl_seconds: 300,
+            invitation_ttl_seconds: 300,
+            room_ttl_seconds: 7_776_000,
+            subs_limit: -1,
+            payload_limit: jwt::DEFAULT_PAYLOAD_LIMIT,
+            http_timeout_seconds: 15,
+            tls_cert: None,
+            tls_key: None,
+        }
+    }
+
+    /// A relay with a freshly minted account key and an in-memory registry.
+    fn relay() -> Arc<Relay> {
+        relay_with_room_ttl(7_776_000)
+    }
+
+    /// The same relay, but rooms live `room_ttl_seconds` — the knob a test
+    /// shortens so a room can expire inside a test instead of in 90 days.
+    fn relay_with_room_ttl(room_ttl_seconds: i64) -> Arc<Relay> {
+        let account = KeyPair::new_account();
+        let seed = account.seed().expect("a new account key has a seed");
+        let mut config = config(seed);
+        config.room_ttl_seconds = room_ttl_seconds;
+        Arc::new(Relay::new(config, None).expect("a fresh relay"))
+    }
+
+    /// The three headers a signed call carries, at `timestamp`.
+    fn signed_at(
+        key: &KeyPair,
+        method: &str,
+        path: &str,
+        timestamp: i64,
+        body: &[u8],
+    ) -> HeaderMap {
+        let (public_key, stamp, signature) =
+            sign::sign(key, method, path, timestamp, body).expect("signing a request");
+        let mut headers = HeaderMap::new();
+        headers.insert("x-future-public-key", public_key.parse().unwrap());
+        headers.insert("x-future-timestamp", stamp.parse().unwrap());
+        headers.insert("x-future-signature", signature.parse().unwrap());
+        headers
+    }
+
+    fn signed(key: &KeyPair, method: &str, path: &str, body: &[u8]) -> HeaderMap {
+        signed_at(key, method, path, now(), body)
+    }
+
+    fn room_path() -> String {
+        format!("/v1/rooms/{PAIR}")
+    }
+
+    /// The URI a handler receives from the route it is mounted on.
+    fn token_uri() -> Uri {
+        "/client/v1/remote/auth/token".parse().unwrap()
+    }
+
+    fn register_body(join_hash: Option<&str>) -> String {
+        let hash = match join_hash {
+            Some(hash) => format!(r#","joinHash":"{hash}""#),
+            None => String::new(),
+        };
+        format!(
+            r#"{{"pairId":"{PAIR}","hostDeviceId":"desktop1","hostName":"FutureOS Desktop"{hash}}}"#
+        )
+    }
+
+    /// Register the room over HTTP, the way the desktop does.
+    async fn register(relay: &Arc<Relay>, host: &KeyPair) -> (StatusCode, Json<Value>) {
+        let body = register_body(Some(&hash_join(JOIN)));
+        register_room(
+            State(relay.clone()),
+            signed(host, "POST", "/v1/rooms", body.as_bytes()),
+            "/v1/rooms".parse().unwrap(),
+            Bytes::from(body),
+        )
+        .await
+    }
+
+    async fn describe(
+        relay: &Arc<Relay>,
+        caller: &KeyPair,
+        pair: &str,
+    ) -> (StatusCode, Json<Value>) {
+        let path = format!("/v1/rooms/{pair}");
+        describe_room(
+            State(relay.clone()),
+            Path(pair.to_string()),
+            signed(caller, "GET", &path, b""),
+            path.parse().unwrap(),
+        )
+        .await
+    }
+
+    /// The answer a desktop needs to reach its own room, and the roster it reads
+    /// back afterwards, in the field names the desktop parses.
+    #[tokio::test]
+    async fn a_desktop_registers_its_room_and_reads_the_roster_back() {
+        let relay = relay();
+        let host = KeyPair::new_user();
+
+        let (status, answer) = register(&relay, &host).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(answer["pairId"], PAIR);
+        assert_eq!(answer["natsUrl"], "nats://127.0.0.1:4222");
+        assert_eq!(answer["natsWsUrl"], "ws://127.0.0.1:9090");
+        let jwt = answer["userJwt"].as_str().expect("a user JWT");
+        assert_eq!(
+            jwt.split('.').count(),
+            3,
+            "a NATS user JWT is three dot-separated parts, not an opaque token: {jwt}"
+        );
+        assert!(
+            answer["jwtExpiresAt"].as_i64().unwrap() > now(),
+            "the expiry is a future wall-clock second: {answer:?}"
+        );
+
+        let (status, roster) = describe(&relay, &host, PAIR).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(roster["pairId"], PAIR);
+        assert_eq!(roster["hostName"], "FutureOS Desktop");
+        assert_eq!(roster["hostPublicKey"], host.public_key());
+        assert_eq!(roster["invitationOpen"], true);
+        assert!(
+            roster["devices"].as_array().unwrap().is_empty(),
+            "nobody has claimed the invitation yet: {roster:?}"
+        );
+    }
+
+    /// A request the relay cannot read is refused before the registry is
+    /// touched, and each refusal names the field the caller has to fix.
+    #[tokio::test]
+    async fn an_unsigned_room_request_is_refused_before_anything_is_read() {
+        let relay = relay();
+        let host = KeyPair::new_user();
+        let body = register_body(Some(&hash_join(JOIN)));
+
+        // Registering and deleting both prove the caller with a signature; an
+        // unsigned one never reaches the body.
+        let (status, answer) = register_room(
+            State(relay.clone()),
+            HeaderMap::new(),
+            "/v1/rooms".parse().unwrap(),
+            Bytes::from(body.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(answer["error"], "signature_missing");
+        assert_eq!(
+            relay.rooms.len(),
+            0,
+            "an unsigned registration creates nothing"
+        );
+
+        let (status, _) = register(&relay, &host).await;
+        assert_eq!(status, StatusCode::OK);
+        let path = room_path();
+        let (status, answer) = revoke_room(
+            State(relay.clone()),
+            Path(PAIR.to_string()),
+            HeaderMap::new(),
+            path.parse().unwrap(),
+            Bytes::new(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(answer["error"], "signature_missing");
+        assert_eq!(relay.rooms.len(), 1, "an unsigned delete keeps the room");
+    }
+
+    /// A room request that cannot be read is refused before the registry is
+    /// touched, and each refusal names the field the caller has to fix.
+    #[tokio::test]
+    async fn a_room_request_that_cannot_be_read_names_the_field_to_fix() {
+        let relay = relay();
+        let host = KeyPair::new_user();
+
+        let (status, answer) = register_room(
+            State(relay.clone()),
+            signed(&host, "POST", "/v1/rooms", b"{not json"),
+            "/v1/rooms".parse().unwrap(),
+            Bytes::from_static(b"{not json"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(answer["error"], "invalid_request");
+        assert_eq!(answer["message"], "Malformed room request.");
+
+        // A join hash is compared against a SHA-256 the desktop computed, so a
+        // value that is not one can never match and is refused up front.
+        let body = register_body(Some("not-a-hash"));
+        let (status, answer) = register_room(
+            State(relay.clone()),
+            signed(&host, "POST", "/v1/rooms", body.as_bytes()),
+            "/v1/rooms".parse().unwrap(),
+            Bytes::from(body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(answer["message"], "joinHash must be 64 hex characters.");
+
+        // The pair id and device id become part of a NATS subject; anything
+        // outside the subject-safe alphabet is refused rather than escaped.
+        let body = format!(
+            r#"{{"pairId":"pair 1","hostDeviceId":"desktop1","hostName":"GUI","joinHash":"{}"}}"#,
+            hash_join(JOIN)
+        );
+        let (status, answer) = register_room(
+            State(relay.clone()),
+            signed(&host, "POST", "/v1/rooms", body.as_bytes()),
+            "/v1/rooms".parse().unwrap(),
+            Bytes::from(body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(answer["error"], "identifier_invalid");
+        assert_eq!(
+            relay.rooms.len(),
+            0,
+            "a refused registration leaves the registry untouched"
+        );
+    }
+
+    /// Re-registering is how a desktop survives a relay restart, so the same key
+    /// keeps its room; a different key for the same pair id is refused instead of
+    /// silently taking the namespace over.
+    #[tokio::test]
+    async fn a_second_desktop_cannot_take_over_an_existing_room() {
+        let relay = relay();
+        let host = KeyPair::new_user();
+        let (status, _) = register(&relay, &host).await;
+        assert_eq!(status, StatusCode::OK, "the room exists before the case");
+
+        let intruder = KeyPair::new_user();
+        let (status, answer) = register(&relay, &intruder).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(answer["error"], "room_owned_by_another_host");
+        assert_eq!(answer["message"], "This room belongs to another desktop.");
+
+        // The owner still reads its own room, with its own name on it.
+        let (status, roster) = describe(&relay, &host, PAIR).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(roster["hostPublicKey"], host.public_key());
+    }
+
+    /// Two signature failures that are *not* "no signature": one the relay
+    /// cannot even decode, and one it decodes and finds belongs to another key.
+    /// Both leave through `VerifyError::code`, so the client is told which of the
+    /// two it has to fix instead of the generic "not signed by its caller".
+    #[tokio::test]
+    async fn an_unreadable_or_foreign_signature_is_named_on_the_wire() {
+        let relay = relay();
+        let host = KeyPair::new_user();
+        let (status, _) = register(&relay, &host).await;
+        assert_eq!(status, StatusCode::OK, "the room exists before the case");
+        let path = room_path();
+
+        // A signature header that is not the base64 it is documented to be.
+        let mut headers = signed(&host, "GET", &path, b"");
+        headers.insert("x-future-signature", "not base64!".parse().unwrap());
+        let (status, answer) = describe_room(
+            State(relay.clone()),
+            Path(PAIR.to_string()),
+            headers,
+            path.parse().unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(answer["error"], "signature_malformed");
+        assert_eq!(
+            answer["message"],
+            "This request is not signed by its caller."
+        );
+
+        // A well-formed header naming the host's key, signed by a stranger's:
+        // the signature is genuine and simply not the one the header promises.
+        let stranger = KeyPair::new_user();
+        let mut headers = signed(&stranger, "GET", &path, b"");
+        headers.insert("x-future-public-key", host.public_key().parse().unwrap());
+        let (status, answer) = describe_room(
+            State(relay.clone()),
+            Path(PAIR.to_string()),
+            headers,
+            path.parse().unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(answer["error"], "signature_invalid");
+        assert_eq!(
+            answer["message"],
+            "This request is not signed by its caller."
+        );
+
+        // The host's own signature over the same path still opens the roster, so
+        // the two refusals above are about the signature and not the request.
+        let (status, _) = describe(&relay, &host, PAIR).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    /// The roster is the desktop's business: an unsigned read, a read by another
+    /// key, and a read of a room that is not there are three different answers.
+    #[tokio::test]
+    async fn the_roster_is_only_readable_by_the_desktop_that_owns_the_room() {
+        let relay = relay();
+        let host = KeyPair::new_user();
+        let (status, _) = register(&relay, &host).await;
+        assert_eq!(status, StatusCode::OK, "the room exists before the case");
+
+        let path = room_path();
+        let (status, answer) = describe_room(
+            State(relay.clone()),
+            Path(PAIR.to_string()),
+            HeaderMap::new(),
+            path.parse().unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(answer["error"], "signature_missing");
+        assert_eq!(
+            answer["message"],
+            "This request is not signed by its caller."
+        );
+
+        // A clock that disagrees is a different problem, with different advice.
+        let (status, answer) = describe_room(
+            State(relay.clone()),
+            Path(PAIR.to_string()),
+            signed_at(&host, "GET", &path, now() - 10_000, b""),
+            path.parse().unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(answer["error"], "signature_stale");
+        let message = answer["message"].as_str().unwrap();
+        assert!(message.contains("behind the relay's clock"), "{message}");
+        assert!(
+            !message.contains("not signed"),
+            "the signature is the caller's; only its timestamp is wrong: {message}"
+        );
+
+        let stranger = KeyPair::new_user();
+        let (status, answer) = describe(&relay, &stranger, PAIR).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(answer["error"], "room_owned_by_another_host");
+
+        let (status, answer) = describe(&relay, &host, "PAIR_UNKNOWN").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(answer["error"], "room_unknown");
+        assert_eq!(answer["message"], "No such room.");
+    }
+
+    /// Deleting a room is the host's own operation, and it takes the room with it.
+    #[tokio::test]
+    async fn deleting_a_room_needs_the_owning_key_and_removes_it() {
+        let relay = relay();
+        let host = KeyPair::new_user();
+        let (status, _) = register(&relay, &host).await;
+        assert_eq!(status, StatusCode::OK, "the room exists before the case");
+
+        let path = room_path();
+        let stranger = KeyPair::new_user();
+        let (status, answer) = revoke_room(
+            State(relay.clone()),
+            Path(PAIR.to_string()),
+            signed(&stranger, "DELETE", &path, b""),
+            path.parse().unwrap(),
+            Bytes::new(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(answer["error"], "room_owned_by_another_host");
+        assert_eq!(relay.rooms.len(), 1, "a refused delete keeps the room");
+
+        let (status, answer) = revoke_room(
+            State(relay.clone()),
+            Path(PAIR.to_string()),
+            signed(&host, "DELETE", &path, b""),
+            path.parse().unwrap(),
+            Bytes::new(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(answer["ok"], true);
+        assert_eq!(relay.rooms.len(), 0);
+
+        let (status, answer) = describe(&relay, &host, PAIR).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(answer["message"], "No such room.");
+    }
+
+    /// A phone claims the invitation and can then forget its own credential: a
+    /// lost phone that revokes is not a support ticket.
+    #[tokio::test]
+    async fn a_phone_claims_the_invitation_and_can_forget_its_own_credential() {
+        let relay = relay();
+        let host = KeyPair::new_user();
+        let (status, _) = register(&relay, &host).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let phone = KeyPair::new_user();
+        let body = format!(
+            r#"{{"nonce":"{JOIN}","device_id":"phone1","device_public_key":"{}","device_name":""}}"#,
+            phone.public_key()
+        );
+        let (status, answer) = claim(State(relay.clone()), Bytes::from(body)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(answer["pair_id"], PAIR);
+        assert_eq!(answer["nats_url"], "nats://127.0.0.1:4222");
+        let refresh = answer["refresh_token"]
+            .as_str()
+            .expect("the long-lived half of the credential")
+            .to_string();
+        assert!(refresh.starts_with("rt_"), "{refresh}");
+
+        // An unnamed device still gets a name a person can recognize in the
+        // roster, instead of an empty row.
+        let (_, roster) = describe(&relay, &host, PAIR).await;
+        assert_eq!(roster["invitationOpen"], false, "the invitation was used");
+        let devices = roster["devices"].as_array().unwrap();
+        assert_eq!(devices.len(), 1, "{roster:?}");
+        assert_eq!(devices[0]["name"], "FutureOS device");
+
+        // The same invitation cannot be spent by a second device.
+        let other = KeyPair::new_user();
+        let body = format!(
+            r#"{{"nonce":"{JOIN}","device_id":"phone2","device_public_key":"{}","device_name":"Other"}}"#,
+            other.public_key()
+        );
+        let (status, answer) = claim(State(relay.clone()), Bytes::from(body)).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(answer["error"], "join_used");
+
+        let revoke = format!(
+            r#"{{"pair_id":"{PAIR}","device_id":"phone1","public_key":"{}","refresh_token":"{refresh}"}}"#,
+            phone.public_key()
+        );
+        let (status, answer) =
+            client_revoke(State(relay.clone()), Bytes::from(revoke.clone())).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(answer["ok"], true);
+        let (_, roster) = describe(&relay, &host, PAIR).await;
+        assert!(
+            roster["devices"].as_array().unwrap().is_empty(),
+            "the device is gone from the roster: {roster:?}"
+        );
+
+        // Revoking twice is the same outcome, not an error: the caller wanted the
+        // credential gone, and it is.
+        let (status, answer) = client_revoke(State(relay.clone()), Bytes::from(revoke)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(answer["ok"], true);
+    }
+
+    /// A room that reaches its TTL is gone for the client too: the revoke is
+    /// answered with the room error rather than with the "already gone" success,
+    /// and the registry drops the credential with the room instead of keeping a
+    /// device that can never authenticate again.
+    ///
+    /// **The one wall-clock assumption in this file, and why it is sound.** The
+    /// room is registered with `room_ttl_seconds: 1`, which makes
+    /// `expires_at = t + 1` for the whole second `t` the registration happens
+    /// in, and `authorize_refresh` refuses once `now >= expires_at`. `now()` is
+    /// whole UNIX seconds, so waiting 1.1 s is not a race against the clock:
+    /// 1.1 >= 1 means `floor(t + 1.1) >= floor(t) + 1` for every `t`, i.e. the
+    /// refusal condition is already true when the sleep returns. The sleep is
+    /// also a lower bound (tokio never returns early), so a loaded machine or a
+    /// stalled scheduler only adds slack to an assertion that is on the correct
+    /// side of it. Nothing here retries or polls, so there is no window in which
+    /// a slower run flips the result.
+    #[tokio::test]
+    async fn a_revoke_against_an_expired_room_says_the_room_is_gone() {
+        let relay = relay_with_room_ttl(1);
+        let host = KeyPair::new_user();
+        let (status, _) = register(&relay, &host).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let phone = KeyPair::new_user();
+        let body = format!(
+            r#"{{"nonce":"{JOIN}","device_id":"phone1","device_public_key":"{}","device_name":"Phone"}}"#,
+            phone.public_key()
+        );
+        let (status, answer) = claim(State(relay.clone()), Bytes::from(body)).await;
+        assert_eq!(status, StatusCode::OK);
+        let refresh = answer["refresh_token"]
+            .as_str()
+            .expect("the long-lived half of the credential")
+            .to_string();
+        assert_eq!(relay.rooms.len(), 1, "the room exists inside its TTL");
+
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+
+        let revoke = format!(
+            r#"{{"pair_id":"{PAIR}","device_id":"phone1","public_key":"{}","refresh_token":"{refresh}"}}"#,
+            phone.public_key()
+        );
+        let (status, answer) = client_revoke(State(relay.clone()), Bytes::from(revoke)).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "an expired room outlives no credential, including its own revoke: {answer:?}"
+        );
+        assert_eq!(answer["error"], "room_expired");
+        assert_eq!(answer["message"], "This room has expired.");
+        assert_eq!(
+            relay.rooms.len(),
+            0,
+            "the registry dropped the room, and the device credential went with it"
+        );
+    }
+
+    /// A claim that cannot be read, cannot name the device key, or names no
+    /// invitation is refused before the registry is touched — and the last two
+    /// answers do not tell a stranger which rooms exist.
+    #[tokio::test]
+    async fn a_claim_that_cannot_identify_the_phone_is_refused_by_name() {
+        let relay = relay();
+        let host = KeyPair::new_user();
+        let (status, _) = register(&relay, &host).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, answer) = claim(State(relay.clone()), Bytes::from_static(b"{not json")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(answer["message"], "Malformed claim request.");
+
+        let (status, answer) = claim(
+            State(relay.clone()),
+            Bytes::from_static(
+                br#"{"nonce":"whatever","device_id":"phone1","device_public_key":"NOPE","device_name":""}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            answer["message"],
+            "device_public_key must be an NKey user key."
+        );
+
+        let phone = KeyPair::new_user();
+        let body = format!(
+            r#"{{"nonce":"join_guessed","device_id":"phone1","device_public_key":"{}","device_name":""}}"#,
+            phone.public_key()
+        );
+        let (status, answer) = claim(State(relay.clone()), Bytes::from(body)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(answer["error"], "pairing_code_invalid");
+        assert_eq!(answer["message"], "This invitation is not valid.");
+        assert_eq!(
+            relay.rooms.len(),
+            1,
+            "a refused claim does not create a room"
+        );
+    }
+
+    /// A credential is rotated two ways: the desktop proves itself with its
+    /// pairing key, the phone with its refresh token. Each refusal names what the
+    /// caller actually got wrong.
+    #[tokio::test]
+    async fn a_credential_request_is_refused_for_the_reason_it_is_wrong() {
+        let relay = relay();
+        let host = KeyPair::new_user();
+        let (status, _) = register(&relay, &host).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let path = "/client/v1/remote/auth/token";
+
+        let (status, answer) = rotate_token(
+            State(relay.clone()),
+            HeaderMap::new(),
+            token_uri(),
+            Bytes::from_static(b"{not json"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(answer["message"], "Malformed token request.");
+
+        let (status, answer) = rotate_token(
+            State(relay.clone()),
+            HeaderMap::new(),
+            token_uri(),
+            Bytes::from_static(br#"{"pair_id":"PAIR1","public_key":"Ux","role":"owner"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(answer["message"], "role must be `bridge` or `client`.");
+
+        // A bridge rotation with no signature at all.
+        let body = format!(
+            r#"{{"pair_id":"{PAIR}","public_key":"{}","role":"bridge"}}"#,
+            host.public_key()
+        );
+        let (status, answer) = rotate_token(
+            State(relay.clone()),
+            HeaderMap::new(),
+            token_uri(),
+            Bytes::from(body.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(answer["error"], "signature_missing");
+
+        // Signed by one key, asking for a credential for another: the signature
+        // proves the caller, and the caller is not the credential's owner.
+        let other = KeyPair::new_user();
+        let body = format!(
+            r#"{{"pair_id":"{PAIR}","public_key":"{}","role":"bridge"}}"#,
+            other.public_key()
+        );
+        let (status, answer) = rotate_token(
+            State(relay.clone()),
+            signed(&host, "POST", path, body.as_bytes()),
+            token_uri(),
+            Bytes::from(body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(answer["error"], "signature_invalid");
+        assert_eq!(
+            answer["message"],
+            "The signature does not match the credential."
+        );
+
+        // The host's own rotation, in the field names the desktop parses.
+        let body = format!(
+            r#"{{"pair_id":"{PAIR}","public_key":"{}","role":"bridge"}}"#,
+            host.public_key()
+        );
+        let (status, answer) = rotate_token(
+            State(relay.clone()),
+            signed(&host, "POST", path, body.as_bytes()),
+            token_uri(),
+            Bytes::from(body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(answer["nats_url"], "nats://127.0.0.1:4222");
+        assert_eq!(
+            answer["user_jwt"].as_str().unwrap().split('.').count(),
+            3,
+            "a NATS user JWT, not an opaque token"
+        );
+
+        // A phone presenting a refresh token for a device that was never paired
+        // with this room.
+        let (status, answer) = rotate_token(
+            State(relay.clone()),
+            HeaderMap::new(),
+            token_uri(),
+            Bytes::from_static(
+                br#"{"pair_id":"PAIR1","device_id":"phone1","public_key":"Uphone","role":"client","refresh_token":"rt_gone"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(answer["error"], "device_unknown");
+        assert_eq!(
+            answer["message"],
+            "This device is not paired with that room."
+        );
+
+        // A well-signed bridge rotation for a room that is not there: the
+        // signature is the host's, so the answer is about the room.
+        let body = format!(
+            r#"{{"pair_id":"PAIR_UNKNOWN","public_key":"{}","role":"bridge"}}"#,
+            host.public_key()
+        );
+        let (status, answer) = rotate_token(
+            State(relay.clone()),
+            signed(&host, "POST", path, body.as_bytes()),
+            token_uri(),
+            Bytes::from(body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(answer["error"], "room_unknown");
+    }
+
+    /// A revoke the relay cannot read is refused as a malformed request: the
+    /// caller has to send the credential, not a bare word, to end a pairing.
+    #[tokio::test]
+    async fn a_revoke_that_cannot_be_read_is_refused() {
+        let relay = relay();
+        let (status, answer) =
+            client_revoke(State(relay.clone()), Bytes::from_static(b"{not json")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(answer["error"], "invalid_request");
+        assert_eq!(answer["message"], "Malformed revoke request.");
+    }
+
+    /// A seed that is not an account key cannot sign the relay's user JWTs, and
+    /// the refusal says which kind of key was handed over.
+    #[test]
+    fn a_user_seed_cannot_be_the_relay_account() {
+        let user = KeyPair::new_user();
+        let result = Relay::new(config(user.seed().unwrap()), None);
+        let message = result.map(|_| ()).unwrap_err().to_string();
+        assert!(message.contains("account seed"), "{message}");
+    }
+
+    /// A desktop that is already paired re-registers without an invitation —
+    /// that is how it refreshes a credential after a relay restart. The roster
+    /// it has already collected must survive, and no QR code may reopen.
+    #[tokio::test]
+    async fn re_registering_without_an_invitation_keeps_the_code_closed() {
+        let relay = relay();
+        let host = KeyPair::new_user();
+        let (status, _) = register(&relay, &host).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let phone = KeyPair::new_user();
+        let body = format!(
+            r#"{{"nonce":"{JOIN}","device_id":"phone1","device_public_key":"{}","device_name":"Pixel"}}"#,
+            phone.public_key()
+        );
+        let (status, _) = claim(State(relay.clone()), Bytes::from(body)).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let body = register_body(None);
+        let (status, answer) = register_room(
+            State(relay.clone()),
+            signed(&host, "POST", "/v1/rooms", body.as_bytes()),
+            "/v1/rooms".parse().unwrap(),
+            Bytes::from(body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(answer["pairId"], PAIR);
+
+        let (_, roster) = describe(&relay, &host, PAIR).await;
+        assert_eq!(
+            roster["invitationOpen"], false,
+            "a credential refresh must not reopen the code: {roster:?}"
+        );
+        let devices = roster["devices"].as_array().unwrap();
+        assert_eq!(
+            devices.len(),
+            1,
+            "the paired phone keeps its row: {roster:?}"
+        );
+        assert_eq!(devices[0]["name"], "Pixel");
+    }
+
+    /// Every refusal a room route can produce, in the reader's terms: the status
+    /// a script branches on, the code it logs, and the sentence it shows.
+    #[test]
+    fn every_room_refusal_carries_its_own_status_code_and_advice() {
+        for (failure, status, code, message) in [
+            (
+                RoomError::Unknown,
+                StatusCode::NOT_FOUND,
+                "room_unknown",
+                "No such room.",
+            ),
+            (
+                RoomError::Expired,
+                StatusCode::NOT_FOUND,
+                "room_expired",
+                "This room has expired.",
+            ),
+            (
+                RoomError::InvitationExpired,
+                StatusCode::CONFLICT,
+                "invitation_expired",
+                "This invitation has expired. Create a new one on the desktop.",
+            ),
+            (
+                RoomError::HostMismatch,
+                StatusCode::CONFLICT,
+                "room_owned_by_another_host",
+                "This room belongs to another desktop.",
+            ),
+            (
+                RoomError::JoinInvalid,
+                StatusCode::FORBIDDEN,
+                "join_invalid",
+                "This invitation is not valid for this room.",
+            ),
+            (
+                RoomError::JoinUsed,
+                StatusCode::CONFLICT,
+                "join_used",
+                "This invitation has already been used.",
+            ),
+            (
+                RoomError::DeviceUnknown,
+                StatusCode::FORBIDDEN,
+                "device_unknown",
+                "This device is not paired with that room.",
+            ),
+            (
+                RoomError::RefreshInvalid,
+                StatusCode::FORBIDDEN,
+                "invalid_remote_credential",
+                "This device credential is no longer valid.",
+            ),
+            (
+                RoomError::BadIdentifier,
+                StatusCode::FORBIDDEN,
+                "identifier_invalid",
+                "One of the identifiers is not usable.",
+            ),
+        ] {
+            let (answer_status, answer) = room_error(failure);
+            assert_eq!(answer_status, status, "{code}");
+            assert_eq!(answer["error"], code);
+            assert_eq!(answer["message"], message, "{code}");
+        }
+    }
+
     /// A clock that disagrees is refused for the right reason, and the answer says
     /// which direction and by how much — the reader's fix is to correct a clock, not
     /// to look for a forged request.

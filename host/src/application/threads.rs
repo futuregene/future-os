@@ -930,6 +930,103 @@ mod tests {
         script_mock_agent(MockScript::default());
     }
 
+    /// An Agent that cannot be reached is `offline`, not an empty conversation:
+    /// the UI shows retry, and the read fails rather than reporting "no history".
+    #[tokio::test]
+    async fn an_unreachable_agent_reads_as_offline_history() {
+        let _lock = mock_agent_lock();
+        let home = init("cmd_entries_offline");
+        let thread = make_thread(&home, Some("sess_offline"));
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            transport_fail: ["get_session_presence".to_string()].into_iter().collect(),
+            ..Default::default()
+        });
+
+        let error = get_session_entries_page(thread.id.clone(), None, 10, None)
+            .await
+            .expect_err("a transport failure is not an answer about the conversation");
+        assert!(
+            error.to_string().contains("Session catalogue query failed"),
+            "the presence probe's own failure reaches the caller: {error}"
+        );
+        script_mock_agent(MockScript::default());
+    }
+
+    /// A page cursor names the source it was read from. Handing one back after
+    /// the source moved would splice two conversations together, so the read is
+    /// refused instead.
+    #[tokio::test]
+    async fn a_page_from_another_source_is_refused() {
+        let _lock = mock_agent_lock();
+        let home = init("cmd_entries_foreign_source");
+        let thread = make_thread(&home, Some("sess_foreign"));
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript::default());
+
+        let error = get_session_entries_page(
+            thread.id.clone(),
+            Some(5),
+            10,
+            Some("agent:another-database:generation:instance".into()),
+        )
+        .await
+        .expect_err("paging across a source change must be refused");
+        assert!(error.to_string().contains("source changed"), "{error}");
+        script_mock_agent(MockScript::default());
+    }
+
+    /// The same refusal on the recovery side: a legacy cursor that names a
+    /// different archive cannot page this thread's preserved history.
+    #[tokio::test]
+    async fn an_archive_page_from_another_source_is_refused() {
+        let _lock = mock_agent_lock();
+        let home = init("cmd_entries_archive_source");
+        let thread = make_thread(&home, Some("missing-archive"));
+        let path = store::app_data_path().unwrap().db_path;
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute_batch("CREATE TABLE legacy_messages(id TEXT,thread_id TEXT,run_id TEXT,role TEXT,content TEXT,created_at INTEGER);").unwrap();
+        conn.execute(
+            "INSERT INTO legacy_messages VALUES('u',?1,NULL,'user','preserved question',1)",
+            [&thread.id],
+        )
+        .unwrap();
+        drop(conn);
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            errors: HashMap::from([(
+                "get_session_entries".to_string(),
+                "session not found".to_string(),
+            )]),
+            ..Default::default()
+        });
+
+        let error =
+            get_session_entries_page(thread.id.clone(), None, 1, Some("legacy:other".into()))
+                .await
+                .expect_err("a recovery from another archive is refused");
+        assert!(error.to_string().contains("source changed"), "{error}");
+        script_mock_agent(MockScript::default());
+    }
+
+    /// A legacy cursor on a thread that never had a preserved archive is refused
+    /// too — there is nothing behind that cursor to page.
+    #[tokio::test]
+    async fn a_legacy_cursor_without_an_archive_is_refused() {
+        let _lock = mock_agent_lock();
+        let home = init("cmd_entries_legacy_cursor");
+        let thread = make_thread(&home, None);
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript::default());
+
+        let error =
+            get_session_entries_page(thread.id.clone(), None, 10, Some("legacy:abc".into()))
+                .await
+                .expect_err("there is no archive behind that cursor");
+        assert!(error.to_string().contains("source changed"), "{error}");
+        script_mock_agent(MockScript::default());
+    }
+
     #[tokio::test]
     async fn rename_thread_maps_transport_errors() {
         let _lock = mock_agent_lock();
@@ -1911,6 +2008,124 @@ mod tests {
         script_mock_agent(MockScript::default());
         observe_session(thread.id.clone(), "sess_observe".into()).expect("observe");
         agent_bridge::drop_observer("sess_observe");
+        script_mock_agent(MockScript::default());
+    }
+
+    /// The window's list / open / recency reads and the three bookkeeping writes
+    /// it drives them with. Each one is a one-line delegation, so what can be
+    /// wrong here is the *shape* the window receives: the list is in the store's
+    /// order, the pin / archive / restore trio each answer the row they changed,
+    /// and opening a thread is what makes it the recent one.
+    #[test]
+    fn the_list_and_the_three_bookkeeping_writes_answer_the_window() {
+        let _home = init("cmd_thread_reads");
+        let first = make_thread(&_home, None);
+        let second = make_thread(&_home, None);
+
+        let listed = list_threads().expect("list");
+        assert_eq!(listed.len(), 2, "{listed:?}");
+        assert_eq!(
+            get_thread(first.id.clone())
+                .expect("get")
+                .expect("the row")
+                .id,
+            first.id
+        );
+        assert!(get_thread("thread_absent".into()).expect("get").is_none());
+
+        mark_thread_opened(first.id.clone()).expect("opened");
+        assert_eq!(
+            get_recent_thread()
+                .expect("recent")
+                .expect("the opened thread")
+                .id,
+            first.id
+        );
+        // The recency read follows the LAST open, not the first: two threads
+        // created in the same millisecond must still sort by which was opened.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        mark_thread_opened(second.id.clone()).expect("opened");
+        assert_eq!(
+            get_recent_thread()
+                .expect("recent")
+                .expect("the last opened thread")
+                .id,
+            second.id
+        );
+
+        let pinned = pin_thread(store::PinThreadInput {
+            thread_id: first.id.clone(),
+            pinned: true,
+        })
+        .expect("pin");
+        assert!(pinned.pinned, "the row comes back pinned");
+        let archived = archive_thread(first.id.clone()).expect("archive");
+        assert_eq!(archived.status, "archived");
+        let restored = restore_thread(first.id.clone()).expect("restore");
+        assert_eq!(restored.status, "active");
+    }
+
+    /// A conversation whose Agent session is gone is *named*, not answered with an
+    /// empty page: the window renders "history unavailable" from this sentence,
+    /// and an empty page would read as "this conversation never said anything".
+    /// The three statuses keep their own reason so a log can say which happened.
+    #[tokio::test]
+    async fn a_history_read_names_an_unavailable_agent_session() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_history_availability");
+        crate::test_support::command_agent::ensure_mock_agent();
+        let thread = make_thread(&_home, Some("sess_gone"));
+
+        for status in ["deleted", "import_failed", "missing"] {
+            script_mock_agent(MockScript {
+                data: HashMap::from([(
+                    "get_session_presence".to_string(),
+                    serde_json::json!({
+                        "databaseId": "db-1",
+                        "restoreGeneration": "gen-1",
+                        "sessions": [{"sessionId": "sess_gone", "status": status}],
+                    })
+                    .to_string(),
+                )]),
+                ..Default::default()
+            });
+            let error = get_session_entries(thread.id.clone())
+                .await
+                .expect_err("an unavailable session is an error, not an empty page");
+            assert!(
+                error
+                    .to_string()
+                    .contains("Conversation history is unavailable"),
+                "{status}: {error}"
+            );
+        }
+
+        // A present session whose database is not the one this conversation was
+        // bound to is a different sentence: restoring the Agent session alone
+        // would silently show another machine's history under this title.
+        crate::store::record_thread_source(&thread.id, "sess_gone", "db-1", "gen-1")
+            .expect("bind the source");
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "get_session_presence".to_string(),
+                serde_json::json!({
+                    "databaseId": "db-2",
+                    "restoreGeneration": "gen-2",
+                    "sessions": [{"sessionId": "sess_gone", "status": "present"}],
+                })
+                .to_string(),
+            )]),
+            ..Default::default()
+        });
+        let error = get_session_entries(thread.id.clone())
+            .await
+            .expect_err("a foreign database is refused");
+        assert!(
+            error
+                .to_string()
+                .contains("belongs to a different Agent database"),
+            "{error}"
+        );
         script_mock_agent(MockScript::default());
     }
 }

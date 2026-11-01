@@ -786,6 +786,7 @@ mod tests {
         use crate::session::{Session, SessionEntry};
         use std::io::{Read, Write};
 
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         // Serve exactly one chat-completions response and then exit.

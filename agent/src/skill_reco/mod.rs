@@ -1166,6 +1166,7 @@ mod tests {
         status: &'static str,
         body: String,
     ) -> (String, std::sync::mpsc::Receiver<String>) {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -1186,6 +1187,7 @@ mod tests {
     /// A peer that completes the TCP handshake and then says nothing, so only
     /// the client's own deadline can end the call.
     fn silent_server() -> String {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
         std::thread::spawn(move || {
@@ -1309,6 +1311,7 @@ mod tests {
     #[test]
     fn a_refused_connection_is_reported_as_a_failure() {
         let url = {
+            crate::test_support::ensure_fd_headroom();
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let address = format!("http://{}", listener.local_addr().unwrap());
             drop(listener); // the port is now closed

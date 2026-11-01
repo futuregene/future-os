@@ -2686,3 +2686,128 @@ fn presence_answers_while_a_writer_job_holds_the_lane() {
         "presence waited {waited:?} behind a writer job"
     );
 }
+
+// ── coverage batch: journal maintenance and an unopenable store ────────
+
+/// A store that cannot be opened at all: `agent.db` is a directory, so every
+/// sessionless surface that reaches for the database has to answer with its
+/// own refusal rather than panicking or reporting empty data.
+fn unopenable_store_state() -> crate::rpc::AppState {
+    let dir = test_session_dir();
+    std::fs::create_dir_all(dir.join("agent.db")).unwrap();
+    make_app_state_with(dir, Arc::new(crate::runtime::GlobalQueueBudget::defaults()))
+}
+
+#[test]
+fn reclaim_run_journals_refuses_a_mode_marker_it_cannot_interpret() {
+    // The command deletes journal rows, so an unrecognised marker is refused
+    // instead of guessed at — and nothing is reclaimed.
+    let state = make_app_state();
+    save_via(
+        &state,
+        "reclaim-guard",
+        "mock",
+        vec![crate::session::SessionEntry::new_user(
+            "user",
+            serde_json::json!("keep me"),
+        )],
+    );
+
+    let mut cmd = make_cmd("reclaim_run_journals");
+    cmd.custom_instructions = "yes please".into();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], false, "{resp}");
+    assert_eq!(resp["error_code"], "invalid_request");
+    assert!(resp["error"]
+        .as_str()
+        .unwrap()
+        .contains("only the `dryRun` mode marker"));
+    assert_eq!(resp["error_data"], serde_json::json!({}));
+
+    // The refused request reclaimed nothing: the session still loads.
+    let resp = parse_response(&handle_command_internal(
+        &state,
+        make_cmd_for("get_session_entries", "reclaim-guard"),
+    ));
+    assert_eq!(resp["success"], true, "{resp}");
+}
+
+#[test]
+fn reclaim_run_journals_answers_the_dry_run_marker_with_a_plan() {
+    // `dryRun` is a plan, not a loop: no run is reclaimed, there is no
+    // "more work" claim to chase, and no integrity check is run for a pass
+    // that wrote nothing.
+    let state = make_app_state();
+    let mut cmd = make_cmd("reclaim_run_journals");
+    cmd.custom_instructions = "dryRun".into();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true, "{resp}");
+    let data = &resp["data"];
+    assert_eq!(data["dryRun"], serde_json::json!(true));
+    assert_eq!(data["hasMore"], serde_json::json!(false));
+    assert_eq!(data["reclaimedRuns"], serde_json::json!(0));
+    assert_eq!(data["reclaimedEvents"], serde_json::json!(0));
+    assert!(data["quickCheck"].is_null(), "{resp}");
+    assert!(data["entries"].is_array(), "{resp}");
+    assert!(data["database"]["bytesBefore"].is_i64(), "{resp}");
+}
+
+#[test]
+fn journal_maintenance_surfaces_report_an_unopenable_store() {
+    let state = unopenable_store_state();
+
+    for (command, expected) in [
+        ("get_journal_stats", "journal"),
+        ("get_storage_health", "storage"),
+        ("get_session_storage_format", "format"),
+    ] {
+        let mut cmd = make_cmd(command);
+        cmd.session_id = "anything".into();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false, "{command}: {resp}");
+        assert_eq!(resp["command"], command, "{resp}");
+        assert!(
+            !resp["error"].as_str().unwrap_or("").is_empty(),
+            "{command}: {resp} reports no reason ({expected})"
+        );
+    }
+
+    // The reclaim sweep names its own command in the refusal, and a plan is not
+    // served from a store that could not be opened.
+    let mut cmd = make_cmd("reclaim_run_journals");
+    cmd.custom_instructions = "dryRun".into();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], false, "{resp}");
+    assert_eq!(resp["command"], "reclaim_run_journals", "{resp}");
+    assert!(!resp["error"].as_str().unwrap_or("").is_empty(), "{resp}");
+
+    // Presence is answered per id from the store, so an unopenable store has no
+    // presence to report.
+    let mut cmd = make_cmd("get_session_presence");
+    cmd.session_ids = vec!["anything".into()];
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], false, "{resp}");
+    assert_eq!(resp["command"], "get_session_presence", "{resp}");
+    assert!(!resp["error"].as_str().unwrap_or("").is_empty(), "{resp}");
+}
+
+#[test]
+fn new_session_reports_an_unopenable_store_instead_of_minting_one() {
+    let state = unopenable_store_state();
+    let mut cmd = make_cmd("new_session");
+    cmd.session_id = "wanted".into();
+    cmd.cwd = state.welcome_cwd.clone();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], false, "{resp}");
+    assert_eq!(resp["error_code"], "session_storage_unavailable");
+    assert_eq!(resp["error_data"]["sessionId"], "wanted");
+    assert!(
+        resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("Unable to inspect session storage"),
+        "{resp}"
+    );
+    // Nothing was created: the id is still free.
+    assert!(!state.sessions.read().contains_key("wanted"));
+}

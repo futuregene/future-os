@@ -7031,4 +7031,391 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&session.cwd);
     }
+
+    /// A stop that arrives while the run is still inside startup's recovery
+    /// delay has nothing live to interrupt, so it has to be written down — and a
+    /// stop naming a run that already settled must not write a second terminal.
+    #[tokio::test]
+    async fn a_stop_is_durable_before_recovery_and_a_noop_after_a_settled_run() {
+        let mut session = make_persistent_test_session("stop-before-recovery");
+        std::fs::create_dir_all(&session.cwd).unwrap();
+        session.set_auto_retry(false);
+        // An empty conversation exists on disk; its run began before the crash
+        // and never committed a terminal.
+        session
+            .session_manager
+            .save(&crate::session::Session::snapshot(
+                session.session_id.clone(),
+                session.cwd.clone(),
+                "mock".to_string(),
+                String::new(),
+                String::new(),
+                Vec::new(),
+            ))
+            .unwrap();
+        session
+            .session_manager
+            .append_entries(
+                &session.session_id,
+                &[crate::session::SessionEntry::run_started("crashed-run", 99)],
+            )
+            .unwrap();
+        assert_eq!(
+            session
+                .session_manager
+                .resumable_run_id(&session.session_id)
+                .unwrap(),
+            Some("crashed-run".to_string())
+        );
+        assert!(
+            session.runtime.snapshot().is_none(),
+            "nothing is running yet: the recovery delay owns the run"
+        );
+
+        // The stop is recorded as a cancelled terminal, so recovery can no
+        // longer start the run moments later.
+        session.abort_run(None).unwrap();
+        assert_eq!(
+            session
+                .session_manager
+                .resumable_run_id(&session.session_id)
+                .unwrap(),
+            None,
+            "a stopped run must not be resumable"
+        );
+        let loaded = session.session_manager.load(&session.session_id).unwrap();
+        let terminal = loaded.entries.last().expect("terminal record");
+        assert_eq!(terminal.entry_type, crate::session::ENTRY_TYPE_RUN_TERMINAL);
+        let content = terminal.content.as_ref().expect("terminal content");
+        assert_eq!(content["run_id"], "crashed-run");
+        assert_eq!(content["state"], crate::session::RUN_STATE_CANCELLED);
+        assert_eq!(content["error"], "Stopped by user before recovery");
+        // Only one terminal was written for that run.
+        let terminals = loaded
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.entry_type == crate::session::ENTRY_TYPE_RUN_TERMINAL
+                    && entry
+                        .content
+                        .as_ref()
+                        .is_some_and(|content| content["run_id"] == "crashed-run")
+            })
+            .count();
+        assert_eq!(terminals, 1);
+
+        // A run that already settled needs no marker: the stop is a no-op and
+        // does not append anything.
+        session
+            .prompt("first", &[], &[], Some("run-done"), None)
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while session.runtime.snapshot().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let before = session
+            .session_manager
+            .load(&session.session_id)
+            .unwrap()
+            .entries
+            .len();
+        session.abort_run(Some("run-done")).unwrap();
+        let after = session
+            .session_manager
+            .load(&session.session_id)
+            .unwrap()
+            .entries
+            .len();
+        assert_eq!(before, after, "a settled run gets no second terminal");
+
+        let _ = std::fs::remove_dir_all(&session.cwd);
+    }
+
+    /// The idle-history release is a 30 s sleep, so it is driven on a paused
+    /// clock: a session with no work and no subscribers drops its in-memory
+    /// history, and a session that is still busy keeps it.
+    #[tokio::test(start_paused = true)]
+    async fn an_idle_session_releases_its_history_after_the_delay() {
+        let session = make_persistent_test_session("idle-release");
+        session
+            .messages
+            .write()
+            .push(crate::types::AgentMessage::new_user(
+                "user",
+                serde_json::json!("hi"),
+            ));
+        assert_eq!(session.messages.read().len(), 1);
+        let shared = Arc::new(parking_lot::RwLock::new(session));
+        schedule_idle_history_release(Arc::downgrade(&shared));
+        // Let the spawned task reach its sleep before the clock moves: a timer
+        // that has not been registered cannot be woken by .
+        tokio::task::yield_now().await;
+        tokio::time::advance(IDLE_HISTORY_RELEASE + std::time::Duration::from_secs(1)).await;
+        for _ in 0..64 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            shared.read().messages.read().is_empty(),
+            "an idle session must release its in-memory history"
+        );
+        assert!(!shared.read().history_loaded, "and mark it stale");
+
+        // A session that is still active keeps its history.
+        let busy = make_persistent_test_session("idle-release-busy");
+        busy.messages
+            .write()
+            .push(crate::types::AgentMessage::new_user(
+                "user",
+                serde_json::json!("hi"),
+            ));
+        // A live SSE client is what "in use" means here.
+        let _subscriber = busy.broadcaster.subscribe();
+        let shared = Arc::new(parking_lot::RwLock::new(busy));
+        schedule_idle_history_release(Arc::downgrade(&shared));
+        tokio::task::yield_now().await;
+        tokio::time::advance(IDLE_HISTORY_RELEASE + std::time::Duration::from_secs(1)).await;
+        for _ in 0..64 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            shared.read().messages.read().len(),
+            1,
+            "a session with a started run must keep its history"
+        );
+
+        // Without a runtime the scheduling call is a no-op instead of a panic.
+        let idle = make_persistent_test_session("idle-release-sync");
+        idle.messages
+            .write()
+            .push(crate::types::AgentMessage::new_user(
+                "user",
+                serde_json::json!("hi"),
+            ));
+        let shared = Arc::new(parking_lot::RwLock::new(idle));
+        std::thread::spawn({
+            let weak = Arc::downgrade(&shared);
+            move || schedule_idle_history_release(weak)
+        })
+        .join()
+        .unwrap();
+        assert_eq!(shared.read().messages.read().len(), 1);
+    }
+
+    /// A store that cannot settle cancelled receipts pauses the scheduler
+    /// instead of starting the next queued run on top of them: the queue is left
+    /// exactly as it was, and the next call (once the store recovers) dequeues.
+    #[test]
+    fn a_store_that_cannot_settle_cancelled_receipts_pauses_the_scheduler() {
+        let session = make_persistent_test_session("pause-on-cancelled-receipts");
+        let manager = session.session_manager.clone();
+        // One cancelled receipt for this session, and two queued runs to dequeue.
+        let ack = crate::runtime::RunAck::queued("cancelled-run".into(), 1, 1);
+        let user: crate::session::SessionEntry = serde_json::from_value(serde_json::json!({
+            "id":"u-cancelled","type":"user","role":"user",
+            "timestamp":"2026-10-26T00:00:01Z","meta":{"run_id":"cancelled-run"},"content":"q"
+        }))
+        .unwrap();
+        manager
+            .record_queued_receipt(
+                "pause-on-cancelled-receipts",
+                "req-cancelled",
+                &ack,
+                "fingerprint",
+                &serde_json::json!({}),
+                &user,
+            )
+            .unwrap();
+        manager
+            .cancel_queued_receipt("pause-on-cancelled-receipts", "cancelled-run")
+            .unwrap();
+        for (request, run) in [("req-a", "run-a"), ("req-b", "run-b")] {
+            session
+                .scheduler
+                .accept(
+                    request,
+                    Some(run),
+                    crate::runtime::BusyPolicy::EnqueueIfBusy,
+                    serde_json::json!({"message": request}),
+                )
+                .unwrap();
+        }
+        assert_eq!(session.scheduler.queued().len(), 2);
+        let store = manager.storage().unwrap().clone();
+        store
+            .db
+            .call(|db| {
+                db.execute_batch(
+                    "CREATE TRIGGER refuse_receipt_settle BEFORE UPDATE ON queued_run_receipts \
+                     BEGIN SELECT RAISE(ABORT,'injected receipt settle failure'); END;",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let lease = crate::runtime::RunLease {
+            run_id: "run-a".to_string(),
+            epoch: 1,
+            run_sequence: Some(0),
+        };
+        let mut session = session;
+        session.on_scheduled_run_finished(&lease);
+        assert_eq!(
+            session.scheduler.queued().len(),
+            2,
+            "a paused scheduler must not dequeue"
+        );
+        assert!(session.scheduler.active().is_none());
+        // A store that can settle them again lets the scheduler continue.
+        store
+            .db
+            .call(|db| {
+                db.execute_batch("DROP TRIGGER refuse_receipt_settle")?;
+                Ok(())
+            })
+            .unwrap();
+        session.on_scheduled_run_finished(&lease);
+        assert!(
+            session.scheduler.queued().len() < 2 || session.scheduler.active().is_some(),
+            "the scheduler must continue once the store recovers"
+        );
+    }
+
+    /// Cancelling a queued run marks its receipt first: if the store refuses
+    /// that, the run stays queued and the client is told the store failed,
+    /// instead of the queue forgetting an input whose receipt still says queued.
+    #[test]
+    fn cancelling_a_queued_run_keeps_it_when_the_receipt_cannot_be_marked() {
+        let session = make_persistent_test_session("cancel-queued-run");
+        let ack = session
+            .scheduler
+            .accept(
+                "req-cancel",
+                Some("run-cancel"),
+                crate::runtime::BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({"message": "cancel me"}),
+            )
+            .unwrap();
+        assert_eq!(session.scheduler.queued().len(), 1);
+        // The queued input has its durable receipt — that is the row the
+        // cancellation has to mark.
+        let user: crate::session::SessionEntry = serde_json::from_value(serde_json::json!({
+            "id":"u-cancel","type":"user","role":"user",
+            "timestamp":"2026-10-26T00:00:01Z","meta":{"run_id":"run-cancel"},"content":"cancel me"
+        }))
+        .unwrap();
+        session
+            .session_manager
+            .record_queued_receipt(
+                "cancel-queued-run",
+                "req-cancel",
+                &ack,
+                "fingerprint",
+                &serde_json::json!({}),
+                &user,
+            )
+            .unwrap();
+        let store = session.session_manager.storage().unwrap().clone();
+        const REFUSE_CANCEL: &str =
+            "CREATE TRIGGER refuse_receipt_cancel BEFORE UPDATE ON queued_run_receipts \
+             BEGIN SELECT RAISE(ABORT,'injected receipt cancel failure'); END;";
+        store
+            .db
+            .call(|db| Ok(db.execute_batch(REFUSE_CANCEL)?))
+            .unwrap();
+        let mut session = session;
+        let error = session
+            .cancel_queued_run(
+                "run-cancel",
+                crate::runtime::QueuedCancellationReason::Cancelled,
+            )
+            .unwrap_err();
+        let unavailable = matches!(
+            error,
+            crate::runtime::RunQueueError::PersistenceUnavailable(_)
+        );
+        assert!(
+            unavailable,
+            "the cancellation must report the store failure: {error:?}"
+        );
+        assert_eq!(
+            session.scheduler.queued().len(),
+            1,
+            "the run must stay queued when its receipt could not be marked"
+        );
+        // Once the store accepts the mark, the cancellation goes through.
+        store
+            .db
+            .call(|db| {
+                db.execute_batch("DROP TRIGGER refuse_receipt_cancel")?;
+                Ok(())
+            })
+            .unwrap();
+        let cancelled = session
+            .cancel_queued_run(
+                "run-cancel",
+                crate::runtime::QueuedCancellationReason::Cancelled,
+            )
+            .unwrap();
+        assert_eq!(cancelled.run_id, "run-cancel");
+        assert!(session.scheduler.queued().is_empty());
+    }
+
+    /// The checkpoint fallback is for cold handles only: a directly scheduled
+    /// run can arrive before history was ever loaded, so the first call reads the
+    /// transcript and marks itself done, and every later call is a no-op.
+    #[test]
+    fn a_cold_handle_recovers_its_checkpoint_once_and_then_reports_itself_loaded() {
+        use std::sync::atomic::Ordering;
+        let mut session = make_persistent_test_session("checkpoint-once");
+        // A handle starts with its checkpoint already resolved; the fallback is
+        // what a stale handle uses after its cached history was released.
+        assert!(session.checkpoint_loaded.load(Ordering::Acquire));
+        session.mark_history_stale();
+        assert!(!session.checkpoint_loaded.load(Ordering::Acquire));
+        assert!(session.active_checkpoint.lock().is_none());
+        let snapshot = crate::session::Session::snapshot(
+            "checkpoint-once".to_string(),
+            session.cwd.clone(),
+            "mock".to_string(),
+            String::new(),
+            String::new(),
+            vec![crate::session::SessionEntry::new_user(
+                "user",
+                serde_json::json!("hi"),
+            )],
+        );
+        session.session_manager.save(&snapshot).unwrap();
+
+        session.ensure_checkpoint_loaded().unwrap();
+        assert!(
+            session.checkpoint_loaded.load(Ordering::Acquire),
+            "the fallback marks itself loaded"
+        );
+        // This conversation carries no compaction checkpoint, so the recovery is
+        // "none found" rather than an error, and the lock is explicitly reset.
+        assert!(session.active_checkpoint.lock().is_none());
+
+        // The second call must not read again: a checkpoint written afterwards is
+        // deliberately not picked up on the hot path.
+        session
+            .session_manager
+            .storage()
+            .unwrap()
+            .replace(
+                "checkpoint-once",
+                vec![serde_json::json!({
+                    "id":"torn","type":"compaction","role":"system",
+                    "timestamp":"2026-10-28T00:00:00Z",
+                    "content":{"summary":"[checkpoint]"},
+                })],
+            )
+            .unwrap();
+        session.ensure_checkpoint_loaded().unwrap();
+        assert!(
+            session.active_checkpoint.lock().is_none(),
+            "the once-only fallback did not re-read the transcript"
+        );
+    }
 }

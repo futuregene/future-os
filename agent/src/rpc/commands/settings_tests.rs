@@ -1444,3 +1444,111 @@ fn compact_refuses_directly_when_the_bound_service_is_stopping() {
         "a refused compaction must not claim the in-progress flag"
     );
 }
+
+/// The host probe products are answered straight from the platform, so a client
+/// never has to guess whether a sandbox can be used on this machine.
+#[test]
+fn sandbox_probe_commands_answer_with_the_host_product() {
+    let state = make_app_state();
+    let response = parse_response(&handle_command_internal(&state, make_cmd("probe_sandbox")));
+    assert_eq!(response["success"], true, "{response}");
+    assert!(
+        response["data"]["available"].is_boolean(),
+        "probe_sandbox must report availability: {response}"
+    );
+    assert!(
+        response["data"]["code"].is_string() && response["data"]["backend"].is_string(),
+        "probe_sandbox must name a code and a backend: {response}"
+    );
+
+    let response = parse_response(&handle_command_internal(
+        &state,
+        make_cmd("probe_windows_sandbox"),
+    ));
+    // Outside Windows the probe answers the same product with an unavailable
+    // verdict, which is still a successful command.
+    assert_eq!(response["success"], true, "{response}");
+    assert!(
+        response["data"]["available"].is_boolean(),
+        "probe_windows_sandbox must report availability: {response}"
+    );
+
+    let response = parse_response(&handle_command_internal(
+        &state,
+        make_cmd("reset_windows_sandbox"),
+    ));
+    // The reset is a Windows-only capability: elsewhere the command must refuse
+    // rather than pretend it removed capabilities that cannot exist here.
+    if cfg!(windows) {
+        assert_eq!(response["success"], true, "{response}");
+        // The answer is a count, not a list: the reset reports how many
+        // capability records it revoked, and a host with nothing staged — a
+        // fresh CI runner — legitimately reports 0 rather than refusing
+        // (`reset_capabilities_at` returns `Ok(0)` for a missing state file).
+        // `host::agent_bridge::reset_windows_sandbox` reads this field with
+        // `as_u64`, so the count is the shape clients consume.
+        assert!(
+            response["data"]["removedCapabilities"].as_u64().is_some(),
+            "reset_windows_sandbox must answer how many it removed: {response}"
+        );
+    } else {
+        assert_eq!(response["success"], false, "{response}");
+        assert!(
+            response["error"]
+                .as_str()
+                .unwrap()
+                .contains("only available on Windows"),
+            "{response}"
+        );
+    }
+}
+
+/// A level stored before the vocabulary narrowed has no "next" step: cycling
+/// snaps it back onto the model's default instead of leaving the session on a
+/// level the provider does not offer.
+#[test]
+fn cycling_from_a_level_the_model_no_longer_declares_snaps_to_the_default() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    session.write().thinking_level = "turbo".to_string();
+    let response = parse_response(&handle_command_internal(
+        &state,
+        make_cmd("cycle_thinking_level"),
+    ));
+    assert_eq!(response["success"], true, "{response}");
+    assert_eq!(
+        response["data"]["level"],
+        crate::llm::schema::DEFAULT_THINKING_LEVEL,
+        "an out-of-vocabulary level must snap to the default"
+    );
+    assert_eq!(
+        session.read().thinking_level,
+        crate::llm::schema::DEFAULT_THINKING_LEVEL
+    );
+}
+
+/// Persistence mode is chosen before work is admitted: once a run has started
+/// the session refuses to switch, instead of stranding the in-flight run's
+/// output in a journal that is about to disappear.
+#[test]
+fn persistence_mode_cannot_change_once_a_run_has_started() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    session
+        .write()
+        .broadcaster
+        .start_run("run-started".to_string(), 1);
+    let mut cmd = make_cmd("set_ephemeral");
+    cmd.ephemeral = true;
+    let response = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(response["success"], false, "{response}");
+    assert!(
+        response["error"]
+            .as_str()
+            .unwrap()
+            .contains("persistence mode must be selected before a prompt is admitted"),
+        "{response}"
+    );
+    // Nothing changed: the session is still persistent.
+    assert!(!session.read().ephemeral, "the refusal must not apply");
+}

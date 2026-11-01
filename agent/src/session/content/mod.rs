@@ -637,3 +637,5 @@ mod stream_entry_tests;
 
 #[cfg(test)]
 mod native_identity_tests;
+#[cfg(test)]
+mod transport_tests;

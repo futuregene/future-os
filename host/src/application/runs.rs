@@ -1087,4 +1087,61 @@ mod tests {
                 .is_err()
         );
     }
+
+    /// The four read delegations a window makes when it opens a conversation and
+    /// when it reconciles the thread list. They are the only way the GUI reaches
+    /// these store queries, so the *shapes* matter: a thread with no run answers
+    /// `Ok(None)` (not an error, or the window would show a failure on every
+    /// fresh conversation), and the batch form answers one row per thread that
+    /// has a run and skips the ones that do not.
+    #[test]
+    fn the_run_reads_answer_the_threads_they_are_given() {
+        let (_home, thread) = seeded("cmd_run_reads");
+        assert!(
+            get_latest_run(thread.id.clone())
+                .expect("latest on a fresh thread")
+                .is_none(),
+            "a thread nobody has prompted has no run"
+        );
+        assert!(list_runs(thread.id.clone()).expect("list").is_empty());
+        assert!(
+            list_latest_run_infos(vec![])
+                .expect("empty batch")
+                .is_empty(),
+            "an empty batch asks the store nothing"
+        );
+        assert!(get_run("run_absent".into()).expect("absent run").is_none());
+
+        create_run(run_input(&thread.id, "run_reads")).expect("create run");
+        let runs = list_runs(thread.id.clone()).expect("list");
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        assert_eq!(runs[0].id, "run_reads");
+        let latest = get_latest_run(thread.id.clone())
+            .expect("latest")
+            .expect("a run exists");
+        assert_eq!(latest.id, "run_reads");
+        assert_eq!(
+            get_run("run_reads".into())
+                .expect("by id")
+                .expect("the run exists")
+                .thread_id,
+            thread.id
+        );
+
+        let _other = crate::store::create_thread(store::CreateThreadInput {
+            mode: "chat".into(),
+            title: Some("No runs".into()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: None,
+        })
+        .expect("create thread");
+        let infos =
+            list_latest_run_infos(vec![thread.id.clone(), "thread_absent".into()]).expect("batch");
+        assert_eq!(infos.len(), 1, "{infos:?}");
+        assert_eq!(infos[0].run_id, "run_reads");
+        assert_eq!(infos[0].status, "running", "a fresh run is running");
+        assert_eq!(infos[0].thread_id, thread.id);
+    }
 }

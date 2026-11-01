@@ -90,4 +90,61 @@ mod tests {
         let review = get_last_run_review(thread.id).expect("review");
         assert!(review.is_some());
     }
+
+    /// The three review commands the panel opens with. The capabilities and the
+    /// git review both describe *this* workspace — a plain directory is the
+    /// shape that proves the path came from the id the caller passed — and the
+    /// retry reports the changeset its own capture materialized.
+    #[test]
+    fn the_review_commands_answer_for_the_workspace_and_run_they_are_given() {
+        let _home = init("cmd_review_wave");
+        let ws = workspace("review_wave_ws");
+        let thread = thread_in(&ws);
+
+        let capabilities =
+            serde_json::to_value(get_workspace_review_capabilities(ws.id.clone()).expect("caps"))
+                .expect("serialize caps");
+        assert_eq!(capabilities["isGitWorkspace"], serde_json::json!(false));
+        assert_eq!(capabilities["views"], serde_json::json!(["last_run"]));
+        assert_eq!(capabilities["defaultView"], serde_json::json!("last_run"));
+        assert_eq!(capabilities["changePreview"], serde_json::json!("ready"));
+
+        let review =
+            serde_json::to_value(get_git_review(ws.id.clone(), None, None).expect("git review"))
+                .expect("serialize review");
+        assert_eq!(review["isGitWorkspace"], serde_json::json!(false));
+        assert_eq!(review["workspacePath"], serde_json::json!(ws.path));
+        let unknown_workspace = get_git_review("ws_absent".into(), None, None)
+            .expect_err("an unknown workspace is reported");
+        assert!(
+            unknown_workspace
+                .to_string()
+                .contains("Workspace could not be loaded"),
+            "{unknown_workspace}"
+        );
+
+        let run = crate::store::create_run(crate::store::CreateRunInput {
+            id: None,
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("run");
+        // The retry path only accepts a real capture (it re-materializes the
+        // diff from the stored snapshots), so the fixture takes one.
+        std::fs::write(std::path::Path::new(&ws.path).join("b.txt"), b"hello").unwrap();
+        crate::agent_bridge::capture_before(&thread.id, &run.id);
+        crate::agent_bridge::finalize_after(&thread.id, &run.id);
+        assert!(
+            retry_run_review(run.id).expect("retry").is_some(),
+            "the retried run has a changeset"
+        );
+        let unknown_run =
+            retry_run_review("run_absent".into()).expect_err("an unknown run is reported");
+        assert!(
+            unknown_run.to_string().contains("Run could not be loaded"),
+            "{unknown_run}"
+        );
+    }
 }

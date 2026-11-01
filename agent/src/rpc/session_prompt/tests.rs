@@ -3488,6 +3488,7 @@ async fn an_automatic_reviewer_policy_reviews_a_sandboxed_run_without_asking_the
         return;
     }
     let home = crate::test_support::TestHome::new();
+    crate::test_support::ensure_fd_headroom();
     // A reviewer that is reachable and answers "server error" at once, so the
     // review completes fast (and fails: no verdict is reachable).
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3693,5 +3694,614 @@ async fn a_run_abandoned_by_persistence_still_sends_a_terminal() {
             .phase,
         crate::runtime::RunPhase::PersistenceDegraded,
         "the outcome was never recorded, so the run must not look settled"
+    );
+}
+
+/// Test-only: persist an accepting snapshot plus a queued receipt, which is the
+/// durable half of "this client request was already accepted" after a restart
+/// (the in-memory scheduler is empty again, so admission has to read it back).
+#[tokio::test(flavor = "current_thread")]
+async fn a_persisted_receipt_answers_a_replayed_request_and_refuses_a_different_body() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![]), "receipt-replay");
+    let mut session = fixture.session;
+    let msg = "replayed input";
+    let snapshot = crate::session::Session::snapshot(
+        "s1".to_string(),
+        session.cwd.clone(),
+        "mock".to_string(),
+        String::new(),
+        String::new(),
+        vec![crate::session::SessionEntry::run_started("run-receipt", 1)],
+    );
+    session.session_manager.save(&snapshot).unwrap();
+    // The fingerprint is the canonical hash admission recomputes from the
+    // request itself; anything else means a different input was accepted.
+    let fingerprint = crate::session::compaction_ops::canonical_hash(&serde_json::json!({
+        "message": msg, "modelContext": "", "images": [], "attachments": []
+    }))
+    .unwrap();
+    let ack = crate::runtime::RunAck::queued("run-receipt".into(), 1, 1);
+    let user: crate::session::SessionEntry = serde_json::from_value(serde_json::json!({
+        "id":"u-replayed","type":"user","role":"user",
+        "timestamp":"2026-10-26T00:00:01Z","meta":{"run_id":"run-receipt"},"content":msg
+    }))
+    .unwrap();
+    session
+        .session_manager
+        .record_queued_receipt(
+            "s1",
+            "req-receipt",
+            &ack,
+            &fingerprint,
+            &serde_json::json!({}),
+            &user,
+        )
+        .unwrap();
+
+    // The same body under the same request id is the same accepted input: the
+    // client gets the original acknowledgement instead of a second run.
+    let replayed = session
+        .enqueue_prompt(
+            msg,
+            &[],
+            &[],
+            None,
+            "req-receipt",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    assert_eq!(replayed.run_id, "run-receipt");
+    assert_eq!(replayed.run_sequence, Some(1));
+    assert_eq!(
+        replayed.accepted_state,
+        crate::runtime::RunAcceptedState::Existing
+    );
+    // Naming the receipt's own run id is also the same accepted input.
+    let named = session
+        .enqueue_prompt(
+            msg,
+            &[],
+            &[],
+            Some("run-receipt"),
+            "req-receipt",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    assert_eq!(
+        named.accepted_state,
+        crate::runtime::RunAcceptedState::Existing
+    );
+
+    // A different body under the same request id is refused, and nothing new
+    // was accepted for it.
+    let error = session
+        .enqueue_prompt(
+            "different body",
+            &[],
+            &[],
+            None,
+            "req-receipt",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("already belongs to another accepted input"),
+        "{error}"
+    );
+    // Naming a *different* run id for the same request id is refused too.
+    let error = session
+        .enqueue_prompt(
+            msg,
+            &[],
+            &[],
+            Some("run-other"),
+            "req-receipt",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("already belongs to another accepted input"),
+        "{error}"
+    );
+}
+
+/// A reset owns the conversation's identities while it runs: new input has to
+/// wait rather than race the rewrite.
+#[tokio::test(flavor = "current_thread")]
+async fn a_history_reset_in_progress_refuses_new_input_until_it_finishes() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![]), "reset-guard");
+    let mut session = fixture.session;
+    session
+        .history_reset_in_progress
+        .store(true, std::sync::atomic::Ordering::Release);
+    let error = session
+        .enqueue_prompt(
+            "hi",
+            &[],
+            &[],
+            None,
+            "req-reset",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("session history reset is in progress"),
+        "{error}"
+    );
+    // The refusal is the flag, not a permanent state: clearing it admits the
+    // same input.
+    session
+        .history_reset_in_progress
+        .store(false, std::sync::atomic::Ordering::Release);
+    assert!(session
+        .enqueue_prompt(
+            "hi",
+            &[],
+            &[],
+            None,
+            "req-reset",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .is_ok());
+}
+
+/// A session whose journal already failed refuses new input with that failure
+/// instead of accepting work it could not persist.
+#[tokio::test(flavor = "current_thread")]
+async fn a_failed_journal_refuses_new_input_with_its_persistence_failure() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![]), "journal-failed");
+    let mut session = fixture.session;
+    session
+        .broadcaster
+        .fail_persistence("injected journal failure");
+    let error = session
+        .enqueue_prompt(
+            "hi",
+            &[],
+            &[],
+            None,
+            "req-failed",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap_err();
+    let text = format!("{error:#}");
+    assert!(text.contains("injected journal failure"), "{text}");
+    assert!(
+        matches!(
+            error.downcast_ref::<crate::runtime::RunQueueError>(),
+            Some(crate::runtime::RunQueueError::PersistenceUnavailable(_))
+        ),
+        "{text}"
+    );
+    // Nothing was accepted for that request id.
+    assert!(session.scheduler.queued().is_empty());
+}
+
+/// A queued input whose durable receipt cannot be written is not left behind:
+/// the accepted run is cancelled out of the scheduler and the client is told
+/// the store failed, so a retry cannot meet a phantom queue entry.
+#[tokio::test(flavor = "current_thread")]
+async fn a_queue_that_cannot_record_its_receipt_is_not_left_queued() {
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![Script::Stall(vec![text_event("running")])]),
+        "receipt-refused",
+    );
+    let mut session = fixture.session;
+    // The first input takes the lane, so the second one has to be queued —
+    // which is the only path that records a receipt.
+    session
+        .enqueue_prompt(
+            "first",
+            &[],
+            &[],
+            Some("run-first"),
+            "req-first",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    let store = session.session_manager.storage().unwrap().clone();
+    store
+        .db
+        .call(|db| {
+            db.execute_batch(
+                "CREATE TRIGGER refuse_receipt BEFORE INSERT ON queued_run_receipts \
+                 BEGIN SELECT RAISE(ABORT,'injected receipt failure'); END;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let error = session
+        .enqueue_prompt(
+            "second",
+            &[],
+            &[],
+            Some("run-second"),
+            "req-second",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap_err();
+    let text = format!("{error:#}");
+    assert!(text.contains("injected receipt failure"), "{text}");
+    assert!(
+        matches!(
+            error.downcast_ref::<crate::runtime::RunQueueError>(),
+            Some(crate::runtime::RunQueueError::PersistenceUnavailable(_))
+        ),
+        "{text}"
+    );
+    assert!(
+        session.scheduler.queued().is_empty(),
+        "the input whose receipt failed must not stay queued"
+    );
+    assert!(session
+        .session_manager
+        .queued_receipt("s1", "req-second")
+        .unwrap()
+        .is_none());
+    // A store that accepts receipts again admits the same input.
+    store
+        .db
+        .call(|db| {
+            db.execute_batch("DROP TRIGGER refuse_receipt")?;
+            Ok(())
+        })
+        .unwrap();
+    let ack = session
+        .enqueue_prompt(
+            "second",
+            &[],
+            &[],
+            Some("run-second"),
+            "req-second",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    assert_eq!(ack.run_id, "run-second");
+    // A queued input always carries its durable receipt; a running one does not
+    // need one, because the scheduler itself owns it.
+    assert_eq!(
+        session
+            .session_manager
+            .queued_receipt("s1", "req-second")
+            .unwrap()
+            .is_some(),
+        ack.accepted_state == crate::runtime::RunAcceptedState::Queued,
+        "receipt presence must match the accepted state"
+    );
+}
+
+/// A provider failure ends the run as an `error` terminal, and that terminal is
+/// announced on the same frame that carries the state, the token usage and the
+/// duration — clients that joined late still learn how the run ended.
+///
+/// The separate `error` *event* is not part of this path: a provider failure is
+/// folded into the terminal state, so the contract asserted here is "exactly one
+/// terminal frame, no error frame".
+#[tokio::test(flavor = "current_thread")]
+async fn a_failed_run_broadcasts_a_single_terminal_frame_with_its_usage() {
+    let provider = ScriptedProvider::new(vec![Script::Fail("upstream is down".to_string())]);
+    let fixture = run_fixture(provider, "error-events");
+    let mut session = fixture.session;
+    session.set_auto_retry(false);
+    let mut receiver = session.broadcaster.subscribe();
+    let _ = session.prompt("hi", &[], &[], None, None);
+    wait_for_run_end(&session).await;
+
+    let events: Vec<_> = std::iter::from_fn(|| receiver.try_recv().ok()).collect();
+    let terminals: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == "agent_end")
+        .collect();
+    assert_eq!(
+        terminals.len(),
+        1,
+        "one terminal frame: {:?}",
+        kinds(&events)
+    );
+    let data: serde_json::Value = serde_json::from_str(&terminals[0].data).unwrap();
+    assert_eq!(data["state"], crate::session::RUN_STATE_ERROR);
+    assert!(data["usage"]["output_tokens"].is_number(), "{data}");
+    assert!(data["duration_ms"].is_number(), "{data}");
+    // The run started and was announced before it failed.
+    let kinds = kinds(&events);
+    assert_eq!(kinds.first().map(String::as_str), Some("user_message"));
+    assert!(kinds.contains(&"agent_start".to_string()), "{kinds:?}");
+    assert!(
+        !kinds.contains(&"error".to_string()),
+        "a provider failure is folded into the terminal state: {kinds:?}"
+    );
+}
+
+/// The event kinds of a captured stream, for failure messages.
+fn kinds(events: &[crate::rpc::SseEvent]) -> Vec<String> {
+    events
+        .iter()
+        .map(|event| event.event_type.clone())
+        .collect()
+}
+
+/// Superseding a queued input whose receipt cannot be cancelled must not leave
+/// the successor behind: the replacement run is cancelled too and the client is
+/// told the store failed.
+#[tokio::test(flavor = "current_thread")]
+async fn a_supersede_whose_receipt_cannot_be_cancelled_leaves_no_successor() {
+    let provider = ScriptedProvider::new(vec![Script::Stall(vec![text_event("running")])]);
+    let fixture = run_fixture(provider, "supersede-refused");
+    let mut session = fixture.session;
+    session
+        .enqueue_prompt(
+            "first",
+            &[],
+            &[],
+            Some("run-first"),
+            "req-first",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    // A queued input with its durable receipt — this is the one that the
+    // superseding request has to cancel.
+    let queued = session
+        .enqueue_prompt(
+            "second",
+            &[],
+            &[],
+            Some("run-second"),
+            "req-second",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    assert_eq!(
+        queued.accepted_state,
+        crate::runtime::RunAcceptedState::Queued
+    );
+    let store = session.session_manager.storage().unwrap().clone();
+    store
+        .db
+        .call(|db| {
+            db.execute_batch(
+                "CREATE TRIGGER refuse_receipt_cancel BEFORE UPDATE ON queued_run_receipts \
+                 BEGIN SELECT RAISE(ABORT,'injected receipt cancel failure'); END;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    let error = session
+        .enqueue_prompt(
+            "third",
+            &[],
+            &[],
+            Some("run-third"),
+            "req-third",
+            crate::runtime::BusyPolicy::SupersedeSession,
+        )
+        .unwrap_err();
+    let text = format!("{error:#}");
+    assert!(text.contains("injected receipt cancel failure"), "{text}");
+    assert!(
+        matches!(
+            error.downcast_ref::<crate::runtime::RunQueueError>(),
+            Some(crate::runtime::RunQueueError::PersistenceUnavailable(_))
+        ),
+        "{text}"
+    );
+    // Neither the superseded input nor its replacement may stay queued.
+    let queued = session.scheduler.queued();
+    assert!(
+        queued.iter().all(|run| run.run_id != "run-third"),
+        "the refused successor must be cancelled: {:?}",
+        queued
+            .iter()
+            .map(|run| run.run_id.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        queued.iter().all(|run| run.run_id != "run-second"),
+        "the superseded input must be cancelled too"
+    );
+}
+
+// ─── the legacy (non-segmented) conversation path ──────────────────────────
+
+/// A conversation whose storage format is the plain transcript, with the
+/// format selected **before** the session configures its journal: the
+/// broadcaster reads the format once and never reconsiders it, so binding it
+/// afterwards would silently keep the canonical path under test.
+fn run_fixture_legacy(provider: Arc<dyn LLMProvider>, name: &str, session_id: &str) -> RunFixture {
+    let dir = test_path(name);
+    let workspace = dir.join("ws");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let manager = Arc::new(crate::session::Manager::new(dir.join("sessions")));
+    manager
+        .storage()
+        .unwrap()
+        .bind_legacy_events(session_id)
+        .unwrap();
+    let agent_loop = Loop::new(provider, "mock").with_tools(coding_tools());
+    let session = crate::rpc::ServerSession::new_with_queue_budget(
+        session_id.to_string(),
+        Arc::new(tokio::sync::RwLock::new(agent_loop)),
+        manager,
+        workspace.to_string_lossy().as_ref(),
+        Arc::new(crate::rpc::SseBroadcaster::new()),
+        crate::rpc::ApprovalGate::default(),
+        Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
+        Arc::new(crate::runtime::GlobalQueueBudget::defaults()),
+    );
+    RunFixture { workspace, session }
+}
+
+/// A legacy conversation writes each message straight into the transcript and
+/// keeps the session's provenance on the run's own `session_info` entry — the
+/// canonical path deliberately drops `source_meta` (a stream run has no place
+/// for it), so this is the only branch that carries it forward.
+#[tokio::test(flavor = "current_thread")]
+async fn a_legacy_run_writes_plain_transcript_entries_and_keeps_its_provenance() {
+    let provider = ScriptedProvider::new(vec![text_turn("legacy answer")]);
+    let mut fixture = run_fixture_legacy(provider, "legacy-run", "leg-run");
+    let session = &mut fixture.session;
+    session.created_by = "desktop".to_string();
+    session.creator_id = "device-1".to_string();
+    session.source_meta = serde_json::json!({"threadId": "thread-1"});
+
+    session
+        .prompt("hello", &[], &[], Some("run-legacy"), None)
+        .unwrap();
+    wait_for_run_end(session).await;
+
+    assert!(
+        !session.broadcaster.uses_segmented_storage(),
+        "the fixture must exercise the plain transcript path"
+    );
+
+    let loaded = session.session_manager.load("leg-run").unwrap();
+    let info = loaded
+        .entries
+        .iter()
+        .rev()
+        .find(|entry| entry.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO)
+        .and_then(|entry| entry.content.clone())
+        .expect("the run wrote its own session_info entry");
+    assert_eq!(info["created_by"], "desktop", "{info}");
+    assert_eq!(info["creator_id"], "device-1", "{info}");
+    assert_eq!(info["source_meta"]["threadId"], "thread-1", "{info}");
+
+    // The answer is a plain assistant entry: no stream staging on this path.
+    let answer = loaded
+        .entries
+        .iter()
+        .find(|entry| entry.role == "assistant")
+        .expect("the answer was persisted");
+    assert_eq!(answer.entry_type, crate::session::ENTRY_TYPE_ASSISTANT);
+    let rendered = answer
+        .content
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    assert!(rendered.contains("legacy answer"), "{rendered}");
+}
+
+/// A pre-block-array transcript recorded a run's id inside the entry **content**
+/// rather than the journal, so a replayed `run_id` has to be recognised by
+/// scanning the transcript — there is no per-run journal row to ask.
+#[tokio::test(flavor = "current_thread")]
+async fn a_legacy_transcript_answers_a_replayed_run_id_without_a_journal() {
+    let provider = ScriptedProvider::new(vec![text_turn("must not run")]);
+    let mut fixture = run_fixture_legacy(provider, "legacy-dup", "leg-dup");
+    let session = &mut fixture.session;
+    session
+        .session_manager
+        .storage()
+        .unwrap()
+        .replace(
+            "leg-dup",
+            vec![
+                serde_json::json!({"id":"legacy-info","type":"session_info","timestamp":"2024-01-01T00:00:00Z","content":{"cwd":".","model":"mock"}}),
+                serde_json::json!({"id":"legacy-answer","type":"assistant","role":"assistant","timestamp":"2024-01-01T00:00:01Z","content":{"run_id":"run-legacy","text":"old answer"}}),
+            ],
+        )
+        .unwrap();
+
+    // The scan lives on the *enqueue* path: a directly submitted prompt never
+    // carries a client request id, so only a queued admission is deduplicated.
+    let error = session
+        .enqueue_prompt(
+            "hello",
+            &[],
+            &[],
+            Some("run-legacy"),
+            "req-legacy",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .expect_err("the transcript already holds that run id");
+    assert!(
+        error
+            .to_string()
+            .contains("already exists in this Agent instance"),
+        "{error}"
+    );
+    assert!(error.to_string().contains("run-legacy"), "{error}");
+    // Nothing was admitted: no run started and the script is untouched.
+    assert!(session.runtime.snapshot().is_none());
+}
+
+/// A run whose event journal dies while it is in flight is **abandoned as
+/// failed**: the runtime leaves `Running` for `PersistenceDegraded`, the live
+/// client is told persistence failed, and the terminal frame says `error` — on
+/// the unpersisted path, because a journal that just refused a commit would
+/// drop an ordinary broadcast before any subscriber saw it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_run_whose_event_journal_dies_mid_way_is_abandoned_as_failed() {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let provider = ScriptedProvider::new(vec![Script::Gated(
+        gate.clone(),
+        vec![text_event("late answer"), finish_event()],
+    )]);
+    let mut fixture = run_fixture_legacy(provider, "journal-dies", "leg-journal");
+    let session = &mut fixture.session;
+    let mut receiver = session.broadcaster.subscribe();
+    session
+        .prompt("hello", &[], &[], Some("run-journal"), None)
+        .unwrap();
+
+    // The run is parked before the body it will send, so the damage lands after
+    // admission and before the batch that carries the answer.
+    session
+        .session_manager
+        .test_execute("DROP TABLE run_events");
+    gate.notify_one();
+
+    let mut degraded = false;
+    for _ in 0..300 {
+        if session
+            .runtime
+            .snapshot()
+            .is_some_and(|snapshot| snapshot.phase == crate::runtime::RunPhase::PersistenceDegraded)
+        {
+            degraded = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        degraded,
+        "a run that cannot persist must leave Running, not hold it: {:?}",
+        session.runtime.snapshot().map(|snapshot| snapshot.phase)
+    );
+
+    let events: Vec<_> = std::iter::from_fn(|| receiver.try_recv().ok()).collect();
+    let kinds: Vec<&str> = events
+        .iter()
+        .map(|event| event.event_type.as_str())
+        .collect();
+    let failure = events
+        .iter()
+        .find(|event| event.event_type == "persistence_error")
+        .unwrap_or_else(|| panic!("no persistence_error frame in {kinds:?}"));
+    let reported: serde_json::Value = serde_json::from_str(&failure.data).unwrap();
+    assert!(reported["error"].is_string(), "{reported}");
+
+    let terminal = events
+        .iter()
+        .rev()
+        .find(|event| event.event_type == "agent_end")
+        .unwrap_or_else(|| panic!("no terminal frame in {kinds:?}"));
+    let data: serde_json::Value = serde_json::from_str(&terminal.data).unwrap();
+    assert_eq!(data["state"], crate::session::RUN_STATE_ERROR, "{data}");
+    assert!(
+        data["error"]
+            .as_str()
+            .is_some_and(|text| text.starts_with("Session persistence failed:")),
+        "{data}"
+    );
+    assert!(
+        session.broadcaster.persistence_error().is_some(),
+        "the broadcaster keeps the failure the client was told about"
     );
 }

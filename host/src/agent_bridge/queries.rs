@@ -865,3 +865,262 @@ pub async fn request_future_models_refresh(
     ))
     .map_err(|error| format!("Future Agent returned an invalid refresh result: {error}").into())
 }
+
+#[cfg(test)]
+mod probe_tests {
+    #![allow(clippy::await_holding_lock)]
+    use super::*;
+    use crate::test_support::agent::{mock_agent, Reply, TestHome};
+
+    /// The sandbox probes are the Settings page's capability read: the desktop
+    /// asks, the Agent answers, and a refusal is an error the page shows. Both
+    /// probes and the reset are asserted through the command they issue and the
+    /// shape that comes back, because a wrong field name here reads as "the
+    /// sandbox is unavailable" on a machine where it works.
+    #[tokio::test]
+    async fn the_sandbox_probes_ask_the_agent_and_map_its_answer() {
+        let _home = TestHome::new("queries-sandbox");
+        let mock = mock_agent();
+
+        mock.push_data(
+            "probe_sandbox",
+            serde_json::json!({
+                "available": true,
+                "code": "ok",
+                "backend": "seatbelt",
+                "path": "/usr/bin/sandbox-exec",
+                "version": "1",
+                "capabilities": {"network": false},
+            }),
+        );
+        let probe = probe_sandbox().await.expect("sandbox probe");
+        assert!(probe.available);
+        assert_eq!(probe.backend, "seatbelt");
+        assert_eq!(probe.path.as_deref(), Some("/usr/bin/sandbox-exec"));
+        assert_eq!(
+            probe.capabilities,
+            Some(serde_json::json!({"network": false}))
+        );
+        assert_eq!(mock.requests_of("probe_sandbox").len(), 1);
+
+        mock.push_data(
+            "probe_windows_sandbox",
+            serde_json::json!({"available": false, "code": "not_windows"}),
+        );
+        let windows = probe_windows_sandbox().await.expect("windows probe");
+        assert!(!windows.available);
+        assert_eq!(windows.code, "not_windows");
+
+        mock.push_data(
+            "reset_windows_sandbox",
+            serde_json::json!({"removedCapabilities": 2}),
+        );
+        assert_eq!(reset_windows_sandbox().await.expect("reset"), 2);
+
+        // A reset reply without the count is refused rather than reported as
+        // "nothing was removed": the page uses the number to say what changed.
+        mock.push_data("reset_windows_sandbox", serde_json::json!({}));
+        let error = reset_windows_sandbox().await.expect_err("no count");
+        assert!(
+            error
+                .to_string()
+                .contains("Invalid Windows sandbox reset response"),
+            "{error}"
+        );
+
+        // A rejected probe is an error, with the Agent's own sentence.
+        mock.push("probe_sandbox", Reply::Reject("probe failed".into()));
+        let error = probe_sandbox().await.expect_err("rejected");
+        assert_eq!(
+            error.to_string(),
+            "probe failed",
+            "the Agent's own sentence is what the page shows"
+        );
+    }
+
+    /// The immutable content page the timeline asks for when a message was
+    /// stored out of line: the caller passes the coordinates it was given, and
+    /// the range comes back for exactly that run.
+    #[tokio::test]
+    async fn an_event_content_range_is_read_for_the_run_it_names() {
+        let _home = TestHome::new("queries-content-range");
+        let mock = mock_agent();
+        mock.push_data(
+            "get_event_content_range",
+            serde_json::json!({"text": "hello", "nextOffset": 5, "complete": true}),
+        );
+
+        let range = get_event_content_range(
+            "sess_1".into(),
+            "run_1".into(),
+            future_rpc::content_range::ContentRequest {
+                database_id: "db".into(),
+                restore_generation: "gen".into(),
+                epoch: 7,
+                cursor: 42,
+                field: "text".into(),
+                offset: 0,
+                max_bytes: 1024,
+            },
+        )
+        .await
+        .expect("content range");
+
+        assert_eq!(range["text"], serde_json::json!("hello"));
+        assert_eq!(range["complete"], serde_json::json!(true));
+        let requests = mock.requests_of("get_event_content_range");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].run_id, "run_1");
+        let sent = requests[0]
+            .content_request
+            .as_ref()
+            .expect("the request is forwarded");
+        assert_eq!(sent.cursor, 42);
+        assert_eq!(sent.field, "text");
+        assert_eq!(sent.max_bytes, 1024);
+    }
+
+    /// A projection that runs past the replay window the events were cut to is
+    /// refused rather than folded together: the two halves come from different
+    /// moments, and a consumer that merged them would silently skip whatever
+    /// fell between.
+    #[tokio::test]
+    async fn a_projection_past_the_replay_window_is_refused() {
+        let _home = TestHome::new("queries-window");
+        let mock = mock_agent();
+        mock.push_typed_data(
+            "get_events_since",
+            serde_json::json!({
+                "runId": "run_1",
+                "events": [{"idx": 2}],
+                "hasMore": false,
+                "watermark": 10,
+                "projection": {"cursor": 50, "events": []},
+            }),
+        );
+
+        let error = read_events_since("sess_1".into(), "run_1".into(), -1, None, None)
+            .await
+            .expect_err("a projection past the watermark is not a page");
+        assert_eq!(error.to_string(), "replay_window_changed");
+    }
+
+    /// A settled run whose projection the Agent can no longer serve is `None`,
+    /// not an error: the caller falls back to the journal instead of showing a
+    /// broken conversation. The two codes the Agent uses for that are the ones
+    /// the fallback keys on.
+    #[tokio::test]
+    async fn an_unavailable_run_snapshot_falls_back_to_none() {
+        let _home = TestHome::new("queries-run-snapshot");
+        let mock = mock_agent();
+
+        for code in ["run_snapshot_too_large", "run_snapshot_unavailable"] {
+            mock.push(
+                "get_run_snapshot",
+                Reply::RejectCode(code, "the projection cannot be served".into()),
+            );
+            assert!(
+                get_run_snapshot("sess_1".into(), "run_1".into())
+                    .await
+                    .expect("a missing projection is not an error")
+                    .is_none(),
+                "{code} must fall back"
+            );
+        }
+
+        // Any other refusal is reported: it is a fault, not a projection that
+        // aged out, and silently reading an empty journal would hide it.
+        mock.push(
+            "get_run_snapshot",
+            Reply::RejectCode("internal_error", "boom".into()),
+        );
+        let error = get_run_snapshot("sess_1".into(), "run_1".into())
+            .await
+            .expect_err("a real fault");
+        assert_eq!(error.to_string(), "boom", "the Agent's error is reported");
+    }
+}
+
+#[cfg(test)]
+mod hydration_tests {
+    use super::*;
+    use crate::test_support::agent::{mock_agent, TestHome};
+
+    /// The full-tail read materializes the fields a consumer needs to decide on
+    /// or show: a replayed event that carries `content_refs` is replaced by the
+    /// referenced body before the caller sees the page, and the reference map
+    /// is gone afterwards. A page that kept the reference would show a message
+    /// that says nothing, because the body lives out of line.
+    #[tokio::test]
+    async fn a_replayed_event_is_hydrated_from_its_content_reference() {
+        let _home = TestHome::new("queries-hydration");
+        let mock = mock_agent();
+        let referenced = serde_json::json!({
+            "role": "user",
+            "message": "",
+            "content_refs": {
+                "message": {
+                    "databaseId": "db",
+                    "restoreGeneration": "gen",
+                    "epoch": 3,
+                    "cursor": 42,
+                    "field": "/data/message",
+                },
+            },
+        });
+        mock.push_typed_data(
+            "get_events_since",
+            serde_json::json!({
+                "runId": "run_1",
+                "events": [{
+                    "idx": 0,
+                    "type": "user_message",
+                    "data": referenced.to_string(),
+                }],
+                "hasMore": false,
+            }),
+        );
+        // The read_field page: identity echoed back, byte progress exact, one
+        // page, `hasMore` false because the next offset reached the total.
+        mock.push_data(
+            "get_event_content_range",
+            serde_json::json!({
+                "databaseId": "db",
+                "restoreGeneration": "gen",
+                "text": "materialized text",
+                "nextOffset": 17,
+                "totalBytes": 17,
+                "etag": "e1",
+                "encoding": "text",
+                "hasMore": false,
+            }),
+        );
+
+        let page = get_events_since_payload("sess_1".into(), "run_1".into(), -1)
+            .await
+            .expect("a replayed page");
+        assert_eq!(page.events.len(), 1);
+        let data: serde_json::Value =
+            serde_json::from_str(&page.events[0].data).expect("the event carries JSON");
+        assert_eq!(data["message"], serde_json::json!("materialized text"));
+        assert_eq!(data["role"], serde_json::json!("user"));
+        assert!(
+            data.get("content_refs").is_none(),
+            "the reference map does not survive hydration: {data}"
+        );
+
+        // The read was for the referenced coordinates, on the run the event
+        // named — not the session's current run.
+        let reads = mock.requests_of("get_event_content_range");
+        assert_eq!(reads.len(), 1);
+        assert_eq!(reads[0].run_id, "run_1");
+        let request = reads[0]
+            .content_request
+            .as_ref()
+            .expect("the reference is forwarded as a content request");
+        assert_eq!(request.cursor, 42);
+        assert_eq!(request.field, "/data/message");
+        assert_eq!(request.epoch, 3);
+        assert_eq!(request.offset, 0, "the body is read from its start");
+    }
+}
