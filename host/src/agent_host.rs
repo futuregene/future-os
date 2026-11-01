@@ -723,6 +723,39 @@ mod block_fixtures {
         run_case("moved-home");
     }
 
+    /// A recovery attempt that reaches a Desktop already stopping is refused by
+    /// name rather than repairing anything: the stop it would start cannot
+    /// finish, and a repair begun under it is what turns a clean quit into a
+    /// "restart Desktop".
+    #[test]
+    fn a_recovery_attempt_during_shutdown_is_refused_before_it_repairs() {
+        run_case("recover-stopping");
+    }
+
+    /// An owned service that never publishes `finished` inside the stop window:
+    /// `recover` must not claim the cleanup half-done, and must say the process
+    /// is what has to be restarted.
+    #[test]
+    fn a_recovery_whose_cleanup_cannot_finish_asks_for_a_restart() {
+        run_case("recover-unfinished");
+    }
+
+    /// A worker that answers without taking ownership and without becoming
+    /// ready: the launcher is waiting on a start that will never proceed, so it
+    /// is told the startup was cancelled instead of being left to its deadline.
+    #[test]
+    fn a_worker_that_takes_nothing_reports_the_start_as_cancelled() {
+        run_case("cancelled-start");
+    }
+
+    /// An update reserved against a live owned Agent: the handle's idle
+    /// admission is what every in-flight command passes through, and closing it
+    /// is the only way the update can be sure none is left.
+    #[test]
+    fn an_owned_ready_agent_reserves_idle_admission_for_an_update() {
+        run_case("owned-idle");
+    }
+
     fn run_case(case: &str) {
         let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/host-fixtures");
         std::fs::create_dir_all(&parent).unwrap();
@@ -829,8 +862,68 @@ mod block_fixtures {
         let Ok(case) = std::env::var(CASE) else {
             return;
         };
+        // The cancelled-start case is the one that must *not* have the entry's
+        // driver: it is about a worker that answers without doing anything.
+        if case == "cancelled-start" {
+            crate::agent_host::configure_driver(|_, _| Ok(())).unwrap();
+            let error = AgentHost::default()
+                .start("auto".into())
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("startup was cancelled"), "{error}");
+            return;
+        }
         test_driver::install();
         let host = AgentHost::default();
+        if case == "recover-stopping" {
+            // Admission closes once and for all in a process, so this arm needs
+            // a process of its own: the guard below is what every later
+            // `recover` would answer, and the fixture is the only caller left.
+            crate::request_scope::close_admission();
+            let error = host.recover("auto".into()).unwrap_err().to_string();
+            // Exact: the recovery path answers this same sentence from a second
+            // guard inside its closure, so a `contains` here cannot tell them
+            // apart — a one-space change to either arm has to fail this test.
+            assert_eq!(error, "Desktop is stopping");
+            assert_eq!(host.phase(), Phase::Idle, "nothing was repaired");
+            return;
+        }
+        if case == "recover-unfinished" {
+            // An owned service that never reaches `finished`: the stop inside
+            // `recover` spends its whole window and gives up, so the cleanup is
+            // incomplete and the process — not this host — is the only repair.
+            {
+                let mut state = host.0.state();
+                state.phase = Phase::Ready;
+                state.owned = true;
+                state.finished = false;
+            }
+            let error = host.recover("auto".into()).unwrap_err().to_string();
+            assert!(error.contains("restart Desktop"), "{error}");
+            assert!(
+                host.recovery_requires_restart(),
+                "the unfinished cleanup has to be reported from then on"
+            );
+            // The stop spent its whole window, so the phase it leaves behind is
+            // the deadline's own failure — not `Stopped`, which would claim a
+            // cleanup that never happened.
+            let phase = host.phase();
+            assert!(
+                matches!(phase, Phase::Failed(_)),
+                "a cleanup that timed out is a failure: {phase:?}"
+            );
+            return;
+        }
+        if case == "owned-idle" {
+            host.start("auto".into()).unwrap();
+            assert!(host.owns_agent(), "an embedded start is owned");
+            assert!(
+                host.reserve_idle_update().unwrap(),
+                "a freshly ready Agent is idle, so an update may take it"
+            );
+            host.stop().unwrap();
+            return;
+        }
         if case == "progress" {
             host.0.state().phase = Phase::Starting;
             let starter = host.clone();
