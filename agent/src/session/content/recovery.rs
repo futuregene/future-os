@@ -320,15 +320,14 @@ impl SqliteStore {
                                     .iter()
                                     .find(|(field, _, _)| field == "/data/text")
                                 {
-                                    draft.text(
-                                        key,
-                                        if change.event_type == "text_chunk" {
-                                            "text"
-                                        } else {
-                                            "reasoning"
-                                        },
-                                        *range,
-                                    )?;
+                                    // The label is bound first so the call — and its
+                                    // `?` — share a line; the branch itself is unchanged.
+                                    let label = if change.event_type == "text_chunk" {
+                                        "text"
+                                    } else {
+                                        "reasoning"
+                                    };
+                                    draft.text(key, label, *range)?;
                                 }
                             }
                         }
