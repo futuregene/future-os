@@ -19,17 +19,54 @@ closes it) or *not waived* with the falsifier that would prove it reachable.
 
 ## before / after (this task)
 
-| | 2026-10-31 (task start) | r2 (wave 12) | **r4 (this round)** |
-|---|---:|---:|---:|
-| `workbench/run.rs` DA:0 | 333 | 168 | **142** |
-| `workbench/mod.rs` DA:0 | 316 | 287 | **262** |
-| lane total DA:0 | — | 1486 | **1458** |
+| | 2026-10-31 (task start) | r2 (wave 12) | r4 | **r8 (wave 5, final)** |
+|---|---:|---:|---:|---:|
+| `workbench/run.rs` DA:0 | 333 | 168 | 142 | **136** |
+| `workbench/mod.rs` DA:0 | 316 | 287 | 262 | **236** |
+| lane total DA:0 (with meters) | — | 1486 | — | **1359** |
 
-r2 → r4 is this round's work; the run.rs figure also carries the earlier waves, because the
-task began at 333. `lcov` for both: `coverage/2026-11/after/tui2/tui2-r4.info`
-(`r2`/`r3` kept beside it for the comparison).
+Each `rN` is one measurement pass; `lcov` for all of them is in
+`coverage/2026-11/after/tui2/tui2-rN.info`, and every figure in this file was re-derived from
+the one it cites (`missed_run.py` for a count, `ranges.py` for the rows). Wave 5 rebased onto
+`origin/dev-huichen` first (16 commits from the sibling lanes), so `r5` — not `r4` — is this
+round's baseline: run.rs **138**, mod.rs **262**.
 
-## Closed this round — and by what
+## Wave 5 (2026-11-01): mod.rs −26, run.rs −2/−8 that turned out to be dead producer
+
+| was | how it closed |
+|---|---|
+| `mod.rs` — eleven `let [WbAction::X(..)] = actions else { panic!(..) }` arms | A `panic!` on a `let … else` arm is a line **no passing test can reach**, so it reads `DA:0` however often the case passes (taxonomy (e)/(c)). One `one(actions, closure)` helper builds its message on the passing path and narrows through a closure whose non-matching arm runs for every action that is not the expected one. Probes: the eleven cases it replaced (`multiline_editing_and_queue_actions_use_shared_state`, the `ctrl+a`/`ctrl+e` pair, the palette's `tab` fill, the five mention completions, `a_paste_is_an_edit_and_never_a_key`). |
+| `mod.rs:1265, 1277` and the per-overlay `_ => …Redraw` fallback | `every_overlay_refuses_the_keys_it_does_not_own`: sixteen overlays × four chords nothing on the surface claims (function keys, an unheard-of modifier combination). A refusal is nothing to do **or at most a repaint** — never an edit, a submission, a command or a decision, which is what the table asserts. |
+| `mod.rs:1070, 2591-2596, 2607, 2613, 2621, 3151, 3158, 3185, 2563-2564, 2679-2685, 2812-2813` — the layout menu's ten rows, and the navigation keys of every box | `every_preference_row_answers_enter_and_the_menus_refuse_a_sideways_press` walks the surface's own `PREFERENCE_ROWS`: every row answers `enter`, and the four rows that open a menu of their own (`Language`, `Theme`, `Shortcuts`, `Reset`) refuse `left`/`right` instead of flipping through a list one press at a time. `navigation_scrolls_a_box_without_closing_it` presses `up`/`down`/`k`/`j`/`pageup`/`pagedown`/`home`/`end` in each of eleven boxes and asserts the box is still on screen and the answer is never a quit, a submission, a decision or a verb. |
+| `run.rs:444, 472-473` — a completion and an alert that arrive behind another event | `a_burst_announces_what_is_in_it` — see the row-8 finding below. |
+
+### What row 8 actually was (and what is left of it)
+
+The ledger's row 8 said the notification lines never ran and named "`adopt_run`/`install_state`'s
+run map after the prompt ack" as the next check. It was neither: the driver fixture's prompt ack
+was `{"run_id","accepted_state"}`, and `payloads_ext::RunAck` also requires `run_epoch`, so the
+ack **failed to decode** — the reader was told `发送未得到确认：missing field \`run_epoch\`` and
+no run was ever filed as this client's own. With the field in the fixture, the completion gate
+answers `true` (measured: `468-469` and `498-501` execute) and the failure notice is the only
+part still at zero — for a different reason:
+
+**`take_completion_notification` removes the run's candidate before it checks the state**
+(`live.rs`: `.position(..).and_then(|index| self.completion_candidates.remove(index))` runs
+before `should_notify`, whose reply for `state == "failed"` is `false`). Both loop sites call the
+completion gate first and the failure gate second, so `take_failure_notification` can never see a
+candidate the loop has not already consumed, and `notify(.. NotifyKind::Failed ..)` at
+`run.rs:453-456` and `run.rs:476-479` is **unreachable from the loop** — `alert_for` covers
+`error` and `approval_request`, not `agent_end` with `state: "failed"`, so a failed run is
+announced by nothing at all.
+
+That is a product defect in `live.rs` (the sibling worker's file), not a measurement gap: the fix
+is to consume the candidate only when the state check passes — or to try the failure gate first —
+and both lines open. **Falsifier for a waiver taken on the wrong grounds:** a `Live`-level case in
+which a run is filed, its `agent_end` carries `state: "failed"`, and `take_failure_notification`
+returns `true`; that case passes today only if the candidate is never offered to the completion
+gate first, which the loop always does.
+
+## Closed in an earlier wave — and by what
 
 | was | how it closed |
 |---|---|
@@ -63,10 +100,11 @@ The guard is held across `await` on purpose (`#[allow(clippy::await_holding_lock
 site): the loop is what spawns the read, nothing the loop runs takes that lock, so the
 lint's deadlock cannot occur here while releasing it early reopens the race.
 
-## Remaining in `run.rs` (142) — grouped, none waived
+## Remaining in `run.rs` (136) — grouped, none waived
 
-Line numbers are r4; `python3 ../tui2/ranges.py <info> <src> workbench/run.rs` re-prints them
-with the source line.
+Line numbers are r8 for the product lines (the test module below them grew, the code above it
+did not); `python3 ../tui2/ranges.py <info> <src> workbench/run.rs` re-prints them with the
+source line.
 
 | # | lines | category | the code that would have to be defeated | falsifier | status |
 |---|---|---|---|---|---|
@@ -77,7 +115,8 @@ with the source line.
 | 5 | `226, 242-243` | reachable | an explicit theme carried to the next start; `run()` returning `Err` | a theme change before quitting; an agent that refuses the attach | **not waived** |
 | 6 | `364-367` | reachable | a conversation step **and another key inside the same burst**: the step lands before the key so the key belongs to the conversation the reader is on | one burst carrying `shift+↓` *and* a plain key (the settle-window case next door only covers the key arriving in a later pass) | **not waived** |
 | 7 | `400, 428, 925, 1591, 1620` | **(c)** brace | closing braces whose arm executes but whose zero edge is the `if let` completion | single-line the arm (no behaviour change) | **not waived** |
-| 8 | `418, 444, 453-456, 469-479, 499-501` | reachable | the **notification** paths: an `Older` page's paint, a completion's `run_id`, the failure and completion `notify(..)` calls | a driver fixture in which the completion/failure event is the *client's own* run and the queue is empty (`live.take_completion_notification` / `take_failure_notification` gate it). **Measured, not assumed:** `a_completed_run_is_announced_and_the_activity_row_stops` and `a_failed_run_is_announced_as_failed` already send `agent_end` on the run the prompt-ack named, and these lines still read 0 — so the gate returned false on both, and the ack's `run_id` is not by itself enough | **not waived** — next useful check is `adopt_run`/`install_state`'s run map after the prompt ack |
+| 8 | `453-456, 476-479` | **W8** (dead producer) | the failure notice in both call sites: `take_completion_notification` **removes** the run's candidate before it checks the state (`live.rs`: `.position(..).and_then(|i| self.completion_candidates.remove(i))` runs before `should_notify(.., state, ..)`), and both loop sites call the completion gate first — so `take_failure_notification` never sees a candidate, and `alert_for` covers `error`/`approval_request` but not `agent_end state:"failed"`. A failed run is announced by nothing | a `Live`-level case where a filed run's `agent_end` says `failed` and `take_failure_notification` answers `true` — which today holds only if that candidate is never offered to the completion gate first | **not waived** — product defect in `live.rs` (see "What row 8 actually was"); the fix opens all eight lines |
+| 8a | `469` | reachable | the burst drain's completion (`completion = event.run_id…`) | an `agent_end` with `state:"completed"` that arrives **behind** another event in the same breath (the single-event arm at `444` is now covered) | **not waived** |
 | 9 | `742, 959, 1259, 1348, 1409` | reachable | small `match` tails: `resolve_step`'s non-switch actions, `Outcome::Quit`, a tab key that maps to no section, a filter parse's default, a picker's `Some(next)` | one driver key per arm | **not waived** |
 | 10 | `918-919, 1028-1035, 1075-1084, 1088, 1106, 1146, 1153, 1280-1283, 1362-1368, 1772-1773` | **W3 (a)** | the error arms of five panel reads plus `toggle_pin_selected` and its `continue` | a mock that answers `Err` on the read each arm belongs to (the driver's mock answers by command type, so this is one fixture per arm) | **not waived** |
 | 11 | `1197-1201, 1208-1213, 1231-1232, 1236-1238, 1243-1249, 1756-1761, 1787, 1793-1802, 1821` | reachable | the mouse-capture and preview verbs: `/preview`, `reset_preview`, `refresh_state`, the clipboard copy's `spawn_blocking`, the picture scope | one driver verb each; `/preview` on a file row needs a workspace with a picture (the loop_edges preview test builds one) | **not waived** |
@@ -85,25 +124,53 @@ with the source line.
 | 13 | `1734-1743` | **W7** | "No driver behind this surface (never in the running app): read it here" — the synchronous fallback the driver never takes because `Live` has a load sender | a `Live` with no `load_tx` (the comment is the claim; it has not been measured) | **not waived** |
 | 14 | `2664, 2669, 2697, 2950` | reachable | display helpers (`bubble[0]`, `index + 1`) and `events_of`'s lone-`ESC`-then-`[B` split | one unit case each; `events_of` is a pure function | **not waived** |
 
-## Remaining in `mod.rs` (262) — shape only
+## Remaining in `mod.rs` (236) — shape only
 
-Not itemised here yet; the r4 range list groups them in five families, and the first two are
-where the cheap lines are:
+Not itemised line by line; the r8 range list groups them in five families, and wave 5 removed
+the first one's easiest half:
 
-- **early-return guards** (`return Vec::new()`, `return None`, `_ => {}`): the largest family —
-  each is one event the surface refuses, and every one is reachable from a `WbEvent` the test
-  builds, so the work is enumerating the refusal table, not defeating a mechanism.
-- **overlay/key arms** (`Overlay::DeleteSession => Vec::new()`, the picker's `backspace`,
-  preference rows that cycle an index): reachable per key.
-- **`panic!` failure arguments in this file's own tests** (`panic!("{actions:?}")` and
-  friends): taxonomy **(e)/(c)** — the same hoist this round applied to three of them in
-  `run.rs`.
+- **early-return guards** (`return Vec::new()`, `return None`, `_ => {}`): the largest family,
+  and the one the refusal tables now walk for the *generic* case (a stray chord, the three
+  non-key events, the layout menu's rows, the navigation keys of every box). What is left is
+  the guards that need a particular **state** rather than a particular key — a step at the end
+  of the rail, a panel row that is a heading, a picker with no rows — each reachable, none
+  defeated by a mechanism.
+- **overlay/key arms** (`Overlay::DeleteSession => Vec::new()`, the picker's `backspace`, the
+  keybinding editor's indices): reachable per key, in a state the box only reaches after
+  another action.
+- **`panic!`/`expect` failure arguments in this file's own tests**: what `one` did not cover —
+  a `match` arm or a `let … else` whose message is a separate argument.
 - **mouse and divider arms** (`git.divider`, wheel bursts, `preview_drag`).
 - **error arms of panel reads**: the remainder, the same shape as `run.rs` row 10.
 
-The two families with a mechanism rather than a missing key press are the `panic!` arguments
-(mechanical hoist) and the git-divider drags (a press on `git.divider` needs the `/git` panel
-open, which the driver tests already do).
+## The pty rail check costs one poll (5 s); it stays, with the cost written down
+
+`the_rail_re_reads_its_list_on_its_own_clock` (`tui/tests/driver_run.rs`) is the **only** way to
+cover `run.rs:523, 536-539`: the rail is drawn only on a window at least
+`layout::NARROW_WIDTH` (88) columns wide, and the in-process driver's terminal answers 80 under a
+redirected stdout. The alternative was a test seam in `terminal.rs` (a forced size per terminal),
+i.e. product machinery for one arm.
+
+**Measured, with timestamps printed from the test itself** (2026-11-01, this host):
+
+| segment | time | whose |
+|---|---:|---|
+| child spawn → first frame | **5.1 s** | the fixture, not the check: it is the same for this harness with the window size and the seeded settings both removed, and the sibling `an_approval_streamed_to_a_real_terminal_rings_the_desktop` paints in 0.3 s because its agent streams an event at once — an idle stream (`pending()`) is what costs the 5 s. Unattributed beyond that. |
+| first frame → the re-read | **5.0 s** | **the check**: one `SESSIONS_POLL`, which is the product's own constant |
+| ctrl+x → the child is gone | **0.06 s** | the fixture |
+| libtest total for the target (4 cases, parallel) | **15.2 s** | was 5.4 s for the same target before this case, measured on the real-entry case alone |
+
+So the case adds **5 s**, and the target went 5.4 s → 15.2 s: 5 s of that is the check, the rest is
+this fixture's startup/teardown overlapping differently under parallel scheduling. Worth it while
+the four lines have no other route; if that ever changes, the two levers are (a) a
+`FUTURE_TUI_*` poll override the child reads — a product seam, not a shorter wait — and (b)
+folding the check into the real-entry case, which already holds a child (at the cost of coupling
+"the exit path writes settings.json" with "the rail re-reads its list").
+
+The 5 s is not a sleep the test chose: the assertion is that the read happens on the loop's own
+clock, the clock is `std::time::Instant` inside the child (so `tokio`'s paused clock cannot
+shorten it), and any shorter wait would prove something else. It is `#[cfg(unix)]` at the
+harness's level, so Windows pays nothing.
 
 ## How to re-measure this file
 

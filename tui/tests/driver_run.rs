@@ -87,7 +87,15 @@ impl Run {
     /// `size`: the window the child is handed, for a surface that lays itself
     /// out differently at different widths — the rail is only drawn on a
     /// terminal at least [`future_tui::workbench::layout::NARROW_WIDTH`] columns
-    /// wide, and the size a child sees is the one its own `TIOCGWINSZ` reports.
+    /// wide.
+    ///
+    /// It is handed over as `COLUMNS`/`LINES` rather than a `TIOCSWINSZ` on the
+    /// pty: the surface asks `TIOCGWINSZ` first and falls back to those two
+    /// variables when the terminal reports no size — which is what this harness's
+    /// pty does — and the variables say what the surface should compose for
+    /// instead of pretending the pty has that window. Measured: the child's first
+    /// frame takes ~5.1 s either way in this fixture, so the ioctl bought
+    /// nothing and this is one less moving part.
     fn spawn_sized(addr: &str, seeded: Option<&str>, size: Option<(u16, u16)>) -> Self {
         let dir = tempfile::tempdir().expect("temp dir");
         let settings = dir.path().join("tui").join("settings.json");
@@ -109,13 +117,15 @@ impl Run {
             .env_remove("FUTURE_AGENT_SOCKET")
             .env_remove("FUTURE_AGENT_GRPC_ADDR")
             .env("TERM", "xterm-256color");
+        if let Some((cols, rows)) = size {
+            command
+                .env("COLUMNS", cols.to_string())
+                .env("LINES", rows.to_string());
+        }
         // The PTY is the child's **stdout** as much as its stdin: the workbench
         // paints on fd 1, so redirecting stdout to a file would leave the parent
         // reading an empty master (measured: a 20 s wait and no frame).
         let (master, slave) = open_pty();
-        if let Some((cols, rows)) = size {
-            set_pty_size(&slave, cols, rows);
-        }
         let out = dup_fd(&slave);
         let err = dup_fd(&slave);
         command.stdin(Stdio::from(slave));
@@ -243,18 +253,6 @@ fn open_pty() -> (OwnedFd, OwnedFd) {
         assert!(libc::fcntl(master, libc::F_SETFL, flags | libc::O_NONBLOCK) >= 0);
         (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave))
     }
-}
-
-/// Give the pty a window size before the child starts: the child reads its own
-/// with `TIOCGWINSZ`, so this is the only place a test can decide how wide the
-/// surface it is painting is.
-fn set_pty_size(slave: &OwnedFd, cols: u16, rows: u16) {
-    use std::os::fd::AsRawFd as _;
-    let mut size: libc::winsize = unsafe { std::mem::zeroed() };
-    size.ws_col = cols;
-    size.ws_row = rows;
-    let set = unsafe { libc::ioctl(slave.as_raw_fd(), libc::TIOCSWINSZ, &mut size) };
-    assert_eq!(set, 0, "TIOCSWINSZ on the pty slave failed");
 }
 
 // ─── The one run ──────────────────────────────────────────────────────────
