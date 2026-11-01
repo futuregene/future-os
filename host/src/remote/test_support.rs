@@ -89,7 +89,7 @@ pub fn access_diagnostics() -> (u64, bool, bool) {
 /// The thread that owns the active fixture scope, if any.
 ///
 /// `HomeGuard` is serialized on [`crate::TEST_HOME_LOCK`], so there is at most
-/// one — and it is the whole contract a *dispatch* has to respect: the
+/// one — and it is the whole contract a *test body* has to respect: the
 /// supervisor below is one process-global machine, so a test that reaches it
 /// must be the test that owns the machine. This exists because one did not
 /// (`F7`: a `Root`-based dispatch test with no guard drove `add_device` with an
@@ -138,6 +138,21 @@ pub fn leave_fixture_scope() {
 /// globals. Failing loudly here is the point: the same call against a live
 /// fixture is invisible — it stops a machine another test is starting, whose
 /// only symptom is a `Stopped` status in an unrelated test name.
+///
+/// Two clauses, and both are load-bearing:
+///
+/// 1. **Some fixture has to own the machine.** A machine-wide teardown while no
+///    fixture is active can only be a test body that never took one.
+/// 2. **A test body has to be *that* fixture.** The libtest harness names each
+///    test's thread after its test path (`module::nested::the_test`), while a
+///    thread the code under test spawned carries a worker name
+///    (`desktop-stop`, `tokio-rt-worker`) or none. Clause 2 is therefore about
+///    the caller's *role*, not its identity: the shutdown sequence's own
+///    cleanup worker is allowed to stop the machine it belongs to — that is the
+///    production path — and the dispatch test that ran beside it is not. Keying
+///    on identity alone refused the worker too and reddened seven
+///    `shutdown::services::` tests plus a `TestHome` drop (measured, one full
+///    run: `after-run-1.log`), which is why the role test is explicit here.
 #[cfg(test)]
 pub fn assert_fixture_scope(what: &str) {
     // Never escalate while a test is already unwinding: a panic on the way out
@@ -148,18 +163,47 @@ pub fn assert_fixture_scope(what: &str) {
         note_access("refused: unsupervised teardown while unwinding");
         return;
     }
+    if let Some(clause) = fixture_scope_clause() {
+        panic!(
+            "{what} reached the process-global remote supervisor outside the fixture that \
+             owns it ({clause}). Every writer of that state is serialized on \
+             TEST_HOME_LOCK, so a dispatch without a HomeGuard can stop a machine another \
+             test is starting (measured: `pair_new_device` on an empty book is `re_pair` → \
+             `unpair` → `stop_with`). Take a `HomeGuard` for the test body."
+        );
+    }
+}
+
+/// Which clause of the scope contract the caller violates, or `None`.
+///
+/// Split out from [`assert_fixture_scope`] so both clauses can be asserted in a
+/// test body instead of only by provoking a panic (`a_teardown_from_another…`
+/// below). Returning the clause rather than a bool keeps the panic message and
+/// the assertion the same fact.
+#[cfg(test)]
+fn fixture_scope_clause() -> Option<&'static str> {
     let owner = *FIXTURE_OWNER
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
-    assert_eq!(
-        owner,
-        Some(std::thread::current().id()),
-        "{what} reached the process-global remote supervisor outside the fixture that \
-         owns it. Every writer of that state is serialized on TEST_HOME_LOCK, so a \
-         dispatch without a HomeGuard can stop a machine another test is starting \
-         (measured: `pair_new_device` on an empty book is `re_pair` → `unpair` → \
-         `stop_with`). Take a `HomeGuard` for the test body."
-    );
+    let caller = std::thread::current();
+    match owner {
+        None => Some("no fixture owns the process-global remote supervisor"),
+        Some(owner) if owner != caller.id() && is_a_test_body(caller.name()) => {
+            Some("the calling test body is not the one that owns the supervisor")
+        }
+        Some(_) => None,
+    }
+}
+
+/// Is this thread a libtest test body rather than a thread the code spawned?
+///
+/// The harness names a test's thread after the test path, and a path always
+/// contains `::`; a spawned worker is named by the code that spawns it
+/// (`desktop-stop`, `tokio-rt-worker`, `future-rt`) or left unnamed. Only used
+/// by [`assert_fixture_scope`], which is `cfg(test)`.
+#[cfg(test)]
+fn is_a_test_body(name: Option<&str>) -> bool {
+    name.is_some_and(|name| name.contains("::"))
 }
 
 /// Credentials for a pairing that exists only inside the test process.
@@ -3073,5 +3117,49 @@ mod tests {
     #[should_panic(expected = "outside the fixture that owns it")]
     async fn a_machine_wide_teardown_outside_a_fixture_is_refused() {
         crate::remote::unpair().await.ok();
+    }
+
+    /// The other half of the rule: a fixture owns the machine, and *another*
+    /// test body still may not tear it down.
+    ///
+    /// This is the F7 shape without the 7-minute suite: `HomeGuard` holds the
+    /// machine here, and a thread named the way the libtest harness names a test
+    /// (its path) asks whether it may stop it. Asserted through
+    /// [`fixture_scope_clause`] rather than by provoking the panic, because the
+    /// panic is what `a_machine_wide_teardown_outside_a_fixture_is_refused`
+    /// already covers and a second panic would only re-test the wrapper.
+    ///
+    /// Falsification: make [`is_a_test_body`] return `false` — the dispatch is
+    /// then indistinguishable from a worker and this assertion fails.
+    #[test]
+    fn a_teardown_from_another_test_body_is_refused_even_while_a_fixture_runs() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("clause-two");
+        assert_eq!(
+            fixture_scope_clause(),
+            None,
+            "the owner may stop its machine"
+        );
+        let clause = std::thread::Builder::new()
+            .name("remote::control::tests::serving::the_other_test".into())
+            .spawn(fixture_scope_clause)
+            .expect("spawn the other test body")
+            .join()
+            .expect("the other test body panicked");
+        assert_eq!(
+            clause,
+            Some("the calling test body is not the one that owns the supervisor")
+        );
+    }
+
+    /// …and a thread the code spawned is not a test body, which is what lets the
+    /// shutdown sequence's own cleanup worker stop the machine it belongs to.
+    #[test]
+    fn a_worker_thread_is_not_a_test_body() {
+        assert!(!is_a_test_body(None));
+        assert!(!is_a_test_body(Some("desktop-stop")));
+        assert!(!is_a_test_body(Some("tokio-rt-worker")));
+        assert!(is_a_test_body(Some(
+            "remote::control::tests::serving::a_client_role_change"
+        )));
     }
 }

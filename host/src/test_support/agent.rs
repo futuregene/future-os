@@ -769,6 +769,12 @@ impl TestHome {
 
     fn restore(&mut self) {
         self.timing.mark("body");
+        // Re-publish the scope: `restore` runs twice for a fixture that calls it
+        // directly and then drops (or is dropped after its body), and the drain
+        // below is this fixture's own machine-wide teardown, so it has to be
+        // attributed to this fixture both times (see
+        // `remote::test_support::enter_fixture_scope`).
+        crate::remote::test_support::enter_fixture_scope();
         (self.cleanup)();
         self.timing.mark("cleanup");
         match &self.prev_home {
