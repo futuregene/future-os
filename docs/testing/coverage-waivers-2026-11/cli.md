@@ -7,15 +7,24 @@ llvm-cov *summary* percentages are not the acceptance number.
 target), rust **1.99.1** pinned by `rust-toolchain.toml`. The relay lane also runs
 `--test relay_nats_auth -- --ignored` against a real `nats-server`
 (`FUTURE_RELAY_NATS_SERVER`), and the profile of both passes is merged into one report —
-`coverage/2026-11/after/cli/measure12.sh` is the whole thing, `cli-lcov-12.info` the artifact.
+`coverage/2026-11/after/cli/measure13.sh` is the whole thing, `cli-lcov-13.info` the artifact.
 
 **This file's status: 16 rows / 53 lines registered, and it is not a claim of per-line 100 %.** The
-lane reads **284 `DA:0`** out of 54 893 lines (99.48 %): 80 of those are one class
-(closing tokens, below), 49 are statements registered here, **147 are work items** with a
+lane reads **266 `DA:0`** out of 55 051 lines (99.52 %): 79 of those are one class
+(closing tokens, below), 49 are statements registered here, **130 are work items** with a
 falsifier each, and **8 await a product decision** (a section of their own, below). Nothing
-in the 284 is silently missing — the section *Not waived* exists so that "not covered" and
+in the 266 is silently missing — the section *Not waived* exists so that "not covered" and
 "cannot be covered" are never the same sentence, and the decision block exists so that
 "reachable in principle" and "reachable today" are not either.
+
+Two of this wave's own numbers go **up**: `browser/safari/safari_manager.rs` reads 14 `DA:0`
+instead of 9, because the launch test's failure diagnosis was ported from its sibling
+(5 test-side panic arms; §*The launch test that could not say why it failed*). Net for the
+wave is still negative, and the gate it buys is the ability to close
+[`cli-safari-gate-flake.md`](cli-safari-gate-flake.md)'s open item at the next red run.
+A third file, `test_server.rs`, went 3 → 14 (+11) from **another lane's** commits (`9fdabcb03`
+platform-gates an fd diagnostic); those eleven are that lane's test-side arms, listed here
+only so the total is not read as this wave's doing.
 
 ## Headline
 
@@ -26,29 +35,44 @@ in the 284 is silently missing — the section *Not waived* exists so that "not 
 | wave 3 (`cli-lcov-7.info`) | **429** | 54 561 |
 | wave 10 (`cli-lcov-10.info`) | **355** | 54 882 |
 | wave 11 (`cli-lcov-11.info`) | **288** | 54 892 |
-| **this wave (`cli-lcov-12.info`)** | **284** | 54 893 |
-| — closing tokens (one class, see below) | 80 | |
-| — statements | 204 | |
+| wave 12 (`cli-lcov-12.info`) | **284** | 54 893 |
+| **this wave (`cli-lcov-13.info`)** | **266** | 55 051 |
+| — closing tokens (one class, see below) | 79 | |
+| — statements | 187 | |
 | — of those, registered as waivers (16 rows, this file; 49 of the 53 are statements, 4 are closing tokens) | **49** | |
-| — of those, work items named below (not waived) | 147 | |
+| — of those, work items named below (not waived) | 130 | |
 | — of those, awaiting a product decision (below) | 8 | |
 
-Per file, wave 11 → this wave (top of the list only; `delta.py cli-lcov-11.info
-cli-lcov-12.info w11 w12` prints the whole table and both totals):
+Per file, wave 12 → this wave (top of the list only; `delta.py cli-lcov-12.info
+cli-lcov-13.info w12 w13` prints the whole table and both totals):
 
 ```
-file                                    w11    w12   delta
-commands/remote_peers.rs                   29     24      -5
-commands/remote.rs                         31     31      +0   (reclassified: 12 rows, not one work item)
-headless/mod.rs                            24     24      +0
-commands/data.rs                           21     21      +0
-prompt.rs                                  15     15      +0
-relay/cli.rs                               15     15      +0
+file                                    w12    w13   delta
+commands/session.rs                       11      1     -10
+commands/models.rs                        12      0     -12
+commands/session_journal.rs               15      8      -7
+commands/remote_peers.rs                  24     20      -4
+commands/remote.rs                        31     31      +0   (14 rows + 2 closing tokens + 15 test-side)
+browser/safari/safari_manager.rs           9     14      +5   (the ported failure diagnosis, test-side)
+headless/mod.rs                           24     24      +0   (line numbers moved; see the rows below)
+test_server.rs                             3     14     +11   (another lane's fd diagnostic)
 ```
 
-The line total grew by one between wave 11 and this wave, and the −4 is all closed code:
-the two tests added in this wave live in `cli/tests/`, which the lane does not instrument,
-so nothing here grew for a reason this file has to explain.
+The wave was measured twice, because the integration branch moved by twelve commits between
+the first report and the hand-off: on wave 12's base the lane read **254 / 55 028**, and on
+this wave's base (`origin/dev-huichen` at `71f93f804`) it reads **266 / 55 051**. The
+difference is not this lane's: three upstream commits touched this crate (`9fdabcb03`,
+`71f93f804`, `5d371857d`), which added the eleven `test_server.rs` lines above and moved
+line numbers inside `commands/remote.rs` and `headless/mod.rs` — the registered rows below
+were re-mapped onto the new numbers and re-checked (`checked=53 stale=0`), rather than left
+describing the old file.
+
+The line total grew by 158, and none of it is product code: the nine tests added in this
+wave live inside the lib (five in `session_journal`'s and `session`'s test modules, two in
+`models`', one in `remote_peers`'), so their bodies are instrumented and the denominator
+grows with them. `commands/models.rs` and `commands/session.rs` are therefore both at
+metric A's floor: `models.rs` reads **0**, and `session.rs`'s single remaining line is a
+closing brace.
 
 `delta.py` keyed its rows on the absolute `SF:` path until this wave, which made every file
 look new whenever the two reports were measured in different worktrees (`cov-cli`, then
@@ -59,22 +83,26 @@ row on the left. It now keys on the path inside `cli/src/`.
 
 ```bash
 cd coverage/2026-11/after/cli
-./measure12.sh                                # lib + every integration target, then the nats-only pass
-python3 perfile.py cli-lcov-12.info           # per file, highest first
-python3 missed.py cli-lcov-12.info relay/server.rs /path/to/cli/src/relay/server.rs
+./measure13.sh                                # lib + every integration target, then the nats-only pass
+python3 perfile.py cli-lcov-13.info           # per file, highest first
+python3 missed.py cli-lcov-13.info relay/server.rs /path/to/cli/src/relay/server.rs
                                               # the DA:0 lines of one file, with their text
-python3 classify.py cli-lcov-12.info          # closing-token class vs statements
-python3 delta.py cli-lcov-11.info cli-lcov-12.info w11 w12   # per-file movement between two waves
-python3 waiver_check.py cli-lcov-12.info "relay/cli.rs:519-522,526-528,530,532,584,588-590,421,245" \
+python3 classify.py cli-lcov-13.info          # closing-token class vs statements
+python3 delta.py cli-lcov-12.info cli-lcov-13.info w12 w13   # per-file movement between two waves
+python3 waiver_check.py cli-lcov-13.info "relay/cli.rs:519-522,526-528,530,532,584,588-590,421,245" \
     "relay/server.rs:239" "relay/room.rs:168-170" "prompt.rs:37,59,67-74,104,127,140,151" \
-    "commands/remote.rs:533,1341,1578,2446,2404-2405,2779,2781-2782,2599-2603" \
+    "commands/remote.rs:533,1341,1578,2474,2432-2433,2807,2809-2810,2627-2631" \
     "commands/remote_peers.rs:684,687-690,692"
                                               # every registered row, re-read against this report
+./safari-load-repro.sh 3 8                    # the gate flake's reproduction (see cli-safari-gate-flake.md)
 ```
 
-`measure12.sh` pins `HOME` to `target/test-home`, clears `CARGO_BUILD_TARGET`/
+`measure13.sh` pins `HOME` to `target/test-home`, clears `CARGO_BUILD_TARGET`/
 `CARGO_TARGET_DIR` (they leak from other sessions' shells) and puts the 1.99.1 toolchain
-first on `PATH` (Homebrew's rustup shim shadows it otherwise).
+first on `PATH` (Homebrew's rustup shim shadows it otherwise). It must be run as
+`sh ./measure13.sh` (or after `chmod +x`): the file is checked in without the executable
+bit, and `./measure13.sh` then fails in milliseconds with no output at all — which reads
+exactly like "the measurement finished instantly".
 
 ## Rows registered as waivers
 
@@ -96,9 +124,9 @@ line, W7 mock closure, W8 dead producer.
 | 10 | `commands/remote.rs:533` | **W2** | `Book::set_controller`'s `if self.legacy { return; }` — "a legacy file has one device, which controls by virtue of being alone". Its only caller is `take_control`'s `book.edit` closure (2605), inside `if !recorded`, and a legacy book *is* one credential: `Book::read` sets `active = slots.first()` (434-435), so `recorded` is already true whenever a legacy book is in hand and the call never happens. | a second caller of `set_controller` that does not compare against `active` first — or a legacy document that yields no `Device`, which fails `read` before the caller runs | `use_persists_the_controller_and_keeps_unmodelled_fields` drives the multi-device arm of the same function; `a_legacy_single_pairing_reads_as_one_slot_that_cannot_serve` pins the single-device shape that makes the guard true |
 | 11 | `commands/remote.rs:1341` | **W2** | `Observed::headline`'s `(other, _, _) => (*other).to_string()`. The match is on `self.state()`, and `state()` is `state_of(running, phase)` (1081-1083) — a `&'static str` whose every arm returns one of the eight literals matched above it (`off`, `unknown`, `on`, `connecting`, `serving`, `degraded`, `failed`, `revoked`). A phase this build does not know is `"unknown"` (1063), which has its own arm at 1333-1334. | an arm added to `state_of` — or `state()` ceasing to be its only source | `every_phase_maps_to_the_state_the_document_promises` pins the closed vocabulary, including `state_of(true, Some("draining")) == "unknown"`: the unknown phase lands on a named arm, never on this one |
 | 12 | `commands/remote.rs:1578` | **W2** | `switch`'s `out.log_err(silence)` inside `"off" if on =>`. `silence` is set only on the paths where `reported` stays `None` (1523, 1534), and a running Desktop whose state is `"off"` must have answered with `phase: "stopped"` (1054) — i.e. `reported` is `Some`. With no Desktop running `silence` is never set at all (1517). The two conditions are mutually exclusive by construction, so the arm is entered (`DA:26` on 1576) and its body never is. | an answer that carries a status *and* an error, or a `state_of` that maps a missing status to `"off"` | `a_desktop_that_refuses_the_switch_still_stores_it_and_exits_one` takes the `"unknown"` arm above it (1521-1526 → 1570-1574); `enable_without_a_desktop_stores_the_switch_and_says_it_is_not_serving` takes `"off"` with no silence |
-| 13 | `commands/remote.rs:2446` | **W2** | `queue_pending_revoke`'s `None => return Err(… "is not a JSON object")` on `pending.as_object_mut()`. `pending` has exactly two producers: `json!({})` for a missing file, and the document that survived `.filter(Value::is_object)` (2434-2438) — a third shape would have to be constructed below that filter. | a third way to build `pending` that is not an object (e.g. reading the queue through a helper that returns `Value`) | `an_undeliverable_platform_revoke_is_queued_for_the_next_desktop` writes the queue through this function, taking the `Some` arm, and reads the file back as an object |
-| 14 | `commands/remote.rs:2404-2405, 2779, 2781-2782` | **W4** | `platform_api_key`'s `NotFound` and other-I/O arms, and `revoke`'s arm that queues the revoke for that error. The caller has already proved this file readable: `future_api_key()` (2390) returned the key out of `<home>/agent/auth.json` through `auth_store::read`, and `platform_api_key()` resolves the *same* path (`future_agent::utils::default_config_dir()` = `future_home()/agent`, the same root as `auth_store::agent_dir()`) and reads it again microseconds later, with no `await` in between. Any of these five lines needs the file to be deleted, replaced or emptied exactly in that window. | a concurrent `future auth logout` (or an editor) landing between the two reads — which a test cannot place without a seam — or the two functions resolving different paths, which would be a defect of its own rather than a line to cover | `an_undeliverable_platform_revoke_is_queued_for_the_next_desktop` pins the guard's own outcome: the "not signed in" warning is what a machine with no `auth.json` gets, and it is produced at 2391-2400, before either read can differ |
-| 15 | `commands/remote.rs:2599-2603` | **W4** | `take_control`'s "no longer paired to this machine: the pairing book changed while this ran" — `book.edit`'s closure finding the wanted device gone. The book is read twice in this function (`Book::load()` at 2580, `Self::load()` inside `edit`), and nothing between them awaits: `desktop_running()` and `switch_is_on()` are file reads, so another process cannot be placed in that gap by a test. | an `await` between the two reads (the Desktop round trip moved before the write, which the comment at 2593-2595 says is deliberate), or a load seam | `use_persists_the_controller_and_keeps_unmodelled_fields` takes the `Ok` arm of the same closure — `book.edit` writing a controller that is still there; `use_accepts_a_stripped_or_partial_id` reaches the same write by prefix |
+| 13 | `commands/remote.rs:2474` | **W2** | `queue_pending_revoke`'s `None => return Err(… "is not a JSON object")` on `pending.as_object_mut()`. `pending` has exactly two producers: `json!({})` for a missing file, and the document that survived `.filter(Value::is_object)` (2434-2438) — a third shape would have to be constructed below that filter. | a third way to build `pending` that is not an object (e.g. reading the queue through a helper that returns `Value`) | `an_undeliverable_platform_revoke_is_queued_for_the_next_desktop` writes the queue through this function, taking the `Some` arm, and reads the file back as an object |
+| 14 | `commands/remote.rs:2432-2433, 2807, 2809-2810` | **W4** | `platform_api_key`'s `NotFound` and other-I/O arms, and `revoke`'s arm that queues the revoke for that error. The caller has already proved this file readable: `future_api_key()` (2390) returned the key out of `<home>/agent/auth.json` through `auth_store::read`, and `platform_api_key()` resolves the *same* path (`future_agent::utils::default_config_dir()` = `future_home()/agent`, the same root as `auth_store::agent_dir()`) and reads it again microseconds later, with no `await` in between. Any of these five lines needs the file to be deleted, replaced or emptied exactly in that window. | a concurrent `future auth logout` (or an editor) landing between the two reads — which a test cannot place without a seam — or the two functions resolving different paths, which would be a defect of its own rather than a line to cover | `an_undeliverable_platform_revoke_is_queued_for_the_next_desktop` pins the guard's own outcome: the "not signed in" warning is what a machine with no `auth.json` gets, and it is produced at 2391-2400, before either read can differ |
+| 15 | `commands/remote.rs:2627-2631` | **W4** | `take_control`'s "no longer paired to this machine: the pairing book changed while this ran" — `book.edit`'s closure finding the wanted device gone. The book is read twice in this function (`Book::load()` at 2580, `Self::load()` inside `edit`), and nothing between them awaits: `desktop_running()` and `switch_is_on()` are file reads, so another process cannot be placed in that gap by a test. | an `await` between the two reads (the Desktop round trip moved before the write, which the comment at 2593-2595 says is deliberate), or a load seam | `use_persists_the_controller_and_keeps_unmodelled_fields` takes the `Ok` arm of the same closure — `book.edit` writing a controller that is still there; `use_accepts_a_stripped_or_partial_id` reaches the same write by prefix |
 | 16 | `commands/remote_peers.rs:684, 687-690, 692` | **W2** | `add`'s `Some(live) => "The pairing is stored, but the connection did not come up{…}"`. `peer.live.connected` is `PeerSummary.connected` as `pair_with_emitter` returned it, and the only assignment to that field on an `Ok` path is `summary.connected = true` (`packages/remote-client/src/runtime.rs:1806`); every failed connection returns `Err` (1765-1789), which `add` turns into `describe_pairing_error` and a failed command instead of this arm. The arm reports a state the runtime cannot produce. | a runtime that returns an `Ok` summary with `connected == false` — i.e. stores the pairing and answers before the first connect, which is the contract this arm was written for | the connected arm is driven twice, by `add_says_which_machine_it_paired_and_who_connects_it` (text) and `add_json_prints_the_machine_it_paired_and_who_keeps_it_connected` (JSON, `cli/tests/`) |
 
 > A line whose text is nothing but a closing token (`}`, `})`, `});`, `))`, `));`, `)?;`,
@@ -111,11 +139,11 @@ is gained by waiving it line by line, which would turn 80 measurements into 80 a
 The count is printed by `classify.py` on every run so it cannot grow silently: `80` at this
 measurement, `86` at wave 10, `97` at wave 3, `119` at wave 2.
 
-All 53 registered lines were re-read against `cli-lcov-12.info` when this wave landed
+All 53 registered lines were re-read against `cli-lcov-13.info` when this wave landed
 (`waiver_check.py`, `checked=53 stale=0`), so no row is stale. Four of them
-(`relay/cli.rs:245`, `relay/cli.rs:522`, `commands/remote.rs:2603`, `commands/remote.rs:2782`)
-are also closing tokens, which is why the class count is 80 of the 284, the registered
-statements are 49 and not 53, and 80 + 49 + 147 + 8 = 284.
+(`relay/cli.rs:245`, `relay/cli.rs:522`, `commands/remote.rs:2631`, `commands/remote.rs:2810`)
+are also closing tokens, which is why the class count is 79 of the 266, the registered
+statements are 49 and not 53, and 79 + 49 + 130 + 8 = 266.
 
 Four of this wave's seven new rows were written *after* trying to cover them, and each of
 them names the measurement that changed the answer rather than a guess:
@@ -135,8 +163,8 @@ The lines that were in `commands/remote.rs`'s work-item row at wave 11 were ther
 **mis-classified as reachable-with-a-live-session**, and the wave-10 sentence that the
 `host::remote_peer::testing` bridge "is what supplies one" was wrong about them: it supplies
 the *pairing* (`add`), which is a different file. The file's 31 `DA:0` lines now divide
-exactly: **14 registered** here (4 W2 + 10 W4: 533, 1341, 1578, 2446, 2404-2405, 2599-2603,
-2779, 2781-2782), **2 closing tokens** (520, 1366) and **15 test-side lines** (below).
+exactly: **14 registered** here (4 W2 + 10 W4: 533, 1341, 1578, 2474, 2432-2433, 2627-2631,
+2807, 2809-2810), **2 closing tokens** (520, 1366) and **15 test-side lines** (below).
 
 ### The fifteen test-side lines in `commands/remote.rs`
 
@@ -145,16 +173,42 @@ it anyway, so it is counted here rather than in a separate file:
 
 | lines | what they are | why 0 |
 |---|---|---|
-| 3711, 3753, 3758, 5136, 5147, 5152 | the `recorded[0]` / `platform_requests[0]` / `relay_requests[0]` arguments of six `assert!` messages | an assertion's message arguments are evaluated **only when the assertion fails**; every one of these six assertions passes on every run |
-| 5070 | `a_real_ca_bundle_builds_a_trusting_client`'s `bundle.display()` message argument | same rule: the assertion passes |
-| 3867, 3876 | the closing braces of a test-side `retain` in `answer_removals` | closing tokens, in test code |
-| 3918-3919, 5640-5641 | two fixture loops' "not there yet" / "claimed" arms (`answer_takeovers`, the silent-Desktop responder) | the first poll of each task already finds the request, and the loop's iteration cost is attributed to the `read_dir` line above it (the same attribution shape as the closing-token class) |
-| 5064-5065 | the "no platform CA bundle on this host" fallback of the same test | macOS ships `/etc/ssl/cert.pem`, so the `let Some(..) else` never takes its else arm on this lane's host |
+| 3739, 3781, 3786, 5164, 5175, 5180 | the `recorded[0]` / `platform_requests[0]` / `relay_requests[0]` arguments of six `assert!` messages | an assertion's message arguments are evaluated **only when the assertion fails**; every one of these six assertions passes on every run |
+| 5098 | `a_real_ca_bundle_builds_a_trusting_client`'s `bundle.display()` message argument | same rule: the assertion passes |
+| 3895, 3904 | the closing braces of a test-side `retain` in `answer_removals` | closing tokens, in test code |
+| 3946-3947, 5668-5669 | two fixture loops' "not there yet" / "claimed" arms (`answer_takeovers`, the silent-Desktop responder) | the first poll of each task already finds the request, and the loop's iteration cost is attributed to the `read_dir` line above it (the same attribution shape as the closing-token class) |
+| 5092-5093 | the "no platform CA bundle on this host" fallback of the same test | macOS ships `/etc/ssl/cert.pem`, so the `let Some(..) else` never takes its else arm on this lane's host |
 
 They are left uncovered on purpose: making them `DA:1` would mean writing assertions that
 fail (to evaluate their messages) or a host with no CA store — both worse than the
 measurement they would buy. `classify.py` prints them as ordinary statements, so they stay
 visible in this file rather than disappearing into a class.
+
+## The launch test that could not say why it failed (5 test-side lines, wave 13)
+
+`browser::safari::safari_manager::tests::launch_then_become_reachable_reports_started`
+waited 20 s for its driver script's marker and then panicked with its **own** sentence —
+"the driver was never spawned, so the poll was never reached" — while throwing away
+whatever `safari_start` had actually answered. That is why the two red runs in wave 12
+could not say whether the product refused before the spawn or the host starved it
+([`cli-safari-gate-flake.md`](cli-safari-gate-flake.md) is the conclusion record).
+
+Its sibling `start_launch_success_against_fake_driver` has checked
+`started.is_finished()` since its driver-port record replaced a sleep. This wave ported
+that check (test code only; no product line, no timeout, no seam). The five lines it adds
+(`safari_manager.rs:508-513`) read `DA:0` in every green run **by construction**: they are
+the arms reached only when the launch has already failed, so a passing run can never
+execute them. They are counted here rather than waived, exactly like `commands/remote.rs`'s
+assertion-message arguments: `classify.py` prints them as ordinary statements, so they stay
+visible instead of disappearing into a class.
+
+Measured, not assumed: with the platform gate forced false for one run, the same test now
+reports `safari_start failed before spawning a driver: Safari is only available on macOS.`
+in **0.04 s**; before the change the same input printed the marker-wait sentence after the
+full 20 s. That is the diagnostic's positive control, and the reason this wave's per-file
+count for the file went *up* by five while the lane's went down by thirty.
+
+
 
 ## Rows this wave closed
 
@@ -163,6 +217,10 @@ names the input that reaches it:
 
 | was | now covered by |
 |---|---|
+| `commands/models.rs` **12 lines → 0** (wave 13): `refresh_failure_reason`'s platform-failure sentence (380-381), the arm that reports it (350), and the `source: "cache"` document a script reads instead of the sentence (354-362) | `a_failed_platform_fetch_is_reported_as_the_network_not_the_login` — a credential pointing at a refused port, so the local fetch fails *and* the credential exists, which is the only input that separates the network sentence from the login one (the file's existing tests reached neither: one has no credential, the other's fetch succeeds). `a_local_refresh_reports_itself_as_the_cache_in_json` — the same real platform fixture, asking for the document. The file now reads 0 `DA:0`. |
+| `commands/session.rs` **11 → 1** (wave 13): `session prune`'s dispatch (1471), `list`'s own argument shape — `--parent` with no value (1514-1515), `--help` (1520-1522), an unknown option (1524-1526) — and `option_label`'s unmodelled-key label (1427) | `the_dispatcher_reaches_prune`, `list_refuses_its_own_unknown_and_valueless_options`, `an_unmodelled_setting_keeps_a_generic_label`. The one line left is a closing brace (1338). |
+| `commands/session_journal.rs` **15 → 8** (wave 13): `number`'s string arm and its unknown-shape arm (121-122), `short`'s truncation (134), `local_time`'s "never" (140), the report's "never" and "none recorded" rows (222, 260), and a kept journal's reason (273) | `counters_read_a_string_and_degrade_an_unknown_shape_to_zero`, `long_run_ids_are_shortened_and_short_ones_are_not`, `an_absent_instant_reads_as_never`, `a_report_with_no_history_says_never_and_none_recorded`, `a_kept_journal_prints_the_reason_it_was_kept`. All five are pure functions of a report document, so none of them needs an Agent. |
+| `commands/remote_peers.rs` **1105-1108** (wave 13) — `remove`'s "Could not remove the pairing: … The book is unchanged", the arm behind a client that cannot rewrite the book | `a_book_only_this_command_can_read_is_not_reported_as_removed`: a `remote_peers.json` whose row carries a `desktopId` and nothing else — readable by this command's own loader (which needs only the id to print a row) and rejected by the client's typed book. No race and no permission trick: the row is on disk for the whole command, and the test asserts the file came back byte-identical. |
 | `commands/remote_peers.rs` **668-672** (wave 12) — `add --json`'s document: `desktopRunning`, the `paired` row and the return that keeps the document whole | `add_json_prints_the_machine_it_paired_and_who_keeps_it_connected` (`cli/tests/remote_peers_add_json.rs`): the same **real** pairing as the lib's text test, then `serde_json::from_str` over the *whole* of stdout — which is also the assertion that nothing follows the document on this branch. |
 | `commands/remote_peers.rs` **694-695** (wave 12) — "The Desktop running here keeps it connected from now on." | `add_with_a_desktop_running_says_who_keeps_it_connected` (`cli/tests/remote_peers_add_running_desktop.rs`): one real pairing while this process holds `<future>/app/desktop.lock`, which is the file `desktop_running()` opens; the test asserts the sentence **and** the absence of its opposite. |
 | `commands/remote_peers.rs` 78 → 29 (49 lines) — `add`'s pairing and its report (638-700), `takeover` on an empty book (862-866), `remove` on a Desktop that holds the lock and never answers (1084-1087), and the row a Desktop reports that the book does not hold (545) | `add_says_which_machine_it_paired_and_who_connects_it` — a **real** pairing: a host bridge on the in-process broker, a claim the mock platform grants, one Noise handshake, and the book written where the next start reads it. Plus `takeover` in `an_action_on_an_empty_book_names_the_paired_command`, `remove_proceeds_here_when_the_desktop_never_answers`, `list_keeps_a_pairing_the_book_and_the_desktop_disagree_about`. |
@@ -214,12 +272,15 @@ above.
 
 | area | `DA:0` | the input that would take it |
 |---|---:|---|
-| `commands/remote_peers.rs` | 24 | 11 of them are closing tokens (`411`, `671`, `806`, `906`, `988`, `992`, `1009`, `1045`, `1065`, `1108`, `1118`). Six are registered (row 16). The remaining **7 statements** are two `Book::edit` arms: `rename`'s "the book changed while this ran" (985-987, 991 — the closure finds its row gone, so a concurrent writer must land between the read at the top of the function and the re-read inside `edit`, W4) and `remove`'s "Could not remove the pairing: … The book is unchanged" (1105-1107 — `unpair` returns a *warning* rather than an `Err` when only the platform fails, so this arm needs the client's own book *write* to fail, i.e. a read-only `remote_peers.json`: that read/write permission pair is the exact shape `commands/data.rs`'s four W3 rows were measured not to produce on macOS). |
-| `headless/mod.rs` | 24 | four groups, after the `NeedsAccount` notice moved out of this table into the product decision below. (a) 128: `start_logging` failing — a read-only data root or a full disk, while the entry keeps serving. (b) 302/306: a `--relay` launch (the "no Future account is used" line, and the `None` account it decides). (c) 451/456: a login adopted while the switch is **off** (adopted, but `remote::status()` instead of a start). (d) 523 (`Stopped` with the switch on and something to serve), 656-658 (a model-catalogue refresh the *Agent* refuses), 857-859 (`stop`'s runtime build failing — W2), and 951-953/1178, which are two test-side arms: the closure body a "startup was dropped" test must never poll, and a fixture-discovery `panic!`. |
+| `commands/remote_peers.rs` | 20 | 8 of them are closing tokens (`411`, `671`, `806`, `906`, `1009`, `1045`, `1065`, `1118`); `988`, `992` and `692` close the two arms below. Six are registered (row 16). The remaining **6 statements** are one `Book::edit` arm: `rename`'s "the book changed while this ran" (985-987) and its "an entry that is not a JSON object" sibling (991 — `Value::get` on an array entry never matches `desktopId`, so a row that satisfies the `find` is an object by construction: **W2**). The first is **W4**: the closure finds its row gone, so a concurrent writer must land between `Book::load()` at the top of the function and `book.edit`'s re-read — with no `await` between them, which is why no test can place one. **(Wave 13 closed `remove`'s failed-unpair arm, 1105-1108, with a book only this command can read.)** |
+| `headless/mod.rs` | 24 | four groups, after the `NeedsAccount` notice moved out of this table into the product decision below. (a) 128: `start_logging` failing — a read-only data root or a full disk, while the entry keeps serving. (b) 302/306: a `--relay` launch (the "no Future account is used" line, and the `None` account it decides) — `FUTURE_RELAY_URL` or `--relay` reaches it, but only through the entry point itself, so it needs the whole heavyweight `headless_cli` fixture, not a unit test. (c) 451/456: a login adopted while the switch is **off** (adopted, but `remote::status()` instead of a start). (d) 523 (`Stopped` with the switch on and something to serve), 656-658 (a model-catalogue refresh the *Agent* refuses), 857-859 (`stop`'s runtime build failing — W2), and 951-953 plus 1183, which are two test-side arms: the closure body a "startup was dropped" test must never poll, and a fixture-discovery `panic!` (covered until wave 13; an upstream commit re-shaped the fixture that used to take it, so it is uncovered again and belongs to that commit's owner). |
+| `test_server.rs` | 14 | **another lane's** (upstream `9fdabcb03`/`71f93f804`): the mock listener's fd-pressure report and its platform gates — diagnostic arms a passing run cannot execute. Listed so this lane's total is fully accounted for; it is not a work item here. |
+| `commands/session_journal.rs` | 8 | three `serde_json::to_string_pretty(..).map_err(..)?` arms (300, 329, 364) — **W2**, serialising this module's own structs cannot fail —, the `MAX_SLICES` exhaustion refusal (350-353, a journal of 64+ slices), and one closing token (367). |
 | `commands/data.rs` | 21 | **4 statements** are the `Err(error) => return Err(error.into())` arms of `symlink_metadata` in `digest`/`collect`/`inventory`/`work` (293, 359, 591, 638) — **W3**: reached when the OS fails with something other than `NotFound` (`EIO`, `ESTALE`, `ENAMETOOLONG`). Permission denial does **not** reach them, and that was measured, not assumed: with the parent at `0o444` macOS still resolves `lstat` of a child, `read_dir` opens, and the *iteration* is what fails — a line `every_move_boundary…` already covers. The other **17** are closing tokens. |
 | `commands/doctor.rs` | 12 | **W1 + W2**: the **OS-sandbox probe** arms. On macOS `platform_sandbox_probe_product()` always returns `Ok`, always reports `version: None`, and its `code` is only `available`/`binary_missing` — so `Status::Warn` (173) needs `/usr/bin/sandbox-exec` **absent**, `version={version}` (183) can never print, `available_write_only` (186) and `sandbox_remedy` (189) are Linux-only, and the `Err` arm (197-201) has no macOS producer. The remaining two are defensive: an empty key the accessor has already normalised to `None` (140) and a `Stdio::piped` pair that is piped by construction (387), plus one `join` error from a copy task that cannot panic (419). |
 | `relay/cli.rs` | 15 | registered above (rows 1-5): process lifetime, W3, W1 |
-| `commands/session_journal.rs`, `models.rs`, `session.rs`, `configure.rs`, `mcp_*`, `browser/*`, `headless/agent.rs` | 15+12+11+7+18+14+14 | one refusal/report arm each. `headless/agent.rs`'s 14 are named in the `supervise` section below; `session_journal.rs`'s are a journal the real Agent writes. |
+| `commands/session.rs`, `models.rs` | 1 + 0 | both are now at metric A's floor (`session.rs` has one closing brace left) — no work item remains in either |
+| `commands/configure.rs`, `mcp_*`, `browser/*`, `headless/agent.rs` | 7+18+14+14 | one refusal/report arm each. `headless/agent.rs`'s 14 are named in the `supervise` section below. |
 
 ### A product decision, not a waiver: `headless/mod.rs:488-495`
 
@@ -275,8 +336,8 @@ PhaseAction::NeedsAccount => {            // Failed(AccountAuthorization) && !se
    narrower — "no CLI input exists *today*".
 
 For the arithmetic: these 8 lines are neither in the 49 registered nor in the work items
-below; they are the third category (80 closing tokens + 49 registered + 147 work items +
-8 decision-pending = 284).
+below; they are the third category (79 closing tokens + 49 registered + 130 work items +
+8 decision-pending = 266).
 
 ### `supervise` — the wave-3 plan, executed in wave 10
 
@@ -338,10 +399,10 @@ this lane):
 
 ## What this file cannot claim
 
-- **Not per-line 100 %.** 284 lines read 0. The lane's compliance statement is the one
+- **Not per-line 100 %.** 266 lines read 0. The lane's compliance statement is the one
   `docs/testing/coverage-waivers-2026-11/README.md` makes for the web lane: no silent gap
-  (80 one-class + 49 registered statements + 147 work items + 8 decision-pending = 284), no
-  stale row (all 53 registered lines re-read against `cli-lcov-12.info` by
+  (79 one-class + 49 registered statements + 130 work items + 8 decision-pending = 266), no
+  stale row (all 53 registered lines re-read against `cli-lcov-13.info` by
   `waiver_check.py`, `stale=0`), no product change made for coverage (no seam, no `pub`, no
   signature — the `test-support` decision is a dev-dependency this crate already had, and its
   whole diff is test code, including the two integration targets added in wave 12).
@@ -356,6 +417,15 @@ this lane):
   of the `add` test drove **two** pairings in one process and failed with
   `remote_client_stopped`; the cause was not the command but the fixture's one-bridge rule,
   and the test is now one pairing with that rule written down where it bit.
+- **Wave 13's own first attempt broke a neighbouring test, and the fix is in the test, not in
+  the report**: the new `remove` test reached `install_runtime()` before any test had
+  installed a *process-lifetime* handle, so `future_host::runtime::set`'s `OnceLock` took the
+  test-scoped one and `add_says_which_machine_it_paired_and_who_connects_it` then failed with
+  `host shows an invitation`. The instrumented run that caught it is `run13.log` from the
+  first attempt (1 failed of 1543); the test now installs the durable handle first, the same
+  way `Served::start` does, and three consecutive module runs plus two full instrumented runs
+  are green. This is the second time this lane has paid for that `OnceLock` (see the
+  `test-support` section) — the rule is written where the next test will read it.
 - **Wave 12 falsified this file's own plan for `commands/remote.rs`**, which is why its row
   moved out of *Not waived*: the eleven lines left there were each traced to the invariant
   that confines them (rows 10-15) instead of to a scenario, and the scenario the wave-10 text
@@ -363,14 +433,13 @@ this lane):
   them. Writing five rows for one file and *not* writing tests for them is the honest version
   of that finding; a test would have needed a seam (a second `Book::load`, an `await` between
   two reads, a `platform_api_key` hook) and the rule for this lane is no seam.
-- **This wave's measurement needed a second pass, and that is recorded rather than smoothed
-  over**: four full `--lib` runs were made, two green and two red on one or two tests from
-  `browser::safari::safari_manager::tests` — the tests that spawn a real driver script and
-  poll for its marker. That module alone passes 10/10, so the trigger is the ~1500-test
-  parallel run (load), not the code, and it is not this lane's change; but it is this lane's
-  *problem*, because it decides the gate. `run12.log` (1 red) and `run12-lib-retry.log` (0
-  red) are both kept, and the report merges their profiles — which is also why the 314-row
-  reading taken from the failed pass is not the number in this file. One of the two tests
-  cannot say why it failed: it reports its own 20 s marker wait even when the product refused
-  before spawning, while its neighbour prints the product's error (`started.is_finished()`).
-  Porting that check is the cheapest next step; finding the refusal is the real one.
+- **The gate flake has a record of its own**, because it decides the gate and none of this
+  lane's numbers: [`cli-safari-gate-flake.md`](cli-safari-gate-flake.md) carries the red
+  runs — including one **plain** full `--lib` run of this wave that failed both launch tests
+  together (1541/2, 141 s) and the three identical runs after it that were green —, the five
+  loaded rounds that did **not** reproduce them, the arms of `safari_start` that each were
+  forced (platform gate: refused in 0.04 s; `ulimit -n 64`: still green; the poll window: a
+  different message by construction), and the one thing still missing — a red run *with* the
+  new `started.is_finished()` diagnosis captured to a file, which is what will name whether
+  the spawn, an external listener on the port, or the host's scheduler is what beat the
+  bound. The reproduction is therefore open, not "fixed by a retry".
