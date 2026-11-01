@@ -751,14 +751,20 @@ mod tests {
             config.public_url = "https://relay.example.com".into();
         });
 
-        let error = serve(&["--config".to_string(), path])
-            .expect_err("the address is taken by the holder")
-            .to_string();
+        let error =
+            serve(&["--config".to_string(), path]).expect_err("the address is taken by the holder");
         // The bind error is the OS's, with no address added on top — this
         // assertion is what proves the deployment got as far as binding: a
         // certificate or room-registry problem would have surfaced instead.
-        assert!(
-            error.to_lowercase().contains("in use"),
+        // It is read as the *kind*, not as one host's spelling of it: unix
+        // answers "Address already in use" and Windows "Only one usage of each
+        // socket address (protocol/network address/port) is normally
+        // permitted".
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::AddrInUse),
             "the OS reason survives: {error}"
         );
         drop(holder);
@@ -779,13 +785,16 @@ mod tests {
             config.tls_key = Some(key.to_string_lossy().into_owned());
         });
 
-        let error = serve(&["--config".to_string(), path])
-            .expect_err("the address is taken by the holder")
-            .to_string();
+        let error =
+            serve(&["--config".to_string(), path]).expect_err("the address is taken by the holder");
         // Reaching the bind proves the certificate was read and matched its
         // key: a bad pair fails in `server_tls_config`, before the socket.
-        assert!(
-            error.to_lowercase().contains("in use"),
+        // Read as the kind for the same reason as the plaintext case above.
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::AddrInUse),
             "the TLS configuration was built and the bind was what failed: {error}"
         );
         drop(holder);
