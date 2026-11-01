@@ -5754,6 +5754,53 @@ mod tests {
         );
     }
 
+    /// A press lands on the row a frame painted, and a message can arrive and
+    /// reflow the transcript between that paint and the press: the link the
+    /// click names is then not one of the stops any more. That is a repaint —
+    /// the pointer named something that has gone — and the cursor is left
+    /// naming nothing rather than holding an index into a list that moved.
+    #[test]
+    fn a_click_that_names_a_link_the_frame_no_longer_holds_is_a_repaint() {
+        let mut data = demo::chat();
+        data.messages = vec![format!(
+            "{} {}",
+            md_link("https://example.com/a", "the site"),
+            md_link("https://example.com/b", "the other"),
+        )]
+        .into();
+        let mut workbench = workbench();
+        workbench.render(&data, 150, 38);
+        let (rect, _) = workbench
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| *id == "chat.link.1")
+            .cloned()
+            .expect("the second link is painted");
+        // The transcript reflows before the press is handled: one link where the
+        // frame drew two, in the same row — a streaming reply rewriting the row
+        // it is on, which is why the spans are keyed by `revision` and not by
+        // the row count.
+        data.messages = vec![md_link("https://example.com/a", "the site")].into();
+        data.revision += 1;
+        assert_eq!(
+            workbench.handle(
+                WbEvent::Mouse(mouse::MouseEvent {
+                    kind: mouse::MouseKind::Press,
+                    x: rect.x,
+                    y: rect.y,
+                    shift: false,
+                    alt: false,
+                    ctrl: false,
+                }),
+                &data
+            ),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.chat_index, None, "the cursor names nothing");
+        assert!(!workbench.stop_reveal, "and nothing was chased into view");
+    }
+
     /// `tab` reaches the transcript's own rows — a folded process, a burst, a
     /// call, a reasoning marker — and `enter` opens the one under the cursor,
     /// with the walk in reading order across both kinds of stop.
@@ -7962,6 +8009,40 @@ mod tests {
         );
         assert_eq!(workbench.overlay, None);
     }
+
+    /// The files panel and the rail's 文件 section read and write one window:
+    /// the wheel over the rail is what moves it down (the panel's own keys move
+    /// the cursor, and `select_file` is what brings the window back), so once it
+    /// has been scrolled, `home` has to take the window with the cursor —
+    /// otherwise the first row is the row the key names and out of sight.
+    #[test]
+    fn home_brings_the_files_window_back_to_the_row_it_names() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let slot = PanelId::Files.index();
+        workbench.panel = PanelId::Files;
+
+        roll(&mut workbench, &data, mouse::MouseKind::WheelDown, 110, 15);
+        assert_eq!(
+            workbench.panel_scroll[slot], 3,
+            "the wheel over the rail is what takes the window down a burst"
+        );
+
+        workbench.overlay = Some(Overlay::Files);
+        let last = data.tree.rows().len() - 1;
+        assert!(last > 0, "the fixture's tree has more than one row");
+        workbench.files_index = last;
+        assert_eq!(
+            workbench.handle(WbEvent::Key("home".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.files_index, 0, "`home` is the tree's first row");
+        assert_eq!(
+            workbench.panel_scroll[slot], 0,
+            "and the window came back to it"
+        );
+    }
+
     /// The help table and the shortcut editor read the same map the keys do: the
     /// table lists only rows that *have* a chord, the editor lists every action,
     /// and the two tabs' number chords are rows of their own now.
