@@ -216,6 +216,41 @@ mod tests {
         agent.shutdown("headless_exit").await.unwrap();
         assert!(!super::host().owns_agent());
     }
+
+    /// The ordinary round: an Agent is already serving, so supervision observes
+    /// it and starts nothing. Asserting the probe's own answer first is what
+    /// keeps this test from ever reaching the restart arm — a fixture that went
+    /// away must fail here, not start an Agent in the test process.
+    #[tokio::test]
+    async fn a_live_agent_is_observed_and_never_started_twice() {
+        let _home = future_host::auth_store::test_support::HomeGuard::new("headless-attached");
+        let _mock = future_host::test_support::agent::mock_agent();
+        let state = probe_local_agent(
+            &future_host::agent_client::raw_agent_addr(),
+            PROBE_CONNECT,
+            PROBE_HANDSHAKE,
+        )
+        .await;
+        assert!(
+            matches!(state, LocalAgentState::Attached),
+            "the fixture must be a live Agent, not something to repair: {state:?}"
+        );
+
+        let mut agent = Agent::default();
+        agent
+            .supervise()
+            .await
+            .expect("an attached Agent is not a fault");
+        assert!(
+            !super::host().owns_agent(),
+            "supervision must not take ownership of an Agent another process serves"
+        );
+        // A second round is still attached: the loss window and the restart
+        // budget stay untouched, which is what keeps one missed probe from
+        // becoming a restart.
+        agent.supervise().await.expect("still attached");
+        assert!(!agent.loss.confirmed(std::time::Instant::now()));
+    }
 }
 
 /// `check_running` and the busy-lock yield, driven in a **child process**.

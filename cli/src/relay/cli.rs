@@ -1208,6 +1208,17 @@ mod serve_tls_tests {
             "expected a certificate failure, got: {error}"
         );
 
+        // The refused handshake is ordinary traffic, not a relay failure: the
+        // listener is still answering, which is the behaviour the per-connection
+        // task's error arm exists for.
+        let response = https_get(port, Some(&roots))
+            .await
+            .expect("the listener survives a client that does not trust it");
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "the relay kept serving after a refused handshake: {response}"
+        );
+
         server.abort();
     }
 

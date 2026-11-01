@@ -759,6 +759,47 @@ mod tests {
         );
     }
 
+    /// A request the relay cannot read is refused before the registry is
+    /// touched, and each refusal names the field the caller has to fix.
+    #[tokio::test]
+    async fn an_unsigned_room_request_is_refused_before_anything_is_read() {
+        let relay = relay();
+        let host = KeyPair::new_user();
+        let body = register_body(Some(&hash_join(JOIN)));
+
+        // Registering and deleting both prove the caller with a signature; an
+        // unsigned one never reaches the body.
+        let (status, answer) = register_room(
+            State(relay.clone()),
+            HeaderMap::new(),
+            "/v1/rooms".parse().unwrap(),
+            Bytes::from(body.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(answer["error"], "signature_missing");
+        assert_eq!(
+            relay.rooms.len(),
+            0,
+            "an unsigned registration creates nothing"
+        );
+
+        let (status, _) = register(&relay, &host).await;
+        assert_eq!(status, StatusCode::OK);
+        let path = room_path();
+        let (status, answer) = revoke_room(
+            State(relay.clone()),
+            Path(PAIR.to_string()),
+            HeaderMap::new(),
+            path.parse().unwrap(),
+            Bytes::new(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(answer["error"], "signature_missing");
+        assert_eq!(relay.rooms.len(), 1, "an unsigned delete keeps the room");
+    }
+
     /// A room request that cannot be read is refused before the registry is
     /// touched, and each refusal names the field the caller has to fix.
     #[tokio::test]
@@ -1136,6 +1177,34 @@ mod tests {
             answer["message"],
             "This device is not paired with that room."
         );
+
+        // A well-signed bridge rotation for a room that is not there: the
+        // signature is the host's, so the answer is about the room.
+        let body = format!(
+            r#"{{"pair_id":"PAIR_UNKNOWN","public_key":"{}","role":"bridge"}}"#,
+            host.public_key()
+        );
+        let (status, answer) = rotate_token(
+            State(relay.clone()),
+            signed(&host, "POST", path, body.as_bytes()),
+            token_uri(),
+            Bytes::from(body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(answer["error"], "room_unknown");
+    }
+
+    /// A revoke the relay cannot read is refused as a malformed request: the
+    /// caller has to send the credential, not a bare word, to end a pairing.
+    #[tokio::test]
+    async fn a_revoke_that_cannot_be_read_is_refused() {
+        let relay = relay();
+        let (status, answer) =
+            client_revoke(State(relay.clone()), Bytes::from_static(b"{not json")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(answer["error"], "invalid_request");
+        assert_eq!(answer["message"], "Malformed revoke request.");
     }
 
     /// A seed that is not an account key cannot sign the relay's user JWTs, and
