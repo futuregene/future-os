@@ -1156,14 +1156,6 @@ fn a_switched_off_remote_desktop_stays_up_and_comes_back_without_a_restart() {
     );
 }
 
-/// A stored account key the platform no longer honours is named as such, and it
-/// is **not** a logout: the machine keeps serving everything local, and the
-/// refused key is not offered again on the next iteration.
-///
-/// The distinction is the whole point of the arm: a 5xx while verifying is a
-/// transport failure (the arm below), a key the platform refuses is a credential
-/// the operator has to replace, and neither may be reported as the other.
-#[cfg(unix)]
 /// A login that arrives while the switch is **off** is adopted, and the entry
 /// still does not start serving: the switch is the user's decision, so the
 /// adopted account changes what this run *could* serve and nothing more.
@@ -1246,6 +1238,14 @@ fn a_login_adopted_while_the_switch_is_off_serves_nothing_until_the_switch_retur
     assert!(status.success(), "{status}\n{}", log.collected);
 }
 
+/// A stored account key the platform no longer honours is named as such, and it
+/// is **not** a logout: the machine keeps serving everything local, and the
+/// refused key is not offered again on the next iteration.
+///
+/// The distinction is the whole point of the arm: a 5xx while verifying is a
+/// transport failure (the arm below), a key the platform refuses is a credential
+/// the operator has to replace, and neither may be reported as the other.
+#[cfg(unix)]
 #[test]
 fn a_stored_key_the_platform_refuses_leaves_the_machine_serving_locally() {
     use std::time::Duration;
