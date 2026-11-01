@@ -15,6 +15,23 @@ use tauri::test::{get_ipc_response, mock_builder, mock_context, noop_assets, INV
 use tauri::webview::InvokeRequest;
 use tauri::WebviewWindowBuilder;
 
+/// The URL an `InvokeRequest` must carry to *reach* the command it names.
+///
+/// `Webview::on_message` derives the ACL origin from this URL. Off the page the app
+/// actually serves, the origin is remote: the request never reaches the command's
+/// arguments, and the reply is the ACL refusal `"<cmd> not allowed. Plugin not found"`
+/// instead of whatever the case is about. The app's own origin is not the same string
+/// on every platform — `tauri://localhost` on macOS and Linux, `http://tauri.localhost`
+/// on Windows and Android (`tauri::protocol::origin`) — so a fixture that hardcodes one
+/// of them tests a remote caller on the other.
+pub fn local_invoke_url() -> &'static str {
+    if cfg!(any(windows, target_os = "android")) {
+        "http://tauri.localhost"
+    } else {
+        "tauri://localhost"
+    }
+}
+
 /// Build one mock app + webview registering `handler`, then reject an
 /// empty-object body for every command in `cmds`. Each rejection must produce
 /// an IPC error (covering the async wrapper's argument-deserialization error
@@ -69,7 +86,7 @@ fn assert_rejects(
             cmd: cmd.to_string(),
             callback: CallbackFn(0),
             error: CallbackFn(1),
-            url: "tauri://localhost".parse().expect("url"),
+            url: local_invoke_url().parse().expect("url"),
             body: InvokeBody::Json(body),
             headers: Default::default(),
             invoke_key: INVOKE_KEY.to_string(),

@@ -256,8 +256,15 @@ mod tests {
     /// (`CommandItem::deserialize_option` visits `none`), so the only body it refuses is a
     /// **raw bytes** payload — measured here, not assumed: `deserialize_option` returns an
     /// error for `InvokeBody::Raw` before the key is looked up.
+    ///
+    /// The request carries [`ipc_harness::local_invoke_url`], i.e. the app's own origin for
+    /// the platform this runs on. With the other platform's spelling the origin reads as
+    /// remote, `Webview::on_message` refuses the call in its ACL check and answers
+    /// `"begin_session_history_transfer not allowed. Plugin not found"` — a reply that
+    /// proves nothing about deserialization, which is how this case failed on Windows.
     #[test]
     fn the_transfer_command_refuses_a_raw_bytes_payload() {
+        use crate::commands::ipc_harness::local_invoke_url;
         use tauri::ipc::{CallbackFn, InvokeBody};
         use tauri::test::{get_ipc_response, INVOKE_KEY};
         use tauri::webview::InvokeRequest;
@@ -274,13 +281,18 @@ mod tests {
                 cmd: "begin_session_history_transfer".into(),
                 callback: CallbackFn(0),
                 error: CallbackFn(1),
-                url: "tauri://localhost".parse().expect("url"),
+                url: local_invoke_url().parse().expect("url"),
                 body: InvokeBody::Raw(Vec::new()),
                 headers: Default::default(),
                 invoke_key: INVOKE_KEY.to_string(),
             },
         );
         let error = response.expect_err("a raw payload is not a history request");
+        assert!(
+            !error.as_str().unwrap_or_default().contains("not allowed"),
+            "the request was refused as a remote origin, so it never reached the command's \
+             arguments: {error}"
+        );
         assert!(
             error.as_str().unwrap_or_default().contains("bytes payload"),
             "the refusal must come from argument deserialization, not from an unregistered \
