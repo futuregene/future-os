@@ -285,6 +285,31 @@ async fn list_says_the_state_is_unknown_when_the_desktop_stays_silent() {
     assert!(stderr.contains("did not answer"), "{stderr}");
 }
 
+/// A Desktop that reported a fault is not the same as one that stayed silent:
+/// the note carries the Desktop's own reason, and the stored pairings are still
+/// listed — a broken Desktop does not empty the list.
+#[tokio::test]
+async fn list_notes_a_desktop_that_reports_a_fault() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    answer_requests(&home, json!({ "error": "the Remote page is not open" }));
+
+    let (code, stdout, stderr) = run(&["remote", "peers"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stderr.contains("did not report its connections"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("the Remote page is not open"),
+        "the Desktop's own words: {stderr}"
+    );
+    assert!(stdout.contains(ONE), "{stdout}");
+    assert!(stdout.contains(TWO), "{stdout}");
+}
+
 #[tokio::test]
 async fn list_json_keeps_unknown_state_null_rather_than_guessing() {
     let _guard = crate::test_env::lock_env().await;
@@ -807,6 +832,95 @@ async fn remove_with_no_desktop_unpairs_here_and_revokes_where_it_can() {
     let remaining = after["peers"].as_array().unwrap();
     assert_eq!(remaining.len(), 1, "{after}");
     assert_eq!(remaining[0]["desktopId"], ONE, "{after}");
+}
+
+/// The Desktop removed it, and the JSON says so with the book it left behind:
+/// this command must not remove it a second time and then report a pairing that
+/// is already gone.
+#[tokio::test]
+async fn remove_json_reports_the_desktop_that_did_it() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    answer_requests(
+        &home,
+        json!({ "removed": true, "peers": [live_row(TWO, false)] }),
+    );
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "remove", ONE, "--yes", "--json"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    // This branch prints the JSON *and* the closing sentence, unlike the paths
+    // that return straight after the document, so the answer is read from the
+    // front of stdout rather than from all of it.
+    let value: Value = serde_json::Deserializer::from_str(&stdout)
+        .into_iter::<Value>()
+        .next()
+        .expect("a JSON document was printed")
+        .unwrap();
+    assert_eq!(value["removed"], ONE);
+    assert_eq!(value["answered"], true);
+    assert_eq!(value["desktopRunning"], true);
+    let peers = value["peers"].as_array().unwrap();
+    assert_eq!(peers.len(), 1, "{value}");
+    assert_eq!(peers[0]["desktopId"], TWO, "{value}");
+}
+
+/// The Desktop answered and declined — it has no such pairing, or a newer build
+/// refused. This command takes it out here anyway and names the Desktop's own
+/// reason, so the reader can tell "not connected" from "refused".
+#[tokio::test]
+async fn remove_takes_the_pairing_out_here_when_the_desktop_declines() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    let server = crate::test_server::spawn_http(vec![
+        crate::test_server::HttpRoute::json("/client/v1/remote/auth/token", 200, "{}"),
+        crate::test_server::HttpRoute::json("/client/v1/remote/pair/revoke", 200, "{}"),
+    ])
+    .await;
+    let token_url = format!("{server}/client/v1/remote/auth/token");
+    home.write(BOOK_FILE, &book(&token_url).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    answer_requests(&home, json!({ "error": "superseded" }));
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "remove", TWO, "--yes"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("no longer paired"), "{stdout}");
+    assert!(stderr.contains("did not remove it"), "{stderr}");
+    assert!(
+        stderr.contains("superseded"),
+        "the Desktop's own reason: {stderr}"
+    );
+    let after: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
+    assert_eq!(after["peers"].as_array().unwrap().len(), 1, "{after}");
+}
+
+/// The local pairing goes first, always: a platform that could not be told is a
+/// warning that says what the other machine still shows, not a failure — and the
+/// JSON still reports the book this machine is left with.
+#[tokio::test]
+async fn remove_says_when_the_platform_could_not_be_told() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    let server = crate::test_server::spawn_http(vec![
+        crate::test_server::HttpRoute::json("/client/v1/remote/auth/token", 200, "{}"),
+        crate::test_server::HttpRoute::json("/client/v1/remote/pair/revoke", 500, "{}"),
+    ])
+    .await;
+    let token_url = format!("{server}/client/v1/remote/auth/token");
+    home.write(BOOK_FILE, &book(&token_url).to_string());
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "remove", TWO, "--yes", "--json"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stderr.contains("could not be told"), "{stderr}");
+    assert!(stderr.contains("credential expires"), "{stderr}");
+    let value: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(value["removed"], TWO);
+    assert_eq!(value["answered"], false);
+    assert_eq!(value["desktopRunning"], false);
+    let peers = value["peers"].as_array().unwrap();
+    assert_eq!(peers.len(), 1, "{value}");
+    assert_eq!(peers[0]["desktopId"], ONE, "{value}");
 }
 
 // -- help and arguments -----------------------------------------------------
