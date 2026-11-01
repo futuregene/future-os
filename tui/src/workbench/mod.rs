@@ -4742,7 +4742,9 @@ mod tests {
         workbench.render(&data, 120, 38);
         // A chord nothing on the surface claims is nothing at all.
         assert!(
-            workbench.handle(WbEvent::Key("f13".into()), &data).is_empty(),
+            workbench
+                .handle(WbEvent::Key("f13".into()), &data)
+                .is_empty(),
             "an unclaimed chord answered something"
         );
         // The keys that answer with a repaint and only a repaint: moving the
@@ -4751,7 +4753,10 @@ mod tests {
             .iter()
             .map(|key| workbench.handle(WbEvent::Key((*key).into()), &data))
             .find(|actions| {
-                !actions.is_empty() && actions.iter().all(|action| matches!(action, WbAction::Redraw))
+                !actions.is_empty()
+                    && actions
+                        .iter()
+                        .all(|action| matches!(action, WbAction::Redraw))
             })
             .expect("a repaint-only refusal exists on the base surface");
         assert!(
@@ -4789,7 +4794,10 @@ mod tests {
             .expect("a workspace heading above it");
         let path = heading_of(&rows[heading], &railed).expect("a heading names its workspace");
         assert!(
-            railed.workspaces.iter().any(|workspace| workspace.path == path),
+            railed
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.path == path),
             "the heading named {path:?}, which is no workspace of this rail"
         );
     }
@@ -9365,9 +9373,15 @@ mod tests {
         // list rather than on the row the old one kept.
         workbench.handle(WbEvent::Key("down".into()), &data);
         workbench.handle(WbEvent::Key("q".into()), &data);
-        assert_eq!(workbench.palette_index, 0, "a narrower list starts at its top");
+        assert_eq!(
+            workbench.palette_index, 0,
+            "a narrower list starts at its top"
+        );
         workbench.handle(WbEvent::Key("backspace".into()), &data);
-        assert!(workbench.palette_query.is_empty(), "the query was shortened");
+        assert!(
+            workbench.palette_query.is_empty(),
+            "the query was shortened"
+        );
     }
 
     /// The chooser's search line: a letter narrows the list and sends the
@@ -9404,7 +9418,10 @@ mod tests {
         workbench.picker.index = 1;
         workbench.handle(WbEvent::Key("中".into()), &data);
         assert_eq!(workbench.picker.query, "中", "the letter never joined");
-        assert_eq!(workbench.picker.index, 0, "the highlight kept an old ordinal");
+        assert_eq!(
+            workbench.picker.index, 0,
+            "the highlight kept an old ordinal"
+        );
         workbench.handle(WbEvent::Key("backspace".into()), &data);
         assert!(
             workbench.picker.query.is_empty(),
@@ -9424,7 +9441,9 @@ mod tests {
         workbench.overlay = Some(Overlay::Worktree);
         let stray = workbench.handle(WbEvent::Key("f13".into()), &data);
         assert!(
-            stray.iter().all(|action| matches!(action, WbAction::Redraw)),
+            stray
+                .iter()
+                .all(|action| matches!(action, WbAction::Redraw)),
             "the worktree box answered a key it does not own with {stray:?}"
         );
         assert_eq!(
@@ -9471,10 +9490,7 @@ mod tests {
             workbench.handle(WbEvent::Key("up".into()), &data),
             vec![WbAction::Redraw]
         );
-        assert_eq!(
-            workbench.preferences_index, 0,
-            "the first row is the first"
-        );
+        assert_eq!(workbench.preferences_index, 0, "the first row is the first");
     }
 
     /// A width of nothing has no pane to split: the body's own cell count is
@@ -13519,5 +13535,228 @@ mod tests {
             let _ = wb.handle(WbEvent::Key("escape".into()), &data);
             assert_eq!(wb.overlay, None, "escape did not close {overlay:?}");
         }
+    }
+
+    /// Anything at the given cell of the frame, as a mouse event of that kind.
+    fn at(kind: mouse::MouseKind, x: u16, y: u16) -> mouse::MouseEvent {
+        mouse::MouseEvent {
+            kind,
+            x,
+            y,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        }
+    }
+
+    /// The pointer in a chooser: the wheel walks the list one row a turn, the
+    /// box's own frame absorbs a press, and motion that is not a gesture is
+    /// nothing at all.
+    ///
+    /// A pointer has no `↑`/`↓`, so the wheel is the only way to move the
+    /// highlight before clicking — and the row it lands on is previewed the
+    /// same way a key stepping there previews it.
+    #[test]
+    fn the_pointer_in_a_chooser_walks_the_list_and_its_frame_absorbs_a_press() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.open_picker(PickerKind::Theme, &data);
+        assert_eq!(
+            workbench.handle(
+                WbEvent::Mouse(at(mouse::MouseKind::WheelDown, 60, 20)),
+                &data
+            ),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.picker.index, 1, "a wheel turn is not a row");
+        assert_eq!(
+            workbench.palette.id, "light",
+            "the wheel moved the highlight without previewing the row it landed on"
+        );
+        assert_eq!(
+            workbench.handle(WbEvent::Mouse(at(mouse::MouseKind::WheelUp, 60, 20)), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.picker.index, 0, "a turn back is a row back");
+        assert_eq!(workbench.palette.id, FUTURE_DARK.id, "the preview stayed");
+
+        // The box's own body — its search line, its hints, its padding — is not
+        // a choice and not a dismissal: the reader aimed inside the box.
+        let body = click_region(&mut workbench, &data, 120, 38, "picker.body");
+        assert!(
+            body.is_empty(),
+            "a click on the box's own frame answered {body:?}"
+        );
+        assert_eq!(
+            workbench.overlay,
+            Some(Overlay::Picker(PickerKind::Theme)),
+            "a click on the box closed it"
+        );
+
+        // Motion is not a gesture: it moves neither the highlight nor the box.
+        assert!(workbench
+            .handle(WbEvent::Mouse(at(mouse::MouseKind::Move, 3, 3)), &data)
+            .is_empty());
+        assert_eq!(
+            workbench.overlay,
+            Some(Overlay::Picker(PickerKind::Theme)),
+            "the pointer passing over the dimmed page closed the box"
+        );
+    }
+
+    /// A chooser's row applies the level or the approval mode it names — to the
+    /// conversation it belongs to (`Set…`) and, while nothing is attached, as
+    /// the choice the first message will run with (`SetPending…`): the agent
+    /// answers both setters with "session not found" with none, which is why the
+    /// level is staged rather than sent.
+    #[test]
+    fn a_thinking_row_applies_where_a_session_is_and_is_staged_where_it_is_not() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.open_picker(PickerKind::Thinking, &data);
+        // The demo model declares `default`, `off`, `low`, `medium`, `high`,
+        // `xhigh` in that order, so the third row is `low`.
+        let rows = plain(&workbench.render(&data, 120, 38));
+        assert!(
+            rows.contains("low"),
+            "the picker lists no `low` row:\n{rows}"
+        );
+        assert_eq!(
+            click_region(&mut workbench, &data, 120, 38, "picker.row.2"),
+            vec![WbAction::SetThinking("low".into())]
+        );
+
+        let home = demo::launchpad();
+        let (mut workbench, _rows) = frame(&home, 120, 38);
+        workbench.open_picker(PickerKind::Thinking, &home);
+        workbench.render(&home, 120, 38);
+        assert_eq!(
+            click_region(&mut workbench, &home, 120, 38, "picker.row.2"),
+            vec![WbAction::SetPendingThinking("low".into())],
+            "a level chosen before the first message was sent to a session that does not exist"
+        );
+
+        // The approval mode is one setter on both roads: the agent holds it per
+        // session, and the launchpad's picker is the same list.
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.open_picker(PickerKind::Approval, &data);
+        workbench.render(&data, 120, 38);
+        let actions = click_region(&mut workbench, &data, 120, 38, "picker.row.1");
+        assert!(
+            matches!(actions.as_slice(), [WbAction::SetApproval(_)]),
+            "an approval row answered {actions:?}"
+        );
+    }
+
+    /// The pointer takes a list row the way `enter` does: it moves the highlight
+    /// to the row it landed on and then applies it, because a mouse has no
+    /// second `enter`.
+    #[test]
+    fn a_click_on_a_list_row_takes_the_row_the_way_enter_does() {
+        // `/preferences`: the row is the cursor, and `←`/`→` acts on whatever
+        // row the cursor is on — so a click has to move it there.
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.open_preferences();
+        workbench.render(&data, 120, 38);
+        assert_eq!(workbench.preferences_index, 0);
+        assert_eq!(
+            click_region(&mut workbench, &data, 120, 38, "preferences.row.3"),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(
+            workbench.preferences_index, 3,
+            "the cursor stayed on the row it opened on"
+        );
+
+        // The worktree box: a row is a place, so the click both takes the row
+        // and asks for the switch — the same `enter` the keyboard sends.
+        let mut data = demo::chat();
+        data.worktrees = ["/w/one", "/w/two", "/w/three"]
+            .iter()
+            .map(|path| state::WorktreeView {
+                path: (*path).into(),
+                label: path.rsplit('/').next().unwrap_or_default().into(),
+                description: "2m".into(),
+                current: false,
+            })
+            .collect();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.overlay = Some(Overlay::Worktree);
+        workbench.render(&data, 120, 38);
+        assert_eq!(
+            click_region(&mut workbench, &data, 120, 38, "workflow.row.1"),
+            vec![WbAction::SelectWorktree("/w/two".into())],
+            "a click on the second worktree did not move the session there"
+        );
+        assert_eq!(workbench.workflow_index, 1);
+        assert_eq!(workbench.overlay, None, "the box stayed up");
+    }
+
+    /// The wheel over a box is that box's own key: the patch scrolls when it
+    /// has the keys, the file list walks when it has them, and a page key on a
+    /// detail view comes back by a page.
+    #[test]
+    fn the_wheel_over_a_box_answers_the_way_its_keys_do() {
+        let mut data = demo::chat();
+        data.diff = Some(state::DiffView {
+            files: (0..30)
+                .map(|index| diff_review::DiffFile {
+                    path: format!("src/page_{index}.rs"),
+                    status: "M".into(),
+                })
+                .collect(),
+            ..state::DiffView::default()
+        });
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.overlay = Some(Overlay::Diff);
+        workbench.render(&data, 120, 38);
+        assert!(
+            workbench.diff_patch_focus,
+            "the diff opens with the keys on the patch"
+        );
+        workbench.overlay_scroll = 12;
+        assert_eq!(
+            workbench.handle(WbEvent::Mouse(at(mouse::MouseKind::WheelUp, 60, 20)), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(
+            workbench.overlay_scroll, 9,
+            "the wheel over the patch did not scroll it"
+        );
+        let cursor = workbench.workflow_index;
+        assert_eq!(
+            cursor, 0,
+            "scrolling the patch moved the file list it does not hold"
+        );
+
+        // The keys on the file list: the wheel walks it, and the row it lands on
+        // is asked for — the same answer `↓` gives.
+        workbench.diff_patch_focus = false;
+        let scroll = workbench.overlay_scroll;
+        assert_eq!(
+            workbench.handle(
+                WbEvent::Mouse(at(mouse::MouseKind::WheelDown, 60, 20)),
+                &data
+            ),
+            vec![WbAction::SelectDiff(1)]
+        );
+        assert_eq!(workbench.workflow_index, 1, "the wheel is one row a turn");
+        assert_eq!(
+            workbench.overlay_scroll, scroll,
+            "the wheel over the list scrolled the patch"
+        );
+
+        // A page key on a detail view goes back a page as well as forward.
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.overlay = Some(Overlay::Approval);
+        let page = workbench.list_page.max(1);
+        workbench.handle(WbEvent::Key("pageDown".into()), &data);
+        assert_eq!(workbench.overlay_scroll, page);
+        workbench.handle(WbEvent::Key("pageUp".into()), &data);
+        assert_eq!(
+            workbench.overlay_scroll, 0,
+            "a page back on a detail view did not come back a page"
+        );
     }
 }
