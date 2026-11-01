@@ -184,6 +184,16 @@ HOME=$PWD/target/test-home cargo test -p future-agent --test cli_smoke
   what makes the test fail instead of hanging, and the unbounded waits are what make a hang
   visible in CI. It is a scheduling property of the measurement host.
 
+### Why the whole suite cannot fit a 120 s gate
+
+Measured on a subset (`cargo test -p future-agent --lib session::content`): 143 tests,
+**43.3 s wall, 82 s user, 213 s system** — 1.5 s of kernel time per test. Every test's SQLite
+store is opened with `synchronous = FULL` and `wal_autocheckpoint = 0`
+(`agent/src/session/database/connection.rs:110-116`), so each commit fsyncs. Scaled to the
+2829-test suite that is ~7 k CPU-seconds, against the 3 840 a 32-core machine can spend in
+120 s. A test-only durability relaxation is the lever; it is not taken here because it changes
+what the crash-recovery tests exercise.
+
 ## What is not claimed
 
 - **No W5/W6/W7 rows are waivers.** A `?` error edge, a lone `}` or a `tracing::` call is
