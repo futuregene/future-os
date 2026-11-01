@@ -5627,9 +5627,18 @@ mod driver_tests {
             driver.live.notice = None;
             assert!(!driver.quit_key("enter").await);
             let notice = driver.live.notice.clone().unwrap_or_default();
-            assert!(
-                notice.contains("No such file"),
-                "re-reading a file the tools cannot read said {notice:?}"
+            // A missing program is spelled by the host — `No such file or
+            // directory` on unix, `program not found` on Windows — and the
+            // product hands the reader that reason unchanged. Ask this host for
+            // its own answer instead of pinning one host's spelling of it
+            // (`docs/testing/module-cli-tui.md` §3.3).
+            let missing = std::process::Command::new("git")
+                .output()
+                .map_err(|error| error.to_string())
+                .expect_err("this test's PATH holds no git");
+            assert_eq!(
+                notice, missing,
+                "re-reading a file the tools cannot read did not carry the machine's own reason"
             );
         }
 
@@ -6180,7 +6189,7 @@ mod driver_tests {
                 .expect("the box asks for its picture")
                 .request;
             let placement = (request.x, request.y, request.columns, request.rows);
-            let mut terminal = Terminal::new().expect("terminal");
+            let mut terminal = crate::terminal::driver_terminal();
 
             // A frame that repainted the picture's own row: the picture is text
             // it just overwrote, so it goes back in.
@@ -6240,7 +6249,7 @@ mod driver_tests {
                 !workbench.image_requests.is_empty(),
                 "a sixel terminal is asked to place the picture"
             );
-            let mut terminal = Terminal::new().expect("terminal");
+            let mut terminal = crate::terminal::driver_terminal();
             crate::terminal::capture::start();
             super::super::paint_images(&mut terminal, &mut workbench, &[0]);
             let painted = crate::terminal::capture::take();
@@ -6268,7 +6277,7 @@ mod driver_tests {
                 .painted_images
                 .inline_shown
                 .push((8, (0, 0, 2, 2)));
-            let mut terminal = Terminal::new().expect("terminal");
+            let mut terminal = crate::terminal::driver_terminal();
             crate::terminal::capture::start();
             super::super::paint_images(&mut terminal, &mut workbench, &[]);
             let painted = crate::terminal::capture::take();
@@ -6310,7 +6319,7 @@ mod driver_tests {
                         pixels: pixels.clone(),
                     });
             }
-            let mut terminal = Terminal::new().expect("terminal");
+            let mut terminal = crate::terminal::driver_terminal();
             crate::terminal::capture::start();
             super::super::paint_images(&mut terminal, &mut workbench, &[]);
             let painted = crate::terminal::capture::take();
@@ -6783,7 +6792,15 @@ mod driver_tests {
             let shot = dir.path().join("chart.png");
             std::fs::write(&shot, b"\x89PNG\r\n\x1a\nrest of the file").expect("write the picture");
 
-            let text = format!("the build is green — see [the chart]({})", shot.display());
+            // The destination is spelled with `/` rather than `display()`'s own
+            // separators: CommonMark escapes an ASCII punctuation character
+            // after a backslash, and a Windows temp path carries one in its
+            // `.tmp…` leaf, so the raw form reaches the renderer with a
+            // separator eaten (`…\Temp.tmp…\chart.png`) — a link to a file that
+            // never existed. Windows accepts `/` in a path, so one spelling
+            // describes the same picture on both hosts.
+            let link = shot.to_string_lossy().replace('\\', "/");
+            let text = format!("the build is green — see [the chart]({link})");
             let entries = serde_json::json!({"entries": [{
                 "id": "e2",
                 "role": "assistant",
