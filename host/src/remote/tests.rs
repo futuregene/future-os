@@ -2408,25 +2408,31 @@ mod runtime_tests {
         })
         .unwrap();
 
-        let mut tap = nats.tap();
         let handle = spawn_presence_heartbeat(client.clone(), pair.clone(), "bridge_hb".into());
 
-        let presence = await_publish_matching(
-            &mut tap,
-            &format!("p.{pair}.presence"),
-            Duration::from_secs(5),
-            |published| published.json()["online"] == json!(true),
-        )
-        .await;
+        // Every wait below ends on the server's own record of what it accepted,
+        // or on this publisher finishing — never on how quickly the test thread
+        // was scheduled. `state.sessions` is change-driven: the tap's ring can
+        // drop it while the test is descheduled, and it is not sent again.
+        let presence = nats
+            .await_publish(
+                &format!("p.{pair}.presence"),
+                |published| published.json()["online"] == json!(true),
+                || handle.is_finished(),
+                Duration::from_secs(5),
+            )
+            .await;
         assert_eq!(presence.json()["online"], json!(true));
         assert_eq!(presence.json()["pairId"], json!(pair));
 
-        let sessions = await_publish(
-            &mut tap,
-            &format!("p.{pair}.state.sessions"),
-            Duration::from_secs(5),
-        )
-        .await;
+        let sessions = nats
+            .await_publish(
+                &format!("p.{pair}.state.sessions"),
+                |_| true,
+                || handle.is_finished(),
+                Duration::from_secs(5),
+            )
+            .await;
         let rows = sessions.json()["sessions"].as_array().unwrap().clone();
         let row = rows
             .iter()
@@ -2435,12 +2441,14 @@ mod runtime_tests {
         assert_eq!(row["streaming"], json!(true));
         assert_eq!(row["title"], json!("Heartbeat thread"));
 
-        let workspaces = await_publish(
-            &mut tap,
-            &format!("p.{pair}.state.workspaces"),
-            Duration::from_secs(5),
-        )
-        .await;
+        let workspaces = nats
+            .await_publish(
+                &format!("p.{pair}.state.workspaces"),
+                |_| true,
+                || handle.is_finished(),
+                Duration::from_secs(5),
+            )
+            .await;
         let list = workspaces.json()["workspaces"].as_array().unwrap().clone();
         assert!(list.iter().any(|w| w["name"] == json!("HB Workspace")));
 
@@ -2450,25 +2458,29 @@ mod runtime_tests {
             title: "Renamed heartbeat".to_string(),
         })
         .unwrap();
-        let mut saw_rename = false;
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while !saw_rename {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            assert!(!remaining.is_zero(), "rename never republished");
-            let published = tokio::time::timeout(remaining, tap.recv())
-                .await
-                .expect("tap stays live")
-                .expect("tap value");
-            if published.subject == format!("p.{pair}.state.sessions")
-                && published.json()["sessions"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|row| row["title"] == json!("Renamed heartbeat"))
-            {
-                saw_rename = true;
-            }
-        }
+        // The rename is a *later* packet on a subject that already has one, so
+        // the wait is for the record to grow a match, not for the next arrival.
+        let renamed = nats
+            .await_publish(
+                &format!("p.{pair}.state.sessions"),
+                |published| {
+                    published.json()["sessions"].as_array().is_some_and(|rows| {
+                        rows.iter()
+                            .any(|row| row["title"] == json!("Renamed heartbeat"))
+                    })
+                },
+                || handle.is_finished(),
+                Duration::from_secs(5),
+            )
+            .await;
+        assert!(
+            renamed.json()["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["title"] == json!("Renamed heartbeat")),
+            "the tick's signature check republished the renamed row"
+        );
 
         // Publish failures (broker dead) are logged, not fatal.
         nats.kill();
