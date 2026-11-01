@@ -7036,6 +7036,56 @@ mod tests {
         }
     }
 
+    /// Navigation scrolls the box the reader is in and never leaves it: `up`,
+    /// `down`, the page keys and the vim letters move a cursor or a scroll
+    /// offset, and the overlay that owns them is still the overlay on screen.
+    ///
+    /// The table is every box that lists or scrolls — the surface has no single
+    /// list of "the scrollable overlays", so stating it here is what keeps a new
+    /// box from being added without one.
+    #[test]
+    fn navigation_scrolls_a_box_without_closing_it() {
+        let data = demo::chat();
+        let boxes = [
+            Overlay::Help,
+            Overlay::Palette,
+            Overlay::Queue,
+            Overlay::Approval,
+            Overlay::Diff,
+            Overlay::Git,
+            Overlay::Files,
+            Overlay::Fork,
+            Overlay::Worktree,
+            Overlay::DeleteSession,
+            Overlay::FilePreview,
+        ];
+        for overlay in boxes {
+            for key in ["up", "down", "k", "j", "pageup", "pagedown", "home", "end"] {
+                let (mut workbench, _rows) = frame(&data, 120, 38);
+                workbench.overlay = Some(overlay);
+                workbench.overlay_scroll = 0;
+                workbench.workflow_index = 0;
+                let actions = workbench.handle(WbEvent::Key(key.into()), &data);
+                let answered = format!("{actions:?}");
+                assert_eq!(
+                    workbench.overlay,
+                    Some(overlay),
+                    "{overlay:?} left the screen on {key}: {answered}"
+                );
+                assert!(
+                    !actions.iter().any(|action| matches!(
+                        action,
+                        WbAction::Quit
+                            | WbAction::Submit(_)
+                            | WbAction::ApprovalDecision { .. }
+                            | WbAction::Command(_)
+                    )),
+                    "{overlay:?} answered a navigation key {key} with {answered}"
+                );
+            }
+        }
+    }
+
     /// Both ends clamp instead of running off: a rail is never under 30 columns
     /// or over 60, however far the pointer travels in one drag.
     #[test]
