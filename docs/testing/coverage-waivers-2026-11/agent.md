@@ -124,6 +124,54 @@ These need tests, not classification. Ranked by size, with the mechanism already
 Honest summary: the lane is at **98.29 %** per line, and the remaining 1337 lines are one
 mechanism away (a store-fault seam, a probe seam or a fixture) rather than one line away.
 
+## Measurement-lane notes: the four `cli_smoke` timeouts
+
+A whole-workspace instrumented run reported four agent tests as failing or hanging. This
+lane sees the same four, all in one target — `agent/tests/cli_smoke.rs` — and they are a
+**measurement-lane** problem, not a product or assertion problem. No test semantics were
+changed to accommodate instrumentation.
+
+The four spawn the **real `future-agent` binary** from the test process and then wait on wall
+clock:
+
+| test | bound | what it waits for |
+|---|---|---|
+| `agent_is_singleton_per_user_even_on_different_ports` | **5 s** (`cli_smoke.rs:47`) then blocking reaps (`:97`) | a second instance must fail while the first holds the instance lock |
+| `future_home_env_runs_a_second_isolated_instance` | **10 s** (`:126`) then blocking reaps (`:186`, `:188`) | two agents on separate `FUTURE_HOME`s |
+| `agent_default_ipc_shuts_down_gracefully_and_releases_its_endpoint` | **none** — `Command::output()` | a profile-timer shutdown that binds and releases the local endpoint |
+| `agent_shuts_down_cleanly_on_sigint` | **30 s** for server-up (`:545`), then unbounded `child.wait()` (`:555`) | SIGINT must produce a clean exit 0 |
+
+Two failure modes follow from that shape: the **bounded** two assert and fail
+(`first agent did not acquire its instance lock`), the **unbounded** two block — one observed
+hang lasted `>12 min` until the agent child was killed.
+
+**It is contention, not instrumentation semantics.** Evidence, all on this lane:
+
+- the same instrumented binary, target run alone: **25 passed, 0 failed in 6.94 s**;
+- the same target under a concurrent 32-thread instrumented lib suite: **25 passed in 7.32 s**;
+- instrumented-process startup is not slower: `future-agent --version` is **9 ms** from
+  `llvm-cov-target` vs **11 ms** from `target/debug`;
+- in **11 full instrumented runs** of this lane the target failed in 3 (always
+  `agent_is_singleton_per_user_even_on_different_ports`, always the 5 s deadline) and hung
+  once (`agent_shuts_down_cleanly_on_sigint`), in both cases while several **other worktrees'
+  instrumented suites** were running on the same machine.
+
+**Reproduce / avoid**
+
+```bash
+# the target alone — this is the shape that passes and is what a lane should measure
+cargo llvm-cov -p future-agent --test cli_smoke --no-report        # 25 passed, ~7 s
+
+# if it is already failing, re-run that target alone before believing it:
+HOME=$PWD/target/test-home cargo test -p future-agent --test cli_smoke
+```
+
+- A whole-workspace instrumented run should run **one suite per machine**; two concurrent
+  `cargo llvm-cov` runs (different worktrees) are what pushed this target over its 5 s bound.
+- Never "fix" this by widening the deadline or removing the unbounded wait: the deadlines are
+  what makes the test fail instead of hanging, and the unbounded waits are what make a hang
+  visible in CI. It is a scheduling property of the measurement host.
+
 ## What is not claimed
 
 - **No W5/W6/W7 rows are waivers.** A `?` error edge, a lone `}` or a `tracing::` call is
