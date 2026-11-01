@@ -491,3 +491,25 @@ describe("imagePreview folder navigation", () => {
     expect(atStart.onPrev).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * An image opened on its own has no folder to walk.
+ *
+ * `navigation` is what ties a preview to the files beside it; a pasted screenshot
+ * or an attachment has none. The arrows still reach this component (the listener
+ * is on the window), so the guard is what keeps a keypress from walking a
+ * sequence that does not exist — and from crashing on `nav.index`.
+ */
+it("ignores the arrows when there is no folder to walk", async () => {
+  const view = await mountReady();
+  expect(view.container.querySelector("img")).not.toBeNull();
+
+  await act(async () => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowRight" }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowLeft" }));
+  });
+
+  // Nothing moved and nothing was reported: this image is the whole set.
+  expect(view.onError).not.toHaveBeenCalled();
+  expect(view.container.querySelector("img")).not.toBeNull();
+});

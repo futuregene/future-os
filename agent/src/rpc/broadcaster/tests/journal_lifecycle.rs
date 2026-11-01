@@ -409,3 +409,169 @@ fn attach_beyond_ring_without_journal_returns_projection() {
     assert_eq!(projection.run_id, "run-ring");
     assert!(!projection.events.is_empty());
 }
+
+// ─── pending-age admission (the 2026-10-31 killed runs) ────────────────
+
+/// The writer parked on its own test gate, released on drop.
+///
+/// A panic between parking and releasing would otherwise leave the writer
+/// thread inside the barrier, and the broadcaster's drop-time shutdown
+/// handshake would block forever — a failing assertion would hang the suite
+/// instead of reporting.
+struct HeldWriter {
+    gate: std::sync::Arc<std::sync::Barrier>,
+    released: bool,
+}
+
+impl HeldWriter {
+    fn new(broadcaster: &SseBroadcaster) -> Self {
+        let gate = {
+            let journal = broadcaster.journal.lock();
+            let writer = journal
+                .writer
+                .as_ref()
+                .expect("a configured journal owns its writer");
+            writer
+                .admission
+                .set_age_limit_for_test(std::time::Duration::from_millis(1));
+            writer.hold_worker_for_test()
+        };
+        Self {
+            gate,
+            released: false,
+        }
+    }
+
+    fn arrive(&self) {
+        self.gate.wait();
+    }
+
+    fn release(&mut self) {
+        self.released = true;
+        self.gate.wait();
+    }
+}
+
+impl Drop for HeldWriter {
+    fn drop(&mut self) {
+        if !self.released {
+            self.released = true;
+            self.gate.wait();
+        }
+    }
+}
+
+/// Reproduction of the 2026-10-31 incident (`run_ebdcad4959…`, 20:04:58Z):
+/// an append whose oldest pending reservation is past the age bound is refused
+/// as `Unavailable`, the caller marks the journal failed, the run's interrupt
+/// flag flips — and **nothing** clears it afterwards. The backlog itself is
+/// gone by then, so the session dies from a condition that no longer exists.
+///
+/// The writer is parked on its own test gate and the age bound is shrunk to
+/// 1 ms, so "the oldest reservation is older than the bound" is a fact at the
+/// second append rather than a wall-clock race. Everything else is real: the
+/// segmented store, the writer thread, the broadcaster's stamping and its
+/// failure bookkeeping.
+#[test]
+fn an_append_past_the_pending_age_limit_kills_the_journal_and_it_never_recovers() {
+    let directory = tempfile::tempdir().unwrap();
+    let manager = crate::session::Manager::new(directory.path().to_path_buf());
+    let broadcaster = SseBroadcaster::new();
+    broadcaster
+        .configure_journal("age-limit", &manager)
+        .unwrap();
+    assert!(
+        broadcaster.uses_segmented_storage(),
+        "the pending-age bound only guards the segmented writer"
+    );
+
+    // `start_run` clears the health and the interrupt flag, so both are
+    // installed after it — the same order the run path uses.
+    broadcaster.start_run("run-age".to_string(), 1);
+    let interrupt = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    broadcaster.set_persistence_interrupt(interrupt.clone());
+
+    let mut gate = HeldWriter::new(&broadcaster);
+    gate.arrive(); // the worker is parked inside its command loop
+
+    let mut events = broadcaster.subscribe();
+    broadcaster.broadcast(SseEvent::new(
+        "text_chunk",
+        serde_json::json!({"block_id": "b0", "text": "a"}),
+    ));
+    assert_eq!(
+        events
+            .try_recv()
+            .expect("the admitted chunk is published")
+            .event_type,
+        "text_chunk"
+    );
+
+    // A parked writer is what a slow WAL commit looks like from admission: the
+    // reservation taken above cannot be released, so it keeps ageing.
+    std::thread::sleep(std::time::Duration::from_millis(25));
+
+    broadcaster.broadcast(SseEvent::new(
+        "text_chunk",
+        serde_json::json!({"block_id": "b0", "text": "b"}),
+    ));
+    let error = broadcaster
+        .persistence_error()
+        .expect("the refused append must fail the journal");
+    assert!(
+        error.contains("backlog exceeded its byte or age limit"),
+        "{error}"
+    );
+    assert!(
+        error.contains("oldest pending") && error.contains("of 1ms"),
+        "the refusal must name the bound that fired and how far past it it is: {error}"
+    );
+    assert!(
+        interrupt.load(std::sync::atomic::Ordering::SeqCst),
+        "the refusal must interrupt the run's production"
+    );
+    assert!(
+        events.try_recv().is_err(),
+        "a refused event is never published live"
+    );
+
+    // Release the writer and wait for the backlog it was holding. The bound is
+    // satisfied again — nothing is actually stuck any more.
+    gate.release();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let pending = {
+            let journal = broadcaster.journal.lock();
+            let writer = journal.writer.as_ref().expect("journal writer");
+            writer.admission.snapshot()["pendingEvents"]
+                .as_u64()
+                .expect("pendingEvents is a number")
+        };
+        if pending == 0 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the parked batch must drain once the gate opens ({pending} still pending)"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    // The refusal is permanent even though its cause is gone: the health latch
+    // is only cleared by re-binding the journal (agent restart) or by
+    // `start_run`, which a poisoned session can never reach because the prompt
+    // path refuses first.
+    assert!(
+        broadcaster.persistence_error().is_some(),
+        "a drained backlog must not by itself revive the journal"
+    );
+    assert!(interrupt.load(std::sync::atomic::Ordering::SeqCst));
+    broadcaster.broadcast(SseEvent::new(
+        "text_chunk",
+        serde_json::json!({"block_id": "b0", "text": "c"}),
+    ));
+    assert!(
+        events.try_recv().is_err(),
+        "every later event stays dropped until the session is restarted"
+    );
+}

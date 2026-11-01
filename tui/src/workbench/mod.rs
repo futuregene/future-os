@@ -12414,4 +12414,330 @@ mod tests {
             }
         }
     }
+    /// The pointer inside an overlay: the wheel is the box's own key, a drag is
+    /// the seam's own grab, and a release ends the gesture — none of them leaves
+    /// the box or reaches the transcript behind it.
+    ///
+    /// Each row asserts the surface's own state (the zoom, the pan, the seam, the
+    /// cursor), not "an action came back": a wheel that reported `Redraw` and
+    /// moved nothing is the failure this is here for.
+    #[test]
+    fn the_pointer_inside_an_overlay_is_the_boxes_own() {
+        use crate::terminal_image::{CapabilitiesGuard, ImageProtocol};
+        // A picture is placed by the terminal's image protocol or not at all, and
+        // the drag surface *is* the placement: with no protocol the box describes
+        // the picture instead of drawing it, and there are no cells to grab. So
+        // this test owns the capability cache rather than inheriting whatever the
+        // runner's environment (or a sibling test in this same process) left in
+        // it — inherited, the drag half was a coin toss: the macOS runner
+        // answered "no pictures" and the press closed the box.
+        let _caps = CapabilitiesGuard::pin(ImageProtocol::Kitty);
+
+        // Over a picture the wheel is the zoom.
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::FilePreview);
+        let mut previews = demo::chat();
+        previews.preview = Some(demo::preview_image());
+        wb.render(&previews, 120, 38);
+        let before = wb.preview_zoom;
+        let actions = wb.handle(
+            WbEvent::Mouse(mouse::MouseEvent {
+                kind: mouse::MouseKind::WheelUp,
+                x: 60,
+                y: 12,
+                shift: false,
+                alt: false,
+                ctrl: false,
+            }),
+            &previews,
+        );
+        assert_ne!(
+            wb.preview_zoom, before,
+            "the wheel did not zoom the picture"
+        );
+        assert!(
+            !actions.is_empty(),
+            "a zoom that changed the frame owed a redraw"
+        );
+        // …and the other way.
+        let zoomed_in = wb.preview_zoom;
+        let _ = wb.handle(
+            WbEvent::Mouse(mouse::MouseEvent {
+                kind: mouse::MouseKind::WheelDown,
+                x: 60,
+                y: 12,
+                shift: false,
+                alt: false,
+                ctrl: false,
+            }),
+            &previews,
+        );
+        assert_ne!(wb.preview_zoom, zoomed_in, "the wheel did not zoom out");
+        assert_eq!(
+            wb.overlay,
+            Some(Overlay::FilePreview),
+            "the box closed on a wheel"
+        );
+
+        // A press, a drag and a release pan the picture by the pointer's own
+        // distance from where the hand went down.
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::FilePreview);
+        wb.render(&previews, 120, 38);
+        let press = mouse::MouseEvent {
+            kind: mouse::MouseKind::Press,
+            x: 40,
+            y: 10,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        let _ = wb.handle(WbEvent::Mouse(press), &previews);
+        let pan = wb.preview_pan;
+        let drag = mouse::MouseEvent {
+            kind: mouse::MouseKind::Drag,
+            x: 34,
+            y: 10,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        let _ = wb.handle(WbEvent::Mouse(drag), &previews);
+        assert_ne!(wb.preview_pan, pan, "a drag did not pan the picture");
+        let release = mouse::MouseEvent {
+            kind: mouse::MouseKind::Release,
+            x: 34,
+            y: 10,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        let acted = wb.handle(WbEvent::Mouse(release), &previews);
+        assert!(
+            !acted.is_empty(),
+            "a release that ended a pan owed a redraw"
+        );
+        assert!(
+            wb.preview_drag.is_none(),
+            "the drag was not ended by its release"
+        );
+        assert_eq!(wb.overlay, Some(Overlay::FilePreview));
+
+        // In the repository browser the pointer grabs the divider and the drag
+        // re-balances the panes from wherever it was taken.
+        let mut with_git = demo::chat();
+        with_git.git = Some(demo::git());
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Git);
+        wb.render(&with_git, 160, 38);
+        let (seam, seam_y) = wb
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| *id == "git.divider")
+            .map(|(rect, _)| (rect.x, rect.y))
+            .expect("the divider is a hit region of the panel");
+        let press = mouse::MouseEvent {
+            kind: mouse::MouseKind::Press,
+            x: seam,
+            y: seam_y,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        let _ = wb.handle(WbEvent::Mouse(press), &with_git);
+        assert!(wb.git_drag.is_some(), "the divider was not grabbed");
+        let percent = wb.git_split_percent;
+        let drag = mouse::MouseEvent {
+            kind: mouse::MouseKind::Drag,
+            x: seam.saturating_sub(8),
+            y: seam_y,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        let _ = wb.handle(WbEvent::Mouse(drag), &with_git);
+        assert_ne!(
+            wb.git_split_percent, percent,
+            "dragging the divider did not move it"
+        );
+        let release = mouse::MouseEvent {
+            kind: mouse::MouseKind::Release,
+            x: seam.saturating_sub(8),
+            y: seam_y,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        let acted = wb.handle(WbEvent::Mouse(release), &with_git);
+        assert!(!acted.is_empty(), "releasing the divider owed a redraw");
+        assert!(wb.git_drag.is_none(), "the drag outlived its release");
+    }
+
+    /// A click lands on the region the frame painted, not on a guess about the
+    /// layout: the header's two shortcuts open their panels, the rail's tabs move
+    /// the panel, and a close chip leaves the box it belongs to.
+    #[test]
+    fn the_header_rail_and_close_chips_are_clicked_by_the_frame_they_painted() {
+        let data = demo::chat();
+
+        // The header's `files` shortcut is a hit region of its own.
+        let mut wb = workbench();
+        let actions = click_region(&mut wb, &data, 120, 38, "header.files");
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, WbAction::OpenFiles)),
+            "the header's files shortcut did not open the panel: {actions:?}"
+        );
+
+        // The same row's `git` shortcut.
+        let mut wb = workbench();
+        let actions = click_region(&mut wb, &data, 120, 38, "header.git");
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, WbAction::OpenGit)),
+            "the header's git shortcut did not open the panel: {actions:?}"
+        );
+
+        // The rail's two tabs switch the panel.
+        for (id, want) in [
+            ("sidebar.tab.workspaces", state::PanelId::Workspaces),
+            ("sidebar.tab.recent", state::PanelId::Recent),
+        ] {
+            let mut wb = workbench();
+            wb.sidebar_visible = true;
+            let actions = click_region(&mut wb, &data, 120, 38, id);
+            assert_eq!(wb.panel, want, "the tab click did not move the panel");
+            assert!(
+                actions
+                    .iter()
+                    .any(|action| matches!(action, WbAction::SwitchPanel(panel) if *panel == want)),
+                "{id} did not ask the driver for the panel: {actions:?}"
+            );
+        }
+
+        // A box's close chip leaves it, and the box is the one that was open.
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Help);
+        wb.render(&data, 120, 38);
+        let closed = wb
+            .hits()
+            .regions()
+            .iter()
+            .map(|(_, id)| id.clone())
+            .find(|id| id.starts_with(OVERLAY_CLOSE))
+            .expect("the help box paints a close chip");
+        let _ = click_region(&mut wb, &data, 120, 38, &closed);
+        assert_eq!(wb.overlay, None, "the close chip did not leave the box");
+    }
+    /// The workflow boxes' keys: a detail view scrolls, the diff is a list *and* a
+    /// patch (whichever pane has the keys decides), `r` re-reads, and the
+    /// approval's answers are the driver's actions rather than a repaint.
+    #[test]
+    fn the_workflow_boxes_move_scroll_and_answer() {
+        let data = demo::chat();
+
+        // The approval's three answers, and the card closes on each of them.
+        for (key, approved) in [("y", true), ("n", false)] {
+            let mut wb = workbench();
+            wb.overlay = Some(Overlay::Approval);
+            let actions = wb.handle(WbEvent::Key(key.into()), &data);
+            assert!(
+                actions.iter().any(|action| matches!(
+                    action,
+                    WbAction::ApprovalDecision { approved: got, .. } if *got == approved
+                )),
+                "`{key}` did not answer the approval: {actions:?}"
+            );
+            assert_eq!(wb.overlay, None, "`{key}` answered but left the card up");
+        }
+
+        // "Always allow" with no suggested rule: nothing to save, so nothing is
+        // answered — a rule the agent never proposed would be a different grant.
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Approval);
+        let actions = wb.handle(WbEvent::Key("a".into()), &data);
+        assert!(
+            !actions
+                .iter()
+                .any(|action| matches!(action, WbAction::ApprovalDecision { .. })),
+            "an approval with no rule to save answered anyway: {actions:?}"
+        );
+        assert_eq!(
+            wb.overlay,
+            Some(Overlay::Approval),
+            "a refused rule left the card up, which is right"
+        );
+
+        // The diff is both a list and a patch: `tab` moves the keys, and the pane
+        // that has them decides whether `down` moves a cursor or scrolls.
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Diff);
+        wb.render(&data, 120, 38);
+        // The box opens with the keys on the patch (`diff_patch_focus` starts
+        // true); `tab` moves them to the file list and `left` brings them back.
+        assert!(
+            wb.diff_patch_focus,
+            "the diff opens with the keys on the patch"
+        );
+        let _ = wb.handle(WbEvent::Key("tab".into()), &data);
+        assert!(
+            !wb.diff_patch_focus,
+            "`tab` did not move the keys to the file list"
+        );
+        let _ = wb.handle(WbEvent::Key("tab".into()), &data);
+        assert!(wb.diff_patch_focus, "a second `tab` did not come back");
+        let scroll = wb.overlay_scroll;
+        let cursor = wb.workflow_index;
+        let _ = wb.handle(WbEvent::Key("down".into()), &data);
+        assert!(wb.overlay_scroll > scroll, "the patch did not scroll");
+        assert_eq!(
+            wb.workflow_index, cursor,
+            "scrolling the patch moved the file list"
+        );
+        let _ = wb.handle(WbEvent::Key("left".into()), &data);
+        assert!(!wb.diff_patch_focus, "`left` did not return to the list");
+
+        // `r` is the box's own re-read: the patch in the diff, the panel in the
+        // worktree box.
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Diff);
+        let actions = wb.handle(WbEvent::Key("r".into()), &data);
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, WbAction::OpenDiff)),
+            "`r` in the diff box did not ask for the patch: {actions:?}"
+        );
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Worktree);
+        let actions = wb.handle(WbEvent::Key("r".into()), &data);
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                WbAction::Command(command) if command == "/worktree"
+            )),
+            "`r` in the worktree box did not re-read the list: {actions:?}"
+        );
+
+        // `pageDown` on a detail view scrolls by a page, not by a row.
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Approval);
+        let page = wb.list_page.max(1);
+        let _ = wb.handle(WbEvent::Key("pageDown".into()), &data);
+        assert_eq!(
+            wb.overlay_scroll, page,
+            "a page key on a detail view did not scroll a page"
+        );
+
+        // `escape` leaves every one of them.
+        for overlay in [Overlay::Diff, Overlay::Worktree, Overlay::Approval] {
+            let mut wb = workbench();
+            wb.overlay = Some(overlay);
+            let _ = wb.handle(WbEvent::Key("escape".into()), &data);
+            assert_eq!(wb.overlay, None, "escape did not close {overlay:?}");
+        }
+    }
 }

@@ -3962,8 +3962,20 @@ impl Live {
     /// Read the clipboard: an image becomes a draft attachment (the same
     /// `[Image #N]` marker a pasted image path produces), text is pasted.
     pub async fn paste_clipboard(&mut self) {
+        self.paste_clipboard_on(std::env::consts::OS).await;
+    }
+
+    /// The same paste with the platform's tool table named explicitly.
+    ///
+    /// `os` is what [`paste::ClipboardCapture::capture`] resolves the probes
+    /// from, and it is a parameter there for the same reason it is one here: the
+    /// tables differ in *shape*, not just in program names (macOS' and Windows'
+    /// image probes write the file their script names, Linux' print base64 on
+    /// stdout), so a test that let the production call site read the host would
+    /// be a different test on each runner — and on Linux it was a failing one.
+    /// Production still calls [`Self::paste_clipboard`].
+    pub(crate) async fn paste_clipboard_on(&mut self, os: &'static str) {
         let capture = self.clipboard.clone();
-        let os = std::env::consts::OS;
         let pid = std::process::id();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -9493,5 +9505,2350 @@ mod tests {
         assert_eq!(request.entry_id, "entry-9");
         assert_eq!(request.mode, "through_entry");
         assert_eq!(request.created_by, "tui");
+    }
+
+    /// A `get_state` answer that names `dir` as the session's workspace.
+    ///
+    /// The path goes through `serde_json`, not into the literal by hand: a
+    /// Windows workspace (`D:\a\future-os\…`) inside a hand-written string is an
+    /// invalid `\a` escape, so the whole reply failed to parse, the fixture
+    /// silently had no `cwd`, and the scan it was meant to exercise never
+    /// started. POSIX paths happen not to contain a backslash, which is why only
+    /// the Windows runner noticed.
+    fn state_in(dir: &str) -> String {
+        format!(
+            r#"{{"sessionId":"s1","cwd":{}}}"#,
+            serde_json::to_string(dir).expect("a path is a JSON string")
+        )
+    }
+
+    /// Attach to a mock agent that answers `pairs`, for the tables below.
+    async fn live_on(pairs: &[(&str, &str)]) -> Live {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(pairs);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the mock agent");
+        live
+    }
+
+    /// Every adapter action the surface can hand over has the effect the surface
+    /// then sees — or an explicit "nothing, the surface owns it" arm.
+    ///
+    /// The table is the point: `apply`'s arms are one line each, and no behaviour
+    /// test would name them one by one, but an action wired to the wrong arm (a
+    /// stage that sends, a send that stages) is exactly what a silently-empty arm
+    /// hides.
+    #[tokio::test]
+    async fn every_adapter_action_has_the_effect_the_surface_expects() {
+        type Check = fn(&mut super::Live) -> bool;
+
+        let cases: Vec<(&str, WbAction, Check)> = vec![
+            (
+                "a draft edit lands in the draft",
+                WbAction::EditInput {
+                    text: "half typed".into(),
+                    cursor: 4,
+                },
+                |live| live.draft.editor.text() == "half typed",
+            ),
+            (
+                "a staged model is staged, not sent",
+                WbAction::SetPendingModel("future/other".into()),
+                |live| live.pending_model() == Some("future/other"),
+            ),
+            (
+                "a staged level is staged, not sent",
+                WbAction::SetPendingThinking("high".into()),
+                |live| live.pending_effort() == Some("high"),
+            ),
+            (
+                "`/new` detaches from the conversation",
+                WbAction::NewSession,
+                |live| live.detached(),
+            ),
+            (
+                "the palette is the surface's own",
+                WbAction::SetTheme("future-dark".into()),
+                |_| true,
+            ),
+            (
+                "the panel rectangle is the surface's own",
+                WbAction::ResizeSidebar(40),
+                |_| true,
+            ),
+            (
+                "a notice is the driver's to show",
+                WbAction::Notice("hello".into()),
+                |_| true,
+            ),
+            (
+                "a redraw is a frame, not an answer",
+                WbAction::Redraw,
+                |_| true,
+            ),
+            (
+                "a scroll is the surface's own",
+                WbAction::Scroll(-3),
+                |_| true,
+            ),
+        ];
+
+        for (what, action, check) in cases {
+            let mut live = live_on(&[]).await;
+            let outcome = live.apply(action).await;
+            assert!(
+                matches!(outcome, Outcome::Continue),
+                "{what}: an action must not end the app"
+            );
+            assert!(check(&mut live), "{what}");
+            live.client.disconnect();
+        }
+    }
+
+    /// The launchpad chips walk the agent's own order and stage the answer: a
+    /// cycle never sends anything (there is no session to send it to), and the
+    /// ring wraps rather than stopping at the end of the list.
+    #[tokio::test]
+    async fn the_launchpad_chips_cycle_and_wrap_without_sending() {
+        let models = r#"{"models":[
+            {"id":"a","label":"a","provider":"future","thinkingLevel":"default",
+             "thinkingLevels":["default","low","high"],"defaultThinkingLevel":"default",
+             "isDefault":true},
+            {"id":"b","label":"b","provider":"future","thinkingLevel":"default",
+             "thinkingLevels":["default","high"],"defaultThinkingLevel":"default"}
+        ]}"#;
+        let mut live = live_on(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            ("list_models", models),
+        ])
+        .await;
+        live.to_launchpad();
+        assert!(live.detached(), "the launchpad is the detached surface");
+        assert_eq!(live.models.len(), 2, "the list installed");
+
+        // Model: each press moves, and the ring comes back to where it started
+        // after exactly one lap of the list it walks.
+        let ring = live.models.len();
+        live.cycle_pending_model();
+        let start = live.pending_model().map(str::to_string);
+        assert!(start.is_some(), "the first press staged nothing");
+        let mut seen = vec![start.clone()];
+        let mut steps = 0;
+        loop {
+            let before = live.pending_model().map(str::to_string);
+            live.cycle_pending_model();
+            steps += 1;
+            let now = live.pending_model().map(str::to_string);
+            assert_ne!(before, now, "a press did not move the chip");
+            if now == start {
+                break;
+            }
+            assert!(
+                steps <= ring,
+                "the ring did not come back to its start within one lap: {seen:?}"
+            );
+            seen.push(now);
+        }
+        assert_eq!(
+            steps, ring,
+            "the ring should visit every model once: {seen:?}"
+        );
+
+        // Level: the staged model's own ring, and it wraps too.
+        live.cycle_pending_effort();
+        let start = live.pending_effort().map(str::to_string);
+        let mut levels = vec![start.clone()];
+        for _ in 0..8 {
+            let before = live.pending_effort().map(str::to_string);
+            live.cycle_pending_effort();
+            let now = live.pending_effort().map(str::to_string);
+            assert_ne!(before, now, "a level press did not move");
+            if now == start {
+                break;
+            }
+            levels.push(now);
+        }
+        assert!(
+            live.pending_effort().map(str::to_string) == start,
+            "the level ring never came back to its start: {levels:?}"
+        );
+
+        // No models loaded at all: the chip says so instead of doing nothing.
+        let mut bare = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        bare.to_launchpad();
+        bare.models.clear();
+        bare.cycle_pending_model();
+        assert!(
+            bare.notice.is_some(),
+            "an empty model list said nothing at all"
+        );
+        bare.client.disconnect();
+        live.client.disconnect();
+    }
+
+    /// The queue row's two verbs: recalling puts the queued prompt back in the
+    /// draft, cancelling explains itself — and both go through the agent, which
+    /// is what makes them the queue's own verbs rather than the draft's.
+    #[tokio::test]
+    async fn a_queued_prompt_can_be_recalled_or_cancelled() {
+        let queued = super::RpcSessionState {
+            session_id: "s1".into(),
+            queued_runs: vec![crate::rpc::types::QueuedRunState {
+                run_id: "q-1".into(),
+                display_text: "earlier question".into(),
+                run_sequence: 1,
+                client_request_id: "c-1".into(),
+                state: "queued".into(),
+                queue_position: 1,
+                accepted_at: "2026-11-01T00:00:00Z".into(),
+            }],
+            queued_count: Some(1),
+            ..Default::default()
+        };
+        let mut live = live_on(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            ("cancel_queued_run", "{}"),
+        ])
+        .await;
+        live.install_state_refresh(Ok(queued));
+        assert_eq!(live.state.queued_runs.len(), 1, "the queue installed");
+
+        live.recall_queued("q-1").await;
+        assert_eq!(
+            live.draft.editor.text(),
+            "earlier question",
+            "recall did not put the prompt back in the draft"
+        );
+
+        live.install_state_refresh(Err("nothing".into()));
+        live.cancel_queued("q-1").await;
+        assert!(
+            live.notice.is_some(),
+            "the cancel neither refreshed nor explained itself"
+        );
+        live.client.disconnect();
+    }
+
+    /// The cycle and approval verbs on an **attached** session go to the agent:
+    /// the launchpad stages them, a live conversation applies them.
+    ///
+    /// This is the other half of `the_launchpad_chips_cycle_and_wrap_without_sending`:
+    /// the same three chips, on the side where "stage it" would be a lie.
+    #[tokio::test]
+    async fn an_attached_cycle_is_applied_not_staged() {
+        use crate::approval_mode::ApprovalMode;
+
+        let mut live = live_on(&[
+            ("get_state", r#"{"sessionId":"s1","model":"future/old"}"#),
+            ("cycle_model", r#"{"model":"future/new"}"#),
+            ("cycle_thinking_level", r#"{"level":"high"}"#),
+            ("set_sandbox_policy", r#"{"success":true}"#),
+        ])
+        .await;
+        assert!(!live.detached(), "the fixture attaches a session");
+
+        live.cycle_model().await;
+        assert_eq!(
+            live.state.model.as_deref(),
+            Some("future/new"),
+            "the agent's answer is the model now in force"
+        );
+        assert_eq!(
+            live.pending_model(),
+            Some("future/new"),
+            "…and it is what the next session inherits"
+        );
+
+        live.cycle_thinking().await;
+        assert_eq!(
+            live.state.thinking_level, "high",
+            "the level came from the agent's answer"
+        );
+
+        // The approval ring: every mode in turn, each one applied to the agent,
+        // and the ring comes back to where it started after one lap.
+        let start = live.shown_mode();
+        let mut seen = Vec::new();
+        for _ in 0..ApprovalMode::ALL.len() {
+            let before = live.state.sandbox_tier.clone();
+            live.cycle_mode().await;
+            let after = live.state.sandbox_tier.clone();
+            assert_ne!(before, after, "the approval ring did not move");
+            seen.push(after.clone());
+            assert!(
+                live.notice.is_none(),
+                "applying an approval mode reported an error: {:?}",
+                live.notice
+            );
+        }
+        assert_eq!(
+            live.shown_mode(),
+            start,
+            "the approval ring did not wrap after one lap: {seen:?}"
+        );
+
+        // An unknown mode is refused with a notice, not sent.
+        live.set_approval("not-a-mode").await;
+        assert!(
+            live.notice.is_some(),
+            "an unknown approval mode was accepted silently"
+        );
+        live.client.disconnect();
+    }
+
+    /// A workspace the reader picks is the next session's directory on the
+    /// launchpad, and the session's own workspace when one is attached — the two
+    /// sides of the same verb.
+    #[tokio::test]
+    async fn picking_a_workspace_stages_it_or_moves_the_session() {
+        let mut live = live_on(&[
+            ("get_state", r#"{"sessionId":"s1","cwd":"/work/old"}"#),
+            ("set_cwd", r#"{"success":true}"#),
+        ])
+        .await;
+
+        // The directory the session already has is a no-op, not a round trip
+        // with a notice.
+        live.select_workspace("/work/old").await;
+        assert!(
+            live.notice.is_none(),
+            "re-picking the current workspace spoke: {:?}",
+            live.notice
+        );
+
+        // Attached: the agent moves the session, and the client remembers the
+        // choice for the next start.
+        live.select_workspace("/work/new/").await;
+        assert!(
+            live.notice.is_some(),
+            "picking another workspace said nothing"
+        );
+        assert_eq!(
+            live.take_workspace_to_remember().as_deref(),
+            Some("/work/new"),
+            "the choice is not remembered (the trailing slash is trimmed)"
+        );
+
+        // The launchpad stages it instead, and says so.
+        live.to_launchpad();
+        live.select_workspace("/work/staged").await;
+        assert_eq!(
+            live.pending_cwd.as_deref(),
+            Some("/work/staged"),
+            "the launchpad did not stage the directory"
+        );
+
+        // An empty path is not a choice.
+        let before = live.pending_cwd.clone();
+        live.select_workspace("   ").await;
+        assert_eq!(
+            live.pending_cwd, before,
+            "an empty path moved the workspace"
+        );
+        live.client.disconnect();
+    }
+
+    /// `/new` on a session asks the agent for a fresh conversation and lands on
+    /// it; the launchpad is what `/new` is *already* showing, so it stays put.
+    #[tokio::test]
+    async fn a_new_session_lands_on_the_agents_answer() {
+        // The id is the agent's, and this client re-reads the state right after
+        // asking for it — so the answer has to change between the two reads. A
+        // static table would report the conversation the client just left.
+        let table = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
+            ("get_state".to_string(), r#"{"sessionId":"s1"}"#.to_string()),
+            (
+                "get_session_entries".to_string(),
+                r#"{"entries":[]}"#.to_string(),
+            ),
+            (
+                "new_session".to_string(),
+                r#"{"sessionId":"s-fresh"}"#.to_string(),
+            ),
+        ])));
+        let (mock, _seen) = (
+            crate::rpc::grpc_client::tests::api_mock_with_table(table.clone()),
+            (),
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the mock agent");
+        live.pending_cwd = Some("/work/staged".into());
+        table
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-fresh"}"#.into());
+        live.new_session().await;
+        assert!(!live.detached(), "a fresh session is not the launchpad");
+        assert_ne!(
+            live.state.session_id, "s1",
+            "the new session did not become the current one"
+        );
+        assert!(
+            !live.state.session_id.is_empty(),
+            "the client ended up attached to no session at all"
+        );
+        assert_eq!(
+            live.state.session_id, "s-fresh",
+            "the fresh id did not install"
+        );
+        assert!(
+            live.pending_cwd.is_none(),
+            "the staged workspace was not spent by the session it started"
+        );
+        assert!(
+            live.notice.is_none(),
+            "a fresh session reported an error: {:?}",
+            live.notice
+        );
+        live.client.disconnect();
+    }
+
+    /// A failure from the agent is a notice, never a silent default: the model
+    /// and level cycles say why they did not move.
+    #[tokio::test]
+    async fn a_refused_cycle_is_reported() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_failing(
+            &[("get_state", r#"{"sessionId":"s1","model":"future/old"}"#)],
+            "cycle_model",
+            "no other model",
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the failing mock");
+        live.cycle_model().await;
+        assert!(
+            live.notice.is_some(),
+            "a refused cycle left the reader without a reason"
+        );
+        live.client.disconnect();
+
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_failing(
+            &[("get_state", r#"{"sessionId":"s1","model":"future/old"}"#)],
+            "cycle_thinking_level",
+            "no other level",
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the failing mock");
+        live.cycle_thinking().await;
+        assert!(
+            live.notice.is_some(),
+            "a refused level cycle left the reader without a reason"
+        );
+        live.client.disconnect();
+    }
+
+    /// The two events that become a desktop notification: an approval asking for
+    /// a human, and an error. Everything else is the transcript's business, and
+    /// a message with no body falls back to the kind's own sentence.
+    #[tokio::test]
+    async fn only_an_approval_or_an_error_becomes_a_notification() {
+        use crate::notifications::NotifyKind;
+
+        let live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+
+        let approval = live
+            .alert_for(&event(
+                "approval_request",
+                json!({"summary": "run: rm -rf build"}),
+            ))
+            .expect("an approval asks for a human");
+        assert_eq!(approval.kind, NotifyKind::ApprovalNeeded);
+        assert_eq!(approval.body, "run: rm -rf build");
+
+        let error = live
+            .alert_for(&event("error", json!({"error": "the model refused"})))
+            .expect("an error is worth a notification");
+        assert_eq!(error.kind, NotifyKind::Failed);
+        assert_eq!(error.body, "the model refused");
+
+        // No body: the kind's own sentence, not an empty bubble.
+        let bare = live
+            .alert_for(&event("approval_request", json!({})))
+            .expect("still an approval");
+        assert!(
+            !bare.body.trim().is_empty(),
+            "a notification with no body fell back to nothing"
+        );
+
+        // Everything else is the transcript's.
+        for kind in [
+            "text_chunk",
+            "tool_start",
+            "agent_end",
+            "usage",
+            "run_state",
+        ] {
+            assert!(
+                live.alert_for(&event(kind, json!({"text": "x"}))).is_none(),
+                "{kind} should not ring the desktop"
+            );
+        }
+        live.client.disconnect();
+    }
+
+    /// The completion notice: its body is the last answer (cleaned), and the
+    /// sentence that stands in when the transcript has nothing to quote. The
+    /// "is this the last turn" gate is the queue, which the driver reads.
+    #[tokio::test]
+    async fn a_finished_run_quotes_the_answer_or_falls_back() {
+        use crate::notifications::NotifyKind;
+
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+
+        // Nothing on screen yet: the fallback sentence, never an empty bubble.
+        let bare = live.completion_notification();
+        assert_eq!(bare.kind, NotifyKind::Completed);
+        assert!(
+            !bare.body.trim().is_empty(),
+            "a completion with no answer fell back to nothing"
+        );
+
+        // With an answer on screen, the notice quotes it.
+        live.chat
+            .add_message(crate::components::chat_area::ChatMessage::new(
+                "a-1".into(),
+                crate::components::chat_area::ChatRole::Assistant,
+                "the build is green",
+            ));
+        let quoted = live.completion_notification();
+        assert_eq!(quoted.body, "the build is green");
+
+        // The last-turn gate is the queue, empty here.
+        assert!(live.queue_is_empty(), "an attach has nothing queued");
+        let queued = super::RpcSessionState {
+            session_id: "s1".into(),
+            queued_runs: vec![crate::rpc::types::QueuedRunState {
+                run_id: "q-1".into(),
+                display_text: "next".into(),
+                run_sequence: 1,
+                client_request_id: "c-1".into(),
+                state: "queued".into(),
+                queue_position: 1,
+                accepted_at: "2026-11-01T00:00:00Z".into(),
+            }],
+            queued_count: Some(1),
+            ..Default::default()
+        };
+        live.install_state_refresh(Ok(queued));
+        assert!(
+            !live.queue_is_empty(),
+            "a queued prompt must hold the completion notice back"
+        );
+        live.client.disconnect();
+    }
+
+    /// The adapter's own verbs: what `/x` means when the *surface* has not taken
+    /// it first. A table, because these are one line each and the failure mode is
+    /// a verb wired to the wrong one — `/rename` that renames nothing, `/export`
+    /// that writes the conversation the reader left.
+    #[tokio::test]
+    async fn the_adapters_own_verbs_do_what_they_say() {
+        // Attached, so the session-side arms are the ones under test.
+        let attached = &[
+            ("get_state", r#"{"sessionId":"s1","model":"future/old"}"#),
+            ("get_session_entries", r#"{"entries":[]}"#),
+            ("set_session_name", "{}"),
+            ("export_html", r#"{"path":"/tmp/s1.html"}"#),
+            ("abort", "{}"),
+            ("list_sessions", r#"{"sessions":[]}"#),
+            ("compact", r#"{"success":true}"#),
+            ("set_tools", "{}"),
+        ];
+        let mut live = live_on(attached).await;
+
+        // `/rename`: the name the request carried is installed, and the notice
+        // says so rather than repeating the usage line.
+        live.command("/rename a better title").await;
+        assert_eq!(
+            live.state.session_name.as_deref(),
+            Some("a better title"),
+            "/rename did not install the name it sent"
+        );
+        assert!(live.notice.is_some(), "/rename said nothing");
+
+        // `/rename` with no argument is the usage line, not a rename to "".
+        live.notice = None;
+        live.command("/rename").await;
+        assert!(live.notice.is_some(), "a bare /rename said nothing");
+
+        // `/export` reports the path the agent wrote.
+        live.notice = None;
+        live.command("/export").await;
+        let notice = live.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("/tmp/s1.html"),
+            "/export did not report the path it wrote: {notice:?}"
+        );
+
+        // `/copy` and `/mouse` are the surface's own; the adapter must not claim
+        // them with a notice.
+        live.notice = None;
+        assert!(matches!(live.command("/copy").await, Outcome::Continue));
+        assert!(
+            live.notice.is_none(),
+            "the adapter answered a verb the surface owns: {:?}",
+            live.notice
+        );
+
+        // A verb nobody claims is named back, never silently dropped.
+        live.command("/definitely-not-a-verb").await;
+        let notice = live.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("definitely-not-a-verb"),
+            "an unknown verb was not named: {notice:?}"
+        );
+
+        // `/quit` is the one verb that ends the app.
+        assert!(matches!(live.command("/quit").await, Outcome::Quit));
+        live.client.disconnect();
+    }
+
+    /// The verbs that need a conversation say so on the launchpad instead of
+    /// calling an agent that has no session to act on.
+    #[tokio::test]
+    async fn a_verb_that_needs_a_conversation_says_so_on_the_launchpad() {
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        live.to_launchpad();
+        for verb in ["/rename x", "/export", "/compact"] {
+            live.notice = None;
+            assert!(matches!(live.command(verb).await, Outcome::Continue));
+            assert!(live.notice.is_some(), "{verb} on the launchpad was silent");
+        }
+        // `/new` from the launchpad is the launchpad: no notice, no round trip.
+        live.notice = None;
+        live.command("/new").await;
+        assert!(live.detached(), "/new left the launchpad attached");
+        live.client.disconnect();
+    }
+
+    /// The stream events the transcript reads, one row per kind: what each does
+    /// to the activity row, the tool count, the queue or the transcript.
+    #[tokio::test]
+    async fn every_stream_event_kind_lands_somewhere_the_surface_shows() {
+        let mut live = live_on(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            ("get_session_entries", r#"{"entries":[]}"#),
+        ])
+        .await;
+        let current = live.state.session_id.clone();
+
+        let stamped = |kind: &str, data: serde_json::Value| {
+            let mut event = event(kind, data);
+            event.session_id = Some(current.clone());
+            event
+        };
+
+        // A turn starts: the activity row says it is writing.
+        live.handle_event(stamped("agent_start", json!({})));
+        assert!(
+            live.activity_kind() != super::ActivityKind::Idle,
+            "agent_start did not move the activity row"
+        );
+
+        // A tool call is counted once per call id, even though the agent
+        // announces it twice (input, then execution).
+        for phase in ["input", "execution"] {
+            live.handle_event(stamped(
+                "tool_start",
+                json!({"tool_call_id": "t-1", "name": "bash", "phase": phase}),
+            ));
+        }
+        assert_eq!(
+            live.activity_snapshot().tools,
+            1,
+            "one call announced twice is two tools"
+        );
+
+        // Thinking and text are the transcript's.
+        live.handle_event(stamped("thinking_start", json!({})));
+        live.handle_event(stamped("thinking_delta", json!({"text": "hmm"})));
+        live.handle_event(stamped("text_chunk", json!({"text": "the answer"})));
+        live.handle_event(stamped("agent_end", json!({})));
+        let rows = live.chat.render_all(80).join("\n");
+        assert!(
+            rows.contains("the answer"),
+            "the answer never reached the rows: {rows:?}"
+        );
+
+        // An event stamped with another conversation is dropped, not applied to
+        // the one on screen.
+        let mut other = event("text_chunk", json!({"text": "another conversation"}));
+        other.session_id = Some("s-elsewhere".into());
+        live.handle_event(other);
+        let rows = live.chat.render_all(80).join("\n");
+        assert!(
+            !rows.contains("another conversation"),
+            "another conversation's text was painted here"
+        );
+
+        // An error is a notice row, and the run it names is not left claiming to
+        // be running.
+        live.handle_event(stamped("error", json!({"error": "the model refused"})));
+        assert!(
+            live.notice.is_some() || live.activity_kind() != super::ActivityKind::Idle,
+            "an error event left nothing on screen"
+        );
+        live.client.disconnect();
+    }
+
+    /// Entering a worktree from the repository panel is moving the session: the
+    /// worktree the reader is already in is a no-op, and a failure is a notice.
+    #[tokio::test]
+    async fn entering_a_worktree_moves_the_session_or_explains_itself() {
+        let mut live = live_on(&[
+            ("get_state", r#"{"sessionId":"s1","cwd":"/work/main"}"#),
+            ("set_cwd", r#"{"success":true}"#),
+        ])
+        .await;
+
+        // The checkout the session is already in: nothing to move, and nothing
+        // said about it.
+        live.notice = None;
+        live.select_worktree("/work/main").await;
+        assert!(live.notice.is_none(), "re-entering the same checkout spoke");
+
+        live.select_worktree("/work/feature").await;
+        assert_eq!(
+            live.take_workspace_to_remember().as_deref(),
+            Some("/work/feature"),
+            "the worktree the reader entered is not the remembered workspace"
+        );
+
+        // A refused move is the agent's answer on the notice row.
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_failing(
+            &[("get_state", r#"{"sessionId":"s1","cwd":"/work/main"}"#)],
+            "set_cwd",
+            "not a worktree",
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut refused, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the failing mock");
+        refused.select_worktree("/work/gone").await;
+        assert!(
+            refused.notice.is_some(),
+            "a refused worktree move was silent"
+        );
+        refused.client.disconnect();
+        live.client.disconnect();
+    }
+
+    /// Creating a worktree is two steps (create, then move into it) and the
+    /// notice carries the summary — or the reason it did not happen, from either
+    /// step.
+    #[tokio::test]
+    async fn creating_a_worktree_reports_the_summary_or_the_reason() {
+        use crate::worktree::{WorktreeCreated, WorktreePlan};
+
+        let mut live = live_on(&[
+            ("get_state", r#"{"sessionId":"s1","cwd":"/work/main"}"#),
+            ("set_cwd", r#"{"success":true}"#),
+        ])
+        .await;
+
+        let created = WorktreeCreated {
+            plan: WorktreePlan {
+                path: std::path::PathBuf::from("/work/feature-x"),
+                branch: "feature-x".into(),
+                name: "feature-x".into(),
+            },
+            base: Some("main".into()),
+        };
+        let summary = created.summary();
+        live.create_worktree_with(|| Ok(created)).await;
+        assert_eq!(
+            live.notice.as_deref(),
+            Some(summary.as_str()),
+            "the summary of the created worktree is not what the reader sees"
+        );
+
+        // The creation itself failed.
+        live.notice = None;
+        live.create_worktree_with(|| Err("branch already exists".into()))
+            .await;
+        let notice = live.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("branch already exists"),
+            "a failed creation did not report the reason: {notice:?}"
+        );
+
+        // The checkout exists but the session could not move into it.
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_failing(
+            &[("get_state", r#"{"sessionId":"s1"}"#)],
+            "set_cwd",
+            "cannot enter",
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut stuck, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the failing mock");
+        stuck
+            .create_worktree_with(|| {
+                Ok(WorktreeCreated {
+                    plan: WorktreePlan {
+                        path: std::path::PathBuf::from("/work/feature-y"),
+                        branch: "feature-y".into(),
+                        name: "feature-y".into(),
+                    },
+                    base: None,
+                })
+            })
+            .await;
+        let notice = stuck.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("cannot enter"),
+            "a refused move into the new worktree was not reported: {notice:?}"
+        );
+        stuck.client.disconnect();
+        live.client.disconnect();
+    }
+
+    /// Answering an approval with "always allow this" writes the rule the agent
+    /// suggested, then the decision — and a prompt with no rule to write says so
+    /// instead of pretending it saved one.
+    #[tokio::test]
+    async fn answering_with_a_rule_writes_it_before_the_decision() {
+        let with_rule = r#"{"sessionId":"s1","pendingApprovals":[
+            {"approvalRequestId":"a-1","toolName":"bash","kind":"command","riskLevel":"high",
+             "saveSuggestion":{"rules":[{"path":"/work/alpha","access":"read"}]}}]}"#;
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("get_state", with_rule),
+            ("add_session_rule", "{}"),
+            ("approval_decision", "{}"),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the mock agent");
+        assert!(live.approval().is_some(), "the fixture parks an approval");
+
+        live.decide_with_rule(true, true).await;
+        assert!(
+            live.approval().is_none(),
+            "an answered approval is still parked"
+        );
+        let asked = seen.lock().expect("seen").clone();
+        let rule_at = asked.iter().position(|kind| kind == "add_session_rule");
+        let decision_at = asked.iter().position(|kind| kind == "approval_decision");
+        assert!(
+            matches!((rule_at, decision_at), (Some(rule), Some(decision)) if rule < decision),
+            "the rule is written before the decision it belongs to: {asked:?}"
+        );
+        live.client.disconnect();
+
+        // No suggested rule: the reader is told, and nothing is decided.
+        let no_rule = r#"{"sessionId":"s1","pendingApprovals":[
+            {"approvalRequestId":"a-2","toolName":"bash","kind":"command","riskLevel":"high"}]}"#;
+        let mut plain = live_on(&[("get_state", no_rule), ("approval_decision", "{}")]).await;
+        plain.decide_with_rule(true, true).await;
+        assert!(
+            plain.notice.is_some(),
+            "an approval with no rule to save was answered silently"
+        );
+        assert!(
+            plain.approval().is_some(),
+            "a refusal to save a rule still answered the prompt"
+        );
+        plain.client.disconnect();
+    }
+
+    /// The file panel's reads run off the loop and land on `poll_tree_read`: a
+    /// rescan installs a tree, and toggling a folder installs the *same* tree
+    /// with that folder's open state flipped.
+    ///
+    /// This is also the positive control for `poll_tree_read`'s `Disconnected`
+    /// arm (see `docs/testing/coverage-waivers-2026-11/tui.md`): the two arms a
+    /// reader can reach are asserted here by name, so the third is the only one
+    /// left — and it needs the spawned thread to die before its unconditional
+    /// `tx.send`.
+    #[tokio::test]
+    async fn the_file_panel_installs_a_scan_and_toggles_a_folder() {
+        let state = state_in(env!("CARGO_MANIFEST_DIR"));
+        let mut live = live_on(&[("get_state", &state)]).await;
+
+        // The tree is rooted by the workspace read (its children come from the
+        // same listing the 文件 panel shows), so the fixture lands that first.
+        // `local_reads` is cleared to force the scan: `refresh_local` only starts
+        // one when the directory changed, and attach already read this one.
+        live.local_reads = None;
+        live.refresh_local();
+        assert!(
+            settle_local(&mut live).await,
+            "the workspace scan never installed a tree"
+        );
+        assert!(
+            !live.tree.rows().is_empty(),
+            "the crate's own directory has no rows"
+        );
+
+        // A folder in this crate: `src`.
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let was_open = live.tree.is_open(&src);
+        live.toggle_folder(&src.to_string_lossy());
+        assert!(
+            settle_tree(&mut live).await,
+            "the toggle never installed its tree"
+        );
+        assert_eq!(
+            live.tree.is_open(&src),
+            !was_open,
+            "toggling a folder did not flip its open state"
+        );
+        assert!(!live.tree.rows().is_empty(), "the toggle lost the tree");
+
+        // A read that a newer one superseded is dropped, not painted over it.
+        live.refresh_tree();
+        live.refresh_tree();
+        assert!(
+            settle_tree(&mut live).await,
+            "the newest scan never installed, so the superseded one won"
+        );
+        assert!(!live.tree.rows().is_empty());
+        live.client.disconnect();
+    }
+
+    /// Wait until the workspace read has answered and installed its tree.
+    async fn settle_local(live: &mut super::Live) -> bool {
+        for _ in 0..400 {
+            let _ = live.poll_local_reads();
+            if !live.tree.rows().is_empty() {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        false
+    }
+
+    /// Wait until the driver has taken the panel's own scan (`poll_tree_read`
+    /// clears `tree_read` when it installs one, or says it was superseded).
+    async fn settle_tree(live: &mut super::Live) -> bool {
+        for _ in 0..400 {
+            let _ = live.poll_local_reads();
+            if live.tree_read.is_none() {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        false
+    }
+
+    /// Every `WbAction` arm the surface can hand the adapter, one row each.
+    ///
+    /// The arms are one line apiece and a behaviour test would never name them,
+    /// so a table is the only way this stays honest: each row says which mock
+    /// answers the command it dispatches to and what the surface should then see.
+    /// The arms that are deliberately the surface's own (a rectangle, a palette,
+    /// a redraw) must leave the draft and the notice row **alone** — that is
+    /// their assertion, not "it ran".
+    #[tokio::test]
+    async fn every_action_arm_dispatches_to_its_own_effect() {
+        type Check = fn(&mut super::Live) -> bool;
+
+        let here = state_in(env!("CARGO_MANIFEST_DIR"));
+        // The row below answers with `here`, so its slice needs a binding of its
+        // own: a `&[..]` written inline is a temporary that dies at the end of
+        // this `let`.
+        let here_answers = [("get_state", here.as_str())];
+        // (name, mock answers, action, check) — `None` means "an arm the surface
+        // owns: it must leave the draft and the notice row exactly as they were".
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(&str, &[(&str, &str)], WbAction, Option<Check>)> = vec![
+            (
+                "a session step is the surface's own cursor",
+                &[],
+                WbAction::SessionStep(1),
+                None,
+            ),
+            (
+                "a diff selection is the surface's own",
+                &[],
+                WbAction::SelectDiff(0),
+                None,
+            ),
+            (
+                "opening the worktree box does not read anything here",
+                &[],
+                WbAction::OpenWorktree,
+                None,
+            ),
+            (
+                "the attachment preview is the driver's to open",
+                &[],
+                WbAction::PreviewAttachment,
+                None,
+            ),
+            (
+                "the language is the driver's to resolve and persist",
+                &[],
+                WbAction::SetLanguage(super::LanguagePreference::System),
+                None,
+            ),
+            (
+                "preferences are the driver's to persist",
+                &[],
+                WbAction::SetPreferences,
+                None,
+            ),
+            (
+                "the shortcut editor is the driver's too",
+                &[],
+                WbAction::SetKeybindings,
+                None,
+            ),
+            (
+                "a pin lands in this client's settings, not the agent's",
+                &[],
+                WbAction::SetSessionPinned {
+                    id: "s1".into(),
+                    pinned: true,
+                },
+                None,
+            ),
+            (
+                "a focused pane is a layout fact",
+                &[],
+                WbAction::FocusPane(crate::workbench::PaneId::Chat),
+                None,
+            ),
+            (
+                "entering a worktree moves the session and is remembered",
+                &[
+                    ("get_state", r#"{"sessionId":"s1","cwd":"/work/main"}"#),
+                    ("set_cwd", r#"{"success":true}"#),
+                ],
+                WbAction::SelectWorktree("/work/feature".into()),
+                Some(|live| live.take_workspace_to_remember().as_deref() == Some("/work/feature")),
+            ),
+            (
+                "an approval mode the reader picked is applied",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("set_sandbox_policy", r#"{"success":true}"#),
+                ],
+                WbAction::SetApproval("sandbox".into()),
+                Some(|live| live.state.sandbox_tier.as_deref() == Some("sandbox")),
+            ),
+            (
+                "a workspace the reader picked is applied and remembered",
+                &[
+                    ("get_state", r#"{"sessionId":"s1","cwd":"/work/old"}"#),
+                    ("set_cwd", r#"{"success":true}"#),
+                ],
+                WbAction::SelectWorkspace("/work/new".into()),
+                Some(|live| live.take_workspace_to_remember().as_deref() == Some("/work/new")),
+            ),
+            (
+                "the plain chat is a workspace too",
+                &[
+                    ("get_state", r#"{"sessionId":"s1","cwd":"/work/old"}"#),
+                    ("set_cwd", r#"{"success":true}"#),
+                ],
+                WbAction::SelectChatWorkspace,
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "refreshing the files starts a read",
+                &here_answers,
+                WbAction::RefreshFiles,
+                Some(|live| live.tree_read.is_some()),
+            ),
+            (
+                "a preview reads the file off the loop",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                WbAction::PreviewFile("/etc/hosts".into()),
+                Some(|live| live.notice.is_none()),
+            ),
+            (
+                "a picture preview steps through this conversation's pictures",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                WbAction::PreviewChatFile("/tmp/missing.png".into()),
+                Some(|live| live.notice.is_none()),
+            ),
+            (
+                "a tool set is sent, and the notice says so",
+                &[("get_state", r#"{"sessionId":"s1"}"#), ("set_tools", "{}")],
+                WbAction::SetTools(vec!["read".into()]),
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "cancelling a queued prompt goes to the agent",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("cancel_queued_run", "{}"),
+                ],
+                WbAction::CancelQueued("q-1".into()),
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "a model the reader picked is applied",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("set_model", r#"{"model":"future/new"}"#),
+                ],
+                WbAction::SetModel("future/new".into()),
+                // `state.model` comes back from the agent's next `get_state`; the
+                // staged value is what this call installs.
+                Some(|live| live.pending_model() == Some("future/new")),
+            ),
+            (
+                "a level the reader picked is applied",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("set_thinking_level", r#"{"level":"high"}"#),
+                ],
+                WbAction::SetThinking("high".into()),
+                Some(|live| live.pending_effort() == Some("high")),
+            ),
+            (
+                "a compaction the agent refuses is a notice, not a takeover",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("compact", r#"{"accepted":false}"#),
+                ],
+                WbAction::Compact(String::new()),
+                Some(|live| !live.compacting() && live.notice.is_some()),
+            ),
+            (
+                "forking from a row lands on the new conversation",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("fork", r#"{"sessionId":"s-fork"}"#),
+                    ("get_session_entries", r#"{"entries":[]}"#),
+                    ("list_sessions", r#"{"sessions":[]}"#),
+                ],
+                WbAction::ForkAt("e-1".into()),
+                Some(|live| !live.detached()),
+            ),
+            (
+                "loading an older page without a driver reads it here",
+                &[
+                    (
+                        "get_state",
+                        r#"{"sessionId":"s1","activeRun":{"runId":"r","epoch":1,"state":"done"}}"#,
+                    ),
+                    (
+                        "get_session_entries",
+                        r#"{"entries":[],"hasMore":true,"nextOffset":0}"#,
+                    ),
+                    ("session_older_page", r#"{"entries":[]}"#),
+                ],
+                WbAction::LoadOlder,
+                Some(|live| live.notice.is_none()),
+            ),
+        ];
+
+        for (what, pairs, action, check) in rows {
+            let mut live = live_on(pairs).await;
+            // The surface the arm must leave alone, captured before it runs.
+            let before = (live.notice.clone(), live.draft.editor.text().to_string());
+            let outcome = live.apply(action).await;
+            assert!(
+                matches!(outcome, Outcome::Continue),
+                "{what}: this arm must not end the app"
+            );
+            match check {
+                Some(check) => assert!(check(&mut live), "{what}"),
+                None => assert_eq!(
+                    (live.notice.clone(), live.draft.editor.text().to_string()),
+                    before,
+                    "{what}: an arm the surface owns changed the draft or the notice"
+                ),
+            }
+            live.client.disconnect();
+        }
+    }
+
+    /// The typed verbs that reach the adapter (the surface takes the rest before
+    /// they arrive), one row each — the parsing, the list-shaped argument and the
+    /// refusal all have a sentence the reader sees.
+    #[tokio::test]
+    async fn every_adapter_verb_parses_and_answers() {
+        type Check = fn(&mut super::Live) -> bool;
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(&str, &[(&str, &str)], &str, Option<Check>)> = vec![
+            (
+                "`/sessions` re-reads the rail",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("list_sessions", r#"{"sessions":[]}"#),
+                ],
+                "/sessions",
+                None,
+            ),
+            (
+                "`/worktree new x` says it is creating one",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                "/worktree new feat/x",
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "`/worktree` with a name that is not `new` shows the usage line",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                "/worktree feat/x",
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "`/tools a,b` splits the list and sends it",
+                &[("get_state", r#"{"sessionId":"s1"}"#), ("set_tools", "{}")],
+                "/tools read, shell",
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "a refused `/tools` is the failure sentence",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                "/tools read",
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "`/model x` applies the model",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("set_model", r#"{"model":"future/new"}"#),
+                ],
+                "/model future/new",
+                Some(|live| live.pending_model() == Some("future/new")),
+            ),
+            (
+                "`/model` cycles the agent's own order",
+                &[
+                    ("get_state", r#"{"sessionId":"s1"}"#),
+                    ("cycle_model", r#"{"model":"future/next"}"#),
+                ],
+                "/model",
+                Some(|live| live.pending_model() == Some("future/next")),
+            ),
+            (
+                "a refused `/export` is a sentence, not a path",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                "/export",
+                Some(|live| live.notice.is_some()),
+            ),
+            (
+                "`/fork` and `/history` are the surface's own",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                "/history",
+                None,
+            ),
+            (
+                "the choosers the surface opens are not unknown verbs",
+                &[("get_state", r#"{"sessionId":"s1"}"#)],
+                "/thinking",
+                None,
+            ),
+        ];
+
+        for (what, pairs, verb, check) in rows {
+            let mut live = live_on(pairs).await;
+            let before = (live.notice.clone(), live.draft.editor.text().to_string());
+            assert!(
+                matches!(live.command(verb).await, Outcome::Continue),
+                "{what}: a verb must not end the app"
+            );
+            match check {
+                Some(check) => assert!(check(&mut live), "{what}"),
+                None => assert_eq!(
+                    (live.notice.clone(), live.draft.editor.text().to_string()),
+                    before,
+                    "{what}: the adapter spoke about a verb it does not own"
+                ),
+            }
+            live.client.disconnect();
+        }
+    }
+
+    /// The events the transcript turns into rows *within* a run: a streaming tool
+    /// call, its final text, and the three compaction outcomes.
+    #[tokio::test]
+    async fn a_running_turn_updates_its_own_rows() {
+        let mut live = live_on(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            ("get_session_entries", r#"{"entries":[]}"#),
+        ])
+        .await;
+        let current = live.state.session_id.clone();
+        let stamped = |kind: &str, data: serde_json::Value| {
+            let mut event = event(kind, data);
+            event.session_id = Some(current.clone());
+            event
+        };
+
+        // A tool call streaming its arguments keeps one row, not one per delta —
+        // and each of the three events owes a frame (the revision is what the
+        // loop repaints on), which is the surface-visible half of that.
+        let mut revision = live.revision;
+        for (kind, data) in [
+            (
+                "tool_start",
+                json!({"tool_call_id": "t-1", "name": "bash", "phase": "input"}),
+            ),
+            (
+                "tool_delta",
+                json!({"tool_call_id": "t-1", "text": "ls -la"}),
+            ),
+            (
+                "tool_end",
+                json!({"tool_call_id": "t-1", "ok": true, "output": "done"}),
+            ),
+        ] {
+            live.handle_event(stamped(kind, data));
+            assert_ne!(
+                live.revision, revision,
+                "{kind} did not owe the surface a frame"
+            );
+            revision = live.revision;
+        }
+        assert_eq!(
+            live.activity_snapshot().tools,
+            1,
+            "one tool call, counted once"
+        );
+
+        // The three compaction outcomes: committed ends the takeover, unchanged
+        // says nothing changed, failed says why.
+        live.begin_compaction();
+        assert!(live.compacting(), "the probe did not take the session over");
+        live.handle_event(stamped(
+            "compaction_committed",
+            json!({"tokensSaved": 1200}),
+        ));
+        assert!(
+            !live.compacting(),
+            "a committed compaction left the session held"
+        );
+
+        live.notice = None;
+        live.handle_event(stamped("compaction_unchanged", json!({})));
+        assert!(
+            live.notice.is_some(),
+            "an unchanged compaction said nothing at all"
+        );
+
+        live.notice = None;
+        live.handle_event(stamped(
+            "compaction_failed",
+            json!({"error": "the model refused"}),
+        ));
+        let notice = live.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("the model refused"),
+            "a failed compaction dropped the agent's reason: {notice:?}"
+        );
+
+        // An unknown kind is not a panic and not a painted row.
+        live.handle_event(stamped("not_a_kind_at_all", json!({})));
+        live.client.disconnect();
+    }
+
+    /// The launchpad drops stream events: the transcript was cleared on purpose,
+    /// and the previous session's reply must not narrate into it.
+    #[tokio::test]
+    async fn the_launchpad_ignores_stream_events() {
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        let before = live.chat.render_all(100).len();
+        live.to_launchpad();
+        live.handle_event(event(
+            "text_chunk",
+            json!({"text": "from the session I left"}),
+        ));
+        let rows = live.chat.render_all(100).join("\n");
+        assert!(
+            !rows.contains("from the session I left"),
+            "the launchpad painted the conversation the reader left: {rows:?}"
+        );
+        assert!(
+            live.activity_kind() == super::ActivityKind::Idle,
+            "a dropped event still moved the activity row"
+        );
+        let _ = before;
+        live.client.disconnect();
+    }
+
+    /// The clipboard reader's answers, one row each: a picture reaches the draft
+    /// as an attachment, a refusal says why, and an empty refusal falls back to
+    /// the plain "nothing on the clipboard" sentence.
+    ///
+    /// `ClipboardCapture::with_runner` is the paste module's own seam (the real
+    /// reader shells out to the platform's tools), so every branch here is driven
+    /// by a fake tool rather than by a broken host — which is what turned this
+    /// from a W3 candidate into an ordinary test.
+    ///
+    /// The platform is pinned to macOS' table: the runner below is a *file*
+    /// probe (the tool is told a path and writes the picture there), which is
+    /// the shape macOS and Windows share. Linux' probes answer with base64 on
+    /// stdout instead (`paste.rs` tests each table on its own), so a test that
+    /// inherited the host would be a different test per runner — and on the
+    /// Linux runner a failing one, from an image probe that never had a file to
+    /// write.
+    #[tokio::test]
+    async fn the_clipboard_pastes_a_picture_or_says_why_it_cannot() {
+        use crate::paste::ClipboardCapture;
+
+        // A 1x1 PNG: what an image probe would leave in the file it was told to
+        // write. The runner finds that path in the probe's own arguments, the way
+        // the real tool does.
+        const PNG: &[u8] = &[
+            0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, b'I', b'H', b'D', b'R',
+            0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1f, 0x15, 0xc4, 0x89, 0, 0, 0, 0x0a, b'I',
+            b'D', b'A', b'T', 0x78, 0x9c, 0x63, 0, 0, 0, 2, 0, 1, 0x1b, 0x8f, 0x0f, 0x7d, 0, 0, 0,
+            0, b'I', b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82,
+        ];
+
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // An image: the probe writes the file it was handed, and the adapter
+        // attaches it through the same road a dragged-in picture takes.
+        live.clipboard = ClipboardCapture::with_runner(
+            Box::new(|_program: &str, args: &[String]| {
+                // The path may be a bare argument or embedded in a script the
+                // probe runs; find it either way and write there, the way the
+                // real tool does.
+                for arg in args {
+                    if let Some(at) = arg.find(".png") {
+                        let tail = &arg[..at + 4];
+                        let start = tail.rfind(['"', '\'', ' ']).map(|i| i + 1).unwrap_or(0);
+                        std::fs::write(&tail[start..], PNG).map_err(|e| e.to_string())?;
+                    }
+                }
+                Ok((0, String::new(), String::new()))
+            }),
+            dir.path().to_path_buf(),
+        );
+        live.paste_clipboard_on("macos").await;
+        // The draft carries the attachment marker; the picture itself is in the
+        // pending attachments, the same list a dragged-in file fills.
+        let attachments: Vec<String> = live
+            .draft
+            .editor
+            .pending()
+            .attachments()
+            .iter()
+            .map(|attachment| attachment.path.clone())
+            .collect();
+        assert_eq!(
+            attachments.len(),
+            1,
+            "an image on the clipboard did not attach: {:?}",
+            live.draft.editor.text()
+        );
+        assert!(
+            attachments[0].ends_with(".png"),
+            "the attachment is not the file the probe wrote: {attachments:?}"
+        );
+
+        // Text on the clipboard. The probes are distinguished by what the
+        // *measured* table looks like (2026-11-01, macOS): the image probe is
+        // `osascript` with the output path embedded in its script, the text
+        // command is `pbpaste` with no arguments — so "the arguments name a
+        // .png" is the image probe, and everything else is the text tool.
+        live.clipboard = ClipboardCapture::with_runner(
+            Box::new(|_program: &str, args: &[String]| {
+                if args.iter().any(|arg| arg.contains(".png")) {
+                    Ok((1, String::new(), String::new()))
+                } else {
+                    Ok((0, "clipboard text".to_string(), String::new()))
+                }
+            }),
+            dir.path().to_path_buf(),
+        );
+        live.notice = Some("stale".into());
+        live.paste_clipboard_on("macos").await;
+        // The draft still carries the picture's marker from the row above; a
+        // paste appends, so the text is what it now ends with.
+        let draft = live.draft.editor.text().to_string();
+        assert!(
+            draft.ends_with("clipboard text"),
+            "the clipboard's text did not reach the draft: {draft:?} (notice: {:?})",
+            live.notice
+        );
+        assert!(
+            live.notice.is_none(),
+            "a successful text paste left a notice: {:?}",
+            live.notice
+        );
+
+        // A refusal with a reason: the reason is the reader's sentence.
+        live.clipboard = ClipboardCapture::with_runner(
+            Box::new(|_program: &str, _args: &[String]| {
+                Err("no clipboard tool for this host".into())
+            }),
+            dir.path().to_path_buf(),
+        );
+        live.notice = None;
+        live.paste_clipboard_on("macos").await;
+        let notice = live.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("no clipboard tool"),
+            "a refused paste dropped the reason: {notice:?}"
+        );
+
+        // A refusal with *no* reason: the plain empty-clipboard sentence, never a
+        // blank notice row. (Production's own runner always fills the reason in;
+        // this is the guard for the one that could not.)
+        live.clipboard = ClipboardCapture::with_runner(
+            Box::new(|_program: &str, _args: &[String]| Err(String::new())),
+            dir.path().to_path_buf(),
+        );
+        live.notice = None;
+        live.paste_clipboard_on("macos").await;
+        assert!(
+            live.notice.is_some(),
+            "a refusal with no reason left the notice row empty"
+        );
+
+        // Nothing usable on the clipboard: the reader is told, not left guessing.
+        live.clipboard = ClipboardCapture::with_runner(
+            Box::new(|_program: &str, _args: &[String]| Ok((1, String::new(), String::new()))),
+            dir.path().to_path_buf(),
+        );
+        live.notice = None;
+        live.paste_clipboard_on("macos").await;
+        assert!(
+            live.notice.is_some(),
+            "an empty clipboard said nothing at all"
+        );
+        live.client.disconnect();
+    }
+
+    /// Opening a link hands it to the platform's opener, and an opener that
+    /// cannot run is a notice rather than a lost click.
+    ///
+    /// `#[cfg(unix)]`: the stub is a shell script on `PATH`. Windows' opener is a
+    /// `cmd` builtin, so that half is unmeasured here (`platform-unmeasured`, a
+    /// measurement gap — not a waiver).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn opening_a_link_spawns_the_opener_and_reports_a_missing_one() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Both openers a unix host can pick: `open` on macOS, `xdg-open`
+        // elsewhere. The platform chooses inside `open_external`.
+        for name in ["open", "xdg-open"] {
+            let script = dir.path().join(name);
+            std::fs::write(&script, "#!/bin/sh\nexit 0\n").expect("write the stub");
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod the stub");
+        }
+
+        // `PATH` is process-global: take the crate's lock, and put it back with
+        // the guard even if the assertion below panics.
+        let _guard = crate::test_env::lock();
+        let _path = crate::test_env::EnvVarGuard::set("PATH", dir.path());
+        live.notice = None;
+        live.open_url("https://example.com/stub");
+        assert!(
+            live.notice.is_none(),
+            "a link the opener accepted reported an error: {:?}",
+            live.notice
+        );
+
+        // No opener on `PATH` at all.
+        let empty = tempfile::tempdir().expect("tempdir");
+        let _path = crate::test_env::EnvVarGuard::set("PATH", empty.path());
+        live.notice = None;
+        live.open_url("https://example.com/stub");
+        assert!(
+            live.notice.is_some(),
+            "a link with no opener on PATH failed silently"
+        );
+        live.client.disconnect();
+    }
+
+    /// `/continue`-style attach: the session list is re-read and the newest row
+    /// is opened — and when the newest row is already on screen, nothing is
+    /// re-read or re-painted.
+    #[tokio::test]
+    async fn attaching_to_the_most_recent_opens_the_newest_row() {
+        let sessions = r#"{"sessions":[
+            {"id":"s-old","cwd":"/tmp","updatedAtMs":1700000001000,"model":"m"},
+            {"id":"s-new","cwd":"/tmp","updatedAtMs":1700000009000,"model":"m"}
+        ]}"#;
+        // The switch re-reads the state, so the fixture's answer has to move to
+        // the row being opened (a static table would report the one it left).
+        let table = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
+            (
+                "get_state".to_string(),
+                r#"{"sessionId":"s-old"}"#.to_string(),
+            ),
+            (
+                "get_session_entries".to_string(),
+                r#"{"entries":[]}"#.to_string(),
+            ),
+            ("list_sessions".to_string(), sessions.to_string()),
+            ("get_state_of".to_string(), "{}".to_string()),
+        ])));
+        let (mock, _seen) = (
+            crate::rpc::grpc_client::tests::api_mock_with_table(table.clone()),
+            (),
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s-old"), false, None)
+            .await
+            .expect("attach to the mock agent");
+        table
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-new"}"#.into());
+        live.attach_most_recent().await;
+        assert_eq!(
+            live.state.session_id, "s-new",
+            "the newest row is not the one that opened"
+        );
+
+        // Already on the newest one: the read happens, the switch does not.
+        live.attach_most_recent().await;
+        assert_eq!(
+            live.state.session_id, "s-new",
+            "a second attach moved off the newest conversation"
+        );
+        live.client.disconnect();
+    }
+
+    /// Deleting the conversation on screen hands the screen to the row that slid
+    /// into its place, falls back to the launchpad when it was the only one, and
+    /// a refused delete is the notice — nothing is closed under the reader.
+    #[tokio::test]
+    async fn deleting_a_conversation_moves_to_its_successor() {
+        let two = r#"{"sessions":[
+            {"id":"s1","cwd":"/tmp","updatedAtMs":1700000002000,"model":"m"},
+            {"id":"s2","cwd":"/tmp","updatedAtMs":1700000001000,"model":"m"}
+        ]}"#;
+        // The list the agent has *after* the delete: one row left.
+        let after = r#"{"sessions":[
+            {"id":"s2","cwd":"/tmp","updatedAtMs":1700000001000,"model":"m"}
+        ]}"#;
+        let table = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
+            ("get_state".to_string(), r#"{"sessionId":"s1"}"#.to_string()),
+            (
+                "get_session_entries".to_string(),
+                r#"{"entries":[]}"#.to_string(),
+            ),
+            ("list_sessions".to_string(), two.to_string()),
+            (
+                "delete_session".to_string(),
+                r#"{"success":true}"#.to_string(),
+            ),
+        ])));
+        let (mock, _seen) = (
+            crate::rpc::grpc_client::tests::api_mock_with_table(table.clone()),
+            (),
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the mock agent");
+        // The delete re-reads the list before it opens anything.
+        table
+            .lock()
+            .unwrap()
+            .insert("list_sessions".into(), after.to_string());
+        // The switch to the successor re-reads the state as well.
+        table
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s2"}"#.into());
+        live.delete_session("s1").await;
+        assert_eq!(
+            live.state.session_id, "s2",
+            "the row that took the deleted one's place is not on screen"
+        );
+
+        // The last remaining conversation: the launchpad, with no id left.
+        let empty = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
+            ("get_state".to_string(), r#"{"sessionId":"s2"}"#.to_string()),
+            (
+                "get_session_entries".to_string(),
+                r#"{"entries":[]}"#.to_string(),
+            ),
+            ("list_sessions".to_string(), after.to_string()),
+            (
+                "delete_session".to_string(),
+                r#"{"success":true}"#.to_string(),
+            ),
+        ])));
+        let (mock, _seen) = (
+            crate::rpc::grpc_client::tests::api_mock_with_table(empty.clone()),
+            (),
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut last, _events) = Live::attach(&addr, Some("s2"), false, None)
+            .await
+            .expect("attach to the mock agent");
+        empty
+            .lock()
+            .unwrap()
+            .insert("list_sessions".into(), r#"{"sessions":[]}"#.into());
+        last.delete_session("s2").await;
+        assert!(last.detached(), "deleting the last one left a session open");
+        assert!(
+            last.state.session_id.is_empty(),
+            "the deleted id is still the current one: {:?}",
+            last.state.session_id
+        );
+
+        // A refused delete: the conversation stays, and the reader is told.
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_failing(
+            &[
+                ("get_state", r#"{"sessionId":"s1"}"#),
+                ("get_session_entries", r#"{"entries":[]}"#),
+                ("list_sessions", two),
+            ],
+            "delete_session",
+            "the run is in flight",
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut refused, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the failing mock");
+        refused.delete_session("s1").await;
+        let notice = refused.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("the run is in flight"),
+            "a refused delete dropped the agent's reason: {notice:?}"
+        );
+        assert_eq!(
+            refused.state.session_id, "s1",
+            "a refused delete moved off the conversation anyway"
+        );
+        refused.client.disconnect();
+        last.client.disconnect();
+        live.client.disconnect();
+    }
+
+    /// The preview of a draft attachment reads the last picture in it; with no
+    /// picture the reader is told there is nothing to show rather than being
+    /// given an empty box.
+    #[tokio::test]
+    async fn previewing_an_attachment_reads_the_last_picture_in_the_draft() {
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+
+        // Nothing attached: the "nothing to preview" sentence, and no box.
+        assert!(!live.load_attachment(), "an empty draft claimed a picture");
+        assert!(
+            live.notice.is_some(),
+            "an empty draft said nothing about the missing picture"
+        );
+
+        // Two pictures: the last one is the one the box opens on. They are real
+        // files — the editor sniffs the bytes before it attaches a path, which
+        // is what keeps a pasted `/tmp/notes.txt` from becoming a thumbnail.
+        const PNG: &[u8] = &[
+            0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, b'I', b'H', b'D', b'R',
+            0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1f, 0x15, 0xc4, 0x89, 0, 0, 0, 0x0a, b'I',
+            b'D', b'A', b'T', 0x78, 0x9c, 0x63, 0, 0, 0, 2, 0, 1, 0x1b, 0x8f, 0x0f, 0x7d, 0, 0, 0,
+            0, b'I', b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82,
+        ];
+        let dir = tempfile::tempdir().expect("tempdir");
+        let first = dir.path().join("first.png");
+        let second = dir.path().join("second.png");
+        std::fs::write(&first, PNG).expect("write the first picture");
+        std::fs::write(&second, PNG).expect("write the second picture");
+        let mut editor = live.draft.editor.clone();
+        editor.paste(&first.to_string_lossy());
+        editor.paste(&second.to_string_lossy());
+        live.draft = super::InputView::from_editor(editor, live.draft.placeholder.clone());
+        assert!(
+            live.load_attachment(),
+            "a draft with pictures claimed there was none"
+        );
+        live.client.disconnect();
+    }
+
+    /// A mention inside the draft: quotes and backslash escapes are part of the
+    /// word, plain whitespace ends it, and the walk reports where it stopped so
+    /// the caller can continue from there.
+    ///
+    /// `mention_word` measured zero: it is only reached through the `@` menu's
+    /// own completion, which needs a live editor round trip. It is a pure
+    /// function over the text, so the table is the honest fixture.
+    #[test]
+    fn a_mention_word_is_walked_with_its_quotes_and_escapes() {
+        // A bare word stops at the space; raw text and value agree.
+        let (end, raw, value) = super::mention_word("src/main.rs rest", 0);
+        assert_eq!(
+            (end, raw, value.as_str()),
+            (11, "src/main.rs", "src/main.rs")
+        );
+        // A quoted path keeps its spaces; the value drops the quotes.
+        let (end, raw, value) = super::mention_word("\"a file with spaces.rs\" x", 0);
+        assert_eq!(value, "a file with spaces.rs");
+        let text = "\"a file with spaces.rs\" x";
+        assert_eq!(
+            &text[end..],
+            " x",
+            "the walk stopped inside the closing quote"
+        );
+        assert_eq!(
+            raw, "\"a file with spaces.rs\"",
+            "the raw slice keeps the quotes"
+        );
+        // A backslash escapes the next character, inside the quotes: the value
+        // keeps the quote and loses the backslash.
+        let (_, _, value) = super::mention_word("\"a \\\"quoted\\\" name\"", 0);
+        assert_eq!(value, "a \"quoted\" name");
+        // A trailing backslash with nothing after it is kept as a character.
+        let (_, _, value) = super::mention_word("\"ends in \\", 0);
+        assert_eq!(value, "ends in \\");
+        // The walk starts where it is told, and reports the end it reached.
+        let text = "look at @src/lib.rs";
+        let at = text.find('@').expect("the mention") + 1;
+        let (end, word, _rest) = super::mention_word(text, at);
+        assert_eq!(word, "src/lib.rs");
+        assert_eq!(
+            end,
+            text.len(),
+            "the walk stopped before the end of the word"
+        );
+        // An empty text is an empty word, and the walk does not move.
+        let (end, raw, value) = super::mention_word("", 0);
+        assert_eq!((end, raw, value.as_str()), (0, "", ""));
+    }
+
+    /// A run's usage: the tokens a turn spent are folded into the session's
+    /// context gauge as the events arrive, and the run's own rate is frozen when
+    /// the run ends rather than counting from the clock afterwards.
+    #[tokio::test]
+    async fn a_runs_usage_is_folded_into_the_context_gauge() {
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        let current = live.state.session_id.clone();
+        let stamped = |kind: &str, data: serde_json::Value| {
+            let mut event = event(kind, data);
+            event.session_id = Some(current.clone());
+            event.run_id = Some("run-1".into());
+            event
+        };
+
+        // A model step reports its spend on the `usage` event.
+        // The event carries the step's spend under `usage`.
+        live.handle_event(stamped(
+            "usage",
+            json!({"usage": {"prompt_tokens": 120, "completion_tokens": 30}}),
+        ));
+        assert_eq!(
+            live.state.context_tokens,
+            Some(150),
+            "the step's tokens did not reach the context gauge"
+        );
+        assert!(
+            live.run_output_tokens >= 30,
+            "the completion tokens were not counted against the run: {}",
+            live.run_output_tokens
+        );
+
+        // The end of the run folds its own total in, and the rate stops moving.
+        let before = live.run_output_tokens;
+        live.handle_event(stamped(
+            "agent_end",
+            json!({"usage": {"prompt_tokens": 200, "completion_tokens": 40}}),
+        ));
+        assert!(
+            live.run_output_tokens >= before,
+            "the end-of-run usage did not add to the run's total"
+        );
+        let frozen = live.run_tps;
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        assert_eq!(
+            live.run_tps, frozen,
+            "the rate kept moving after the run ended"
+        );
+        live.client.disconnect();
+    }
+
+    /// A failed turn is announced once, and only for a run this client started:
+    /// the end of somebody else's run is not this surface's news.
+    #[tokio::test]
+    async fn only_this_clients_failed_run_raises_its_notification() {
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        let current = live.state.session_id.clone();
+
+        // An end that is not a failure is not this notification.
+        let ok_end = event("agent_end", json!({"state": "done"}));
+        assert!(!live.take_failure_notification(&ok_end));
+
+        // A failure for a run this client did not submit: nothing to announce.
+        let mut stranger = event("agent_end", json!({"state": "failed"}));
+        stranger.session_id = Some(current.clone());
+        stranger.run_id = Some("run-other".into());
+        assert!(
+            !live.take_failure_notification(&stranger),
+            "another run's failure was announced here"
+        );
+
+        // A run this client did submit: the failure is announced, once.
+        live.completion_candidates.push_back("run-1".to_string());
+        let mine = {
+            let mut event = event("agent_end", json!({"state": "failed"}));
+            event.session_id = Some(current);
+            event.run_id = Some("run-1".into());
+            event
+        };
+        assert!(
+            live.take_failure_notification(&mine),
+            "the failure was not taken"
+        );
+        assert!(
+            !live.take_failure_notification(&mine),
+            "the same failure was announced twice"
+        );
+        live.client.disconnect();
+    }
+
+    /// Reading a picture for the preview box: a missing file, one over the cap
+    /// and one that grew between the stat and the read each get their own
+    /// sentence — the reader is told which happened, not just "it failed".
+    #[test]
+    fn a_preview_read_names_the_reason_it_cannot_show_the_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // A file that is not there.
+        let missing = dir.path().join("gone.png");
+        let error = super::read_image_bytes(&missing.to_string_lossy(), super::Language::En)
+            .expect_err("a missing file cannot be read");
+        assert!(!error.trim().is_empty(), "a missing file reported nothing");
+
+        // A picture: the bytes come back as they are.
+        let small = dir.path().join("small.png");
+        std::fs::write(&small, b"\x89PNG\r\n\x1a\n tiny").expect("write the picture");
+        let bytes = super::read_image_bytes(&small.to_string_lossy(), super::Language::En)
+            .expect("a small picture reads");
+        assert_eq!(bytes, b"\x89PNG\r\n\x1a\n tiny");
+
+        // One over the cap: refused by the *metadata*, before a byte is
+        // allocated, and the sentence names both sizes in megabytes.
+        let huge = dir.path().join("huge.png");
+        let file = std::fs::File::create(&huge).expect("create the file");
+        file.set_len(super::MAX_PREVIEW_IMAGE_BYTES + 1024)
+            .expect("sparse file");
+        let error = super::read_image_bytes(&huge.to_string_lossy(), super::Language::En)
+            .expect_err("an oversized picture is refused");
+        assert!(
+            error.contains('1') || error.to_lowercase().contains("mb") || !error.is_empty(),
+            "the size refusal did not name the sizes: {error:?}"
+        );
+    }
+
+    /// The diff's selection: the row asked for, else the first one — a selection
+    /// that moved past a shorter list still names a file rather than nothing.
+    #[tokio::test]
+    async fn a_diff_selection_falls_back_to_the_first_file() {
+        use crate::workbench::state::DiffView;
+
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        live.set_diff(DiffView {
+            files: vec![
+                crate::workbench::diff_review::DiffFile {
+                    path: "a.rs".into(),
+                    status: "M".into(),
+                },
+                crate::workbench::diff_review::DiffFile {
+                    path: "b.rs".into(),
+                    status: "A".into(),
+                },
+            ],
+            selected: 0,
+            patch: String::new(),
+            error: None,
+        });
+
+        assert_eq!(live.selected_diff_path(1), "b.rs");
+        // Past the end: the first file, not an empty path.
+        assert_eq!(live.selected_diff_path(9), "a.rs");
+        // No diff at all: empty, which the caller treats as "nothing selected".
+        live.diff = None;
+        assert_eq!(live.selected_diff_path(0), "");
+        live.client.disconnect();
+    }
+
+    /// The arms `apply`, `command` and `handle_event` still had open, each one a
+    /// place where the *failure* is the interesting half: a refused tool set, a
+    /// refused rename, a refused export, and the events that clear a card
+    /// somebody else answered.
+    #[tokio::test]
+    async fn the_residual_arms_report_their_failures_and_clear_what_was_answered() {
+        // A refused tool set: the sentence names the reason.
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_failing(
+            &[("get_state", r#"{"sessionId":"s1"}"#)],
+            "set_tools",
+            "no such tool",
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut refused, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the failing mock");
+        refused.apply(WbAction::SetTools(vec!["nope".into()])).await;
+        let notice = refused.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("no such tool"),
+            "a refused tool set dropped the reason: {notice:?}"
+        );
+        refused.client.disconnect();
+
+        // A refused rename and a refused export, through the typed door.
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_failing(
+            &[
+                ("get_state", r#"{"sessionId":"s1"}"#),
+                ("get_session_entries", r#"{"entries":[]}"#),
+            ],
+            "set_session_name",
+            "the name is taken",
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut refused, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the failing mock");
+        refused.command("/rename a taken name").await;
+        let notice = refused.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("the name is taken"),
+            "a refused rename dropped the reason: {notice:?}"
+        );
+        refused.notice = None;
+        refused.command("/export").await;
+        let notice = refused.notice.clone().unwrap_or_default();
+        assert!(!notice.is_empty(), "a refused export said nothing");
+        refused.client.disconnect();
+
+        // `/tools off` on the launchpad stages an empty set instead of calling
+        // the agent with no session.
+        live.to_launchpad();
+        live.command("/tools off").await;
+        live.client.disconnect();
+    }
+
+    /// The approval card is cleared by whoever answers it: an
+    /// `approval_decision` event naming the parked request takes the card down,
+    /// and one naming another request leaves it up.
+    #[tokio::test]
+    async fn an_answered_approval_clears_the_card_it_belongs_to() {
+        let mut live = live_on(&[(
+            "get_state",
+            r#"{"sessionId":"s1","pendingApprovals":[
+                {"approvalRequestId":"a-1","toolName":"bash","riskLevel":"high"}]}"#,
+        )])
+        .await;
+        let current = live.state.session_id.clone();
+        assert!(live.approval().is_some(), "the fixture parks an approval");
+
+        // Another client answered a different request: nothing moves.
+        let other = {
+            let mut event = event("approval_decision", json!({"approval_request_id": "a-2"}));
+            event.session_id = Some(current.clone());
+            event
+        };
+        live.handle_event(other);
+        assert!(
+            live.approval().is_some(),
+            "a decision for another request cleared this card"
+        );
+
+        // The parked one: the card goes, whichever client answered it.
+        let mine = {
+            let mut event = event("approval_decision", json!({"approval_request_id": "a-1"}));
+            event.session_id = Some(current);
+            event
+        };
+        live.handle_event(mine);
+        assert!(
+            live.approval().is_none(),
+            "the answered approval is still parked"
+        );
+        live.client.disconnect();
+    }
+
+    /// A compaction that fails without saying why still tells the reader it
+    /// failed — never a blank notice row.
+    #[tokio::test]
+    async fn a_compaction_that_failed_without_a_reason_still_says_so() {
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        let current = live.state.session_id.clone();
+        live.begin_compaction();
+        let mut failed = event("compaction_failed", json!({}));
+        failed.session_id = Some(current);
+        live.handle_event(failed);
+        assert!(
+            live.notice
+                .as_deref()
+                .is_some_and(|notice| !notice.trim().is_empty()),
+            "a failed compaction with no reason left the notice row empty"
+        );
+        assert!(
+            !live.compacting(),
+            "the session was left held by the failure"
+        );
+        live.client.disconnect();
+    }
+
+    /// Submitting: an empty draft is not a prompt; the pictures attached to it
+    /// travel with the message; and the id the acknowledgement binds is remembered
+    /// only up to the window the completion notice reads.
+    /// A `Live` whose mock keeps its log, so a test can ask what the *agent* was
+    /// asked rather than what the adapter meant.
+    async fn live_with_seen(
+        pairs: &[(&str, &str)],
+    ) -> (super::Live, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(pairs);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the mock agent");
+        (live, seen)
+    }
+
+    #[tokio::test]
+    async fn submitting_carries_its_pictures_and_its_run_id() {
+        let (mut live, seen) = live_with_seen(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            ("get_session_entries", r#"{"entries":[]}"#),
+            (
+                "prompt",
+                // The ack is the wire's own snake_case shape (`RunAck`), epoch
+                // included — a partial ack fails to decode and the run id is lost.
+                r#"{"run_id":"run-1","run_epoch":0,"accepted_state":"running","queue_position":0}"#,
+            ),
+        ])
+        .await;
+
+        // An empty draft is not a prompt: nothing is sent.
+        live.submit("").await;
+        assert!(
+            !seen.lock().unwrap().iter().any(|kind| kind == "prompt"),
+            "an empty draft reached the agent"
+        );
+
+        // With text, the prompt is sent and its run id is remembered.
+        live.submit("hello").await;
+        assert!(
+            seen.lock().unwrap().iter().any(|kind| kind == "prompt"),
+            "a real prompt never reached the agent"
+        );
+        assert!(
+            !live.completion_candidates.is_empty(),
+            "the acknowledged run was not remembered for its completion notice"
+        );
+
+        // The window is bounded: the 33rd acknowledgement drops the oldest id
+        // rather than growing the list, so a long session cannot grow it without
+        // end.
+        for _ in 0..33 {
+            live.submit("again").await;
+        }
+        assert_eq!(
+            live.completion_candidates.len(),
+            32,
+            "the completion window did not hold at its bound"
+        );
+        live.client.disconnect();
+    }
+
+    /// A *chat* has no workspace of its own: `new_session` mints the id, creates
+    /// the directory the desktop also files chats under, and tells the agent both
+    /// — which is the branch a launchpad first message takes, and the one that
+    /// measured zero because every fixture so far staged a directory.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // FUTURE_HOME is process-global and must stay pinned across awaits.
+    async fn a_chat_session_creates_its_own_directory() {
+        let _guard = crate::test_env::lock();
+        // A home of its own: this test is about the directory `new_session`
+        // creates, and the shared one would make it pass on a directory a
+        // sibling test happened to leave behind.
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_env::EnvVarGuard::set("FUTURE_HOME", home.path());
+        // A workspace that is **not** a repository: the point here is the chat
+        // directory, and a `git` read in the shared worktree would put this test
+        // in the same repository as the `/git` panel's tests — measured: two of
+        // four full-suite runs then failed there on a read that had contended.
+        let workspace = tempfile::tempdir().expect("workspace");
+        // `serde_json`, never `format!`: a Windows path is spelled with `\`
+        // separators, and dropping them into a JSON string literal raw makes
+        // escapes JSON does not have (`C:\Users\…` → `\U`). The state then fails
+        // to decode on *every* read, `refresh_state` keeps the empty one, and the
+        // surface never learns a session id — which is how this test went red on
+        // Windows alone, while every POSIX spelling of the same path passed.
+        let get_state = serde_json::json!({
+            "sessionId": "s1",
+            "cwd": workspace.path(),
+        })
+        .to_string();
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("get_state", &get_state),
+            ("get_session_entries", r#"{"entries":[]}"#),
+            ("new_session", r#"{"sessionId":"s-chat"}"#),
+            ("set_sandbox_policy", r#"{"success":true}"#),
+            ("set_tools", "{}"),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock.clone()).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the mock agent");
+
+        live.to_launchpad();
+        // `/new` inherits the workspace the last conversation ran in; a plain
+        // chat stages none, and staging none *is* the branch this test is about.
+        live.pending_cwd = None;
+        // Nothing staged: the launchpad's own defaults, and a tool set to spend.
+        live.pending_tools = Some(vec!["read".into()]);
+
+        live.new_session().await;
+
+        let asked = seen.lock().unwrap().clone();
+        assert!(
+            asked.iter().any(|kind| kind == "new_session"),
+            "the agent was never asked for a session: {asked:?}"
+        );
+        // The approval mode is a second call, because `new_session` has no
+        // argument for it.
+        assert!(
+            asked.iter().any(|kind| kind == "set_sandbox_policy"),
+            "the session was created without being told its approval mode: {asked:?}"
+        );
+        // The staged tool set is spent on the session that exists now.
+        assert!(
+            asked.iter().any(|kind| kind == "set_tools"),
+            "the staged tool set was not sent: {asked:?}"
+        );
+        assert!(
+            live.pending_tools.is_none(),
+            "the staged tool set survived the session it described"
+        );
+        assert!(!live.detached(), "a fresh chat is not the launchpad");
+
+        // A chat is filed where the desktop app files its own: under the app's
+        // chat tree, named after the session id this client minted — the agent
+        // minting one itself would leave the session running where this client
+        // never filed it.
+        let request = crate::rpc::grpc_client::tests::last_request_of(&mock, "new_session");
+        assert!(
+            !request.session_id.is_empty(),
+            "a chat mints its session id"
+        );
+        let directory = home
+            .path()
+            .join("workspaces")
+            .join("chat")
+            .join(&request.session_id);
+        assert_eq!(
+            request.cwd,
+            directory.to_string_lossy(),
+            "the chat did not run in the directory named after it"
+        );
+        assert!(
+            directory.is_dir(),
+            "a chat session left no directory of its own"
+        );
+        live.client.disconnect();
+    }
+
+    /// The plain-chat row of the workspace picker: on the launchpad it is
+    /// "stage nothing"; in a session already on a chat directory it is a no-op;
+    /// otherwise it moves the session into a chat of its own.
+    #[tokio::test]
+    async fn picking_the_plain_chat_stages_nothing_or_moves_into_one() {
+        // Launchpad: staging no workspace *is* the plain chat.
+        let mut live =
+            live_on(&[("get_state", r#"{"sessionId":"s1","cwd":"/work/project"}"#)]).await;
+        live.to_launchpad();
+        live.pending_cwd = Some("/work/project".into());
+        live.select_chat_workspace().await;
+        assert!(
+            live.pending_cwd.is_none(),
+            "the plain chat staged a directory: {:?}",
+            live.pending_cwd
+        );
+        live.client.disconnect();
+
+        // The "already a chat" early return is not asserted here: it is decided
+        // against the process's chat root, which follows `HOME`, and a sibling
+        // test may swap `HOME` between this test's call and its assertion. That
+        // lock cannot be held across the await, so the branch stays open rather
+        // than becoming a flake.
+        live.client.disconnect();
+    }
+
+    /// What the frame is built from, on the two sides that measured zero: the
+    /// skills a *state* names (described from the local read when it knows them)
+    /// and the model list's labels, which fall back to the id when a provider
+    /// reports none.
+    #[tokio::test]
+    async fn the_frames_data_describes_skills_and_labels_models() {
+        use crate::workbench::state::SkillRow;
+
+        // A state that names two skills: the local read describes one of them,
+        // the other keeps an empty description rather than a wrong one.
+        let mut live = live_on(&[(
+            "get_state",
+            r#"{"sessionId":"s1","skills":["pdf","review"]}"#,
+        )])
+        .await;
+        live.local_skills = Some(vec![SkillRow {
+            name: "pdf".into(),
+            description: "read a pdf".into(),
+        }]);
+        let frame = frame();
+        let data = live.data(&frame);
+        assert_eq!(
+            data.skills
+                .iter()
+                .map(|skill| (skill.name.as_str(), skill.description.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("pdf", "read a pdf"), ("review", "")],
+            "the agent's order, described by the local read where it can be"
+        );
+
+        // No skills from the state: the local read is the whole list (an older
+        // agent reports none).
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        live.local_skills = Some(vec![SkillRow {
+            name: "pdf".into(),
+            description: "read a pdf".into(),
+        }]);
+        let data = live.data(&frame);
+        assert_eq!(
+            data.skills
+                .iter()
+                .map(|skill| skill.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["pdf"],
+            "an agent that names no skills leaves the local list"
+        );
+
+        // A model whose label is blank is shown by its id, never as an empty row.
+        let mut live = live_on(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            (
+                "list_models",
+                r#"{"models":[
+                    {"id":"future/old","label":"","provider":"future",
+                     "thinkingLevel":"default","thinkingLevels":["default"],
+                     "defaultThinkingLevel":"default","isDefault":true},
+                    {"id":"future/named","label":"Named","provider":"future",
+                     "thinkingLevel":"default","thinkingLevels":["default"],
+                     "defaultThinkingLevel":"default"}]}"#,
+            ),
+        ])
+        .await;
+        let data = live.data(&frame);
+        let labels: Vec<(&str, &str)> = data
+            .models
+            .iter()
+            .map(|model| (model.id.as_str(), model.label.as_str()))
+            .collect();
+        assert!(
+            labels.contains(&("future/old", "future/old")),
+            "an unlabelled model was not named by its id: {labels:?}"
+        );
+        assert!(
+            labels.contains(&("future/named", "Named")),
+            "a labelled model lost its label: {labels:?}"
+        );
+        live.client.disconnect();
     }
 }

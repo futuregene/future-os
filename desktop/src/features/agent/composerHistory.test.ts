@@ -29,6 +29,15 @@ describe("composer history", () => {
     expect(loadComposerHistory("t1")).toEqual([]);
   });
 
+  it("reads a store that is valid JSON but not a list as empty", () => {
+    // A hand-edited or foreign write: an object here is not a history, and reading
+    // entries off it would be a guess.
+    sessionStorage.setItem("composer-history:t1", JSON.stringify({ entries: ["x"] }));
+    expect(loadComposerHistory("t1")).toEqual([]);
+    sessionStorage.setItem("composer-history:t1", "\"one message\"");
+    expect(loadComposerHistory("t1")).toEqual([]);
+  });
+
   it("survives a corrupt store", () => {
     sessionStorage.setItem("composer-history:t1", "{not json");
     expect(loadComposerHistory("t1")).toEqual([]);

@@ -250,9 +250,9 @@ impl Supervisor {
                             // Keep the fixed classification observable without
                             // logging the server's untrusted body or message.
                             if revoked {
-                                eprintln!("remote: invalid_remote_credential; forgetting that device");
+                                future_remote_protocol::remote_log!("remote: invalid_remote_credential; forgetting that device");
                             } else {
-                                eprintln!("remote: platform rejected account authorization; stopping bridge");
+                                future_remote_protocol::remote_log!("remote: platform rejected account authorization; stopping bridge");
                             }
                             *server.last_error_code.lock().unwrap() = Some(
                                 if revoked {
@@ -281,7 +281,7 @@ impl Supervisor {
                                 .credential_failures
                                 .record("credential_network", error)
                             {
-                                eprintln!("{line}");
+                                future_remote_protocol::remote_log!("{line}");
                             }
                             server.credential_refreshing.store(false, Ordering::Release);
                             tokio::time::sleep(server.renewal_retry_delay(until_expiry)).await;
@@ -299,7 +299,7 @@ impl Supervisor {
                             "credential_expired",
                             "the refreshed credential had already expired",
                         ) {
-                            eprintln!("{line}");
+                            future_remote_protocol::remote_log!("{line}");
                         }
                         server.credential_refreshing.store(false, Ordering::Release);
                         tokio::time::sleep(server.executor.options().refresh_tick).await;
@@ -315,7 +315,7 @@ impl Supervisor {
                             // its attempt budget), which is the only thing that can
                             // succeed when the refusal was a stale relay-side cache
                             // rather than a real revocation.
-                            eprintln!(
+                            future_remote_protocol::remote_log!(
                                 "remote: refreshed NATS credential rejected [AU001]: {error}"
                             );
                             if let Some(state) = server.state.lock().unwrap().get(&pair_id) {
@@ -334,7 +334,7 @@ impl Supervisor {
                                 .credential_failures
                                 .record("credential_connect", error)
                             {
-                                eprintln!("{line}");
+                                future_remote_protocol::remote_log!("{line}");
                             }
                             server.credential_refreshing.store(false, Ordering::Release);
                             tokio::time::sleep(
@@ -360,7 +360,7 @@ impl Supervisor {
                                 .credential_failures
                                 .record("credential_connect", error)
                             {
-                                eprintln!("{line}");
+                                future_remote_protocol::remote_log!("{line}");
                             }
                             server.credential_refreshing.store(false, Ordering::Release);
                             tokio::time::sleep(
@@ -395,7 +395,7 @@ impl Supervisor {
                         return;
                     };
                     if let Err(error) = server.host.save(&refreshed) {
-                        eprintln!("remote: save refreshed credential failed [LC004]: {error}");
+                        future_remote_protocol::remote_log!("remote: save refreshed credential failed [LC004]: {error}");
                         server.credential_refreshing.store(false, Ordering::Release);
                         continue;
                     }
@@ -417,7 +417,7 @@ impl Supervisor {
                     // backlog — no event gap at the swap point.
                     drop(old_event);
                     if let Some(line) = server.credential_failures.recovered() {
-                        eprintln!("{line}");
+                        future_remote_protocol::remote_log!("{line}");
                     }
                     server.credential_refreshing.store(false, Ordering::Release);
                 }

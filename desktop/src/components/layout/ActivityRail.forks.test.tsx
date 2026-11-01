@@ -149,6 +149,55 @@ describe("activity rail forks", () => {
     expect(list.textContent).not.toContain("Forked conversation");
   });
 
+  it("does not re-open a chain that is already open when the reader picks a sibling", async () => {
+    // Two forks of the same conversation: picking the first expands the chain, picking
+    // the second asks for that same chain again. The state update has to answer "already
+    // open" with the very same set — replacing it would re-render every row and drop any
+    // fold the reader had made elsewhere in the list.
+    const threads = [
+      conversation("root", "Root conversation"),
+      conversation("mid", "Middle fork", "root"),
+      conversation("leaf", "Leaf fork", "mid"),
+    ];
+    // Selecting the leaf opens the whole chain …
+    const first = await render(props(threads, "leaf"));
+    expect(first.container.querySelector("[data-activity-rail-content]")!.textContent).toContain("Leaf fork");
+
+    // … and stepping up one to the middle fork asks for a chain that is already open.
+    act(() => first.root.render(<ActivityRail {...props(threads, "mid")} />));
+    await flushAsync();
+
+    const list = first.container.querySelector("[data-activity-rail-content]")!;
+    expect(list.textContent).toContain("Middle fork");
+    expect(list.textContent).toContain("Leaf fork");
+    act(() => first.root.unmount());
+    first.container.remove();
+  });
+
+  it("draws a pair whose lineage loops instead of following it for ever", async () => {
+    // `rootOf` walks `parentSessionId` upward to find the conversation a row belongs
+    // under, and bounds the walk at 64 hops. A lineage that loops (a fork recorded as
+    // the parent of its own ancestor — a hand-edited or half-migrated store) must cost
+    // those rows their place under a parent, never the list itself: the walk stops and
+    // the rows are still drawn.
+    const { container } = await render(props([
+      conversation("first", "First loop", "second", true),
+      conversation("second", "Second loop", "first", true),
+    ], null));
+
+    const list = container.querySelector("[data-activity-rail-content]")!;
+    expect(list.textContent).toContain("First loop");
+    expect(list.textContent).toContain("Second loop");
+
+    // And the walk is bounded: the same list re-renders without hanging, which is what
+    // makes the bound a guard rather than a style choice.
+    const again = await render(props([
+      conversation("first", "First loop", "second", true),
+      conversation("second", "Second loop", "first", true),
+    ], null));
+    expect(again.container.querySelector("[data-activity-rail-content]")!.textContent).toContain("First loop");
+  });
+
   it("opens the whole chain for a fork of a fork", async () => {
     const { container } = await render(props([
       conversation("root", "Root conversation"),

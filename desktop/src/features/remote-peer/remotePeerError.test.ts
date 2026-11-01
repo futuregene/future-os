@@ -99,6 +99,36 @@ describe("remotePeerErrorText", () => {
   });
 
   /**
+   * A host that answered and was busy is not one that did not answer: the retry is
+   * the fix, and calling it "unreachable" would send the reader to check a network
+   * that is working.
+   */
+  it("reads a busy host as a request that timed out, not a dead one", () => {
+    expect(remotePeerErrorKind("remote_secure_channel_invalid (busy)")).toBe("timeout");
+  });
+
+  /**
+   * The handshake token can also arrive without the host's reason attached (an older
+   * build, or a frame whose detail was cut). Two builds that never agreed on the
+   * channel is the only honest reading of that.
+   */
+  it("treats a bare handshake mismatch as a version problem", () => {
+    expect(remotePeerErrorKind("e2ee_v2 confirmation_mismatch")).toBe("secureChannel");
+  });
+
+  /**
+   * A command sent over a link that is no longer there is, from the user's seat, the
+   * same fact as "could not reach it" — including the runtime's own record of a
+   * generation whose socket closed for good.
+   */
+  it.each(["peer_not_connected", "nats_connection_exhausted", "stream is not connected"])(
+    "reads a link that is gone as unreachable for %s",
+    (raw) => {
+      expect(remotePeerErrorKind(raw)).toBe("unreachable");
+    },
+  );
+
+  /**
    * The exact string the platform returns when the *other* computer unpairs:
    * this side keeps its half of the pairing, and the next connect is refused.
    * It used to reach the screen in English, because no class matched it — the

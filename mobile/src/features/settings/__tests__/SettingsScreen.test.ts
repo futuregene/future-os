@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { ScrollView, SectionList, StyleSheet, Switch, Text, TextInput } from "react-native";
+import { Linking, ScrollView, SectionList, StyleSheet, Switch, Text, TextInput } from "react-native";
 import { Button } from "../../../components/Button";
 import { SettingsScreen, TITLED_SETTINGS_PAGES, type SettingsScreenHandle } from "../SettingsScreen";
 import { resources } from "../../../i18n/locales";
@@ -922,4 +922,25 @@ test("limited protection keeps the usual approval choices and only adds the upgr
   mockRemote.sandboxAvailable = false;
   await act(async () => { tree.update(createElement(SettingsScreen, deviceProps)); });
   expect(texts()).not.toContain("approvalTier.upgrade");
+});
+
+// The policy link sits on the phone's own page — the one screen that is there
+// before any desktop is paired — so it is reachable whatever the machines are
+// doing, and it opens in the app's current language.
+test("opens the privacy policy from the phone's own page", async () => {
+  const open = jest.spyOn(Linking, "openURL").mockResolvedValue(undefined);
+  try {
+    mockLanguage = "zh-Hans";
+    await act(async () => { tree = create(createElement(SettingsScreen, props)); });
+    await flush();
+    const link = tree.root.findAll(node => node.props.accessibilityRole === "link"
+      && node.props.accessibilityLabel === "common.privacyPolicy"
+      && typeof node.props.onPress === "function");
+    expect(link.length).toBeGreaterThan(0);
+    await act(async () => link[0]!.props.onPress());
+    // 双语页面，按 App 当前语言打开对应那一半。
+    expect(open).toHaveBeenCalledWith("https://future-os.cn/privacy-mobile.html?lang=zh");
+  } finally {
+    open.mockRestore();
+  }
 });
