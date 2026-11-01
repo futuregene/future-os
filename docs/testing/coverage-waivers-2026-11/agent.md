@@ -8,15 +8,15 @@ llvm-cov *summary* percentage is not the acceptance number.
 `coverage/2026-11/after/agent/lcov-wave26.info`, run log `wave26-cov.log`. The ledger below was
 regenerated from that lcov and passes its own check (wave 29).
 
-**Result**: `DA:0` = **1173** lines in **129** files under `agent/src` (wave 32 measurement,
-`lcov-wave32.info`, 2891 tests). This branch has cleared **500** of the 1673 it started from
-(waves 23, 26, 27, 30, 31 and 32; waves 24-25 changed the suite's speed, not which lines it
-reaches). Of the 1173:
+**Result**: `DA:0` = **1169** lines in **129** files under `agent/src` (wave 33 measurement,
+`lcov-wave33.info`, 2891 tests). This branch has cleared **504** of the 1673 it started from
+(waves 23, 26, 27, 30, 31, 32 and 33; waves 24-25 changed the suite's speed, not which lines it
+reaches). Of the 1169:
 
 | state | lines |
 |---|---:|
 | **waived** (mechanism + falsifier named below) | **98** |
-| `open` — **no test and no justification yet** | **1105** |
+| `open` — **no test and no justification yet** | **1101** |
 
 Reconciliation (the rows below describe the 98 waived lines; they were written against the
 1231-line measurement and their line numbers were re-checked against the 1211 one in wave 29):
@@ -177,6 +177,68 @@ Writing the "key on one side only" case found a defect **in the helper**:
 panics `no entry found for key` and throws away the path the function exists to
 produce. The absent side is now a JSON null. This is test-only code
 (`rpc/commands/test_support.rs` is `#[cfg(test)]`), so no product behaviour moved.
+
+## Wave 33: the fixture's second half, and the arm that needs a different one
+
+One more event on the wave-32 sequence (commit `8dd1d45c9`) covers the other half of the
+provider rule: a `thinking_end` that carries **no** `/data/provider_metadata` body keeps the
+snapshot the event itself carries, instead of an empty object. Verified in a targeted run:
+`recovery.rs:381-385` are reached by this test and no other. Both halves are asserted together —
+body present → `{}` on the call, body absent → the event's snapshot on the thinking block — so
+neither can silently swap.
+
+**Measured, including a flip worth knowing about:** `recovery.rs` 27 → **22** missed, but the
+lane total moved 1173 → **1169** because `entries.rs:255` — a lone `}` — went from covered to
+missed between the two runs. Brace rows are attribution, and they are not stable: a ±1 wobble in
+the aggregate is measurement noise in this metric, not a regression. Any wave comparing totals
+must compare the *named rows*, which is what this ledger is for.
+
+What is left in `recovery.rs` (22 rows) is:
+
+- **`with_context` closures and `ensure!` messages** — evaluated only on the failure they
+  describe (`read recovery stream …`, `decode …`, `recovery crossed durable watermark`, the
+  identity errors). Reaching them needs a *fault* in the page read or a malformed event: error
+  injection, not more events.
+- **Two closing braces** (432-433) whose `if let` arm completes elsewhere — attribution rows.
+
+### `entries.rs:155-161`, and why it was not attempted here
+
+The `/content/error` truncation arm sits inside `prepare_owned`'s prelinked loop, which only runs
+when `prefix.is_some() || shared` — i.e. through `prepare_staged` (a reset) or
+`prepare_shared_fork` (an unpublished fork). Reaching it needs a **checkpoint-owned content
+reference** at `/content/<n>/error` plus an entry whose `content[n].error` is longer than 512
+characters, so the copy has something to truncate. That is a different fixture shape from the
+run-stream one (a bound `content_references` row on the `checkpoint` owner kind, written through
+`begin_write_transaction` + `bind`, not a `commit_batch` change), and it was left for the next
+wave rather than half-built.
+
+## Wave 33: the fixture's second half, and the arm that needs a different one
+
+One more event on the wave-32 sequence (commit `8dd1d45c9`) covers the other half of the
+provider rule: a `thinking_end` that carries **no** `/data/provider_metadata` body keeps the
+snapshot the event itself carries, instead of an empty object. Verified: `recovery.rs:381-385`
+are reached by this test and no other. Both halves are now asserted together — body present →
+`{}` on the call, body absent → the event's snapshot on the thinking block — so neither can
+silently swap.
+
+That closes what the `commit_batch` fixture can reach easily. What is left in `recovery.rs`
+(272-278, 285, 296, 312-313, 331-332, 353-358, 432-433, 440, 474, 499, 570, 576) is:
+
+- **`with_context` closures and `ensure!` messages** — evaluated only on the failure they
+  describe (`read recovery stream …`, `decode …`, `recovery crossed durable watermark`,
+  the identity errors). Reaching them needs a *fault* in the page read or a malformed event,
+  which is error injection, not more events.
+- **Two closing braces** (432-433) whose `if let` arm completes elsewhere — attribution rows.
+
+### `entries.rs:155-161`, and why it was not attempted here
+
+The `/content/error` truncation arm sits inside `prepare_owned`'s prelinked loop, which only runs
+when `prefix.is_some() || shared` — i.e. through `prepare_staged` (a reset) or
+`prepare_shared_fork`. Reaching it needs a **checkpoint-owned content reference** at
+`/content/<n>/error` plus an entry whose `content[n].error` is longer than 512 characters, so the
+copy is truncatable. That is a different fixture shape from the run-stream one (a bound
+`content_references` row on the `checkpoint` owner kind, not a `commit_batch` change), and it was
+left for the next wave rather than half-built.
 
 ## Wave 32: the fixture that unlocks `tool_input_end` — and what it cost to build
 
