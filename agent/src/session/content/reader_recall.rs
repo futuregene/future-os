@@ -369,3 +369,31 @@ fn slice(bytes: &[u8], offset: i64, limit: i64) -> Result<String> {
     };
     Ok(text.to_owned())
 }
+#[cfg(test)]
+mod tests {
+    use super::slice;
+
+    /// A page budget is a byte count, and a byte budget lands wherever the
+    /// producer's text happens to be. Cutting a multi-byte character must
+    /// shorten the page, never split the character: the caller joins pages
+    /// verbatim, so half a character would be persisted.
+    #[test]
+    fn a_page_budget_never_splits_a_character() {
+        // 汉 is three bytes; the page budget of two ends inside it.
+        assert_eq!(slice("汉a".as_bytes(), 0, 2).unwrap(), "");
+        assert_eq!(slice("汉a".as_bytes(), 0, 3).unwrap(), "汉");
+        assert_eq!(slice("汉a".as_bytes(), 0, 4).unwrap(), "汉a");
+        // A budget past the end is the whole tail, not a panic.
+        assert_eq!(slice("汉a".as_bytes(), 0, 99).unwrap(), "汉a");
+        // An offset at the end is the empty tail: a page reader asks for the
+        // next page before it knows the body ended.
+        assert_eq!(slice("汉a".as_bytes(), 4, 8).unwrap(), "");
+        // A start offset inside a character is a reader bug, and it must be an
+        // error rather than a silently mangled fragment.
+        let error = slice("汉a".as_bytes(), 1, 3).unwrap_err().to_string();
+        assert!(
+            error.contains("offset must be on a UTF-8 character boundary"),
+            "{error}"
+        );
+    }
+}

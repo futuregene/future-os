@@ -1020,4 +1020,53 @@ mod thinking_projection {
             "an already-projected reasoning block is not duplicated"
         );
     }
+    // ─── the tool-role projection ───────────────────────────────────────────
+
+    /// A `tool` entry that recorded only text still has to reach the model as
+    /// a tool result: a plain user-side text block would be answered as a new
+    /// user turn and lose the call it belongs to.
+    #[test]
+    fn a_tool_entry_carrying_only_text_is_projected_as_a_tool_result() {
+        let entry = SessionEntry::new_tool("call-7", "listed 3 files");
+        let messages = entries_to_agent_messages(std::slice::from_ref(&entry), false);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "tool");
+        assert_eq!(messages[0].content.len(), 1, "{:?}", messages[0].content);
+        match &messages[0].content[0] {
+            ContentBlock::ToolResult {
+                tool_call_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_call_id, "call-7");
+                assert_eq!(content, "listed 3 files");
+                assert!(!is_error);
+            }
+            other => panic!("expected a tool result block, got {other:?}"),
+        }
+    }
+
+    /// A tool entry that already carries its result block is passed through
+    /// unchanged — re-wrapping it would send the text twice.
+    #[test]
+    fn a_tool_entry_that_already_carries_its_result_is_not_rewrapped() {
+        let mut entry = SessionEntry::new_tool("call-7", "ignored");
+        entry.content = Some(serde_json::json!([{
+            "type": "tool_result",
+            "tool_call_id": "call-7",
+            "content": "the recorded result",
+            "is_error": true
+        }]));
+        let messages = entries_to_agent_messages(std::slice::from_ref(&entry), false);
+        assert_eq!(messages[0].content.len(), 1, "{:?}", messages[0].content);
+        match &messages[0].content[0] {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
+                assert_eq!(content, "the recorded result");
+                assert!(is_error);
+            }
+            other => panic!("expected the recorded tool result, got {other:?}"),
+        }
+    }
 }
