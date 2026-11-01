@@ -7361,4 +7361,61 @@ mod tests {
         assert_eq!(cancelled.run_id, "run-cancel");
         assert!(session.scheduler.queued().is_empty());
     }
+
+    /// The checkpoint fallback is for cold handles only: a directly scheduled
+    /// run can arrive before history was ever loaded, so the first call reads the
+    /// transcript and marks itself done, and every later call is a no-op.
+    #[test]
+    fn a_cold_handle_recovers_its_checkpoint_once_and_then_reports_itself_loaded() {
+        use std::sync::atomic::Ordering;
+        let mut session = make_persistent_test_session("checkpoint-once");
+        // A handle starts with its checkpoint already resolved; the fallback is
+        // what a stale handle uses after its cached history was released.
+        assert!(session.checkpoint_loaded.load(Ordering::Acquire));
+        session.mark_history_stale();
+        assert!(!session.checkpoint_loaded.load(Ordering::Acquire));
+        assert!(session.active_checkpoint.lock().is_none());
+        let snapshot = crate::session::Session::snapshot(
+            "checkpoint-once".to_string(),
+            session.cwd.clone(),
+            "mock".to_string(),
+            String::new(),
+            String::new(),
+            vec![crate::session::SessionEntry::new_user(
+                "user",
+                serde_json::json!("hi"),
+            )],
+        );
+        session.session_manager.save(&snapshot).unwrap();
+
+        session.ensure_checkpoint_loaded().unwrap();
+        assert!(
+            session.checkpoint_loaded.load(Ordering::Acquire),
+            "the fallback marks itself loaded"
+        );
+        // This conversation carries no compaction checkpoint, so the recovery is
+        // "none found" rather than an error, and the lock is explicitly reset.
+        assert!(session.active_checkpoint.lock().is_none());
+
+        // The second call must not read again: a checkpoint written afterwards is
+        // deliberately not picked up on the hot path.
+        session
+            .session_manager
+            .storage()
+            .unwrap()
+            .replace(
+                "checkpoint-once",
+                vec![serde_json::json!({
+                    "id":"torn","type":"compaction","role":"system",
+                    "timestamp":"2026-10-28T00:00:00Z",
+                    "content":{"summary":"[checkpoint]"},
+                })],
+            )
+            .unwrap();
+        session.ensure_checkpoint_loaded().unwrap();
+        assert!(
+            session.active_checkpoint.lock().is_none(),
+            "the once-only fallback did not re-read the transcript"
+        );
+    }
 }
