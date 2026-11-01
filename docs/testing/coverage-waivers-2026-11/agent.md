@@ -3,11 +3,11 @@
 **Metric A** — a line counts as uncovered iff its LCOV record is `DA:<line>,0`. The
 llvm-cov *summary* percentage is not the acceptance number.
 
-**Last measurement**: `test/cov-agent` at `c2bcdf282` (cut from `origin/dev-huichen@79bd2bd37`),
+**Last measurement**: `test/cov-agent` at `4c608b9e5` (cut from `origin/dev-huichen@79bd2bd37`),
 Rust **1.99.1** (`rust-toolchain.toml`), macOS arm64.
 
-**Result**: `DA:0` = **1416** lines in **131** files under `agent/src` (82 840 executable,
-98.29 % per-line). This wave cleared **257** of the 1673 it started from. Of the 1416:
+**Result**: `DA:0` = **1412** lines in **131** files under `agent/src` (82 890 executable,
+98.30 % per-line). This wave cleared **261** of the 1673 it started from. Of the 1416:
 
 | state | lines |
 |---|---:|
@@ -111,7 +111,7 @@ These need tests, not classification. Ranked by size, with the mechanism already
 |---|---:|---|
 | `rpc/session_prompt.rs` | 52 | injected persistence failures on the admission path (`PersistenceUnavailable` arms around 1111-1120 and 1394-1402), and the deferred-input restore arms |
 | `rpc/commands/settings.rs` | 12 | what is left after the 29 waived lines: `332-338` (thread-spawn failure, W3) and the per-arm refusals |
-| `rpc/session.rs` | 41 | `schedule_idle_history_release` (27-35) and the cancelled-receipt compensation arms (505-506) |
+| `rpc/session.rs` | 37 | the cancelled-receipt compensation arms (505-506) and the stop before recovery edge |
 | `tools/shell/execution.rs` | 41 | 24 of these are the waived Linux helper block; the other 17 are the exit-status edge and the timeout drain |
 | `session/content/reader_recall.rs` | 39 | `find()`'s cross-page carry tail and `slice()`'s remaining UTF-8 arms |
 | `session/content/recovery.rs` | 38 | recovery of partially committed message drafts |
