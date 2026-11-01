@@ -5863,6 +5863,90 @@ mod tests {
         assert_eq!(workbench.chat_index, Some(0));
     }
 
+    /// A click can name a row or a control the transcript no longer offers. The
+    /// hit map comes from the frame on screen, and the data between two events
+    /// can move under it — a message that arrived, a stop that folded away. The
+    /// press names something nothing can open, and the answer is still a
+    /// repaint: the box the reader pressed is not the draft's to swallow.
+    #[test]
+    fn a_click_on_a_row_or_chip_that_is_not_there_still_repaints() {
+        use crate::components::chat_area::{RowAction, RowStop};
+        let mut painted = demo::chat();
+        painted.messages = vec!["▸ 2 tool calls".to_string(), "the answer".to_string()].into();
+        painted.row_stops = vec![
+            RowStop {
+                row: 0,
+                start: 1,
+                end: 15,
+                action: RowAction::Process { msg: 1 },
+                expanded: false,
+            },
+            RowStop {
+                row: 1,
+                start: 1,
+                end: 5,
+                action: RowAction::Copy { msg: 1 },
+                expanded: false,
+            },
+        ];
+
+        // The frame the reader pressed: a folded row and a reply's copy chip.
+        let mut workbench = workbench();
+        workbench.render(&painted, 150, 38);
+        let cell = |workbench: &Workbench, id: &str| {
+            let (rect, _) = workbench
+                .hits()
+                .regions()
+                .iter()
+                .find(|(_, region)| region == id)
+                .cloned()
+                .unwrap_or_else(|| panic!("no region {id}"));
+            mouse::MouseEvent {
+                kind: mouse::MouseKind::Press,
+                x: rect.x + 1,
+                y: rect.y,
+                shift: false,
+                alt: false,
+                ctrl: false,
+            }
+        };
+        let row_cell = cell(&workbench, "chat.row.0");
+        let chip_cell = cell(&workbench, "chat.button.1.copy");
+
+        // …and the transcript as it stands when the press arrives: the fold was
+        // resolved and the chip is gone, so neither id names anything.
+        let mut now = painted.clone();
+        now.row_stops.clear();
+
+        assert_eq!(
+            workbench.handle(WbEvent::Mouse(row_cell), &now),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.chat_index, None, "nothing to put the cursor on");
+        assert!(!workbench.stop_reveal);
+
+        assert_eq!(
+            workbench.handle(WbEvent::Mouse(chip_cell), &now),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.chat_index, None);
+        assert!(!workbench.stop_reveal);
+    }
+
+    /// A press on the draft takes the keys back to the composer from whatever
+    /// field is selected, so the next key lands in the box the reader pressed.
+    #[test]
+    fn a_click_on_the_draft_takes_the_keys_to_the_composer() {
+        let data = demo::chat();
+        let mut workbench = workbench();
+        workbench.launch_field = LaunchField::Model;
+        assert_eq!(
+            click_region(&mut workbench, &data, 120, 38, "input"),
+            vec![WbAction::FocusPane(PaneId::Input)]
+        );
+        assert_eq!(workbench.launch_field, LaunchField::Prompt);
+    }
+
     /// Opening a row shows what it hid *under* it: the row the reader pressed
     /// and every row above it stay on the lines they were painted on, and only
     /// what is below them changes.
@@ -8213,6 +8297,52 @@ mod tests {
         assert!(workbench.preview_scroll > 5, "wheel down moves the text");
     }
 
+    /// A document in the box scrolls where a picture would zoom: `+`/`-` are the
+    /// same two keys read as "further in / further out", the arrows are one row
+    /// a press, and `]` with nothing beside the file keeps the file it has.
+    #[test]
+    fn a_document_preview_scrolls_where_a_picture_would_zoom() {
+        let mut data = demo::chat();
+        data.preview = Some(state::PreviewView::Text {
+            path: "notes.txt".into(),
+            lines: (0..40)
+                .map(|n| super::syntax::Line::plain(format!("line {n}")))
+                .collect::<Vec<_>>()
+                .into(),
+            truncated: false,
+        });
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.overlay = Some(Overlay::FilePreview);
+        workbench.render(&data, 120, 38);
+
+        workbench.handle(WbEvent::Key("-".into()), &data);
+        workbench.handle(WbEvent::Key("-".into()), &data);
+        assert_eq!(workbench.preview_scroll, 6, "`-` is three rows down");
+        assert_eq!(
+            workbench.handle(WbEvent::Key("+".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(
+            workbench.preview_scroll, 3,
+            "there is nothing to zoom: `+` is three rows up"
+        );
+        assert_eq!(workbench.preview_zoom, 1, "and the zoom is untouched");
+
+        // One row a press, and `0` is the top of the file.
+        workbench.handle(WbEvent::Key("up".into()), &data);
+        assert_eq!(workbench.preview_scroll, 2);
+        workbench.handle(WbEvent::Key("0".into()), &data);
+        assert_eq!(workbench.preview_scroll, 0);
+
+        // The file came to the box alone, so there is no neighbour to step to.
+        assert!(workbench.preview_siblings.len() < 2);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("]".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.preview_index, 0, "the box keeps what it shows");
+    }
+
     /// A preview box is the screen less its two-row margin, whatever the
     /// document holds.
     ///
@@ -9686,6 +9816,76 @@ mod tests {
         let typed = with_input(&demo::chat(), "看 @tu");
         workbench.render(&typed, 120, 38);
         assert!(workbench.mention.is_some());
+    }
+
+    /// The menu is *derived* from the draft, so the same token with one more
+    /// letter typed is a different list: the highlight starts over at its top
+    /// instead of holding an ordinal that named a row of the list before.
+    ///
+    /// Its `Debug` is hand-written (the struct is public and its fields are the
+    /// menu's own vocabulary), so the line a failing case prints is asserted
+    /// too: a `Mention { .. }` placeholder would tell a reader nothing about the
+    /// query it was stuck on.
+    #[test]
+    fn a_narrowed_mention_starts_its_highlight_over() {
+        let mut data = demo::chat();
+        data.files = vec!["src/main.rs".into(), "src/lib.rs".into(), "other.rs".into()];
+        let data = with_input(&data, "read @");
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.render(&data, 120, 38);
+        assert_eq!(
+            workbench.mention_rows(&data).len(),
+            3,
+            "a bare sigil lists everything"
+        );
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        let (start, index, debug) = {
+            let open = workbench.mention.as_ref().expect("the menu is open");
+            (open.start, open.index, format!("{open:?}"))
+        };
+        assert_eq!(index, 2, "two presses down the list");
+
+        for field in ["Mention", "kind", "start", "query", "index"] {
+            assert!(
+                debug.contains(field),
+                "the debug line names {field}: {debug}"
+            );
+        }
+
+        // One letter on, with no `esc` between: the same token, a shorter list.
+        let narrower = with_input(&data, "read @src");
+        workbench.render(&narrower, 120, 38);
+        let now = workbench.mention.as_ref().expect("the menu stays open");
+        assert_eq!(now.start, start, "the same token");
+        assert_eq!(now.query, "src");
+        assert_eq!(
+            now.index, 0,
+            "a narrower query starts the highlight over rather than keeping 2"
+        );
+        assert_eq!(workbench.mention_rows(&narrower).len(), 2);
+
+        // No menu at all is no rows: the list is the menu's, not the draft's.
+        workbench.mention = None;
+        assert!(workbench.mention_rows(&narrower).is_empty());
+    }
+
+    /// A conversation filed without a title is offered under its id: the menu
+    /// has one column for the name and nothing else to put in it.
+    #[test]
+    fn a_conversation_with_no_title_is_offered_under_its_id() {
+        let mut data = demo::chat();
+        data.sessions[0].title = String::new();
+        let id = data.sessions[0].id.clone();
+        let data = with_input(&data, "#");
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.render(&data, 120, 38);
+        let rows = workbench.mention_rows(&data);
+        let row = rows
+            .iter()
+            .find(|row| row.insert.contains(&id))
+            .unwrap_or_else(|| panic!("no row for {id}: {rows:?}"));
+        assert_eq!(row.label, id, "the id stands in for the missing title");
     }
 
     #[test]
@@ -12064,6 +12264,69 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The repository panel's list pans with the arrows and `0` is its left
+    /// edge; `tab` hands the keys to the patch, where the same arrows scroll it
+    /// a row and `home` still means the first row of the list.
+    #[test]
+    fn the_repository_list_pans_and_its_cursor_jumps_home() {
+        let mut data = demo::chat();
+        data.git = Some(demo::git());
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.overlay = Some(Overlay::Git);
+        workbench.render(&data, 120, 38);
+
+        // The arrows pan the list one step at a time…
+        assert_eq!(
+            workbench.handle(WbEvent::Key("right".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(
+            workbench.handle(WbEvent::Key("right".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.git_list_x, GIT_HSCROLL_STEP * 2);
+        // …and `0` is the left edge of the pane that holds the keys.
+        assert_eq!(
+            workbench.handle(WbEvent::Key("0".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.git_list_x, 0, "`0` is the list's left edge");
+
+        // `tab` moves the keys to the patch: the arrows scroll it a row and
+        // leave the list where it was.
+        assert_eq!(
+            workbench.handle(WbEvent::Key("tab".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert!(workbench.git_detail_focus);
+        workbench.overlay_scroll = 2;
+        assert_eq!(
+            workbench.handle(WbEvent::Key("up".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.overlay_scroll, 1, "one row a press");
+        assert_eq!(workbench.git_list_x, 0, "and the list stays where it was");
+
+        // Back on the list, `home` takes the first selectable row rather than
+        // whatever index the cursor was left on.
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        let git = data.git.as_ref().expect("the fixture has a repository");
+        workbench.workflow_index = git.last().expect("a selectable row");
+        let first = git.first().expect("a selectable row");
+        assert_ne!(first, workbench.workflow_index, "the fixture has two rows");
+        assert_eq!(
+            workbench.handle(WbEvent::Key("home".into()), &data),
+            vec![WbAction::SelectGit(first)]
+        );
+        assert_eq!(workbench.workflow_index, first);
+
+        // A key the panel does not own is not an edit and not a selection.
+        assert!(workbench
+            .handle(WbEvent::Key("f5".into()), &data)
+            .is_empty());
+        assert_eq!(workbench.overlay, Some(Overlay::Git), "and it stays open");
     }
 
     /// The working-tree review has one door now: `d` in the repository browser.
