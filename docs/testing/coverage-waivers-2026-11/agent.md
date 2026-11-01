@@ -3,14 +3,14 @@
 **Metric A** — a line counts as uncovered iff its LCOV record is `DA:<line>,0`. The
 llvm-cov *summary* percentage is not the acceptance number.
 
-**Last measurement**: `test/cov-agent` at `b01a44d3f`, Rust **1.99.1** (`rust-toolchain.toml`),
-macOS arm64, lcov `coverage/2026-11/after/agent/lcov-wave40.info`, run log `wave40.log`
-(**12 test targets, 0 failed**). The ledger below was regenerated from that lcov and passes its
-own check. Measure with `measure-guard.sh`, never with a bare `cargo llvm-cov --no-report` — see
-*Wave 39* for why.
+**Last measurement**: `test/cov-agent` at `9fe14c54f`, Rust **1.99.1** (`rust-toolchain.toml`),
+macOS arm64, lcov `coverage/2026-11/after/agent/lcov-wave43.info`, run log `wave43.log`
+(**12 test targets, 2896 passed, 0 failed, 0 panics**). The ledger below was regenerated from
+that lcov and passes its own check. Measure with `measure-guard.sh`, never with a bare
+`cargo llvm-cov --no-report` — see *Wave 39* for why.
 
-**Result**: `DA:0` = **1131** lines in **129** files under `agent/src` (2899 tests). This branch
-has cleared **542** of the 1673 it started from. Of the 1131:
+**Result**: `DA:0` = **1123** lines in **129** files under `agent/src`. This branch has cleared
+**550** of the 1673 it started from. Of the 1123:
 
 > **A ~100-line jump in a total is a broken run, not noise (wave 39).** `cargo llvm-cov` runs
 > `cargo test`, which stops at the first failing test *target*; `cli_smoke` fails intermittently
@@ -35,7 +35,7 @@ has cleared **542** of the 1673 it started from. Of the 1131:
 | state | lines |
 |---|---:|
 | **waived** (mechanism + falsifier named below, 11 rows) | **134** |
-| `open` — **no test and no justification yet** | **997** |
+| `open` — **no test and no justification yet** | **989** |
 
 Reconciliation: of the 1131 rows, the 11 waiver rows below name **134** lines, and the remaining
 **997** carry no justification yet. The generated ledger's class column (`open`, `a`, `W6`, `W5`,
@@ -256,6 +256,59 @@ Two consequences the lane has to live with, both now recorded:
    claims 100 % will have to show the `providers.rs` rows covered in the same run as everything
    else, or the number is a draw from a distribution. The honest target is the named-row ledger
    with every row either covered or exempted, which is what this file already is.
+
+## Wave 40: the gate's environment, an eight-row title branch, and a real HOME race
+
+**The gate.** `cargo test -p future-agent --lib` is the declared machine verification, and it
+has timed out at both 120 s and 300 s across this todo's attempts. Measured here, on an otherwise
+idle host, twice — the suite is green and simply takes that long:
+
+| run | toolchain | threads | test time | wall | exit |
+|---|---|---:|---:|---:|---|
+| `gate-test-196.log` | Homebrew **1.96.0** (`/opt/homebrew/bin/cargo`, the *default* PATH) | 32 | 206.63 s | **3 m 29.7 s** | 0 (2895 passed, 0 failed, 5 ignored) |
+| `gate-test-8threads.log` | same | 8 | 201.42 s | 3 m 21.7 s | 0 |
+| `cargo test`, pinned 1.99.1 on PATH | rustup 1.99.1 | 32 | 196.83 s | 3 m 29.8 s | 0 (2895 passed, 0 failed, 5 ignored) |
+
+Two facts a validator has to be built around. (a) **The default PATH does not resolve the pinned
+toolchain**: `/opt/homebrew/bin/cargo` is `Cellar/rust/1.96.0`, not a rustup proxy, and
+`rust-toolchain.toml` is invisible to it — so a validator that inherits the ambient PATH compiles
+whatever changed since the last 1.96 build (~53 s here) on top of a ~205 s suite. (b) A warm run is
+~210 s with ~30 % headroom to 300 s, and this machine runs several coverage lanes at once, so that
+headroom is routine to lose. Eight threads cut *system* CPU from 62 m 29 s to 15 m 58 s for the
+same wall time (`RUST_TEST_THREADS=8`): the suite is bound by per-test setup and SQLite serialisation,
+not by thread count, so fewer threads is free interference relief for every other lane on the host.
+
+**A real race the measurement caught.** The wave-41 run failed
+`tools::tests::rejects_recursive_rm_of_home_and_roots` with
+`assertion failed: reject_dangerous_command(...).is_err()`, passing when run alone under both the
+real and the isolated `HOME`. The test reads `home_dir()` (from `HOME`) and then calls the guard,
+which reads `HOME` again — and any `TestHome` fixture on another thread sets `HOME`/`USERPROFILE`
+process-wide between the two reads. It now holds `test_support::home_env_lock()`, the same lock the
+fixtures hold while mutating the environment (`2cb123f5e`). This is not a coverage row; it is a
+flake that would have made any measurement run a draw.
+
+**Eight rows, one branch.** `batch_summaries` has two ways to reach a first-message title: the
+inline `entries.content_json` value, and a paged read of a body reference. Every canonical fixture
+writes only the second, so the inline branch had never executed. A row written before
+externalization — and any session restored from one — carries the text inline, and without that
+branch such a session loses its preview entirely. The test rewrites one user entry into that shape
+through the store's own connection (identity binding preserved) and asserts the exact summary, the
+bulk row and `list_all` agree, with no caller-side fallback (`3ed439865`, `9fe14c54f`). It covers
+`reader_summary.rs:96-100` **and** `224-226`: the single-summary path shares the branch and had
+never taken it either.
+
+Result **1131 → 1123**; `lcov-symdiff.py wave40 wave43` = those 8 rows in `reader_summary.rs` and
+nothing else. Suite green at 2896 tests, 12 targets, 0 panics; `fmt --check` and
+`clippy -p future-agent --all-targets -D warnings` clean; ledger `ledger=clean`, 799 rows,
+classes `open` 719 · `a` 192 · `W6` 151 · `W5` 23 · `lane` 24 · `W1` 11 · `W7` 3.
+
+**The exit status is not evidence.** `cargo llvm-cov --no-report --no-fail-fast` returned **rc=0**
+for the wave-41 run whose log contains `test result: FAILED. 2895 passed; 1 failed`, and returned
+rc=0 again for a run in which a `panicked at` line appeared. `measure-guard.sh` now reads the log,
+not the status: it sums the `N failed` field of every per-target summary and refuses to write a
+report unless all 12 targets ran and that sum is 0. A bare `panicked at` is reported but is not a
+verdict — `acceptance_tests.rs:427` panics a background `agent-sqlite` thread on purpose while its
+test reports ok.
 
 ## Wave 39: the 100-row "noise" was a truncated run
 
