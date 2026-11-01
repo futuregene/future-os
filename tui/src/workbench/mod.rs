@@ -6712,6 +6712,10 @@ mod tests {
         // around to the first conversation.
         assert!(workbench.step_session(5, &data).is_empty());
         assert_eq!(workbench.sidebar_index, 3);
+        // A burst that stepped and came back nets zero: the driver still asks,
+        // and the answer is that nothing moved and nothing switched.
+        assert!(workbench.step_session(0, &data).is_empty());
+        assert_eq!(workbench.sidebar_index, 3);
     }
     /// `/pin` pins the conversation under the rail's cursor — the rail's cursor,
     /// so `shift+↑/↓` picks which one — and `p` stays a letter in the draft.
@@ -6751,6 +6755,18 @@ mod tests {
                     pinned: true,
                 },
             ]
+        );
+
+        // Words after the verb are the reader's prompt, not a pin: a line that
+        // follows `/pin` with a sentence is a sentence about what to pin, and
+        // claiming the verb there answered the rail and dropped everything after
+        // it — which is how a draft meant for the agent ended up toggling a pin.
+        let mut words = data.clone();
+        words.input.text = "/pin explain this".into();
+        words.input.cursor = words.input.text.len();
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &words),
+            vec![WbAction::Submit("/pin explain this".into())]
         );
 
         // The same verb on a pinned row is the unpin: the action carries the
