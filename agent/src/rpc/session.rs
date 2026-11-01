@@ -7317,15 +7317,12 @@ mod tests {
             )
             .unwrap();
         let store = session.session_manager.storage().unwrap().clone();
+        const REFUSE_CANCEL: &str =
+            "CREATE TRIGGER refuse_receipt_cancel BEFORE UPDATE ON queued_run_receipts \
+             BEGIN SELECT RAISE(ABORT,'injected receipt cancel failure'); END;";
         store
             .db
-            .call(|db| {
-                db.execute_batch(
-                    "CREATE TRIGGER refuse_receipt_cancel BEFORE UPDATE ON queued_run_receipts \
-                     BEGIN SELECT RAISE(ABORT,'injected receipt cancel failure'); END;",
-                )?;
-                Ok(())
-            })
+            .call(|db| Ok(db.execute_batch(REFUSE_CANCEL)?))
             .unwrap();
         let mut session = session;
         let error = session
@@ -7334,12 +7331,13 @@ mod tests {
                 crate::runtime::QueuedCancellationReason::Cancelled,
             )
             .unwrap_err();
+        let unavailable = matches!(
+            error,
+            crate::runtime::RunQueueError::PersistenceUnavailable(_)
+        );
         assert!(
-            matches!(
-                error,
-                crate::runtime::RunQueueError::PersistenceUnavailable(_)
-            ),
-            "{error:?}"
+            unavailable,
+            "the cancellation must report the store failure: {error:?}"
         );
         assert_eq!(
             session.scheduler.queued().len(),
