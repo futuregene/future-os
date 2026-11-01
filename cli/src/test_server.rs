@@ -336,6 +336,43 @@ impl HttpRoute {
     }
 }
 
+/// The message an accept failure panics with: the error, plus the descriptor
+/// budget, which is the only OS-level cause a mock listener has to expect.
+///
+/// Unix reports the soft `RLIMIT_NOFILE`, the number a runaway test raises and
+/// then runs out of.
+#[cfg(unix)]
+fn accept_failure(error: &std::io::Error) -> String {
+    let mut limits = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: the call fills a `rlimit` this function owns for its lifetime.
+    let soft = unsafe {
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limits) == 0 {
+            Some(limits.rlim_cur)
+        } else {
+            None
+        }
+    };
+    match soft {
+        Some(soft) => format!("mock listener accept: {error} (soft limit now {soft})"),
+        // Nothing to claim about a budget that could not be read: say so rather
+        // than report the zero the struct was initialised with as the limit.
+        None => format!(
+            "mock listener accept: {error} (getrlimit(RLIMIT_NOFILE) failed: {})",
+            std::io::Error::last_os_error()
+        ),
+    }
+}
+
+/// Windows has no `RLIMIT_NOFILE`: a process is capped by its handle table, not
+/// by a number a test could raise, so the error itself is the whole diagnostic.
+#[cfg(not(unix))]
+fn accept_failure(error: &std::io::Error) -> String {
+    format!("mock listener accept: {error} (handle pressure; no RLIMIT_NOFILE on this platform)")
+}
+
 /// Spawn a minimal HTTP/1.1 server answering `routes` (exact path match;
 /// unmatched paths get 404 with an empty JSON object). Returns the base URL
 /// "http://127.0.0.1:<port>". Each connection gets one response (reqwest
@@ -396,11 +433,8 @@ async fn spawn_http_impl(
                 accepted = listener.accept() => {
                     // Invariant: accept on a live mock listener only fails
                     // on OS-level resource exhaustion.
-                    let (mut socket, _) = accepted.unwrap_or_else(|e| {
-                        let mut l = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
-                        unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut l); }
-                        panic!("mock listener accept: {e} (soft limit now {})", l.rlim_cur);
-                    });
+                    let (mut socket, _) = accepted
+                        .unwrap_or_else(|e| panic!("{}", accept_failure(&e)));
                     let routes = routes.clone();
                     let requests = requests.clone();
                     tokio::spawn(async move {

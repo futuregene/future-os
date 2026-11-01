@@ -1851,6 +1851,34 @@ fn local_wall_clock(unix: i64) -> Option<String> {
     )
 }
 
+/// Whether to answer the `add` lock the way a file system that does not lock at
+/// all does, instead of taking it.
+///
+/// No platform CI runs on refuses a lock on an ordinary file — ext4, APFS and
+/// NTFS all take it — so the branch would otherwise only be reachable on the one
+/// platform whose `flock` rejects a FIFO. This seam makes it reachable
+/// everywhere; it is never set outside tests.
+#[cfg(test)]
+static FILE_SYSTEM_WILL_NOT_LOCK: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Take the `add` lock, or fail the way a file system without working `flock`
+/// does — the failure `exclusive_add_slot` turns into `Ok(None)`.
+fn lock_add_slot(file: &std::fs::File) -> std::io::Result<()> {
+    #[cfg(test)]
+    if FILE_SYSTEM_WILL_NOT_LOCK.load(std::sync::atomic::Ordering::SeqCst) {
+        // A kind that carries no errno: `lock_is_contended` compares errnos, so
+        // "this file system does not do locks" cannot be read as contention
+        // here — on any platform, which is what makes the seam a stand-in for a
+        // property of the file system rather than of one OS.
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "this file system will not lock",
+        ));
+    }
+    fs2::FileExt::try_lock_exclusive(file)
+}
+
 /// Hold the "one `add` at a time" lock for as long as this lives.
 ///
 /// An advisory file lock, so a process that dies releases it: a stale lock would
@@ -1870,7 +1898,7 @@ fn exclusive_add_slot() -> Result<Option<std::fs::File>, String> {
         .truncate(false)
         .open(&path)
         .map_err(|error| format!("Cannot open {}: {error}", path.display()))?;
-    match fs2::FileExt::try_lock_exclusive(&file) {
+    match lock_add_slot(&file) {
         Ok(()) => Ok(Some(file)),
         Err(error) if lock_is_contended(&error) => Err(
             "Another `future remote devices add` is already waiting for an invitation. Finish \
@@ -5999,26 +6027,40 @@ mod tests {
 
     // ── the add path's rare shapes ──────────────────────────────────────────
 
+    /// Make every `add` in this test body find a file system that will not lock,
+    /// and put the answer back when the body ends.
+    ///
+    /// The seam is a process-wide static, so this is only sound under
+    /// [`crate::test_env::lock_env`], which every test that reaches the lock holds;
+    /// the `Drop` restores it even when a test body panics.
+    struct UnlockableFileSystem;
+
+    impl Drop for UnlockableFileSystem {
+        fn drop(&mut self) {
+            super::FILE_SYSTEM_WILL_NOT_LOCK.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn a_file_system_that_will_not_lock() -> UnlockableFileSystem {
+        super::FILE_SYSTEM_WILL_NOT_LOCK.store(true, std::sync::atomic::Ordering::SeqCst);
+        UnlockableFileSystem
+    }
+
     /// A file system that will not lock at all is not another `add`: the command
     /// carries on and says out loud that the one-at-a-time guarantee is missing.
+    ///
+    /// The refusal is injected rather than arranged: a file system that declines
+    /// locks is a network share without a lock manager (or a FUSE mount), and no
+    /// test can build one — Linux takes the very FIFO lock macOS refuses, which is
+    /// how this landed as a platform-specific failure before. The FIFO's own
+    /// answer is still covered, one layer down, by
+    /// `a_file_system_that_will_not_lock_does_not_refuse_the_add`.
     #[tokio::test]
     async fn add_says_so_when_the_file_system_will_not_lock_it() {
         let _guard = crate::test_env::lock_env().await;
         let home = Home::new();
         sign_in();
-        let directory = home.future().join("run").join(CONTROL_DIRECTORY);
-        std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join(ADD_LOCK_FILE);
-        let fifo = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
-        // SAFETY: mkfifo only reads the path built above; a failure is asserted.
-        let created = unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) };
-        // Hoisted: `assert_eq!` formats its arguments only when it fails.
-        let mkfifo_error = format!(
-            "mkfifo {}: {}",
-            path.display(),
-            std::io::Error::last_os_error()
-        );
-        assert_eq!(created, 0, "{mkfifo_error}");
+        let _unlockable = a_file_system_that_will_not_lock();
         let _desktop = RunningDesktop::claim(&home);
         answer_requests(
             &home,
