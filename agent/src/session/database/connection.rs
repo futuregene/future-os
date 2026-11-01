@@ -9,6 +9,19 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection> {
     open_connection_cancellable(path, &crate::service::StartupCancellation::default())
 }
 
+/// User tables (anything that is not SQLite's own bookkeeping).
+const USER_TABLE_COUNT: &str = "SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'";
+
+/// Does this file carry a table that the Agent's own schema does not own?
+const FOREIGN_TABLES_EXIST: &str = "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table'
+     AND name NOT LIKE 'sqlite_%' AND name NOT IN
+     ('skills','skills_meta','skill_installations','skill_operations'))";
+
+/// The complement of [`FOREIGN_TABLES_EXIST`]: nothing but the skills tables.
+const NO_FOREIGN_TABLES: &str = "SELECT NOT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table'
+     AND name NOT LIKE 'sqlite_%' AND name NOT IN
+     ('skills','skills_meta','skill_installations','skill_operations'))";
+
 pub(super) fn open_connection_cancellable(
     path: &Path,
     cancellation: &crate::service::StartupCancellation,
@@ -56,23 +69,13 @@ fn initialize_connection(
         bail!("database belongs to a different application");
     }
     if application == 0 {
-        let tables: i64 = connection.query_row(
-            "SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
-            [],
-            |row| row.get(0),
-        )?;
+        let tables: i64 = connection.query_row(USER_TABLE_COUNT, [], |row| row.get(0))?;
         if version != 0 || tables != 0 {
             bail!("refusing to initialize an unrecognized database");
         }
     }
     if application == 0x46555452 && version == 0 {
-        let unknown: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table'
-             AND name NOT LIKE 'sqlite_%' AND name NOT IN
-             ('skills','skills_meta','skill_installations','skill_operations'))",
-            [],
-            |row| row.get(0),
-        )?;
+        let unknown: bool = connection.query_row(FOREIGN_TABLES_EXIST, [], |row| row.get(0))?;
         if unknown {
             bail!("Agent database has an incomplete schema identity; preserve it for recovery");
         }
@@ -91,13 +94,7 @@ fn initialize_connection(
         // CREATE IF NOT EXISTS must never mask missing authoritative history.
         super::schema::validate_core(connection)?;
     } else if application != 0 {
-        let bootstrap: bool = connection.query_row(
-            "SELECT NOT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table'
-             AND name NOT LIKE 'sqlite_%' AND name NOT IN
-             ('skills','skills_meta','skill_installations','skill_operations'))",
-            [],
-            |row| row.get(0),
-        )?;
+        let bootstrap: bool = connection.query_row(NO_FOREIGN_TABLES, [], |row| row.get(0))?;
         if !(bootstrap && matches!(version, 0 | 3 | 4)) {
             super::schema::validate_authoritative_history(connection, version)?;
         }
