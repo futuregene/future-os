@@ -1564,9 +1564,19 @@ mod tests {
     /// from the build channel *inside* the command, so any invocation makes a live
     /// request to `dl.future-os.cn`. Measured, not assumed: an earlier version of this
     /// fixture dispatched it and came back with a real `0.0.2-104+nightly` manifest.
+    ///
+    /// The request carries [`ipc_harness::local_invoke_url`], i.e. the app's own origin for
+    /// the platform this runs on. A hardcoded `tauri://localhost` is the app's origin on
+    /// macOS and Linux only; on Windows and Android the same page is
+    /// `http://tauri.localhost`, so the request reads as a *remote* caller and
+    /// `Webview::on_message` refuses it in its ACL check — measured here, not assumed: with
+    /// the Windows spelling this case reproduces Windows' reply verbatim on macOS,
+    /// `"install_app_update not allowed. Plugin not found"`, without ever reaching the
+    /// argument deserialization or the wrapper's guard this case is about.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn the_install_command_refuses_a_manual_only_build_over_ipc() {
+        use crate::commands::ipc_harness::local_invoke_url;
         use tauri::ipc::{CallbackFn, InvokeBody};
         use tauri::test::{get_ipc_response, INVOKE_KEY};
         use tauri::webview::InvokeRequest;
@@ -1583,7 +1593,7 @@ mod tests {
                 cmd: "install_app_update".into(),
                 callback: CallbackFn(0),
                 error: CallbackFn(1),
-                url: "tauri://localhost".parse().expect("url"),
+                url: local_invoke_url().parse().expect("url"),
                 // An empty JSON object: `language` is an `Option<String>`, and the
                 // frontend sends it absent most of the time.
                 body: InvokeBody::Json(json!({})),
@@ -1599,6 +1609,11 @@ mod tests {
             "the fixture needs a build that cannot install in place"
         );
         let error = response.expect_err("a manual-only build cannot install over IPC");
+        assert!(
+            !error.as_str().unwrap_or_default().contains("not allowed"),
+            "the request was refused as a remote origin, so it never reached the wrapper's \
+             guard: {error}"
+        );
         assert!(
             error
                 .as_str()
