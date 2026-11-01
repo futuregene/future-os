@@ -233,6 +233,14 @@ and inside `session::history`: `display_index` 71.64 s (14 tests), `paging` 27.6
 tests at ≤1.2 s. Every one of those is a deliberate scale test (a 9.6 MiB history, an 8 MiB page
 budget, a 100 k-entry index) — heavy on purpose, and none of them is wrong.
 
+**What is inside the 15 s test.** `sample` on the running test binary (4 s, ~150 samples of the
+live thread) puts the busy frames in `serde_json::format_escaped_str_contents` with
+`memchr`/`slice::split_at` beneath it, and the rest of the thread parked in writer semaphores —
+i.e. the cost is **serializing ~9.6 MB of JSON text, repeatedly**, not test scaffolding and not
+I/O durability. That matters for the decision: there is no fixture-side waste to remove, so the
+only lever left is product code (the page assembly re-encodes text it already holds), which is
+not this lane's to change.
+
 That is the honest shape of the problem: **four tests own ~35 s of the critical path**, and the
 only ways to shorten them are to shrink what they exercise (weakening) or to make the product
 fast enough that the same scenario costs less (a production change). Neither is this lane's call.
