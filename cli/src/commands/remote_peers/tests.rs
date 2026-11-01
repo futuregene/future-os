@@ -906,6 +906,168 @@ async fn remove_proceeds_here_when_the_desktop_never_answers() {
     assert_eq!(remaining[0]["desktopId"], ONE, "{after}");
 }
 
+/// A process-lifetime runtime for the host bridge, installed once.
+///
+/// `future_host::runtime::set` is a `OnceLock`: the first handle a process
+/// installs is the one every later test in that process uses. A handle to *this*
+/// test's runtime would therefore be dead the moment the test ends, and every
+/// later test that spawns host work would spawn onto nothing. Measured: three
+/// `headless::tests` CLI-discovery probes timed out in a full run with a
+/// test-scoped handle, and passed in runs without it. So this runtime is leaked
+/// on purpose — it is the entry point's runtime, and this process has one.
+fn host_runtime() -> tokio::runtime::Handle {
+    static RUNTIME: std::sync::OnceLock<&'static tokio::runtime::Runtime> =
+        std::sync::OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            Box::leak(Box::new(
+                tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+                    .expect("host runtime"),
+            ))
+        })
+        .handle()
+        .clone()
+}
+
+/// A host bridge that is serving and has **no device bound yet**.
+///
+/// `add` is the command that binds one, so this stands where `testing::fixture`
+/// does and stops one step earlier. Three measured properties of that fixture are
+/// why it cannot be reused as it is:
+///
+/// * its `claim` binds the bridge to a device, and a second claim against the same
+///   bridge is answered `peer_mismatch`;
+/// * `add` shuts the peer runtime down before it returns, so a process holds one
+///   pairing — which is what a one-shot command deserves, and it is why the `--json`
+///   branch of the same command has no second test here: a second bridge cannot be
+///   started in this process once the first one is torn down;
+/// * the bridge's tasks need a `multi_thread` test runtime (see the test below).
+struct Served {
+    _home: future_host::remote::test_support::HomeGuard,
+    platform: future_host::remote::test_support::MockPlatform,
+    nats: future_host::remote::test_support::FakeNats,
+    pair_id: String,
+    host_invitation: String,
+    claim_url: String,
+    desktop_id: String,
+}
+
+impl Served {
+    async fn start(label: &str) -> Self {
+        use future_host::remote::test_support::{HomeGuard, MockPlatform};
+        use future_host::remote_peer::testing;
+
+        let home = HomeGuard::new(label);
+        // The host bridge spawns through the shared host runtime, which refuses
+        // to run without an installed handle. This process is the entry point
+        // here, so it installs one — exactly what `add` does for its own call.
+        future_host::runtime::set(host_runtime());
+        future_host::remote_peer::runtime::reset_for_test(&home).await;
+        future_host::remote::test_support::init_store();
+        let platform = MockPlatform::start().await;
+        let nats = future_host::remote::test_support::FakeNats::start().await;
+        let (pair_id, host_invitation) = testing::start_host(&platform, &nats).await;
+        let desktop_id = reqwest::Url::parse(&host_invitation)
+            .expect("the bridge shows a url")
+            .query_pairs()
+            .find(|(key, _)| key == "desktopId")
+            .map(|(_, value)| value.into_owned())
+            .expect("the invitation names the machine");
+        let claim_url = format!("{}/client/v1/remote/pair/claim", platform.url());
+        Self {
+            _home: home,
+            platform,
+            nats,
+            pair_id,
+            claim_url,
+            host_invitation,
+            desktop_id,
+        }
+    }
+
+    /// Script one claim the way the platform answers one — the grant, and the
+    /// endpoint the credential refresh resolves — then hand back an invitation
+    /// for it. Built from this bridge's own invitation, so the PSK and the Noise
+    /// keys are the ones it will answer for.
+    fn invitation(&self, tag: &str) -> String {
+        self.platform.push(
+            "/client/v1/remote/pair/claim",
+            200,
+            json!({
+                "pair_id": self.pair_id,
+                "user_jwt": future_host::remote::test_support::jwt(
+                    future_host::remote::test_support::now_secs() + 3_600
+                ),
+                "refresh_token": tag,
+                "nats_ws_url": self.nats.url().replace("nats://", "ws://"),
+            }),
+        );
+        self.platform.respond_refresh(self.nats.url());
+        future_host::remote_peer::testing::invitation_for(&self.host_invitation, &self.claim_url)
+    }
+
+    /// The peer the book on disk holds, as the next start will read it.
+    fn paired_book(&self) -> Value {
+        let path = self._home.path().join(".future").join("remote_peers.json");
+        serde_json::from_str(&std::fs::read_to_string(path).expect("the book was written"))
+            .expect("the book is JSON")
+    }
+
+    /// Stop the bridge before the home guard drops. A bridge left running keeps
+    /// the guard's cleanup waiting for its supervisor, and a task that cannot
+    /// stop aborts the test process instead of failing one test.
+    async fn finish(self) {
+        future_host::remote_peer::testing::teardown(&self.pair_id).await;
+    }
+}
+
+/// `future remote peers add` is the one command in this group that pairs **here**
+/// instead of asking the Desktop: a claim against the platform plus one Noise
+/// handshake with the other machine. A mocked platform answers the HTTP half and
+/// nothing else, which is why this arm needs the host's own fixture — a real host
+/// bridge on the in-process broker — and not a bigger fake.
+///
+/// What the person reads: the three facts a report has to carry — which machine,
+/// whether it is reachable now, and who keeps it connected from here.
+///
+/// `multi_thread` is required, not a preference. The bridge's tasks are spawned
+/// on the process-lifetime runtime above, and the home guard's cleanup waits for
+/// them from the test thread — a current-thread runtime cannot poll the aborts
+/// while that thread is blocked, which is a five second deadline followed by a
+/// panic in a destructor (measured).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn add_says_which_machine_it_paired_and_who_connects_it() {
+    let _cli = crate::test_env::ENV_LOCK.lock().await;
+    let served = Served::start("cli-peers-add-text").await;
+    let invitation = served.invitation("refresh-token-add-text");
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "add", &invitation]).await;
+
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stdout.contains(&served.desktop_id),
+        "the machine must be named: {stdout}"
+    );
+    assert!(
+        stdout.contains("Connected to it now."),
+        "a pairing that answered must say it is connected: {stdout}"
+    );
+    assert!(
+        stdout.contains("No Desktop is running") || stdout.contains("keeps it connected"),
+        "the report must say who connects it from here: {stdout}"
+    );
+    let stored = served.paired_book();
+    assert_eq!(
+        stored["peers"][0]["desktopId"],
+        json!(served.desktop_id),
+        "{stored}"
+    );
+    served.finish().await;
+}
+
 /// The Desktop removed it, and the JSON says so with the book it left behind:
 /// this command must not remove it a second time and then report a pairing that
 /// is already gone.
