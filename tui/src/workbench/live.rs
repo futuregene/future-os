@@ -11235,4 +11235,143 @@ mod tests {
         );
         live.client.disconnect();
     }
+
+    /// A mention inside the draft: quotes and backslash escapes are part of the
+    /// word, plain whitespace ends it, and the walk reports where it stopped so
+    /// the caller can continue from there.
+    ///
+    /// `mention_word` measured zero: it is only reached through the `@` menu's
+    /// own completion, which needs a live editor round trip. It is a pure
+    /// function over the text, so the table is the honest fixture.
+    #[test]
+    fn a_mention_word_is_walked_with_its_quotes_and_escapes() {
+        // A bare word stops at the space; raw text and value agree.
+        let (end, raw, value) = super::mention_word("src/main.rs rest", 0);
+        assert_eq!(
+            (end, raw, value.as_str()),
+            (11, "src/main.rs", "src/main.rs")
+        );
+        // A quoted path keeps its spaces; the value drops the quotes.
+        let (end, raw, value) = super::mention_word("\"a file with spaces.rs\" x", 0);
+        assert_eq!(value, "a file with spaces.rs");
+        let text = "\"a file with spaces.rs\" x";
+        assert_eq!(
+            &text[end..],
+            " x",
+            "the walk stopped inside the closing quote"
+        );
+        assert_eq!(
+            raw, "\"a file with spaces.rs\"",
+            "the raw slice keeps the quotes"
+        );
+        // A backslash escapes the next character, inside the quotes: the value
+        // keeps the quote and loses the backslash.
+        let (_, _, value) = super::mention_word("\"a \\\"quoted\\\" name\"", 0);
+        assert_eq!(value, "a \"quoted\" name");
+        // A trailing backslash with nothing after it is kept as a character.
+        let (_, _, value) = super::mention_word("\"ends in \\", 0);
+        assert_eq!(value, "ends in \\");
+        // The walk starts where it is told, and reports the end it reached.
+        let text = "look at @src/lib.rs";
+        let at = text.find('@').expect("the mention") + 1;
+        let (end, word, _rest) = super::mention_word(text, at);
+        assert_eq!(word, "src/lib.rs");
+        assert_eq!(
+            end,
+            text.len(),
+            "the walk stopped before the end of the word"
+        );
+        // An empty text is an empty word, and the walk does not move.
+        let (end, raw, value) = super::mention_word("", 0);
+        assert_eq!((end, raw, value.as_str()), (0, "", ""));
+    }
+
+    /// A run's usage: the tokens a turn spent are folded into the session's
+    /// context gauge as the events arrive, and the run's own rate is frozen when
+    /// the run ends rather than counting from the clock afterwards.
+    #[tokio::test]
+    async fn a_runs_usage_is_folded_into_the_context_gauge() {
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        let current = live.state.session_id.clone();
+        let stamped = |kind: &str, data: serde_json::Value| {
+            let mut event = event(kind, data);
+            event.session_id = Some(current.clone());
+            event.run_id = Some("run-1".into());
+            event
+        };
+
+        // A model step reports its spend on the `usage` event.
+        // The event carries the step's spend under `usage`.
+        live.handle_event(stamped(
+            "usage",
+            json!({"usage": {"prompt_tokens": 120, "completion_tokens": 30}}),
+        ));
+        assert_eq!(
+            live.state.context_tokens,
+            Some(150),
+            "the step's tokens did not reach the context gauge"
+        );
+        assert!(
+            live.run_output_tokens >= 30,
+            "the completion tokens were not counted against the run: {}",
+            live.run_output_tokens
+        );
+
+        // The end of the run folds its own total in, and the rate stops moving.
+        let before = live.run_output_tokens;
+        live.handle_event(stamped(
+            "agent_end",
+            json!({"usage": {"prompt_tokens": 200, "completion_tokens": 40}}),
+        ));
+        assert!(
+            live.run_output_tokens >= before,
+            "the end-of-run usage did not add to the run's total"
+        );
+        let frozen = live.run_tps;
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        assert_eq!(
+            live.run_tps, frozen,
+            "the rate kept moving after the run ended"
+        );
+        live.client.disconnect();
+    }
+
+    /// A failed turn is announced once, and only for a run this client started:
+    /// the end of somebody else's run is not this surface's news.
+    #[tokio::test]
+    async fn only_this_clients_failed_run_raises_its_notification() {
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        let current = live.state.session_id.clone();
+
+        // An end that is not a failure is not this notification.
+        let ok_end = event("agent_end", json!({"state": "done"}));
+        assert!(!live.take_failure_notification(&ok_end));
+
+        // A failure for a run this client did not submit: nothing to announce.
+        let mut stranger = event("agent_end", json!({"state": "failed"}));
+        stranger.session_id = Some(current.clone());
+        stranger.run_id = Some("run-other".into());
+        assert!(
+            !live.take_failure_notification(&stranger),
+            "another run's failure was announced here"
+        );
+
+        // A run this client did submit: the failure is announced, once.
+        live.completion_candidates.push_back("run-1".to_string());
+        let mine = {
+            let mut event = event("agent_end", json!({"state": "failed"}));
+            event.session_id = Some(current);
+            event.run_id = Some("run-1".into());
+            event
+        };
+        assert!(
+            live.take_failure_notification(&mine),
+            "the failure was not taken"
+        );
+        assert!(
+            !live.take_failure_notification(&mine),
+            "the same failure was announced twice"
+        );
+        live.client.disconnect();
+    }
 }
