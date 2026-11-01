@@ -316,3 +316,39 @@ fn a_live_delta_over_the_text_budget_is_delivered_as_bounded_pieces() {
     }
     assert_eq!(assembled, text, "the pieces must tile the original text");
 }
+
+/// A canonical event whose payload is not JSON never reaches the store *or* a
+/// subscriber: the payload is parsed before the stamping lock is taken, so the
+/// refusal is immediate and recorded on the journal, and no frame the store
+/// could never hold is delivered to a live client.
+#[test]
+fn an_unparseable_canonical_event_fails_the_journal_before_delivery() {
+    let (_root, manager, _store) = canonical_store();
+    let broadcaster = SseBroadcaster::new();
+    broadcaster.configure_journal("s", &manager).unwrap();
+    assert!(
+        broadcaster.uses_segmented_storage(),
+        "this refusal only exists on the canonical path"
+    );
+    let mut receiver = broadcaster.subscribe();
+    broadcaster.start_run("run-bad-json".into(), 1);
+    broadcaster.broadcast(SseEvent::new("agent_start", json!({})));
+
+    let mut truncated = SseEvent::new("text_chunk", json!({"text": "x"}));
+    truncated.data = "{\"text\": \"unterminated".to_string();
+    broadcaster.broadcast(truncated);
+
+    let error = broadcaster
+        .persistence_error()
+        .expect("the refusal is recorded on the journal");
+    assert!(error.contains("invalid event data"), "{error}");
+
+    let delivered: Vec<String> = std::iter::from_fn(|| receiver.try_recv().ok())
+        .map(|event| event.event_type)
+        .collect();
+    assert_eq!(
+        delivered,
+        vec!["agent_start".to_string()],
+        "the frame the store could not hold must not be delivered"
+    );
+}
