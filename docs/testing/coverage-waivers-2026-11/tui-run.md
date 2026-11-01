@@ -200,6 +200,36 @@ wave's number is reproducible rather than one lucky pass.
 | `run.rs:1362-1364` | the clipboard refusing the repository's `y` — a `PATH` with a **stub `git`** and no clipboard tool, so the panel loads and only the copy cannot run | `a_copy_the_clipboard_refuses_is_reported` |
 | `run.rs:1075-1085` | the palette's `/pin` row, which is the **only** door to the loop's `/pin` arm: a typed `/pin` is answered in the surface (`toggle_pin_selected`, `mod.rs:4346`), so `driver.command("/pin")` never reaches `run.rs:1074` | `the_palettes_pin_reaches_the_rail_the_draft_answers_in_the_surface` |
 
+### The ±1 in the lane total, and where it came from
+
+`r10` and `r11` disagree by one line, and it is not the tree: `cmp_info.py` puts the whole
+difference on `git_panel.rs` (47 vs 48), and `diff_lines.py` names the line —
+**`git_panel.rs:1077`**, `focus`'s `Err(error) => view.detail = vec![spoken(lang, error)]`.
+
+That arm runs when a cursor move re-reads one row's patch and the read fails. It was covered
+only **when a read happened to break under the whole suite**, and this file's own fixtures made
+that likelier than it sounds: they spawned `git` **by name** (`Command::new("git")`, three
+call sites in `git_panel`'s tests), so a peer test's `PATH` swap — the one
+`live::tests::opening_a_link_spawns_the_opener_and_reports_a_missing_one` holds the environment
+lock for — could turn a read they expected to succeed into the failure arm. A measurement that
+depends on a race is not a measurement; it is what made any single-pass lane total ±1.
+
+Closed from both ends, in `1ab7bb41f`:
+
+* the fixtures resolve `git` absolutely (`test_env::absolute_tool`, same fix as `run.rs`'s
+  fixture in wave 5), so the read a test means to make is the read it makes;
+* `a_detail_that_cannot_be_read_is_one_spoken_line` states the arm's own premise — a workspace
+  that is gone, a row selected, and the gutter holding exactly the one line that says so.
+
+Verified in isolation rather than by a whole-lane pass: `cargo llvm-cov -p future-tui --lib --
+git_panel::tests::a_detail_that_cannot_be_read` (own `CARGO_TARGET_DIR`, so a sibling run cannot
+rebuild the shared one mid-pass) reports `DA:1` on `1077` and `DA:0` on `1076` (`Ok(lines)`) —
+i.e. the test took the failure path it is named for. **`r12`, the whole-lane confirmation, did
+not produce a usable artifact:** its meters pass died with `signal_shutdown … (never executed)`
+because the second `--agent-id cov-tui2` run rebuilt the shared `target/llvm-cov-target`
+underneath it. The next lane pass on a quiet worktree settles the last digit; the line itself
+is no longer in doubt.
+
 ### What the palette's `/pin` showed: a sentence nothing prints
 
 `toggle_pin_selected` answers a launchpad pin with `WbAction::Notice(NoticePinNewSession)`
