@@ -1481,9 +1481,15 @@ fn sandbox_probe_commands_answer_with_the_host_product() {
     // rather than pretend it removed capabilities that cannot exist here.
     if cfg!(windows) {
         assert_eq!(response["success"], true, "{response}");
+        // The answer is a count, not a list: the reset reports how many
+        // capability records it revoked, and a host with nothing staged — a
+        // fresh CI runner — legitimately reports 0 rather than refusing
+        // (`reset_capabilities_at` returns `Ok(0)` for a missing state file).
+        // `host::agent_bridge::reset_windows_sandbox` reads this field with
+        // `as_u64`, so the count is the shape clients consume.
         assert!(
-            response["data"]["removedCapabilities"].is_array(),
-            "reset_windows_sandbox must answer what it removed: {response}"
+            response["data"]["removedCapabilities"].as_u64().is_some(),
+            "reset_windows_sandbox must answer how many it removed: {response}"
         );
     } else {
         assert_eq!(response["success"], false, "{response}");
