@@ -254,9 +254,9 @@ Both of these are in `headless::session`, and both were registered as "needs the
 heavyweight `headless_cli` fixture, not a unit test". They were right about the *shape* and
 wrong about the cost: the fixture existed, and each arm is **one** more launch in it.
 
-**`--relay` (302/306).** The flag had only ever been *parsed* —
-`relay_flags_are_accepted_in_both_spellings` stops at `--help`, because an unattended run
-blocks the terminal rule in that older shape. A launch now really runs: `future host --relay
+**`--relay` (302/306).** The flag had only ever been *parsed*:
+`relay_flags_are_accepted_in_both_spellings` stops at `--help`, and no test in this crate had
+started a relay run. A launch now really runs: `future host --relay
 http://127.0.0.1:1` serves, prints "Self-hosted relay (…). No Future account is used for phone
 pairing", takes the `None` account branch and stays up (`No device is paired yet`), then
 stops cleanly on SIGINT. The port is a loopback one nothing listens on **on purpose**: the
