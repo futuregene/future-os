@@ -3,25 +3,25 @@
 **Metric A** — a line counts as uncovered iff its LCOV record is `DA:<line>,0`. The
 llvm-cov *summary* percentage is not the acceptance number.
 
-**Last measurement**: `test/cov-agent` at `f9a8d0881` (cut from `origin/dev-huichen@79bd2bd37`),
+**Last measurement**: `test/cov-agent` at `2f4e66046` (cut from `origin/dev-huichen@79bd2bd37`),
 Rust **1.99.1** (`rust-toolchain.toml`), macOS arm64, lcov
-`coverage/2026-11/after/agent/lcov-after23.info`, run log `after23.log`.
+`coverage/2026-11/after/agent/lcov-after24.info`, run log `after24.log`.
 
-**Result**: `DA:0` = **1237** lines in **130** files under `agent/src` (83 550 executable,
-98.52 % per-line). Two waves on this branch have cleared **436** of the 1673 it started
-from. Of the 1237:
+**Result**: `DA:0` = **1231** lines in **130** files under `agent/src` (83 585 executable,
+98.53 % per-line). Three waves on this branch have cleared **442** of the 1673 it started
+from. Of the 1231:
 
 | state | lines |
 |---|---:|
 | **waived** (mechanism + falsifier named below) | **98** |
-| `open` — **no test and no justification yet** | **1139** |
+| `open` — **no test and no justification yet** | **1133** |
 
 Reconciliation (the rows below sum to the measured total): waived 24 (`glob_scan.rs` ignored
 acceptance, class `lane`) + 24 (`execution.rs` Linux helper block, class `open` there because
 the line text carries no attribute) + 1 (`transport.rs:212`, class `open`) + 2 (Windows
 candidates, class `W1`) + 6 (`settings.rs` serialization fallbacks, class `open`) + 23
 (`settings.rs` probe-error / host-capability arms, class `open`) = **98** waived, and the
-remaining **1139** are `open`. The generated ledger's class column (`open`, `a`, `W6`, `W5`,
+remaining **1133** are `open`. The generated ledger's class column (`open`, `a`, `W6`, `W5`,
 `W7`, `W1`, `lane`) *subdivides* those open lines; it does not reduce them.
 
 The class column of the generated ledger is a first-cut reading of each line's own text
@@ -105,9 +105,9 @@ A stream content range can never carry `tool_args_string_v1`:
 (`session/content/transport_tests.rs`), which asserts both refusals. Falsified by finding any
 writer or schema path that can store that encoding for a stream range — the test would fail.
 
-## Open (1139 lines) — no waiver claimed
+## Open (1133 lines) — no waiver claimed
 
-Raw `DA:0` counts from `lcov-after23.info`; the 98 waived lines above are **inside** these
+Raw `DA:0` counts from `lcov-after24.info`; the 98 waived lines above are **inside** these
 counts, so a row's open share is its count minus its waiver row (e.g. `execution.rs` 41 − 24).
 
 | file | `DA:0` | mechanism |
@@ -119,7 +119,7 @@ counts, so a row's open share is its count minus its waiver row (e.g. `execution
 | `agent/run_loop.rs` | 36 | tool-approval denial arms and the truncation reporter |
 | `session/content/reader.rs` | 35 | the remaining header/column arms around the targeted read |
 | `compaction/semantic/evidence.rs` | 33 | evidence summariser arms that need a real compaction transcript |
-| `rpc/session.rs` | 33 | the stop-before-recovery edge and the scheduler-pause diagnostics |
+| `rpc/session.rs` | 26 | the stop-before-recovery edge and the scheduler-pause diagnostics |
 | `session/content/entries.rs` | 33 | staged-reset placeholders and the extension staging loop |
 | `session/content/reader_recall.rs` | 32 | `find()`'s cross-page carry tail and the snippet arms |
 | `sandbox/linux/glob_scan.rs` | 28 | 24 waived (ignored acceptance); the walk's own edges are open |
@@ -131,7 +131,7 @@ counts, so a row's open share is its count minus its waiver row (e.g. `execution
 | `rpc/broadcaster/mod.rs` | 16 | admission/close arms and the live-delta split tail |
 | `session/content/journal.rs` | 20 | the batch commit tail and the string-argument repair |
 | `rpc/commands/session_lifecycle.rs` | 17 | fork/clone failure arms and the legacy-history scan |
-| rest (≈ 111 files) | 594 | mostly single `?` error edges; the generated ledger names each line |
+| rest (≈ 111 files) | 595 | mostly single `?` error edges; the generated ledger names each line |
 
 ### The mid-run transcript-write defect, narrowed
 
@@ -150,14 +150,15 @@ surfaces later where nothing maps it back onto this run. That is the thing to ch
 reproduction is in `coverage/2026-11/after/agent/report.md` § *Open defect*. The line stays
 `open` on purpose — a waiver would hide it.
 
-Honest summary: the lane is at **98.52 %** per line, and the remaining 1139 lines are one
+Honest summary: the lane is at **98.53 %** per line, and the remaining 1133 lines are one
 mechanism away (a store-fault seam, a probe seam or a fixture) rather than one line away.
 
-## What waves 20-21 cleared (1237 left of 1311)
+## What waves 20-22 cleared (1231 left of 1311)
 
 | file | before | after | how |
 |---|---:|---:|---|
 | `rpc/session_prompt.rs` | 61 | **35** | two runs, both end to end. **Legacy conversation:** the plain-transcript format is selected before the session configures its journal (the broadcaster reads it once and never reconsiders), so a prompt runs through the non-canonical write path; the answer is asserted to be a plain assistant entry, the run's own `session_info` is asserted to keep `created_by`/`creator_id`/`source_meta` (the canonical path deliberately drops `source_meta`), and a replayed run id is asserted to be refused from the transcript's own `content.run_id` where no per-run journal exists — reachable only through `enqueue_prompt`, since a directly submitted prompt carries no request id. **Journal death mid-run:** a gated run whose event table is dropped while it is parked is asserted to leave `Running` for `PersistenceDegraded`, emit `persistence_error`, and end on `agent_end` with state `error` and the `Session persistence failed:` prefix. |
+| `rpc/session.rs` | 33 | **26** | `ensure_checkpoint_loaded` — the fallback for a handle whose cached history was released — is driven through its supported transition: a handle starts resolved, releasing the history marks it stale, and the fallback then reads the transcript, records "none found" for a conversation without a compaction checkpoint, and marks itself loaded. A checkpoint written afterwards is deliberately not picked up, which is what keeps the call free on the hot path. |
 | `rpc/commands/test_support.rs` | 25 | **0** | `assert_json_eq`'s `difference` only ran when an assertion was about to fail, so all of it was dark. Eight tests drive it through a failing comparison and assert the path it names: nested field, array index, a key only one side carries, one document written two ways (an encoding difference, not a value difference), two different JSON strings compared as documents, a non-JSON string, and a root-type mismatch. |
 | `rpc/commands/session_lifecycle.rs` | 36 | **17** | a store that **cannot be opened at all** (`agent.db` is a directory) now reaches the sessionless surfaces: journal stats, storage health, storage format, presence, the reclaim sweep and `new_session` each answer with their own refusal (code, message, `error_data.sessionId`) instead of panicking or reporting empty data. The reclaim sweep also refuses a mode marker it does not recognise without reclaiming anything, and `dryRun` is pinned as a plan: no run reclaimed, `hasMore` false, `quickCheck` null. |
 | `rpc/broadcaster/mod.rs` | 20 | **16** | a canonical event whose payload is not JSON is refused before the stamping lock: the journal records `invalid event data`, and the subscriber gets only the healthy frame that preceded it. |
@@ -194,6 +195,45 @@ drive this branch with non-empty text (`an_unknown_role_gets_its_own_labelled_ca
 an **attribution** row, not a behaviour row. The rustfmt-stable fixes are a `let … else`
 restructure or a `match` with an explicit empty arm; neither is claimed here because neither was
 measured, and `cargo fmt` after the change would need its own measurement pass.
+
+## What the suite costs, and what does not help
+
+The declared verifier is `cargo test -p future-agent --lib`. Measured on this head, warm:
+**2874 tests, 0 failed, 5 ignored, 317.52 s** of test time (**335.93 s** wall). Three
+consecutive warm runs gave 307 / 336 s wall and one 295 s of test time. The budget is a
+subprocess timeout, so what has to fit is **wall** time.
+
+Two levers have now been *measured* rather than assumed, and both are dead ends:
+
+- **Durability is not the cost.** The standing theory was that `synchronous=FULL` (`F_FULLFSYNC`
+  on macOS) makes every commit cost tens of milliseconds. Under `#[cfg(test)]` switched to
+  `NORMAL`: **316.18 s** of test time — no change at all — and it *broke*
+  `session::database::wal::tests::a_long_reader_can_delay_checkpointing_without_joining_the_ordered_commit_queue`,
+  which asserts frame/checkpoint behaviour. Reverted. The kernel time (≈5 700 s across the suite)
+  is not fsync.
+- **Thread count is not reachable.** On a 143-test subset, `RUST_TEST_THREADS` 32 / 16 / 8 gave
+  50.6 s / 37.8 s / 49.6 s wall — inside the run-to-run noise, and the verifier's command line is
+  fixed, so it could not be applied anyway.
+
+One real pathology found, **not** fixed here (it is a production cost, not a test cost):
+`session::title_preview::tests::paged_preview_handles_long_labels_targets_and_small_unicode_pages`
+spends **12.5 s of CPU** on four inputs — 4 % of the suite — because it pages a 100 000-character
+title in ≤13-byte steps, which makes `title_preview::paged` quadratic in the page count. Fixing
+that is a production change with its own tests, so this lane only records it.
+
+The remaining honest options for the verifier are the supervisor's: a larger budget, or a
+knowingly narrower command (`rpc::commands::` ≈ 62 s, `session::content` ≈ 50 s).
+
+## Replay vocabulary of `session::content::recovery` (learned the hard way)
+
+The recovery replay matches on `event_type` and **ignores/serves nothing for `tool_input_start`**:
+the accepted kinds are `message_start`, `text_start`, `thinking_start`, `text_chunk`,
+`thinking_delta`, `tool_start` (with `"phase":"input"`), `tool_delta`, `thinking_end`,
+`tool_input_end`, `message_end`, `tool_end`. A hand-built fixture that uses `tool_input_start`
+leaves the run at `recovery_failed`. The `thinking_end` / `tool_input_end` arms that re-link a
+published `/data/provider_metadata` or `/data/tool_args` body additionally need `message_start`
+(a draft) *and* a following `tool_end` to publish anything — a crash between the input events and
+`message_end` recovers no partial assistant entry.
 
 ## Measurement-lane notes: the four `cli_smoke` timeouts
 
