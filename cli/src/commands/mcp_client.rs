@@ -1209,7 +1209,19 @@ done
         /// waits out its grace period and then kills what is left.
         #[tokio::test]
         async fn shutdown_kills_a_server_that_ignores_its_closed_stdin() {
-            let spec = sh_spec(format!("{SERVE_ONCE}\nsleep 30"), Map::new(), None);
+            // A shell BUILTIN busy loop, not `sleep`: `sleep` is looked up on
+            // PATH at run time, and other tests in this binary repoint the
+            // process-wide PATH at a fixture directory while they run. When that
+            // happened the command was not found, the script exited on its own,
+            // and the shutdown this test measures returned in under a
+            // millisecond (`the grace period must be waited out: 909µs`) —
+            // a failure that named this test and was caused by another one.
+            // A builtin needs no lookup and cannot be affected by PATH.
+            let spec = sh_spec(
+                format!("{SERVE_ONCE}\nwhile :; do :; done"),
+                Map::new(),
+                None,
+            );
             let process = ServerProcess::start("stubborn", &spec, Duration::from_secs(10))
                 .await
                 .expect("the handshake is a normal one");
@@ -1243,12 +1255,22 @@ done
                 .await
                 .expect("the handshake is a normal one");
 
-            // The drain is a background task: wait (bounded) for the tail to
-            // fill rather than guessing how long it needs.
-            crate::test_env::wait_for(|| {
-                process.stderr_tail().lines().count() == STDERR_TAIL_LINES
+            // The drain is a background task, so wait for the line the child
+            // writes *last* rather than for the ring to reach its size: reaching
+            // 40 lines happens while the child is still on line 42, and the tail
+            // then starts at `stderr-03` although every count and every byte is
+            // correct so far (measured as a whole-suite failure at 32 threads).
+            // Waiting on the last line makes the assertions below read a settled
+            // tail, and it is still bounded.
+            let settled = crate::test_env::wait_for(|| {
+                process.stderr_tail().trim_end().lines().last() == Some("stderr-45")
             })
             .await;
+            assert!(
+                settled,
+                "the tail never reached the last line: {}",
+                process.stderr_tail()
+            );
 
             let tail = process.stderr_tail();
             let lines: Vec<&str> = tail.lines().collect();

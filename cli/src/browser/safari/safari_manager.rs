@@ -66,11 +66,11 @@ static READINESS_BUDGET_OVERRIDE: std::sync::Mutex<Option<u32>> = std::sync::Mut
 /// Sets [`READINESS_BUDGET_OVERRIDE`] and restores it on drop, so a panicking
 /// test cannot leak a probe budget into the rest of the binary.
 #[cfg(test)]
-struct ReadinessBudgetGuard;
+pub(crate) struct ReadinessBudgetGuard;
 
 #[cfg(test)]
 impl ReadinessBudgetGuard {
-    fn set(max_probes: u32) -> Self {
+    pub(crate) fn set(max_probes: u32) -> Self {
         *READINESS_BUDGET_OVERRIDE.lock().unwrap() = Some(max_probes);
         ReadinessBudgetGuard
     }
@@ -902,6 +902,15 @@ mod tests {
     #[tokio::test]
     async fn start_launch_success_against_fake_driver() {
         let _guard = crate::test_env::lock_env().await;
+        // The mock endpoint can only appear after the spawn records its port, so
+        // what decides this test must be the poll *noticing* the answer, not the
+        // host scheduling the mock quickly enough for the product's 10 s window —
+        // that is the same load-sensitive construction the neighbouring
+        // `launch_then_become_reachable_reports_started` was fixed for (measured
+        // 5/5 red with a slow driver). The wall-clock window keeps its own test
+        // (`start_launch_never_ready_times_out`), and the 30 s `timeout` below
+        // still bounds this one.
+        let _budget = ReadinessBudgetGuard::set(200);
         *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
         let _reset_platform = PlatformReset;
         // Fake safaridriver: a POSIX shell script that records the port it was
@@ -940,6 +949,19 @@ mod tests {
                     if port > 0 {
                         break port;
                     }
+                }
+            }
+            // A `safari_start` that returned before spawning never writes that
+            // file, and its own error is the only thing that explains why —
+            // without this the test reports its own 20 s wait instead of the
+            // product's refusal.
+            if started.is_finished() {
+                match started.await {
+                    Ok(Ok(_)) => panic!("safari_start answered without spawning a driver"),
+                    Ok(Err(error)) => {
+                        panic!("safari_start failed before spawning a driver: {error}")
+                    }
+                    Err(join) => panic!("the safari_start task panicked: {join}"),
                 }
             }
             assert!(

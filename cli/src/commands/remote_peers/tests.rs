@@ -272,6 +272,40 @@ async fn list_reports_the_state_the_running_desktop_answered_with() {
     assert!(posed[0].get("desktopId").is_none(), "{}", posed[0]);
 }
 
+/// A row the Desktop holds and the book does not is a pairing that was made
+/// between the two reads. It is listed from the Desktop's own answer, because a
+/// pairing that exists but is invisible is worse than one that appears a moment
+/// early: the user just made it on the window, and this list is where they look.
+#[tokio::test]
+async fn list_keeps_a_pairing_the_book_and_the_desktop_disagree_about() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    let mut single = book(PLATFORM_TOKEN);
+    single["peers"].as_array_mut().unwrap().pop();
+    home.write(BOOK_FILE, &single.to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    answer_requests(
+        &home,
+        json!({ "peers": [live_row(ONE, true), live_row(TWO, true)] }),
+    );
+
+    let (code, stdout, stderr) = run(&["remote", "peers"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    // The book's own row, then the one only the Desktop knew about — with the
+    // state it answered, not the default this command would have guessed.
+    assert!(stdout.contains("2 remote desktops are paired"), "{stdout}");
+    assert!(stdout.contains(ONE), "{stdout}");
+    assert!(stdout.contains(TWO), "{stdout}");
+    assert!(stdout.contains("connected"), "{stdout}");
+    assert!(
+        !stdout.contains("not connected"),
+        "a row taken from the Desktop must keep the state it answered with: {stdout}"
+    );
+    // The row the book lost is never written back: this command reads.
+    let stored: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
+    assert_eq!(stored["peers"].as_array().unwrap().len(), 1, "{stored}");
+}
+
 #[tokio::test]
 async fn list_says_the_state_is_unknown_when_the_desktop_stays_silent() {
     let _guard = crate::test_env::lock_env().await;
@@ -283,6 +317,31 @@ async fn list_says_the_state_is_unknown_when_the_desktop_stays_silent() {
     assert_eq!(code, 0, "{stderr}");
     assert!(stdout.contains("unknown"), "{stdout}");
     assert!(stderr.contains("did not answer"), "{stderr}");
+}
+
+/// A Desktop that reported a fault is not the same as one that stayed silent:
+/// the note carries the Desktop's own reason, and the stored pairings are still
+/// listed — a broken Desktop does not empty the list.
+#[tokio::test]
+async fn list_notes_a_desktop_that_reports_a_fault() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    answer_requests(&home, json!({ "error": "the Remote page is not open" }));
+
+    let (code, stdout, stderr) = run(&["remote", "peers"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stderr.contains("did not report its connections"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("the Remote page is not open"),
+        "the Desktop's own words: {stderr}"
+    );
+    assert!(stdout.contains(ONE), "{stdout}");
+    assert!(stdout.contains(TWO), "{stdout}");
 }
 
 #[tokio::test]
@@ -305,6 +364,39 @@ async fn list_json_keeps_unknown_state_null_rather_than_guessing() {
     // another device is driving the machine.
     assert!(value["peers"][0]["control"].is_null(), "{value}");
     assert!(value["peers"][0]["holder"].is_null(), "{value}");
+}
+
+/// A book with one pairing is singular in the sentence, and a row the Desktop
+/// reported with an error says so: the machine is listed and not usable, which
+/// is the case a reader most needs spelled out.
+#[tokio::test]
+async fn list_one_pairing_is_singular_and_carries_the_last_error() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    let mut book = book(PLATFORM_TOKEN);
+    book["peers"].as_array_mut().unwrap().truncate(1);
+    home.write(BOOK_FILE, &book.to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    answer_requests(
+        &home,
+        json!({ "peers": [{
+            "desktopId": ONE,
+            "pairId": "pair_ONE",
+            "connected": false,
+            "stopped": false,
+            "agentAvailable": false,
+            "error": "handshake timed out",
+        }] }),
+    );
+
+    let (code, stdout, stderr) = run(&["remote", "peers"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("1 remote desktop is paired"), "{stdout}");
+    assert!(!stdout.contains("remote desktops are"), "{stdout}");
+    assert!(
+        stdout.contains("last error: handshake timed out"),
+        "{stdout}"
+    );
 }
 
 #[tokio::test]
@@ -404,6 +496,121 @@ async fn connect_without_a_desktop_says_there_is_nothing_to_act_on() {
     assert!(stderr.contains("No Desktop is running"), "{stderr}");
     // Nothing was asked of a Desktop that is not there, and the book is intact.
     assert!(!home.exists("run"), "{}", home.future().display());
+}
+
+/// Nothing is paired, so there is no machine to act on: the refusal is the same
+/// for every action that takes one, and each names the command that pairs one.
+#[tokio::test]
+async fn an_action_on_an_empty_book_names_the_paired_command() {
+    let _guard = crate::test_env::lock_env().await;
+    let _home = Home::new();
+
+    for (args, expected) in [
+        (
+            vec!["remote", "peers", "connect", ONE],
+            "future remote peers add",
+        ),
+        (
+            vec!["remote", "peers", "disconnect", "#1"],
+            "future remote peers add",
+        ),
+        (
+            vec!["remote", "peers", "remove", ONE, "--yes"],
+            "not paired with any remote desktop",
+        ),
+        (
+            vec!["remote", "peers", "takeover", ONE],
+            "future remote peers add",
+        ),
+    ] {
+        let (code, _, stderr) = run(&args).await;
+        assert_eq!(code, 1, "{args:?}");
+        assert!(stderr.contains(expected), "{args:?} → {stderr}");
+    }
+}
+
+/// Disconnect's own note: unlike connect, it has no reason to add that an
+/// unstarted Desktop says nothing about the pairing — the machine is paired and
+/// being connected is the pairing working.
+#[tokio::test]
+async fn disconnect_without_a_desktop_keeps_its_own_words() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+
+    let (code, _, stderr) = run(&["remote", "peers", "disconnect", ONE]).await;
+    assert_eq!(code, 1);
+    assert!(stderr.contains("nothing to disconnect here"), "{stderr}");
+    assert!(
+        !stderr.contains("not a fact about the pairing"),
+        "connect's clause does not belong in disconnect's sentence: {stderr}"
+    );
+    // The book is untouched by a Desktop that is not there.
+    assert!(!home.exists("run"), "{}", home.future().display());
+}
+
+/// A Desktop that refuses in its own words is quoted, not summarised: the
+/// refusal is the only thing that says what to change.
+#[tokio::test]
+async fn connect_reports_a_refusal_in_the_desktops_own_words() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    answer_requests(&home, json!({ "error": "superseded" }));
+
+    let (code, _, stderr) = run(&["remote", "peers", "connect", ONE]).await;
+    assert_eq!(code, 1);
+    assert!(stderr.contains("could not connect it"), "{stderr}");
+    assert!(stderr.contains("superseded"), "{stderr}");
+}
+
+/// `--json` prints what the Desktop answered, not the row the book guessed.
+#[tokio::test]
+async fn connect_json_carries_the_list_the_desktop_returned() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    answer_requests(
+        &home,
+        json!({ "peers": [live_row(ONE, true), live_row(TWO, false)] }),
+    );
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "connect", "AAAA", "--json"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    // The document comes first and the sentence a reader needs after it, so the
+    // parse stops at the document rather than at the end of stdout.
+    let mut documents = serde_json::Deserializer::from_str(&stdout).into_iter::<Value>();
+    let value = documents.next().expect("a document").unwrap();
+    assert_eq!(value["desktopRunning"], true);
+    assert_eq!(value["answered"], true);
+    assert_eq!(value["peers"][0]["desktopId"], ONE);
+    assert_eq!(value["peers"][0]["connected"], true);
+    assert_eq!(value["peers"][1]["connected"], false);
+    assert!(
+        stdout.contains("is connected."),
+        "--json does not take the sentence away: {stdout}"
+    );
+}
+
+/// A Desktop that kept the connection did not do what it was asked, so the exit
+/// code says so even though it answered.
+#[tokio::test]
+async fn disconnect_says_when_the_desktop_kept_it_connected() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    answer_requests(&home, json!({ "peers": [live_row(ONE, true)] }));
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "disconnect", ONE]).await;
+    assert_eq!(code, 1, "{stdout} {stderr}");
+    assert!(
+        stdout.contains("is still connected: the Desktop did not drop it"),
+        "{stdout}"
+    );
+    assert!(stderr.is_empty(), "{stderr}");
 }
 
 #[tokio::test]
@@ -565,6 +772,49 @@ async fn a_row_number_and_a_case_insensitive_prefix_name_the_same_machine() {
     assert_eq!(after["peers"][0]["name"], "work");
 }
 
+/// Both halves of the instruction are refused when only one is given: a rename
+/// with nothing to name asks which machine, and `--clear` beside a name is two
+/// answers to one question.
+#[tokio::test]
+async fn rename_names_what_it_needs_before_touching_the_book() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    let before = book(PLATFORM_TOKEN);
+    home.write(BOOK_FILE, &before.to_string());
+
+    let (code, _, stderr) = run(&["remote", "peers", "rename"]).await;
+    assert_eq!(code, 1);
+    assert!(stderr.contains("Which machine?"), "{stderr}");
+
+    let (code, _, stderr) = run(&["remote", "peers", "rename", ONE, "laptop", "--clear"]).await;
+    assert_eq!(code, 1);
+    assert!(
+        stderr.contains("--clear goes back to the machine id"),
+        "{stderr}"
+    );
+    // Neither refusal wrote anything.
+    assert_eq!(home.read(BOOK_FILE), before.to_string());
+}
+
+/// The JSON form re-reads the book after the edit, so a script sees the label it
+/// just set rather than the one from before.
+#[tokio::test]
+async fn rename_json_prints_the_book_it_left_behind() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+
+    let (code, stdout, stderr) =
+        run(&["remote", "peers", "rename", "EEEE", "laptop", "--json"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    let value: Value = serde_json::from_str(&stdout).unwrap();
+    // No Desktop was asked, and the document says which half is missing.
+    assert_eq!(value["desktopRunning"], false);
+    assert_eq!(value["peers"][1]["desktopId"], TWO);
+    assert_eq!(value["peers"][1]["name"], "laptop");
+    assert_eq!(value["peers"][0]["name"], "work");
+}
+
 // -- remove -----------------------------------------------------------------
 
 #[tokio::test]
@@ -620,6 +870,291 @@ async fn remove_with_no_desktop_unpairs_here_and_revokes_where_it_can() {
     let remaining = after["peers"].as_array().unwrap();
     assert_eq!(remaining.len(), 1, "{after}");
     assert_eq!(remaining[0]["desktopId"], ONE, "{after}");
+}
+
+/// A Desktop that holds this data root's lock but never answers is the case the
+/// note exists for: the window is wedged, or its control loop has not started,
+/// and the user asked to drop a pairing *now*. The removal happens here, and the
+/// sentence says so — the alternative, refusing because the other process is
+/// quiet, would leave a pairing the user has to fight a hung window to drop.
+#[tokio::test]
+async fn remove_proceeds_here_when_the_desktop_never_answers() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    let server = crate::test_server::spawn_http(vec![
+        crate::test_server::HttpRoute::json("/client/v1/remote/auth/token", 200, "{}"),
+        crate::test_server::HttpRoute::json("/client/v1/remote/pair/revoke", 200, "{}"),
+    ])
+    .await;
+    let token_url = format!("{server}/client/v1/remote/auth/token");
+    home.write(BOOK_FILE, &book(&token_url).to_string());
+    // The lock proves a Desktop is there; nothing answers the request, so every
+    // ask runs into the command's own (short, test-build) deadline.
+    let _desktop = RunningDesktop::claim(&home);
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "remove", TWO, "--yes"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stderr.contains("the running Desktop did not answer")
+            && stderr.contains("removing it here, so it is gone at the next start"),
+        "the note must say where the removal happened: {stderr}"
+    );
+    assert!(stdout.contains("no longer paired"), "{stdout}");
+    let after: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
+    let remaining = after["peers"].as_array().unwrap();
+    assert_eq!(remaining.len(), 1, "{after}");
+    assert_eq!(remaining[0]["desktopId"], ONE, "{after}");
+}
+
+/// A process-lifetime runtime for the host bridge, installed once.
+///
+/// `future_host::runtime::set` is a `OnceLock`: the first handle a process
+/// installs is the one every later test in that process uses. A handle to *this*
+/// test's runtime would therefore be dead the moment the test ends, and every
+/// later test that spawns host work would spawn onto nothing. Measured: three
+/// `headless::tests` CLI-discovery probes timed out in a full run with a
+/// test-scoped handle, and passed in runs without it. So this runtime is leaked
+/// on purpose — it is the entry point's runtime, and this process has one.
+fn host_runtime() -> tokio::runtime::Handle {
+    static RUNTIME: std::sync::OnceLock<&'static tokio::runtime::Runtime> =
+        std::sync::OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            Box::leak(Box::new(
+                tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+                    .expect("host runtime"),
+            ))
+        })
+        .handle()
+        .clone()
+}
+
+/// A host bridge that is serving and has **no device bound yet**.
+///
+/// `add` is the command that binds one, so this stands where `testing::fixture`
+/// does and stops one step earlier. Three measured properties of that fixture are
+/// why it cannot be reused as it is:
+///
+/// * its `claim` binds the bridge to a device, and a second claim against the same
+///   bridge is answered `peer_mismatch`;
+/// * `add` shuts the peer runtime down before it returns, so a process holds one
+///   pairing — which is what a one-shot command deserves, and it is why the `--json`
+///   branch of the same command has no second test here: a second bridge cannot be
+///   started in this process once the first one is torn down;
+/// * the bridge's tasks need a `multi_thread` test runtime (see the test below).
+struct Served {
+    _home: future_host::remote::test_support::HomeGuard,
+    platform: future_host::remote::test_support::MockPlatform,
+    nats: future_host::remote::test_support::FakeNats,
+    pair_id: String,
+    host_invitation: String,
+    claim_url: String,
+    desktop_id: String,
+}
+
+impl Served {
+    async fn start(label: &str) -> Self {
+        use future_host::remote::test_support::{HomeGuard, MockPlatform};
+        use future_host::remote_peer::testing;
+
+        let home = HomeGuard::new(label);
+        // The host bridge spawns through the shared host runtime, which refuses
+        // to run without an installed handle. This process is the entry point
+        // here, so it installs one — exactly what `add` does for its own call.
+        future_host::runtime::set(host_runtime());
+        future_host::remote_peer::runtime::reset_for_test(&home).await;
+        future_host::remote::test_support::init_store();
+        let platform = MockPlatform::start().await;
+        let nats = future_host::remote::test_support::FakeNats::start().await;
+        let (pair_id, host_invitation) = testing::start_host(&platform, &nats).await;
+        let desktop_id = reqwest::Url::parse(&host_invitation)
+            .expect("the bridge shows a url")
+            .query_pairs()
+            .find(|(key, _)| key == "desktopId")
+            .map(|(_, value)| value.into_owned())
+            .expect("the invitation names the machine");
+        let claim_url = format!("{}/client/v1/remote/pair/claim", platform.url());
+        Self {
+            _home: home,
+            platform,
+            nats,
+            pair_id,
+            claim_url,
+            host_invitation,
+            desktop_id,
+        }
+    }
+
+    /// Script one claim the way the platform answers one — the grant, and the
+    /// endpoint the credential refresh resolves — then hand back an invitation
+    /// for it. Built from this bridge's own invitation, so the PSK and the Noise
+    /// keys are the ones it will answer for.
+    fn invitation(&self, tag: &str) -> String {
+        self.platform.push(
+            "/client/v1/remote/pair/claim",
+            200,
+            json!({
+                "pair_id": self.pair_id,
+                "user_jwt": future_host::remote::test_support::jwt(
+                    future_host::remote::test_support::now_secs() + 3_600
+                ),
+                "refresh_token": tag,
+                "nats_ws_url": self.nats.url().replace("nats://", "ws://"),
+            }),
+        );
+        self.platform.respond_refresh(self.nats.url());
+        future_host::remote_peer::testing::invitation_for(&self.host_invitation, &self.claim_url)
+    }
+
+    /// The peer the book on disk holds, as the next start will read it.
+    fn paired_book(&self) -> Value {
+        let path = self._home.path().join(".future").join("remote_peers.json");
+        serde_json::from_str(&std::fs::read_to_string(path).expect("the book was written"))
+            .expect("the book is JSON")
+    }
+
+    /// Stop the bridge before the home guard drops. A bridge left running keeps
+    /// the guard's cleanup waiting for its supervisor, and a task that cannot
+    /// stop aborts the test process instead of failing one test.
+    async fn finish(self) {
+        future_host::remote_peer::testing::teardown(&self.pair_id).await;
+    }
+}
+
+/// `future remote peers add` is the one command in this group that pairs **here**
+/// instead of asking the Desktop: a claim against the platform plus one Noise
+/// handshake with the other machine. A mocked platform answers the HTTP half and
+/// nothing else, which is why this arm needs the host's own fixture — a real host
+/// bridge on the in-process broker — and not a bigger fake.
+///
+/// What the person reads: the three facts a report has to carry — which machine,
+/// whether it is reachable now, and who keeps it connected from here.
+///
+/// `multi_thread` is required, not a preference. The bridge's tasks are spawned
+/// on the process-lifetime runtime above, and the home guard's cleanup waits for
+/// them from the test thread — a current-thread runtime cannot poll the aborts
+/// while that thread is blocked, which is a five second deadline followed by a
+/// panic in a destructor (measured).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn add_says_which_machine_it_paired_and_who_connects_it() {
+    let _cli = crate::test_env::ENV_LOCK.lock().await;
+    let served = Served::start("cli-peers-add-text").await;
+    let invitation = served.invitation("refresh-token-add-text");
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "add", &invitation]).await;
+
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stdout.contains(&served.desktop_id),
+        "the machine must be named: {stdout}"
+    );
+    assert!(
+        stdout.contains("Connected to it now."),
+        "a pairing that answered must say it is connected: {stdout}"
+    );
+    assert!(
+        stdout.contains("No Desktop is running") || stdout.contains("keeps it connected"),
+        "the report must say who connects it from here: {stdout}"
+    );
+    let stored = served.paired_book();
+    assert_eq!(
+        stored["peers"][0]["desktopId"],
+        json!(served.desktop_id),
+        "{stored}"
+    );
+    served.finish().await;
+}
+
+/// The Desktop removed it, and the JSON says so with the book it left behind:
+/// this command must not remove it a second time and then report a pairing that
+/// is already gone.
+#[tokio::test]
+async fn remove_json_reports_the_desktop_that_did_it() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    answer_requests(
+        &home,
+        json!({ "removed": true, "peers": [live_row(TWO, false)] }),
+    );
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "remove", ONE, "--yes", "--json"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    // This branch prints the JSON *and* the closing sentence, unlike the paths
+    // that return straight after the document, so the answer is read from the
+    // front of stdout rather than from all of it.
+    let value: Value = serde_json::Deserializer::from_str(&stdout)
+        .into_iter::<Value>()
+        .next()
+        .expect("a JSON document was printed")
+        .unwrap();
+    assert_eq!(value["removed"], ONE);
+    assert_eq!(value["answered"], true);
+    assert_eq!(value["desktopRunning"], true);
+    let peers = value["peers"].as_array().unwrap();
+    assert_eq!(peers.len(), 1, "{value}");
+    assert_eq!(peers[0]["desktopId"], TWO, "{value}");
+}
+
+/// The Desktop answered and declined — it has no such pairing, or a newer build
+/// refused. This command takes it out here anyway and names the Desktop's own
+/// reason, so the reader can tell "not connected" from "refused".
+#[tokio::test]
+async fn remove_takes_the_pairing_out_here_when_the_desktop_declines() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    let server = crate::test_server::spawn_http(vec![
+        crate::test_server::HttpRoute::json("/client/v1/remote/auth/token", 200, "{}"),
+        crate::test_server::HttpRoute::json("/client/v1/remote/pair/revoke", 200, "{}"),
+    ])
+    .await;
+    let token_url = format!("{server}/client/v1/remote/auth/token");
+    home.write(BOOK_FILE, &book(&token_url).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    answer_requests(&home, json!({ "error": "superseded" }));
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "remove", TWO, "--yes"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("no longer paired"), "{stdout}");
+    assert!(stderr.contains("did not remove it"), "{stderr}");
+    assert!(
+        stderr.contains("superseded"),
+        "the Desktop's own reason: {stderr}"
+    );
+    let after: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
+    assert_eq!(after["peers"].as_array().unwrap().len(), 1, "{after}");
+}
+
+/// The local pairing goes first, always: a platform that could not be told is a
+/// warning that says what the other machine still shows, not a failure — and the
+/// JSON still reports the book this machine is left with.
+#[tokio::test]
+async fn remove_says_when_the_platform_could_not_be_told() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    let server = crate::test_server::spawn_http(vec![
+        crate::test_server::HttpRoute::json("/client/v1/remote/auth/token", 200, "{}"),
+        crate::test_server::HttpRoute::json("/client/v1/remote/pair/revoke", 500, "{}"),
+    ])
+    .await;
+    let token_url = format!("{server}/client/v1/remote/auth/token");
+    home.write(BOOK_FILE, &book(&token_url).to_string());
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "remove", TWO, "--yes", "--json"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stderr.contains("could not be told"), "{stderr}");
+    assert!(stderr.contains("credential expires"), "{stderr}");
+    let value: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(value["removed"], TWO);
+    assert_eq!(value["answered"], false);
+    assert_eq!(value["desktopRunning"], false);
+    let peers = value["peers"].as_array().unwrap();
+    assert_eq!(peers.len(), 1, "{value}");
+    assert_eq!(peers[0]["desktopId"], ONE, "{value}");
 }
 
 // -- help and arguments -----------------------------------------------------
@@ -693,4 +1228,131 @@ async fn an_unknown_action_is_a_usage_error() {
     assert_eq!(code, 1);
     assert!(stderr.contains("Unknown argument: poke"), "{stderr}");
     assert!(stderr.contains("future remote peers"), "{stderr}");
+}
+
+// -- the book on disk -------------------------------------------------------
+
+/// Every way the pairing file can be wrong is refused with the file named, and
+/// none of them is repaired by overwriting it: this file holds credentials, so a
+/// command that cannot read it must not replace it.
+#[tokio::test]
+async fn an_unusable_pairing_file_is_named_and_left_alone() {
+    let _guard = crate::test_env::lock_env().await;
+    for (contents, expected) in [
+        ("{ not json", "is not valid JSON"),
+        ("[]", "The root of"),
+        (r#"{"peers": "one"}"#, "`peers` must be an array"),
+        (r#"{"peers": ["desktop_AAAA"]}"#, "must be a JSON object"),
+        (
+            r#"{"peers": [{"pairId": "pair_ONE"}]}"#,
+            "has no `desktopId`",
+        ),
+    ] {
+        let home = Home::new();
+        home.write(BOOK_FILE, contents);
+        let (code, _, stderr) = run(&["remote", "peers"]).await;
+        assert_eq!(code, 1, "{contents}");
+        assert!(stderr.contains(expected), "{contents} → {stderr}");
+        // A pairing file that could not be read is still the only copy of those
+        // credentials: the refusal must leave it byte for byte as it was.
+        assert_eq!(home.read(BOOK_FILE), contents);
+    }
+}
+
+/// A book with no `peers` key at all is an empty book, not a broken one: an
+/// installation that has never paired anything, or a file another tool wrote.
+#[tokio::test]
+async fn a_book_without_a_peer_list_is_empty_rather_than_broken() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, "{}");
+
+    let (code, stdout, stderr) = run(&["remote", "peers"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stdout.contains("not paired with any remote desktop"),
+        "{stdout}"
+    );
+}
+
+/// Two machines that share the start of their id cannot both answer to it: the
+/// refusal names how many matched and asks for more, instead of picking one.
+#[tokio::test]
+async fn an_ambiguous_prefix_asks_for_a_longer_one() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    let mut book = book(PLATFORM_TOKEN);
+    book["peers"][1]["desktopId"] = json!("desktop_AAAACCCCDDDDEEEE");
+    home.write(BOOK_FILE, &book.to_string());
+
+    let (code, _, stderr) = run(&["remote", "peers", "rename", "aaaa", "first"]).await;
+    assert_eq!(code, 1);
+    assert!(
+        stderr.contains("`aaaa` matches 2 machines. Give a longer prefix."),
+        "{stderr}"
+    );
+    // Nothing was renamed by a selector that did not name one machine.
+    let after: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
+    assert_eq!(after["peers"][0]["name"], json!("work"));
+    assert!(after["peers"][1].get("name").is_none(), "{after}");
+
+    // The longer prefix does name one.
+    let (code, _, stderr) = run(&["remote", "peers", "rename", "aaaacccc", "second"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    let after: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
+    assert_eq!(after["peers"][1]["name"], json!("second"));
+}
+
+/// `list` is a list, so a machine given to it is a mistake worth saying out
+/// loud rather than one row silently answered.
+#[tokio::test]
+async fn list_refuses_to_be_given_a_machine() {
+    let _guard = crate::test_env::lock_env().await;
+    let _home = Home::new();
+
+    let (code, _, stderr) = run(&["remote", "peers", "list", ONE]).await;
+    assert_eq!(code, 1);
+    assert!(
+        stderr.contains("`list` takes no machine: it lists them all (drop "),
+        "{stderr}"
+    );
+    assert!(stderr.contains(ONE), "{stderr}");
+}
+
+/// A link failure is the user's only clue, so each one that has a fix names it —
+/// and a failure with no known fix keeps its own words instead of borrowing
+/// advice that does not apply.
+#[test]
+fn each_link_fault_names_what_to_do_about_it() {
+    let remote = |code: Option<&str>, message: &str| future_host::Error::Remote {
+        status: 400,
+        code: code.map(str::to_string),
+        message: message.to_string(),
+    };
+
+    let expired = describe_pairing_error(&remote(Some("PA002"), "pairing_link_expired"));
+    assert!(expired.contains("The invitation has expired"), "{expired}");
+    assert!(expired.contains("PA002"), "{expired}");
+    assert!(expired.contains("pairing_link_expired"), "{expired}");
+
+    for message in [
+        "pairing_link_malformed",
+        "pairing_link_invalid_field",
+        "pairing_link_unsupported_version",
+    ] {
+        let refused = describe_pairing_error(&remote(Some("PA002"), message));
+        assert!(
+            refused.contains("not a usable `futureos://remote/pair`"),
+            "{refused}"
+        );
+        assert!(refused.contains(message), "{refused}");
+    }
+
+    // An unknown fault is not given advice that might be wrong for it...
+    let unknown = describe_pairing_error(&remote(None, "something_else"));
+    assert!(unknown.starts_with("Pairing failed: "), "{unknown}");
+    // ...and a link fault that arrived without a support code still names the
+    // default one a person would be asked for.
+    let uncoded = describe_pairing_error(&remote(None, "pairing_link_expired"));
+    assert!(uncoded.contains("PA002"), "{uncoded}");
 }
