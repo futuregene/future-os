@@ -435,15 +435,35 @@ mod tests {
     }
 
     /// A `.app` tree shaped the way an update carries it: an optional `CFBundleExecutable`
-    /// and a real Mach-O in `Contents/MacOS/future` (`/bin/echo`, whose `--help` exits 0 —
-    /// which is exactly what `probe` runs).
+    /// and a main executable in `Contents/MacOS/future` that exits 0 — which is exactly what
+    /// `probe` runs (`--help`).
+    ///
+    /// The executable is a POSIX shell script, not a copied Mach-O: signing a Mach-O copy of a
+    /// system binary gives it a signature macOS has never seen, so its *first* exec is
+    /// validated by `amfid`, and in a full instrumented suite that validation can outlast
+    /// `probe`'s own 10 s deadline — measured once in round 1 of `wave3_repeat.log`, where this
+    /// test failed with "Candidate executable probe timed out" while the suite had several
+    /// tests blocked (a script needs no code-signature validation on exec).
     ///
     /// `sign` runs the same ad-hoc signature a locally built bundle gets, so the
     /// `codesign --verify --deep --strict` inside preparation has something to accept.
-    fn bundle_tree(case: &Path, executable: Option<&str>, sign: bool) -> PathBuf {
+    /// `macho` swaps the script for a copy of `/bin/echo`. Only the no-identity case needs
+    /// that: `codesign --deep` skips a non-Mach-O subcomponent, so a script-only bundle cannot
+    /// be signed at all (measured: verify answers "code object is not signed at all … In
+    /// subcomponent: Contents/MacOS/future"), which would stop the test at the signature check
+    /// instead of the identity one. That case never reaches `probe`, so it does not inherit the
+    /// exec cost described above.
+    fn bundle_tree(case: &Path, executable: Option<&str>, sign: bool, macho: bool) -> PathBuf {
         let app = case.join("payload/FutureOS.app");
         std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
-        std::fs::copy("/bin/echo", app.join("Contents/MacOS/future")).unwrap();
+        let main = app.join("Contents/MacOS/future");
+        if macho {
+            std::fs::copy("/bin/echo", &main).unwrap();
+        } else {
+            std::fs::write(&main, "#!/bin/sh\nexit 0\n").unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&main, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let identity = executable
             .map(|name| format!("<key>CFBundleExecutable</key><string>{name}</string>"))
             .unwrap_or_default();
@@ -542,7 +562,7 @@ mod tests {
     fn a_payload_must_hold_exactly_one_application_bundle() {
         let (_home, _root, case, fixtures) = prepared_case("macos-prepare-bundle-count");
         let operation = journal::Operation::begin("9.9.9").unwrap();
-        let tree = bundle_tree(fixtures.path(), Some("future"), false);
+        let tree = bundle_tree(fixtures.path(), Some("future"), false, false);
         let target = case.path().join("FutureOS.app");
 
         // Two bundles: which one would be installed is genuinely ambiguous.
@@ -567,7 +587,7 @@ mod tests {
     fn an_unsigned_candidate_is_refused_by_the_signature_check() {
         let (_home, _root, case, fixtures) = prepared_case("macos-prepare-unsigned");
         let operation = journal::Operation::begin("9.9.9").unwrap();
-        let tree = bundle_tree(fixtures.path(), Some("future"), false);
+        let tree = bundle_tree(fixtures.path(), Some("future"), false, false);
         let payload = tar_gz(&[("FutureOS.app", &tree)]);
         let error = Prepared::prepare_at(&payload, &operation, case.path().join("FutureOS.app"))
             .err()
@@ -583,7 +603,7 @@ mod tests {
     fn a_signed_candidate_without_an_executable_identity_is_refused() {
         let (_home, _root, case, fixtures) = prepared_case("macos-prepare-no-identity");
         let operation = journal::Operation::begin("9.9.9").unwrap();
-        let tree = bundle_tree(fixtures.path(), None, true);
+        let tree = bundle_tree(fixtures.path(), None, true, true);
         let payload = tar_gz(&[("FutureOS.app", &tree)]);
         let error = Prepared::prepare_at(&payload, &operation, case.path().join("FutureOS.app"))
             .err()
@@ -604,7 +624,7 @@ mod tests {
     fn a_signed_candidate_is_verified_probed_and_handed_to_the_helper() {
         let (_home, _root, case, fixtures) = prepared_case("macos-prepare-signed");
         let operation = journal::Operation::begin("9.9.9").unwrap();
-        let tree = bundle_tree(fixtures.path(), Some("future"), true);
+        let tree = bundle_tree(fixtures.path(), Some("future"), true, false);
         let payload = tar_gz(&[("FutureOS.app", &tree)]);
         let error = Prepared::prepare_at(&payload, &operation, case.path().join("FutureOS.app"))
             .err()
