@@ -14,20 +14,28 @@ belong to `live.rs` are in `tui.md`; rows about `run()`'s process wiring are in 
 "`run()`'s remaining branches" table and are **not repeated here** (they are unchanged: the
 same eight branches, the same 19 lines).
 
-**Status of this file: 9 lines waived in wave 6** (see "Waived this wave"), **10 as W7 in wave
-7** (see "W7: `open_git_panel`'s …"), **3 as W7 in wave 8** (see "W7 in wave 8") and **1 as W7 in
-wave 9** (`mod.rs:3594`, the drag's zero-width edge) — 23 lines, each with its mechanism, positive
-control and falsifier. `mod.rs:1563` is **not waived**: it is a line-attribution artefact and its
-section says what would falsify that. Everything else below is either closed (with the test that
-closes it) or *not waived* with the falsifier that would prove it reachable.
+**Status of this file: 7 lines waived in wave 6** (see "Waived this wave" — 9 when it was written,
+3 retracted in wave 10 because they are measured), **10 as W7 in wave 7** (see "W7:
+`open_git_panel`'s …"), **3 as W7 in wave 8** (see "W7 in wave 8"), **1 as W7 in wave 9**
+(`mod.rs:3594`, the drag's zero-width edge) and **8 in wave 10** (wave 6's "closing braces", off by
+one line each and re-classified as arm bodies) — **29 lines**, each with its mechanism, positive
+control and falsifier, and `waived_still_dark.py` asserts all of them are still `DA:0` in a named
+pass. `mod.rs:1563` is **not waived**: it is a line-attribution artefact and its section says what
+would falsify that. Everything else below is either closed (with the test that closes it) or
+*not waived* with the falsifier that would prove it reachable.
+
+The rows that remain at zero in `mod.rs` — **55** at `r22`/`r23` — and in `run.rs` — **94** — are
+this ledger's open list. They are described **by shape**, not one row at a time: the "Remaining in"
+sections were written when the counts were 236 and 95, so read their headings as the shape they
+name, and take every count from the table above.
 
 ## before / after (this task)
 
-| | 2026-10-31 (task start) | r2 (wave 12) | r4 | r8 (wave 5) | r9 | r10 (wave 6) | r12 (wave 7) | r19 (wave 8, one commit stale) | **r20** | **r21 (wave 9)** |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `workbench/run.rs` DA:0 | 333 | 168 | 142 | 136 | 116 | 113 | 95 | 94 | **94** | **94** |
-| `workbench/mod.rs` DA:0 | 316 | 287 | 262 | 236 | 221 | 221 | 221 | 97 | **57** | **55** |
-| lane total DA:0 | — | 1486¹ | — | 1359¹ | 1321¹ | 1316¹ | 1298¹ | 1336² | **1298²** | **1293²** |
+| | 2026-10-31 (task start) | r2 (wave 12) | r4 | r8 (wave 5) | r9 | r10 (wave 6) | r12 (wave 7) | r19 (wave 8, one commit stale) | r20 | r21 (wave 9) | **r22 (wave 10)** | **r23 (wave 10)** |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `workbench/run.rs` DA:0 | 333 | 168 | 142 | 136 | 116 | 113 | 95 | 94 | 94 | 94 | **94** | **94** |
+| `workbench/mod.rs` DA:0 | 316 | 287 | 262 | 236 | 221 | 221 | 221 | 97 | 57 | 55 | **55** | **55** |
+| lane total DA:0 | — | 1486¹ | — | 1359¹ | 1321¹ | 1316¹ | 1298¹ | 1336² | 1298² | 1293² | **1297²** | **1295²** |
 
 ¹ `METERS=1` passes. ² `METERS=0`. The two are **not** the same lane: a `METERS=0` pass drops
 the 151 lines inside the `#[ignore = "meter, not a check"]` tests, so `1336` here is higher than
@@ -272,14 +280,27 @@ cannot see at all (`-`: no `DA` record) are not counted by metric A either way.
 
 | lines | why no test can reach it | falsifier |
 |---|---|---|
-| `1366-1369` | the `Err` side of the git copy's `spawn_blocking(..).await` (`clipboard::copy_text`): a `JoinError` needs the blocking closure to **panic** — `copy_text` returns `Result` and does not panic on any input the panel passes. Its four render lines stay at `0` because the arm is multi-line (the blind spot above hides only single-statement arms) | any input that makes `copy_text` panic (then this is a product defect, not a missing test) |
-| `1375-1377` | `WbAction::CopyLast` has one producer — the keymap's `Action::Copy` (`mod.rs:1550`) — and the loop answers that action itself before `handle` runs (`run.rs:936-941`), so a `Copy` binding never reaches the arm and a reader who rebinds the chord lands in the intercept for the same reason | a `CopyLast` produced by something other than the keymap's `Action::Copy` (a mouse or paste path would do it) |
-| `959-960` | a `match` over `Outcome` whose arms are constant expressions: the decision's span lands on `959` and `960` reads `0` although `/new` continues (`live.rs:2194-2200`), and `Quit` cannot be produced by `live.apply(WbAction::Command("/new"))` (`Quit` comes only from `WbAction::Quit`, `live.rs:1880`, or the `quit` command, `live.rs:2189`). No test can move either line; the lever is rewriting the `match` as an `if` | an `Outcome` from `Live::apply` that is neither of the two arms |
+| `1366-1368` | the `Err` side of the git copy's `spawn_blocking(..).await` (`clipboard::copy_text`): a `JoinError` needs the blocking closure to **panic** — `copy_text` returns `Result` and does not panic on any input the panel passes. Its three render lines stay at `0` because the arm is multi-line (the blind spot above hides only single-statement arms); `1369` (the call's closing `),`) is measured, so the range stops at `1368` — wave 10 retracted the last line of it | any input that makes `copy_text` panic (then this is a product defect, not a missing test) |
+| `1374-1376` | `WbAction::CopyLast` has one producer — the keymap's `Action::Copy` (`mod.rs:1550`) — and the loop answers that action itself before `handle` runs (`run.rs:936-941`), so a `Copy` binding never reaches the arm and a reader who rebinds the chord lands in the intercept for the same reason. `1377`, the `if`'s closing brace, is measured; wave 10 retracted it from the range | a `CopyLast` produced by something other than the keymap's `Action::Copy` (a mouse or paste path would do it) |
+| `959` | a `match` over `Outcome` whose arms are constant expressions: the decision's span lands on `959`, and `/new` returns `Continue` (`live.rs:2194-2200`), so the `Quit` arm never runs; `Quit` comes only from `WbAction::Quit` (`live.rs:1880`) or the `quit` command (`live.rs:2189`). `960` (`Outcome::Continue`) **is** measured — wave 10 retracted it from this row, and with it the claim that "`960` reads 0" | an `Outcome` from `Live::apply` that is neither of the two arms |
 
-Eight more lines of this wave are **not** waived: `1036`, `1084`, `1107`, `1154`, `1282`,
-`1284`, `1349`, `1774` are `}` / `};` closing braces with a zero edge (taxonomy **(c)**, like
-`400`/`428`/`926` above). The arms they close execute; single-lining the arm is a code change
-with no behavioural content.
+Eight more lines of this wave were first classified as **not** waived — `1036`, `1084`, `1107`,
+`1154`, `1282`, `1284`, `1349`, `1774`, "`}` / `};` closing braces with a zero edge (taxonomy
+**(c)**, like `400`/`428`/`926` above)". **Wave 10 measured that list and it is off by one on
+every row**: the zeros are one line *above* each of those braces, and they are arm bodies, not
+braces:
+
+| zero line (measured, r22) | what it is | mechanism | positive control | falsifier |
+|---|---|---|---|---|
+| `1035` | `Err(error) => live.notice = Some(error.to_string()),` | the `JoinError` side of `spawn_blocking(probe_repo).await` (`1018-1025`): the closure calls a `Result`-returning function and cannot unwind, so only a runtime shutdown produces this arm | `1028-1034`, the `Ok(Err(..))` arm — the failure that *can* happen — is measured | any closure that panics |
+| `1106` | `Err(error) => live.notice = Some(error.to_string()),` | the same shape around `create_worktree` (`1093-1103`) | the `Ok(..)` arm `1105` is measured | ditto |
+| `1153` | `Err(error) => live.notice = Some(error.to_string()),` | the same shape around the `/diff` read (`1134-1150`); its `Ok(Err(..))` sibling is `1146` | `1146` measured | ditto |
+| `1281` | `Err(error) => live.notice = Some(error.to_string()),` | the same shape around the review read at `1269-1272`; the inner `Ok(Err(..))` is `1280` | `1280` measured | ditto |
+| `1773` | `Err(error) => git.detail = vec![error.to_string()],` | the same shape around `git_panel::detail` (`1765-1768`) | `1772`, the parse failure, is measured | ditto |
+| `1083` | `return Ok(true);` under `if matches!(live.apply(other).await, Outcome::Quit)` | `toggle_pin_selected` (`mod.rs:2155-2170`) returns only `Notice(..)` or `SetSessionPinned{..}`, so the `other =>` arm at `1081` exists for exhaustiveness and `apply` never sees a `Quit` | both real outcomes are measured: the launchpad notice and the pin applied | a third variant returned by `toggle_pin_selected` |
+| `1348` | `_ => (GitSection::Commits, None, 0, true),` | the guard at `1309-1316` admits exactly five variants; `SelectGit` continues at `1319`, the other four are matched at `1323`/`1332`/`1338`/`1339`, so no action reaches `_` | the panel opens through each of the four (`OpenGit`, `GitSection`, `GitFilter`, `GitRefresh`) and `SelectGit` through `open_git_detail` | the guard widening to a sixth variant |
+| `1288` | `workbench.overlay = Some(super::Overlay::Approval);` under `if matches!(action, WbAction::OpenApproval)` | **`WbAction::OpenApproval` has no producer**: `grep` finds the enum variant (`mod.rs:278`), this test, and a no-op listing in `apply` (`live.rs:1892`) — nothing constructs it, so the approval overlay's real door is elsewhere and this branch is dead code | the overlay is opened by the paths the approval cases exercise | any producer of `OpenApproval`; if one appears, this is a coverage row *and* a product question |
+
 
 ### Row 8 (W8) re-checked, and it stands
 
@@ -352,7 +373,10 @@ rather than 188 — the 151 lines of `session_rail_cost_meter` and its neighbour
 tests-only lane should read. `r16`…`r19` are all `METERS=0` and comparable with each other;
 `r14`'s `1250` is not comparable with `r19`'s `1336`. Reproducibility: `r16` and `r17` are the
 same tree two passes apart — `1360` vs `1358` lane, `111` vs `111` on `mod.rs` — so `mod.rs` is
-stable to the line and the lane carries a ±2 that lives in `live.rs` (an async arm), not here.
+stable to the line and the lane carries a ±2 that lives in `live.rs`, not here. **Wave 10 named
+that arm**: it is `refresh_worktrees`'s failure edge, which errs only while a peer test has moved
+the process cwd (see "Wave 10", where `r22`/`r23`/`r24` hold `mod.rs` at 55 and `run.rs` at 94 and
+the `screen.rs` ±2 is still open).
 
 | lines | what runs | case |
 |---|---|---|
@@ -412,9 +436,10 @@ broken — it prints plausible text against the wrong lines (here `8107` read as
 `git log -1 --format=%ci` with the `.info`'s mtime; every row in this file should name the commit
 its pass measured.
 
-Reproducibility: `r20` and `r21` are the same tree two passes apart, with only the two cases below
-committed between them — `mod.rs` **57 → 55**, `run.rs` **94 → 94** (untouched), `live.rs` 337 →
-335, the ±2 the wave-8 note already attributes to an async arm.
+Two passes ten minutes apart, `r20` and `r21` — **not** a reproducibility pair: the two cases
+below were committed between them (`366cab908` 14:44, `eaa3514d7` 14:45; `r20` 14:37, `r21` 14:47),
+so `mod.rs` **57 → 55** here is those two cases landing, not stability. The pair that holds the
+tree still is `r22`/`r23` in wave 10, and it moves the same two files by **zero** lines.
 
 | | r19 (stale) | **r20** | **r21** |
 |---|---:|---:|---:|
@@ -496,27 +521,102 @@ pointing this at the wrong one does not fail — it prints the source with almos
 zero (measured: 282 non-zero region lines of 14 536 on the wrong binary, 8 792 on the right one),
 which reads exactly like a lane where nothing ran.
 
+## Wave 10 (2026-11-01, r22/r23/r24): three passes on one tree, the flake named, three ranges retracted
+
+Wave 9 ended with a numbered pair (`r20`/`r21`) that **was not** a pair: two cases were committed
+between the passes. This wave measured the tree three times with nothing committed in between, and
+once more with the one test that mutates the process-wide cwd removed. Tree for all four: `e6e2c0474`
+(docs-only) on top of `eaa3514d7`; the code is `eaa3514d7`'s.
+
+| | r21 (wave 9) | **r22** | **r23** | **r24** (skip-cwd) |
+|---|---:|---:|---:|---:|
+| `workbench/mod.rs` DA:0 | 55 | **55** | **55** | **55** |
+| `workbench/run.rs` DA:0 | 94 | **94** | **94** | **94** |
+| `workbench/live.rs` DA:0 | 335 | **337** | **335** | **337** |
+| `workbench/screen.rs` DA:0 | 85 | **87** | **87** | **87** |
+| `index.rs` DA:0 | 39 | **39** | **39** | **55** |
+| lane total DA:0 | 1293 | **1297** | **1295** | **1313** |
+
+`removed` = `run-cov-tui2-skipcwd.sh`, which is `run-cov-tui2.sh` with one extra `--skip` on
+`build_initial_prompt_relative_path_uses_cwd`. It is not a candidate lane number (one test's 16
+lines in `index.rs` leave with it); it exists to test the mechanism below.
+
+**The two files this ledger audits are stable to the line.** `mod.rs` **55** and `run.rs` **94** in
+all four passes, and the DA:0 *sets* are identical: `identical.py tui2-r22.info tui2-r23.info
+workbench/mod.rs` finds 8 891 lines in both files with the same 55 at zero (86 rows differ only in
+their covered counts), and the same for `run.rs` (4 123 lines, 94 at zero, 291 count-only rows).
+So a covered-line count is not a reproducible number and a zero set is — which is the whole reason
+metric A reads `DA:0` and not a percentage.
+
+**The ±4 in the lane total is two files, and the flips are four lines, each named.**
+`same_tree.py` compares two passes line by line and prints the source of every line that crosses
+zero. `r22`→`r23`: exactly `live.rs:3685` and `live.rs:3688` (0 → 2). `r21`→`r22`: those two
+(1 → 0) **and** `screen.rs:2491` (1 → 0) with `screen.rs:3022` (4 → 0). Nothing else in 64 568
+lines moves across zero.
+
+- `live.rs:3685` `Err(error) => Err(error),` and `:3688` `self.notice = Some(… WorkflowFailed …)`
+  are `refresh_worktrees`'s failure arm. `probe_repo` (`mod.rs:1018-1025`'s blocking closure) errs
+  only when **both** candidates fail: the session's cwd *and* `std::env::current_dir()`
+  (`worktree.rs:576-609`). The crate has exactly one test that moves the process cwd
+  (`index.rs:1437` `build_initial_prompt_relative_path_uses_cwd`, `set_current_dir` at `1444`,
+  restored at `1446`) and it holds only `test_env::lock()`, which the workbench tests do not take —
+  so for the few milliseconds it is in that temp directory, a concurrent `refresh_worktrees`
+  fails, and the count depends on the interleaving (measured 0, 1, 2 across the three runs).
+  **Positive control:** `r24`, the same lane with that test skipped, reads **0** on both lines —
+  the arm goes dark when the cwd mutation is gone, which is what the mechanism predicts.
+  **Falsifier:** those two lines staying 0 with the test present, or any other test that calls
+  `std::env::set_current_dir`.
+- `screen.rs:2491` (`vec![t(lang, Key::GitNoSelection) …]`) and `:3022` (`palette.dim(&chunk)`,
+  the "similarity index" dim list) were measured in `r21` and read 0 in `r22`, `r23` and `r24`.
+  The source of `screen.rs` did not change between those passes (the only commit between `r21` and
+  `r22` is the docs commit), and `r24` removes the cwd test without changing them — so this is
+  **not** the same mechanism and it is **not** explained yet. What it does change is the reading of
+  any row that cites `r21`: three later passes agree on 0, so the `r21` reading is the outlier and
+  no row in this file may be closed on `r21` alone. **Next check:** which case paints a git panel
+  whose `detail` is empty and which paints a diff containing a rename, and whether either reads the
+  filesystem through a path that the `test_env` lock does not cover.
+
+**Three ranges retracted, and a taxonomy correction** (both in wave 6's section): `run.rs:960`,
+`:1369` and `:1377` were inside waived ranges and are measured — the ranges now stop at `959`,
+`1368` and `1376`. The eight rows wave 6 filed as "closing braces" are off by one line each and are
+arm bodies — the `JoinError` arms of five `spawn_blocking(..).await` calls, plus `1083`, `1348` and
+the dead `OpenApproval` branch at `1288`; each now has its own mechanism, positive control and
+falsifier rather than a shared taxonomy label. `waived_still_dark.py` is the check that keeps this
+honest: it asserts every row this file waives is still `DA:0` in a named pass, and it is what
+found the three.
+
+```bash
+cd coverage/2026-11/after/tui2
+python3 waived_still_dark.py tui2-r22.info    # exits non-zero if a waived row got measured
+python3 per_file.py tui2-r21.info tui2-r22.info tui2-r23.info tui2-r24.info
+python3 same_tree.py tui2-r22.info tui2-r23.info
+python3 identical.py tui2-r22.info tui2-r23.info workbench/mod.rs
+```
+
 ## How to re-measure this file
 
 ```bash
 cd coverage/2026-11/after/tui2
 git -C ../../../.worktrees/cov-tui2 log -1 --format='%ci %h'   # the tree the pass will measure
-TAG=r22 METERS=0 ./run-cov-tui2.sh
-python3 missed_run.py tui2-r22.info workbench/run.rs        # counts
-python3 missed_exact.py tui2-r22.info ../../../.worktrees/cov-tui2/tui/src/workbench/mod.rs workbench/mod.rs
-python3 total.py tui2-r22.info                              # the lane's own DA:0
+TAG=r25 METERS=0 ./run-cov-tui2.sh
+python3 missed_run.py tui2-r25.info workbench/run.rs        # counts
+python3 missed_exact.py tui2-r25.info /Users/geilige/future-os/.worktrees/cov-tui2/tui/src/workbench/mod.rs workbench/mod.rs
+python3 total.py tui2-r25.info                              # the lane's own DA:0
 ```
 
-`missed_exact.py` rather than `ranges.py` for the lines that follow: `ranges.py` merges anything
-within three lines, so a printed range can hide covered lines inside it (`1550-1552` read as
-three misses when `1551` was measured twice). `METERS=0` unless the row you are checking is a
-meter: a `METERS=1` pass and a `METERS=0` pass are not the same lane number (see the wave-8
-note above — they differ by the 151 lines inside the ignored tests).
+`missed_exact.py` takes an **absolute** path for the source (a relative `../../../` breaks as soon
+as the script is run from anywhere but this directory) — wave 10 hit that. It rather than
+`ranges.py` for the lines that follow: `ranges.py` merges anything within three lines, so a printed
+range can hide covered lines inside it (`1550-1552` read as three misses when `1551` was measured
+twice). `METERS=0` unless the row you are checking is a meter: a `METERS=1` pass and a `METERS=0`
+pass are not the same lane number (see the wave-8 note above — they differ by the 151 lines inside
+the ignored tests).
 
 **Record the commit with every pass.** A `.info` is evidence for one tree only, and the rows print
 the current source either way, so a stale pass is invisible until a row is chased that was already
-closed (wave 9 chased six). `r19` was one commit behind its own description; `r20`/`r21` are the
-first two passes in this ledger whose tree is named.
+closed (wave 9 chased six). `r19` was one commit behind its own description; `r20`/`r21` were the
+first two passes whose tree was named (and they were **not** the same tree — wave 10 corrected
+that); `r22`/`r23` are the first genuine same-tree pair in this ledger.
 
 `rm -rf target/llvm-cov-target` afterwards: the instrumented build is ~4 GB and nothing but
 this lane reads it.
