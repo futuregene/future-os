@@ -1403,6 +1403,53 @@ mod tests {
         assert!(with_stopped_home(&home, || Ok(())).is_err());
     }
 
+    /// Nest directories under `root` until the path itself is `target` bytes
+    /// long. A component is at most 255 bytes on every filesystem this lane
+    /// runs on, so the padding is split into one component per remaining byte
+    /// budget instead of overshooting into a path that cannot be created.
+    fn nested_home(root: &Path, target: usize) -> PathBuf {
+        let mut current = root.to_path_buf();
+        while current.as_os_str().len() < target {
+            let remaining = target - current.as_os_str().len();
+            let width = remaining.saturating_sub(1).clamp(1, 200);
+            current.push("n".repeat(width));
+        }
+        fs::create_dir_all(&current).unwrap();
+        current
+    }
+
+    /// `work` reads an absent restore directory as "no restore has started",
+    /// which is the ordinary case; the only way to reach its error arm is a
+    /// directory name the filesystem refuses. A home nested deep enough that
+    /// `<home>/.restore-work-<id>` crosses `PATH_MAX` is that name, and a nested
+    /// home is an ordinary deployment shape — no fault is injected, the OS is
+    /// answering about the path it was handed.
+    #[test]
+    #[cfg(unix)]
+    fn a_restore_work_directory_the_filesystem_cannot_name_is_an_error_not_an_absence() {
+        let root = tempfile::tempdir().unwrap();
+        // 985 bytes: the home, its `app`/`agent` children and the pending marker
+        // all still resolve (they stay under 1023), and the work directory — 46
+        // bytes below the home — cannot.
+        let home = nested_home(root.path(), 985);
+        let archive = root.path().join("archive");
+        fs::create_dir_all(home.join("agent/sessions")).unwrap();
+        fs::create_dir_all(home.join("app/images")).unwrap();
+        backup(&home, &archive).unwrap();
+        assert!(
+            fs::symlink_metadata(home.join("agent/sessions")).is_ok(),
+            "the managed roots are still nameable, which is what makes the work \
+             directory the one path over the limit"
+        );
+
+        let error = begin_restore(&home, &archive).unwrap_err().to_string();
+        assert!(error.contains("too long"), "{error}");
+        assert!(
+            !pending(&home).exists(),
+            "a refused restore must not leave a startup fence"
+        );
+    }
+
     /// The two reasons a lock cannot be taken have different fixes, and the one
     /// that is *not* a running process must not send the reader to quit one.
     #[test]
