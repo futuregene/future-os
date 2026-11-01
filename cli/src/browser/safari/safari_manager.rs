@@ -951,6 +951,19 @@ mod tests {
                     }
                 }
             }
+            // A `safari_start` that returned before spawning never writes that
+            // file, and its own error is the only thing that explains why —
+            // without this the test reports its own 20 s wait instead of the
+            // product's refusal.
+            if started.is_finished() {
+                match started.await {
+                    Ok(Ok(_)) => panic!("safari_start answered without spawning a driver"),
+                    Ok(Err(error)) => {
+                        panic!("safari_start failed before spawning a driver: {error}")
+                    }
+                    Err(join) => panic!("the safari_start task panicked: {join}"),
+                }
+            }
             assert!(
                 std::time::Instant::now() < deadline,
                 "the driver was never spawned, so the poll was never reached"
