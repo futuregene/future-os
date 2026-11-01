@@ -500,7 +500,7 @@ it:
 What is left is structural and deliberate: `test_support::agent::TestHome` **holds the
 process-wide `TEST_HOME_LOCK` for its whole lifetime** (`host/src/test_support/agent.rs:686`,
 because a test publishes `HOME`/`FUTURE_HOME` as real environment variables). Tests therefore run
-essentially one at a time — 1948 tests × ~0.22 s ≈ 430 s.
+essentially one at a time — 1955 tests × ~0.22 s ≈ 430 s.
 
 **This serialization is the runtime, not the stall.** A pass that stops making progress does so at
 0 % CPU with every fixture thread queued behind a holder that is not running — a different thing with
