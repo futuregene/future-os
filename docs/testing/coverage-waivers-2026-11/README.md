@@ -14,6 +14,7 @@
 | [web.md](web.md) | web（desktop vitest），布局与交互组 | 37（33 `W2` + 4 `W8`） | `desktop/src/components/layout/`、`features/vibe/`、`features/agent/`、`features/palette/`、`features/tasks/`、`terminal/`、`artifacts/`… | lane 102，其中 37 条在此 |
 | [web-remote.md](web-remote.md) | web（desktop vitest），远端 / 设置组 + 收口批次 2-3 采纳的 16 条 | 42（38 `W2` + 2 `W5` + 2 `W8`） | `desktop/src/features/remote/`、`features/remote-peer/`、`features/settings/`；行 27-42 来自 lane 审计（见文件内说明） | 42 条在此 |
 | [tui.md](tui.md) | tui（rust, llvm-cov） | 2 | `tui/src/workbench/live.rs` 的两处 | 见该文件头部 |
+| [cli.md](cli.md) | cli（rust, llvm-cov） | 19（7 行登记 + 97 行一类关闭符） | `relay/`（cli、server、room 的 HTTP 与注册表）、`commands/remote_peers` 的 remove/list、`headless/agent` 的 `supervise` | **429**（其中 315 行是登记的工作项，不是豁免） |
 | [mobile.md](mobile.md) | mobile（jest） | 8 | `mobile/src` | 见该文件头部 |
 
 `mobile.md` 与 `tui.md` 的权威数字在各自文件头部，本索引不复述——复述过的数字迟早会不一致。
