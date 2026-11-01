@@ -11795,4 +11795,190 @@ mod tests {
         );
         live.client.disconnect();
     }
+
+    /// The last of `apply`'s arms that no test reached: a decision handed to the
+    /// adapter, a folder toggle, a link, a recalled prompt and the older page a
+    /// driver expects to be read off the loop.
+    #[tokio::test]
+    async fn the_last_apply_arms_do_what_the_surface_expects() {
+        // `ApprovalDecision` is the driver's shortcut for the same answer the
+        // `y` key produces.
+        let mut live = live_on(&[
+            (
+                "get_state",
+                r#"{"sessionId":"s1","pendingApprovals":[
+                    {"approvalRequestId":"a-1","toolName":"bash","riskLevel":"high"}]}"#,
+            ),
+            ("approval_decision", "{}"),
+        ])
+        .await;
+        assert!(live.approval().is_some(), "the fixture parks an approval");
+        live.apply(WbAction::ApprovalDecision {
+            approved: true,
+            rule: false,
+        })
+        .await;
+        assert!(
+            live.approval().is_none(),
+            "the action did not answer the parked approval"
+        );
+        live.client.disconnect();
+
+        // A folder toggle starts the tree read; the answer arrives on its own.
+        let workspace = tempfile::tempdir().expect("workspace");
+        std::fs::create_dir_all(workspace.path().join("src")).expect("a folder");
+        let get_state = format!(
+            r#"{{"sessionId":"s1","cwd":"{}"}}"#,
+            workspace.path().display()
+        );
+        let mut live = live_on(&[("get_state", &get_state)]).await;
+        live.local_reads = None;
+        live.refresh_local();
+        for _ in 0..100 {
+            let _ = live.poll_local_reads();
+            if !live.tree.rows().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        live.apply(WbAction::ToggleFolder(
+            workspace.path().join("src").to_string_lossy().to_string(),
+        ))
+        .await;
+        assert!(
+            live.tree_read.is_some(),
+            "toggling a folder started no read"
+        );
+        live.client.disconnect();
+
+        // A recalled prompt goes back into the draft.
+        let mut live = live_on(&[
+            (
+                "get_state",
+                r#"{"sessionId":"s1","queuedRuns":[
+                    {"runId":"q-1","displayText":"earlier question"}]}"#,
+            ),
+            ("cancel_queued_run", "{}"),
+        ])
+        .await;
+        live.install_state_refresh(Ok(super::RpcSessionState {
+            session_id: "s1".into(),
+            queued_runs: vec![crate::rpc::types::QueuedRunState {
+                run_id: "q-1".into(),
+                display_text: "earlier question".into(),
+                run_sequence: 1,
+                client_request_id: "c-1".into(),
+                state: "queued".into(),
+                queue_position: 1,
+                accepted_at: "2026-11-01T00:00:00Z".into(),
+            }],
+            ..Default::default()
+        }));
+        live.apply(WbAction::RecallQueued("q-1".into())).await;
+        assert_eq!(
+            live.draft.editor.text(),
+            "earlier question",
+            "the recalled prompt is not in the draft"
+        );
+        live.client.disconnect();
+
+        // A load the driver is behind is started on the loop, not waited for.
+        let mut live = live_on(&[
+            (
+                "get_state",
+                r#"{"sessionId":"s1","activeRun":{"runId":"r","epoch":1,"state":"done"}}"#,
+            ),
+            (
+                "get_session_entries",
+                r#"{"entries":[],"hasMore":true,"nextOffset":0}"#,
+            ),
+        ])
+        .await;
+        let (tx, mut answers) = tokio::sync::mpsc::unbounded_channel();
+        live.set_load_sender(tx);
+        live.apply(WbAction::LoadOlder).await;
+        // The read was started: the answer comes back on the driver's channel.
+        let loaded = tokio::time::timeout(std::time::Duration::from_secs(10), answers.recv()).await;
+        assert!(loaded.is_ok(), "the older page was never read off the loop");
+        live.client.disconnect();
+    }
+
+    /// The typed `/tools` and `/export`: the launchpad stages a list, a refusal
+    /// carries the agent's reason, and a refused export is a sentence instead of
+    /// a path.
+    #[tokio::test]
+    async fn the_tool_and_export_verbs_stage_or_explain() {
+        // The launchpad parses the list and stages it — the agent is not called
+        // with no session to apply it to.
+        let (mut live, seen) = live_with_seen(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        live.to_launchpad();
+        live.command("/tools read, shell").await;
+        assert_eq!(
+            live.pending_tools.as_deref(),
+            Some(&["read".to_string(), "shell".to_string()][..]),
+            "the launchpad did not stage the list it parsed"
+        );
+        assert!(
+            !seen.lock().unwrap().iter().any(|kind| kind == "set_tools"),
+            "a staged list was sent with no session"
+        );
+        live.client.disconnect();
+
+        // An attached `/tools off` the agent refuses: the reason is the notice.
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_failing(
+            &[("get_state", r#"{"sessionId":"s1"}"#)],
+            "disable_tools",
+            "tools are locked",
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut refused, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the failing mock");
+        refused.command("/tools off").await;
+        let notice = refused.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("tools are locked"),
+            "a refused `/tools off` dropped the reason: {notice:?}"
+        );
+        refused.client.disconnect();
+
+        // The other door: a *list* the agent refuses.
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_failing(
+            &[("get_state", r#"{"sessionId":"s1"}"#)],
+            "set_tools",
+            "no such tool",
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut refused, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the failing mock");
+        refused.command("/tools read, shell").await;
+        let notice = refused.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("no such tool"),
+            "a refused tool list dropped the reason: {notice:?}"
+        );
+        refused.client.disconnect();
+
+        // A refused export: the sentence, not the (empty) path.
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_failing(
+            &[
+                ("get_state", r#"{"sessionId":"s1"}"#),
+                ("get_session_entries", r#"{"entries":[]}"#),
+            ],
+            "export_html",
+            "no session to export",
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut refused, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the failing mock");
+        refused.command("/export").await;
+        let notice = refused.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("no session to export"),
+            "a refused export dropped the reason: {notice:?}"
+        );
+        refused.client.disconnect();
+    }
 }
