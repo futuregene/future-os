@@ -1,0 +1,14 @@
+{
+  "lane": "host/rust-lib",
+  "measurement_commit": "41cf889bf",
+  "toolchain": "1.99.1",
+  "scope_prefix": "/host/src/",
+  "command": "cargo llvm-cov -p future-host --lib --no-report && cargo llvm-cov report --lcov",
+  "da0_total": 2822,
+  "switch_lane": 2009,
+  "waived": 24,
+  "open": 789,
+  "before_da0": 3265,
+  "artifact": "coverage/2026-11/after/host/final-lcov.info",
+  "doc": "docs/testing/coverage-waivers-2026-11/host.md"
+}

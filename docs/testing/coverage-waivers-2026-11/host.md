@@ -6,13 +6,14 @@ summary's `Lines` column is not the acceptance number (it adds ghost lines).
 **Lane** — `future-host`'s **lib** unit tests only. The integration-test binaries and the
 `#[ignore]`d real-network legs are measured by their own lanes; this file is about the lib.
 
-**Last measurement**: `test/cov-host` at `95a4299b0` (cut from `origin/dev-huichen@12b89ee7e`),
+**Last measurement**: `test/cov-host` at `41cf889bf` (cut from `origin/dev-huichen@12b89ee7e`),
 rustc **1.99.1** (`rust-toolchain.toml`), `HOME=target/test-home`, `ulimit -n 8192`.
 Artifacts (gitignored) are in `coverage/2026-11/after/host/`: `final-lcov.info`, `final-run.log`,
 `final-missed.json`, and the bucket arithmetic in `buckets.py`.
 
-It was re-measured after `95a4299b0` (the task-fixture directory fix, §8) and the per-line result is
-**identical** — same 2819, same lines in every file (`prev-final-missed.json` is the pre-fix copy).
+The lane record beside this file — `host-lane.json` — carries the same numbers, and
+`scripts/coverage/lane-check.py` fails when the record, this doc and the lcov artifact disagree
+(§8). Run it after every re-measurement; it is the cheap gate this lane can actually carry.
 
 ```bash
 export PATH=/Users/geilige/.rustup/toolchains/1.99.1-aarch64-apple-darwin/bin:$PATH
@@ -29,7 +30,7 @@ awk '/^SF:/{f=substr($0,4)} /^DA:[0-9]+,0$/{split(substr($0,4),a,","); print f":
   /tmp/host-lcov.info | grep '/host/src/' | wc -l
 ```
 
-The run is also the gate: **1882 passed, 0 failed, 11 ignored** in 432 s, then `report rc=0`
+The run is also the gate: **1883 passed, 0 failed, 11 ignored** in 437 s, then `report rc=0`
 (`final-run.log`).
 
 ## 1. Before / after, and where every remaining line sits
@@ -38,23 +39,29 @@ Both columns are `DA:0` over `host/src/`, same lane, same recipe.
 
 | | before (`before-lcov.info`) | after (`final-lcov.info`) | Δ |
 |---|---:|---:|---:|
-| **lane total** (`host/src/**`) | 3265 | **2819** | **−446** |
+| **lane total** (`host/src/**`) | 3265 | **2822** | **−443** |
 | switch-lane files (§2.1) | 1884 | 1884 | 0 |
-| **in-scope** (lane total − switch-lane files) | 1381 | **935** | **−446** |
+| **in-scope** (lane total − switch-lane files) | 1381 | **938** | **−443** |
 
-Every one of the 2819 remaining lines is in exactly one bucket (`buckets.py` prints this; the three
+Every one of the 2822 remaining lines is in exactly one bucket (`buckets.py` prints this; the three
 numbers sum to the total):
 
 | bucket | lines | what it is |
 |---|---:|---|
 | **switch lane** | **2009** | covered only by legs this lane does not run: the five files below (1884) plus 125 lines inside in-scope files that only those legs execute (`tasks.rs`'s two `#[ignore]`d tests, 83; `remote/test_support.rs`'s `reconnect_secure_channel`, 42) |
 | **waived** | **24** | §3 — each with a mechanism, a positive control and a falsifier |
-| **open** | **786** | §4 — real gaps. **Not waived.** |
+| **open** | **789** | §4 — real gaps. **Not waived.** |
 
-So the campaign figure for this lane today is **786 open**, not 0: this pass closed 446 lines and
+So the campaign figure for this lane today is **789 open**, not 0: this pass closed 443 lines and
 waived 24, and 2009 of the residual are another lane's to measure.
 
-Where the 446 closed lines came from (per file, before → after):
+Two lines moved in the *opposite* direction, and they are worth naming rather than smoothing over:
+`agent_host.rs:502` and `shutdown/services.rs:319-320` are arms **inside tests** (a `select!`
+branch and a task parked on `pending()`), so which of them runs depends on how that run's races
+landed. They read as uncovered here because this measurement is the one this file pins. A third
+pair, `startup.rs`, moved only because this pass added 28 lines to its test module (§4).
+
+Where the 443 closed lines came from (per file, before → after):
 
 | file | before | after | commit |
 |---|---:|---:|---|
@@ -107,7 +114,7 @@ W8 dead producer.
 
 Waived total: **24**. Nothing else in §4 is claimed as waived.
 
-## 4. Open residual — 786 lines in 85 files
+## 4. Open residual — 789 lines in 85 files
 
 **Not waived.** Every row is the measurement plus whatever has actually been read; "not yet read"
 means exactly that.
@@ -115,7 +122,7 @@ means exactly that.
 | file | open lines | `DA:0` | mechanism, as far as it has been read |
 |---|---:|---|---|
 | `remote/control.rs` | 87 | 580-618, 623, 743, 748, 767-777, 792, 815-856, 939-998, 1237-1242 | `spawn_host`'s poll loop (its only caller is `desktop/src-tauri/src/lib.rs:1422`), the peer-op branch of `serve_one`, and the `perform`/`perform_peer` arms that need a running supervisor (`pair_new_device`, `unpair_slot`, `takeover`, `enable`, `disable`, peer connect/disconnect/remove) |
-| `agent_host.rs` | 57 | 117-119, 141, 144, 149, 152, 155, 173-174, 177, 196-204, 207-218, 311-313, 317-319, 334, 363, 435, 443, 451, 487, 503, 531, 539, 665, 762-764, 766-767, 815, 890, 1027-1028 | supervisor guard/refusal arms (`recover`, `detach_attached`, `reserve_idle_update`, `activity`); each needs a specific `AgentHost` state |
+| `agent_host.rs` | 58 | 117-119, 141, 144, 149, 152, 155, 173-174, 177, 196-204, 207-218, 311-313, 317-319, 334, 363, 435, 443, 451, 487, 502-503, 531, 539, 665, 762-764, 766-767, 815, 890, 1027-1028 | supervisor guard/refusal arms (`recover`, `detach_attached`, `reserve_idle_update`, `activity`); each needs a specific `AgentHost` state |
 | `remote/trust.rs` | 45 | 46, 57-93, 166-181 | `root_bundle`'s extra-CA bundle and `load_platform_certs`: reachable through `FUTURE_RELAY_CA`, but the `OnceLock` makes it one-shot per process and it reads the platform store |
 | `agent_bridge/observer.rs` | 40 | 369-376, 398-403, 446, 790-796, 806-812, 1040-1049, 1108, 1115, 1234 | reconcile result logs, source-verification backoff, required-content hydration failures |
 | `agent_bridge/reconciliation.rs` | 39 | 409-411, 454-491 | an orphaned run's settle path, and the abort-then-read reconciliation against the Agent |
@@ -125,7 +132,7 @@ means exactly that.
 | `application/threads.rs` | 22 | 117, 147, 396-399, 401, 405-406, 420-421, 423-426, 458-460, 474-476, 490 | `update_thread_*`'s agent-propagation arms and `get_thread_history`'s availability branches (`deleted` / `import_failed` / `different_database` / `offline`) |
 | `cli_tool.rs` | 19 | 84, 93, 100, 105, 255-257, 326-328, 333, 345, 385-387, 402, 705, 732, 832 | not yet read |
 | `store/migrations.rs` | 17 | 39, 57-59, 76, 78, 126-127, 139, 163, 203-206, 222-224 | migration failure/repair branches |
-| `shutdown/services.rs` | 16 | 47-49, 68, 70-71, 73, 75-76, 81, 93, 96, 98-99, 280, 321 | service shutdown error arms |
+| `shutdown/services.rs` | 18 | 47-49, 68, 70-71, 73, 75-76, 81, 93, 96, 98-99, 280, 319-321 | service shutdown error arms; 319-320 is a test task parked on `pending()` |
 | `agent_client.rs` | 16 | 177-178, 192, 208-209, 257-259, 262-264, 318-320, 397, 526 | connection-readiness arms |
 | `tasks.rs` | 15 | 126-128, 228-230, 234, 328, 439, 476, 482, 572-573, 1859, 2176 | store-open / delete / thread-load failure logs, plus two test-only panic arms |
 | `remote/mod.rs` | 14 | 112-119, 127-129, 132, 150, 165 | remote switch/status helpers |
@@ -201,12 +208,12 @@ enumerated in §4, and most of it needs a running remote supervisor.
 
 - `cargo fmt -p future-host --check` — clean (the measurement is post-fmt).
 - `cargo clippy -p future-host --all-targets -- -D warnings` — clean.
-- `cargo test -p future-host` — lib **1882 passed / 0 failed / 11 ignored** under instrumentation
+- `cargo test -p future-host` — lib **1883 passed / 0 failed / 11 ignored** under instrumentation
   (`final-run.log`) and the non-instrumented package suite green (`target/gate-test2.log`).
 
 ## 8. The lane's suite runtime, and why a 120 s check cannot pass
 
-The lib suite took **860 s** before this pass and **420-432 s** after it. The 2× came from one test
+The lib suite took **860 s** before this pass and **432-437 s** after it. The 2× came from one test
 fixture, not from coverage work, and the measurement is worth recording because every host
 verification pays it:
 
@@ -217,14 +224,14 @@ verification pays it:
   measured at **36 s, 44 s and 54 s** for the *same single test* as TMPDIR filled up, and it made
   the 32 tasks tests alone take over 600 s.
 - `95a4299b0` gives each task an empty directory under a per-process root: that one test drops to
-  **0.56 s**, `tasks::` to 4.7 s, and the whole lane to ~420 s. No assertion changed: these tests
+  **0.56 s**, `tasks::` to 4.7 s, and the whole lane to ~435 s. No assertion changed: these tests
   assert on the run's rows, the prompt it composed and the announcements it made, never on the
   contents of its directory. Coverage is unchanged line for line (re-measured, §above).
 
 What is left is structural and deliberate: `test_support::agent::TestHome` **holds the
 process-wide `TEST_HOME_LOCK` for its whole lifetime** (`host/src/test_support/agent.rs:676`, because
 a test publishes `HOME`/`FUTURE_HOME` as real environment variables). Tests therefore run
-essentially one at a time — 1882 tests × ~0.22 s ≈ 420 s — and the per-test fixture cost is spread
+essentially one at a time — 1883 tests × ~0.23 s ≈ 435 s — and the per-test fixture cost is spread
 across `remote_peer` (208 s / 130 tests), `remote` (108 s / 296) and `agent_bridge` (61 s / 395).
 Getting under a 120 s budget would mean replacing process-global env isolation with parameter
 injection across the crate: a harness refactor, not a coverage change, and one that this pass did not
@@ -232,4 +239,29 @@ attempt.
 
 **So the machine check `cd .worktrees/cov-host && cargo test -p future-host --lib` exits 0 but needs
 ~7 minutes of budget.** A 120 s timeout reports a validator failure on a suite that is green —
-which is exactly what the previous attempt hit.
+which is exactly what the previous attempts hit. The budget is not configurable from a todo: the
+goal kernel runs a `--verify` command with `sh -c` in the goal cwd and kills it after
+`DEFAULT_TIMEOUT` = **120 s** (`orchestration/goal/src/validator.rs`), unless the orchestrator
+process itself has `FUTURE_GOAL_VALIDATOR_TIMEOUT_SECS` set (`orchestration/goal/src/executor.rs`,
+`run_validator`). A whole test suite is the wrong shape for a validator anyway: on timeout the
+kernel records **`Inconclusive` — "validator failed to run"**, which says nothing about the artifact.
+
+### The gate this lane should carry instead
+
+`scripts/coverage/lane-check.py` + `docs/testing/coverage-waivers-2026-11/host-lane.json` — **0.1 s**,
+deterministic, and red when the numbers stop matching the tree. It ties three things together:
+
+1. the lane record's buckets must add up (`switch + waived + open == lane total`);
+2. the doc must quote the same total, the same waived/open counts and the measurement commit, so the
+   prose cannot drift from the record;
+3. when this machine still has the lcov artifact, per-line `DA:0` over the recorded scope is
+   **recomputed** and must equal the record — a stale report, or a "complete but almost all zero"
+   one written before the run finished, fails here instead of passing silently.
+
+```bash
+cd .worktrees/cov-host
+python3 scripts/coverage/lane-check.py docs/testing/coverage-waivers-2026-11/host-lane.json
+```
+
+That is the shape a `--verify` should have. The suite itself belongs in the turn's work, not in a
+120 s gate — and this file records what "the suite is green" meant when it was measured.
