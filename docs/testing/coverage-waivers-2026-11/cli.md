@@ -362,12 +362,13 @@ this lane):
   of that finding; a test would have needed a seam (a second `Book::load`, an `await` between
   two reads, a `platform_api_key` hook) and the rule for this lane is no seam.
 - **This wave's measurement needed a second pass, and that is recorded rather than smoothed
-  over**: the first full run failed one unrelated test
-  (`browser::safari::safari_manager::tests::launch_then_become_reachable_reports_started`,
-  "the driver was never spawned, so the poll was never reached") under a 1532-test parallel
-  run; it passes alone, and a re-run of `--lib` reported 1532 passed / 0 failed. Both passes
-  are in `run12.log` and `run12-lib-retry.log`, and the report merges their profiles — which
-  is also why the earlier 314-row reading taken from the failed pass is not the number in
-  this file. The flake itself is a separate finding: a test that spawns a driver and polls it
-  inside a fixed window is the shape the memory's flaky-source list warns about, and it is
-  not this lane's.
+  over**: four full `--lib` runs were made, two green and two red on one or two tests from
+  `browser::safari::safari_manager::tests` — the tests that spawn a real driver script and
+  poll for its marker. That module alone passes 10/10, so the trigger is the ~1500-test
+  parallel run (load), not the code, and it is not this lane's change; but it is this lane's
+  *problem*, because it decides the gate. `run12.log` (1 red) and `run12-lib-retry.log` (0
+  red) are both kept, and the report merges their profiles — which is also why the 314-row
+  reading taken from the failed pass is not the number in this file. One of the two tests
+  cannot say why it failed: it reports its own 20 s marker wait even when the product refused
+  before spawning, while its neighbour prints the product's error (`started.is_finished()`).
+  Porting that check is the cheapest next step; finding the refusal is the real one.
