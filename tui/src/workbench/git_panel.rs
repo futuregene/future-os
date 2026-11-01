@@ -1094,10 +1094,19 @@ mod tests {
     use super::*;
     use std::process::Command;
 
+    /// `git`, resolved once from the standard locations (then `PATH`, then the
+    /// bare name): a peer test in this binary swaps the process-global `PATH`
+    /// while it runs, and a fixture that spawns `git` by name inherits that
+    /// window — the red is an ENOENT in a test that never asked about `PATH`
+    /// (see `test_env::absolute_tool`).
+    fn git_bin() -> std::path::PathBuf {
+        crate::test_env::absolute_tool("git")
+    }
+
     fn repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let git = |args: &[&str]| {
-            let output = Command::new("git")
+            let output = Command::new(git_bin())
                 .arg("-C")
                 .arg(dir.path())
                 .args(args)
@@ -1591,7 +1600,7 @@ mod tests {
     fn a_real_repository_lists_worktrees_and_branches() {
         let dir = repo();
         let git = |args: &[&str]| {
-            let output = Command::new("git")
+            let output = Command::new(git_bin())
                 .arg("-C")
                 .arg(dir.path())
                 .args(args)
@@ -1654,6 +1663,52 @@ mod tests {
         assert!(rows(dir.path(), GitSection::Commits, None).is_err());
     }
 
+    /// Moving the cursor re-reads one row's patch, and a read that fails is one
+    /// spoken line in the gutter — not an empty detail that reads like "this
+    /// commit changed nothing".
+    ///
+    /// This is the arm the lane's count wobbled on (`focus`'s `Err(error)`): it
+    /// used to be reached only when a read happened to break under the whole
+    /// suite, so a run covered it and the next did not. The workspace here is
+    /// gone on purpose, which is the state a panel left open over a deleted
+    /// checkout is in.
+    #[test]
+    fn a_detail_that_cannot_be_read_is_one_spoken_line() {
+        let gone = std::path::Path::new("/nonexistent/future-os/repository");
+        let mut view = GitView {
+            repo: "gone".into(),
+            section: GitSection::Commits,
+            rows: vec![row_with_key("0123456789abcdef")],
+            selected: 0,
+            detail: Vec::new(),
+            filter: None,
+            error: None,
+        };
+        focus(gone, &mut view, 0, Language::En);
+        assert_eq!(
+            view.detail.len(),
+            1,
+            "a failed detail read filled the gutter with {view:?}"
+        );
+        assert!(
+            !view.detail[0].trim().is_empty(),
+            "the gutter says nothing about what failed"
+        );
+        // The row is still the one the cursor moved to: the failure is the
+        // patch, not the selection.
+        assert_eq!(view.selected, 0);
+    }
+
+    fn row_with_key(key: &str) -> GitRow {
+        GitRow {
+            key: Some(key.to_string()),
+            columns: Vec::new(),
+            prefix: "● ".into(),
+            pieces: vec!["a commit".into()],
+            kinds: Vec::new(),
+        }
+    }
+
     /// A repository with no commit yet is an empty log, not an error: git's
     /// "your current branch does not have any commits" is a state, and the panel
     /// paints "no commits" for it.
@@ -1661,7 +1716,7 @@ mod tests {
     fn an_empty_repository_is_an_empty_log() {
         let dir = tempfile::tempdir().unwrap();
         let git = |args: &[&str]| {
-            let output = Command::new("git")
+            let output = Command::new(git_bin())
                 .arg("-C")
                 .arg(dir.path())
                 .args(args)
