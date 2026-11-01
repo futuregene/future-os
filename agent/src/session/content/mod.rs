@@ -7,6 +7,16 @@ use anyhow::{bail, ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use sha2::{Digest, Sha256};
 
+/// Single-row lookups that every read and every write repeats. Hoisted so the
+/// call — and its `?` — stays on one line: a multi-line call puts the `?` alone
+/// on the last row, where it records only the error edge and reads as uncovered
+/// even when the statement ran.
+const HAS_HISTORY: &str = "SELECT EXISTS(SELECT 1 FROM entries WHERE session_id=?1)";
+const OBJECT_ROW: &str = "SELECT byte_length,sealed FROM content_objects WHERE id=?1";
+const OBJECT_DIGEST: &str = "SELECT byte_length,sha256 FROM content_objects WHERE id=?1";
+const JSON_DIGEST: &str = "SELECT json_sha256 FROM content_objects WHERE id=?1";
+const OBJECT_LENGTH: &str = "SELECT byte_length FROM content_objects WHERE id=?1";
+
 pub(crate) mod checkpoint;
 mod checkpoint_retirement;
 pub(crate) mod compact;
@@ -98,11 +108,7 @@ pub(super) fn format_bound(db: &Connection, session: &impl rusqlite::ToSql) -> R
 /// Called only in the transaction creating a session, never on a legacy open.
 pub(crate) fn enable(tx: &Transaction<'_>, session: &str) -> Result<()> {
     let stored = super::identity::session_key(tx, session)?;
-    let has_history: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM entries WHERE session_id=?1)",
-        [&stored],
-        |r| r.get(0),
-    )?;
+    let has_history: bool = tx.query_row(HAS_HISTORY, [&stored], |r| r.get(0))?;
     ensure!(
         !has_history,
         "cannot change an existing conversation's storage format"
@@ -131,11 +137,7 @@ pub(crate) fn append(
         offset >= 0 && text.len() <= WRITE_BYTES,
         "invalid content append budget"
     );
-    let (length, sealed): (i64, bool) = tx.query_row(
-        "SELECT byte_length,sealed FROM content_objects WHERE id=?1",
-        [id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
+    let (length, sealed) = tx.query_row(OBJECT_ROW, [id], |r| Ok((r.get(0)?, r.get(1)?)))?;
     let added = i64::try_from(text.len())?;
     let end = offset
         .checked_add(added)
@@ -187,11 +189,7 @@ pub(crate) fn seal(tx: &Transaction<'_>, id: i64, digest: ContentDigest) -> Resu
         params![id, bytes, hash],
     )?;
     if changed == 0 {
-        let existing: (i64, Option<String>) = tx.query_row(
-            "SELECT byte_length,sha256 FROM content_objects WHERE id=?1",
-            [id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
+        let existing = tx.query_row(OBJECT_DIGEST, [id], |r| Ok((r.get(0)?, r.get(1)?)))?;
         ensure!(
             existing == (bytes, Some(hash)),
             "content seal does not match durable bytes"
@@ -296,11 +294,7 @@ pub(crate) fn seal_json(
     digest: JsonContentDigest,
 ) -> Result<ContentRange> {
     let range = seal(tx, id, digest.raw)?;
-    let existing: Option<String> = tx.query_row(
-        "SELECT json_sha256 FROM content_objects WHERE id=?1",
-        [id],
-        |r| r.get(0),
-    )?;
+    let existing: Option<String> = tx.query_row(JSON_DIGEST, [id], |r| r.get(0))?;
     if let Some(existing) = existing {
         ensure!(
             existing == digest.canonical,
@@ -369,11 +363,7 @@ pub(crate) fn bind_encoded(
         range.offset >= 0 && range.length >= 0,
         "invalid content reference"
     );
-    let total: i64 = tx.query_row(
-        "SELECT byte_length FROM content_objects WHERE id=?1",
-        [range.id],
-        |r| r.get(0),
-    )?;
+    let total: i64 = tx.query_row(OBJECT_LENGTH, [range.id], |r| r.get(0))?;
     let end = range
         .offset
         .checked_add(range.length)
@@ -465,11 +455,7 @@ pub(crate) fn read(db: &Connection, id: i64, offset: i64, max_bytes: usize) -> R
         offset >= 0 && max_bytes <= READ_BYTES,
         "invalid content read budget"
     );
-    let (total, sealed): (i64, bool) = db.query_row(
-        "SELECT byte_length,sealed FROM content_objects WHERE id=?1",
-        [id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
+    let (total, sealed) = db.query_row(OBJECT_ROW, [id], |r| Ok((r.get(0)?, r.get(1)?)))?;
     ensure!(offset <= total, "content read starts past durable bytes");
     let end = offset.saturating_add(i64::try_from(max_bytes)?).min(total);
     let mut stmt=db.prepare_cached("SELECT byte_offset,body FROM content_segments WHERE content_id=?1 AND byte_offset>=?2 AND byte_offset<?3 ORDER BY byte_offset")?;

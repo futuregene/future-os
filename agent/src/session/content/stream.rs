@@ -323,7 +323,7 @@ pub(crate) fn read_encoded_changes(
             has_more: false,
         });
     };
-    let mut stmt=db.prepare("SELECT c.id,length(CAST(c.metadata_json AS BLOB))+length(CAST(x.descriptor_json AS BLOB))+x.symbol_bytes FROM stream_changes c LEFT JOIN stream_contexts x ON x.id=c.context_id AND x.stream_id=c.stream_id AND x.event_kind=c.event_kind WHERE c.stream_id=?1 AND c.last_cursor>?2 ORDER BY c.last_cursor LIMIT ?3")?;
+    let mut stmt=db.prepare_cached("SELECT c.id,length(CAST(c.metadata_json AS BLOB))+length(CAST(x.descriptor_json AS BLOB))+x.symbol_bytes FROM stream_changes c LEFT JOIN stream_contexts x ON x.id=c.context_id AND x.stream_id=c.stream_id AND x.event_kind=c.event_kind WHERE c.stream_id=?1 AND c.last_cursor>?2 ORDER BY c.last_cursor LIMIT ?3")?;
     let mut rows = stmt.query(params![id, since, i64::try_from(limit + 1)?])?;
     let mut ids = Vec::new();
     let mut bytes = 0usize;

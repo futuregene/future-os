@@ -88,7 +88,7 @@ impl SqliteStore {
             return Ok(result);
         }
         self.db.read(move |db| {
-            let mut stmt = db.prepare(
+            let mut stmt = db.prepare_cached(
 
                 "SELECT payload FROM (
                     SELECT sequence,payload FROM run_events WHERE session_id=?1
@@ -137,7 +137,7 @@ impl SqliteStore {
                 } else {
                     "SELECT session_id,run_id,epoch,idx,event_id,payload,sequence FROM run_events WHERE session_id=?1 AND run_id=?2 ORDER BY epoch,idx"
                 };
-                let mut statement = tx.prepare(sql)?;
+                let mut statement = tx.prepare_cached(sql)?;
                 let rows = statement.query_map(params![session,run], stored_event)?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
                 rows
@@ -457,7 +457,7 @@ pub(crate) fn read_replay_event_rows(
     } else {
         "SELECT session_id,run_id,epoch,idx,event_id,payload,sequence FROM run_events WHERE session_id=?1 AND run_id=?2 AND idx>?3 ORDER BY epoch,idx"
     };
-    let mut statement = db.prepare(&format!("{sql} LIMIT ?4"))?;
+    let mut statement = db.prepare_cached(&format!("{sql} LIMIT ?4"))?;
     let limit = limit
         .map(|n| i64::try_from(n).unwrap_or(i64::MAX))
         .unwrap_or(-1);
@@ -478,7 +478,7 @@ pub(crate) fn read_compaction_event_rows(
     limit: usize,
 ) -> Result<Option<Vec<StoredEventRow>>> {
     const PAGE_BYTES: usize = 4 * 1024 * 1024;
-    let mut statement = db.prepare(
+    let mut statement = db.prepare_cached(
         "SELECT session_id,run_id,epoch,idx,event_id,
          CASE WHEN length(CAST(payload AS BLOB))<=?6 THEN payload ELSE NULL END,sequence
          FROM run_events WHERE session_id=?1 AND run_id=?2 AND (idx,epoch)>(?3,?4)

@@ -1310,6 +1310,39 @@ mod tests {
         }
     }
 
+    /// The control for the two fence tests around it.
+    ///
+    /// Both of them assert that `effect_fixture`'s file is *absent*, which is
+    /// only evidence about the fence if the same fixture writes it when nothing
+    /// stops it. Without this test their `!path.exists()` would also pass for a
+    /// tool call that never reached its handler at all.
+    #[tokio::test]
+    async fn an_unfenced_tool_call_runs_to_its_effect() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("effect");
+        let mut agent = make_loop();
+        let mut tool = cov_tool("effect", true);
+        tool.handler = effect_fixture;
+        agent.tools = vec![tool];
+        let calls = [cov_tool_call(
+            "c",
+            "effect",
+            serde_json::json!({"path":path}),
+        )];
+        let mut messages = Vec::new();
+        agent
+            .execute_tools_sequential(0, &calls, &mut messages, &|_| {}, &StreamContext::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "executed",
+            "the fixture is what makes the fence tests' absence assertion meaningful"
+        );
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].text(), "done");
+    }
+
     #[tokio::test]
     async fn stop_during_the_intent_fence_prevents_starting_the_tool() {
         let root = tempfile::tempdir().unwrap();
