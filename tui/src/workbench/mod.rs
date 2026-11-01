@@ -13758,6 +13758,22 @@ mod tests {
             workbench.overlay_scroll, 0,
             "a page back on a detail view did not come back a page"
         );
+
+        // Every other box takes the wheel as its own `↑`/`↓`: the help reads
+        // one row a turn, in the direction the hand moved.
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.overlay = Some(Overlay::Help);
+        workbench.render(&data, 120, 38);
+        assert_eq!(
+            workbench.handle(
+                WbEvent::Mouse(at(mouse::MouseKind::WheelDown, 60, 20)),
+                &data
+            ),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.overlay_scroll, 1, "the wheel did not read on");
+        workbench.handle(WbEvent::Mouse(at(mouse::MouseKind::WheelUp, 60, 20)), &data);
+        assert_eq!(workbench.overlay_scroll, 0, "the wheel did not read back");
     }
 
     /// The actions that ship without a chord are still reachable: the shortcut
