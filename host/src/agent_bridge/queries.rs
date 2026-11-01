@@ -1040,3 +1040,87 @@ mod probe_tests {
         assert_eq!(error.to_string(), "boom", "the Agent's error is reported");
     }
 }
+
+#[cfg(test)]
+mod hydration_tests {
+    use super::*;
+    use crate::test_support::agent::{mock_agent, TestHome};
+
+    /// The full-tail read materializes the fields a consumer needs to decide on
+    /// or show: a replayed event that carries `content_refs` is replaced by the
+    /// referenced body before the caller sees the page, and the reference map
+    /// is gone afterwards. A page that kept the reference would show a message
+    /// that says nothing, because the body lives out of line.
+    #[tokio::test]
+    async fn a_replayed_event_is_hydrated_from_its_content_reference() {
+        let _home = TestHome::new("queries-hydration");
+        let mock = mock_agent();
+        let referenced = serde_json::json!({
+            "role": "user",
+            "message": "",
+            "content_refs": {
+                "message": {
+                    "databaseId": "db",
+                    "restoreGeneration": "gen",
+                    "epoch": 3,
+                    "cursor": 42,
+                    "field": "/data/message",
+                },
+            },
+        });
+        mock.push_typed_data(
+            "get_events_since",
+            serde_json::json!({
+                "runId": "run_1",
+                "events": [{
+                    "idx": 0,
+                    "type": "user_message",
+                    "data": referenced.to_string(),
+                }],
+                "hasMore": false,
+            }),
+        );
+        // The read_field page: identity echoed back, byte progress exact, one
+        // page, `hasMore` false because the next offset reached the total.
+        mock.push_data(
+            "get_event_content_range",
+            serde_json::json!({
+                "databaseId": "db",
+                "restoreGeneration": "gen",
+                "text": "materialized text",
+                "nextOffset": 17,
+                "totalBytes": 17,
+                "etag": "e1",
+                "encoding": "text",
+                "hasMore": false,
+            }),
+        );
+
+        let page = get_events_since_payload("sess_1".into(), "run_1".into(), -1)
+            .await
+            .expect("a replayed page");
+        assert_eq!(page.events.len(), 1);
+        let data: serde_json::Value =
+            serde_json::from_str(&page.events[0].data).expect("the event carries JSON");
+        assert_eq!(data["message"], serde_json::json!("materialized text"));
+        assert_eq!(data["role"], serde_json::json!("user"));
+        assert!(
+            data.get("content_refs").is_none(),
+            "the reference map does not survive hydration: {data}"
+        );
+
+        // The read was for the referenced coordinates, on the run the event
+        // named — not the session's current run.
+        let reads = mock.requests_of("get_event_content_range");
+        assert_eq!(reads.len(), 1);
+        assert_eq!(reads[0].run_id, "run_1");
+        let request = reads[0]
+            .content_request
+            .as_ref()
+            .expect("the reference is forwarded as a content request");
+        assert_eq!(request.cursor, 42);
+        assert_eq!(request.field, "/data/message");
+        assert_eq!(request.epoch, 3);
+        assert_eq!(request.offset, 0, "the body is read from its start");
+    }
+}

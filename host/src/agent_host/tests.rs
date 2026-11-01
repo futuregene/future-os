@@ -789,3 +789,147 @@ fn a_poisoned_state_is_still_readable() {
     assert!(outcome.is_err(), "an unfinished worker must time out");
     assert!(matches!(host.phase(), Phase::Failed(_)));
 }
+
+/// The host's read-only decisions, driven from the state a worker leaves behind.
+///
+/// Each of these is a function of `State` alone: a fresh `AgentHost` with that
+/// state written into it is the same entry point a caller hits after a real
+/// worker ran, without needing an Agent, a socket or a runtime. The guards are
+/// what decide whether the app starts, repairs or gives the Agent up, so each
+/// answer is asserted on both sides of its condition.
+#[test]
+fn the_host_reads_its_own_progress_and_only_detaches_what_it_merely_attached_to() {
+    let host = AgentHost::default();
+
+    // Progress is a plain read of the worker's own report, before any listener
+    // exists: a host that has not started is still "preparing", not absent.
+    assert_eq!(
+        host.startup_progress().stage,
+        future_agent::service::StartupStage::Preparing
+    );
+
+    // Idle refuses: there is nothing attached to give up.
+    assert!(!host.detach_attached());
+    assert_eq!(host.phase(), Phase::Idle);
+
+    // Ready but owned refuses too: an owned service holds the instance lock
+    // until a full stop, and pretending otherwise would let a second process
+    // start one against the same storage.
+    {
+        let mut state = host.0.state();
+        state.phase = Phase::Ready;
+        state.owned = true;
+        state.yield_reason = Some("Future Agent is held by another process".into());
+    }
+    assert!(!host.detach_attached(), "an owned Agent is not detached");
+    assert_eq!(host.phase(), Phase::Ready, "a refused detach changes nothing");
+
+    // Ready and not owned is the one case it accepts, and the yield reason from
+    // the attempt that attached belongs to that attempt, not to this stop.
+    {
+        let mut state = host.0.state();
+        state.owned = false;
+    }
+    assert!(host.detach_attached());
+    assert_eq!(host.phase(), Phase::Stopped);
+    assert_eq!(host.yield_reason(), None);
+}
+
+/// The idle-update reservation is the last step before a stop: it closes idle
+/// admission on an Agent this host owns, and it says "nothing to reserve" for
+/// one it only attached to. An owned Agent without a control handle yet is
+/// still starting, and that is an error rather than a silent "reserved".
+#[test]
+fn the_idle_update_reservation_needs_an_owned_agent_with_a_handle() {
+    let host = AgentHost::default();
+    assert!(
+        !host.reserve_idle_update().expect("an external Agent reserves"),
+        "an Agent this host does not own is never reserved"
+    );
+
+    {
+        let mut state = host.0.state();
+        state.owned = true;
+        state.phase = Phase::Starting;
+        state.handle = None;
+    }
+    let error = host
+        .reserve_idle_update()
+        .expect_err("an owned Agent with no handle is still starting");
+    assert_eq!(error.to_string(), "Agent is still starting");
+}
+
+/// `recover` repairs only what it can: a concurrent recovery owns the decision,
+/// a start or stop in flight is left alone, an unfinished external worker is
+/// left for a later pass, and an owned service that never finished retiring is
+/// the one state that needs a Desktop restart instead of a repair.
+#[test]
+fn recovery_declines_every_state_it_must_not_repair() {
+    let host = AgentHost::default();
+
+    // A second recovery running right now: not an error, and not this caller's
+    // decision to make.
+    let running = host.0.recovery.lock().unwrap();
+    assert!(host.recover("auto".into()).is_ok());
+    drop(running);
+
+    // A start or stop in flight is already doing the work.
+    for phase in [Phase::Starting, Phase::Stopping] {
+        {
+            let mut state = host.0.state();
+            state.phase.clone_from(&phase);
+        }
+        assert!(
+            host.recover("auto".into()).is_ok(),
+            "{phase:?} is left to finish"
+        );
+        assert_eq!(host.phase(), phase, "a declined recovery changes nothing");
+    }
+
+    // An external worker that has not finished is left for a later pass.
+    {
+        let mut state = host.0.state();
+        state.phase = Phase::Idle;
+        state.owned = false;
+        state.finished = false;
+    }
+    assert!(host.recover("auto".into()).is_ok());
+
+    // The cleanup never completed: repairing here would start a second service
+    // over the first one's storage, so the answer is a restart.
+    {
+        let mut state = host.0.state();
+        state.finished = true;
+        state.recovery_requires_restart = true;
+    }
+    assert!(host.recovery_requires_restart());
+    let error = host
+        .recover("auto".into())
+        .expect_err("an unfinished retirement needs a restart");
+    assert_eq!(
+        error.to_string(),
+        "Agent cleanup is incomplete; restart Desktop"
+    );
+}
+
+/// A host that has not been stopped cannot start again: the worker that owns
+/// the service scope is still there, and a second start would race it for the
+/// instance lock. Both non-startable phases answer with the same sentence,
+/// because the caller's move is the same either way — stop, then start.
+#[test]
+fn a_host_that_has_not_stopped_refuses_to_start_again() {
+    for phase in [Phase::Failed("worker panicked".into()), Phase::Stopping] {
+        let host = AgentHost::default();
+        {
+            let mut state = host.0.state();
+            state.phase.clone_from(&phase);
+        }
+        let error = host.start("auto".into()).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Agent host cannot start before a successful stop; restart Desktop",
+            "{phase:?} must not start a second worker"
+        );
+        assert_eq!(host.phase(), phase, "a refused start changes nothing");
+    }
+}
