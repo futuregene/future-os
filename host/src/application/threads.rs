@@ -1967,4 +1967,68 @@ mod tests {
         let restored = restore_thread(first.id.clone()).expect("restore");
         assert_eq!(restored.status, "active");
     }
+
+    /// A conversation whose Agent session is gone is *named*, not answered with an
+    /// empty page: the window renders "history unavailable" from this sentence,
+    /// and an empty page would read as "this conversation never said anything".
+    /// The three statuses keep their own reason so a log can say which happened.
+    #[tokio::test]
+    async fn a_history_read_names_an_unavailable_agent_session() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_history_availability");
+        crate::test_support::command_agent::ensure_mock_agent();
+        let thread = make_thread(&_home, Some("sess_gone"));
+
+        for status in ["deleted", "import_failed", "missing"] {
+            script_mock_agent(MockScript {
+                data: HashMap::from([(
+                    "get_session_presence".to_string(),
+                    serde_json::json!({
+                        "databaseId": "db-1",
+                        "restoreGeneration": "gen-1",
+                        "sessions": [{"sessionId": "sess_gone", "status": status}],
+                    })
+                    .to_string(),
+                )]),
+                ..Default::default()
+            });
+            let error = get_session_entries(thread.id.clone())
+                .await
+                .expect_err("an unavailable session is an error, not an empty page");
+            assert!(
+                error
+                    .to_string()
+                    .contains("Conversation history is unavailable"),
+                "{status}: {error}"
+            );
+        }
+
+        // A present session whose database is not the one this conversation was
+        // bound to is a different sentence: restoring the Agent session alone
+        // would silently show another machine's history under this title.
+        crate::store::record_thread_source(&thread.id, "sess_gone", "db-1", "gen-1")
+            .expect("bind the source");
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "get_session_presence".to_string(),
+                serde_json::json!({
+                    "databaseId": "db-2",
+                    "restoreGeneration": "gen-2",
+                    "sessions": [{"sessionId": "sess_gone", "status": "present"}],
+                })
+                .to_string(),
+            )]),
+            ..Default::default()
+        });
+        let error = get_session_entries(thread.id.clone())
+            .await
+            .expect_err("a foreign database is refused");
+        assert!(
+            error
+                .to_string()
+                .contains("belongs to a different Agent database"),
+            "{error}"
+        );
+        script_mock_agent(MockScript::default());
+    }
 }
