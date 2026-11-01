@@ -12423,6 +12423,16 @@ mod tests {
     /// moved nothing is the failure this is here for.
     #[test]
     fn the_pointer_inside_an_overlay_is_the_boxes_own() {
+        use crate::terminal_image::{CapabilitiesGuard, ImageProtocol};
+        // A picture is placed by the terminal's image protocol or not at all, and
+        // the drag surface *is* the placement: with no protocol the box describes
+        // the picture instead of drawing it, and there are no cells to grab. So
+        // this test owns the capability cache rather than inheriting whatever the
+        // runner's environment (or a sibling test in this same process) left in
+        // it — inherited, the drag half was a coin toss: the macOS runner
+        // answered "no pictures" and the press closed the box.
+        let _caps = CapabilitiesGuard::pin(ImageProtocol::Kitty);
+
         // Over a picture the wheel is the zoom.
         let mut wb = workbench();
         wb.overlay = Some(Overlay::FilePreview);
