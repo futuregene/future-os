@@ -97,3 +97,33 @@ describe("agent status gate", () => {
     expect(text).toContain("cannot be bypassed");
   });
 });
+
+/**
+ * A shutdown an update asked for is not a quit.
+ *
+ * The generic screen explains cleanup stages for a normal quit; an update that
+ * stops the app has its own next step (reopen, or repair the install), and its
+ * panel also keeps the *failure* of that stop — the one moment a user needs to
+ * be told what to do rather than shown a spinner.
+ */
+it("hands an update's shutdown to the recovery panel, not the cleanup screen", () => {
+  const progress: ShutdownProgress = {
+    operationId: "upd-1",
+    reason: "update",
+    state: "running",
+    stage: "background",
+    elapsedMs: 900,
+    errors: [],
+  };
+  const running = renderStatus("stopping", false, undefined, progress);
+  // The quit screen's own copy, which this branch must not borrow.
+  expect(running).not.toContain("Finishing background work");
+  // Neither is the app "just stopping": the panel says what it is waiting for.
+  expect(running.length).toBeGreaterThan(0);
+
+  // A stop that failed during an update says so through its own sentence, not
+  // the quit screen's "cleanup failed".
+  const failed = renderStatus("stopping", false, "deadline exceeded", { ...progress, state: "failed", errors: ["deadline exceeded"] });
+  expect(failed).toContain("couldn’t finish preparing for the update");
+  expect(failed).not.toContain("Finishing background work");
+});
