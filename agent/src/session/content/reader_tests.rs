@@ -289,11 +289,7 @@ fn history_search_and_recall_walk_only_the_visible_fields() {
     assert_eq!(hits[0]["entryId"], "a");
     assert_eq!(hits[0]["blockIndex"], 0);
     assert_eq!(hits[0]["kind"], "text");
-    let snippet = hits[0]["snippet"].as_str().unwrap();
-    assert!(
-        snippet.contains("Execution status"),
-        "the snippet comes from the summary projection: {snippet}"
-    );
+    assert_eq!(hits[0]["byteOffset"], 0);
     assert!(hits[0]["snippet"].as_str().unwrap().starts_with("跨页"));
 
     // A hit in the tool arguments is reported as arguments, not as text.
@@ -581,4 +577,64 @@ fn a_derived_summary_field_pages_from_its_projection() {
         snippet.contains("Execution status"),
         "the snippet comes from the summary projection: {snippet}"
     );
+}
+
+/// A block whose body is a *projection* (the model summary of canonical shell
+/// facts) is paged through that projection, so a recall serves the same text the
+/// transcript shows instead of the raw facts document.
+#[test]
+fn a_projected_shell_body_is_paged_through_its_summary() {
+    let (_dir, store) = store();
+    let result = future_rpc::shell_result::ShellResult {
+        command: "printf hi".into(),
+        cwd: "/w".into(),
+        duration_ms: 3,
+        status: future_rpc::shell_result::ShellStatus::Exited,
+        exit_code: Some(0),
+        is_soft_fail: false,
+        is_error: false,
+        attempts: vec![future_rpc::shell_result::ShellAttempt {
+            status: future_rpc::shell_result::ShellStatus::Exited,
+            exit_code: Some(0),
+            duration_ms: 3,
+            output: "hi\n".into(),
+            output_truncated: false,
+            escalated: false,
+        }],
+        approval: None,
+        note: None,
+    };
+    let summary = future_rpc::shell_result::model_summary(&result);
+    store
+        .append(
+            "s",
+            vec![json!({"id":"tool","type":"tool","role":"tool",
+                "timestamp":"2026-10-26T00:00:02Z",
+                "meta":{"run_id":"r","shell_result":serde_json::to_value(&result).unwrap()},
+                "content":[{"type":"tool_result","tool_call_id":"t","content":summary,"is_error":false}]})],
+        )
+        .unwrap();
+    // The entry's content is bound to the summary projection, not to the facts.
+    let encoding: String = store
+        .db
+        .read(|db| {
+            Ok(db.query_row(
+                "SELECT encoding FROM content_references WHERE session_id='s' AND owner_kind='entry' AND owner_id='tool' AND field='/content/0/content'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(encoding, "shell_summary");
+
+    let recalled = Snapshot::recall(&store, "s", "tool", 0, 16).unwrap();
+    assert_eq!(recalled["chunks"][0]["kind"], "tool_result");
+    assert_eq!(recalled["chunks"][0]["field"], "text");
+    assert_eq!(recalled["totalBytes"], summary.len() as i64);
+    assert_eq!(
+        recalled["chunks"][0]["text"],
+        summary[..16].to_owned(),
+        "the page is a slice of the projection"
+    );
+    assert_eq!(recalled["hasMore"], true);
 }
