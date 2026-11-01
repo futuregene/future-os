@@ -157,6 +157,104 @@ mod tests {
         drop(PreparedProcess::start(fixture(&marker)).unwrap());
         assert!(!marker.exists());
     }
+
+    /// The three ways a helper can refuse before authorising anything are three different
+    /// answers, and only one of them is the user cancelling authorization.
+    #[test]
+    fn a_helper_that_does_not_announce_ready_is_reported_with_when_it_was_cancelled() {
+        let script = |body: &'static str| {
+            let mut command = Command::new("/bin/sh");
+            command.arg("-c").arg(body);
+            command
+        };
+        // Spoke, but not READY: the refusal carries its own first line.
+        let refused = PreparedProcess::start(script("printf 'DENIED\\n'"))
+            .err()
+            .expect("a helper that does not announce READY is refused");
+        assert_eq!(
+            refused, "Update preparation was cancelled or refused: DENIED",
+            "the diagnostic carries what the helper actually said"
+        );
+        // Exited 126 before saying anything: the authorization dialog's own code, so the
+        // parent may report cancellation instead of a fault.
+        let cancelled = PreparedProcess::start(script("exit 126"))
+            .err()
+            .expect("exit 126 is a refusal");
+        assert_eq!(
+            cancelled, "Authorization cancelled; current services are still running",
+            "126 is the dialog's cancellation, not a generic failure"
+        );
+    }
+
+    /// A helper that stops reading between `READY` and `COMMIT` leaves nobody to write to.
+    /// That is a failed commit — reported as one, not as a panic and not as a success.
+    #[test]
+    fn a_helper_that_stops_reading_before_the_commit_is_a_failed_commit() {
+        // The child closes **its** stdin and stays alive, so the parent's `COMMIT` meets a
+        // pipe with no readers — which is what makes this arm deterministic. A child that
+        // merely exits after `READY` races the parent: the write then succeeds into the pipe
+        // buffer and the failure moves to the completion read instead (measured in the full
+        // suite, where the first version of this case failed exactly that way).
+        let prepared = PreparedProcess::start({
+            let mut command = Command::new("/bin/sh");
+            command
+                .arg("-c")
+                .arg("printf 'READY\\n'; exec 0<&-; sleep 5");
+            command
+        })
+        .expect("READY arrives before the helper stops reading");
+        let completion = prepared.commit().expect("a failed write is still a result");
+        assert!(!completion.ok);
+        assert!(completion.restored, "nothing was replaced");
+        assert!(
+            completion
+                .diagnostic
+                .contains("Update commit was not delivered"),
+            "the diagnostic names the lost commit, got {:?}",
+            completion.diagnostic
+        );
+    }
+
+    /// A completion that claims success while the helper exits non-zero is the one shape the
+    /// parent may not accept: the claim and the process disagree about what happened.
+    #[test]
+    fn a_successful_completion_from_a_helper_that_failed_is_refused() {
+        let prepared = PreparedProcess::start({
+            let mut command = Command::new("/bin/sh");
+            command.arg("-c").arg(
+                "printf 'READY\\n'; IFS= read -r request || exit 0; \
+                 printf '{\"ok\":true,\"restored\":false,\"diagnostic\":\"\"}\\n'; exit 3",
+            );
+            command
+        })
+        .expect("READY");
+        let error = prepared
+            .commit()
+            .expect_err("a claimed success from a failed helper is refused");
+        assert!(
+            error.contains("Update helper exited with"),
+            "the refusal names the exit status, got {error:?}"
+        );
+    }
+
+    /// `agent_lease` derives the Agent's home from the record it was handed, and refuses a
+    /// path that is not `<home>/app/updates/<id>/result.json` rather than writing a lock file
+    /// somewhere unexpected.
+    #[test]
+    fn the_agent_lease_refuses_a_record_path_that_is_not_an_update_record() {
+        let root = tempfile::tempdir().unwrap();
+        for record in [
+            root.path().join("result.json"),
+            root.path().join("elsewhere/app/notes/result.json"),
+        ] {
+            let error = agent_lease(&record).expect_err("not an update record");
+            assert_eq!(error, "Invalid update record location");
+        }
+        assert!(
+            !root.path().join("agent").exists(),
+            "a refused path must not have created the Agent lock directory"
+        );
+    }
 }
 
 #[cfg(not(target_os = "windows"))]

@@ -371,8 +371,17 @@ pub(super) fn worker(args: &[String]) -> Result<(), String> {
     };
     process::complete(&completion)
 }
+/// After a verified start: the staging directory a successful install kept for rollback is no
+/// longer needed, so it goes.
 pub(super) fn confirm(id: &str) -> Result<(), String> {
-    let directory = staging(&bundle()?, id)?;
+    confirm_at(&bundle()?, id)
+}
+/// The body of [`confirm`] with the installed bundle's path injected — the same split, for the
+/// same reason, as [`Prepared::prepare_at`]: `bundle()` derives the path from `current_exe()`,
+/// which is never an `.app` from a test binary, so "a confirmed install removes the staging
+/// directory" would otherwise be unobservable.
+pub(super) fn confirm_at(target: &Path, id: &str) -> Result<(), String> {
+    let directory = staging(target, id)?;
     if directory.exists() {
         std::fs::remove_dir_all(directory).map_err(|e| e.to_string())?;
     }

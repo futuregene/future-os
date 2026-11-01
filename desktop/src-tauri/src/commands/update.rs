@@ -139,6 +139,13 @@ pub fn run_update_worker_for_tests(args: &[String]) -> Result<(), String> {
 pub fn probe_update_candidate_for_tests(path: &std::path::Path) -> Result<(), String> {
     macos::probe(path)
 }
+/// `macos::confirm` with the installed bundle's path injected: production reads that path from
+/// `current_exe()`, which a test binary is never inside, so the step that removes a confirmed
+/// install's staging directory would otherwise be unreachable.
+#[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
+pub fn confirm_update_for_tests(target: &std::path::Path, id: &str) -> Result<(), String> {
+    macos::confirm_at(target, id)
+}
 #[cfg(not(target_os = "windows"))]
 fn helper_result(result: Result<(), String>) -> Result<(), String> {
     if let Err(error) = &result {

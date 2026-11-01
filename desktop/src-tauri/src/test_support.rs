@@ -56,6 +56,12 @@ pub use crate::commands::run_update_worker_for_tests;
 #[cfg(all(feature = "gui", target_os = "macos"))]
 pub use crate::commands::probe_update_candidate_for_tests;
 
+/// `commands::update_macos::confirm` with the installed bundle's path injected — the step that
+/// removes a confirmed install's staging directory, whose only production caller reads that
+/// path from `current_exe()`.
+#[cfg(all(feature = "gui", target_os = "macos"))]
+pub use crate::commands::confirm_update_for_tests;
+
 /// How long a fixture waits for a fact about **another process**, and the seam that decides
 /// it.
 ///

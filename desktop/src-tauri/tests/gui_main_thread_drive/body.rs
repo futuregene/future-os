@@ -884,7 +884,7 @@ fn exercise_update_installation(root: &std::path::Path) {
                 .map_err(|e| e.to_string())
         })();
         let outcome = match prepared {
-            Ok(()) => drive_update_worker_cancel(&target, id, &record),
+            Ok(()) => run_update_worker(&target, id, &record, false),
             Err(error) => Err(error),
         };
         let kept = bundle_version(&target);
@@ -903,12 +903,229 @@ fn exercise_update_installation(root: &std::path::Path) {
         ));
     }
 
+    // The worker's three failure arms. Each is a real child against a real bundle: what varies
+    // is the world it is handed, not the code it runs.
+    {
+        // (1) The candidate cannot be swapped in — there is nothing at the staging path.
+        let case = root.join("update-install-missing-candidate");
+        let _ = std::fs::remove_dir_all(&case);
+        let target = case.join("FutureOS.app");
+        let id = "update-driver-missing";
+        let staging = case.join(format!(".futureos-{id}"));
+        let record = case
+            .join("worker-home/app/updates")
+            .join(id)
+            .join("result.json");
+        let prepared = (|| -> Result<(), String> {
+            write_installed_bundle(&target, INSTALLED)?;
+            std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(record.parent().expect("a record directory"))
+                .map_err(|e| e.to_string())
+        })();
+        let outcome = match prepared {
+            Ok(()) => run_update_worker(&target, id, &record, true),
+            Err(error) => Err(error),
+        };
+        let kept = bundle_version(&target);
+        checks.push((
+            "a failed exchange is reported as restored, with the original bundle intact",
+            outcome.as_ref().is_ok_and(|worker| {
+                worker.completion.as_ref().is_some_and(|completion| {
+                    completion["ok"] == false
+                        && completion["restored"] == true
+                        && completion["diagnostic"]
+                            .as_str()
+                            .is_some_and(|text| text.contains("Atomic application exchange failed"))
+                })
+            }) && kept == INSTALLED,
+            describe(&outcome, format!("version {kept:?}")),
+        ));
+    }
+
+    {
+        // (2) The Agent lease cannot even be created: `agent` is a file, not a directory, so
+        // the worker must report `failed-restored` and say so in the journal.
+        let case = root.join("update-install-agent-lease");
+        let _ = std::fs::remove_dir_all(&case);
+        let target = case.join("FutureOS.app");
+        let id = "update-driver-agent-lease";
+        let staging = case.join(format!(".futureos-{id}"));
+        let home = case.join("worker-home");
+        let record = home.join("app/updates").join(id).join("result.json");
+        let prepared = (|| -> Result<(), String> {
+            write_installed_bundle(&target, INSTALLED)?;
+            std::fs::create_dir_all(staging.join("candidate.app")).map_err(|e| e.to_string())?;
+            write_update_record(record.parent().expect("a record directory"), id)?;
+            std::fs::write(home.join("agent"), b"not a directory").map_err(|e| e.to_string())
+        })();
+        let outcome = match prepared {
+            Ok(()) => run_update_worker(&target, id, &record, true),
+            Err(error) => Err(error),
+        };
+        let journal: Option<serde_json::Value> = std::fs::read(&record)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+        let kept = bundle_version(&target);
+        checks.push((
+            "a worker that cannot take the Agent lease restores and records why",
+            outcome.as_ref().is_ok_and(|worker| {
+                worker.completion.as_ref().is_some_and(|completion| {
+                    completion["ok"] == false && completion["restored"] == true
+                })
+            }) && journal
+                .as_ref()
+                .is_some_and(|value| value["outcome"] == "failed-restored")
+                && kept == INSTALLED,
+            describe(
+                &outcome,
+                format!(
+                    "version {kept:?}; journal outcome {:?}",
+                    journal.as_ref().map(|value| value["outcome"].clone())
+                ),
+            ),
+        ));
+    }
+
+    {
+        // (3) The exchange succeeded but its result cannot be persisted: the directory the
+        // worker has to fsync cannot be opened. It must put the original back.
+        let case = root.join("update-install-unpersistable");
+        let _ = std::fs::remove_dir_all(&case);
+        let target = case.join("FutureOS.app");
+        let id = "update-driver-unpersistable";
+        let staging = case.join(format!(".futureos-{id}"));
+        let record = case
+            .join("worker-home/app/updates")
+            .join(id)
+            .join("result.json");
+        let prepared = (|| -> Result<(), String> {
+            write_installed_bundle(&target, INSTALLED)?;
+            std::fs::create_dir_all(staging.join("candidate.app")).map_err(|e| e.to_string())?;
+            // A valid record, so the only thing this scenario can fail on is the permission of
+            // the directory the worker has to fsync. Without it the journal write fails first
+            // and the arm would be covered by a missing file instead — measured, this is how
+            // the first version of this check passed while asserting nothing.
+            write_update_record(record.parent().expect("a record directory"), id)
+        })();
+        let narrowed = prepare_unreadable_directory(&case);
+        let outcome = match (prepared, narrowed) {
+            (Ok(()), Ok(())) => run_update_worker(&target, id, &record, true),
+            (Err(error), _) => Err(error),
+            (_, Err(error)) => Err(error),
+        };
+        // Restored before anything reads the tree: a directory with no read permission cannot
+        // be walked, and the driver's own root is removed by `finish`.
+        let _ = restore_directory_permissions(&case);
+        let kept = bundle_version(&target);
+        checks.push((
+            "a result that cannot be persisted puts the original bundle back",
+            outcome.as_ref().is_ok_and(|worker| {
+                worker.completion.as_ref().is_some_and(|completion| {
+                    completion["ok"] == false
+                        && completion["restored"] == true
+                        && completion["diagnostic"].as_str().is_some_and(|text| {
+                            text.contains("Cannot persist installation result")
+                                && text.contains("Permission denied")
+                        })
+                })
+            }) && kept == INSTALLED,
+            describe(&outcome, format!("version {kept:?}")),
+        ));
+    }
+
+    // `confirm` is the step after a *verified* start: it removes the staging directory a
+    // successful install deliberately kept for rollback. Its only production caller reads the
+    // bundle from `current_exe()`, so the path is injected here as preparation's is.
+    {
+        let case = root.join("update-install-confirm");
+        let _ = std::fs::remove_dir_all(&case);
+        let target = case.join("FutureOS.app");
+        let id = "update-driver-confirm";
+        let staging = case.join(format!(".futureos-{id}"));
+        let prepared = write_installed_bundle(&target, INSTALLED)
+            .and_then(|()| std::fs::create_dir_all(&staging).map_err(|e| e.to_string()));
+        let outcome = match prepared {
+            Ok(()) => futureos_lib::test_support::confirm_update_for_tests(&target, id),
+            Err(error) => Err(error),
+        };
+        checks.push((
+            "a confirmed installation removes the staging directory it kept for rollback",
+            outcome.is_ok() && !staging.exists(),
+            format!(
+                "{}; staging {}",
+                outcome.err().unwrap_or_else(|| "removed".to_string()),
+                if staging.exists() {
+                    "left behind"
+                } else {
+                    "gone"
+                }
+            ),
+        ));
+    }
+
     report_checks(
         "update installation",
         "ran the real worker against temporary bundles",
         &checks,
     );
     let _ = std::fs::remove_dir_all(&payload);
+}
+
+/// What a worker child reported: its parsed completion (absent when it was cancelled before
+/// the install) and how it ended.
+struct WorkerOutcome {
+    completion: Option<serde_json::Value>,
+    status: String,
+}
+
+/// One line for a check's detail: the child's status plus the caller's own derived facts.
+fn describe(outcome: &Result<WorkerOutcome, String>, extra: String) -> String {
+    match outcome {
+        Ok(worker) => format!(
+            "{}; {extra}; completion {:?}",
+            worker.status, worker.completion
+        ),
+        Err(error) => format!("{error}; {extra}"),
+    }
+}
+
+/// Make a directory **write and execute only**: the worker can still rename inside it, but
+/// cannot open it to fsync the installation result — the one failure its persistence step has
+/// to be able to describe.
+#[cfg(all(feature = "test-support", target_os = "macos"))]
+fn prepare_unreadable_directory(directory: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o300))
+        .map_err(|error| format!("cannot narrow {}: {error}", directory.display()))
+}
+
+/// Put the walkable permissions back, so `finish` can remove the driver's own root.
+#[cfg(all(feature = "test-support", target_os = "macos"))]
+fn restore_directory_permissions(directory: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o755))
+        .map_err(|error| error.to_string())
+}
+
+/// The record a worker reads when it reports an outcome, in the shape the journal writes:
+/// `result.json` under `<home>/app/updates/<id>/`, four of whose ancestors name the Agent home.
+fn write_update_record(directory: &std::path::Path, id: &str) -> Result<(), String> {
+    std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+    std::fs::write(
+        directory.join("result.json"),
+        serde_json::json!({
+            "formatVersion": 1,
+            "operationId": id,
+            "fromVersion": "old-9.9.8",
+            "targetVersion": "new-9.9.9",
+            "stage": "installing",
+            "outcome": serde_json::Value::Null,
+            "diagnostic": serde_json::Value::Null,
+            "restartSafe": false,
+        })
+        .to_string(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// The bundle that is already installed: no signature and no executable, because nothing
@@ -945,11 +1162,12 @@ fn bundle_version(app: &std::path::Path) -> String {
 /// A worker child whose stdin is closed before `COMMIT`: it must announce `READY`, read the
 /// end of input where the authorisation would have been, and undo its staging.
 #[cfg(all(feature = "test-support", target_os = "macos"))]
-fn drive_update_worker_cancel(
+fn run_update_worker(
     target: &std::path::Path,
     id: &str,
     record: &std::path::Path,
-) -> Result<(), String> {
+    commit: bool,
+) -> Result<WorkerOutcome, String> {
     use std::io::BufRead;
     use std::process::{Command, Stdio};
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -963,8 +1181,12 @@ fn drive_update_worker_cancel(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|error| format!("cannot start the worker: {error}"))?;
+    // One reader for the child's whole life: it announces one line now and (after COMMIT) one
+    // completion line later, and `take()`ing the pipe twice would hand the second read nothing.
+    let mut output =
+        std::io::BufReader::new(child.stdout.take().ok_or("the worker has no stdout")?);
     let mut line = String::new();
-    std::io::BufReader::new(child.stdout.take().ok_or("the worker has no stdout")?)
+    output
         .read_line(&mut line)
         .map_err(|error| format!("cannot read the worker's first line: {error}"))?;
     if line.trim() != "READY" {
@@ -972,14 +1194,34 @@ fn drive_update_worker_cancel(
         let _ = child.wait();
         return Err(format!("the worker announced {line:?}, not READY"));
     }
-    // Closing stdin **is** the cancel: `await_commit` reads end of input and answers "not
-    // committed", and the worker then removes the staging directory and exits normally.
-    drop(child.stdin.take());
+    let mut completion = None;
+    if commit {
+        child
+            .stdin
+            .take()
+            .ok_or("the worker has no stdin")?
+            .write_all(b"COMMIT\n")
+            .map_err(|error| format!("cannot authorise the install: {error}"))?;
+        let mut result = String::new();
+        output
+            .read_line(&mut result)
+            .map_err(|error| format!("cannot read the worker's completion: {error}"))?;
+        completion = Some(serde_json::from_str(result.trim()).map_err(|error| {
+            format!("the completion line is not JSON: {error}; {result:?}")
+        })?);
+    } else {
+        // Closing stdin **is** the cancel: `await_commit` reads end of input and answers "not
+        // committed", and the worker then removes the staging directory and exits normally.
+        drop(child.stdin.take());
+    }
     let status = child.wait().map_err(|error| error.to_string())?;
     if !status.success() {
-        return Err(format!("the cancelled worker exited with {status}"));
+        return Err(format!("the worker exited with {status}"));
     }
-    Ok(())
+    Ok(WorkerOutcome {
+        completion,
+        status: format!("worker {status}"),
+    })
 }
 
 /// `probe`'s timeout arm: a candidate that outlives the deadline is killed and named.
