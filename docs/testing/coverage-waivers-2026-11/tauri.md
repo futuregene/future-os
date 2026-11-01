@@ -11,9 +11,10 @@ binaries beyond the driver.
 
 **Last measurement**: `test/tauri-cov2` (waves 6-8), rustc **1.99.1** (`rust-toolchain.toml`),
 `ulimit -n 8192`, raw profiles deleted first (`--no-report` accumulates). Artifacts
-(gitignored) in `coverage/2026-11/tauri/`: `wave9-lcov.info` (the numbers quoted below),
-`wave9-lib.log` / `wave9-driver.log` / `wave9-report.log`, the run script `wave9.sh`, the
-per-wave records `wave6.md` (waves 6-7) and `wave9.md` (wave 8), the classification
+(gitignored) in `coverage/2026-11/tauri/`: `wave10-lcov.info` (the numbers quoted below; wave 9's
+`wave9.md` was written against the pre-`a8669c8b3` base and re-measured here),
+`wave10-lib.log` / `wave10-driver.log` / `wave10-report.log`, the run script `wave10.sh`, the
+per-wave records `wave6.md` (waves 6-7) and `wave9.md` (waves 8-9), the classification
 `classification.md`, and the diff tools `diff_lane.py` / `da0_lane.py` / `da0_lines.py` /
 `da0_file.py`.
 
@@ -23,9 +24,9 @@ silently unions `desktop/src-tauri/src/lib.rs` with `host/src/lib.rs` and `packa
 
 ```bash
 # One measurement, both legs, fresh profiles (the script does the rm for you).
-coverage/2026-11/tauri/wave9.sh
-python3 coverage/2026-11/tauri/da0_lane.py  coverage/2026-11/tauri/wave9-lcov.info            # lane total
-python3 coverage/2026-11/tauri/da0_file.py  coverage/2026-11/tauri/wave9-lcov.info \
+coverage/2026-11/tauri/wave10.sh
+python3 coverage/2026-11/tauri/da0_lane.py  coverage/2026-11/tauri/wave10-lcov.info           # lane total
+python3 coverage/2026-11/tauri/da0_file.py  coverage/2026-11/tauri/wave10-lcov.info \
         desktop/src-tauri/src/lib.rs                                                         # per line, one file
 cargo test -p futureos --lib                                  # gate: 421 passed, ulimit -n 8192
 cargo test -p futureos --test gui_main_thread_drive --features test-support
@@ -39,7 +40,8 @@ cargo test -p futureos --test gui_main_thread_drive --features test-support
 | wave 5 (`963`) | 963 | preparation chain moved into the driver |
 | wave 6 | **864** | the real update worker end to end (−99) |
 | wave 7 | **819** | worker failure arms, `confirm`, `update_process` refusals (−45) |
-| wave 9 | **639** | the transfer commands, the host-event sink, the two open update items (−180) |
+| wave 9 (first measurement) | 639 | the transfer commands, the host-event sink, the two open update items (−180), on the pre-`a8669c8b3` base |
+| wave 10 | **638** | the same tests after `a8669c8b3` landed under them; per-file identical except the interleaving line below |
 
 The lane is **not** at per-line 0 and does not claim to be. What it does claim: every remaining
 line in the files this table covers is either registered below or named as a work item in §4;
@@ -49,7 +51,7 @@ nothing in §2 is claimed as "covered".
 |---|---:|---|
 | `src/commands/update.rs` | 194 | work items — the IPC wrappers this lane has not reached yet |
 | `src/agent_supervisor.rs` | 88 | work items — the watchdog loop body and the quit dialogs |
-| `src/lib.rs` | 48 | §2.6 registered (real handle / mock-always-Ok / startup) + work items |
+| `src/lib.rs` | 47 | §2.6 registered (real handle / mock-always-Ok / startup) + work items |
 | `src/terminal/server.rs` | 56 | known ±1 fluctuation (§2.5) + interleaving-dependent test arms |
 | `src/main.rs`, `src/terminal/pty.rs`, … | 429 | work items (see `classification.md` for the wave-1 bucket split) |
 | `src/commands/history_transfer.rs` | 2 | 1 measured-unreachable command arm (§2.7) + 1 scaffolding arm |
@@ -101,7 +103,8 @@ file's number should quote the run it came from, not the field.
 `src/lib.rs:808` belongs to the same family and was measured on both sides: the drain loop's
 100 ms idle arm read `DA>0` in `wave8-lcov.info` (47 lines, no test had ever started the thread)
 and `0` in `wave9-lcov.info` (48), because wave 9's event case is the first to start it. Nothing
-in the arm changed.
+in the arm changed — and `wave10-lcov.info` has it back at `DA>0` (47), which is what a ±1 looks
+like.
 
 ### 2.6 `src/lib.rs` — `T1` / `T6`
 
