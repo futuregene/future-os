@@ -11,17 +11,17 @@ Rust **1.99.1** (`rust-toolchain.toml`), macOS arm64.
 
 | state | lines |
 |---|---:|
-| **waived** (mechanism + falsifier named below) | **80** |
-| `open` — **no test and no justification yet** | **1336** |
+| **waived** (mechanism + falsifier named below) | **89** |
+| `open` — **no test and no justification yet** | **1327** |
 
 Reconciliation with the generated ledger (which must sum to 1416): waived 24
 (`glob_scan.rs` ignored acceptance, class `lane`) + 24 (`execution.rs` Linux helper block,
 class `open` there because the line text carries no attribute) + 1 (`transport.rs:212`, class
 `open`) + 2 (Windows candidates, class `W1`) + 6 (`settings.rs` serialization fallbacks, class
 `open`) + 23 (`settings.rs` probe-error / host-capability arms, class `open`) = **80**; the
-remaining **1336** are `open`.
+remaining **1336** are `open`; the duplicate-run scan row adds 9, so today it is **89** waived / **1327** open.
 The ledger's own class totals are `open` 966, `a` 214, `W6` 173, `W5` 26, `W7` 8, `W1` 5,
-`lane` 24 — those hints *subdivide* the 1336 open lines, they do not reduce them.
+`lane` 24 — those hints *subdivide* the 1327 open lines, they do not reduce them.
 
 The class column of the generated ledger is a first-cut reading of each line's own text
 (`?` tails, lone `}`, `tracing::`, `assert`, platform attributes). **It is not a waiver.**
@@ -49,7 +49,7 @@ The working copies (`ledger-gen.py`, `ledger.md`, the lcov files) live under the
 `coverage/2026-11/after/agent/`, which is why this file exists in `docs/`: the numbers above
 are reproducible from the commands shown, with nothing but the lcov file.
 
-## Waived (80 lines)
+## Waived (89 lines)
 
 Category names follow `.future/memory/coverage-llvm-cov.md` (W1 cfg(windows) · W2 defensive
 dead arm · W3 OS failure injection · W4 race window · W5 attribution artifact · W6 ghost line
@@ -64,6 +64,7 @@ lane needs no network and no model.
 | 4 | `sandbox/mod.rs:1041,1059` | 2 | **W1** (candidate) | close brace / `SandboxBackendReceipt::Unavailable` under a Windows-only path | run the suite on Windows; **not yet verified line by line** — see "what is not claimed" |
 | 5 | `rpc/commands/settings.rs:14-17,19,39` | 6 | **W2** | the `serde_json::to_value(...).unwrap_or_else(&vert;» json!({"available": false, "code": "serialization_failed"}))` fallbacks in the two probe handlers | none reachable: `SandboxProbeResult` is `bool`, two `String`s and three `Option`s of `PathBuf`/`String`/`LinuxSandboxCapabilities`, whose fields are all `bool` or `String` (`sandbox/mod.rs:1067-1077`, `sandbox/linux/probe.rs:148-160`); `to_value` fails only on non-string map keys and non-finite floats, which that shape cannot produce |
 | 6 | `rpc/commands/settings.rs:21-24,43-46,53-56,548-552,555-562,570-571` | 23 | **W3** (host capability) | the probe **error** arms, the Windows-only reset arm, and the "sandbox tier unavailable → Manual" fallback | the macOS probe body always returns `Ok` (`sandbox/mod.rs:1082-1100`: `available` is `/usr/bin/sandbox-exec`'s existence), so the error arms need a host whose probe fails and the fallback needs a host without that binary; falsify by running these settings tests on either |
+| 7 | `rpc/session_prompt.rs:306-314` | 9 | **W2** (candidate) | the non-segmented transcript scan for a duplicate `run_id` | only reachable when a session is **not** ephemeral yet its broadcaster is **not** segmented, which the constructor cannot produce unless `configure_journal` failed (`rpc/session.rs:288` swallows that error); the same store then answers `ensure_execution_allowed` first (`session_prompt.rs:260-266`) with `PersistenceUnavailable`, so the scan is never reached. Falsified by a fixture that makes `configure_journal` fail while the store still accepts execution |
 
 ### 1. `execution.rs:716-745` — the bubblewrap helper-report block
 
@@ -107,7 +108,7 @@ These need tests, not classification. Ranked by size, with the mechanism already
 
 | file | `DA:0` | mechanism |
 |---|---:|---|
-| `rpc/session_prompt.rs` | 61 | injected persistence failures on the admission path (`PersistenceUnavailable` arms, compensating `cancel_queued`), the legacy transcript scan (`306-314`), and the propagated loop-error branch (`1740-1758`) |
+| `rpc/session_prompt.rs` | 52 | injected persistence failures on the admission path (`PersistenceUnavailable` arms around 1111-1120 and 1394-1402), and the deferred-input restore arms |
 | `rpc/commands/settings.rs` | 12 | what is left after the 29 waived lines: `332-338` (thread-spawn failure, W3) and the per-arm refusals |
 | `rpc/session.rs` | 41 | `schedule_idle_history_release` (27-35) and the cancelled-receipt compensation arms (505-506) |
 | `tools/shell/execution.rs` | 41 | 24 of these are the waived Linux helper block; the other 17 are the exit-status edge and the timeout drain |
