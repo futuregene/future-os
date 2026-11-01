@@ -36,7 +36,7 @@ Each row states the code that makes it unreachable, the test that pins that code
 exists), and the falsifier. The ledger convention (`docs/testing/waiver-ledger.md`) applies:
 **a waiver that cannot name its own falsifier is not evidence.**
 
-## The 22 lines
+## The 37 lines
 
 | # | file:line | category | construct | pinned by |
 |---|---|---|---|---|
