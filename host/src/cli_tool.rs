@@ -350,8 +350,23 @@ fn probe(path: &Path, source: &str) -> Result<Descriptor, String> {
 fn resolve_from(parent: &Path, name: &str, path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     let mut candidates = vec![parent.join(name)];
     // Compile-time checkout paths are development-only, never a packaged fallback.
-    #[cfg(all(debug_assertions, not(test)))]
-    if !crate::remote::fixture_mode() {
+    //
+    // The gate is the feature-based form, and `not(test)` was the wrong one: an
+    // entry crate (`future-cli`, Desktop) compiles this crate as a *dependency*
+    // of its own test binary, where `cfg(test)` is false. The runtime guard that
+    // stood in for it (`fixture_mode()`) starts false there too, because its own
+    // `cfg!(test)` arm cannot see the entry crate's test build — so these
+    // candidates were live inside exactly the tests whose PATH fixture they
+    // outrank, and whether a test saw them depended on a *sibling* having
+    // already called `configure_entry_fixture()`. That is the flake: measured
+    // 2026-11-01, `future-cli`'s three built-in-skill bootstrap tests red in 3
+    // of 5 runs of the same binary, discovery returning this checkout's own
+    // `target/debug/future` instead of the fixture. Compiling the list out is
+    // what makes the answer the same in every order; `test-support` is a
+    // dev-dependency everywhere (`cli`, `desktop`), so no packaged binary loses
+    // it.
+    #[cfg(all(debug_assertions, not(any(test, feature = "test-support"))))]
+    {
         if let Some(target) = std::env::var_os("CARGO_TARGET_DIR")
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())

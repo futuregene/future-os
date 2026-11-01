@@ -550,4 +550,86 @@ mod tests {
         let error = run(&args(&["--reclaim", "--yes"]), &out).await.unwrap_err();
         assert!(error.contains("integrity check"), "{error}");
     }
+
+    /// A machine that has never reclaimed and has never skipped a journal: the
+    /// two rows must read "never" and "none recorded" rather than a blank or a
+    /// zero that looks like a measurement. Both arms are what a fresh install
+    /// prints, and both are pure functions of the report — no Agent is needed.
+    #[test]
+    fn a_report_with_no_history_says_never_and_none_recorded() {
+        let (out, cap) = Output::memory();
+        report(&serde_json::json!({}), &out);
+        let printed = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let row = |label: &str| {
+            printed
+                .lines()
+                .find(|line| line.starts_with(label))
+                .map(|line| line.trim_end().to_string())
+                .unwrap_or_else(|| panic!("no {label} row in:\n{printed}"))
+        };
+        // One call per row, into a binding: a `row(..)` inside an assert's
+        // message argument is only evaluated when the assertion fails, and would
+        // sit in this lane's count as an uncovered line forever.
+        let reclaimed = row("Last reclamation");
+        assert!(reclaimed.ends_with("never"), "{reclaimed}");
+        let kept = row("Kept journals");
+        assert!(kept.ends_with("none recorded"), "{kept}");
+    }
+
+    /// A kept journal is printed with the reason it was kept: the sweep's whole
+    /// point is that "not deleted" is evidence, not silence.
+    #[test]
+    fn a_kept_journal_prints_the_reason_it_was_kept() {
+        let (out, cap) = Output::memory();
+        let plan = serde_json::json!({
+            "entries": [{
+                "sessionId": "s",
+                "runId": "run_big",
+                "rawEvents": 3,
+                "rawBytes": 10,
+                "kind": "journal",
+                "skip": "not_terminal",
+            }],
+        });
+        print_entries(&plan, true, &out);
+        let printed = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(printed.contains("kept (not_terminal)"), "{printed}");
+    }
+
+    /// The report's numbers arrive as JSON and are not always typed: a counter
+    /// can be a string after an Agent round trip, and an unexpected shape must
+    /// degrade to zero instead of inventing a figure.
+    #[test]
+    fn counters_read_a_string_and_degrade_an_unknown_shape_to_zero() {
+        assert_eq!(
+            number(&serde_json::json!({ "at": "1761461892000" }), "at"),
+            1_761_461_892_000
+        );
+        assert_eq!(number(&serde_json::json!({ "at": true }), "at"), 0);
+        assert_eq!(number(&serde_json::json!({ "at": null }), "at"), 0);
+        assert_eq!(number(&serde_json::json!({}), "at"), 0);
+        // An unparseable string is not a number either.
+        assert_eq!(number(&serde_json::json!({ "at": "later" }), "at"), 0);
+    }
+
+    /// Run ids shorter than the column are printed whole; longer ones are cut to
+    /// 21 characters plus one ellipsis, so every row keeps its alignment.
+    #[test]
+    fn long_run_ids_are_shortened_and_short_ones_are_not() {
+        let short_id = "a".repeat(22);
+        assert_eq!(short(&short_id), short_id);
+        let long = "b".repeat(30);
+        let printed = short(&long);
+        assert_eq!(printed.chars().count(), 22);
+        assert!(printed.ends_with('…'), "{printed}");
+        assert_eq!(printed.trim_end_matches('…'), "b".repeat(21));
+    }
+
+    /// "Never" is a state, not a timestamp: a missing or non-positive instant is
+    /// said in words rather than rendered as 1970 or as a bare number.
+    #[test]
+    fn an_absent_instant_reads_as_never() {
+        assert_eq!(local_time(0), "never");
+        assert_eq!(local_time(-1), "never");
+    }
 }
