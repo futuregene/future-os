@@ -759,7 +759,33 @@ async fn handle_command_inner(
     // before the control gate: a standby device is one this machine asked to sit
     // still, not one it pretends has gone.
     if let Some(link) = handshake.runtime.client_link(&handshake.creds.pair_id) {
-        link.observe();
+        // A beat is a proof, not news; only the first proof after an absence is
+        // an arrival, and that is what a later investigation needs to see. There
+        // is no other line anywhere for "a device reached this machine", which
+        // is why a phone that could not connect left nothing to read.
+        if link.observe() {
+            let identity = handshake
+                .runtime
+                .client_identity(&handshake.creds.pair_id)
+                .and_then(|slot| slot.lock().unwrap().clone());
+            let device = identity
+                .as_ref()
+                .map(|identity| identity.name.clone())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| declared_text(&cmd.device_name).unwrap_or_default());
+            let kind = identity
+                .as_ref()
+                .map(|identity| identity.kind.clone())
+                .filter(|kind| !kind.is_empty())
+                .unwrap_or_else(|| cmd.device_kind.trim().to_string());
+            future_remote_protocol::remote_log!(
+                "remote: inbound device connected (pair={}, device={}, kind={}, command={}, direction=inbound)",
+                &handshake.creds.pair_id,
+                if device.is_empty() { "-" } else { &device },
+                if kind.is_empty() { "-" } else { &kind },
+                &cmd.cmd_type
+            );
+        }
     }
 
     // Control arbitration happens here, on the machine the two devices are
@@ -905,6 +931,18 @@ async fn handle_command_inner(
             } else {
                 handshake.runtime.client_left(&handshake.creds.pair_id);
             }
+            // Said out loud, with the reason the client gave: this is the other
+            // half of the arrival line, and the only place a deliberate stop is
+            // distinguishable from a lease that simply lapsed.
+            future_remote_protocol::remote_log!(
+                "remote: inbound device left (pair={}, reason={}, direction=inbound)",
+                &handshake.creds.pair_id,
+                if cmd.reason.trim().is_empty() {
+                    "unknown"
+                } else {
+                    cmd.reason.trim()
+                }
+            );
             reply(client, &msg, true, json!({}), None).await;
         }
         // A phone-initiated unpair first reaches the desktop over the existing

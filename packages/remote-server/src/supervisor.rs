@@ -342,7 +342,7 @@ impl Supervisor {
                 segmented_content: Arc::new(AtomicBool::new(false)),
                 content_refusals: Default::default(),
                 client_identity: Arc::new(Mutex::new(None)),
-                client_link: Arc::new(link::ClientLink::default()),
+                client_link: Arc::new(link::ClientLink::with_pair(pair_id)),
                 next_generation_id: Arc::new(AtomicU64::new(1)),
                 handshake: Arc::new(Mutex::new(None)),
                 invitation: None,
@@ -613,7 +613,7 @@ impl Supervisor {
             .filter(|(pair_id, state)| {
                 pair_id.as_str() != except
                     && status::connected(state)
-                    && self.client_link(pair_id).present()
+                    && self.client_link(pair_id).present_and_report()
             })
             .map(|(pair_id, _)| pair_id.clone())
             .collect()
@@ -754,7 +754,7 @@ impl Supervisor {
             segmented_content: Arc::new(AtomicBool::new(false)),
             content_refusals: Default::default(),
             client_identity: Arc::new(Mutex::new(None)),
-            client_link: Arc::new(link::ClientLink::default()),
+            client_link: Arc::new(link::ClientLink::with_pair(pair_id)),
             next_generation_id: Arc::new(AtomicU64::new(1)),
             handshake: Arc::new(Mutex::new(None)),
             invitation,
