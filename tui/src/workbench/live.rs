@@ -11629,8 +11629,17 @@ mod tests {
     /// measured zero because every fixture so far staged a directory.
     #[tokio::test]
     async fn a_chat_session_creates_its_own_directory() {
+        // A workspace that is **not** a repository: the point here is the chat
+        // directory, and a `git` read in the shared worktree would put this test
+        // in the same repository as the `/git` panel's tests — measured: two of
+        // four full-suite runs then failed there on a read that had contended.
+        let workspace = tempfile::tempdir().expect("workspace");
+        let get_state = format!(
+            r#"{{"sessionId":"s1","cwd":"{}"}}"#,
+            workspace.path().display()
+        );
         let (mut live, seen) = live_with_seen(&[
-            ("get_state", r#"{"sessionId":"s1"}"#),
+            ("get_state", &get_state),
             ("get_session_entries", r#"{"entries":[]}"#),
             ("new_session", r#"{"sessionId":"s-chat"}"#),
             ("set_sandbox_policy", r#"{"success":true}"#),
