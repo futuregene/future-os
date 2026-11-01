@@ -48,6 +48,7 @@ cargo test -p futureos --test gui_main_thread_drive --features test-support
 | round 9, `wave14-lcov.info` | **624** | the supervisor's fault / login-gate / quit-confirmation arms and `run()` itself, at the **default** driver settle window (2 s) |
 | round 9, `wave15-lcov.info` | **608** | the same tests with `FUTUREOS_DRIVE_SETTLE_SECS=12`: the app now outlives the watchdog's first 3 s sleep, so its loop body runs (§2.9.1) |
 | round 9, `wave16-lcov.info` | **604** | settle 70 s: the watchdog reaches `Attached::Stable` (60 s, `STABLE_AFTER`) and `confirm_update_startup` runs (§2.9.1). **Quote this one for the round**, with the knob named; a plain suite run still reads 624 |
+| round 9, `wave17-lcov.info` | **606** | the same tests and the same knob on `72d870b14` — the base the branch was rebased onto after `fix/win-desktop-cases` landed. The +2 against `wave16` is that merge's own lines (`ipc_harness.rs` +1, `update_journal.rs` +1), in files this round does not touch; `agent_supervisor.rs` 63, `lib.rs` 44 and `update.rs` 187 are identical on both bases. **Quote this one**: it is the first measurement on a base another session's work has landed on |
 
 The lane is **not** at per-line 0 and does not claim to be. What it does claim: every remaining
 line in the files this table covers is either registered below or named as a work item in §4;
