@@ -260,23 +260,46 @@ Two consequences the lane has to live with, both now recorded:
 ## Wave 40: the gate's environment, an eight-row title branch, and a real HOME race
 
 **The gate.** `cargo test -p future-agent --lib` is the declared machine verification, and it
-has timed out at both 120 s and 300 s across this todo's attempts. Measured here, on an otherwise
-idle host, twice — the suite is green and simply takes that long:
+has timed out at both 120 s and 300 s across this todo's attempts. Measured here, twice, on an
+otherwise idle host — the suite is green and simply takes that long:
 
 | run | toolchain | threads | test time | wall | exit |
 |---|---|---:|---:|---:|---|
 | `gate-test-196.log` | Homebrew **1.96.0** (`/opt/homebrew/bin/cargo`, the *default* PATH) | 32 | 206.63 s | **3 m 29.7 s** | 0 (2895 passed, 0 failed, 5 ignored) |
 | `gate-test-8threads.log` | same | 8 | 201.42 s | 3 m 21.7 s | 0 |
-| `cargo test`, pinned 1.99.1 on PATH | rustup 1.99.1 | 32 | 196.83 s | 3 m 29.8 s | 0 (2895 passed, 0 failed, 5 ignored) |
+| `gate-final-196.log` | same | 32 | 199.48 s | 3 m 39.8 s | 0 (2896 passed, 0 failed, 5 ignored) |
+| `cargo test`, pinned 1.99.1 on PATH | rustup 1.99.1 | 32 | 196.83 s | 3 m 29.8 s | 0 |
 
-Two facts a validator has to be built around. (a) **The default PATH does not resolve the pinned
-toolchain**: `/opt/homebrew/bin/cargo` is `Cellar/rust/1.96.0`, not a rustup proxy, and
-`rust-toolchain.toml` is invisible to it — so a validator that inherits the ambient PATH compiles
-whatever changed since the last 1.96 build (~53 s here) on top of a ~205 s suite. (b) A warm run is
-~210 s with ~30 % headroom to 300 s, and this machine runs several coverage lanes at once, so that
-headroom is routine to lose. Eight threads cut *system* CPU from 62 m 29 s to 15 m 58 s for the
-same wall time (`RUST_TEST_THREADS=8`): the suite is bound by per-test setup and SQLite serialisation,
-not by thread count, so fewer threads is free interference relief for every other lane on the host.
+Four measurements to build an honest budget from:
+
+1. **A warm run is ~200 s of tests.** Nothing in this crate's suite is fast: 2889 of the 2896
+   tests still take **145.1 s** with the seven slowest skipped, so the cost is spread across the
+   suite, not concentrated in one benchmark.
+2. **Seven tests dominate the remainder** (libtest's own ">60 seconds" line, `wave43.log`):
+   `acceptance_tests::realistic::historical_distribution_valid_transcripts` (it writes ~357 MB of
+   WAL by design), `transport_tests::the_summary_is_composed_from_every_canonical_page_before_it_is_paged`,
+   `display_index` ×3, `recall::tests::snippets_keep_character_boundaries_at_every_match_offset`,
+   `persistence::tests::queue_overload_is_reported_and_recovers`. `-- display_index` alone (15
+   tests) is 45.5 s. They are fsync-bound: the full suite burns **62 CPU-minutes of system time**
+   for a 200 s wall.
+3. **Threads do not move the wall, only the CPU.** `RUST_TEST_THREADS=8`: wall 201.42 s (unchanged)
+   and system time 15 m 58 s instead of 62 m 29 s. Fewer threads is free relief for the other
+   coverage lanes on the same host, not a speedup.
+4. **A cold build does not fit next to the tests.** Probe: a fresh `CARGO_TARGET_DIR` compiles
+   **281 crates in the first 60 s**; this crate's tree needs roughly 450, i.e. ~145–200 s before
+   the first test runs. Cold build + suite = **~350–400 s**, which is exactly the shape of a
+   300 s timeout with no failing test to show for it.
+
+So a 300 s budget only works when the target directory is already warm *for the toolchain the
+validator resolves* — and the default PATH resolves Homebrew 1.96.0 (`/opt/homebrew/bin/cargo` is
+`Cellar/rust/1.96.0`, not a rustup proxy; `rust-toolchain.toml` is invisible to it). Two remedies,
+in order of preference: give the gate **~480 s** if it may build; or split it into a build step and
+a timed test step sharing one `CARGO_TARGET_DIR`. If it must stay at 300 s and must be one command,
+shard by exclusion: `--lib -- --skip realistic::historical_distribution --skip
+the_summary_is_composed_from_every_canonical_page --skip ordinary_appends_and_metadata_changes_do_not_rewrite
+--skip a_forward_page_stops_at_the_eight_megabyte_budget --skip cold_page_reads_only_selected_bodies
+--skip snippets_keep_character_boundaries --skip queue_overload_is_reported_and_recovers`
+is **145.1 s** for 2889 tests, with the seven named above as a second invocation.
 
 **A real race the measurement caught.** The wave-41 run failed
 `tools::tests::rejects_recursive_rm_of_home_and_roots` with
