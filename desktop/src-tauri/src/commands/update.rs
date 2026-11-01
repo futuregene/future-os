@@ -1499,6 +1499,115 @@ mod tests {
             );
         }
     }
+
+    /// An install that arrives while the Desktop is already stopping must be refused
+    /// *after* it claimed the process-wide install flag, and must hand that flag back
+    /// on the way out: a refusal that leaked it would answer "already in progress" to
+    /// every later attempt in this process.
+    ///
+    /// The stopping bit is process-global, so this fixture takes the same `HomeGuard`
+    /// every other `is_stopping()` observer in this binary holds — `TEST_HOME_LOCK`
+    /// serializes this window against them instead of leaving a sibling assertion to
+    /// sample a closed admission. The guard is live for one already-ready poll of the
+    /// future (the check precedes every await point), so the window has no yield in it.
+    #[cfg(feature = "gui")]
+    #[tokio::test]
+    async fn install_refuses_once_the_desktop_is_stopping_and_releases_the_install_flag() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("update-stopping");
+        let app = tauri::test::mock_app();
+        let stopping = crate::desktop_shutdown::close_admission_guard_for_test();
+        let error = install_app_update_impl(
+            app.handle().clone(),
+            BuildChannel::Release,
+            true,
+            RELEASE_MANIFEST_URL,
+            "1.0.0",
+            None,
+        )
+        .await
+        .unwrap_err();
+        drop(stopping);
+        assert!(
+            error.to_string().contains("Desktop has stopped"),
+            "a stopping Desktop must refuse the install, not start it: {error}"
+        );
+        // The `InstallGuard` in `install_app_update_impl` is what releases this bit; the
+        // refusal path returns early, which is exactly where the guard is easiest to lose.
+        assert!(
+            INSTALL_ACTIVE
+                .compare_exchange(
+                    false,
+                    true,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .is_ok(),
+            "a refused install must release the process-wide install flag"
+        );
+        INSTALL_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    /// The frontend calls this command with no `language` at all, so the absent-optional
+    /// path through the generated wrapper — deserialize the missing key, then reach the
+    /// body — is the shape that ships, and it is not what the direct-call fixture covers.
+    ///
+    /// This is **not** an attribute-line test, and measuring said so: the attribute owns
+    /// the wrapper only for the argument-error arm (`InvokeBody::Raw` was refused with
+    /// "expected a value for key language but the IPC call used a bytes payload" — the
+    /// arm the `history_transfer` module relies on). A dispatch that reaches the body
+    /// leaves the attribute line at `DA:0`; it is in the waiver table, not covered here.
+    /// The handler is also this fixture's own `generate_handler!`, so it says nothing
+    /// about the product's registration in `run_with` — that list is only reachable on a
+    /// real `Wry` builder.
+    ///
+    /// `check_app_update` has no offline dispatch at all: it resolves its manifest URL
+    /// from the build channel *inside* the command, so any invocation makes a live
+    /// request to `dl.future-os.cn`. Measured, not assumed: an earlier version of this
+    /// fixture dispatched it and came back with a real `0.0.2-104+nightly` manifest.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn the_install_command_refuses_a_manual_only_build_over_ipc() {
+        use tauri::ipc::{CallbackFn, InvokeBody};
+        use tauri::test::{get_ipc_response, INVOKE_KEY};
+        use tauri::webview::InvokeRequest;
+        let app = tauri::test::mock_builder()
+            .invoke_handler(tauri::generate_handler![install_app_update])
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build mock app");
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("build webview");
+        let response = get_ipc_response(
+            &window,
+            InvokeRequest {
+                cmd: "install_app_update".into(),
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: "tauri://localhost".parse().expect("url"),
+                // An empty JSON object: `language` is an `Option<String>`, and the
+                // frontend sends it absent most of the time.
+                body: InvokeBody::Json(json!({})),
+                headers: Default::default(),
+                invoke_key: INVOKE_KEY.to_string(),
+            },
+        );
+        // This build carries `BuildChannel::Local`, so the wrapper's own channel and
+        // platform derivation is what refuses — before any updater work, and without a
+        // network call.
+        assert!(
+            !automatic_install_supported(build_info::channel()),
+            "the fixture needs a build that cannot install in place"
+        );
+        let error = response.expect_err("a manual-only build cannot install over IPC");
+        assert!(
+            error
+                .as_str()
+                .unwrap_or_default()
+                .contains("not available for this build or platform"),
+            "the refusal must come from the wrapper's own guard, not from an unregistered \
+             command: {error}"
+        );
+    }
 }
 
 /// Share the UI dictionary so native update dialogs never expose diagnostics or
