@@ -116,13 +116,18 @@ Three passes in this round were **discarded rather than read**, all kept on disk
 - `round7-A-DISCARDED-parked-*` is the pass that **parked at 0 % CPU** after twelve tests (§5.17).
   Its `sample`, classified this round rather than only kept, is
   `round7-park-sample-2026-11-01.txt`. A parked pass is the same trap as a killed one: the tests
-  that never ran leave their lines `DA:0` and the report looks complete.
+  that never ran leave their lines `DA:0` and the report looks complete — and this one's lcov was
+  *written* (the harness reports the SIGTERM as a failure, and `report` still runs on the partial
+  `.profraw`s), which is exactly how a killed pass comes to look green.
 - `round7-A-DISCARDED-red-*` is a **red** pass — `1955 passed / 1 failed` — from the
   `remote_peer::testing` fixture that was dropped afterwards (§4.1). A green-looking lcov that had
   one failing test in it is not a measurement.
-- `round6-B-DISCARDED-*` and `round5-B-DISCARDED-sigkill`, `round4-A-DISCARDED-two-failures` from
-  earlier rounds are the same rule applied before: a killed pass, a superseded tree, and a
-  green-looking lcov from a run in which two new tests failed at their first assertion.
+- `round7-control-DISCARDED-premeasurement-lcov.info` is the filtered run used to check one file's
+  lines while the tests were being written (§5.15). It is fine for that and is never quoted as a
+  lane number.
+
+Earlier rounds' discards — `round6-B-DISCARDED-*`, `round5-B-DISCARDED-sigkill`,
+`round4-A-DISCARDED-two-failures` — are the same rule applied before.
 
 ### 1.2 Lines that move between passes, named
 
