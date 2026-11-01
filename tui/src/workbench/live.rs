@@ -3962,8 +3962,20 @@ impl Live {
     /// Read the clipboard: an image becomes a draft attachment (the same
     /// `[Image #N]` marker a pasted image path produces), text is pasted.
     pub async fn paste_clipboard(&mut self) {
+        self.paste_clipboard_on(std::env::consts::OS).await;
+    }
+
+    /// The same paste with the platform's tool table named explicitly.
+    ///
+    /// `os` is what [`paste::ClipboardCapture::capture`] resolves the probes
+    /// from, and it is a parameter there for the same reason it is one here: the
+    /// tables differ in *shape*, not just in program names (macOS' and Windows'
+    /// image probes write the file their script names, Linux' print base64 on
+    /// stdout), so a test that let the production call site read the host would
+    /// be a different test on each runner — and on Linux it was a failing one.
+    /// Production still calls [`Self::paste_clipboard`].
+    pub(crate) async fn paste_clipboard_on(&mut self, os: &'static str) {
         let capture = self.clipboard.clone();
-        let os = std::env::consts::OS;
         let pid = std::process::id();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -9495,6 +9507,21 @@ mod tests {
         assert_eq!(request.created_by, "tui");
     }
 
+    /// A `get_state` answer that names `dir` as the session's workspace.
+    ///
+    /// The path goes through `serde_json`, not into the literal by hand: a
+    /// Windows workspace (`D:\a\future-os\…`) inside a hand-written string is an
+    /// invalid `\a` escape, so the whole reply failed to parse, the fixture
+    /// silently had no `cwd`, and the scan it was meant to exercise never
+    /// started. POSIX paths happen not to contain a backslash, which is why only
+    /// the Windows runner noticed.
+    fn state_in(dir: &str) -> String {
+        format!(
+            r#"{{"sessionId":"s1","cwd":{}}}"#,
+            serde_json::to_string(dir).expect("a path is a JSON string")
+        )
+    }
+
     /// Attach to a mock agent that answers `pairs`, for the tables below.
     async fn live_on(pairs: &[(&str, &str)]) -> Live {
         let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(pairs);
@@ -10342,15 +10369,8 @@ mod tests {
     /// `tx.send`.
     #[tokio::test]
     async fn the_file_panel_installs_a_scan_and_toggles_a_folder() {
-        let mut live = live_on(&[(
-            "get_state",
-            concat!(
-                r#"{"sessionId":"s1","cwd":""#,
-                env!("CARGO_MANIFEST_DIR"),
-                r#""}"#
-            ),
-        )])
-        .await;
+        let state = state_in(env!("CARGO_MANIFEST_DIR"));
+        let mut live = live_on(&[("get_state", &state)]).await;
 
         // The tree is rooted by the workspace read (its children come from the
         // same listing the 文件 panel shows), so the fixture lands that first.
@@ -10430,6 +10450,11 @@ mod tests {
     async fn every_action_arm_dispatches_to_its_own_effect() {
         type Check = fn(&mut super::Live) -> bool;
 
+        let here = state_in(env!("CARGO_MANIFEST_DIR"));
+        // The row below answers with `here`, so its slice needs a binding of its
+        // own: a `&[..]` written inline is a temporary that dies at the end of
+        // this `let`.
+        let here_answers = [("get_state", here.as_str())];
         // (name, mock answers, action, check) — `None` means "an arm the surface
         // owns: it must leave the draft and the notice row exactly as they were".
         #[allow(clippy::type_complexity)]
@@ -10529,14 +10554,7 @@ mod tests {
             ),
             (
                 "refreshing the files starts a read",
-                &[(
-                    "get_state",
-                    concat!(
-                        r#"{"sessionId":"s1","cwd":""#,
-                        env!("CARGO_MANIFEST_DIR"),
-                        r#""}"#
-                    ),
-                )],
+                &here_answers,
                 WbAction::RefreshFiles,
                 Some(|live| live.tree_read.is_some()),
             ),
@@ -10859,6 +10877,14 @@ mod tests {
     /// reader shells out to the platform's tools), so every branch here is driven
     /// by a fake tool rather than by a broken host — which is what turned this
     /// from a W3 candidate into an ordinary test.
+    ///
+    /// The platform is pinned to macOS' table: the runner below is a *file*
+    /// probe (the tool is told a path and writes the picture there), which is
+    /// the shape macOS and Windows share. Linux' probes answer with base64 on
+    /// stdout instead (`paste.rs` tests each table on its own), so a test that
+    /// inherited the host would be a different test per runner — and on the
+    /// Linux runner a failing one, from an image probe that never had a file to
+    /// write.
     #[tokio::test]
     async fn the_clipboard_pastes_a_picture_or_says_why_it_cannot() {
         use crate::paste::ClipboardCapture;
@@ -10894,7 +10920,7 @@ mod tests {
             }),
             dir.path().to_path_buf(),
         );
-        live.paste_clipboard().await;
+        live.paste_clipboard_on("macos").await;
         // The draft carries the attachment marker; the picture itself is in the
         // pending attachments, the same list a dragged-in file fills.
         let attachments: Vec<String> = live
@@ -10932,7 +10958,7 @@ mod tests {
             dir.path().to_path_buf(),
         );
         live.notice = Some("stale".into());
-        live.paste_clipboard().await;
+        live.paste_clipboard_on("macos").await;
         // The draft still carries the picture's marker from the row above; a
         // paste appends, so the text is what it now ends with.
         let draft = live.draft.editor.text().to_string();
@@ -10955,7 +10981,7 @@ mod tests {
             dir.path().to_path_buf(),
         );
         live.notice = None;
-        live.paste_clipboard().await;
+        live.paste_clipboard_on("macos").await;
         let notice = live.notice.clone().unwrap_or_default();
         assert!(
             notice.contains("no clipboard tool"),
@@ -10970,7 +10996,7 @@ mod tests {
             dir.path().to_path_buf(),
         );
         live.notice = None;
-        live.paste_clipboard().await;
+        live.paste_clipboard_on("macos").await;
         assert!(
             live.notice.is_some(),
             "a refusal with no reason left the notice row empty"
@@ -10982,7 +11008,7 @@ mod tests {
             dir.path().to_path_buf(),
         );
         live.notice = None;
-        live.paste_clipboard().await;
+        live.paste_clipboard_on("macos").await;
         assert!(
             live.notice.is_some(),
             "an empty clipboard said nothing at all"

@@ -4422,8 +4422,12 @@ mod driver_tests {
         /// all, so neither is a place to measure "the second row".
         fn repo_with_two_commits() -> tempfile::TempDir {
             let dir = tempfile::tempdir().expect("a temp directory");
+            // Pinned, not `git` from `PATH`: a sibling test in this binary swaps
+            // the process-global `PATH` while it runs, and a spawn in that window
+            // fails with ENOENT (`docs/testing/flaky-tui.md` §13.4, rule 2).
+            let git_program = crate::test_env::absolute_tool("git");
             let git = |args: &[&str]| {
-                let output = std::process::Command::new("git")
+                let output = std::process::Command::new(&git_program)
                     .arg("-C")
                     .arg(dir.path())
                     .args(args)
@@ -4509,13 +4513,47 @@ mod driver_tests {
             let repo = repo_with_two_commits();
             let mut driver = Driver::attach_conversation_in(repo.path()).await;
             assert!(!driver.quit_key("ctrl+g").await);
-            let _ = driver.pump(Duration::from_millis(700)).await;
+            // The read is a spawned `git` walk, so how long it takes is the
+            // machine's business: wait for the effect (a view installed) rather
+            // than for a fixed number of milliseconds. 700ms was a guess that a
+            // loaded Windows runner loses — the panel then had nothing to read a
+            // row from, and the assertion below failed as "a view".
+            assert!(
+                driver
+                    .wait_for(Duration::from_secs(20), |driver| driver
+                        .live
+                        .git()
+                        .is_some())
+                    .await,
+                "the repository read never landed"
+            );
             let first = driver.live.git().cloned().expect("a view");
             assert!(first.rows.len() > 1, "no second row to move to");
 
             // `down` inside the panel is a selection, not a draft key.
             assert!(!driver.quit_key("down").await, "down does not leave");
-            let painted = driver.pump(Duration::from_millis(700)).await;
+            // The row under the cursor is a second read of its own.
+            assert!(
+                driver
+                    .wait_for(Duration::from_secs(20), |driver| driver
+                        .live
+                        .git()
+                        .is_some_and(|view| view.selected != first.selected))
+                    .await,
+                "the cursor did not move off the first row"
+            );
+            assert!(
+                driver
+                    .wait_for(Duration::from_secs(20), |driver| driver
+                        .live
+                        .git()
+                        .is_some_and(
+                            |view| !view.detail.is_empty() || view.error.is_some()
+                        ))
+                    .await,
+                "the row under the cursor was never read"
+            );
+            let painted = driver.pump(Duration::from_millis(300)).await;
             let moved = driver.live.git().cloned().expect("a view");
             assert_ne!(
                 moved.selected, first.selected,
@@ -4623,7 +4661,11 @@ mod driver_tests {
                 !workbench.image_requests.is_empty(),
                 "a kitty terminal is asked to place the picture"
             );
-            let mut terminal = Terminal::new().expect("terminal");
+            // The terminal supplies the write path `paint_images` uses and
+            // nothing else — as in the rest of this driver's fixtures, it must
+            // not need a console (Windows' `Terminal::new` does, and a runner
+            // that redirects stdio has none).
+            let mut terminal = crate::terminal::driver_terminal();
 
             // A frame that rewrote the picture's rows asks for it again.
             let all_rows: Vec<usize> = (0..38).collect();
