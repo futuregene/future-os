@@ -8,9 +8,9 @@ llvm-cov *summary* percentage is not the acceptance number.
 `coverage/2026-11/after/agent/lcov-wave26.info`, run log `wave26-cov.log`. The ledger below was
 regenerated from that lcov and passes its own check (wave 29).
 
-**Result**: `DA:0` = **1211** lines in **129** files under `agent/src`. This branch has cleared
-**462** of the 1673 it started from (waves 23, 26 and 27; wave 24-25 changed the suite's speed,
-not which lines it reaches). Of the 1211:
+**Result**: `DA:0` = **1186** lines in **129** files under `agent/src` (wave 30 measurement,
+`lcov-wave30.info`). This branch has cleared **487** of the 1673 it started from (waves 23, 26,
+27 and 30; waves 24-25 changed the suite's speed, not which lines it reaches). Of the 1186:
 
 | state | lines |
 |---|---:|
@@ -176,6 +176,33 @@ Writing the "key on one side only" case found a defect **in the helper**:
 panics `no entry found for key` and throws away the path the function exists to
 produce. The absent side is now a JSON null. This is test-only code
 (`rpc/commands/test_support.rs` is `#[cfg(test)]`), so no product behaviour moved.
+
+## Wave 30: ten `)?;` tails, and a full re-measurement at 1186
+
+Following wave 29's plan — take the attribution rows rather than the open ones — two files got
+the const-hoist treatment the `connection.rs` work established:
+
+| file | sites | what moved |
+|---|---:|---|
+| `session/content/mod.rs` | 6 | `has_history`, the content-object row / digest / json-digest / length lookups: each `tx.query_row(SQL, params, closure)?` was five rows with the `?` alone on the last. Hoisting the five statements to consts keeps each call on one line. Measured on the `session::content` lane: **194 / 26 048 / 175 / 284 / 1 688 / 24 372** hits. |
+| `session/entry_records.rs` | 4 | the session-metadata stamp and the empty-block marker (consts), the metadata validation (module alias so the call fits), and the identity guard's `ok_or_else` closure on one line. |
+
+**A const costs no coverage row.** The declaration lines of `HAS_HISTORY`, `OBJECT_ROW` and the
+rest carry no `DA` record at all — they are compile-time, so the rewrite is exactly −1 row per
+site with nothing added back. That is why this shape is worth doing at scale: it is the only
+rewrite in this file's taxonomy that is strictly subtractive.
+
+Full re-measurement on `b2525dea6` (`lcov-wave30.info`, whole lane, 2890 tests):
+
+```
+DA:0 = 1186 lines in 129 files   (was 1211 at lcov-wave26.info)
+rows = 826   classes {'open': 767, 'a': 201, 'W6': 156, 'W5': 24, 'W7': 3, 'W1': 11, 'lane': 24}
+ledger=clean
+```
+
+The ten explicit sites plus wave 27's connection/settings work account for the 25 lines. The
+class mix barely moved: `open` 767 and the attribution pair (`a` 201 + `W6` 156) still account
+for 357 rows, which remains the cheapest place to spend the next wave.
 
 ## Wave 29: the ledger is regenerated and `clean` against the current lcov
 
