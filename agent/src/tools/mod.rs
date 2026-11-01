@@ -1538,6 +1538,13 @@ mod tests {
 
     #[test]
     fn rejects_recursive_rm_of_home_and_roots() {
+        // `home_dir()` and the guard inside `is_protected_rm_target` each read
+        // `HOME` from the process environment, so a `TestHome` fixture created
+        // by a neighbouring test on another thread can move the home between
+        // this read and the guard's. Measured 2026-11-02: a full parallel run
+        // failed here with the command naming the *old* home while the guard
+        // compared against the new one. Hold the same lock the fixtures hold.
+        let _home_lock = crate::test_support::home_env_lock();
         let home = crate::utils::home_dir();
         assert!(reject_dangerous_command(&format!("rm -rf '{}'", home.display())).is_err());
         for cmd in [
