@@ -906,6 +906,39 @@ async fn remove_proceeds_here_when_the_desktop_never_answers() {
     assert_eq!(remaining[0]["desktopId"], ONE, "{after}");
 }
 
+/// A book this command can list but the client cannot read is **not** a removal:
+/// the row is still there, so `remove` must say the pairing is unchanged instead
+/// of reporting a pairing that never happened.
+///
+/// The two loaders are deliberately different: this command's own reader needs
+/// only a `desktopId` to print a row, while the client's typed book needs the
+/// credentials too. A half-written or hand-edited book is exactly the file that
+/// sorts those two apart, and it is reachable without a race — the row is on
+/// disk, unmoved, for the whole command.
+#[tokio::test]
+async fn a_book_only_this_command_can_read_is_not_reported_as_removed() {
+    let _guard = crate::test_env::lock_env().await;
+    // `future_host::runtime::set` is a `OnceLock`: if this test's own (scoped)
+    // handle were the first one installed, every later test that spawns host work
+    // would spawn onto a runtime that dies with this test. Install the
+    // process-lifetime one first — the same thing `Served::start` does, and the
+    // reason `install_runtime()` inside the command is a no-op afterwards.
+    future_host::runtime::set(host_runtime());
+    let home = Home::new();
+    let unreadable = json!({ "peers": [{ "desktopId": TWO, "name": "work" }] });
+    home.write(BOOK_FILE, &unreadable.to_string());
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "remove", TWO, "--yes"]).await;
+    assert_ne!(code, 0, "a failed removal must not exit zero: {stdout}");
+    assert!(
+        stderr.contains("Could not remove the pairing") && stderr.contains("The book is unchanged"),
+        "the sentence must say nothing was written: {stderr}"
+    );
+    assert!(!stdout.contains("no longer paired"), "{stdout}");
+    // The claim that matters: the file is byte-for-byte what the user had.
+    assert_eq!(home.read(BOOK_FILE), unreadable.to_string());
+}
+
 /// A process-lifetime runtime for the host bridge, installed once.
 ///
 /// `future_host::runtime::set` is a `OnceLock`: the first handle a process

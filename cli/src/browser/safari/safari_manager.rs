@@ -497,6 +497,22 @@ mod tests {
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         while !marker.exists() {
+            // A `safari_start` that returned before spawning never touches the
+            // marker, and its own answer is the only thing that explains why —
+            // without this the test reports its own 20 s wait instead of the
+            // product's refusal. `start_launch_success_against_fake_driver` has
+            // carried this check since the driver-port record replaced a sleep;
+            // this test did not, which is why a red full-suite run of it could
+            // not say whether the spawn or the poll was what failed.
+            if started.is_finished() {
+                match started.await {
+                    Ok(Ok(_)) => panic!("safari_start answered without spawning a driver"),
+                    Ok(Err(error)) => {
+                        panic!("safari_start failed before spawning a driver: {error}")
+                    }
+                    Err(join) => panic!("the safari_start task panicked: {join}"),
+                }
+            }
             assert!(
                 std::time::Instant::now() < deadline,
                 "the driver was never spawned, so the poll was never reached"
