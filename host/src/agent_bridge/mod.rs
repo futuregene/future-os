@@ -6,6 +6,7 @@ mod client {
 pub mod config;
 pub mod config_observer;
 mod delete_outbox;
+mod global_loop;
 mod headless;
 mod import;
 pub mod models;
@@ -84,6 +85,19 @@ pub use self::run_control::{abort_session, wait_for_agent_idle, AbortSessionOutc
 pub use self::session::fork_agent_session;
 pub use self::session::set_agent_sandbox_policy_tier;
 pub use self::session_events::spawn_session_events_observer;
+
+/// Test-only: stop every process-global loop that re-attaches an Agent stream.
+///
+/// A fixture that owns the mock's script queue must own these too: the mock
+/// hands each scripted stream to whoever attaches first, so a loop left running
+/// by an earlier test takes the script this one is about to push, and this test
+/// then waits on an unscripted (forever-parked) stream while holding the mock's
+/// lock — the whole suite stops with no `test result` line.
+#[cfg(any(test, feature = "test-support"))]
+pub fn stop_global_agent_observers_for_test() {
+    config_observer::stop_provider_config_observer_for_test();
+    session_events::stop_session_events_observer_for_test();
+}
 pub use self::skills::{
     install_skill, list_available_skills, list_installed_skills, refresh_skills, suggest_skill,
     sync_skills, uninstall_skill, AvailableSkill, InstalledSkill, SkillCandidate,

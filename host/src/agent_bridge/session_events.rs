@@ -13,25 +13,40 @@
 //! creator id, so its sessions are imported normally.
 
 use crate::console;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use super::connect_agent;
+use super::global_loop::GlobalLoop;
 
-static STARTED: AtomicBool = AtomicBool::new(false);
+/// One Agent stream per process: the reconnect loop re-attaches a plain
+/// subscription forever, so the test fixture has to be able to end it — see
+/// [`GlobalLoop`] for what a loop that outlives its test does to the mock's
+/// script queue.
+static LOOP: GlobalLoop = GlobalLoop::new();
 
 /// Re-arm the start guard so the "start it once" arm is reachable regardless of
-/// what earlier tests in this process already started.
+/// what earlier tests in this process already started — and stop whatever one
+/// of them left running.
 #[cfg(test)]
 fn reset_started_for_test() {
-    STARTED.store(false, Ordering::Release);
+    LOOP.stop_for_test();
 }
 
 pub fn spawn_session_events_observer() {
-    if STARTED.swap(true, Ordering::AcqRel) {
-        return;
-    }
-    crate::runtime::spawn(run());
+    LOOP.start(run());
+}
+
+/// Test-only: stop the process-wide observer and wait until its future is
+/// dropped, so its next reconnect cannot take another test's scripted stream.
+#[cfg(any(test, feature = "test-support"))]
+pub fn stop_session_events_observer_for_test() {
+    LOOP.stop_for_test();
+}
+
+/// Test-only: is the process-wide observer still owned by a live task?
+#[cfg(test)]
+fn session_events_observer_is_running_for_test() -> bool {
+    LOOP.is_running_for_test()
 }
 
 async fn run() {
@@ -220,7 +235,7 @@ fn handle_session_deleted(data: &str) {
 mod tests {
     use super::super::test_support::{
         break_home, mock_agent, restore_home, seed_thread, seed_workspace, stream_event, Reply,
-        TestHome,
+        StreamScript, TestHome,
     };
     use super::*;
 
@@ -364,10 +379,55 @@ mod tests {
 
         spawn_session_events_observer();
         spawn_session_events_observer();
+        assert!(
+            super::session_events_observer_is_running_for_test(),
+            "the first spawn must start the loop (the second is a no-op)"
+        );
 
         // Let the spawned loop reach its first attachment (and the mock answer
         // it) so the test proves the loop ran, not merely that it was queued.
         tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    /// A test that spawns this loop must not leave it re-attaching into the
+    /// next test's script queue — the same rule as the provider-config
+    /// observer, and the reason `mock_agent` stops both.
+    #[tokio::test]
+    async fn a_leaked_observer_cannot_take_the_next_tests_script() {
+        let _home = TestHome::new("session-events-leak");
+        spawn_session_events_observer();
+        assert!(super::session_events_observer_is_running_for_test());
+        let mock = mock_agent();
+        assert!(
+            !super::session_events_observer_is_running_for_test(),
+            "mock_agent must stop the loop an earlier test left running"
+        );
+        mock.push_plain_stream(StreamScript::Events(
+            vec![stream_event(
+                "",
+                0,
+                "session_created",
+                r#"{"sessionId":"s-1"}"#,
+            )],
+            None,
+        ));
+        let mut client = connect_agent().await.expect("connect to the mock");
+        let mut stream = client
+            .stream_events(future_rpc::proto::StreamRequest {
+                event_types: vec!["session_created".to_string()],
+                global_events: true,
+                ..Default::default()
+            })
+            .await
+            .expect("attach")
+            .into_inner();
+        let event = stream
+            .message()
+            .await
+            .expect("the scripted stream must reach this test")
+            .expect("one scripted event");
+        assert_eq!(event.r#type, "session_created");
+        assert_eq!(mock.stream_requests().len(), 1);
     }
 
     /// `run` lives until host shutdown, so what this test
