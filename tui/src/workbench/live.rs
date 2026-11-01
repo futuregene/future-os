@@ -12077,6 +12077,12 @@ mod tests {
     /// not pretend to have started a session: it is still on the launchpad with
     /// the reason on the notice row.
     ///
+    /// This is `new_session`'s minting branch (the id is chosen here so the
+    /// directory exists before the agent opens the session); the sibling row a
+    /// reader picks from the launchpad is
+    /// [`a_chat_workspace_that_cannot_be_created_is_reported`], which has its own
+    /// directory-creation arm and says so separately.
+    ///
     /// `#[cfg(unix)]`: the failure is injected with `chmod 000` on the parent.
     /// Windows would need an ACL case, which this lane cannot measure here.
     #[cfg(unix)]
@@ -12108,5 +12114,183 @@ mod tests {
         live.client.disconnect();
         // Put the permissions back so the temp directory can be removed.
         let _ = std::fs::set_permissions(&unwritable, std::fs::Permissions::from_mode(0o700));
+    }
+
+    /// The launchpad's chat row, when a session is already attached: the app
+    /// creates `~/.future/workspaces/chat/<id>` itself, so the same failure has
+    /// its own arm here — and the agent must not be asked to move into a
+    /// directory that is not there.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_chat_workspace_that_cannot_be_created_is_reported() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let blocked = tempfile::tempdir().expect("blocked root");
+        let unwritable = blocked.path().join("locked");
+        std::fs::create_dir_all(&unwritable).expect("the parent");
+        std::fs::set_permissions(&unwritable, std::fs::Permissions::from_mode(0o500))
+            .expect("chmod the parent");
+        let _own = super::test_chat_root::Guard::own(unwritable.join("chat"));
+
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("get_state", r#"{"sessionId":"s1","cwd":"/work/alpha"}"#),
+            ("get_session_entries", r#"{"entries":[]}"#),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the mock agent");
+
+        live.select_chat_workspace().await;
+
+        let notice = live.notice.clone().unwrap_or_default();
+        assert!(
+            !notice.trim().is_empty(),
+            "a chat directory that could not be created left the notice row empty"
+        );
+        let commands = seen.lock().unwrap().clone();
+        assert!(
+            !commands.iter().any(|command| command == "set_cwd"),
+            "the agent was told to move into a directory that does not exist: {commands:?}"
+        );
+        assert_eq!(
+            live.state.cwd.as_deref(),
+            Some("/work/alpha"),
+            "the surface claimed a workspace it never moved to"
+        );
+        live.client.disconnect();
+        let _ = std::fs::set_permissions(&unwritable, std::fs::Permissions::from_mode(0o700));
+    }
+
+    /// The directory exists but the agent refuses the move: the refusal is the
+    /// reader's, not a silently-unchanged workspace.
+    #[tokio::test]
+    async fn a_chat_workspace_the_agent_refuses_is_reported() {
+        let root = tempfile::tempdir().expect("chat root");
+        let _own = super::test_chat_root::Guard::own(root.path().to_path_buf());
+
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_failing(
+            &[
+                ("get_state", r#"{"sessionId":"s1","cwd":"/work/alpha"}"#),
+                ("get_session_entries", r#"{"entries":[]}"#),
+            ],
+            "set_cwd",
+            "no such directory",
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the failing mock");
+
+        live.select_chat_workspace().await;
+
+        let notice = live.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("no such directory"),
+            "a refused move did not carry the agent's reason: {notice:?}"
+        );
+        assert!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|command| command == "set_cwd"),
+            "the move was never asked for"
+        );
+        live.client.disconnect();
+    }
+
+    /// A session that starts but whose staged choices the agent will not take:
+    /// the mode and the tool set are one call each *after* the session exists, so
+    /// a failure is a notice while the session stands.
+    #[tokio::test]
+    async fn a_new_session_says_why_a_staged_choice_was_not_applied() {
+        let root = tempfile::tempdir().expect("chat root");
+        let _own = super::test_chat_root::Guard::own(root.path().to_path_buf());
+
+        // The approval mode is always named by the launchpad (its default is
+        // 完全访问), so its call always happens.
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_failing(
+            &[("get_state", r#"{"sessionId":""}"#)],
+            "set_sandbox_policy",
+            "unknown mode",
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the failing mock");
+        live.to_launchpad();
+        live.new_session().await;
+        let notice = live.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("unknown mode"),
+            "a refused approval mode left the reader without a reason: {notice:?}"
+        );
+        assert!(
+            !live.launchpad,
+            "the session exists even when its approval mode was refused"
+        );
+        live.client.disconnect();
+
+        // The staged tool set is the second call, and it is spent here.
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_failing(
+            &[("get_state", r#"{"sessionId":""}"#)],
+            "set_tools",
+            "no such tool",
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the failing mock");
+        live.to_launchpad();
+        live.pending_tools = Some(vec!["no-such-tool".into()]);
+        live.new_session().await;
+        let notice = live.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("no such tool"),
+            "a refused tool set left the reader without a reason: {notice:?}"
+        );
+        assert!(
+            live.pending_tools.is_none(),
+            "the staged tool set was not spent on the session it was staged for"
+        );
+        assert!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|command| command == "set_tools"),
+            "the staged tool set was never sent"
+        );
+        live.client.disconnect();
+    }
+
+    /// A session the agent will not start says so on the notice row instead of
+    /// leaving a launchpad that looks accepted.
+    #[tokio::test]
+    async fn a_refused_new_session_is_reported() {
+        let root = tempfile::tempdir().expect("chat root");
+        let _own = super::test_chat_root::Guard::own(root.path().to_path_buf());
+
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_failing(
+            &[("get_state", r#"{"sessionId":""}"#)],
+            "new_session",
+            "no capacity",
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the failing mock");
+        live.to_launchpad();
+        live.new_session().await;
+
+        let notice = live.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("no capacity"),
+            "a refused session did not carry the agent's reason: {notice:?}"
+        );
+        assert!(
+            live.launchpad,
+            "the launchpad was left for a session the agent refused"
+        );
+        live.client.disconnect();
     }
 }
