@@ -6,10 +6,13 @@ summary's `Lines` column is not the acceptance number (it adds ghost lines).
 **Lane** — `future-host`'s **lib** unit tests only. The integration-test binaries and the
 `#[ignore]`d real-network legs are measured by their own lanes; this file is about the lib.
 
-**Last measurement**: `test/cov-host` at `ed6547572` (cut from `origin/dev-huichen@12b89ee7e`),
+**Last measurement**: `test/cov-host` at `95a4299b0` (cut from `origin/dev-huichen@12b89ee7e`),
 rustc **1.99.1** (`rust-toolchain.toml`), `HOME=target/test-home`, `ulimit -n 8192`.
 Artifacts (gitignored) are in `coverage/2026-11/after/host/`: `final-lcov.info`, `final-run.log`,
 `final-missed.json`, and the bucket arithmetic in `buckets.py`.
+
+It was re-measured after `95a4299b0` (the task-fixture directory fix, §8) and the per-line result is
+**identical** — same 2819, same lines in every file (`prev-final-missed.json` is the pre-fix copy).
 
 ```bash
 export PATH=/Users/geilige/.rustup/toolchains/1.99.1-aarch64-apple-darwin/bin:$PATH
@@ -26,7 +29,7 @@ awk '/^SF:/{f=substr($0,4)} /^DA:[0-9]+,0$/{split(substr($0,4),a,","); print f":
   /tmp/host-lcov.info | grep '/host/src/' | wc -l
 ```
 
-The run is also the gate: **1882 passed, 0 failed, 11 ignored** in 860 s, then `report rc=0`
+The run is also the gate: **1882 passed, 0 failed, 11 ignored** in 432 s, then `report rc=0`
 (`final-run.log`).
 
 ## 1. Before / after, and where every remaining line sits
@@ -199,4 +202,34 @@ enumerated in §4, and most of it needs a running remote supervisor.
 - `cargo fmt -p future-host --check` — clean (the measurement is post-fmt).
 - `cargo clippy -p future-host --all-targets -- -D warnings` — clean.
 - `cargo test -p future-host` — lib **1882 passed / 0 failed / 11 ignored** under instrumentation
-  (`final-run.log`) and the non-instrumented package suite green (`target/gate-test.log`).
+  (`final-run.log`) and the non-instrumented package suite green (`target/gate-test2.log`).
+
+## 8. The lane's suite runtime, and why a 120 s check cannot pass
+
+The lib suite took **860 s** before this pass and **420-432 s** after it. The 2× came from one test
+fixture, not from coverage work, and the measurement is worth recording because every host
+verification pays it:
+
+- `test_support::tasks::task()` set every task's `cwd` to `std::env::temp_dir()`. A task's `cwd`
+  becomes its conversation's workspace path, and the shadow-review before-snapshot measures a
+  **non-git** workspace by walking it (`agent_bridge::review::capture_before` →
+  `shadow_review::evaluate_volume`). So every task run walked the whole shared temp directory —
+  measured at **36 s, 44 s and 54 s** for the *same single test* as TMPDIR filled up, and it made
+  the 32 tasks tests alone take over 600 s.
+- `95a4299b0` gives each task an empty directory under a per-process root: that one test drops to
+  **0.56 s**, `tasks::` to 4.7 s, and the whole lane to ~420 s. No assertion changed: these tests
+  assert on the run's rows, the prompt it composed and the announcements it made, never on the
+  contents of its directory. Coverage is unchanged line for line (re-measured, §above).
+
+What is left is structural and deliberate: `test_support::agent::TestHome` **holds the
+process-wide `TEST_HOME_LOCK` for its whole lifetime** (`host/src/test_support/agent.rs:676`, because
+a test publishes `HOME`/`FUTURE_HOME` as real environment variables). Tests therefore run
+essentially one at a time — 1882 tests × ~0.22 s ≈ 420 s — and the per-test fixture cost is spread
+across `remote_peer` (208 s / 130 tests), `remote` (108 s / 296) and `agent_bridge` (61 s / 395).
+Getting under a 120 s budget would mean replacing process-global env isolation with parameter
+injection across the crate: a harness refactor, not a coverage change, and one that this pass did not
+attempt.
+
+**So the machine check `cd .worktrees/cov-host && cargo test -p future-host --lib` exits 0 but needs
+~7 minutes of budget.** A 120 s timeout reports a validator failure on a suite that is green —
+which is exactly what the previous attempt hit.
