@@ -130,9 +130,20 @@ fixed before measuring again.
 
 ### 2.1 Their own files — 1884
 
-`real_network.rs` (788), `download_tiers_network.rs` (449), `verify_e2e.rs` (434),
-`relay_e2e.rs` (173), `remote_host/sync_measurement.rs` (40). Byte-identical before and after: the
-campaign's rule for this lane is not to write tests or change measurement for them.
+The criterion is per file and it is the same one for all five: **every test in the file carries an
+`#[ignore]` naming the process, broker or snapshot it needs**, so a default `cargo test` never
+executes a line of it — the lines are not unreachable, they are unrun by *this* lane.
+
+| file | lines | the `#[ignore]` reason in the source |
+|---|---:|---|
+| `remote/real_network.rs` | 788 | `real network: needs nats-server + a future-agent (docs/testing/real-network.md)` — a two-process exercise |
+| `remote/download_tiers_network.rs` | 449 | `real network: needs nats-server (docs/testing/remote-download-tiers-live-2026-10-26.md)` |
+| `remote/verify_e2e.rs` | 434 | `real broker: needs VERIFY_E2E_NATS_URL …` / `measurement: needs VERIFY_E2E_JOURNAL/…` |
+| `remote/relay_e2e.rs` | 173 | `needs a running future relay serve (docs/guide/self-hosted-relay.md)` |
+| `remote_host/sync_measurement.rs` | 40 | `requires isolated DB snapshot; run scripts/measure/measure-sync-browser.py` |
+
+Byte-identical before and after (`1884 → 1884`): the campaign's rule for this lane is not to write
+tests or change measurement for them.
 
 ### 2.2 Inside in-scope files — 125
 
@@ -266,6 +277,23 @@ snapshot event), `store/migrations.rs`'s repair branches (14 — a deliberately 
 group of seven-line files that are only "not yet read" (`business/prompt.rs`,
 `agent_bridge/headless.rs`, `shadow_review/repository.rs`), and `remote/control.rs`'s `spawn_host`
 block (38, which needs either a supervisor fixture or a decision to leave it open — §5.7).
+
+### What needs a product seam (judged OPEN, not waived)
+
+Four blocks cannot be measured without changing product code to make themselves observable. They
+stay open and the missing piece is named here rather than waived:
+
+- `remote_host/business/prompt.rs:148-154` — the `accepted_rx.await` `Err` arm. Needs a way for a
+  test to drop the acknowledgement sender; today it is an internal `oneshot` created inside the
+  handler, so no fixture can reach it.
+- `remote/trust.rs:64-93` — `bundle_with_extra`'s four arms inside one `OnceLock` closure, of which
+  at most one runs per process. Needs the body extracted from the closure, which is product code
+  written for the measurement (§5.8).
+- `remote/control.rs:580-986` — `spawn_host` and the supervisor-backed `perform` arms. Needs a
+  supervisor fixture (a live host bridge), not a seam: the loop's only caller is
+  `desktop/src-tauri/src/lib.rs:1422`.
+- `agent_bridge/observer.rs:1040-1049` — the projection's `return false` arms. Needs a crafted
+  snapshot event whose shape no fixture produces yet; this one is a fixture, not a seam.
 
 ## 5. Rejected approaches (this lane)
 
