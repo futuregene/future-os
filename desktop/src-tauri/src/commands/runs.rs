@@ -188,4 +188,128 @@ mod tests {
             list_latest_run_infos(vec![thread.id.clone(), "ghost".into()]).expect("latest infos");
         assert_eq!(infos.len(), 1);
     }
+
+    /// The agent-backed run commands the transcript polls. Each result carries
+    /// the id the wrapper passed (the journal rows are labelled with the run
+    /// they were asked for, the tool output with the tool call it was asked
+    /// for), so a dropped argument shows up as a different id, and the cursor
+    /// command's two arms are decided by the number it forwarded.
+    #[tokio::test]
+    async fn the_agent_backed_run_commands_forward_their_arguments() {
+        use crate::commands::agent_mock::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_runs_agent");
+        create_run(run_input(&thread.id, "run_wave")).expect("create run");
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([
+                (
+                    "get_events_since".into(),
+                    serde_json::json!({
+                        "events": [{
+                            "eventId": "e1",
+                            "type": "assistant",
+                            "data": "{}",
+                            "idx": 0,
+                            "timestamp": "2024-01-01T00:00:00Z",
+                        }],
+                    })
+                    .to_string(),
+                ),
+                (
+                    "list_tool_calls".into(),
+                    serde_json::json!({
+                        "tools": [{
+                            "toolCallId": "tc-1",
+                            "name": "Read",
+                            "status": "completed",
+                            "startedAtMs": 3,
+                        }],
+                        "hasMore": false,
+                    })
+                    .to_string(),
+                ),
+                (
+                    "get_tool_output".into(),
+                    serde_json::json!({
+                        "tools": [],
+                        "output": { "isError": false, "text": "done", "createdAtMs": 7 },
+                    })
+                    .to_string(),
+                ),
+            ]),
+            ..Default::default()
+        });
+
+        let events = list_run_events("run_wave".into()).await.expect("events");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, "e1");
+        assert_eq!(
+            events[0].run_id, "run_wave",
+            "the row is labelled with the run the caller asked for"
+        );
+
+        let at_cursor = list_run_events_since("run_wave".into(), 0)
+            .await
+            .expect("since");
+        assert!(
+            at_cursor.is_empty(),
+            "the cursor is forwarded: an event at the cursor is not repeated"
+        );
+        let whole = list_run_events_since("run_wave".into(), -1)
+            .await
+            .expect("negative cursor");
+        assert_eq!(whole.len(), 1, "a negative cursor asks for the whole run");
+
+        let bulk = list_run_events_bulk(vec!["run_wave".into()])
+            .await
+            .expect("bulk events");
+        assert_eq!(bulk.len(), 1);
+        assert_eq!(bulk[0].0, "run_wave");
+        assert_eq!(bulk[0].1[0].run_id, "run_wave");
+
+        let tools = list_tool_calls("run_wave".into()).await.expect("tools");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].id, "tc-1");
+        assert_eq!(tools[0].run_id, "run_wave");
+
+        let tools_bulk = list_tool_calls_bulk(vec!["run_wave".into()])
+            .await
+            .expect("bulk tools");
+        assert_eq!(tools_bulk.len(), 1);
+        assert_eq!(tools_bulk[0].0, "run_wave");
+
+        let outputs = list_tool_outputs("run_wave".into(), "tc-1".into())
+            .await
+            .expect("tool outputs");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(
+            outputs[0].tool_call_id, "tc-1",
+            "the tool call id is forwarded, not the run's own id"
+        );
+        assert_eq!(outputs[0].kind, "text");
+
+        // Abort is a mutation, so its contract is the two refusals: an unknown
+        // run, and a run that belongs to another conversation.
+        let ghost = abort_run(thread.id.clone(), "run_absent".into())
+            .await
+            .expect_err("an unknown run cannot be aborted");
+        assert!(
+            ghost.to_string().contains("Run could not be loaded"),
+            "{ghost}"
+        );
+        let foreign = abort_run("thread_absent".into(), "run_wave".into())
+            .await
+            .expect_err("a run is only abortable from its own conversation");
+        assert!(foreign.to_string().contains("does not belong"), "{foreign}");
+
+        let aborted = abort_run(thread.id.clone(), "run_wave".into())
+            .await
+            .expect("abort");
+        assert_eq!(aborted.id, "run_wave");
+        assert_eq!(aborted.status, "cancelled");
+        script_mock_agent(MockScript::default());
+    }
 }
