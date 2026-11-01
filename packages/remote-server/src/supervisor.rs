@@ -525,7 +525,9 @@ impl Supervisor {
             match result {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
-                    eprintln!("remote: could not persist the controlling device: {error}")
+                    future_remote_protocol::remote_log!(
+                        "remote: could not persist the controlling device: {error}"
+                    )
                 }
                 Err(panic) => std::panic::resume_unwind(panic),
             }

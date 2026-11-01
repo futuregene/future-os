@@ -371,13 +371,13 @@ pub async fn command_loop_with_ready(
         Ok(sub) => sub,
         Err(error) => {
             if let Some(line) = COMMAND_EPISODE.record("command_subscription", error) {
-                eprintln!("{line}");
+                future_remote_protocol::remote_log!("{line}");
             }
             return;
         }
     };
     if let Some(line) = COMMAND_EPISODE.recovered() {
-        eprintln!("{line}");
+        future_remote_protocol::remote_log!("{line}");
     }
     if let Some(sender) = ready.take() {
         let _ = sender.send(());
@@ -493,7 +493,7 @@ pub async fn command_loop_with_ready(
                     // the console a user can actually be asked to read).
                     if let Err(error) = &result {
                         if let Some(line) = HANDSHAKE_EPISODE.record("handshake_refused", error) {
-                            eprintln!("{line}");
+                            future_remote_protocol::remote_log!("{line}");
                         }
                     }
                     let accepted = result.is_ok();
@@ -566,7 +566,7 @@ pub async fn command_loop_with_ready(
     if let Some(line) =
         COMMAND_EPISODE.record("command_subscription", "subscription ended unexpectedly")
     {
-        eprintln!("{line}");
+        future_remote_protocol::remote_log!("{line}");
     }
 }
 
@@ -964,7 +964,7 @@ async fn finish_phone_unpair(handshake: HandshakeState, pair_id: String) {
         return;
     }
     if let Err(error) = handshake.runtime.unpair_slot(&pair_id).await {
-        eprintln!("remote: phone-initiated unpair failed: {error}");
+        future_remote_protocol::remote_log!("remote: phone-initiated unpair failed: {error}");
     }
 }
 
@@ -1016,7 +1016,7 @@ async fn handle_pair_handshake(
             "pairing_identity_mismatch",
             format!("{field} does not match this bridge's pairing"),
         ) {
-            eprintln!("{line}");
+            future_remote_protocol::remote_log!("{line}");
         }
         reply(
             client,
@@ -1311,11 +1311,15 @@ async fn publish_reply_payload(
         }
     };
     if let Err(error) = client.publish(reply_subject, payload.into()).await {
-        eprintln!("FutureOS: failed to publish remote command reply: {error}");
+        future_remote_protocol::remote_log!(
+            "FutureOS: failed to publish remote command reply: {error}"
+        );
         return;
     }
     if let Err(error) = client.flush().await {
-        eprintln!("FutureOS: failed to flush remote command reply: {error}");
+        future_remote_protocol::remote_log!(
+            "FutureOS: failed to flush remote command reply: {error}"
+        );
     }
 }
 
