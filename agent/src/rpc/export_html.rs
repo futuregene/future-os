@@ -1422,7 +1422,10 @@ mod tests {
                 ..Default::default()
             };
             let html = render(&[message]);
-            assert!(!html.contains("<span class=\"tool-hint\">"), "{args} {html}");
+            assert!(
+                !html.contains("<span class=\"tool-hint\">"),
+                "{args} {html}"
+            );
             let expected = serde_json::to_string_pretty(&args).expect("pretty prints");
             assert!(html.contains(&escape_html(&expected)), "{args} {html}");
         }
@@ -1433,7 +1436,11 @@ mod tests {
         let command = format!("echo {}\nsecond line", "y".repeat(120));
         let message = AgentMessage {
             role: "assistant".to_string(),
-            content: vec![tool_call("c1", "shell", serde_json::json!({"command": command}))],
+            content: vec![tool_call(
+                "c1",
+                "shell",
+                serde_json::json!({"command": command}),
+            )],
             ..Default::default()
         };
         let html = render(&[message]);

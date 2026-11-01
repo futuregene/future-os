@@ -638,10 +638,12 @@ mod tests {
 
     #[test]
     fn tools_and_generation_knobs_reach_the_chat_body() {
-        let mut config = OpenAiChatConfig::default();
-        config.tool_stream = true;
-        config.max_tokens_field = crate::llm::schema::ChatMaxTokensField::MaxCompletionTokens;
-        config.reasoning = ChatReasoningFormat::DeepSeek;
+        let config = OpenAiChatConfig {
+            tool_stream: true,
+            max_tokens_field: crate::llm::schema::ChatMaxTokensField::MaxCompletionTokens,
+            reasoning: ChatReasoningFormat::DeepSeek,
+            ..Default::default()
+        };
         let target = chat_target(
             config,
             GenerationConfig {
@@ -797,7 +799,10 @@ mod tests {
         let adapter = OpenAiChatAdapter;
         let mut state = adapter.new_stream_state();
         let events = adapter
-            .decode_frame(&frame(json!({"error": {"message": "quota exhausted"}})), state.as_mut())
+            .decode_frame(
+                &frame(json!({"error": {"message": "quota exhausted"}})),
+                state.as_mut(),
+            )
             .unwrap();
         assert_eq!(events.len(), 1);
         match &events[0] {
@@ -808,7 +813,10 @@ mod tests {
         // An error frame without a message keeps a readable default.
         let mut other_state = adapter.new_stream_state();
         let events = adapter
-            .decode_frame(&frame(json!({"error": {"code": "boom"}})), other_state.as_mut())
+            .decode_frame(
+                &frame(json!({"error": {"code": "boom"}})),
+                other_state.as_mut(),
+            )
             .unwrap();
         match &events[0] {
             ModelStreamEvent::Error { message } => {
