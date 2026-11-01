@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import i18n from "../../i18n";
+import i18n, { setLanguage } from "../../i18n";
 import { setFontSize } from "../../lib/fontSize";
 import { DEFAULT_REPLY_DETAIL, getReplyDetail, setReplyDetail } from "../../lib/replyDisplay";
 import { setThemeMode, setThemePalette } from "../../lib/theme";
@@ -32,6 +32,12 @@ vi.mock("../../lib/platform", () => ({
 const roots: { root: ReturnType<typeof createRoot>; container: HTMLElement }[] = [];
 
 beforeEach(() => {
+  // The picker shows the *preference* ("system" until someone chooses), which
+  // `i18n` keeps at module scope, so `changeLanguage("en")` was not enough: a
+  // test that picked a language left the preference — and therefore the
+  // picker — on that choice for whichever test ran next. Reset it through the
+  // module's own setter.
+  setLanguage("system");
   mocks.availability = { available: true, code: null, resolved: true };
   mocks.isLinux = false;
   mocks.isWindows = true;
@@ -40,7 +46,7 @@ beforeEach(() => {
   setFontSize("medium");
   // Back to the shipped level rather than whatever the last case left.
   setReplyDetail(DEFAULT_REPLY_DETAIL);
-  void i18n.changeLanguage("en");
+  setLanguage("system");
 });
 
 afterEach(() => {
@@ -48,7 +54,7 @@ afterEach(() => {
     act(() => root.unmount());
     container.remove();
   }
-  void i18n.changeLanguage("en");
+  setLanguage("system");
 });
 
 function mount(overrides: Partial<React.ComponentProps<typeof GeneralPage>> = {}) {

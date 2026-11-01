@@ -96,6 +96,10 @@ async function openPreferences() { await act(async () => link("desktopSettings.p
 async function flush() { await act(async () => { await Promise.resolve(); }); }
 
 beforeEach(async () => {
+  // `clearAllMocks` clears calls but keeps implementations, and the cases below
+  // pin their own catalogue, a rejected read or a refused removal. Every default
+  // is therefore rebuilt here (`mockImplementation` replaces whatever the last
+  // test pinned), so each test starts where the module factory left off.
   jest.clearAllMocks();
   stored = { autoTitleFirstTurn: true, autoUpgradeSkills: true, autoConnectRemote: false, hiddenModels: ["one/same", "other/hidden"] };
   installed = [{ id: "skill", name: "Skill", description: "", version: "1.0.0" }];
@@ -112,7 +116,20 @@ beforeEach(async () => {
   mockRemote.desktopSettingsRevision = 0;
   mockRemote.skillsRevision = 0;
   mockRemote.getDesktopSettings.mockImplementation(async () => ({ ...stored }));
+  mockRemote.updateDesktopSettings.mockImplementation(async (patch: Partial<DesktopSettings>) => {
+    stored = { ...stored, ...patch };
+    return stored;
+  });
+  mockRemote.setApprovalTier.mockImplementation(async () => {});
+  mockRemote.switchDesktop.mockImplementation(async () => {});
   mockRemote.listSettingsModels.mockImplementation(async () => [{ id: "same", provider: "one" }, { id: "same", provider: "two" }]);
+  mockRemote.listInstalledSkills.mockImplementation(async () => [...installed]);
+  mockRemote.listAvailableSkills.mockImplementation(async () => [
+    { id: "skill", name: "Skill", description: "", latestVersion: "1.2.0" },
+    { id: "new", name: "New", description: "", latestVersion: "1.0" },
+  ]);
+  mockRemote.installSkill.mockImplementation(async () => {});
+  mockRemote.uninstallSkill.mockImplementation(async () => true);
   mockRemote.listProviders.mockImplementation(async () => providers);
   providers = {
     // `one` is deliberately keyless: the page must list it anyway.
