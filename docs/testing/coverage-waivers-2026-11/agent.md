@@ -53,8 +53,9 @@ are reproducible from the commands shown, with nothing but the lcov file.
 
 Category names follow `.future/memory/coverage-llvm-cov.md` (W1 cfg(windows) · W2 defensive
 dead arm · W3 OS failure injection · W4 race window · W5 attribution artifact · W6 ghost line
-· W7 mock closure · W8 dead producer). **No row here is W3, W4 or an environment class**: this
-lane needs no network and no model.
+· W7 mock closure · W8 dead producer). **No row here needs a network or a model**, and none is W4: the only
+environment-class rows are the two W3 settings rows, each of which names the host capability
+it needs.
 
 | # | file:line | lines | category | construct | falsifier |
 |---|---|---:|---|---|---|
