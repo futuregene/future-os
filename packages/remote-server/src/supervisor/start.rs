@@ -896,9 +896,14 @@ impl Supervisor {
         // Saturating, not wrapping: a generation that keeps failing now spends
         // attempts past the burst budget (each one after a cooldown), so this
         // counter is no longer bounded by `MAX_RUNTIME_RECONNECT_ATTEMPTS`.
+        //
+        // `try_update` is the current name of this operation; `fetch_update` is
+        // deprecated, and `clippy -D warnings` (which CI runs over the whole
+        // workspace) turns that deprecation into an error. Same arguments, same
+        // always-`Some` closure, so the increment is unchanged.
         let previous = self
             .runtime_reconnect_attempts
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |attempts| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |attempts| {
                 Some(attempts.saturating_add(1))
             })
             .unwrap_or(u8::MAX);
