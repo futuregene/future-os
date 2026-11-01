@@ -182,40 +182,6 @@ produce. The absent side is now a JSON null. This is test-only code
 
 One more event on the wave-32 sequence (commit `8dd1d45c9`) covers the other half of the
 provider rule: a `thinking_end` that carries **no** `/data/provider_metadata` body keeps the
-snapshot the event itself carries, instead of an empty object. Verified in a targeted run:
-`recovery.rs:381-385` are reached by this test and no other. Both halves are asserted together —
-body present → `{}` on the call, body absent → the event's snapshot on the thinking block — so
-neither can silently swap.
-
-**Measured, including a flip worth knowing about:** `recovery.rs` 27 → **22** missed, but the
-lane total moved 1173 → **1169** because `entries.rs:255` — a lone `}` — went from covered to
-missed between the two runs. Brace rows are attribution, and they are not stable: a ±1 wobble in
-the aggregate is measurement noise in this metric, not a regression. Any wave comparing totals
-must compare the *named rows*, which is what this ledger is for.
-
-What is left in `recovery.rs` (22 rows) is:
-
-- **`with_context` closures and `ensure!` messages** — evaluated only on the failure they
-  describe (`read recovery stream …`, `decode …`, `recovery crossed durable watermark`, the
-  identity errors). Reaching them needs a *fault* in the page read or a malformed event: error
-  injection, not more events.
-- **Two closing braces** (432-433) whose `if let` arm completes elsewhere — attribution rows.
-
-### `entries.rs:155-161`, and why it was not attempted here
-
-The `/content/error` truncation arm sits inside `prepare_owned`'s prelinked loop, which only runs
-when `prefix.is_some() || shared` — i.e. through `prepare_staged` (a reset) or
-`prepare_shared_fork` (an unpublished fork). Reaching it needs a **checkpoint-owned content
-reference** at `/content/<n>/error` plus an entry whose `content[n].error` is longer than 512
-characters, so the copy has something to truncate. That is a different fixture shape from the
-run-stream one (a bound `content_references` row on the `checkpoint` owner kind, written through
-`begin_write_transaction` + `bind`, not a `commit_batch` change), and it was left for the next
-wave rather than half-built.
-
-## Wave 33: the fixture's second half, and the arm that needs a different one
-
-One more event on the wave-32 sequence (commit `8dd1d45c9`) covers the other half of the
-provider rule: a `thinking_end` that carries **no** `/data/provider_metadata` body keeps the
 snapshot the event itself carries, instead of an empty object. Verified: `recovery.rs:381-385`
 are reached by this test and no other. Both halves are now asserted together — body present →
 `{}` on the call, body absent → the event's snapshot on the thinking block — so neither can
