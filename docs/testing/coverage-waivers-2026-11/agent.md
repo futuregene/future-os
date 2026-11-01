@@ -175,6 +175,59 @@ panics `no entry found for key` and throws away the path the function exists to
 produce. The absent side is now a JSON null. This is test-only code
 (`rpc/commands/test_support.rs` is `#[cfg(test)]`), so no product behaviour moved.
 
+## Wave 29: the ledger is regenerated and `clean` against the current lcov
+
+The per-line ledger had drifted: checking it against `lcov-wave26.info` reported **150 problems**
+— 24 `MISSING` files/lines that no row named and 126 `STALE` rows naming lines that are covered
+now (waves 23/26/27's work, plus the line shifts those edits caused). Regenerating it from the
+lcov and re-checking gives:
+
+```
+wrote ledger.md: 1211 lines, 852 rows,
+  classes {'open': 775, 'a': 208, 'W6': 167, 'W5': 23, 'W7': 3, 'W1': 11, 'lane': 24}
+ledger=clean
+```
+
+The class of a row is a first-cut reading of the line's own text (the generator's own words:
+"a classification aid, never a waiver"), so the useful statement is the split, not the label:
+
+| class | lines | what it means for the next wave |
+|---|---:|---|
+| `open` | 775 | statements with no test and no justification — the real work |
+| `a` | 208 | un-hit error arm or failure-only message: needs a failure test (or a seam) |
+| `W6` | 167 | close-brace / attribution artifact: a rustfmt-stable rewrite, not a test |
+| `lane` | 24 | inside an `#[ignore]`d acceptance test |
+| `W5` | 23 | region that only evaluates with a tracing subscriber |
+| `W1` | 11 | platform gate the generator can see |
+| `W7` | 3 | closure no input calls |
+
+Per file, largest first (lines, then the classes found in it):
+
+| lines | file | classes |
+|---:|---|---|
+| 41 | `rpc/commands/settings.rs` | open=29, W6=12 — but the hand-written rows 5 and 6 above say those 29 are W2/W3: the generator cannot see the `platform_sandbox_probe_product()` guard |
+| 41 | `tools/shell/execution.rs` | open=37, W6=3, W7=1 — row 1 above covers 24 of them as the bubblewrap lane |
+| 38 | `session/content/recovery.rs` | open=19, a=10, W6=9 |
+| 36 | `agent/run_loop.rs` | open=34, W6=1, W5=1 |
+| 35 | `rpc/session_prompt.rs` | open=22, W6=7, W5=5, a=1 |
+| 33 | `compaction/semantic/evidence.rs` | open=27, a=3, W6=2, W7=1 |
+| 33 | `session/content/entries.rs` | open=16, a=11, W6=6 |
+| 31 | `session/content/reader.rs` | open=23, W6=5, a=3 |
+| 28 | `sandbox/linux/glob_scan.rs` | lane=24, open=2, a=1, W1=1 — row 2 above |
+| 26 | `rpc/session.rs` | open=14, W6=8, a=3, W1=1 |
+
+Two caveats worth carrying forward, both visible in that table:
+
+- **The generator over-reports `open` for guarded code.** `settings.rs` and `execution.rs` are the
+  two biggest files and 53 of their 82 lines are already exempted by hand-written rows; the
+  generator classifies by line text, so a row inside an `if backend == …LinuxBubblewrap` block
+  still reads `open`. A future pass should teach it to read the enclosing guard, or the hand
+  rows and the generated ledger will keep disagreeing by ~50 lines.
+- **`W6` (167) and `a` (208) are 31 % of the total.** Those are not behaviour gaps; they are the
+  attribution and error-arm shapes `.future/memory/coverage-llvm-cov.md` describes. A wave that
+  rewrites them rustfmt-stably moves ~375 lines without writing a test — which is why the
+  ledger's classes matter more than its total.
+
 ## Wave 28: the 32-thread default is thrashing, and the real work is 1620 CPU-seconds
 
 Everything in waves 23-25 assumed the suite's cost was *work*. It is not, all the way down. The
