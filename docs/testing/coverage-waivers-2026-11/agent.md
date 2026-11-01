@@ -3,20 +3,27 @@
 **Metric A** — a line counts as uncovered iff its LCOV record is `DA:<line>,0`. The
 llvm-cov *summary* percentage is not the acceptance number.
 
-**Last measurement**: `test/cov-agent` at `08f3225e0` (waves 23-34: statement cache 256, vendored
-SQLite at `-O3` in dev/test), Rust **1.99.1** (`rust-toolchain.toml`), macOS arm64, lcov
-`coverage/2026-11/after/agent/lcov-wave34.info`, run log `wave34-cov.log`. The ledger below was
-regenerated from that lcov and passes its own check.
+**Last measurement**: `test/cov-agent` at `b01a44d3f`, Rust **1.99.1** (`rust-toolchain.toml`),
+macOS arm64, lcov `coverage/2026-11/after/agent/lcov-wave40.info`, run log `wave40.log`
+(**12 test targets, 0 failed**). The ledger below was regenerated from that lcov and passes its
+own check. Measure with `measure-guard.sh`, never with a bare `cargo llvm-cov --no-report` — see
+*Wave 39* for why.
 
-**Result**: `DA:0` = **1160** lines in **129** files under `agent/src` (wave 35 measurement,
-`lcov-wave35.info`, 2893 tests). This branch has cleared **513** of the 1673 it started from
-(waves 23, 26, 27, 30, 31, 32, 33, 34 and 35; waves 24-25 changed the suite's speed, not which
-lines it reaches). Of the 1160:
+**Result**: `DA:0` = **1131** lines in **129** files under `agent/src` (2899 tests). This branch
+has cleared **542** of the 1673 it started from. Of the 1131:
 
-> **The total is a range, not a number: 1150-1160 on the same binary.** Wave 36's repeats settle
-> what wave 35 could only observe (see *Wave 36* below): the aggregate moves by ten lines between
-> two runs of identical code, entirely inside `rpc/commands/providers.rs`, because those rows'
-> regions are attributed unstably. Quote the ledger's named rows, not this total.
+> **A ~100-line jump in a total is a broken run, not noise (wave 39).** `cargo llvm-cov` runs
+> `cargo test`, which stops at the first failing test *target*; `cli_smoke` fails intermittently
+> on a loaded host, and when it does every later target — including the services fixtures that
+> cover `service/mod.rs`, `logfile.rs`, `service/shutdown.rs` — never runs, while the lcov is
+> still written. Two complete runs of one tree differ by **1 row**; a complete run and a truncated
+> one differ by **100**. `measure-guard.sh` counts the targets and refuses to report otherwise.
+>
+> **The old "1150-1160 range" claim was two effects, not one.** The 10-row pair (waves 35↔36) is
+> real and lives in `rpc/commands/providers.rs` (9 rows, ambient `thinkingLevels`) plus
+> `llm/mod.rs:439` (1 row, race window). The 100-row pairs in wave 38 were truncated runs: the
+> wave-38 log holds 3 `Running` lines, `wave38b.log` holds 12, and the 100-row symmetric
+> difference is exactly the files whose fixtures were skipped.
 >
 > **The total went up by 6 with no regression in it.** Wave 35 covered three new rows
 > (`recovery.rs` 277-278, `compact.rs` 381) and lost nine it had no business losing:
@@ -27,17 +34,12 @@ lines it reaches). Of the 1160:
 
 | state | lines |
 |---|---:|
-| **waived** (mechanism + falsifier named below) | **98** |
-| `open` — **no test and no justification yet** | **1092** |
+| **waived** (mechanism + falsifier named below, 11 rows) | **134** |
+| `open` — **no test and no justification yet** | **997** |
 
-Reconciliation (the rows below describe the 98 waived lines; they were written against the
-1231-line measurement and their line numbers were re-checked against the 1211 one in wave 29):
-waived 24 (`glob_scan.rs` ignored acceptance, class `lane`) + 24 (`execution.rs` Linux helper block, class `open` there because
-the line text carries no attribute) + 1 (`transport.rs:212`, class `open`) + 2 (Windows
-candidates, class `W1`) + 6 (`settings.rs` serialization fallbacks, class `open`) + 23
-(`settings.rs` probe-error / host-capability arms, class `open`) = **98** waived, and the
-remaining **1113** are `open`. The generated ledger's class column (`open`, `a`, `W6`, `W5`,
-`W7`, `W1`, `lane`) *subdivides* those open lines; it does not reduce them.
+Reconciliation: of the 1131 rows, the 11 waiver rows below name **134** lines, and the remaining
+**997** carry no justification yet. The generated ledger's class column (`open`, `a`, `W6`, `W5`,
+`W7`, `W1`, `lane`) *subdivides* those 997; it does not reduce them.
 
 The class column of the generated ledger is a first-cut reading of each line's own text
 (`?` tails, lone `}`, `tracing::`, `assert`, platform attributes). **It is not a waiver.**
@@ -47,18 +49,20 @@ how to falsify that claim — the ledger convention of `docs/testing/waiver-ledg
 ## Reproducing
 
 ```bash
-# 1. measure (env sanitisation is mandatory; see .future/memory/coverage-llvm-cov.md)
-ulimit -n 8192
-unset CARGO_BUILD_TARGET CARGO_TARGET_DIR CARGO_INCREMENTAL CARGO_PROFILE_DEV_DEBUG RUSTFLAGS
-export PATH="$HOME/.rustup/toolchains/1.99.1-aarch64-apple-darwin/bin:$PATH"
-export HOME="$PWD/target/test-home"
-cargo llvm-cov -p future-agent --no-report
-cargo llvm-cov report -p future-agent --lcov --output-path agent-lcov.info
+# 1. measure — the guard, not a bare cargo llvm-cov (see wave 39)
+bash coverage/2026-11/after/agent/measure-guard.sh agent-lcov.info agent-run.log
+#    it sanitises the environment, runs with --no-fail-fast, and refuses to
+#    report unless all 12 test targets ran; the env it sets is
+#    ulimit -n 8192, CARGO_* unset, RUSTFLAGS unset, HOME=$PWD/target/test-home
+#    (.future/memory/coverage-llvm-cov.md)
 
 # 2. per-line ledger + its own check (both work from the lcov alone)
 python3 coverage/2026-11/after/agent/ledger-gen.py --lcov agent-lcov.info --root . --out ledger.md
 python3 coverage/2026-11/after/agent/ledger-gen.py --check --lcov agent-lcov.info --out ledger.md
 # → "ledger=clean" means every DA:0 line is named here and no line is stale
+
+# 3. per-file deltas between two runs (missed-line sets, line numbers included)
+python3 coverage/2026-11/after/agent/lcov-symdiff.py A.info B.info
 ```
 
 The working copies (`ledger-gen.py`, `ledger.md`, the lcov files) live under the gitignored
@@ -253,7 +257,67 @@ Two consequences the lane has to live with, both now recorded:
    else, or the number is a draw from a distribution. The honest target is the named-row ledger
    with every row either covered or exempted, which is what this file already is.
 
+## Wave 39: the 100-row "noise" was a truncated run
+
+`cargo llvm-cov --no-report` executes `cargo test`, which stops at the first failing test
+*target*, and `cli_smoke` fails intermittently on a loaded host (two documented deadlines). When
+it fails, every later target never runs — and the lcov is still written, with `report rc=0`, so
+nothing in the pipeline objects. Counted from the run logs:
+
+| log | `Running` lines | `DA:0` |
+|---|---:|---:|
+| `wave38.log` | **3** (failed at `cli_smoke`) | 1260 |
+| `wave38c.log` | **3** (failed at `cli_smoke`) | 1254 |
+| `wave38b.log` | 12 | 1158 |
+| `wave39.log` | 12 | 1157 |
+
+`lcov-symdiff.py wave38b wave38c` = **100 rows in 16 files, every one of them missed only in the
+truncated run**, and the files are exactly the ones the skipped fixtures cover: `service/mod.rs`
+27, `logfile.rs` 22, `service/shutdown.rs` 12, `legacy_import.rs` 11, `service/work.rs` 8,
+`cli.rs` 6. The sharpest case is `logfile.rs:273-296` (`init_embedded_tracing`): it is called only
+from `tests/service_startup.rs`'s child process, reads 0 in a truncated run, and reads 1 the
+moment that target runs — verified by running the target alone.
+
+**So the noise floor is 1 row, not 10 and certainly not 100.** Two complete runs of identical
+source — `lcov-symdiff.py wave38b wave39` — differ by **1 row** (`llm/mod.rs:439`, the W4 race
+already waived as row 10). The 10-row pair (waves 35↔36) is the 9 `providers.rs` rows plus that
+same row. The wave-38 conclusion below ("a profiler test moves 100 rows") is withdrawn: that pair
+compared a truncated run with a complete one, and the flamegraph line in the logs was a
+coincidence, not the cause.
+
+**The guard is a script now**: `coverage/2026-11/after/agent/measure-guard.sh` runs
+`--no-fail-fast` and refuses to emit an lcov unless the log shows all 12 targets, printing the
+failure names when a target did fail. A wave that quotes a number has to pass it first.
+
+**Two tests landed (commit `b01a44d3f`) for 27 rows.**
+
+| test | rows | what it asserts |
+|---|---:|---|
+| `an_ephemeral_run_that_fails_reports_the_error_in_its_agent_end` (`rpc/session_prompt/tests.rs`) | **19** | an ephemeral run has no persisted terminal, so its failure exists only in the live stream: the `error` event's message, the closing `agent_end`'s state/error/usage/duration, nothing after it, transcript untouched |
+| `an_unfenced_tool_call_runs_to_its_effect` (`agent/mod.rs`) | **8** | the control for the two fence tests: the same fixture *does* write its file when nothing stops it, so their `!path.exists()` assertions are not vacuous |
+
+Both row counts were predicted before measuring (`session_prompt.rs:1740-1758` = 19,
+`agent/mod.rs:1264-1271` = 8) and the wave-39→40 symdiff reproduces exactly those rows, no more
+and no fewer. Result **1157 → 1131**: 27 cleared, and the `llm/mod.rs:439` race row flipped in
+the same run.
+
+Suite green at 2899 tests; `fmt --check` and `clippy -p future-agent --all-targets -D warnings`
+clean. Run `wave40.log` (12 targets, 0 failed), lcov `lcov-wave40.info`, ledger regenerated
+(`ledger=clean`, 801 rows, classes `open` 727 · `a` 192 · `W6` 151 · `W5` 23 · `lane` 24 ·
+`W1` 11 · `W7` 3).
+
+**Rejected this wave, with the evidence that rejected it.** The hypothesis that metric A
+double-counts lines — `DA:0` in one function record and `DA:n` in another for the same line, so a
+max-merge would retract the whole `W6` class — does not hold: `dual-records.py` finds **0**
+file:line keys carrying both a zero and a non-zero record out of 83 784 in the wave-38c lcov,
+i.e. llvm-cov already max-merges per line. `W6` rows are real attribution disagreements between
+the record and the source, not duplicate records.
+
 ## Wave 38: the noise floor is not a constant — a profiler test moves 100 rows
+
+> **Withdrawn by wave 39.** The 104-row pair below compared a run that died at `cli_smoke` (3 of
+> 12 targets) against a complete one; two complete runs differ by 1 row. Kept as written so the
+> correction is auditable — read the wave-39 section above before quoting anything here.
 
 Two rewrites landed (commit `84c6b37ad`): the text/reasoning label in
 `recovery.rs` is bound before `draft.text(key, label, *range)?`, and the compaction
