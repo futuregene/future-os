@@ -412,6 +412,74 @@ mod tests {
             "the guard must restore the flag it found"
         );
     }
+
+    /// The refusal arm reads the process-global failure, so a fixture that sets it
+    /// must clear it even when an assertion fails. Without this the next stop in
+    /// the process is refused by name — which is exactly how the arm stayed a
+    /// mover: whichever neighbour ran after a failure "covered" it.
+    struct FailureCleared;
+    impl Drop for FailureCleared {
+        fn drop(&mut self) {
+            crate::shutdown::clear_failure_for_test();
+        }
+    }
+
+    /// A recorded failure is the install barrier: the next cleanup refuses before
+    /// it closes admission, freezes tasks or touches the Agent, so a retry cannot
+    /// look like it made progress. Pinned deterministically here; the arm
+    /// otherwise only runs when a neighbouring test leaves a failure behind.
+    #[test]
+    fn a_recorded_failure_is_refused_before_any_stage_runs() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("shutdown-recorded-failure");
+        let _mock = crate::agent_bridge::test_support::mock_agent();
+        let _cleared = FailureCleared;
+        crate::shutdown::reset_for_test();
+        crate::shutdown::clear_failure_for_test();
+        crate::shutdown::record_failure("an earlier Desktop cleanup failed".into());
+
+        let error = super::stop("fixture").unwrap_err();
+        assert_eq!(error.to_string(), "an earlier Desktop cleanup failed");
+        let stage = crate::shutdown::snapshot()
+            .expect("the refused stop owns an operation")
+            .stage;
+        assert_eq!(
+            stage, "admission",
+            "the refusal runs before the first stage"
+        );
+        assert_eq!(
+            crate::shutdown::failure().as_deref(),
+            Some("an earlier Desktop cleanup failed"),
+            "and the refusal keeps the reason it was given"
+        );
+    }
+
+    /// `record_error` is the entry's channel for a failure it found outside the
+    /// shared stages (the Desktop window restore). The final barrier must carry
+    /// it, otherwise a stop that lost the window reports success.
+    #[test]
+    fn an_error_the_entry_records_itself_reaches_the_final_barrier() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("shutdown-recorded-error");
+        let _mock = crate::agent_bridge::test_support::mock_agent();
+        let _cleared = FailureCleared;
+        crate::shutdown::reset_for_test();
+        crate::shutdown::clear_failure_for_test();
+
+        let operation = crate::shutdown::begin("fixture", |operation| {
+            let mut services = super::ServiceStop::prepare(operation, "fixture", || {})
+                .map_err(|error| error.to_string())?;
+            services.record_error("the Desktop window could not be restored".into());
+            services.finish().map_err(|error| error.to_string())
+        });
+        let error = operation.wait().unwrap_err();
+        assert!(
+            error.contains("the Desktop window could not be restored"),
+            "{error}"
+        );
+        assert!(
+            crate::shutdown::failure().is_some(),
+            "a recorded error closes the install barrier"
+        );
+    }
 }
 
 #[cfg(test)]

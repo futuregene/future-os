@@ -828,6 +828,48 @@ mod block_fixtures {
         run_case("owned-idle");
     }
 
+    /// The harness's own guard: a case name it does not implement must fail the
+    /// child loudly instead of exiting green with nothing asserted. Driven through
+    /// the same re-exec as every other case, so it is the *binary's* answer that
+    /// is checked, not this module's reading of it.
+    #[test]
+    fn the_fixture_refuses_a_case_it_does_not_implement() {
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/host-fixtures");
+        std::fs::create_dir_all(&parent).unwrap();
+        let home = tempfile::tempdir_in(&parent).unwrap();
+        let socket = tempfile::tempdir().unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "agent_host::block_fixtures::host_fixture",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CASE, "no-such-case")
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .env("FUTURE_HOME", home.path().join(".future"))
+            .env("FUTURE_DESKTOP_AGENT_MODE", "auto")
+            .env("FUTURE_AGENT_SOCKET", socket.path().join("agent.sock"))
+            .env_remove("FUTURE_AGENT_GRPC_ADDR")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{stderr}");
+        assert!(stderr.contains("unknown case no-such-case"), "{stderr}");
+    }
+
+    /// The `ENXIO` retry loop exists for "no reader has opened the fixture *yet*".
+    /// A path that cannot be opened at all is a broken fixture, not a slow one, so
+    /// it fails at once and names the path instead of spinning to the deadline.
+    #[cfg(unix)]
+    #[test]
+    #[should_panic(expected = "open fixture")]
+    fn a_reader_whose_path_vanished_fails_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        blocked_reader(&dir.path().join("gone"));
+    }
+
     fn run_case(case: &str) {
         let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/host-fixtures");
         std::fs::create_dir_all(&parent).unwrap();
