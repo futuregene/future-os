@@ -7203,4 +7203,82 @@ mod tests {
         .unwrap();
         assert_eq!(shared.read().messages.read().len(), 1);
     }
+
+    /// A store that cannot settle cancelled receipts pauses the scheduler
+    /// instead of starting the next queued run on top of them: the queue is left
+    /// exactly as it was, and the next call (once the store recovers) dequeues.
+    #[test]
+    fn a_store_that_cannot_settle_cancelled_receipts_pauses_the_scheduler() {
+        let session = make_persistent_test_session("pause-on-cancelled-receipts");
+        let manager = session.session_manager.clone();
+        // One cancelled receipt for this session, and two queued runs to dequeue.
+        let ack = crate::runtime::RunAck::queued("cancelled-run".into(), 1, 1);
+        let user: crate::session::SessionEntry = serde_json::from_value(serde_json::json!({
+            "id":"u-cancelled","type":"user","role":"user",
+            "timestamp":"2026-10-26T00:00:01Z","meta":{"run_id":"cancelled-run"},"content":"q"
+        }))
+        .unwrap();
+        manager
+            .record_queued_receipt(
+                "pause-on-cancelled-receipts",
+                "req-cancelled",
+                &ack,
+                "fingerprint",
+                &serde_json::json!({}),
+                &user,
+            )
+            .unwrap();
+        manager
+            .cancel_queued_receipt("pause-on-cancelled-receipts", "cancelled-run")
+            .unwrap();
+        for (request, run) in [("req-a", "run-a"), ("req-b", "run-b")] {
+            session
+                .scheduler
+                .accept(
+                    request,
+                    Some(run),
+                    crate::runtime::BusyPolicy::EnqueueIfBusy,
+                    serde_json::json!({"message": request}),
+                )
+                .unwrap();
+        }
+        assert_eq!(session.scheduler.queued().len(), 2);
+        let store = manager.storage().unwrap().clone();
+        store
+            .db
+            .call(|db| {
+                db.execute_batch(
+                    "CREATE TRIGGER refuse_receipt_settle BEFORE UPDATE ON queued_run_receipts \
+                     BEGIN SELECT RAISE(ABORT,'injected receipt settle failure'); END;",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let lease = crate::runtime::RunLease {
+            run_id: "run-a".to_string(),
+            epoch: 1,
+            run_sequence: Some(0),
+        };
+        let mut session = session;
+        session.on_scheduled_run_finished(&lease);
+        assert_eq!(
+            session.scheduler.queued().len(),
+            2,
+            "a paused scheduler must not dequeue"
+        );
+        assert!(session.scheduler.active().is_none());
+        // A store that can settle them again lets the scheduler continue.
+        store
+            .db
+            .call(|db| {
+                db.execute_batch("DROP TRIGGER refuse_receipt_settle")?;
+                Ok(())
+            })
+            .unwrap();
+        session.on_scheduled_run_finished(&lease);
+        assert!(
+            session.scheduler.queued().len() < 2 || session.scheduler.active().is_some(),
+            "the scheduler must continue once the store recovers"
+        );
+    }
 }
