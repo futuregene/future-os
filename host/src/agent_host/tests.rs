@@ -822,7 +822,11 @@ fn the_host_reads_its_own_progress_and_only_detaches_what_it_merely_attached_to(
         state.yield_reason = Some("Future Agent is held by another process".into());
     }
     assert!(!host.detach_attached(), "an owned Agent is not detached");
-    assert_eq!(host.phase(), Phase::Ready, "a refused detach changes nothing");
+    assert_eq!(
+        host.phase(),
+        Phase::Ready,
+        "a refused detach changes nothing"
+    );
 
     // Ready and not owned is the one case it accepts, and the yield reason from
     // the attempt that attached belongs to that attempt, not to this stop.
@@ -843,7 +847,9 @@ fn the_host_reads_its_own_progress_and_only_detaches_what_it_merely_attached_to(
 fn the_idle_update_reservation_needs_an_owned_agent_with_a_handle() {
     let host = AgentHost::default();
     assert!(
-        !host.reserve_idle_update().expect("an external Agent reserves"),
+        !host
+            .reserve_idle_update()
+            .expect("an external Agent reserves"),
         "an Agent this host does not own is never reserved"
     );
 

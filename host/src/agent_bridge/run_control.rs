@@ -1724,8 +1724,7 @@ mod tests {
         let (entered, observed) = tokio::sync::oneshot::channel();
         let (answer, data) = tokio::sync::oneshot::channel();
         mock.push("get_state", Reply::Deferred { entered, data });
-        let task =
-            mark_run_completed_if_active(Some(&owed_run.id)).expect("a completion job runs");
+        let task = mark_run_completed_if_active(Some(&owed_run.id)).expect("a completion job runs");
         tokio::time::timeout(std::time::Duration::from_secs(5), observed)
             .await
             .expect("the idle poll started")
