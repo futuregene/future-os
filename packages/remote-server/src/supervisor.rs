@@ -18,6 +18,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
         Arc, Mutex,
     },
+    time::Duration,
 };
 
 pub use crate::tasks::TaskHandle;
@@ -770,6 +771,61 @@ pub const RUNTIME_FAILURE_WINDOW_MS: u64 = 10 * 60 * 1_000;
 /// alive for one poll. Only a sustained healthy minute resets the budget.
 pub const RUNTIME_HEALTHY_RESET_SECS: u8 = 60;
 pub const MAX_WEB_RECONNECT_ATTEMPTS: u8 = 3;
+
+/// The first slow-retry delay, and the ceiling it doubles up to.
+///
+/// Spending [`MAX_RUNTIME_RECONNECT_ATTEMPTS`] used to mean *stopping*: the
+/// watcher then idled out the remainder of [`RUNTIME_FAILURE_WINDOW_MS`] and
+/// only tried again once the whole ten-minute window had elapsed. An ordinary
+/// relay blip that would have healed on the next attempt therefore kept the
+/// device unreachable for minutes — the failure a phone reports as "still
+/// waiting for the desktop" rather than as a dropped connection — and healed
+/// only when the window expired.
+///
+/// The cooldown retries instead of idling: after the burst, attempts continue at
+/// [`RUNTIME_COOLDOWN_BASE`] and double per attempt up to
+/// [`RUNTIME_COOLDOWN_MAX`]. A transient failure recovers in tens of seconds,
+/// while a credential the relay keeps refusing still settles at one attempt per
+/// ten minutes, so nothing here retries a dead grant in a tight loop.
+pub const RUNTIME_COOLDOWN_BASE: Duration = Duration::from_secs(30);
+pub const RUNTIME_COOLDOWN_MAX: Duration = Duration::from_secs(600);
+
+/// What the generation watcher should do about a generation that is still
+/// unhealthy.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReconnectStep {
+    /// Spend an attempt now.
+    Attempt,
+    /// Wait first, then spend one.
+    Wait(Duration),
+}
+
+/// How long the next slow retry waits, given how many attempts this failure
+/// window has already spent.
+///
+/// Pure so the cadence can be asserted without a clock: attempts below the burst
+/// budget answer [`RUNTIME_COOLDOWN_BASE`], and the doubling saturates long
+/// before `u8` runs out.
+pub fn cooldown_delay(attempts: u8) -> Duration {
+    let over = attempts.saturating_sub(MAX_RUNTIME_RECONNECT_ATTEMPTS);
+    let factor = 1u32 << over.min(5);
+    (RUNTIME_COOLDOWN_BASE * factor).min(RUNTIME_COOLDOWN_MAX)
+}
+
+/// Attempt now, or wait out a cooldown first.
+///
+/// Inside the failure window the burst budget is enforced, but exhaustion buys a
+/// longer delay rather than silence. Once the window elapses the budget is
+/// forgiven — `record_runtime_failure` starts a fresh window — so the burst is
+/// available again.
+pub fn reconnect_step(attempts: u8, window_started: u64, now: u64) -> ReconnectStep {
+    if attempts >= MAX_RUNTIME_RECONNECT_ATTEMPTS
+        && now.saturating_sub(window_started) <= RUNTIME_FAILURE_WINDOW_MS
+    {
+        return ReconnectStep::Wait(cooldown_delay(attempts));
+    }
+    ReconnectStep::Attempt
+}
 
 /// Single-slot view of the runtime map, for tests.
 ///
