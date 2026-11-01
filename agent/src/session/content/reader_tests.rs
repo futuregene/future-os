@@ -273,3 +273,409 @@ fn metadata_reads_ignore_ordinary_appends_but_fence_configuration_changes() {
         "changed"
     );
 }
+
+/// Search and recall are the only history reads that walk *every* visible
+/// field, so they own the guarantees that invisible extensions are reported as
+/// omitted and that a byte offset can never split a UTF-8 scalar.
+#[test]
+fn history_search_and_recall_walk_only_the_visible_fields() {
+    let (_dir, store) = store();
+    store.append("s", vec![message("a")]).unwrap();
+
+    // A match in the first bounded page of the first block carries its block
+    // identity, its byte offset inside the entry and a snippet around it.
+    let hits = Snapshot::search(&store, "s", "跨页", 5).unwrap();
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0]["entryId"], "a");
+    assert_eq!(hits[0]["blockIndex"], 0);
+    assert_eq!(hits[0]["kind"], "text");
+    assert_eq!(hits[0]["byteOffset"], 0);
+    assert!(hits[0]["snippet"].as_str().unwrap().starts_with("跨页"));
+
+    // A hit in the tool arguments is reported as arguments, not as text.
+    let hits = Snapshot::search(&store, "s", "正文", 5).unwrap();
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0]["kind"], "tool_call");
+    assert_eq!(hits[0]["toolCallId"], "tool");
+    assert_eq!(hits[0]["toolName"], "edit");
+
+    // Three hits in one entry: a result budget of one stops at the second hit
+    // instead of walking the rest of the entry.
+    store
+        .append(
+            "s",
+            vec![json!({"id":"b","type":"assistant","role":"assistant",
+                "timestamp":"2026-10-26T00:00:02Z","meta":{"run_id":"r"},
+                "content":[{"type":"text","text":"限位一"},
+                    {"type":"text","text":"限位二"},
+                    {"type":"text","text":"限位三"}]})],
+        )
+        .unwrap();
+    assert_eq!(Snapshot::search(&store, "s", "限位", 1).unwrap().len(), 2);
+    assert_eq!(Snapshot::search(&store, "s", "限位", 5).unwrap().len(), 3);
+    // Nothing visible matches the opaque extension text.
+    assert!(Snapshot::search(&store, "s", "opaque", 5)
+        .unwrap()
+        .is_empty());
+
+    // The query and page budgets are refused rather than silently clamped.
+    for query in ["".to_string(), "x".repeat(801)] {
+        assert!(Snapshot::search(&store, "s", &query, 5).is_err());
+    }
+    assert!(Snapshot::search(&store, "s", "跨页", 0).is_err());
+    assert!(Snapshot::search(&store, "s", "跨页", 21).is_err());
+
+    // Recall pages one entry's visible bytes and names what it left out.
+    let recalled = Snapshot::recall(&store, "s", "a", 0, 16).unwrap();
+    assert_eq!(recalled["entryId"], "a");
+    assert_eq!(recalled["offset"], 0);
+    assert_eq!(recalled["chunks"][0]["blockIndex"], 0);
+    assert_eq!(recalled["chunks"][0]["blockByteOffset"], 0);
+    assert_eq!(recalled["chunks"][0]["text"], "跨页🙂跨页");
+    assert_eq!(recalled["hasMore"], true);
+    assert!(recalled["nextOffset"].as_i64().unwrap() > 0);
+    assert_eq!(
+        recalled["omittedKinds"],
+        serde_json::json!(["future_block", "image_url", "reasoning"])
+    );
+    // Offsets are byte offsets into visible text: past the end, or inside a
+    // multi-byte scalar, the read fails instead of guessing.
+    let total = recalled["totalBytes"].as_i64().unwrap();
+    assert!(Snapshot::recall(&store, "s", "a", total + 1, 16).is_err());
+    assert!(Snapshot::recall(&store, "s", "a", 1, 4).is_err());
+    // An unknown entry is named, not silently empty.
+    assert!(Snapshot::recall(&store, "s", "missing", 0, 16).is_err());
+}
+
+/// A page of a small inline entry is a byte range of its text, so it must cut
+/// on character boundaries in both directions: a page that ends inside a
+/// character returns the characters it can serve, and an offset that starts
+/// inside one is refused instead of producing replacement characters.
+#[test]
+fn an_inline_page_never_splits_a_character() {
+    let (_dir, store) = store();
+    store
+        .append(
+            "s",
+            vec![json!({"id":"tiny","type":"user","role":"user",
+                "timestamp":"2026-10-26T00:00:01Z","meta":{"run_id":"r"},
+                "content":"跨页🙂"})],
+        )
+        .unwrap();
+
+    // The text is small enough to stay inline in its message block.
+    let recalled = Snapshot::recall(&store, "s", "tiny", 0, 4).unwrap();
+    assert_eq!(recalled["chunks"][0]["kind"], "text");
+    assert_eq!(recalled["totalBytes"], "跨页🙂".len() as i64);
+    // Four bytes end inside the second character, so only the first is served.
+    assert_eq!(recalled["chunks"][0]["text"], "跨");
+    assert_eq!(recalled["hasMore"], true);
+    assert_eq!(recalled["nextOffset"], 3);
+
+    // The next page continues from the boundary the previous one stopped at.
+    let next = Snapshot::recall(&store, "s", "tiny", 3, 4).unwrap();
+    assert_eq!(next["chunks"][0]["text"], "页");
+
+    // Starting inside a character is refused, never rounded.
+    let error = Snapshot::recall(&store, "s", "tiny", 1, 4).unwrap_err();
+    assert!(format!("{error:#}").contains("UTF-8 boundary"), "{error:#}");
+    let error = Snapshot::recall(&store, "s", "tiny", 4, 4).unwrap_err();
+    assert!(format!("{error:#}").contains("UTF-8 boundary"), "{error:#}");
+}
+
+/// A match near the end of a bounded read page needs more bytes for its snippet
+/// than that page holds, so the search has to pull the remainder before it can
+/// answer — the snippet is the window around the hit, not just the page.
+#[test]
+fn a_match_at_a_page_boundary_extends_its_snippet_across_pages() {
+    let (_dir, store) = store();
+    let hit = READ_BYTES as i64 - 10;
+    let text = format!(
+        "{}{}{}",
+        "a".repeat(usize::try_from(hit).unwrap()),
+        "NEEDLE",
+        "b".repeat(4096)
+    );
+    store
+        .append(
+            "s",
+            vec![json!({"id":"wide","type":"assistant","role":"assistant",
+                "timestamp":"2026-10-26T00:00:01Z","meta":{"run_id":"r"},
+                "content":[{"type":"text","text":text}]})],
+        )
+        .unwrap();
+
+    let hits = Snapshot::search(&store, "s", "needle", 5).unwrap();
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0]["entryId"], "wide");
+    assert_eq!(hits[0]["byteOffset"], hit);
+    let snippet = hits[0]["snippet"].as_str().unwrap();
+    // The 120 bytes before the hit and the text after it are both present,
+    // even though the second half lived past the first page.
+    assert!(snippet.contains("NEEDLE"), "{snippet}");
+    assert!(
+        snippet.len() > 120 + "NEEDLE".len(),
+        "the snippet continues past the hit: {} bytes",
+        snippet.len()
+    );
+    assert!(snippet.starts_with('a'), "the snippet keeps its prefix");
+}
+
+/// A targeted field read loads one block, not the entry: the block pointers
+/// (`/content/<ordinal>/<field>`), the whole-block pointer (`/content/<ordinal>`)
+/// and the structural refusals all go through the same bounded path.
+#[test]
+fn targeted_fields_read_one_block_without_loading_the_entry() {
+    let (_dir, store) = store();
+    store
+        .append(
+            "s",
+            vec![
+                json!({"id":"u","type":"user","role":"user","timestamp":"2026-10-26T00:00:01Z",
+                    "meta":{"run_id":"r"},"content":"跨页🙂"}),
+                json!({"id":"a","type":"assistant","role":"assistant","timestamp":"2026-10-26T00:00:02Z",
+                    "meta":{"run_id":"r"},"content":[
+                        {"type":"text","text":"说明"},
+                        {"type":"tool_call","id":"t","name":"shell","args":{"command":"pwd"}}
+                    ]}),
+            ],
+        )
+        .unwrap();
+    let scope = Snapshot::capture(&store, "s").unwrap();
+    let entry = |id: &str| -> Entry {
+        let id_owned = id.to_owned();
+        store
+            .db
+            .read(move |db| {
+                let stored = crate::session::identity::BoundIdentity::entry(db, "s", &id_owned)?;
+                let position: i64 = db.query_row(
+                    "SELECT position FROM entries WHERE session_id='s' AND entry_id=?1",
+                    [&stored],
+                    |row| row.get(0),
+                )?;
+                Ok(Entry {
+                    position,
+                    id: stored,
+                })
+            })
+            .unwrap()
+    };
+    let user = entry("u");
+    let assistant = entry("a");
+    // One block field, by ordinal: text and arguments decode differently.
+    assert_eq!(
+        scope.field(&store, &assistant, "/content/0/text").unwrap(),
+        Some(json!("说明"))
+    );
+    assert_eq!(
+        scope.field(&store, &assistant, "/content/1/args").unwrap(),
+        Some(json!({"command":"pwd"}))
+    );
+    // A canonical entry keeps no assembled content column, so the whole-block
+    // pointer finds nothing rather than rebuilding the entry to answer it.
+    assert_eq!(scope.field(&store, &assistant, "/content/0").unwrap(), None);
+    // A block field the block does not have is simply absent, not an error.
+    assert_eq!(scope.field(&store, &user, "/content/0/args").unwrap(), None);
+
+    // Structural refusals: a malformed pointer, a negative ordinal and an
+    // unknown field name are errors, never silent nulls.
+    for (pointer, expected) in [
+        ("/meta", "unsupported targeted content field"),
+        ("/content/-1/text", "invalid block ordinal"),
+        ("/content/0/bogus", "unsupported targeted block field"),
+    ] {
+        let error = scope.field(&store, &assistant, pointer).expect_err(pointer);
+        assert!(
+            format!("{error:#}").contains(expected),
+            "{pointer}: {error:#}"
+        );
+    }
+    // A settled snapshot cannot be asked for a later entry.
+    let beyond = Entry {
+        position: assistant.position + 100,
+        id: assistant.id.clone(),
+    };
+    let error = scope.field(&store, &beyond, "/content/0/text").unwrap_err();
+    assert!(
+        format!("{error:#}").contains("beyond the captured transcript"),
+        "{error:#}"
+    );
+
+    // Structural refusals: a malformed pointer, a negative ordinal and an
+    // unknown field name are errors, never silent nulls.
+    for pointer in ["/content", "/meta", "/content/-1/text", "/content/0/bogus"] {
+        assert!(
+            scope.field(&store, &assistant, pointer).is_err(),
+            "{pointer} must be refused"
+        );
+    }
+    // A settled snapshot cannot be asked for a later entry.
+    let beyond = Entry {
+        position: assistant.position + 100,
+        id: assistant.id.clone(),
+    };
+    let error = scope.field(&store, &beyond, "/content/0/text").unwrap_err();
+    assert!(
+        format!("{error:#}").contains("beyond the captured transcript"),
+        "{error:#}"
+    );
+}
+
+/// A field bound as the *summary projection* of a shell result is paged from
+/// that projection: recall and search read the derived text (not the raw
+/// facts), while the facts stay available through their own reference.
+#[test]
+fn a_derived_summary_field_pages_from_its_projection() {
+    let (_dir, store) = store();
+    let result = future_rpc::shell_result::ShellResult {
+        command: "printf hi".into(),
+        cwd: "/w".into(),
+        duration_ms: 3,
+        status: future_rpc::shell_result::ShellStatus::Exited,
+        exit_code: Some(0),
+        is_soft_fail: false,
+        is_error: false,
+        attempts: vec![future_rpc::shell_result::ShellAttempt {
+            status: future_rpc::shell_result::ShellStatus::Exited,
+            exit_code: Some(0),
+            duration_ms: 3,
+            output: "界".repeat(30_000),
+            output_truncated: false,
+            escalated: false,
+        }],
+        approval: None,
+        note: None,
+    };
+    let summary = future_rpc::shell_result::model_summary(&result);
+    store
+        .append(
+            "s",
+            vec![json!({"id":"tool","type":"tool","role":"tool",
+                "timestamp":"2026-10-26T00:00:02Z",
+                "meta":{"run_id":"r","shell_result":serde_json::to_value(&result).unwrap()},
+                "content":[{"type":"tool_result","tool_call_id":"t","content":summary,"is_error":false}]})],
+        )
+        .unwrap();
+
+    let recalled = Snapshot::recall(&store, "s", "tool", 0, 64).unwrap();
+    assert_eq!(recalled["totalBytes"], summary.len() as i64);
+    let first = recalled["chunks"][0]["text"].as_str().unwrap();
+    assert!(
+        summary.starts_with(first),
+        "the chunk must be the summary text"
+    );
+    assert_eq!(recalled["hasMore"], true);
+    // Paging continues inside the same projection at a byte offset.
+    let offset = recalled["nextOffset"].as_i64().unwrap();
+    let rest = Snapshot::recall(&store, "s", "tool", offset, 64).unwrap();
+    assert_eq!(rest["offset"], offset);
+    // Search reads the same projection, so a phrase in the summary is found.
+    let hits = Snapshot::search(&store, "s", "Execution status", 5).unwrap();
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    let snippet = hits[0]["snippet"].as_str().unwrap();
+    assert!(
+        snippet.contains("Execution status"),
+        "the snippet comes from the summary projection: {snippet}"
+    );
+}
+
+/// A block whose body is a *projection* (the model summary of canonical shell
+/// facts) is paged through that projection, so a recall serves the same text the
+/// transcript shows instead of the raw facts document.
+#[test]
+fn a_projected_shell_body_is_paged_through_its_summary() {
+    let (_dir, store) = store();
+    let result = future_rpc::shell_result::ShellResult {
+        command: "printf hi".into(),
+        cwd: "/w".into(),
+        duration_ms: 3,
+        status: future_rpc::shell_result::ShellStatus::Exited,
+        exit_code: Some(0),
+        is_soft_fail: false,
+        is_error: false,
+        attempts: vec![future_rpc::shell_result::ShellAttempt {
+            status: future_rpc::shell_result::ShellStatus::Exited,
+            exit_code: Some(0),
+            duration_ms: 3,
+            output: "hi\n".into(),
+            output_truncated: false,
+            escalated: false,
+        }],
+        approval: None,
+        note: None,
+    };
+    let summary = future_rpc::shell_result::model_summary(&result);
+    store
+        .append(
+            "s",
+            vec![json!({"id":"tool","type":"tool","role":"tool",
+                "timestamp":"2026-10-26T00:00:02Z",
+                "meta":{"run_id":"r","shell_result":serde_json::to_value(&result).unwrap()},
+                "content":[{"type":"tool_result","tool_call_id":"t","content":summary,"is_error":false}]})],
+        )
+        .unwrap();
+    // The entry's content is bound to the summary projection, not to the facts.
+    let encoding: String = store
+        .db
+        .read(|db| {
+            Ok(db.query_row(
+                "SELECT encoding FROM content_references WHERE session_id='s' AND owner_kind='entry' AND owner_id='tool' AND field='/content/0/content'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(encoding, "shell_summary");
+
+    let recalled = Snapshot::recall(&store, "s", "tool", 0, 16).unwrap();
+    assert_eq!(recalled["chunks"][0]["kind"], "tool_result");
+    assert_eq!(recalled["chunks"][0]["field"], "text");
+    assert_eq!(recalled["totalBytes"], summary.len() as i64);
+    assert_eq!(
+        recalled["chunks"][0]["text"],
+        summary[..16].to_owned(),
+        "the page is a slice of the projection"
+    );
+    assert_eq!(recalled["hasMore"], true);
+}
+
+/// Anything the reader cannot interpret is treated as **displayed**, not hidden.
+/// That fail-open direction is deliberate: hiding a field it merely failed to
+/// classify would drop content from a transcript, while showing one it could not
+/// place is recoverable. The four shapes below are exactly the ones where
+/// classification gives up.
+#[test]
+fn a_pointer_the_reader_cannot_place_is_still_displayed() {
+    let blocks = json!({"content": [
+        {"type": "text", "text": "answer"},
+        {"type": "tool_call", "args": "{}"},
+    ]});
+
+    // Whole content, and every meta pointer, are displayed outright.
+    assert!(super::display_field(&blocks, "/content"));
+    assert!(super::display_field(&blocks, "/meta"));
+    assert!(super::display_field(&blocks, "/meta/run_id"));
+
+    // An entry whose content is not a block array: any /content/… path is shown.
+    // (A pre-block-array journal stored content as one value.)
+    assert!(super::display_field(
+        &json!({"content": "legacy"}),
+        "/content/0/text"
+    ));
+
+    // Too few components to name a block: nothing to classify, so show it.
+    assert!(super::display_field(&blocks, "/content/0"));
+
+    // An ordinal that is not a number, and one past the end: both unplaceable.
+    assert!(super::display_field(&blocks, "/content/not-a-number/text"));
+    assert!(super::display_field(&blocks, "/content/9/text"));
+
+    // The classification it *can* make still hides what is not a display field.
+    // Both block kinds expose exactly two members each, and a path outside
+    // /content is not a content field at all.
+    assert!(super::display_field(&blocks, "/content/0/text"));
+    assert!(super::display_field(&blocks, "/content/1/args"));
+    assert!(!super::display_field(&blocks, "/content/0/other"));
+    assert!(!super::display_field(&blocks, "/content/1/other"));
+    assert!(!super::display_field(&json!({"content": []}), "/prompt"));
+}
