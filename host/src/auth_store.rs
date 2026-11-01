@@ -275,6 +275,15 @@ pub mod test_support {
         /// directly observable without racing the global `TEST_HOME_LOCK`.
         fn restore(&mut self) {
             self.timing.mark("body");
+            // The drain below is this fixture's own machine-wide teardown, so
+            // this fixture has to be the one that owns the machine while it
+            // runs — including for the guards built by struct literal (the
+            // absent-`HOME` arms below, which never went through
+            // `with_cleanup`). Without this line their `cleanup_host` was the
+            // first *unsupervised* stop in the suite, and a refusal there
+            // happens inside `Drop`, which aborts the process instead of
+            // failing a test.
+            crate::remote::test_support::enter_fixture_scope();
             // Keep the fixture path valid until every process-lifetime task
             // started under it has stopped. Restoring HOME first would let a
             // late task resolve another test's database instead.

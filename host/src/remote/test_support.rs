@@ -102,16 +102,34 @@ pub fn access_diagnostics() -> (u64, bool, bool) {
 /// so "a fixture is active" is not the property to test for.
 static FIXTURE_OWNER: std::sync::Mutex<Option<std::thread::ThreadId>> = std::sync::Mutex::new(None);
 
+/// Publish "the fixture that owns the machine is this thread".
+///
+/// Idempotent on purpose, because a fixture asserts it twice: once when it takes
+/// `TEST_HOME_LOCK` and again before it drains on the way out. The drain is the
+/// same machine-wide teardown, so it must be attributed to the same fixture —
+/// that is what the second call is for, and it is also what makes the two
+/// `auth_store` tests that build a `HomeGuard` by struct literal (to observe the
+/// absent-`HOME` arm without racing the lock) behave like every other fixture.
+/// Without it their `cleanup_host` was the *first* unsupervised machine-wide
+/// stop and panicked inside `Drop`, which is an abort of the whole suite rather
+/// than a red test (measured: 6 of 6 acceptance runs, `after-run-*.log`).
 pub fn enter_fixture_scope() {
     *FIXTURE_OWNER
         .lock()
         .unwrap_or_else(|poison| poison.into_inner()) = Some(std::thread::current().id());
 }
 
+/// Withdraw the scope — but only if this thread is the one that published it.
+///
+/// A leaked task must not be able to clear the scope of a fixture that is still
+/// running, and a thread that never owned it has nothing to withdraw.
 pub fn leave_fixture_scope() {
-    *FIXTURE_OWNER
+    let mut owner = FIXTURE_OWNER
         .lock()
-        .unwrap_or_else(|poison| poison.into_inner()) = None;
+        .unwrap_or_else(|poison| poison.into_inner());
+    if *owner == Some(std::thread::current().id()) {
+        *owner = None;
+    }
 }
 
 /// Refuse a supervisor dispatch made outside the fixture that owns it.
@@ -122,6 +140,14 @@ pub fn leave_fixture_scope() {
 /// only symptom is a `Stopped` status in an unrelated test name.
 #[cfg(test)]
 pub fn assert_fixture_scope(what: &str) {
+    // Never escalate while a test is already unwinding: a panic on the way out
+    // of a `Drop` is not a red test, it is `panic in a destructor` followed by
+    // SIGABRT of the whole suite, and the rogue call it would report is already
+    // a second finding in a run that has one.
+    if std::thread::panicking() {
+        note_access("refused: unsupervised teardown while unwinding");
+        return;
+    }
     let owner = *FIXTURE_OWNER
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
