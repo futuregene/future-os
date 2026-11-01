@@ -6770,6 +6770,16 @@ mod tests {
         // i.e. the 84th column.
         assert_eq!((seam, workbench.sidebar_w), (83, 36));
 
+        // The two questions the driver asks of a painted frame: how big it was
+        // composed for, and what sits at a cell of it. Both are read from the
+        // frame that is on screen, never from the one being built.
+        assert_eq!(workbench.frame_size(), (120, 38));
+        assert_eq!(
+            workbench.hit_at(seam, 12),
+            Some("divider"),
+            "the cell the seam is painted on names no region"
+        );
+
         // Rightward by 6: the rail gives up six columns, and the seam ends on
         // the pointer's own column (89).
         assert!(workbench
@@ -6778,6 +6788,11 @@ mod tests {
                 &data
             )
             .is_empty());
+        assert!(
+            workbench.dragging(),
+            "a press on the seam is a grab, and the driver reads this to tell the \
+             pointer's own motion from a new press"
+        );
         assert_eq!(
             workbench.handle(
                 WbEvent::Mouse(mouse_at(mouse::MouseKind::Drag, seam + 6)),
@@ -6788,6 +6803,10 @@ mod tests {
         workbench.handle(
             WbEvent::Mouse(mouse_at(mouse::MouseKind::Release, seam + 6)),
             &data,
+        );
+        assert!(
+            !workbench.dragging(),
+            "the grab outlived the release: the next press would continue it"
         );
         workbench.render(&data, 120, 38);
         assert_eq!(divider_x(&workbench), seam + 6);
@@ -6811,6 +6830,69 @@ mod tests {
         );
         workbench.render(&data, 120, 38);
         assert_eq!(divider_x(&workbench), seam - 6);
+    }
+
+    /// A surface before its first frame answers "nothing here yet" to every
+    /// question about a frame: no size, no hits, no grab. `Default` is that
+    /// surface — the same one `new()` builds — because a driver that had to
+    /// spell out a starting state would eventually spell out a different one.
+    #[test]
+    fn a_surface_before_its_first_frame_has_no_frame_to_read() {
+        let default = Workbench::default();
+        assert_eq!(default.frame_size(), (0, 0));
+        assert_eq!(default.hit_at(0, 0), None);
+        assert!(!default.dragging());
+        assert_eq!(default.cursor(), None);
+        assert!(
+            default.hits().regions().is_empty(),
+            "an unpainted surface already names regions"
+        );
+        assert_eq!(
+            default.preferences(),
+            Workbench::new().preferences(),
+            "Default and new() disagree about how the surface starts"
+        );
+    }
+
+    /// The launchpad's chips are a ring of five, and each step names the chip a
+    /// click would hit and the verb that key runs — one table, so the two doors
+    /// cannot drift apart.
+    #[test]
+    fn the_launch_fields_are_a_ring_of_named_chips() {
+        let ring = [
+            LaunchField::Prompt,
+            LaunchField::Workspace,
+            LaunchField::Model,
+            LaunchField::Effort,
+            LaunchField::Approval,
+        ];
+        for (index, field) in ring.iter().enumerate() {
+            let next = ring[(index + 1) % ring.len()];
+            let previous = ring[(index + ring.len() - 1) % ring.len()];
+            assert_eq!(field.next(), next, "{field:?} skips the next chip");
+            assert_eq!(
+                previous.next(),
+                *field,
+                "the ring is not closed at {field:?}"
+            );
+            assert_eq!(field.previous(), previous, "{field:?} skips a chip back");
+            assert_eq!(next.previous(), *field, "the ring is not evenly closed");
+        }
+
+        // The draft is not a chip; the four parameters are, and each one's verb
+        // is its own id with the palette's `/` in front.
+        assert_eq!(LaunchField::Prompt.chip_id(), None);
+        assert_eq!(LaunchField::Prompt.command(), None);
+        for field in [
+            LaunchField::Workspace,
+            LaunchField::Model,
+            LaunchField::Effort,
+            LaunchField::Approval,
+        ] {
+            let id = field.chip_id().expect("the parameter chips all have one");
+            let verb = format!("/{id}");
+            assert_eq!(field.command(), Some(verb.as_str()), "{field:?}");
+        }
     }
 
     /// Both ends clamp instead of running off: a rail is never under 30 columns

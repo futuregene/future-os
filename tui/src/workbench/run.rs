@@ -5380,10 +5380,10 @@ mod driver_tests {
 
             assert!(!driver.command("/worktree new cov-branch").await);
             let created = repo.path().join(".worktrees").join("cov-branch");
+            let created_shown = created.display().to_string();
             assert!(
                 created.is_dir(),
-                "the worktree was not created at {}: {:?}",
-                created.display(),
+                "the worktree was not created at {created_shown}: {:?}",
                 driver.live.notice
             );
 
@@ -5463,16 +5463,13 @@ mod driver_tests {
                 "the refs never installed"
             );
             assert!(!driver.quit_key("enter").await);
-            assert!(
-                driver
-                    .wait_for(READ_BUDGET, |driver| driver
-                        .live
-                        .git()
-                        .is_some_and(|view| view.filter.is_some()))
-                    .await,
-                "the ref was not used as a filter: {:?}",
-                driver.live.git().map(|view| view.filter.clone())
-            );
+            let filtered = driver
+                .wait_for(READ_BUDGET, |driver| {
+                    driver.live.git().is_some_and(|view| view.filter.is_some())
+                })
+                .await;
+            let filter_now = driver.live.git().map(|view| view.filter.clone());
+            assert!(filtered, "the ref was not used as a filter: {filter_now:?}");
             assert!(!driver.quit_key("backspace").await);
             assert!(
                 driver
@@ -5507,14 +5504,17 @@ mod driver_tests {
             // The worktrees tab lists the checkout the session is in first, so
             // the pointer moves to the created one before `enter`.
             assert!(!driver.quit_key("5").await);
+            let listed = driver
+                .wait_for(READ_BUDGET, |driver| {
+                    driver.live.git().is_some_and(|view| {
+                        view.section == GitSection::Worktrees && view.rows.len() > 1
+                    })
+                })
+                .await;
+            let rows_now = driver.live.git().map(|view| view.rows.len());
             assert!(
-                driver
-                    .wait_for(READ_BUDGET, |driver| driver.live.git().is_some_and(
-                        |view| view.section == GitSection::Worktrees && view.rows.len() > 1
-                    ))
-                    .await,
-                "the worktrees tab never listed both checkouts: {:?}",
-                driver.live.git().map(|view| view.rows.len())
+                listed,
+                "the worktrees tab never listed both checkouts: {rows_now:?}"
             );
             assert!(!driver.quit_key("down").await);
             assert!(!driver.quit_key("enter").await);
