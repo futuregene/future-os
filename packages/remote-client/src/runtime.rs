@@ -230,11 +230,15 @@ fn rotation_tick() -> std::time::Duration {
 ///
 /// Wider than [`creds::REFRESH_LEAD_SECS`], which stays what it is: that margin
 /// is the connect-time predicate shared with the phone client and pinned by
-/// `fixtures/credentials.json`, so moving it would change another client's
+/// `fixtures/credentials.json`, so changing it would change another client's
 /// agreement. A live link is a different question with more room — the socket is
 /// already serving — and the wider window is what leaves space to retry a
 /// rotation that failed, whether the platform was briefly unreachable between
 /// the mint and the new handshake or the handshake itself timed out.
+///
+/// It matches the bridge's own renewal (`future_remote_server::pairing
+/// ::REFRESH_LEAD`, 240 s): one grant lifetime, one lead, whichever half of a
+/// pair is the one renewing it.
 ///
 /// Measured 2026-11-01 on a desktop whose three outgoing links each lost their
 /// grant at every expiry and were re-minted 2-3 s *after* the relay had already
@@ -242,7 +246,7 @@ fn rotation_tick() -> std::time::Duration {
 /// single attempt at the 60 s margin had no room to be retried, so every 15
 /// minutes the link blinked and the log filled with `User Authentication
 /// Expired` / `authorization violation`.
-const ROTATION_LEAD_SECS: i64 = 150;
+const ROTATION_LEAD_SECS: i64 = 240;
 
 /// How long after a failed rotation the same grant may be attempted again, and
 /// the ceiling that doubling stops at.

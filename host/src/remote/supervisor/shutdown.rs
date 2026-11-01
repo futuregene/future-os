@@ -13,7 +13,13 @@ pub fn stop() -> RemoteStatus {
     SUPERVISOR.stop()
 }
 pub async fn stop_gracefully(reason: &str) -> RemoteStatus {
-    SUPERVISOR.stop_gracefully(reason).await
+    let status = SUPERVISOR.stop_gracefully(reason).await;
+    future_remote_protocol::remote_log!(
+        "remote: stopped (reason={reason}, phase={:?}, failure={:?})",
+        status.phase,
+        status.reason
+    );
+    status
 }
 pub async fn notify_mobile_disconnect(reason: &str) {
     SUPERVISOR.notify_mobile_disconnect(reason).await

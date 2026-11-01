@@ -56,3 +56,23 @@ docker compose down
 ```
 
 绝不把这套遗留本地配置暴露到公网。它不是测试 JWT 主题隔离的有效环境。
+
+## 凭据寿命与续期
+
+每次配对的 NATS user JWT 寿命是 15 分钟（平台铸造的 token 里 `exp - iat = 900`）。socket 是由它
+**建立时**携带的 JWT 授权的，所以一份授权到期后中继会关掉这条链路，而同一个 grant 无法再通过
+认证——续期必须在到期之前完成，配对两端都是：
+
+- 桥（`future_remote_server::pairing::REFRESH_LEAD`）：**240 秒**；
+- 控制另一台机器的客户端（`future-remote-client` 的 `ROTATION_LEAD_SECS`）：**240 秒**，并且
+  续期失败会在窗口内按 15/30/60 秒退避重试，而不是把这份授权放弃到底。
+
+客户端的**连接时**判定仍然是 60 秒（`PeerCreds::needs_refresh`，由 `fixtures/credentials.json`
+钉死，因为手机客户端共用它）：那个边距回答的是"现在发起的连接建立之后还有没有效"，与"已经连着的
+链路需要多大窗口来换授权"是两回事。
+
+改动前实测（2026-11-01）：三条出站链路每次都在到期时丢授权，并且都在中继切断之后 2–3 秒才换到
+新 token（10:50:44 → 10:50:47，10:51:45 → 10:51:48，10:53:35 → 10:53:38），即每 15 分钟闪断一次，
+`desktop.log` 里每次都是 `User Authentication Expired` / `authorization violation` /
+`max reconnection attempts reached`。改动后从 `remote_peers.json` 就能看出效果：每份 `iat` 都落在
+上一份 `exp` 之前约 240 秒，且不再有 socket 被切断。
