@@ -525,6 +525,16 @@ fixed rather than re-argued. Three parts, all measured on the full suite:
 No behaviour changes: the same statements are compiled once per connection instead of once per
 call, and the suite is green at 2886 tests after each step.
 
+**What is left, sampled after the fix** (`wave24-sample-after-cache.txt`, 6 s of
+`session::history`): the same family still leads — `sqlite3ExprCodeTarget` 81 658,
+`sqlite3ExprDup` 66 450, `sqlite3ExprCode` 41 301 — which is **VDBE code generation inside
+prepare**, not parsing and not execution. A cache cannot remove the *first* compile, and every
+test opens one to three fresh connections, each compiling the deep views once (8 statements ×
+26 ms ≈ 0.2 s per test is the right order for the 4848 s of system time that remain). The next
+lever is therefore the **schema's own compile cost** — the five-CTE `entry_records` and its
+siblings — which is a product/schema change with real correctness risk, or a larger budget. It is
+not another caching pass: the prepare_cached sites are now exhausted on the hot paths.
+
 **Still not a 120 s suite.** The floor is now 5322 / 32 = **166 s**, against 194 s before. The
 budget question does not go away by itself; it shrinks. What the fix buys the *product* is real
 too — this is the same class of defect `.future/memory/sqlite-view-prepare-cost.md` records, and
