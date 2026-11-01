@@ -3636,8 +3636,15 @@ mod driver_tests {
                 ),
                 // The prompt ack is the one payload the wire keeps snake_case
                 // (`payloads_ext::RunAck`); camelCase here is a *different*
-                // answer, and one the client reports as unconfirmed.
-                ("prompt", r#"{"run_id":"r-1","accepted_state":"running"}"#),
+                // answer, and one the client reports as unconfirmed. `run_epoch`
+                // is not decoration: without it the ack fails to decode, the
+                // run is never filed as this client's own, and every
+                // `agent_end` about it reads as somebody else's run — which is
+                // what the completion and failure notices gate on.
+                (
+                    "prompt",
+                    r#"{"run_id":"r-1","run_epoch":1,"accepted_state":"running"}"#,
+                ),
             ])
             .await
         }
@@ -5049,17 +5056,33 @@ mod driver_tests {
             assert!(!driver.type_text("hello").await);
             assert!(!driver.quit_key("enter").await);
             let _ = driver.pump(Duration::from_millis(300)).await;
+            // The ack is a `RunAck`, so the client treats the run as its own —
+            // which is what decides whether its `agent_end` is announced. An
+            // ack this fixture cannot decode is *reported* (the reader is told
+            // the send was not confirmed) and files nothing, so this assertion
+            // is the premise of everything below rather than a formality.
+            assert!(
+                driver.live.notice.is_none(),
+                "the fixture's prompt ack did not decode: {:?}",
+                driver.live.notice
+            );
             let session = driver.session_id();
             let _ =
                 driver
                     .agent_tx
                     .send(event("agent_start", serde_json::json!({}), &session, "r-1"));
+            let _ = driver.pump(Duration::from_millis(200)).await;
             let _ = driver.agent_tx.send(event(
                 "text_chunk",
                 serde_json::json!({"text": "finished answer"}),
                 &session,
                 "r-1",
             ));
+            // The end arrives **on its own** — an event that lands in the same
+            // breath as the ones before it is swept up by the loop's burst drain,
+            // which is a different call site for the same decision. This one
+            // pins the single-event arm.
+            let _ = driver.pump(Duration::from_millis(200)).await;
             let _ = driver.agent_tx.send(event(
                 "agent_end",
                 serde_json::json!({"state": "completed"}),
@@ -5083,17 +5106,30 @@ mod driver_tests {
 
         /// A run that ends in an error is announced as a failure, and the run is
         /// over either way: the activity row stops.
+        ///
+        /// The failure notice is not the completion one: a failed run is an
+        /// *attention* alert (it rings even while the terminal is focused),
+        /// which is the branch this pins.
         #[tokio::test]
         async fn a_failed_run_is_announced_as_failed() {
             let mut driver = Driver::attach_conversation().await;
             assert!(!driver.type_text("hello").await);
             assert!(!driver.quit_key("enter").await);
             let _ = driver.pump(Duration::from_millis(300)).await;
+            assert!(
+                driver.live.notice.is_none(),
+                "the fixture's prompt ack did not decode: {:?}",
+                driver.live.notice
+            );
             let session = driver.session_id();
             let _ =
                 driver
                     .agent_tx
                     .send(event("agent_start", serde_json::json!({}), &session, "r-1"));
+            // The end arrives on its own: the loop's burst drain is the *other*
+            // call site of the same decision, and
+            // `a_burst_announces_what_is_in_it` is where that one is pinned.
+            let _ = driver.pump(Duration::from_millis(200)).await;
             let _ = driver.agent_tx.send(event(
                 "agent_end",
                 serde_json::json!({"state": "failed"}),
@@ -5105,6 +5141,56 @@ mod driver_tests {
             assert!(
                 !driver.live.activity_animating(),
                 "a failed run still animates the activity row"
+            );
+        }
+
+        /// A burst is drained, not dropped: what arrives in the same breath as an
+        /// event already being applied still gets its own handling — the failure
+        /// of a run this client started is announced, and an `error` behind it is
+        /// alerted and written to the transcript.
+        #[tokio::test]
+        async fn a_burst_announces_what_is_in_it() {
+            let mut driver = Driver::attach_conversation().await;
+            assert!(!driver.type_text("hello").await);
+            assert!(!driver.quit_key("enter").await);
+            let _ = driver.pump(Duration::from_millis(300)).await;
+            let session = driver.session_id();
+            // Two events in one breath: the first is applied by the arm that
+            // received it, the second by the drain behind it.
+            let _ =
+                driver
+                    .agent_tx
+                    .send(event("agent_start", serde_json::json!({}), &session, "r-1"));
+            let _ = driver.agent_tx.send(event(
+                "agent_end",
+                serde_json::json!({"state": "failed"}),
+                &session,
+                "r-1",
+            ));
+            let _ = driver.pump(Duration::from_millis(500)).await;
+            assert!(
+                !driver.live.activity_animating(),
+                "a failed run in a burst left the activity row spinning"
+            );
+
+            // The same shape for an alert: a plain `error` behind a start. The
+            // key is `error` (the field the surface reads), and the text lands on
+            // the notice row.
+            let _ =
+                driver
+                    .agent_tx
+                    .send(event("agent_start", serde_json::json!({}), &session, "r-1"));
+            let _ = driver.agent_tx.send(event(
+                "error",
+                serde_json::json!({"error": "the provider refused"}),
+                &session,
+                "r-1",
+            ));
+            let _ = driver.pump(Duration::from_millis(500)).await;
+            let notice = driver.live.notice.clone().unwrap_or_default();
+            assert!(
+                notice.contains("the provider refused"),
+                "the error in the burst never reached the notice row: {notice:?}"
             );
         }
 
