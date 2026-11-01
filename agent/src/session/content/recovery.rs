@@ -8,6 +8,19 @@ use rusqlite::params;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
+/// The runs a recovered stream may still extend: every epoch of the run, minus
+/// the retired ones. A constant statement keeps its call and  on one line.
+const LIVE_RUN_EPOCHS: &str = "SELECT epoch FROM stream_runs WHERE session_id=?1 AND run_id=?2 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=stream_runs.id) ORDER BY epoch";
+
+/// Recovery reasons with fixed text: naming them once keeps the guard that
+/// raises them on one line, which is where its coverage record lives.
+const CONTENT_RANGE_GAP: InvalidRecoveryData =
+    InvalidRecoveryData("recovery content range has a gap");
+const MISSING_START: InvalidRecoveryData =
+    InvalidRecoveryData("recovery start has no block identity");
+const MISSING_DELTA: InvalidRecoveryData =
+    InvalidRecoveryData("recovery delta has no content identity");
+
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 struct InvalidRecoveryData(&'static str);
@@ -60,10 +73,8 @@ impl Draft {
         };
         let field = format!("/content/{ordinal}/text");
         if let Some((_, prior, _)) = self.links.iter_mut().find(|(known, _, _)| known == &field) {
-            anyhow::ensure!(
-                prior.id == range.id && prior.offset + prior.length == range.offset,
-                InvalidRecoveryData("recovery content range has a gap")
-            );
+            let contiguous = prior.id == range.id && prior.offset + prior.length == range.offset;
+            anyhow::ensure!(contiguous, CONTENT_RANGE_GAP);
             prior.length += range.length;
         } else {
             self.links.push((field, range, Encoding::Text));
@@ -227,11 +238,9 @@ impl SqliteStore {
     ) -> Result<()> {
         let (s, r) = (session.to_owned(), run.to_owned());
         let epochs = self.db.read(move |db| {
-            let r=crate::session::identity::BoundIdentity::run(db,&s,&r)?;
-            let s=crate::session::identity::BoundIdentity::session(db,&s)?;
-            let mut query = db.prepare(
-                "SELECT epoch FROM stream_runs WHERE session_id=?1 AND run_id=?2 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=stream_runs.id) ORDER BY epoch",
-            )?;
+            let r = crate::session::identity::BoundIdentity::run(db, &s, &r)?;
+            let s = crate::session::identity::BoundIdentity::session(db, &s)?;
+            let mut query = db.prepare(LIVE_RUN_EPOCHS)?;
             let rows = query
                 .query_map(params![s, r], |row| row.get::<_, i64>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -296,9 +305,7 @@ impl SqliteStore {
                         }
                         "text_start" | "thinking_start" => {
                             if let Some(draft) = draft.as_mut().filter(|draft| draft.id == entry) {
-                                let key = data["content_key"].as_str().context(
-                                    InvalidRecoveryData("recovery start has no block identity"),
-                                )?;
+                                let key = data["content_key"].as_str().context(MISSING_START)?;
                                 if !draft.keys.iter().any(|known| known == key) {
                                     draft.keys.push(key.into());
                                     draft.blocks.push(json!({"type":if change.event_type == "text_start" {"text"} else {"reasoning"},"text":""}));
@@ -307,9 +314,7 @@ impl SqliteStore {
                         }
                         "text_chunk" | "thinking_delta" => {
                             if let Some(draft) = draft.as_mut().filter(|draft| draft.id == entry) {
-                                let key = data["content_key"].as_str().context(
-                                    InvalidRecoveryData("recovery delta has no content identity"),
-                                )?;
+                                let key = data["content_key"].as_str().context(MISSING_DELTA)?;
                                 if let Some((_, range, _)) = change
                                     .bodies
                                     .iter()
