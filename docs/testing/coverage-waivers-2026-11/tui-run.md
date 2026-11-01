@@ -143,7 +143,25 @@ source line.
 | 13 | `1734-1743` | **W7** | "No driver behind this surface (never in the running app): read it here" — the synchronous fallback the driver never takes because `Live` has a load sender | a `Live` with no `load_tx`, `open_git_panel` called directly (the comment *is* the mechanism, now measured at `live.rs:2694`/`2483` and registered in "W7: `open_git_panel`'s …") | **waived in wave 7 (W7)** |
 | 14 | `2664, 2669, 2697, 2950` | reachable | display helpers (`bubble[0]`, `index + 1`) and `events_of`'s lone-`ESC`-then-`[B` split | one unit case each; `events_of` is a pure function | **not waived** |
 
-## Remaining in `mod.rs` (236) — shape only
+## Remaining in `mod.rs` (55 at r22/r23; 236 when this section was written) — shape only
+
+**Wave 10 re-derived the current list by function** (`clusters.py` in the lane dir): 55 lines in
+27 functions, and six functions hold 29 of them —
+
+| lines | function | the cluster |
+|---:|---|---|
+| 8 | `handle_workflow_key` | `3138` `_ => 0`, `3216-3221`, `3251` `_ => vec![WbAction::Redraw]` |
+| 6 | `handle_surface_mouse` | `3541`, `3594` (both waived), `3718`, `3752`, `3804-3805` |
+| 4 | `step_stop` | `2003-2006`, the walk-back to a row before the window's end |
+| 4 | `handle_overlay_key` | `2496`, `2509`, `2801`, `2838` |
+| 4 | `click` | `3872`, `4046`, `4054-4055` |
+| 3 | `selected_stop` | `1934-1935`, `1939` |
+| 3 | `handle_mouse` | `3413` (waived), `3476`, `3490` |
+
+Seven of the 55 sit inside functions whose names read like this file's own test fixtures
+(`row_of`, `plain(&rows)`, a `println!` dump, an `unreachable!()` arm). That is a lead, not a
+conclusion: the attribution is "nearest preceding `fn`", so each needs the same first question —
+is that helper called at all, and from where — before a case is written against it.
 
 Not itemised line by line; the r8 range list groups them in five families, and wave 5 removed
 the first one's easiest half:
@@ -537,7 +555,7 @@ once more with the one test that mutates the process-wide cwd removed. Tree for 
 | `index.rs` DA:0 | 39 | **39** | **39** | **55** |
 | lane total DA:0 | 1293 | **1297** | **1295** | **1313** |
 
-`removed` = `run-cov-tui2-skipcwd.sh`, which is `run-cov-tui2.sh` with one extra `--skip` on
+`r24` = `run-cov-tui2-skipcwd.sh`, which is `run-cov-tui2.sh` with one extra `--skip` on
 `build_initial_prompt_relative_path_uses_cwd`. It is not a candidate lane number (one test's 16
 lines in `index.rs` leave with it); it exists to test the mechanism below.
 
