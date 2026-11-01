@@ -123,6 +123,15 @@ These need tests, not classification. Ranked by size, with the mechanism already
 | `llm/schema.rs` | 32 | model-registry validation arms |
 | rest (≈ 119 files) | 949 | mostly single `?` error edges; the generated ledger names each line |
 
+### Open defect behind two of those lines
+
+`session_prompt.rs:1111` (`save_broadcaster.fail_persistence`) and `1394-1402`
+(`abandon_run_for_persistence`) are unreachable **because of a defect**, not by construction: a
+transcript write refused mid-run leaves the run unsettled (no terminal within 30 s) and records
+no journal failure. Reproduction is in `coverage/2026-11/after/agent/report.md` § *Open defect*.
+They stay `open` here on purpose — a waiver would hide it, and the fix should be verified
+against that reproduction.
+
 Honest summary: the lane is at **98.29 %** per line, and the remaining 1337 lines are one
 mechanism away (a store-fault seam, a probe seam or a fixture) rather than one line away.
 
