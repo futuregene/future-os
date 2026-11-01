@@ -176,6 +176,16 @@ fn acquire_transaction_lease() -> Result<std::fs::File, AppError> {
     }
 }
 
+/// Whether the observer lock path exists as a directory instead of a file.
+///
+/// The type matters because the two platforms report this corruption with different
+/// errors: Unix `EISDIR`, Windows `ERROR_ACCESS_DENIED` — the code a genuine permission
+/// refusal uses. A caller that classifies by error kind alone therefore reads the
+/// Windows refusal as "no permission to inspect" and hands the record back undecided.
+fn lock_path_is_a_directory(path: &std::path::Path) -> bool {
+    path.metadata().is_ok_and(|metadata| metadata.is_dir())
+}
+
 pub(super) fn latest() -> Result<Option<Record>, AppError> {
     let lock = transaction_lock()?;
     if lock.try_lock_exclusive().is_err() {
@@ -185,16 +195,26 @@ pub(super) fn latest() -> Result<Option<Record>, AppError> {
         return Ok(None);
     };
     if record.outcome.is_none() {
+        let lock_path = root().join(&record.operation_id).join("observer.lock");
         let observer = match std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(root().join(&record.operation_id).join("observer.lock"))
+            .open(&lock_path)
         {
             Ok(file) => file,
+            // "It cannot be inspected" is a *permission* answer, and the two systems do not
+            // agree on which failures carry one. Unix reports a directory sitting where the
+            // lock belongs as `IsADirectory`, which the generic arm below reports; Windows'
+            // `CreateFile` answers `ERROR_ACCESS_DENIED` for the same directory — the error a
+            // real permission refusal produces — so classifying by error kind alone would
+            // hand a corrupt journal back as an *undecided* record there. Rule the type out
+            // first, and a locked-down directory (the case this arm exists for) still leaves
+            // the record undecided.
             Err(error)
-                if error.kind() == std::io::ErrorKind::PermissionDenied
+                if (error.kind() == std::io::ErrorKind::PermissionDenied
+                    && !lock_path_is_a_directory(&lock_path))
                     || error.raw_os_error() == Some(32) =>
             {
                 return Ok(Some(record))
@@ -806,18 +826,52 @@ mod tests {
         assert_eq!(persisted.outcome, None, "and nothing was written behind it");
     }
 
-    /// Every failure *other* than "someone else holds it" is an error, not a verdict: the
-    /// record is not silently handed back as if it had been inspected.
+    /// Every failure *other* than "someone else holds it" and "there is no permission to
+    /// inspect it" is an error, not a verdict: the record is not silently handed back as if
+    /// it had been inspected.
+    ///
+    /// The fixture is a **directory** where the lock file belongs, and what the platforms
+    /// make of it is asserted rather than assumed, because they do not agree: Unix answers
+    /// `EISDIR`, Windows' `CreateFile` answers `ERROR_ACCESS_DENIED` — the code a permission
+    /// refusal carries — so on Windows this case only stays meaningful if the product code
+    /// rules the directory out by type. If either premise stops holding, the assertion
+    /// below says which one instead of leaving a green case that tests nothing.
     #[test]
     fn latest_refuses_an_observer_lock_that_fails_for_an_unexpected_reason() {
         let _home =
             crate::auth_store::test_support::HomeGuard::new("update-journal-observer-eisdir");
         let _root = CaseRoot::bind();
         let directory = seed("installing", None, Some("new"));
-        std::fs::create_dir(directory.join("observer.lock")).unwrap();
+        let lock = directory.join("observer.lock");
+        std::fs::create_dir(&lock).unwrap();
         assert!(
-            latest().is_err(),
-            "an unopenable observer lock is reported, not treated as undecidable"
+            lock_path_is_a_directory(&lock),
+            "the fixture must be a directory, not a file that merely cannot be opened"
+        );
+        let refusal = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock)
+            .expect_err("a directory can never be opened as the lock file");
+        let expected = if cfg!(windows) {
+            std::io::ErrorKind::PermissionDenied
+        } else {
+            std::io::ErrorKind::IsADirectory
+        };
+        assert_eq!(
+            refusal.kind(),
+            expected,
+            "this platform no longer reports a directory the way this case assumes: {refusal}"
+        );
+
+        let error = latest()
+            .expect_err("an unopenable observer lock is reported, not treated as undecidable");
+        assert_eq!(
+            error.to_string(),
+            refusal.to_string(),
+            "the refusal has to be the one this fixture produced, not a different stage's"
         );
     }
 
