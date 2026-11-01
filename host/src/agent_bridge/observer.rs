@@ -3601,7 +3601,7 @@ mod projection_tests {
 
         assert!(!delivered, "an unreadable body must not be projected");
         assert!(
-            state.cursors.get("run-down").is_none(),
+            !state.cursors.contains_key("run-down"),
             "a refused event must not advance the run cursor"
         );
         assert_eq!(state.session_cursor, -1, "nor the session cursor");
@@ -3635,7 +3635,7 @@ mod projection_tests {
         .await;
 
         assert!(!delivered, "a refused body must not be projected");
-        assert!(state.cursors.get("run-refused").is_none());
+        assert!(!state.cursors.contains_key("run-refused"));
         let reads = mock.requests_of("get_event_content_range");
         assert_eq!(reads.len(), 1, "one referenced field, one read");
         assert_eq!(reads[0].run_id, "run-refused");
@@ -3674,7 +3674,7 @@ mod projection_tests {
 
         assert!(!delivered, "a snapshot with an unreadable event is refused");
         assert!(
-            state.cursors.get("run-json").is_none(),
+            !state.cursors.contains_key("run-json"),
             "the snapshot cursor is not adopted"
         );
     }
@@ -3705,7 +3705,7 @@ mod projection_tests {
         .await;
 
         assert!(!delivered, "a fragment with no prefix is refused");
-        assert!(state.cursors.get("run-hole").is_none());
+        assert!(!state.cursors.contains_key("run-hole"));
     }
 
     /// The same hole outside a snapshot: the live path applies canonical
@@ -3727,6 +3727,6 @@ mod projection_tests {
             handle_event_from("sess-live", &shared, &mut state, event, EventOrigin::Live).await;
 
         assert!(!delivered, "a fragment with no prefix is refused");
-        assert!(state.cursors.get("run-live-hole").is_none());
+        assert!(!state.cursors.contains_key("run-live-hole"));
     }
 }
