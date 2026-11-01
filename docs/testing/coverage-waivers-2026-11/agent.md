@@ -3,14 +3,14 @@
 **Metric A** — a line counts as uncovered iff its LCOV record is `DA:<line>,0`. The
 llvm-cov *summary* percentage is not the acceptance number.
 
-**Last measurement**: `test/cov-agent` at `9fe14c54f`, Rust **1.99.1** (`rust-toolchain.toml`),
-macOS arm64, lcov `coverage/2026-11/after/agent/lcov-wave43.info`, run log `wave43.log`
-(**12 test targets, 2896 passed, 0 failed, 0 panics**). The ledger below was regenerated from
+**Last measurement**: `test/cov-agent` at `6afbb3337`, Rust **1.99.1** (`rust-toolchain.toml`),
+macOS arm64, lcov `coverage/2026-11/after/agent/lcov-wave45.info`, run log `wave45.log`
+(**12 test targets, 2897 passed, 0 failed, 0 panics**). The ledger below was regenerated from
 that lcov and passes its own check. Measure with `measure-guard.sh`, never with a bare
 `cargo llvm-cov --no-report` — see *Wave 39* for why.
 
-**Result**: `DA:0` = **1123** lines in **129** files under `agent/src`. This branch has cleared
-**550** of the 1673 it started from. Of the 1123:
+**Result**: `DA:0` = **1121** lines in **129** files under `agent/src`. This branch has cleared
+**552** of the 1673 it started from. Of the 1121:
 
 > **A ~100-line jump in a total is a broken run, not noise (wave 39).** `cargo llvm-cov` runs
 > `cargo test`, which stops at the first failing test *target*; `cli_smoke` fails intermittently
@@ -35,7 +35,7 @@ that lcov and passes its own check. Measure with `measure-guard.sh`, never with 
 | state | lines |
 |---|---:|
 | **waived** (mechanism + falsifier named below, 11 rows) | **134** |
-| `open` — **no test and no justification yet** | **989** |
+| `open` — **no test and no justification yet** | **987** |
 
 Reconciliation: of the 1131 rows, the 11 waiver rows below name **134** lines, and the remaining
 **997** carry no justification yet. The generated ledger's class column (`open`, `a`, `W6`, `W5`,
@@ -256,6 +256,32 @@ Two consequences the lane has to live with, both now recorded:
    claims 100 % will have to show the `providers.rs` rows covered in the same run as everything
    else, or the number is a draw from a distribution. The honest target is the named-row ledger
    with every row either covered or exempted, which is what this file already is.
+
+## Wave 41: the gate's missing term, and two boundary guards
+
+The gate budget in the wave-40 section is the consolidated account; this wave added the term that
+was missing from it. Two facts, both measured:
+
+- **The suite's cost is spread, not concentrated.** With the seven slowest tests skipped
+  (the complete `--skip` list is in the wave-40 section) 2889 tests still take **145.1 s**. There
+  is no single benchmark to optimise, and no subset that makes the gate fast.
+- **A cold build is 145–200 s on its own.** A fresh `CARGO_TARGET_DIR` compiles **281 crates in
+  the first 60 s** of a ~450-crate tree. So "cold build + 200 s suite" ≈ **350–400 s**: exactly
+  the shape of a 300 s timeout that reports no failing test. `env -i` (no `HOME`) does *not*
+  force that rebuild — the default PATH's Homebrew cargo finds the same target directory — so a
+  warm directory stays warm, and the only way to be sure the gate is warm is to build it with
+  **the toolchain the validator resolves** (Homebrew 1.96 today, not the pinned 1.99.1).
+
+**Two boundary guards.** `segmented_replay` computes its remaining budget as
+`limit.unwrap_or(usize::MAX).saturating_sub(events.len())`, which is what makes `Some(0)` mean
+"no events" rather than "unlimited". No test had ever passed a limit smaller than its stream, so
+neither guard had executed: the test replays one three-event stream twice, with `Some(0)` and
+unlimited, and asserts the empty page still reports the stream as known while the unlimited caller
+gets all three events (`6afbb3337`). Clears `journal.rs:907` and `journal.rs:956` — the two rows
+that were exactly what `lcov-symdiff.py wave43 wave45` reports, and nothing else moved.
+
+Result **1123 → 1121**, green at 2897 tests (12 targets, 0 panics); ledger `ledger=clean` at 797
+rows, classes `open` 717 · `a` 192 · `W6` 151 · `W5` 23 · `lane` 24 · `W1` 11 · `W7` 3.
 
 ## Wave 40: the gate's environment, an eight-row title branch, and a real HOME race
 
