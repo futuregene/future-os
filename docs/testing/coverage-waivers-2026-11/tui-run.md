@@ -14,18 +14,19 @@ belong to `live.rs` are in `tui.md`; rows about `run()`'s process wiring are in 
 "`run()`'s remaining branches" table and are **not repeated here** (they are unchanged: the
 same eight branches, the same 19 lines).
 
-**Status of this file: 9 lines waived in wave 6** (see "Waived this wave"; the arms this
-metric merely *looks* like it covers are discussed there too). Everything else below is either
+**Status of this file: 9 lines waived in wave 6** (see "Waived this wave") **and 10 as W7 in wave
+7** (see "W7: `open_git_panel`'s …") — 19 lines, each with its mechanism, positive control and
+falsifier. Everything else below is either
 closed (with the test that closes it) or *not waived* with the falsifier that would prove it
 reachable.
 
 ## before / after (this task)
 
-| | 2026-10-31 (task start) | r2 (wave 12) | r4 | r8 (wave 5) | r9 | **r10 (wave 6)** |
-|---|---:|---:|---:|---:|---:|---:|
-| `workbench/run.rs` DA:0 | 333 | 168 | 142 | 136 | 116 | **113** |
-| `workbench/mod.rs` DA:0 | 316 | 287 | 262 | 236 | 221 | **221** |
-| lane total DA:0 (with meters) | — | 1486 | — | 1359 | 1321 | **1316** |
+| | 2026-10-31 (task start) | r2 (wave 12) | r4 | r8 (wave 5) | r9 | r10 (wave 6) | **r12 (wave 7)** |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `workbench/run.rs` DA:0 | 333 | 168 | 142 | 136 | 116 | 113 | **95** |
+| `workbench/mod.rs` DA:0 | 316 | 287 | 262 | 236 | 221 | 221 | **221** |
+| lane total DA:0 (with meters) | — | 1486 | — | 1359 | 1321 | 1316 | **1298** |
 
 Each `rN` is one measurement pass; `lcov` for all of them is in
 `coverage/2026-11/after/tui2/tui2-rN.info`, and every figure in this file was re-derived from
@@ -102,7 +103,7 @@ The guard is held across `await` on purpose (`#[allow(clippy::await_holding_lock
 site): the loop is what spawns the read, nothing the loop runs takes that lock, so the
 lint's deadlock cannot occur here while releasing it early reopens the race.
 
-## Remaining in `run.rs` (113 at r10; 136 was why these rows were written)
+## Remaining in `run.rs` (95 at r12; 136 was why these rows were written)
 
 Line numbers are r8 for the product lines (the test module below them grew, the code above it
 did not); `python3 ../tui2/ranges.py <info> <src> workbench/run.rs` re-prints them with the
@@ -123,7 +124,7 @@ source line.
 | 10 | `918-919, 1028-1035, 1075-1084, 1088, 1106, 1146, 1153, 1280-1283, 1362-1368, 1772-1773` | **W3 (a)** | the error arms of five panel reads plus `toggle_pin_selected` and its `continue` | a mock that answers `Err` on the read each arm belongs to (the driver's mock answers by command type, so this is one fixture per arm) | **closed in wave 6 except one tail** — `1028-1034`, `1075-1085`, `1146`, `1362-1364` have their cases; the `Err(join)` arms read `≥1` because a single-expression arm carries the `matches!`/`match` decision's count (see "the metric's own blind spot"), so only the multi-line one, `1366-1369`, is left and it is waived |
 | 11 | `1197-1201, 1208-1213, 1231-1232, 1236-1238, 1243-1249, 1756-1761, 1787, 1793-1802, 1821` | reachable | the mouse-capture and preview verbs: `/preview`, `reset_preview`, `refresh_state`, the clipboard copy's `spawn_blocking`, the picture scope | one driver verb each; `/preview` on a file row needs a workspace with a picture (the loop_edges preview test builds one) | **not waived** |
 | 12 | `1374-1376, 1382-1384, 1435-1436, 2141` | reachable | `copy_last` / `copy_message` and the `ImageProtocol::None` arm | a copy key per row kind; a terminal that reports no picture protocol (the driver's does not, so this is one flag away) | **not waived** |
-| 13 | `1734-1743` | **W7** | "No driver behind this surface (never in the running app): read it here" — the synchronous fallback the driver never takes because `Live` has a load sender | a `Live` with no `load_tx` (the comment is the claim; it has not been measured) | **not waived** |
+| 13 | `1734-1743` | **W7** | "No driver behind this surface (never in the running app): read it here" — the synchronous fallback the driver never takes because `Live` has a load sender | a `Live` with no `load_tx`, `open_git_panel` called directly (the comment *is* the mechanism, now measured at `live.rs:2694`/`2483` and registered in "W7: `open_git_panel`'s …") | **waived in wave 7 (W7)** |
 | 14 | `2664, 2669, 2697, 2950` | reachable | display helpers (`bubble[0]`, `index + 1`) and `events_of`'s lone-`ESC`-then-`[B` split | one unit case each; `events_of` is a pure function | **not waived** |
 
 ## Remaining in `mod.rs` (236) — shape only
@@ -279,6 +280,53 @@ candidate (`.position(..).and_then(|index| self.completion_candidates.remove(ind
 `live.rs:1607-1611`) **before** `should_notify`, and both loop sites call it before
 `take_failure_notification`, so `run.rs:453-456` and `:476-479` stay dark and the waiver's
 falsifier is unchanged. A failed run is still announced by nothing.
+
+## Wave 7 (2026-11-01, r12): the copy's two sentences, and the two preview doors
+
+`run.rs` **113 → 95** (−18, nothing opened: `python3 exact.py tui2-r11.info tui2-r12.info
+workbench/run.rs`), `mod.rs` unchanged at 221, lane `1317 → 1298`. The closed set is
+`1208-1213`, `1231-1232`, `1236-1238`, `1787`, `1793-1797`, `1821` — and `r13`, the same lane on
+the same tree, repeats `95`/`221` (`1298`), so the number is reproducible rather than one lucky
+pass.
+
+| lines | what runs | case |
+|---|---|---|
+| `1787`, `1793-1797` | `/copy`'s answer actually reaching `copy_to_clipboard`: the success sentence when a tool took it, the refusal naming the tool when none could start | `a_copy_of_the_answer_says_which_way_the_clipboard_went` |
+| `1208-1213` | the bindings table's `r`: a save that fails carries the settings writer's own sentence | `a_keybinding_that_cannot_be_saved_is_reported` |
+| `1236-1238` | `PreviewAttachment`: the picture a reader pasted into the draft opens the box on the conversation | `an_attachment_preview_opens_the_box_on_the_draft_picture` |
+| `1231-1232`, `1821` | `PreviewChatFile`: `tab` walks the answer's links, `enter` on the file one opens the box over the conversation | `a_file_the_answer_links_opens_the_box_over_the_conversation` |
+
+**What the copy arm had really been missing.** `last_assistant_text` reads the transcript's
+messages, and the fixture's road was a streamed `text_chunk` — which `append_to_last_message`
+appends to an assistant message and **drops when there is none** (`chat_area.rs:1683-1696`, measured:
+the arm read `Err` on all eight previous calls). The answer has to come from the agent's own
+entries, so the fixture grew `Driver::attach_conversation_holding(cwd, entries)`; a test that wants
+messages now says which. `/copy`'s success branch needed nothing else.
+
+## W7: `open_git_panel`'s "no driver behind this surface" fallback (`run.rs:1734-1743`)
+
+**Mechanism, as the code states it.** The panel's read is the driver's
+(`live.begin_git_read`, `live.rs:2687-2705`), and that answers `false` on exactly one condition —
+`self.load_tx` is `None` (`live.rs:2694`). `load_tx` is `Some` only after `Live::set_load_sender`
+(`live.rs:2483`), which `run()` calls before the loop starts and `Driver::attach_at` calls for the
+tests. So every surface that can open the panel in the running app has a driver behind it, and the
+synchronous read at `1734-1743` is the fallback for a `Live` built without one.
+
+**Positive control.** Everything around the fallback is measured many times over: `open_git_panel`
+is entered 58 times by the repository cases (the box opens, its section and filter land, the
+cursor's row is re-read in `moving_in_the_repository_panel_reads_the_row_under_the_cursor`, the
+worktree row re-reads the panel in `entering_a_worktree_moves_the_session_to_it`), and the failures
+of the *asynchronous* read are the wave-6 cases. What is unmeasured is only the branch where the
+read cannot be dispatched at all.
+
+**Why not a test.** Reaching it means building a `Live` without a load sender (the `live::tests`
+shape), calling `open_git_panel` directly and asserting a frame — a configuration `run()` cannot
+produce. It would pin the fallback's existence rather than any behaviour a reader can reach, which
+is the definition of a W7 line in this ledger.
+
+**Falsifier.** Any path to `open_git_panel` that a reader can take without `Live::set_load_sender`
+having run — a second entry point into the panel, or a driver that stops handing one over — makes
+this a live branch and the waiver void.
 
 ## How to re-measure this file
 
