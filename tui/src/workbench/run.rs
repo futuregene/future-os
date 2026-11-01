@@ -4845,8 +4845,9 @@ mod driver_tests {
                     .wait_for(Duration::from_secs(20), |driver| driver
                         .live
                         .git()
-                        .is_some_and(|view| view.section
-                            == crate::workbench::state::GitSection::Stash))
+                        .is_some_and(
+                            |view| view.section == crate::workbench::state::GitSection::Stash
+                        ))
                     .await,
                 "the stash tab never landed"
             );
@@ -4931,8 +4932,9 @@ mod driver_tests {
                     .wait_for(Duration::from_secs(20), |driver| driver
                         .live
                         .git()
-                        .is_some_and(|view| view.section
-                            == crate::workbench::state::GitSection::Status))
+                        .is_some_and(
+                            |view| view.section == crate::workbench::state::GitSection::Status
+                        ))
                     .await,
                 "the working-tree tab never landed"
             );
@@ -4981,18 +4983,15 @@ mod driver_tests {
                 "the log never installed"
             );
             assert!(!root.quit_key("3").await, "3 left the app");
-            assert!(
-                root.wait_for(Duration::from_secs(20), |driver| driver
-                    .live
-                    .git()
-                    .is_some_and(|view| view
-                        .detail
+            let patched = |driver: &Driver| {
+                driver.live.git().is_some_and(|view| {
+                    view.detail
                         .iter()
-                        .any(|line| line.starts_with("diff --git"))))
-                    .await,
-                "the same tab from the root read no patch: {:?}",
-                root.live.git().map(|view| view.detail.clone())
-            );
+                        .any(|line| line.starts_with("diff --git"))
+                })
+            };
+            let landed = root.wait_for(Duration::from_secs(20), patched).await;
+            assert!(landed, "the same tab from the root read no patch");
             assert!(!root.quit_key("tab").await, "tab left the app");
             let painted = text_of(&root.pump(Duration::from_millis(300)).await);
             assert!(

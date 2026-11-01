@@ -10994,8 +10994,7 @@ mod tests {
             .expect("the backwards press placed the cursor");
         let expected = [0, 20, 40]
             .into_iter()
-            .filter(|row| *row < end)
-            .next_back()
+            .rfind(|row| *row < end)
             .unwrap_or(40);
         assert_eq!(
             landed, expected,
@@ -12978,7 +12977,10 @@ mod tests {
             Vec::<WbAction>::new(),
             "a drawing is not a target"
         );
-        assert_eq!(wb.workflow_index, 0, "the click moved the cursor onto a drawing");
+        assert_eq!(
+            wb.workflow_index, 0,
+            "the click moved the cursor onto a drawing"
+        );
     }
 
     /// The two panes pan on their own axes: `←`/`→` move the pane that holds the
