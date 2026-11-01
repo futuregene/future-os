@@ -571,11 +571,16 @@ its whole body (it mutates `HOME`/`USERPROFILE`/`FUTURE_HOME`, which are process
 call sites** use it. Those 91 tests form a serial chain of roughly their own running time, and the
 tail of that chain is the tail of the suite.
 
-Not measured this wave (it needs an instrumented run of its own): the chain's exact length. What
-is measured is the shape — a ~132 s CPU floor against a 195–219 s wall — so the successor's first
-check is to instrument `home_env_lock()`'s wait and hold time, not to hunt CPU again.
+**And that hypothesis was then measured and rejected.** A temporary probe (installed, run across
+the full suite, then removed — the tree carries no probe) timed `home_env_lock()`'s hold for a
+representative test: **144 ms**. Ninety-one such sites therefore bound the serial chain at
+**~13 s**, not the 70–90 s of idle-core time. The HOME lock is a fixture wart worth fixing on its
+own merits, but it is **not** what separates the 132 s floor from a 195–219 s wall — so the
+successor should look at thread oversubscription and the long parked timers
+(`session::persistence` alone was a 25 s single-test critical path in the wave-24 sample), not at
+this lock.
 
-The fix, if the chain is long enough to matter, is to stop making `HOME` process-global for tests
+The candidate fix for that lock — if it ever matters — is to stop making `HOME` process-global for tests
 (a thread-local override consulted by the path resolution under `cfg(test)`, or running the
 `TestHome` tests through the existing `reexec_env_test` child-process helper). Both are fixture
 work of real size, and both are the right shape for a separate todo.
