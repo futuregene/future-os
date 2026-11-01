@@ -1,6 +1,6 @@
 {
  "lane": "host/rust-lib",
- "measurement_commit": "79050bbd6",
+ "measurement_commit": "8213cd62c",
  "toolchain": "1.99.1",
  "scope_prefix": "/host/src/",
  "command": "cargo llvm-cov -p future-host --lib --no-report && cargo llvm-cov report --lcov",
@@ -9,9 +9,9 @@
  "waived": 97,
  "open": 265,
  "before_da0": 2394,
- "artifact": "coverage/2026-11/after/host/round11-D-lcov.info",
- "inventory": "coverage/2026-11/after/host/round11-D-missed.json",
+ "artifact": "coverage/2026-11/after/host/round12-lcov.info",
+ "inventory": "coverage/2026-11/after/host/round12-missed.json",
  "doc": "docs/testing/coverage-waivers-2026-11/host.md",
- "buckets": "coverage/2026-11/after/host/buckets11d.py",
- "earlier_passes": "round11-C (2378, pre-rebase, buckets11c.py); round11-A/B (2375/2377 at c6b7b4979, buckets11.py); round11-base (2394 at d3b2c58fd)"
+ "buckets": "coverage/2026-11/after/host/buckets12.py",
+ "earlier_passes": "round11-D (2378 at 79050bbd6, buckets11d.py, round11-D-open.json); round11-C (2378, pre-rebase, buckets11c.py); round11-A/B (2375/2377 at c6b7b4979, buckets11.py); round11-base (2394 at d3b2c58fd)"
 }
