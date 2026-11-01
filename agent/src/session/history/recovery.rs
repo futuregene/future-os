@@ -80,7 +80,7 @@ pub(crate) fn ensure_history_index(db: &Connection, session: &str) -> Result<()>
     let mut position = -1;
     loop {
         let rows: Vec<(i64, String)> = {
-            let mut query = db.prepare(&format!("SELECT position,payload FROM {source} WHERE session_id=?1 AND position>?2 ORDER BY position LIMIT 64"))?;
+            let mut query = db.prepare_cached(&format!("SELECT position,payload FROM {source} WHERE session_id=?1 AND position>?2 ORDER BY position LIMIT 64"))?;
             let rows = query
                 .query_map(params![&stored_session, position], |row| {
                     Ok((row.get(0)?, row.get(1)?))

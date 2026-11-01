@@ -206,10 +206,17 @@ pub mod test_support {
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());
             timing.mark("lock_wait");
+            // Names the fixture in the access-epoch journal: a start that answers
+            // `Stopped` is always a reaction to some *other* writer, and the
+            // journal has to say whose.
+            crate::remote::test_support::set_current_fixture(label);
+            crate::remote::test_support::note_access("fixture acquired");
+            crate::remote::test_support::enter_fixture_scope();
             // `HOME` and the SQLite pool are process-global. A task started by
             // an earlier test may outlive its caller runtime, so it must be
             // cancelled and observed before this fixture publishes a new path.
             cleanup();
+            crate::remote::test_support::note_access("fixture drained");
             timing.mark("pre_cleanup");
             let previous = std::env::var("HOME").ok();
             let previous_userprofile = std::env::var_os("USERPROFILE");
@@ -268,6 +275,15 @@ pub mod test_support {
         /// directly observable without racing the global `TEST_HOME_LOCK`.
         fn restore(&mut self) {
             self.timing.mark("body");
+            // The drain below is this fixture's own machine-wide teardown, so
+            // this fixture has to be the one that owns the machine while it
+            // runs — including for the guards built by struct literal (the
+            // absent-`HOME` arms below, which never went through
+            // `with_cleanup`). Without this line their `cleanup_host` was the
+            // first *unsupervised* stop in the suite, and a refusal there
+            // happens inside `Drop`, which aborts the process instead of
+            // failing a test.
+            crate::remote::test_support::enter_fixture_scope();
             // Keep the fixture path valid until every process-lifetime task
             // started under it has stopped. Restoring HOME first would let a
             // late task resolve another test's database instead.
@@ -289,6 +305,10 @@ pub mod test_support {
             // Windows cannot unlink a database held by a connection pool.
             let _ = std::fs::remove_dir_all(&self.dir);
             self.timing.finish();
+            // The scope ends with the fixture, not with the lock: a task this
+            // fixture leaked must not be able to dispatch into the supervisor
+            // under the *next* test's name (see `assert_fixture_scope`).
+            crate::remote::test_support::leave_fixture_scope();
         }
     }
 

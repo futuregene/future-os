@@ -109,6 +109,72 @@ pub fn host() -> &'static AgentHost {
     &HOST
 }
 
+/// What this launch may do with the Agent: `FUTURE_DESKTOP_AGENT_MODE`, whose
+/// only accepted values are `auto` and `external`.
+///
+/// A value outside that set is refused here, before any probe, so a typo neither
+/// starts an embedded service nor silently attaches to whatever happened to
+/// answer.
+fn start_mode() -> Result<String, crate::Error> {
+    let mode = launch_mode();
+    if !matches!(mode.as_str(), "auto" | "external") {
+        return Err("FUTURE_DESKTOP_AGENT_MODE must be auto or external".into());
+    }
+    Ok(mode)
+}
+
+/// The raw value: the operator's environment, defaulting to `auto`.
+fn launch_mode() -> String {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(mode) = START_MODE_OVERRIDE.with(|cell| cell.borrow().clone()) {
+        return mode;
+    }
+    std::env::var("FUTURE_DESKTOP_AGENT_MODE").unwrap_or_else(|_| "auto".into())
+}
+
+// Test-only replacement for the `FUTURE_DESKTOP_AGENT_MODE` read, so a test can
+// drive an unreadable mode through `select` without writing the *process*
+// environment. `set_var` would be a window in which every other test in this
+// binary observes another fixture's launch policy: libtest runs them in parallel,
+// `environment::start_logging` logs this very value, and a wrong-enough value in
+// flight would make an unrelated test's `select` refuse to start. That is the
+// leak class `docs/testing/flaky-tauri.md` item 27 records, and the reason
+// `HomeGuard` has to serialize its own `HOME` swap on `TEST_HOME_LOCK`; a
+// thread-local cannot leak because libtest gives each test its own thread.
+//
+// `test-support` is part of the gate, not just `test`, for the same reason as
+// `cli_tool::PROBE_DEADLINE_OVERRIDE`: an entry crate compiles this crate as a
+// dependency of its own test binary, where `cfg(test)` is false. An unarmed slot
+// falls through to the environment, so a product build that unifies the feature
+// behaves exactly as it does today.
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static START_MODE_OVERRIDE: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Arms [`START_MODE_OVERRIDE`] and clears it on drop, so even a panicking test
+/// cannot hand its launch mode to the next test on the same thread.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use = "the override is cleared when the guard is dropped; bind it to a variable"]
+pub struct StartModeGuard;
+
+#[cfg(any(test, feature = "test-support"))]
+impl StartModeGuard {
+    /// The mode [`start_mode`] reads until this guard drops.
+    pub fn set(mode: &str) -> Self {
+        START_MODE_OVERRIDE.with(|cell| *cell.borrow_mut() = Some(mode.to_string()));
+        StartModeGuard
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for StartModeGuard {
+    fn drop(&mut self) {
+        START_MODE_OVERRIDE.with(|cell| *cell.borrow_mut() = None);
+    }
+}
+
 impl AgentHost {
     pub fn phase(&self) -> Phase {
         self.0.state().phase.clone()
@@ -358,10 +424,7 @@ impl AgentHost {
     /// the opaque result back to `run_selected`.
     pub async fn select(&self, configured: &str) -> Result<StartSelection, crate::Error> {
         crate::install_rustls_provider();
-        let mode = std::env::var("FUTURE_DESKTOP_AGENT_MODE").unwrap_or_else(|_| "auto".into());
-        if !matches!(mode.as_str(), "auto" | "external") {
-            return Err("FUTURE_DESKTOP_AGENT_MODE must be auto or external".into());
-        }
+        let mode = start_mode()?;
         let (cancel, probe_cancel, starting) = {
             let state = self.0.state();
             (
@@ -723,6 +786,90 @@ mod block_fixtures {
         run_case("moved-home");
     }
 
+    /// A recovery attempt that reaches a Desktop already stopping is refused by
+    /// name rather than repairing anything: the stop it would start cannot
+    /// finish, and a repair begun under it is what turns a clean quit into a
+    /// "restart Desktop".
+    #[test]
+    fn a_recovery_attempt_during_shutdown_is_refused_before_it_repairs() {
+        run_case("recover-stopping");
+    }
+
+    /// The refusal must come from `recover`'s *entry*, not from the second guard
+    /// inside its closure: over an owned service those are different behaviours —
+    /// the later one has already stopped the service and moves the stop's own
+    /// deadline into the answer. This fixture is the difference between them.
+    #[test]
+    fn a_refused_recovery_never_stops_an_owned_agent() {
+        run_case("recover-stopping-owned");
+    }
+
+    /// An owned service that never publishes `finished` inside the stop window:
+    /// `recover` must not claim the cleanup half-done, and must say the process
+    /// is what has to be restarted.
+    #[test]
+    fn a_recovery_whose_cleanup_cannot_finish_asks_for_a_restart() {
+        run_case("recover-unfinished");
+    }
+
+    /// A worker that answers without taking ownership and without becoming
+    /// ready: the launcher is waiting on a start that will never proceed, so it
+    /// is told the startup was cancelled instead of being left to its deadline.
+    #[test]
+    fn a_worker_that_takes_nothing_reports_the_start_as_cancelled() {
+        run_case("cancelled-start");
+    }
+
+    /// An update reserved against a live owned Agent: the handle's idle
+    /// admission is what every in-flight command passes through, and closing it
+    /// is the only way the update can be sure none is left.
+    #[test]
+    fn an_owned_ready_agent_reserves_idle_admission_for_an_update() {
+        run_case("owned-idle");
+    }
+
+    /// The harness's own guard: a case name it does not implement must fail the
+    /// child loudly instead of exiting green with nothing asserted. Driven through
+    /// the same re-exec as every other case, so it is the *binary's* answer that
+    /// is checked, not this module's reading of it.
+    #[test]
+    fn the_fixture_refuses_a_case_it_does_not_implement() {
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/host-fixtures");
+        std::fs::create_dir_all(&parent).unwrap();
+        let home = tempfile::tempdir_in(&parent).unwrap();
+        let socket = tempfile::tempdir().unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "agent_host::block_fixtures::host_fixture",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CASE, "no-such-case")
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .env("FUTURE_HOME", home.path().join(".future"))
+            .env("FUTURE_DESKTOP_AGENT_MODE", "auto")
+            .env("FUTURE_AGENT_SOCKET", socket.path().join("agent.sock"))
+            .env_remove("FUTURE_AGENT_GRPC_ADDR")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{stderr}");
+        assert!(stderr.contains("unknown case no-such-case"), "{stderr}");
+    }
+
+    /// The `ENXIO` retry loop exists for "no reader has opened the fixture *yet*".
+    /// A path that cannot be opened at all is a broken fixture, not a slow one, so
+    /// it fails at once and names the path instead of spinning to the deadline.
+    #[cfg(unix)]
+    #[test]
+    #[should_panic(expected = "open fixture")]
+    fn a_reader_whose_path_vanished_fails_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        blocked_reader(&dir.path().join("gone"));
+    }
+
     fn run_case(case: &str) {
         let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/host-fixtures");
         std::fs::create_dir_all(&parent).unwrap();
@@ -829,8 +976,94 @@ mod block_fixtures {
         let Ok(case) = std::env::var(CASE) else {
             return;
         };
+        // The cancelled-start case is the one that must *not* have the entry's
+        // driver: it is about a worker that answers without doing anything.
+        if case == "cancelled-start" {
+            crate::agent_host::configure_driver(|_, _| Ok(())).unwrap();
+            let error = AgentHost::default()
+                .start("auto".into())
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("startup was cancelled"), "{error}");
+            return;
+        }
         test_driver::install();
         let host = AgentHost::default();
+        if case == "recover-stopping" {
+            // Admission closes once and for all in a process, so this arm needs
+            // a process of its own: the guard below is what every later
+            // `recover` would answer, and the fixture is the only caller left.
+            crate::request_scope::close_admission();
+            let error = host.recover("auto".into()).unwrap_err().to_string();
+            // Exact: the recovery path answers this same sentence from a second
+            // guard inside its closure, so a `contains` here cannot tell them
+            // apart — a one-space change to either arm has to fail this test.
+            assert_eq!(error, "Desktop is stopping");
+            assert_eq!(host.phase(), Phase::Idle, "nothing was repaired");
+            return;
+        }
+        if case == "recover-stopping-owned" {
+            // The same refusal, against a host that *owns* a finished service.
+            // `recover` answers "Desktop is stopping" from two places — the guard
+            // at its entry, and a second one inside the closure after the owned
+            // service has been stopped — so a fixture over an unowned host cannot
+            // tell them apart: removing the entry guard only moves the sentence
+            // later. Here it cannot move: with an owned, finished service in a
+            // `Ready` phase, dropping the entry guard lets `recover` reach its
+            // restart-requirement arm (its retirement is not complete), so the
+            // sentence and the untouched phase both change.
+            {
+                let mut state = host.0.state();
+                state.phase = Phase::Ready;
+                state.owned = true;
+                state.finished = true;
+            }
+            crate::request_scope::close_admission();
+            let error = host.recover("auto".into()).unwrap_err().to_string();
+            assert_eq!(error, "Desktop is stopping");
+            assert_eq!(
+                host.phase(),
+                Phase::Ready,
+                "the refusal must land before anything touches the owned service"
+            );
+            return;
+        }
+        if case == "recover-unfinished" {
+            // An owned service that never reaches `finished`: the stop inside
+            // `recover` spends its whole window and gives up, so the cleanup is
+            // incomplete and the process — not this host — is the only repair.
+            {
+                let mut state = host.0.state();
+                state.phase = Phase::Ready;
+                state.owned = true;
+                state.finished = false;
+            }
+            let error = host.recover("auto".into()).unwrap_err().to_string();
+            assert!(error.contains("restart Desktop"), "{error}");
+            assert!(
+                host.recovery_requires_restart(),
+                "the unfinished cleanup has to be reported from then on"
+            );
+            // The stop spent its whole window, so the phase it leaves behind is
+            // the deadline's own failure — not `Stopped`, which would claim a
+            // cleanup that never happened.
+            let phase = host.phase();
+            assert!(
+                matches!(phase, Phase::Failed(_)),
+                "a cleanup that timed out is a failure: {phase:?}"
+            );
+            return;
+        }
+        if case == "owned-idle" {
+            host.start("auto".into()).unwrap();
+            assert!(host.owns_agent(), "an embedded start is owned");
+            assert!(
+                host.reserve_idle_update().unwrap(),
+                "a freshly ready Agent is idle, so an update may take it"
+            );
+            host.stop().unwrap();
+            return;
+        }
         if case == "progress" {
             host.0.state().phase = Phase::Starting;
             let starter = host.clone();

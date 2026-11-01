@@ -9,6 +9,19 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection> {
     open_connection_cancellable(path, &crate::service::StartupCancellation::default())
 }
 
+/// User tables (anything that is not SQLite's own bookkeeping).
+const USER_TABLE_COUNT: &str = "SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'";
+
+/// Does this file carry a table that the Agent's own schema does not own?
+const FOREIGN_TABLES_EXIST: &str = "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table'
+     AND name NOT LIKE 'sqlite_%' AND name NOT IN
+     ('skills','skills_meta','skill_installations','skill_operations'))";
+
+/// The complement of [`FOREIGN_TABLES_EXIST`]: nothing but the skills tables.
+const NO_FOREIGN_TABLES: &str = "SELECT NOT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table'
+     AND name NOT LIKE 'sqlite_%' AND name NOT IN
+     ('skills','skills_meta','skill_installations','skill_operations'))";
+
 pub(super) fn open_connection_cancellable(
     path: &Path,
     cancellation: &crate::service::StartupCancellation,
@@ -36,6 +49,15 @@ fn initialize_connection(
     cancellation: &crate::service::StartupCancellation,
 ) -> Result<()> {
     crate::session::content::install_functions(connection)?;
+    // Compiling this schema's read paths is dominated by the deep views
+    // (`entry_records`, `entry_header_records`, `history_shapes`): measured on
+    // this connection, `SELECT … FROM entry_records` costs **26 ms to prepare
+    // and 0.2 ms to execute** — a 130:1 ratio — and a trivial table read costs
+    // 20 µs. rusqlite's cache holds 16 statements; this crate prepares ~130
+    // distinct ones, so an LRU of 16 evicts the hot views between calls and
+    // pays the 26 ms again. The cache is per connection and per statement, so
+    // the ceiling only has to cover one connection's working set.
+    connection.set_prepared_statement_cache_capacity(256);
     connection.busy_timeout(Duration::from_secs(5))?;
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     let application: i64 =
@@ -47,23 +69,13 @@ fn initialize_connection(
         bail!("database belongs to a different application");
     }
     if application == 0 {
-        let tables: i64 = connection.query_row(
-            "SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
-            [],
-            |row| row.get(0),
-        )?;
+        let tables: i64 = connection.query_row(USER_TABLE_COUNT, [], |row| row.get(0))?;
         if version != 0 || tables != 0 {
             bail!("refusing to initialize an unrecognized database");
         }
     }
     if application == 0x46555452 && version == 0 {
-        let unknown: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table'
-             AND name NOT LIKE 'sqlite_%' AND name NOT IN
-             ('skills','skills_meta','skill_installations','skill_operations'))",
-            [],
-            |row| row.get(0),
-        )?;
+        let unknown: bool = connection.query_row(FOREIGN_TABLES_EXIST, [], |row| row.get(0))?;
         if unknown {
             bail!("Agent database has an incomplete schema identity; preserve it for recovery");
         }
@@ -82,13 +94,7 @@ fn initialize_connection(
         // CREATE IF NOT EXISTS must never mask missing authoritative history.
         super::schema::validate_core(connection)?;
     } else if application != 0 {
-        let bootstrap: bool = connection.query_row(
-            "SELECT NOT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table'
-             AND name NOT LIKE 'sqlite_%' AND name NOT IN
-             ('skills','skills_meta','skill_installations','skill_operations'))",
-            [],
-            |row| row.get(0),
-        )?;
+        let bootstrap: bool = connection.query_row(NO_FOREIGN_TABLES, [], |row| row.get(0))?;
         if !(bootstrap && matches!(version, 0 | 3 | 4)) {
             super::schema::validate_authoritative_history(connection, version)?;
         }

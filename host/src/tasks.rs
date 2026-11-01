@@ -2183,6 +2183,76 @@ mod tests {
         reset_for_test();
     }
 
+    /// The GUI build's loop: `start_with_notifier` is the entry the desktop shell
+    /// calls, and its one difference from the headless variant is that a finished
+    /// run announces its conversation through the entry's notifier. The
+    /// announcement is what tells the two apart, so this fixture asserts on it
+    /// rather than only on the ledger: the same test over `start_headless` would
+    /// pass without ever calling the notifier.
+    #[tokio::test]
+    async fn the_notified_loop_runs_a_queued_request_and_announces_its_conversation() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-loop-notifier");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        std::env::set_var("FUTURE_HOME", dir.path());
+        crate::store::initialize_app_store().expect("app store");
+        reset_for_test();
+        let store = Store::open(dir.path()).unwrap();
+
+        let mut queued = task("queued-notifier");
+        queued.prompt = "summarize yesterday".into();
+        let workspace = TempDir::new().unwrap();
+        queued.cwd = workspace.path().display().to_string();
+        queued.pending_request_at = Some(now_ms());
+        queued.pending_origin = Some(RunOrigin::Cli);
+        store.insert_task(&queued).unwrap();
+        script_agent_setup(&mock, "sess_loop_notifier");
+        mock.push_stream(crate::agent_bridge::test_support::StreamScript::Events(
+            vec![crate::agent_bridge::test_support::stream_event(
+                "@attach",
+                0,
+                "agent_end",
+                r#"{"reason":"complete"}"#,
+            )],
+            None,
+        ));
+
+        let announced: std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = announced.clone();
+        let notify: Notifier = std::sync::Arc::new(move |thread_id| {
+            recorded.lock().unwrap().push(thread_id.map(str::to_string));
+        });
+        start_with_notifier(notify);
+        wake();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let settled = loop {
+            let store = Store::open(dir.path()).unwrap();
+            if let Some(run) = store
+                .list_runs_for_task(&queued.id, 5)
+                .unwrap()
+                .into_iter()
+                .find(|run| run.status != RunStatus::Running)
+            {
+                break run;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!("the notified loop never executed the queued request");
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_eq!(settled.status, RunStatus::Completed, "{settled:?}");
+        let calls = announced.lock().unwrap().clone();
+        assert!(
+            calls.iter().any(|thread_id| thread_id.is_some()),
+            "the entry's notifier learns the conversation it may refresh: {calls:?}"
+        );
+        stop_admission();
+        std::env::remove_var("FUTURE_HOME");
+        reset_for_test();
+    }
+
     /// The loop's own exit and error arms: closed admission ends it before it
     /// waits for a tick, and a tick that cannot reach the task store is
     /// reported without ending the loop (a store that is briefly unavailable
@@ -2375,15 +2445,38 @@ mod tests {
     /// that is not a directory), the drop must log rather than panic — a panic in
     /// a drop guard during shutdown would abort the process the guard exists to
     /// clean up after.
+    ///
+    /// It also *records* the failure, because the host is stopping in exactly the
+    /// situation this guard exists for. That arm is driven here rather than left
+    /// to the ambient stop flag, which neighbours set and clear as they please:
+    /// whichever way that race went, this fixture wrote into the process-wide
+    /// cleanup ledger whenever a stopping neighbour overlapped it, and one entry
+    /// left there makes every later HOME change refuse to proceed
+    /// (`cancel_test_tasks` reads the ledger) — measured as 58 unrelated tests
+    /// red in this module's filter set alone. So the fixture borrows the flag,
+    /// keeps the entry inside the HOME lock's serialization, and takes it back
+    /// before the lock is handed on. The borrowed flag is held for one failed
+    /// `Store::open` and nothing else, so a neighbour that needs admission open
+    /// to run its own command still gets it.
     #[test]
     fn a_drop_that_cannot_reach_the_store_does_not_panic() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("tasks-drop-unreachable");
         let (dir, _store) = store();
         let unusable = dir.path().join("not-a-directory");
         std::fs::write(&unusable, b"x").unwrap();
-        let _interrupted = InterruptedTask {
-            home: unusable,
+        let stopping = crate::request_scope::close_admission_guard_for_test();
+        drop(InterruptedTask {
+            home: unusable.clone(),
             id: future_tasks::new_run_id(),
-        };
+        });
+        drop(stopping);
+        let recorded = crate::runtime::take_cleanup_errors();
+        assert!(
+            recorded
+                .iter()
+                .any(|entry| entry.contains(&unusable.display().to_string())),
+            "the stopping drop records its own store failure: {recorded:?}"
+        );
     }
 
     /// The notifier these unit tests hand `run_inner`: they assert on the

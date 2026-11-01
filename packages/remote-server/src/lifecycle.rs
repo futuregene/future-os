@@ -2,6 +2,88 @@
 use std::sync::Mutex;
 use tokio::{sync::watch, task::AbortHandle};
 
+/// Test-support record of who moved an [`AccessEpoch`].
+///
+/// A start that answers with an *empty* status (`Stopped`, no pair id, no
+/// invitation) is produced by four different early returns, and the status
+/// cannot tell them apart — which is why a failing fixture only ever reported
+/// "the host bridge that started must show an invitation". Every one of those
+/// returns is a reaction to *someone else* moving the epoch or the flags the
+/// epoch protects, so the useful evidence is who moved them and when. This
+/// journal is that: it costs nothing outside `test-support`, and it is what
+/// turns "the suite fails this one test 4 runs in 10" into a named caller.
+#[cfg(feature = "test-support")]
+pub mod journal {
+    use std::collections::VecDeque;
+    use std::sync::{Mutex, OnceLock};
+
+    /// Enough for every epoch event in a suite run plus the notes around it: a
+    /// full `future-host --lib` run records a few hundred.
+    const KEEP: usize = 256;
+    /// Where a dump stops listing. The failure is always near the end, and a
+    /// panic message is read by a person.
+    const SHOWN: usize = 40;
+
+    #[derive(Debug)]
+    pub struct Entry {
+        pub what: &'static str,
+        pub epoch: u64,
+        /// The thread that made the write. This is the discriminator the status
+        /// itself lacks: a test thread is named after the test, so a write from
+        /// `remote::control::tests::…` names the offender, while a write from a
+        /// runtime worker names the *class* — a task that outlived its test.
+        /// (No backtrace: capturing one here aborted a `remote_peer::` run with
+        /// "has overflowed its stack" on a 2 MB tokio worker.)
+        pub thread: String,
+    }
+
+    static JOURNAL: OnceLock<Mutex<VecDeque<Entry>>> = OnceLock::new();
+
+    fn journal() -> &'static Mutex<VecDeque<Entry>> {
+        JOURNAL.get_or_init(|| Mutex::new(VecDeque::new()))
+    }
+
+    pub fn record(what: &'static str, epoch: u64) {
+        let mut entries = journal()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if entries.len() >= KEEP {
+            entries.pop_front();
+        }
+        entries.push_back(Entry {
+            what,
+            epoch,
+            thread: std::thread::current()
+                .name()
+                .unwrap_or("<unnamed thread>")
+                .to_string(),
+        });
+    }
+
+    pub fn clear() {
+        journal()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clear();
+    }
+
+    /// The last [`SHOWN`] events, oldest first.
+    pub fn dump() -> String {
+        let entries = journal()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let skip = entries.len().saturating_sub(SHOWN);
+        let mut out = String::new();
+        for entry in entries.iter().skip(skip) {
+            out.push_str(&format!(
+                "  [epoch {}] {} — {}\n",
+                entry.epoch, entry.thread, entry.what
+            ));
+        }
+        out
+    }
+}
+
 pub struct AccessEpoch {
     epoch: Mutex<u64>,
     changed: watch::Sender<u64>,
@@ -34,15 +116,42 @@ impl AccessEpoch {
     pub fn invalidate<T>(&self, stop: impl FnOnce() -> T) -> T {
         let mut epoch = self.epoch.lock().unwrap();
         *epoch = epoch.wrapping_add(1);
+        #[cfg(feature = "test-support")]
+        journal::record("invalidate", *epoch);
         let result = stop();
         self.changed.send_replace(*epoch);
         result
     }
 
+    /// Test-support: name an event that a later failure can be read against.
+    ///
+    /// A no-op outside test builds, so a call site costs one argument and no
+    /// `cfg` of its own. `&'static str`, never `format!`: these notes run on the
+    /// same chains as `start`, and a `format!` is a dozen debug-build frames —
+    /// enough to tip a 2 MB runtime worker into "has overflowed its stack"
+    /// (measured on `remote_peer::runtime_tests`, whose fixture chain already
+    /// sits at the limit).
+    pub fn note(&self, what: &'static str) {
+        #[cfg(feature = "test-support")]
+        {
+            let epoch = self.published();
+            journal::record(what, epoch);
+        }
+        #[cfg(not(feature = "test-support"))]
+        {
+            let _ = what;
+        }
+    }
+
     /// Stop and installing an asynchronous result share this critical section.
     pub fn commit<T>(&self, expected: u64, install: impl FnOnce() -> T) -> Option<T> {
         let epoch = self.epoch.lock().unwrap();
-        (*epoch == expected).then(install)
+        let admitted = (*epoch == expected).then(install);
+        #[cfg(feature = "test-support")]
+        if admitted.is_none() {
+            journal::record("commit refused", *epoch);
+        }
+        admitted
     }
 
     pub async fn cancelled(&self, expected: u64) {
@@ -52,6 +161,8 @@ impl AccessEpoch {
                 return;
             }
         }
+        #[cfg(feature = "test-support")]
+        journal::record("cancelled", *changed.borrow());
     }
 }
 

@@ -4127,6 +4127,17 @@ mod bridge_tests {
     /// packet the device that has just become the controller is answered
     /// `standby` and reads control back from the heartbeat — the same
     /// three-second lie as a takeover, one screen earlier.
+    ///
+    /// The claim is deferred past the answer on purpose (it writes the pairing
+    /// book to disk, and no reply may wait on that), so the answer reaching the
+    /// device does not mean the pointer has moved: they are two separate
+    /// wake-ups and the client is served between them. The claim is therefore
+    /// waited for rather than read once — a single read was asserting a step that
+    /// had not necessarily run yet. That is how it failed on the Linux lane of CI
+    /// run 41347774311 (`assertion failed: SUPERVISOR.in_control(&bridge.pair_id)`)
+    /// while passing on macOS, where the handler happened to be resumed first; a
+    /// single `yield_now` in that window reproduces the failure on every run
+    /// here.
     #[tokio::test]
     async fn a_first_pairing_announces_the_control_it_takes() {
         // Control is one pointer on the process-global supervisor, so this test
@@ -4180,7 +4191,23 @@ mod bridge_tests {
             json!("standby"),
             "the answer is built before the claim, which is why the packet is owed"
         );
-        assert!(SUPERVISOR.in_control(&bridge.pair_id));
+        // Bounded, not optimistic: the claim lands after the answer and before
+        // the packet, so waiting for it is the contract this test names.
+        wait_until(
+            "the first pairing's claim must move the supervisor's pointer to it; \
+             the confirmation's answer is not the claim",
+            Duration::from_secs(5),
+            || SUPERVISOR.in_control(&bridge.pair_id),
+        )
+        .await;
+        // And it must land on *this* device, not merely leave the machine
+        // unowned: `in_control` also answers yes while nobody holds a machine
+        // that knows of no device at all.
+        assert_eq!(
+            SUPERVISOR.active_pair().as_deref(),
+            Some(bridge.pair_id.as_str()),
+            "the claim must name this pairing in the control pointer"
+        );
 
         let announced = await_publish_matching(
             &mut tap,
