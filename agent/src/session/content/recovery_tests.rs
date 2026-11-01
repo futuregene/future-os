@@ -129,6 +129,15 @@ fn a_recovered_tool_input_end_publishes_the_call_without_replaying_its_arguments
         text: arguments.into(),
         seal: Some(digest),
     };
+    let metadata_body = "{}";
+    let mut metadata_digest = ContentDigest::default();
+    metadata_digest.push(metadata_body).unwrap();
+    let append_metadata = ContentAppend {
+        key: "provider".into(),
+        offset: 0,
+        text: metadata_body.into(),
+        seal: Some(metadata_digest),
+    };
     let cursor = i64::try_from(arguments.len()).unwrap();
     // Each change owns a distinct cursor window: the table keys a run's changes
     // by cursor, and a shared window reads as a conflicting retry.
@@ -143,13 +152,25 @@ fn a_recovered_tool_input_end_publishes_the_call_without_replaying_its_arguments
         bodies,
     };
     let args_body = move || {
-        vec![BodyLink {
-            field: "/data/tool_args".into(),
-            encoding: Encoding::Json,
-            key: "args".into(),
-            offset: 0,
-            length: cursor,
-        }]
+        vec![
+            BodyLink {
+                field: "/data/tool_args".into(),
+                encoding: Encoding::Json,
+                key: "args".into(),
+                offset: 0,
+                length: cursor,
+            },
+            // The provider's metadata travels on its own channel; when it is
+            // present the call carries an empty object rather than the event's
+            // copied value.
+            BodyLink {
+                field: "/data/provider_metadata".into(),
+                encoding: Encoding::Json,
+                key: "provider".into(),
+                offset: 0,
+                length: 2,
+            },
+        ]
     };
     manager
         .storage()
@@ -159,7 +180,7 @@ fn a_recovered_tool_input_end_publishes_the_call_without_replaying_its_arguments
             commit_batch(
                 db,
                 &identity,
-                vec![append],
+                vec![append, append_metadata],
                 vec![
                     change(
                         (0, 1),
@@ -190,7 +211,8 @@ fn a_recovered_tool_input_end_publishes_the_call_without_replaying_its_arguments
                             "tool_id": "t1",
                             "tool_name": "shell",
                             "content_key": "call-1",
-                            "tool_args": ""
+                            "tool_args": "",
+                            "provider_metadata": {}
                         }),
                         args_body(),
                     ),
