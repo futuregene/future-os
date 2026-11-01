@@ -4024,3 +4024,84 @@ fn kinds(events: &[crate::rpc::SseEvent]) -> Vec<String> {
         .map(|event| event.event_type.clone())
         .collect()
 }
+
+/// Superseding a queued input whose receipt cannot be cancelled must not leave
+/// the successor behind: the replacement run is cancelled too and the client is
+/// told the store failed.
+#[tokio::test(flavor = "current_thread")]
+async fn a_supersede_whose_receipt_cannot_be_cancelled_leaves_no_successor() {
+    let provider = ScriptedProvider::new(vec![Script::Stall(vec![text_event("running")])]);
+    let fixture = run_fixture(provider, "supersede-refused");
+    let mut session = fixture.session;
+    session
+        .enqueue_prompt(
+            "first",
+            &[],
+            &[],
+            Some("run-first"),
+            "req-first",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    // A queued input with its durable receipt — this is the one that the
+    // superseding request has to cancel.
+    let queued = session
+        .enqueue_prompt(
+            "second",
+            &[],
+            &[],
+            Some("run-second"),
+            "req-second",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    assert_eq!(
+        queued.accepted_state,
+        crate::runtime::RunAcceptedState::Queued
+    );
+    let store = session.session_manager.storage().unwrap().clone();
+    store
+        .db
+        .call(|db| {
+            db.execute_batch(
+                "CREATE TRIGGER refuse_receipt_cancel BEFORE UPDATE ON queued_run_receipts \
+                 BEGIN SELECT RAISE(ABORT,'injected receipt cancel failure'); END;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    let error = session
+        .enqueue_prompt(
+            "third",
+            &[],
+            &[],
+            Some("run-third"),
+            "req-third",
+            crate::runtime::BusyPolicy::SupersedeSession,
+        )
+        .unwrap_err();
+    let text = format!("{error:#}");
+    assert!(text.contains("injected receipt cancel failure"), "{text}");
+    assert!(
+        matches!(
+            error.downcast_ref::<crate::runtime::RunQueueError>(),
+            Some(crate::runtime::RunQueueError::PersistenceUnavailable(_))
+        ),
+        "{text}"
+    );
+    // Neither the superseded input nor its replacement may stay queued.
+    let queued = session.scheduler.queued();
+    assert!(
+        queued.iter().all(|run| run.run_id != "run-third"),
+        "the refused successor must be cancelled: {:?}",
+        queued
+            .iter()
+            .map(|run| run.run_id.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        queued.iter().all(|run| run.run_id != "run-second"),
+        "the superseded input must be cancelled too"
+    );
+}
