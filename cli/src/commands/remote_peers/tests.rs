@@ -307,6 +307,39 @@ async fn list_json_keeps_unknown_state_null_rather_than_guessing() {
     assert!(value["peers"][0]["holder"].is_null(), "{value}");
 }
 
+/// A book with one pairing is singular in the sentence, and a row the Desktop
+/// reported with an error says so: the machine is listed and not usable, which
+/// is the case a reader most needs spelled out.
+#[tokio::test]
+async fn list_one_pairing_is_singular_and_carries_the_last_error() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    let mut book = book(PLATFORM_TOKEN);
+    book["peers"].as_array_mut().unwrap().truncate(1);
+    home.write(BOOK_FILE, &book.to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    answer_requests(
+        &home,
+        json!({ "peers": [{
+            "desktopId": ONE,
+            "pairId": "pair_ONE",
+            "connected": false,
+            "stopped": false,
+            "agentAvailable": false,
+            "error": "handshake timed out",
+        }] }),
+    );
+
+    let (code, stdout, stderr) = run(&["remote", "peers"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("1 remote desktop is paired"), "{stdout}");
+    assert!(!stdout.contains("remote desktops are"), "{stdout}");
+    assert!(
+        stdout.contains("last error: handshake timed out"),
+        "{stdout}"
+    );
+}
+
 #[tokio::test]
 async fn an_empty_book_says_so_and_points_at_add() {
     let _guard = crate::test_env::lock_env().await;
@@ -404,6 +437,117 @@ async fn connect_without_a_desktop_says_there_is_nothing_to_act_on() {
     assert!(stderr.contains("No Desktop is running"), "{stderr}");
     // Nothing was asked of a Desktop that is not there, and the book is intact.
     assert!(!home.exists("run"), "{}", home.future().display());
+}
+
+/// Nothing is paired, so there is no machine to act on: the refusal is the same
+/// for every action that takes one, and each names the command that pairs one.
+#[tokio::test]
+async fn an_action_on_an_empty_book_names_the_paired_command() {
+    let _guard = crate::test_env::lock_env().await;
+    let _home = Home::new();
+
+    for (args, expected) in [
+        (
+            vec!["remote", "peers", "connect", ONE],
+            "future remote peers add",
+        ),
+        (
+            vec!["remote", "peers", "disconnect", "#1"],
+            "future remote peers add",
+        ),
+        (
+            vec!["remote", "peers", "remove", ONE, "--yes"],
+            "not paired with any remote desktop",
+        ),
+    ] {
+        let (code, _, stderr) = run(&args).await;
+        assert_eq!(code, 1, "{args:?}");
+        assert!(stderr.contains(expected), "{args:?} → {stderr}");
+    }
+}
+
+/// Disconnect's own note: unlike connect, it has no reason to add that an
+/// unstarted Desktop says nothing about the pairing — the machine is paired and
+/// being connected is the pairing working.
+#[tokio::test]
+async fn disconnect_without_a_desktop_keeps_its_own_words() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+
+    let (code, _, stderr) = run(&["remote", "peers", "disconnect", ONE]).await;
+    assert_eq!(code, 1);
+    assert!(stderr.contains("nothing to disconnect here"), "{stderr}");
+    assert!(
+        !stderr.contains("not a fact about the pairing"),
+        "connect's clause does not belong in disconnect's sentence: {stderr}"
+    );
+    // The book is untouched by a Desktop that is not there.
+    assert!(!home.exists("run"), "{}", home.future().display());
+}
+
+/// A Desktop that refuses in its own words is quoted, not summarised: the
+/// refusal is the only thing that says what to change.
+#[tokio::test]
+async fn connect_reports_a_refusal_in_the_desktops_own_words() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    answer_requests(&home, json!({ "error": "superseded" }));
+
+    let (code, _, stderr) = run(&["remote", "peers", "connect", ONE]).await;
+    assert_eq!(code, 1);
+    assert!(stderr.contains("could not connect it"), "{stderr}");
+    assert!(stderr.contains("superseded"), "{stderr}");
+}
+
+/// `--json` prints what the Desktop answered, not the row the book guessed.
+#[tokio::test]
+async fn connect_json_carries_the_list_the_desktop_returned() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    answer_requests(
+        &home,
+        json!({ "peers": [live_row(ONE, true), live_row(TWO, false)] }),
+    );
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "connect", "AAAA", "--json"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    // The document comes first and the sentence a reader needs after it, so the
+    // parse stops at the document rather than at the end of stdout.
+    let mut documents = serde_json::Deserializer::from_str(&stdout).into_iter::<Value>();
+    let value = documents.next().expect("a document").unwrap();
+    assert_eq!(value["desktopRunning"], true);
+    assert_eq!(value["answered"], true);
+    assert_eq!(value["peers"][0]["desktopId"], ONE);
+    assert_eq!(value["peers"][0]["connected"], true);
+    assert_eq!(value["peers"][1]["connected"], false);
+    assert!(
+        stdout.contains("is connected."),
+        "--json does not take the sentence away: {stdout}"
+    );
+}
+
+/// A Desktop that kept the connection did not do what it was asked, so the exit
+/// code says so even though it answered.
+#[tokio::test]
+async fn disconnect_says_when_the_desktop_kept_it_connected() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    answer_requests(&home, json!({ "peers": [live_row(ONE, true)] }));
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "disconnect", ONE]).await;
+    assert_eq!(code, 1, "{stdout} {stderr}");
+    assert!(
+        stdout.contains("is still connected: the Desktop did not drop it"),
+        "{stdout}"
+    );
+    assert!(stderr.is_empty(), "{stderr}");
 }
 
 #[tokio::test]
@@ -563,6 +707,49 @@ async fn a_row_number_and_a_case_insensitive_prefix_name_the_same_machine() {
     let after: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
     assert_eq!(after["peers"][1]["name"], "second");
     assert_eq!(after["peers"][0]["name"], "work");
+}
+
+/// Both halves of the instruction are refused when only one is given: a rename
+/// with nothing to name asks which machine, and `--clear` beside a name is two
+/// answers to one question.
+#[tokio::test]
+async fn rename_names_what_it_needs_before_touching_the_book() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    let before = book(PLATFORM_TOKEN);
+    home.write(BOOK_FILE, &before.to_string());
+
+    let (code, _, stderr) = run(&["remote", "peers", "rename"]).await;
+    assert_eq!(code, 1);
+    assert!(stderr.contains("Which machine?"), "{stderr}");
+
+    let (code, _, stderr) = run(&["remote", "peers", "rename", ONE, "laptop", "--clear"]).await;
+    assert_eq!(code, 1);
+    assert!(
+        stderr.contains("--clear goes back to the machine id"),
+        "{stderr}"
+    );
+    // Neither refusal wrote anything.
+    assert_eq!(home.read(BOOK_FILE), before.to_string());
+}
+
+/// The JSON form re-reads the book after the edit, so a script sees the label it
+/// just set rather than the one from before.
+#[tokio::test]
+async fn rename_json_prints_the_book_it_left_behind() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+
+    let (code, stdout, stderr) =
+        run(&["remote", "peers", "rename", "EEEE", "laptop", "--json"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    let value: Value = serde_json::from_str(&stdout).unwrap();
+    // No Desktop was asked, and the document says which half is missing.
+    assert_eq!(value["desktopRunning"], false);
+    assert_eq!(value["peers"][1]["desktopId"], TWO);
+    assert_eq!(value["peers"][1]["name"], "laptop");
+    assert_eq!(value["peers"][0]["name"], "work");
 }
 
 // -- remove -----------------------------------------------------------------
