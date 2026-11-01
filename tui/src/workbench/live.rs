@@ -4690,14 +4690,20 @@ struct ChatRoots {
 
 impl ChatRoots {
     fn detect() -> Self {
-        let root = crate::home::future_state_dir()
+        // The chat tree is [`chat_root`] — the same directory `chat_dir_for`
+        // names — so the two cannot drift, and a test that owns the chat root
+        // (see `test_chat_root`) owns this answer too. Slashes are normalised
+        // because a cwd compared here may come from a Windows agent.
+        let state = crate::home::future_state_dir()
             .display()
             .to_string()
             .replace('\\', "/");
-        let root = root.trim_end_matches('/').to_string();
+        let state = state.trim_end_matches('/').to_string();
+        let chat = chat_root().display().to_string().replace('\\', "/");
+        let chat = chat.trim_end_matches('/').to_string();
         Self {
-            workspace: format!("{root}/agent/workspace"),
-            chat_prefix: format!("{root}/workspaces/chat/"),
+            workspace: format!("{state}/agent/workspace"),
+            chat_prefix: format!("{chat}/"),
         }
     }
 
@@ -4763,9 +4769,58 @@ fn chat_workspace() -> String {
 /// desktop app files a chat under, so both surfaces name one conversation's
 /// directory the same way.
 fn chat_root() -> std::path::PathBuf {
+    // A test may own the root: the real one follows the process `HOME`, and a
+    // sibling test can swap `HOME` between the moment a fixture creates a chat
+    // directory and the moment the code under test looks it up. The override is
+    // thread-local and `cfg(test)`, so nothing outside a test can see it.
+    #[cfg(test)]
+    if let Some(root) = test_chat_root::get() {
+        return root;
+    }
     crate::home::future_state_dir()
         .join("workspaces")
         .join("chat")
+}
+
+/// The test-only chat root (see [`chat_root`]). Thread-local on purpose: two
+/// tests that each own a root must not see each other's.
+#[cfg(test)]
+pub(crate) mod test_chat_root {
+    use std::cell::RefCell;
+    use std::path::PathBuf;
+
+    thread_local! {
+        static ROOT: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    }
+
+    /// Set (or clear) this thread's chat root; returns what was there.
+    pub(crate) fn set(root: Option<PathBuf>) -> Option<PathBuf> {
+        ROOT.with(|slot| slot.replace(root))
+    }
+
+    pub(crate) fn get() -> Option<PathBuf> {
+        ROOT.with(|slot| slot.borrow().clone())
+    }
+
+    /// Put the previous root back when it drops — a failing assertion must not
+    /// leave it behind for the next test on this thread.
+    pub(crate) struct Guard {
+        previous: Option<PathBuf>,
+    }
+
+    impl Guard {
+        pub(crate) fn own(root: PathBuf) -> Self {
+            Self {
+                previous: set(Some(root)),
+            }
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            set(self.previous.take());
+        }
+    }
 }
 
 /// The directory a chat runs in: `<chat root>/<session id>`.
@@ -11980,5 +12035,78 @@ mod tests {
             "a refused export dropped the reason: {notice:?}"
         );
         refused.client.disconnect();
+    }
+
+    /// The plain-chat row when the session is *already* on a chat: the row the
+    /// reader would leave is the row they are on, so it is a no-op rather than a
+    /// move to the directory it already has.
+    ///
+    /// The chat root is owned by this test (`test_chat_root::Guard`) instead of
+    /// being derived from the process `HOME`: a sibling test swapping `HOME`
+    /// between the fixture and the call is exactly what made this branch flaky
+    /// when it was first written.
+    #[tokio::test]
+    async fn picking_the_chat_already_in_force_is_a_no_op() {
+        let root = tempfile::tempdir().expect("chat root");
+        let _own = super::test_chat_root::Guard::own(root.path().to_path_buf());
+        let chat = super::chat_dir_for("s1");
+        std::fs::create_dir_all(&chat).expect("the chat directory");
+        assert_eq!(
+            chat,
+            format!("{}/s1", root.path().display()),
+            "the chat directory is the root's child"
+        );
+
+        let get_state = format!(r#"{{"sessionId":"s1","cwd":"{chat}"}}"#);
+        let mut live = live_on(&[
+            ("get_state", &get_state),
+            ("get_session_entries", r#"{"entries":[]}"#),
+        ])
+        .await;
+        live.notice = Some("stale".into());
+        live.select_chat_workspace().await;
+        assert!(
+            live.notice.is_none(),
+            "re-picking the chat already in force spoke: {:?}",
+            live.notice
+        );
+        live.client.disconnect();
+    }
+
+    /// A chat whose directory cannot be created is reported, and the client does
+    /// not pretend to have started a session: it is still on the launchpad with
+    /// the reason on the notice row.
+    ///
+    /// `#[cfg(unix)]`: the failure is injected with `chmod 000` on the parent.
+    /// Windows would need an ACL case, which this lane cannot measure here.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_chat_directory_that_cannot_be_created_is_reported() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let blocked = tempfile::tempdir().expect("blocked root");
+        let unwritable = blocked.path().join("locked");
+        std::fs::create_dir_all(&unwritable).expect("the parent");
+        // Nothing may be created under it: the chat root is a *child* of this.
+        std::fs::set_permissions(&unwritable, std::fs::Permissions::from_mode(0o500))
+            .expect("chmod the parent");
+        let _own = super::test_chat_root::Guard::own(unwritable.join("chat"));
+
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        live.to_launchpad();
+        live.new_session().await;
+
+        let notice = live.notice.clone().unwrap_or_default();
+        assert!(
+            !notice.trim().is_empty(),
+            "a chat directory that could not be created left the notice row empty"
+        );
+        assert!(
+            live.detached(),
+            "the client claimed to be in a session it never created"
+        );
+        live.client.disconnect();
+        // Put the permissions back so the temp directory can be removed.
+        let _ = std::fs::set_permissions(&unwritable, std::fs::Permissions::from_mode(0o700));
     }
 }
