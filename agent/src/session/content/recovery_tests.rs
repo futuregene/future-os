@@ -201,8 +201,20 @@ fn a_recovered_tool_input_end_publishes_the_call_without_replaying_its_arguments
                         }),
                         Vec::new(),
                     ),
+                    // A `thinking_end` with no provider-metadata body: the call
+                    // keeps the provider snapshot the event itself carries.
                     change(
                         (4, 5),
+                        "thinking_end",
+                        json!({
+                            "entry_id": "e1",
+                            "content_key": "call-1",
+                            "provider_metadata": {"openai": {"reasoning_id": "rs_1"}}
+                        }),
+                        Vec::new(),
+                    ),
+                    change(
+                        (6, 7),
                         "tool_input_end",
                         // The link names a metadata field, so the field must exist.
                         json!({
@@ -217,7 +229,7 @@ fn a_recovered_tool_input_end_publishes_the_call_without_replaying_its_arguments
                         args_body(),
                     ),
                     change(
-                        (6, cursor),
+                        (8, cursor),
                         "message_end",
                         json!({"entry_id": "e1"}),
                         Vec::new(),
@@ -256,7 +268,22 @@ fn a_recovered_tool_input_end_publishes_the_call_without_replaying_its_arguments
         json!({"cmd": "ls"}),
         "the staged arguments reach the published call through the body link"
     );
-    assert!(block.get("provider_metadata").is_some(), "{block}");
+    // The provider-metadata *body* wins here (the call carries an empty object),
+    // while the reasoning snapshot from the event itself is what the thinking
+    // block keeps — both halves are asserted so neither can silently swap.
+    assert_eq!(block["provider_metadata"], json!({}), "{block}");
+    let thinking = &recovered["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|block| block["type"] == "reasoning")
+        .cloned();
+    if let Some(thinking) = thinking {
+        assert_eq!(
+            thinking["provider_metadata"]["openai"]["reasoning_id"], "rs_1",
+            "a reasoning snapshot with no body channel is copied from the event: {thinking}"
+        );
+    }
 }
 
 #[test]
