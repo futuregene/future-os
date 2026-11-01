@@ -348,16 +348,14 @@ mod tests {
         store
             .db
             .call(|db| {
-                let changed = db.execute(
-                    "UPDATE entries SET content_json=?1 WHERE entry_type='user'",
-                    [serde_json::json!("where is the log?").to_string()],
-                )?;
-                db.execute(
-                    "DELETE FROM content_references WHERE owner_kind='entry' AND field LIKE '/content/%/text'",
-                    [],
-                )?;
-                db.execute("UPDATE message_blocks SET text=NULL", [])?;
-                Ok(changed)
+                let sql = "UPDATE entries SET content_json=?1 WHERE entry_type='user'";
+                db.execute(sql, [serde_json::json!("where is the log?").to_string()])?;
+                let sql = "DELETE FROM content_references \
+                           WHERE owner_kind='entry' AND field LIKE '/content/%/text'";
+                db.execute(sql, [])?;
+                let sql = "UPDATE message_blocks SET text=NULL";
+                db.execute(sql, [])?;
+                Ok(())
             })
             .unwrap();
 
