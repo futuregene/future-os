@@ -1775,6 +1775,93 @@ mod gui {
         }
     }
 
+    /// Every host event the desktop presents, and the entry points behind them.
+    ///
+    /// `present_host_event` is the only sink `future_host` calls for committed backend changes
+    /// (`future_host::events::attach`), so the match is the list of things a GUI may not
+    /// silently drop. These cases assert the **routing** — which entry point each variant
+    /// reaches — because the process-global `APP_HANDLE` is unset in this binary: `run_with`
+    /// is its only writer and no test starts the real app.
+    #[cfg(test)]
+    mod host_event_tests {
+        use super::*;
+        use std::sync::atomic::Ordering;
+
+        /// The premise every case below rests on. If a future test starts the real app, the
+        /// handle becomes a process-global no test can reset, and the `None` arms these
+        /// cases exercise would stop being exercised without any of them turning red.
+        #[test]
+        fn no_running_app_means_no_process_global_handle() {
+            assert!(
+                APP_HANDLE.get().is_none(),
+                "the GUI handle has no reset; a test that starts the real app must not run in this binary"
+            );
+        }
+
+        /// The one variant whose effect survives a missing handle: it allocates the
+        /// process-global revision inside `emit_thread_runtime_updated` and queues the batch.
+        /// The revision moving forward is what says the arm *routed* instead of returning.
+        #[test]
+        fn a_runtime_update_event_reaches_the_coalescing_channel() {
+            let before = NEXT_RUNTIME_REVISION.load(Ordering::Relaxed);
+            present_host_event(future_host::events::Event::ThreadRuntimeUpdated {
+                thread_id: "thread-a".into(),
+                run_id: "run-1".into(),
+                status: "running".into(),
+                reset_projection: false,
+            });
+            assert!(
+                NEXT_RUNTIME_REVISION.load(Ordering::Relaxed) > before,
+                "the event must reach emit_thread_runtime_updated, the only allocator of revisions"
+            );
+        }
+
+        /// Every variant of `future_host::events::Event`, in the order the enum declares them.
+        /// A missing handle is not an error for any of them: the backend publishes committed
+        /// state whether or not a window is listening.
+        #[test]
+        fn every_other_event_is_accepted_without_a_window() {
+            use future_host::events::Event;
+            present_host_event(Event::CloseThreadTerminals("thread-a"));
+            present_host_event(Event::AgentSettings {
+                session_id: "sess",
+                thread_id: "thread-a",
+                event_type: "model_changed",
+                data: "{}",
+            });
+            present_host_event(Event::ReviewUpdated("thread-a"));
+            present_host_event(Event::RemoteActivity("thread-a"));
+            present_host_event(Event::ThreadsUpdated);
+            present_host_event(Event::TasksUpdated);
+            present_host_event(Event::ControlClaimed);
+            present_host_event(Event::ThreadActivity {
+                thread_id: "thread-a",
+                last_message_at: 7,
+            });
+            present_host_event(Event::ApprovalsUpdated {
+                thread_id: "thread-a",
+                approval_request_id: "req-1",
+            });
+            present_host_event(Event::Notification {
+                name: "notice",
+                payload: serde_json::json!({"threadId": "thread-a"}),
+            });
+        }
+
+        /// The entry points the rest of the crate calls *directly* (scheduler, store writes,
+        /// the remote bridge) rather than through an event. Same contract, and the same
+        /// handle-less premise — these are what a startup path calls before the window is up.
+        #[test]
+        fn the_emit_entry_points_are_noops_before_a_window_exists() {
+            emit_review_updated("thread-a");
+            emit_remote_activity("thread-a");
+            emit_threads_updated();
+            emit_tasks_updated();
+            emit_thread_activity("thread-a", 11);
+            emit_approvals_updated("thread-a", "req-1");
+        }
+    }
+
     #[cfg(test)]
     mod startup_paths_tests {
         use super::*;

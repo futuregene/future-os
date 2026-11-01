@@ -580,6 +580,21 @@ mod block_fixtures {
         run_case("owned");
     }
 
+    /// Building the confirmation marks one as open, so the second close request
+    /// during the same quit is answered instead of queueing another dialog.
+    #[test]
+    fn a_quit_confirmation_is_asked_once_and_the_second_request_answers_it() {
+        run_case("confirm-quit");
+    }
+
+    /// The confirmation is the *owned* one while this process owns the Agent:
+    /// quitting then stops every connected client's work, not just this
+    /// Desktop's submitted runs. Building it is what arms "already asking".
+    #[test]
+    fn the_quit_confirmation_of_an_owned_agent_is_built_and_armed() {
+        run_case("owned-confirm");
+    }
+
     #[test]
     fn a_failed_stop_is_a_stopping_status_with_its_reason() {
         run_case("failed-stop");
@@ -600,6 +615,38 @@ mod block_fixtures {
         run_case("quit-repeat");
     }
 
+    /// A launch the host cannot even select is a *fault*, not a yield: the
+    /// status page has to print the worker's own error instead of leaving the
+    /// phase to speak for itself.
+    #[test]
+    fn a_launch_that_cannot_select_a_mode_reports_its_error_on_the_status() {
+        run_case_with_mode("failed-mode", "not-a-mode");
+    }
+
+    /// A fixture case name this module does not know must fail loudly. Silence
+    /// would make a renamed case pass as "the child exited 0 and asserted
+    /// nothing", which is the one failure mode a re-exec fixture cannot see from
+    /// the parent.
+    #[test]
+    fn an_unknown_fixture_case_is_refused_by_name() {
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/host-fixtures");
+        std::fs::create_dir_all(&parent).unwrap();
+        let home = tempfile::tempdir_in(&parent).unwrap();
+        let socket = tempfile::tempdir().unwrap();
+        let output = fixture_command("not-a-case", home.path(), socket.path())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success(),
+            "an unknown case must not pass: {stderr}"
+        );
+        assert!(
+            stderr.contains("unknown case not-a-case"),
+            "the refusal names the case it did not run: {stderr}"
+        );
+    }
+
     fn block_on<F: std::future::Future>(future: F) -> F::Output {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -614,14 +661,23 @@ mod block_fixtures {
             .unwrap()
     }
 
-    fn run_case(case: &str) {
-        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/host-fixtures");
-        std::fs::create_dir_all(&parent).unwrap();
-        let home = tempfile::tempdir_in(&parent).unwrap();
-        // A unix `sun_path` is 104 bytes on macOS, so the socket lives in the
-        // short system temp dir rather than beside the fixture home.
-        let socket = tempfile::tempdir().unwrap();
-        let mut child = Command::new(std::env::current_exe().unwrap())
+    /// A mock app that registered the dialog plugin, so `app.dialog()` resolves.
+    /// Building a confirmation needs the plugin's state; showing one needs a
+    /// native window server, which a libtest process does not have.
+    fn app_with_dialog_plugin() -> tauri::App<tauri::test::MockRuntime> {
+        tauri::test::mock_builder()
+            .plugin(tauri_plugin_dialog::init())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap()
+    }
+
+    /// The child command every case shares: its own `HOME`, its own agent
+    /// socket and exactly one test. `FUTURE_DESKTOP_AGENT_MODE` defaults to
+    /// `auto`; a case that needs the launch to *fail* overrides it through
+    /// [`run_case_with_mode`] rather than mutating the process it runs in.
+    fn fixture_command(case: &str, home: &Path, socket: &Path) -> Command {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
             .args([
                 "--exact",
                 "agent_supervisor::block_fixtures::host_fixture",
@@ -629,14 +685,30 @@ mod block_fixtures {
                 "--test-threads=1",
             ])
             .env(CASE, case)
-            .env("HOME", home.path())
-            .env("USERPROFILE", home.path())
-            .env("FUTURE_HOME", home.path().join(".future"))
+            .env("HOME", home)
+            .env("USERPROFILE", home)
+            .env("FUTURE_HOME", home.join(".future"))
             .env("FUTURE_DESKTOP_AGENT_MODE", "auto")
-            .env("FUTURE_AGENT_SOCKET", socket.path().join("agent.sock"))
+            .env("FUTURE_AGENT_SOCKET", socket.join("agent.sock"))
             .env_remove("FUTURE_AGENT_GRPC_ADDR")
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        command
+    }
+
+    fn run_case(case: &str) {
+        run_case_with_mode(case, "auto");
+    }
+
+    fn run_case_with_mode(case: &str, mode: &str) {
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/host-fixtures");
+        std::fs::create_dir_all(&parent).unwrap();
+        let home = tempfile::tempdir_in(&parent).unwrap();
+        // A unix `sun_path` is 104 bytes on macOS, so the socket lives in the
+        // short system temp dir rather than beside the fixture home.
+        let socket = tempfile::tempdir().unwrap();
+        let mut child = fixture_command(case, home.path(), socket.path())
+            .env("FUTURE_DESKTOP_AGENT_MODE", mode)
             .spawn()
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(120);
@@ -737,6 +809,70 @@ mod block_fixtures {
                 "an unreachable Agent is an error, not silence: {status:?}"
             );
             assert!(status.shutdown.is_none());
+            // The login gate states the same requirement for the login flow:
+            // a ready Agent, or a refusal — never a silent pass.
+            assert!(
+                !block_on(ensure_agent_ready_for_login(mock_app().handle().clone())),
+                "a login cannot proceed without a ready Agent"
+            );
+            return;
+        }
+        if case == "failed-mode" {
+            // `select` refuses a launch mode it does not know, on the calling
+            // thread, before any worker runs. That is `Phase::Failed` with the
+            // error as its text, which is the arm a status poll has to render.
+            let error = crate::agent_host::host()
+                .start("auto".into())
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("FUTURE_DESKTOP_AGENT_MODE"),
+                "the launch fails on the mode, not on the transport: {error}"
+            );
+            assert_eq!(
+                crate::agent_host::host().phase(),
+                crate::agent_host::Phase::Failed(error.clone()),
+                "a refused launch is a fault, and the phase keeps its reason"
+            );
+            let status = block_on(agent_status());
+            assert_eq!(status.phase, "unavailable");
+            assert_eq!(
+                status.error.as_deref(),
+                Some(error.as_str()),
+                "the status carries the worker's own refusal, not a substitute"
+            );
+            return;
+        }
+        if case == "owned-confirm" {
+            // The confirmation text depends on *who owns the Agent*: an owned
+            // service means quitting stops every connected client's work. Build
+            // the dialog with the host owning it — the mock runtime never shows
+            // it, so what this pins is the branch the text was chosen on, read
+            // back through the flag the builder arms.
+            crate::agent_host::host().start("auto".into()).unwrap();
+            assert!(crate::agent_host::host().owns_agent());
+            let dialog = prepare_quit_confirmation(app_with_dialog_plugin().handle());
+            drop(dialog);
+            assert_eq!(
+                on_close_requested(),
+                QuitDecision::Confirm { open_dialog: false },
+                "asking once is recorded, so a second close request does not queue another dialog"
+            );
+            return;
+        }
+        if case == "confirm-quit" {
+            // `confirm_quit` is the close handler's "ask the user" arm. A mock
+            // app cannot present a native dialog, and this case does not need it
+            // to: what is observable is that asking is *recorded* before the
+            // dialog is built, so a second close request answers "already asking"
+            // instead of queueing another. Measured: the call returns at once
+            // and the plugin's queued show task neither blocks nor presents.
+            confirm_quit(app_with_dialog_plugin().handle().clone());
+            assert_eq!(
+                on_close_requested(),
+                QuitDecision::Confirm { open_dialog: false },
+                "confirm_quit must leave exactly one question open"
+            );
             return;
         }
         if case == "owned" {
