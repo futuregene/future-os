@@ -4785,6 +4785,164 @@ mod driver_tests {
             );
             assert!(frames(&painted) >= 1);
         }
+
+        /// A 储藏 entry is read as a whole patch — `stash show --patch` — so a
+        /// rename in a stash arrives as git's own metadata: `similarity index`,
+        /// `rename from`, `rename to`. Those are the lines the pane paints in its
+        /// metadata colour, and they are only visible through a read that spans
+        /// both sides of the rename (a one-path pathspec reports a new file).
+        #[allow(clippy::await_holding_lock)]
+        #[tokio::test]
+        async fn the_stash_tab_paints_git_s_rename_metadata() {
+            let _env = a_peer_may_not_swap_the_environment();
+            let repo = tempfile::tempdir().expect("a temp directory");
+            let git_program = crate::test_env::absolute_tool("git");
+            let git = |args: &[&str]| {
+                let output = std::process::Command::new(&git_program)
+                    .arg("-C")
+                    .arg(repo.path())
+                    .args(args)
+                    .output()
+                    .expect("run git");
+                assert!(output.status.success(), "git {args:?}: {output:?}");
+            };
+            git(&["init", "-q", "-b", "main"]);
+            git(&["config", "user.email", "tui@example.invalid"]);
+            git(&["config", "user.name", "TUI test"]);
+            std::fs::write(repo.path().join("a.txt"), "one\n").expect("write a file");
+            git(&["add", "."]);
+            git(&["commit", "-qm", "first commit"]);
+            git(&["mv", "a.txt", "renamed.txt"]);
+            git(&["stash", "push", "-q", "-m", "a rename"]);
+
+            let mut driver = Driver::attach_conversation_in(repo.path()).await;
+            assert!(!driver.quit_key("ctrl+g").await, "ctrl+g left the app");
+            assert!(
+                driver
+                    .wait_for(Duration::from_secs(20), |driver| driver
+                        .live
+                        .git()
+                        .is_some())
+                    .await,
+                "the log never installed"
+            );
+            // `4` is the 储藏 tab: one entry, read as its own patch.
+            assert!(!driver.quit_key("4").await, "4 left the app");
+            assert!(
+                driver
+                    .wait_for(Duration::from_secs(20), |driver| driver
+                        .live
+                        .git()
+                        .is_some_and(|view| view.section
+                            == crate::workbench::state::GitSection::Stash))
+                    .await,
+                "the stash tab never landed"
+            );
+            let view = driver.live.git().cloned().expect("a view");
+            assert!(
+                view.detail
+                    .iter()
+                    .any(|line| line.starts_with("similarity index")),
+                "the stash's patch is what this tab reads: {:?}",
+                view.detail
+            );
+            // A narrow frame paints one pane at a time; `tab` gives the keys (and
+            // the screen) to the patch.
+            assert!(!driver.quit_key("tab").await, "tab left the app");
+            let painted = driver.pump(Duration::from_millis(300)).await;
+            let text = text_of(&painted);
+            for line in [
+                "similarity index",
+                "rename from a.txt",
+                "rename to renamed.txt",
+            ] {
+                assert!(text.contains(line), "the pane dropped `{line}`: {text}");
+            }
+        }
+
+        /// A session opened in a subdirectory of a repository lists the whole
+        /// tree — `git status` names paths from the repository root — but a
+        /// patch is read from the session's own workspace. A change outside it
+        /// has no patch to show, and the pane says that rather than painting a
+        /// blank box beside a row the reader can see.
+        #[allow(clippy::await_holding_lock)]
+        #[tokio::test]
+        async fn a_change_outside_the_session_s_own_directory_has_nothing_to_show() {
+            let _env = a_peer_may_not_swap_the_environment();
+            let repo = tempfile::tempdir().expect("a temp directory");
+            let git_program = crate::test_env::absolute_tool("git");
+            let git = |args: &[&str]| {
+                let output = std::process::Command::new(&git_program)
+                    .arg("-C")
+                    .arg(repo.path())
+                    .args(args)
+                    .output()
+                    .expect("run git");
+                assert!(output.status.success(), "git {args:?}: {output:?}");
+            };
+            git(&["init", "-q", "-b", "main"]);
+            git(&["config", "user.email", "tui@example.invalid"]);
+            git(&["config", "user.name", "TUI test"]);
+            std::fs::write(repo.path().join("a.txt"), "one\n").expect("write a file");
+            std::fs::create_dir(repo.path().join("sub")).expect("a subdirectory");
+            git(&["add", "."]);
+            git(&["commit", "-qm", "first commit"]);
+            // The change is one level *above* where the session is rooted.
+            std::fs::write(repo.path().join("a.txt"), "two\n").expect("edit the file");
+
+            let mut driver =
+                Driver::attach_conversation_in(&repo.path().join("sub")).await;
+            assert!(!driver.quit_key("ctrl+g").await, "ctrl+g left the app");
+            assert!(
+                driver
+                    .wait_for(Duration::from_secs(20), |driver| driver
+                        .live
+                        .git()
+                        .is_some())
+                    .await,
+                "the log never installed"
+            );
+            assert!(!driver.quit_key("3").await, "3 left the app");
+            assert!(
+                driver
+                    .wait_for(Duration::from_secs(20), |driver| driver
+                        .live
+                        .git()
+                        .is_some_and(|view| view.section
+                            == crate::workbench::state::GitSection::Status))
+                    .await,
+                "the working-tree tab never landed"
+            );
+            let view = driver.live.git().cloned().expect("a view");
+            assert!(
+                !view.rows.is_empty(),
+                "the tab does not list the change: {:?}",
+                view.rows
+            );
+            assert!(
+                view.detail.is_empty(),
+                "a patch was read from outside the workspace: {:?}",
+                view.detail
+            );
+            // The list is what the reader has: the tab names the change.
+            let listed = text_of(&driver.pump(Duration::from_millis(300)).await);
+            assert!(
+                listed.contains("a.txt"),
+                "the row the pane describes is not on screen: {listed}"
+            );
+            // A narrow frame paints one pane at a time; `tab` shows the patch.
+            assert!(!driver.quit_key("tab").await, "tab left the app");
+            let painted = driver.pump(Duration::from_millis(300)).await;
+            let text = text_of(&painted);
+            let placeholder = crate::workbench::i18n::t(
+                driver.workbench.lang,
+                crate::workbench::i18n::Key::GitNoSelection,
+            );
+            assert!(
+                text.contains(placeholder),
+                "the detail pane painted nothing at all: {text}"
+            );
+        }
     }
 
     mod loop_edges {
