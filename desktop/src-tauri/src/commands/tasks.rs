@@ -69,6 +69,23 @@ pub fn apply_task_revision(id: String, revision_id: String) -> Result<TaskView, 
 mod tests {
     use super::*;
 
+    fn task_input(name: &str, prompt: &str) -> TaskInput {
+        TaskInput {
+            name: name.into(),
+            prompt: prompt.into(),
+            cwd: std::env::temp_dir().display().to_string(),
+            model_id: Some("future/gpt-5".into()),
+            thinking_level: Some("high".into()),
+            timezone: Some("Asia/Shanghai".into()),
+            session_policy: Some("existing".into()),
+            conversation_mode: Some("chat".into()),
+            session_retention: None,
+            trigger_kind: Some("manual".into()),
+            trigger: Some(serde_json::json!({ "mode": "manual" })),
+            enabled: None,
+        }
+    }
+
     #[test]
     fn async_command_wrappers_reject_malformed_bodies() {
         crate::commands::ipc_harness::assert_all_reject_bad_body(
@@ -105,5 +122,92 @@ mod tests {
             tauri::generate_handler![update_task],
             &[("update_task", serde_json::json!({ "id": "tsk_1" }))],
         );
+    }
+
+    /// The task screen's whole command surface against one private store: every
+    /// assertion is on a value the *service* derived from the argument the
+    /// wrapper passed, so an argument dropped on the way through shows up as the
+    /// default instead (a task with no timezone, an unchanged prompt, an
+    /// un-queued run). The two dependency commands are deliberately refusals —
+    /// that refusal is the contract, and it must not be swallowed here.
+    #[test]
+    fn every_task_command_forwards_its_arguments_to_the_service() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("cmd_tasks_wave");
+        assert!(list_tasks().expect("empty list").is_empty());
+
+        let created = create_task(task_input("daily", "first prompt")).expect("create");
+        assert_eq!(created.name, "daily");
+        assert_eq!(created.prompt, "first prompt");
+        assert_eq!(created.timezone, "Asia/Shanghai", "the zone was forwarded");
+        assert_eq!(created.conversation_mode, "chat");
+        assert_eq!(created.session_policy, "existing");
+        assert_eq!(created.trigger_kind, "manual");
+        assert!(created.enabled, "a new task is enabled");
+        assert_eq!(created.prompt_version, 1);
+
+        let listed = list_tasks().expect("list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, created.id);
+
+        let updated =
+            update_task(created.id.clone(), task_input("daily", "second prompt")).expect("update");
+        assert_eq!(
+            updated.id, created.id,
+            "the edited row is the requested one"
+        );
+        assert_eq!(updated.prompt, "second prompt");
+        assert_eq!(updated.prompt_version, 2, "the edit is a new revision");
+
+        let disabled = set_task_enabled(created.id.clone(), false).expect("disable");
+        assert!(!disabled.enabled, "the flag reached the row");
+
+        let queued = run_task_now(created.id.clone()).expect("run now");
+        assert!(
+            queued.queued,
+            "the explicit run request is waiting for a tick"
+        );
+
+        assert!(
+            list_task_runs(created.id.clone(), None)
+                .expect("runs")
+                .is_empty(),
+            "a manual trigger has not produced a run yet"
+        );
+
+        assert!(
+            list_task_deps(created.id.clone()).expect("deps").is_empty(),
+            "task dependencies are gone, so there are never any edges"
+        );
+        let added = set_task_dep(created.id.clone(), "other".into(), Some("success".into()));
+        let added_error = added.expect_err("adding a dependency is refused");
+        assert!(added_error.to_string().contains("removed"), "{added_error}");
+        let removed_error = remove_task_dep(created.id.clone(), "other".into())
+            .expect_err("removing a dependency is refused");
+        assert!(
+            removed_error.to_string().contains("no edges"),
+            "{removed_error}"
+        );
+
+        let revisions = list_task_revisions(created.id.clone()).expect("revisions");
+        let first = revisions
+            .iter()
+            .find(|revision| revision.version == 1)
+            .expect("the original prompt is kept as a revision");
+        assert_eq!(first.prompt, "first prompt");
+        let applied =
+            apply_task_revision(created.id.clone(), first.id.clone()).expect("apply revision");
+        assert_eq!(
+            applied.prompt, "first prompt",
+            "the requested revision, not the newest one, is applied"
+        );
+
+        delete_task(created.id.clone()).expect("delete");
+        assert!(
+            list_tasks().expect("list after delete").is_empty(),
+            "a deleted task is no longer listed"
+        );
+
+        // A ghost id is an error, not a silent success: the panel reports it.
+        assert!(delete_task("tsk_absent".into()).is_err());
     }
 }
