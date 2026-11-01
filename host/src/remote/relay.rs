@@ -904,5 +904,17 @@ mod tests {
             matches!(error, crate::Error::RemoteTransport(_)),
             "revoke reports transport the same way, got {error:?}"
         );
+
+        // Rotation is the third call that has to survive an unreachable relay:
+        // the credential it would have replaced is still the one in use, so the
+        // failure has to be transport (retryable) and not a refusal.
+        let error = a_refused_grant(
+            refresh(&creds).await,
+            "nothing answers the rotation endpoint",
+        );
+        assert!(
+            matches!(error, crate::Error::RemoteTransport(_)),
+            "a refused connection is transport for refresh too, got {error:?}"
+        );
     }
 }

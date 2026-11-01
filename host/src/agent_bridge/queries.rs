@@ -980,6 +980,31 @@ mod probe_tests {
         assert_eq!(sent.max_bytes, 1024);
     }
 
+    /// A projection that runs past the replay window the events were cut to is
+    /// refused rather than folded together: the two halves come from different
+    /// moments, and a consumer that merged them would silently skip whatever
+    /// fell between.
+    #[tokio::test]
+    async fn a_projection_past_the_replay_window_is_refused() {
+        let _home = TestHome::new("queries-window");
+        let mock = mock_agent();
+        mock.push_typed_data(
+            "get_events_since",
+            serde_json::json!({
+                "runId": "run_1",
+                "events": [{"idx": 2}],
+                "hasMore": false,
+                "watermark": 10,
+                "projection": {"cursor": 50, "events": []},
+            }),
+        );
+
+        let error = read_events_since("sess_1".into(), "run_1".into(), -1, None, None)
+            .await
+            .expect_err("a projection past the watermark is not a page");
+        assert_eq!(error.to_string(), "replay_window_changed");
+    }
+
     /// A settled run whose projection the Agent can no longer serve is `None`,
     /// not an error: the caller falls back to the journal instead of showing a
     /// broken conversation. The two codes the Agent uses for that are the ones
