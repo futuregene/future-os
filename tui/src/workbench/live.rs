@@ -11067,10 +11067,18 @@ mod tests {
                 .expect("chmod the stub");
         }
 
-        // `PATH` is process-global: take the crate's lock, and put it back with
-        // the guard even if the assertion below panics.
+        // `PATH` is process-global and the rest of the suite runs in this same
+        // process, so the stub is *prepended*: it shadows the real opener for
+        // this test while every other tool (`git`, the shell) still resolves.
+        // Replacing `PATH` outright made unrelated tests that spawn `git` fail
+        // with `NotFound` while this one held the lock — measured as the
+        // `run.rs` repository suites failing 2 runs in 3 (see the round-13
+        // report). The crate's lock is still taken, and the guard puts `PATH`
+        // back even if an assertion below panics.
+        let original = std::env::var("PATH").unwrap_or_default();
+        let prepended = format!("{}:{original}", dir.path().display());
         let _guard = crate::test_env::lock();
-        let _path = crate::test_env::EnvVarGuard::set("PATH", dir.path());
+        let _path = crate::test_env::EnvVarGuard::set("PATH", &prepended);
         live.notice = None;
         live.open_url("https://example.com/stub");
         assert!(
@@ -11078,17 +11086,19 @@ mod tests {
             "a link the opener accepted reported an error: {:?}",
             live.notice
         );
-
-        // No opener on `PATH` at all.
-        let empty = tempfile::tempdir().expect("tempdir");
-        let _path = crate::test_env::EnvVarGuard::set("PATH", empty.path());
-        live.notice = None;
-        live.open_url("https://example.com/stub");
-        assert!(
-            live.notice.is_some(),
-            "a link with no opener on PATH failed silently"
-        );
         live.client.disconnect();
+
+        // The `spawn()?` failure arm is **not** covered here, and cannot be:
+        // reaching it means the opener must not resolve at all, which needs
+        // `PATH` emptied — process-global, in a process running the rest of this
+        // suite in parallel. Measured: with `PATH` emptied, unrelated tests that
+        // spawn `git` fail with `NotFound` (2 of 3 full runs, `run.rs` repository
+        // suites). Shadowing the opener instead does not work either: `execvp`
+        // skips a non-executable match and finds the real `open` (measured — the
+        // notice stayed `None`). The arm is recorded as open in
+        // `docs/testing/coverage-waivers-2026-11/tui.md`; it needs a child
+        // process with no opener on `PATH`, which is a measurement task, not a
+        // test that can share this process.
     }
 
     /// `/continue`-style attach: the session list is re-read and the newest row
