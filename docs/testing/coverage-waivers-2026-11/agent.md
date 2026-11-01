@@ -3,14 +3,14 @@
 **Metric A** — a line counts as uncovered iff its LCOV record is `DA:<line>,0`. The
 llvm-cov *summary* percentage is not the acceptance number.
 
-**Last measurement**: `test/cov-agent` at `6afbb3337`, Rust **1.99.1** (`rust-toolchain.toml`),
-macOS arm64, lcov `coverage/2026-11/after/agent/lcov-wave45.info`, run log `wave45.log`
-(**12 test targets, 2897 passed, 0 failed, 0 panics**). The ledger below was regenerated from
+**Last measurement**: `test/cov-agent` at this wave's tip (cut from `dev-huichen` @ `6d8994349`), Rust **1.99.1** (`rust-toolchain.toml`),
+macOS arm64, lcov `coverage/2026-11/after/agent/lcov-wave49.info`, run log `wave49.log`
+(**12 test targets, 2967 passed, 0 failed, 0 panics**). The ledger below was regenerated from
 that lcov and passes its own check. Measure with `measure-guard.sh`, never with a bare
 `cargo llvm-cov --no-report` — see *Wave 39* for why.
 
-**Result**: `DA:0` = **1121** lines in **129** files under `agent/src`. This branch has cleared
-**552** of the 1673 it started from. Of the 1121:
+**Result**: `DA:0` = **1103** lines in **129** files under `agent/src`. This branch has cleared
+**570** of the 1673 it started from. Of the 1103:
 
 > **A ~100-line jump in a total is a broken run, not noise (wave 39).** `cargo llvm-cov` runs
 > `cargo test`, which stops at the first failing test *target*; `cli_smoke` fails intermittently
@@ -34,12 +34,12 @@ that lcov and passes its own check. Measure with `measure-guard.sh`, never with 
 
 | state | lines |
 |---|---:|
-| **waived** (mechanism + falsifier named below, 11 rows) | **134** |
-| `open` — **no test and no justification yet** | **987** |
+| **waived** (mechanism + falsifier named below, 12 rows) | **144** |
+| `open` — **no test and no justification yet** | **959** |
 
-Reconciliation: of the 1131 rows, the 11 waiver rows below name **134** lines, and the remaining
-**997** carry no justification yet. The generated ledger's class column (`open`, `a`, `W6`, `W5`,
-`W7`, `W1`, `lane`) *subdivides* those 997; it does not reduce them.
+Reconciliation: of the 1103 rows, the 12 waiver rows below name **144** lines, and the remaining
+**959** carry no justification yet. The generated ledger's class column (`open`, `a`, `W6`, `W5`,
+`W7`, `W1`, `lane`) *subdivides* those 959; it does not reduce them.
 
 The class column of the generated ledger is a first-cut reading of each line's own text
 (`?` tails, lone `}`, `tracing::`, `assert`, platform attributes). **It is not a waiver.**
@@ -69,7 +69,7 @@ The working copies (`ledger-gen.py`, `ledger.md`, the lcov files) live under the
 `coverage/2026-11/after/agent/`, which is why this file exists in `docs/`: the numbers above
 are reproducible from the commands shown, with nothing but the lcov file.
 
-## Waived (134 lines)
+## Waived (144 lines)
 
 Category names follow `.future/memory/coverage-llvm-cov.md` (W1 cfg(windows) · W2 defensive
 dead arm · W3 OS failure injection · W4 race window · W5 attribution artifact · W6 ghost line
@@ -83,13 +83,14 @@ it needs.
 | 2 | `sandbox/linux/glob_scan.rs:613-639` | 24 | **lane (ignored acceptance)** | body of `large_workspace_exceeds_old_node_limit_without_failing` | remove `#[ignore = "creates over 100000 entries …"]` and run it: it needs ~100 k files and minutes, which is why it is a lane rather than a test |
 | 3 | `session/content/transport.rs:212` | 1 | **W2** | `Encoding::ToolArgumentsStringV1 => bail!("entry-only encoding cannot be used by a stream content request")` | none possible: see below |
 | 4 | `sandbox/mod.rs:1041,1059` | 2 | **W1** (candidate) | close brace / `SandboxBackendReceipt::Unavailable` under a Windows-only path | run the suite on Windows; **not yet verified line by line** — see "what is not claimed" |
-| 5 | `rpc/commands/settings.rs:14-17,19,39` | 6 | **W2** | the `serde_json::to_value(...).unwrap_or_else(&vert;» json!({"available": false, "code": "serialization_failed"}))` fallbacks in the two probe handlers | none reachable: `SandboxProbeResult` is `bool`, two `String`s and three `Option`s of `PathBuf`/`String`/`LinuxSandboxCapabilities`, whose fields are all `bool` or `String` (`sandbox/mod.rs:1067-1077`, `sandbox/linux/probe.rs:148-160`); `to_value` fails only on non-string map keys and non-finite floats, which that shape cannot produce |
-| 6 | `rpc/commands/settings.rs:21-24,43-46,53-56,548-552,555-562,570-571` | 23 | **W3** (host capability) | the probe **error** arms, the Windows-only reset arm, and the "sandbox tier unavailable → Manual" fallback | the macOS probe body always returns `Ok` (`sandbox/mod.rs:1082-1100`: `available` is `/usr/bin/sandbox-exec`'s existence), so the error arms need a host whose probe fails and the fallback needs a host without that binary; falsify by running these settings tests on either |
+| 5 | `rpc/commands/settings.rs:12-14,17-19` | 6 | **W2** | the `serde_json::to_value(...).unwrap_or_else(&vert;» json!({"available": false, "code": "serialization_failed"}))` fallbacks in the two probe handlers | none reachable: `SandboxProbeResult` is `bool`, two `String`s and three `Option`s of `PathBuf`/`String`/`LinuxSandboxCapabilities`, whose fields are all `bool` or `String` (`sandbox/mod.rs:1067-1077`, `sandbox/linux/probe.rs:148-160`); `to_value` fails only on non-string map keys and non-finite floats, which that shape cannot produce |
+| 6 | `rpc/commands/settings.rs:28-31,48-51,58-61,553-557,560-567,575-576` | 27 | **W3** (host capability) | the probe **error** arms, the Windows-only reset arm, and the "sandbox tier unavailable → Manual" fallback | the macOS probe body always returns `Ok` (`sandbox/mod.rs:1082-1100`: `available` is `/usr/bin/sandbox-exec`'s existence), so the error arms need a host whose probe fails and the fallback needs a host without that binary; falsify by running these settings tests on either. Ranges re-derived from `lcov-wave48.info`: the previous ones were five lines stale after the settings refactor in `6d8994349` |
 | 7 | `rpc/session_prompt.rs:306-314` | 9 | **W2** (candidate) | the non-segmented transcript scan for a duplicate `run_id` | only reachable when a session is **not** ephemeral yet its broadcaster is **not** segmented, which the constructor cannot produce unless `configure_journal` failed (`rpc/session.rs:288` swallows that error); the same store then answers `ensure_execution_allowed` first (`session_prompt.rs:260-266`) with `PersistenceUnavailable`, so the scan is never reached. Falsified by a fixture that makes `configure_journal` fail while the store still accepts execution |
 | 8 | `session/content/reader_recall.rs:51-59` | 9 | **W2** (candidate) | `Field::page`'s `Source::Inline` arm (slice straight from the `message_blocks` column) | reachable only for a **format-2** entry whose block text stayed inline, i.e. whose reference did not resolve when it was written (`entry_records.rs:302-315` sets `text = NULL` exactly when the reference resolves). A pre-canonical conversation does keep inline text, but the canonical reader refuses it outright — measured: `Snapshot::recall` on a `bind_legacy_events` session answers `wrong transcript reader format`. Falsified by finding a writer path that stores inline text in a format-2 session while staging is skipped |
 | 9 | `rpc/commands/providers.rs:370-375,389-391` | 9 | **W6** (attribution) | the `.map(|levels| …collect())` that stringifies a provider's or model's declared thinking-level list | the value it produces is asserted by `list_models_sends_each_models_thinking_levels_and_starting_level`, and that test **passes** while these rows record `DA=0` when it runs alone; a second identical run of the same binary records `DA=2`. A record that disagrees with a passing assertion about its own output is wrong about the line. Falsified by an instrumented build in which the closure body's region lands on the source line in every run |
 | 10 | `llm/mod.rs:439` | 1 | **W4** (race window) | `return;` after `if tx.is_closed()` — the stream stops when the receiver has gone | whether the receiver is observed closed at that instant is a timing property: `stability.py` shows the row flipping between runs of the same binary. Covered whenever the consumer disconnects before the next frame, which no ordering guarantee forces |
 | 11 | 26 rows, listed below | 26 | **W2** (assertion-failure arms) | the `panic!` / `unreachable!` arm of an assertion inside `#[cfg(test)]`: it runs only when the test is *already failing* | none possible by design: a green suite never executes them. `testside.py --rows <lcov>` re-derives the list from any measurement; every row spot-checked on this tree reads `panic!(…)` / `unreachable!()` |
+| 12 | `console.rs:335-337,593-595` | 6 | **W7** (mock trait body) | the `flush` bodies of the two test-local `Write` mocks (`Broken`, `Written`) | not removable: `std::io::Write::flush` is a **required** trait item with no default body, so deleting either impl stops the crate compiling — measured 2026-11-02 on this tree: `error[E0046]: not all trait items implemented, missing: flush`, twice, in `wave48-fast-console.log`. No product path can call them either: `write_line` writes and never flushes, and the `tracing` writer's flush belongs to the subscriber |
 
 ### 11. The 26 assertion-failure arms
 
@@ -162,33 +163,38 @@ A stream content range can never carry `tool_args_string_v1`:
 (`session/content/transport_tests.rs`), which asserts both refusals. Falsified by finding any
 writer or schema path that can store that encoding for a stream range — the test would fail.
 
-## Open (1133 lines) — no waiver claimed
+## Open (959 lines) — no waiver claimed
 
-Raw `DA:0` counts from `lcov-after24.info`; the 98 waived lines above are **inside** these
+Raw `DA:0` counts from `lcov-wave48.info`, re-derived per file with
+`coverage/2026-11/after/agent/file-counts.py`; the 144 waived lines above are **inside** these
 counts, so a row's open share is its count minus its waiver row (e.g. `execution.rs` 41 − 24).
+The previous revision of this table quoted counts from `lcov-after24.info` that had drifted by
+up to 19 lines per file; the generated ledger in `coverage/` stays the authority for
+individual lines.
 
 | file | `DA:0` | mechanism |
 |---|---:|---|
-| `rpc/session_prompt.rs` | 35 | the mid-run transcript-write arm (`fail_persistence`, reachable only through an overloaded persistence queue) and the terminal-error arms; the legacy admission answers are covered now |
-| `rpc/commands/settings.rs` | 41 | 29 of these are the waived serialization/probe rows; the rest are `332-338` (thread-spawn failure, W3) and the per-arm refusals |
+| `rpc/session_prompt.rs` | 15 | the mid-run transcript-write arm (`fail_persistence`, reachable only through an overloaded persistence queue) and the terminal-error arms; the legacy admission answers are covered now |
+| `rpc/commands/settings.rs` | 41 | 33 of these are the waived serialization/probe rows (waiver rows 5 and 6); the rest are `337-343` (thread-spawn failure, W3) and the per-arm refusals |
 | `tools/shell/execution.rs` | 41 | 24 of these are the waived Linux helper block; the other 17 are the exit-status edge and the timeout drain |
-| `session/content/recovery.rs` | 38 | recovery of partially committed message drafts |
+| `session/content/recovery.rs` | 19 | recovery of partially committed message drafts |
 | `agent/run_loop.rs` | 36 | tool-approval denial arms and the truncation reporter |
-| `session/content/reader.rs` | 35 | the remaining header/column arms around the targeted read |
+| `session/content/reader.rs` | 31 | the remaining header/column arms around the targeted read |
 | `compaction/semantic/evidence.rs` | 33 | evidence summariser arms that need a real compaction transcript |
-| `rpc/session.rs` | 26 | the stop-before-recovery edge and the scheduler-pause diagnostics |
-| `session/content/entries.rs` | 33 | staged-reset placeholders and the extension staging loop |
-| `session/content/reader_recall.rs` | 32 | `find()`'s cross-page carry tail and the snippet arms |
+| `rpc/session.rs` | 22 | the stop-before-recovery edge and the scheduler-pause diagnostics |
+| `session/content/entries.rs` | 25 | staged-reset placeholders and the extension staging loop |
+| `session/content/reader_recall.rs` | 18 | `find()`'s cross-page carry tail and the snippet arms |
 | `sandbox/linux/glob_scan.rs` | 28 | 24 waived (ignored acceptance); the walk's own edges are open |
 | `service/mod.rs` | 23 | `AgentService` accessors and the models-synced callback, which needs a live service |
-| `session/content/mod.rs` | 22 | `seal`/`seal_json` conflicting-digest guards and the `?` tails |
+| `session/content/mod.rs` | 16 | `seal`/`seal_json` conflicting-digest guards and the `?` tails |
 | `service/shutdown.rs` | 21 | shutdown drain arms |
-| `session/content/reader_summary.rs` | 21 | the batch/summary preview fallbacks |
+| `session/content/reader_summary.rs` | 13 | the batch/summary preview fallbacks |
 | `compaction/durable.rs` | 20 | the idempotent-replay arm and the checkpoint arms |
 | `rpc/broadcaster/mod.rs` | 16 | admission/close arms and the live-delta split tail |
-| `session/content/journal.rs` | 20 | the batch commit tail and the string-argument repair |
+| `session/content/journal.rs` | 18 | the batch commit tail and the string-argument repair |
 | `rpc/commands/session_lifecycle.rs` | 17 | fork/clone failure arms and the legacy-history scan |
-| rest (≈ 111 files) | 595 | mostly single `?` error edges; the generated ledger names each line |
+| `console.rs` | 9 | 6 waived (row 12, the mocks' `flush` bodies); the rest are one failure-only `panic!` and the two arms of the line-fixture loop that only run when an unexpected line arrives before the marker |
+| rest (≈ 111 files) | 641 | mostly single `?` error edges; the generated ledger names each line |
 
 ### The mid-run transcript-write defect, narrowed
 
@@ -256,6 +262,107 @@ Two consequences the lane has to live with, both now recorded:
    claims 100 % will have to show the `providers.rs` rows covered in the same run as everything
    else, or the number is a draw from a distribution. The honest target is the named-row ledger
    with every row either covered or exempted, which is what this file already is.
+
+## Wave 47: a red run the guard caught, the console writers, and four eager assertions
+
+Measured at this wave's tip (`dev-huichen` @ `6d8994349` + the tests below): **`DA:0` 1121 → 1103**,
+lcov `lcov-wave49.info`, **12 of 12 targets, 2967 passed, 0 failed, 0 panics**. Split honestly:
+**17** rows are this wave's tests and **1** is a known W4 flip (`llm/mod.rs:439`, waiver row 10 —
+missed in `lcov-wave45.info` and again in wave49, covered in wave48; same source, three runs).
+
+Two green runs of the final tree (`lcov-wave48.info`, `lcov-wave49.info`) both total **1103** and
+differ by exactly **2 rows**, neither of them code this wave touched: `llm/mod.rs:439` again, and
+`session/content/reset.rs:285` (the `DELETE FROM stream_runs` tail of the chunked reclaim, reached
+only when an earlier pass already drained the stream — order-dependent, so it moves with the test
+schedule, not with the source). Read the total as stable to ±2, and a single wave's gain smaller
+than three rows as unresolvable without the per-row stability check (`stability.py`).
+
+### The first run of this wave was red, and its lcov was never quoted
+
+`measure-guard.sh` refused `wave47`: `agent/tests/cli_smoke.rs` failed 1 of 25 with
+
+```
+Error: Agent failed to stop: Agent shutdown deadline exceeded during runs and native work;
+       instance ownership retained
+```
+
+The log is kept as `coverage/2026-11/after/agent/wave47-red.log`. The tree was **not** changed in
+response — the next run of it, with only this wave's tests added, was green — so this is the
+shutdown-deadline flake the lane has seen before under load, and the guard's job is exactly this:
+a truncated or red run's lcov reads *better* than the tree (wave 39: 100 rows), so it must not be
+quoted. This is the second wave the counter has saved.
+
+### The four console writers now each have their failure arm measured
+
+`sandbox`-free, no network: the module's whole contract is that a write whose stream is gone is
+**dropped, not fatal**, and before this wave only the success paths ran.
+
+| test | what it asserts (not just "it ran") |
+|---|---|
+| `console::tests::an_unusable_stream_is_reported_once` | a counting `tracing` writer: the **first** failed write of a stream logs the note, the **second** logs nothing (a gate that never closes passes "a warning was logged" and fails this), and a different stream is still reportable |
+| `console::tests::a_write_to_a_dead_stream_survives` + `the_dead_stream_fixture` | the child replaces **both** standard streams with the write ends of pipes whose read end is already closed, calls all four writers (`println!`, `print!`, `eprintln!`, `eprint!`), and leaves its evidence **in a file** — the only channel left; the parent asserts the child reached the end and that both halves were reported |
+| `console::tests::a_stream_repair_is_not_offered_where_streams_are_descriptors` | the non-Windows `Ok(false)` contract, and that a refused repair creates no file |
+
+Result on `console.rs`: **22 → 9** `DA:0`. The nine left are waiver row 12 (six: the two mocks'
+`flush` bodies) plus one failure-only `panic!` and two arms of the *existing* line-fixture loop.
+
+Two measurement facts this depended on, both checked rather than assumed:
+
+- **A child process's coverage is merged.** `cargo llvm-cov` sets `LLVM_PROFILE_FILE` with `%p`, so
+  a spawned copy of the test binary writes its own profraw (42 files after a 7-test run). Without
+  that the fixture would be a smoke test, not a measurement.
+- **The fixture has to kill *both* streams to reach *both* halves.** The first version pointed only
+  stdout at a dead pipe and left the marker on stderr: it covered `write_out_line`'s arm and left
+  `write_err_line`'s untouched — visible as `82` staying `DA:0` while `92-93` cleared. The parent
+  now reads a marker file instead.
+
+### Four assertion messages that were never built
+
+`assert!(cond, "… {:?}", *session.cumulative_cost_split.lock())` builds its argument **only when
+the assertion fails**, so the argument's own line records `DA:0` on every green run (taxonomy (e)
+in `.future/memory/coverage-llvm-cov.md`). Four such rows in `rpc/session.rs`
+(`5728/5765/5901/6180` in wave-45 numbering) now read
+
+```rust
+let replayed = *(session.cumulative_cost_split.lock());
+assert!((replayed.input - 101.0).abs() < 1e-9, "the journal covers the whole session: {replayed:?}");
+```
+
+The value is now read on every run — the failure message is built eagerly, which is the documented
+remedy. This is a change to the *test*, not a comment about it.
+
+### What did not work
+
+Deleting the two mock `flush` impls to make their six rows disappear. `std::io::Write::flush` is a
+**required** trait item with no default body: `error[E0046]: not all trait items implemented,
+missing: flush`, twice (`wave48-fast-console.log`). The rows became waiver row 12 — and that
+compile error is now the row's own falsifier.
+
+### Numbers re-derived rather than carried forward
+
+Two places in this file were quoting ranges measured two refactors ago:
+
+- waiver rows 5 and 6 named `settings.rs:14-17,19,39` and `:21-24,…,570-571`; the current
+  `DA:0` set is `12-14,17-19` and `28-31,48-51,58-61,553-557,560-567,575-576` (**27**, not 23 —
+  the earlier count was five lines light, not five lines heavy).
+- the Open table's per-file counts came from `lcov-after24.info` and had drifted by up to 19 rows
+  (`session/content/recovery.rs` 38 → 19, `reader_recall.rs` 32 → 18). They are re-derived from
+  `lcov-wave48.info` with the new `file-counts.py`.
+
+Both are why the header now says **144 waived / 959 open**: the waiver total moved by the row-6
+correction (+4) and the new row 12 (+6), not by a new claim about behaviour.
+
+### The next useful check, in order
+
+1. `session/content/reader.rs` (31) — several rows look like the `field()` args/text closure, but
+   `reader_tests.rs:467-478` already drives both pointers, so **read the current DA:0 set first**
+   (`missed-of.py … reader.rs`); a row that disagrees with a passing assertion about its own
+   output is an attribution row, not work.
+2. `compaction/semantic/evidence.rs` (33) — the largest single file with no whole-function gap;
+   it needs a real compaction transcript fixture, i.e. the same shape as wave 32's.
+3. `rpc/commands/settings.rs` (41) — 33 are waived; the remaining 8 are the thread-spawn failure
+   (W3: needs `spawn` to fail) and per-arm refusals, each one a small dedicated test.
+
 
 ## Wave 41: the gate's missing term, and two boundary guards
 
