@@ -3,25 +3,27 @@
 **Metric A** — a line counts as uncovered iff its LCOV record is `DA:<line>,0`. The
 llvm-cov *summary* percentage is not the acceptance number.
 
-**Last measurement**: `test/cov-agent` at `2f4e66046` (cut from `origin/dev-huichen@79bd2bd37`),
-Rust **1.99.1** (`rust-toolchain.toml`), macOS arm64, lcov
-`coverage/2026-11/after/agent/lcov-after24.info`, run log `after24.log`.
+**Last measurement**: `test/cov-agent` at `0a70974db` (the wave-25 tree: vendored SQLite at
+`-O3`, statement cache 256), Rust **1.99.1** (`rust-toolchain.toml`), macOS arm64, lcov
+`coverage/2026-11/after/agent/lcov-wave26.info`, run log `wave26-cov.log`. The ledger below was
+regenerated from that lcov and passes its own check (wave 29).
 
-**Result**: `DA:0` = **1231** lines in **130** files under `agent/src` (83 585 executable,
-98.53 % per-line). Three waves on this branch have cleared **442** of the 1673 it started
-from. Of the 1231:
+**Result**: `DA:0` = **1211** lines in **129** files under `agent/src`. This branch has cleared
+**462** of the 1673 it started from (waves 23, 26 and 27; wave 24-25 changed the suite's speed,
+not which lines it reaches). Of the 1211:
 
 | state | lines |
 |---|---:|
 | **waived** (mechanism + falsifier named below) | **98** |
-| `open` — **no test and no justification yet** | **1133** |
+| `open` — **no test and no justification yet** | **1113** |
 
-Reconciliation (the rows below sum to the measured total): waived 24 (`glob_scan.rs` ignored
-acceptance, class `lane`) + 24 (`execution.rs` Linux helper block, class `open` there because
+Reconciliation (the rows below describe the 98 waived lines; they were written against the
+1231-line measurement and their line numbers were re-checked against the 1211 one in wave 29):
+waived 24 (`glob_scan.rs` ignored acceptance, class `lane`) + 24 (`execution.rs` Linux helper block, class `open` there because
 the line text carries no attribute) + 1 (`transport.rs:212`, class `open`) + 2 (Windows
 candidates, class `W1`) + 6 (`settings.rs` serialization fallbacks, class `open`) + 23
 (`settings.rs` probe-error / host-capability arms, class `open`) = **98** waived, and the
-remaining **1133** are `open`. The generated ledger's class column (`open`, `a`, `W6`, `W5`,
+remaining **1113** are `open`. The generated ledger's class column (`open`, `a`, `W6`, `W5`,
 `W7`, `W1`, `lane`) *subdivides* those open lines; it does not reduce them.
 
 The class column of the generated ledger is a first-cut reading of each line's own text
