@@ -3,14 +3,14 @@
 **Metric A** — a line counts as uncovered iff its LCOV record is `DA:<line>,0`. The
 llvm-cov *summary* percentage is not the acceptance number.
 
-**Last measurement**: `test/cov-agent` at this wave's tip (cut from `dev-huichen` @ `6d8994349`), Rust **1.99.1** (`rust-toolchain.toml`),
-macOS arm64, lcov `coverage/2026-11/after/agent/lcov-wave49.info`, run log `wave49.log`
-(**12 test targets, 2967 passed, 0 failed, 0 panics**). The ledger below was regenerated from
-that lcov and passes its own check. Measure with `measure-guard.sh`, never with a bare
+**Last measurement**: `test/cov-agent` at this wave's tip (rebased onto `dev-huichen` @ `b47bc1184`), Rust **1.99.1** (`rust-toolchain.toml`),
+macOS arm64, lcov `coverage/2026-11/after/agent/lcov-wave50.info`, run log `wave50.run.log`
+(**12 test targets, 2970 passed, 0 failed, 0 panics**). The ledger below was regenerated from
+that lcov and passes its own check. Measure with `measure-split.sh` (wave 50), never with a bare
 `cargo llvm-cov --no-report` — see *Wave 39* for why.
 
-**Result**: `DA:0` = **1103** lines in **129** files under `agent/src`. This branch has cleared
-**570** of the 1673 it started from. Of the 1103:
+**Result**: `DA:0` = **1080** lines in **129** files under `agent/src`. This branch has cleared
+**593** of the 1673 it started from. Of the 1080:
 
 > **A ~100-line jump in a total is a broken run, not noise (wave 39).** `cargo llvm-cov` runs
 > `cargo test`, which stops at the first failing test *target*; `cli_smoke` fails intermittently
@@ -35,11 +35,11 @@ that lcov and passes its own check. Measure with `measure-guard.sh`, never with 
 | state | lines |
 |---|---:|
 | **waived** (mechanism + falsifier named below, 12 rows) | **144** |
-| `open` — **no test and no justification yet** | **959** |
+| `open` — **no test and no justification yet** | **936** |
 
-Reconciliation: of the 1103 rows, the 12 waiver rows below name **144** lines, and the remaining
-**959** carry no justification yet. The generated ledger's class column (`open`, `a`, `W6`, `W5`,
-`W7`, `W1`, `lane`) *subdivides* those 959; it does not reduce them.
+Reconciliation: of the 1080 rows, the 12 waiver rows below name **144** lines, and the remaining
+**936** carry no justification yet. The generated ledger's class column (`open`, `a`, `W6`, `W5`,
+`W7`, `W1`, `lane`) *subdivides* those 936; it does not reduce them.
 
 The class column of the generated ledger is a first-cut reading of each line's own text
 (`?` tails, lone `}`, `tracing::`, `assert`, platform attributes). **It is not a waiver.**
@@ -49,12 +49,22 @@ how to falsify that claim — the ledger convention of `docs/testing/waiver-ledg
 ## Reproducing
 
 ```bash
-# 1. measure — the guard, not a bare cargo llvm-cov (see wave 39)
-bash coverage/2026-11/after/agent/measure-guard.sh agent-lcov.info agent-run.log
-#    it sanitises the environment, runs with --no-fail-fast, and refuses to
-#    report unless all 12 test targets ran; the env it sets is
-#    ulimit -n 8192, CARGO_* unset, RUSTFLAGS unset, HOME=$PWD/target/test-home
-#    (.future/memory/coverage-llvm-cov.md)
+# 1. measure — the split gate (wave 50), never a bare cargo llvm-cov (see wave 39)
+PATH=/Users/geilige/.rustup/toolchains/1.99.1-aarch64-apple-darwin/bin:$PATH \
+  scripts/coverage/measure-split.sh future-agent agent-lcov.info \
+    --expect-targets 12 --filter agent/src
+#    step 1 builds every target under the instrumented env from
+#    `cargo llvm-cov show-env --sh` (no test runs); step 2 runs the suite with
+#    RUST_TEST_THREADS=8 under a 480 s budget. It refuses to report unless the
+#    build succeeded, all 12 test targets ran, nothing failed and the run step
+#    recompiled nothing. It writes agent-lcov.{compile,run}.log beside the lcov
+#    and appends one row per measurement to agent-lcov.timings.tsv, with the
+#    1-minute load on both sides, because that wall clock is only comparable
+#    when the box is not carrying another lane.
+#    The env it sets is ulimit -n 8192, CARGO_* unset, RUSTFLAGS unset,
+#    HOME=$WORKTREE/target/test-home (.future/memory/coverage-llvm-cov.md).
+#    coverage/2026-11/after/agent/measure-guard.sh is the pre-wave-50
+#    one-process form, kept for comparing the two.
 
 # 2. per-line ledger + its own check (both work from the lcov alone)
 python3 coverage/2026-11/after/agent/ledger-gen.py --lcov agent-lcov.info --root . --out ledger.md
@@ -262,6 +272,91 @@ Two consequences the lane has to live with, both now recorded:
    claims 100 % will have to show the `providers.rs` rows covered in the same run as everything
    else, or the number is a draw from a distribution. The honest target is the named-row ledger
    with every row either covered or exempted, which is what this file already is.
+
+## Wave 50: the gate splits into build + run, and two replay arms get a falsifier
+
+Measured at this wave's tip (`dev-huichen` @ `b47bc1184` + the tests below): **`DA:0` 1103 → 1080**,
+lcov `lcov-wave50.info`, **12 of 12 targets, 2970 passed, 0 failed, 0 panics**. Split honestly, per
+`lcov-symdiff.py`:
+
+| direction | rows | what it is |
+|---|---:|---|
+| covered by this wave's tests | **24** | `compaction/durable.rs` 176-187 (+80, the brace closing the `fail` guard) and `session/content/entries.rs` 468-475,478 (+255,427, the braces closing the two branch bodies the new retries drive) |
+| recovered | 1 | `llm/mod.rs:439` — waiver row 10 again; missed in wave49, covered here *and* in the second wave-50 run |
+| still dark, not this wave's code | 2 | `session/content/reset.rs:285` (documented as order-dependent in wave 47) and `session/content/mod.rs:523` (`continue` in the collector when segments remain) |
+| **net** | **-23** | 24 + 1 − 2 |
+
+Attribution caveat, stated because the lane's rule is that a total is not its own work: the agent
+*test* tree also moved between wave49 and wave50 (`76c6c105f` added the reader/settings rows), so
+the 2 dark rows cannot be pinned on this wave either way. What is pinned is the 24: they are the
+exact rows the two modules' new tests execute, and each was falsified by deleting the arm it covers
+(below).
+
+### The gate is now two steps, and the budget governs only the suite
+
+Wave 39 established that a red or truncated run's lcov must not be quoted; what it could not do was
+tell a *slow suite* from a *cold build*, because one `cargo llvm-cov --no-report` process does both.
+On this lane the two are the same order of magnitude, so a 480 s budget could only be stated as "the
+whole thing".
+
+`measure-split.sh` splits them. The build step is **not** `--no-run`: cargo-llvm-cov 0.8.7 rejects
+that next to `--no-report` (`error: --no-report may not be used together with --no-run`, measured on
+the first attempt at this script) and deprecates it anyway — it means "report from the profraw already
+on disk", not "build only". So step 1 takes the instrumented environment from
+`cargo llvm-cov show-env --sh` and runs `cargo test --no-run` inside it: same `RUSTC_WRAPPER`, same
+target dir, so step 2 recompiles nothing. That claim is **measured in the run log**, not assumed —
+the script counts the run step's `Compiling` lines and prints `recompiled_units=0`.
+
+Two runs of the same tree, minutes apart, both pinned to 8 threads (`gate-timings.tsv`):
+
+| form | compile | run | total | load 1-min |
+|---|---:|---:|---:|---|
+| split (`measure-split.sh`) | 1 s (warm) | **237 s** | **238 s** | 6.7 → 8.6 |
+| one process (`measure-guard.sh`) | — | — | **291 s** | 6.2 → 7.1 |
+
+What that pair does **not** prove: 53 s of the difference could be load rather than form — one pair
+cannot separate them, and the box carries other lanes' instrumented builds. What it does establish is
+the decomposition: the suite is 237 s against a 480 s budget (51 % headroom), and a cold instrumented
+build no longer eats that budget. A cold build was measured earlier on this lane at 40 s (one test
+target recompiled after the rebase) and 3 m 08 s (the whole dependency graph, from `cargo test
+--no-run` on a cold plain target dir) — which is the range that used to be invisible.
+
+The two runs also differ by exactly **1 row** (`llm/mod.rs:439`), so today's run-to-run floor stays
+where wave 47 put it: ±1-2 rows, far below this wave's 24.
+
+### The first run of this wave was red, and the split gate refused it
+
+`wave50-first-red.*` — the run step exited 101 after 247 s with `targets=12
+failed_summaries=2 failed_total=2`. Both failures are in `agent/tests/service_startup.rs`, both in
+child processes:
+
+- `one_instance_scope_cannot_initialize_two_services` — the child for case `duplicate` exited
+  nonzero; its own output ends at `event journal: event shutdown acknowledgement lost`
+  (`rpc/broadcaster/journal_writer.rs:250`), i.e. the shutdown ack channel was dropped before the
+  journal writer answered;
+- `service_fixture` — `report.status` was `FailedStopping`, not `Stopped`, carrying that same error.
+
+Ten consecutive runs of that one target (8 threads) pass, and the next full-suite run was green with
+the same tree, so this is **not** a regression from this wave and not fixed by it either — it is the
+shutdown-deadline family wave 47 recorded for `cli_smoke`, now seen in `service_startup`. Two
+consequences worth carrying: the lane's flake budget is not confined to `cli_smoke`, and the 8-thread
+pin is new, so the flake's rate under 32 threads is not comparable with this number. Not investigated
+further this wave; the next check is `stability.py` over `service_startup` alone at both thread pins.
+
+### The two replay arms, and how each was falsified
+
+Both tests exist because the code under them is a *guard*: a replay that would undo later work, and a
+retry over a half-written body. A guard test that only exercises the happy path is worthless, so each
+arm was deleted from a scratch copy and the test was watched failing:
+
+| arm | test | falsification run 2026-11-02 |
+|---|---|---|
+| `durable.rs:176-187` — a cached receipt whose checkpoint entry id is not the one the prompt carries answers `Unchanged` (minus the stale `input_tokens`) and hands back a replaying ticket | `a_replay_that_would_undo_a_later_checkpoint_keeps_the_prompt_and_the_receipt` | negating the condition (`if false && current.is_some_and(…)`) made the test panic at line 262: *a replay that would undo the later checkpoint must leave the prompt unchanged* |
+| `entries.rs:468-478` — a retry of an unsealed staging verifies the inherited prefix in bounded `WRITE_BYTES` pages before appending | `a_retry_of_an_unsealed_staging_verifies_the_prefix_and_finishes_it` (pass side) / `a_retry_whose_staged_prefix_disagrees_is_refused_without_appending` (refusal) | replacing the `ensure!` with `let _ = &page;` made the disagreement test fail with `called Result::unwrap_err() on an Ok value: ContentRange { id: 1, offset: 0, length: 22 }` — the retry published 22 bytes over a 7-byte prefix |
+
+The staging test's fixture deliberately reproduces the *interrupted* state rather than a tidy one: a
+body holding `partial`, bound to an entry whose header was never inserted, which is what
+`stage_named` actually sees when a process dies between the append loop and the seal.
 
 ## Wave 47: a red run the guard caught, the console writers, and four eager assertions
 
