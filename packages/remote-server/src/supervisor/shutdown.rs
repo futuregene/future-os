@@ -349,7 +349,9 @@ impl Supervisor {
                         server
                             .resume_recovery_running
                             .store(false, Ordering::Release);
-                        eprintln!("remote: resume recovery failed [PW001]: {error}");
+                        future_remote_protocol::remote_log!(
+                            "remote: resume recovery failed [PW001]: {error}"
+                        );
                         *server.last_error_code.lock().unwrap() =
                             Some("reconnect_required".to_string());
                     }
@@ -447,7 +449,9 @@ impl Supervisor {
         // A failure here is not fatal: creating the invitation replaces the old
         // binding anyway, and `create_pairing` retires whatever revoke is left.
         if let Err(error) = self.host.retry_revokes().await {
-            eprintln!("remote: re-pair could not settle the saved pairing's revoke: {error}");
+            future_remote_protocol::remote_log!(
+                "remote: re-pair could not settle the saved pairing's revoke: {error}"
+            );
         }
         match self.add_device().await {
             Ok(status) => Ok(status),

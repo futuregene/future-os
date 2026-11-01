@@ -79,3 +79,28 @@ fail-closed 锁定卸载、复制后加载验证、复制/验证失败后的回�
 发布前，还要在上一版本之上冒烟测试**完整打包安装器**，覆盖"重装"与"先卸载再升级"
 两种选择。旧版本的卸载器包含的是它自己的原始 hooks，不是新的。任何预检都无法阻止
 其他应用在检查之后获得锁；安装完成前避免重新打开 FutureOS。
+
+## 无终端的启动没有可写的 stderr
+
+由资源管理器启动、安装器"立即运行"或开机自启拉起的进程没有控制台窗口，fd 2 要么不存在，
+要么指向一个本进程无写权限的句柄。`eprintln!` 在这种情况下不是"丢掉这行"：
+`std::io::stdio::print_to` 在写入失败时 panic，直接结束发射它的那个任务。
+
+2026-11-01 在同一个 `futureos.exe` 进程的 `app/logs/crash.log` 里实测到 **699** 条
+`panicked ... failed printing to stderr: 拒绝访问 (os error 5)`，全部在 `tokio-rt-worker`
+上，且每一条都固定出现在中继报出 `authorization violation` 之后 **11.1 秒**。当天两件后果
+都发生了：远程桌面停掉的原因在磁盘上查不到，而 panic 可能杀掉本来要去重建那条链路的任务。
+
+两层措施，缺一不可：
+
+- **`future_agent::console::redirect_windowless_standard_streams`**，由
+  `future_host::environment::prepare_process` 最先调用：`GetConsoleWindow()` 为空时，把本进程的
+  stdout/stderr 指向 `~/.future/app/logs/desktop.stdio.log`（超过 4 MiB 换新文件），于是**任何**
+  `eprintln!`（std、依赖、没人审过的代码）都会写进文件而不是 panic。从终端启动的进程保持原终端。
+- **容错写入器**，用于运行**中途**失效的流：`console::eprintln!` / `console::println!` 丢弃失败的写入，
+  `logfile::eprintln_log!` 同时镜像进 `desktop.log`，remote 栈则统一走
+  `future_remote_protocol::diagnostics`（host 把它接到 `environment::report`）。启动之后才断掉的终端
+  在启动时无法检测，所以长生命周期任务里的诊断不能再用裸 `eprintln!`。
+
+本仓库新代码的规矩：长生命周期任务里的诊断必须走上面三者之一；如果 `grep -rn 'eprintln!'`
+能搜到你那行，就说明它没有。
