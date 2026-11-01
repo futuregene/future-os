@@ -1520,3 +1520,29 @@ fn cycling_from_a_level_the_model_no_longer_declares_snaps_to_the_default() {
         crate::llm::schema::DEFAULT_THINKING_LEVEL
     );
 }
+
+/// Persistence mode is chosen before work is admitted: once a run has started
+/// the session refuses to switch, instead of stranding the in-flight run's
+/// output in a journal that is about to disappear.
+#[test]
+fn persistence_mode_cannot_change_once_a_run_has_started() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    session
+        .write()
+        .broadcaster
+        .start_run("run-started".to_string(), 1);
+    let mut cmd = make_cmd("set_ephemeral");
+    cmd.ephemeral = true;
+    let response = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(response["success"], false, "{response}");
+    assert!(
+        response["error"]
+            .as_str()
+            .unwrap()
+            .contains("persistence mode must be selected before a prompt is admitted"),
+        "{response}"
+    );
+    // Nothing changed: the session is still persistent.
+    assert!(!session.read().ephemeral, "the refusal must not apply");
+}
