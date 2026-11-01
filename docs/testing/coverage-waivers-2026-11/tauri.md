@@ -45,6 +45,10 @@ cargo test -p futureos --test gui_main_thread_drive --features test-support
 | wave 9 (first measurement) | 639 | the transfer commands, the host-event sink, the two open update items (−180), on the pre-`a8669c8b3` base |
 | wave 10 | **638** | the same tests after `a8669c8b3` landed under them; per-file identical except the interleaving line below |
 | wave 11 | **635** | one arm of each update wrapper that a mock can reach; the rest of `update.rs` classified per cluster in §2.8 (the first round that measured its own unreachability instead of asserting it) |
+| round 9, `wave14-lcov.info` | **624** | the supervisor's fault / login-gate / quit-confirmation arms and `run()` itself, at the **default** driver settle window (2 s) |
+| round 9, `wave15-lcov.info` | **608** | the same tests with `FUTUREOS_DRIVE_SETTLE_SECS=12`: the app now outlives the watchdog's first 3 s sleep, so its loop body runs (§2.9.1) |
+| round 9, `wave16-lcov.info` | **604** | settle 70 s: the watchdog reaches `Attached::Stable` (60 s, `STABLE_AFTER`) and `confirm_update_startup` runs (§2.9.1). **Quote this one for the round**, with the knob named; a plain suite run still reads 624 |
+| round 9, `wave17-lcov.info` | **606** | the same tests and the same knob on `72d870b14` — the base the branch was rebased onto after `fix/win-desktop-cases` landed. The +2 against `wave16` is that merge's own lines (`ipc_harness.rs` +1, `update_journal.rs` +1), in files this round does not touch; `agent_supervisor.rs` 63, `lib.rs` 44 and `update.rs` 187 are identical on both bases. **Quote this one**: it is the first measurement on a base another session's work has landed on |
 
 The lane is **not** at per-line 0 and does not claim to be. What it does claim: every remaining
 line in the files this table covers is either registered below or named as a work item in §4;
@@ -52,10 +56,10 @@ nothing in §2 is claimed as "covered".
 
 | file | `DA:0` | disposition |
 |---|---:|---|
-| `src/commands/update.rs` | 191 | §2.8 — every cluster classified; 129 of them are a **product decision** (§2.8.1) |
-| `src/agent_supervisor.rs` | 88 | work items — the watchdog loop body and the quit dialogs |
-| `src/lib.rs` | 47 | §2.6 registered (real handle / mock-always-Ok / startup) + work items |
-| `src/terminal/server.rs` | 56 | known ±1 fluctuation (§2.5) + interleaving-dependent test arms |
+| `src/commands/update.rs` | 187 | §2.8 — every cluster classified; 129 of them are a **product decision** (§2.8.1) |
+| `src/agent_supervisor.rs` | 63 | §2.9 — the watchdog's remaining states, the cfg(test) login constant, the recovery flag and two dialog answers |
+| `src/lib.rs` | 44 | §2.6 registered (real handle / mock-always-Ok / startup) + the menu and close handlers |
+| `src/terminal/server.rs` | 56-57 | known ±1 fluctuation (§2.5) + interleaving-dependent test arms; `wave16` reads 57 |
 | `src/main.rs`, `src/terminal/pty.rs`, … | 429 | work items (see `classification.md` for the wave-1 bucket split) |
 | `src/commands/history_transfer.rs` | 2 | 1 measured-unreachable command arm (§2.7) + 1 scaffolding arm |
 | `src/commands/update_journal.rs` | 12 | 2 real items (§4.2) + attribution (§2.4) |
@@ -98,7 +102,10 @@ Codes used by this lane (the other lanes' `W*` codes are listed in their own fil
 fixtures answer a shell's cursor query and read frames on an **interleaving**: which match arms
 and which DSR branch execute depends on how the shell splits its output across reads. Measured
 both directions (`wave5-lcov.info` 56 → `wave6-lcov.info` 57 → `wave7-lcov.info` 56) with no
-change to the arms in between; wave5 §5.2 recorded the same family earlier.
+change to the arms in between; wave5 §5.2 recorded the same family earlier. Round 9 measured the
+same file at **57** with the driver's 2 s settle (`wave14-lcov.info`), **55** at 12 s
+(`wave15-lcov.info`) and **57** again at 70 s (`wave16-lcov.info`) with no test touching it — the
+interleaving responds to the settle window, which is one more reason to quote the run.
 
 This is **not** registered as a waiver — the lines are reachable — but a round that quotes this
 file's number should quote the run it came from, not the field.
@@ -123,8 +130,14 @@ lines in the file:
 | 168, 171, 200 | `unminimize` / `show` / `set_focus` error arms | `T6` | the mock runtime answers `Ok(())` to all three (`tauri-2.12.5/src/test/mock_runtime.rs:695-707`) | `activate_main_window_restores_shows_and_focuses_the_main_window` runs the `Ok` half on the same window |
 | 892-948 (the menu handler's body) | `activate_main_window`, the `open-settings` / `menu-command` emits, the webview reload | `T1` | a `Builder::on_menu_event` listener is dispatched only from `RuntimeRunEvent::UserEvent(EventLoopMessage::MenuEvent)` (`tauri-2.12.5/src/app.rs:2755-2771`), which `muda` posts through the event-loop proxy (`app.rs:2520-2522`). The mock runtime's `EventProxy::send_event` returns `Ok(())` and **drops** the event (`src/test/mock_runtime.rs:1158-1165`), so no menu event can reach a listener on a mock app — measured, not inferred from "needs a real handle" | `gui_builder::<MockRuntime>()` is built by `quit_admission_closed_before_the_ready_event_withholds_the_window_work` (`lib.rs:2787`), so the *registration* is covered; only these bodies are not |
 | 933, 937, 939-948 (the window handler's body) | the `main`-label guard and the two `QuitDecision` arms | `T1` | `Builder::on_window_event` handlers live in the window manager and are invoked from the per-window `on_window_event` closure (`tauri-2.12.5/src/manager/window.rs:98-110`); the mock runtime **discards** that closure — `MockWindowDispatcher::on_window_event` returns a fresh id without storing `f` (`src/test/mock_runtime.rs:722-723`). The mock's `close()` delivers `RunEvent::WindowEvent { CloseRequested }` to the `app.run` callback instead (`mock_runtime.rs:1360-1382`), which is a different seam than the builder's handler | `agent_supervisor::on_close_requested` and both arms it answers are covered by their own cases; only the routing from a window event is not |
-| 863-865, 972-1000, 1249, 1260, 1293-1294 | `run()` and `run_with()`'s startup and setup-failure paths | `T1` | need the real `Wry` event loop; `run_with` also writes the process-global `APP_HANDLE` | — |
+| 972-1000, 1249, 1260, 1293-1294 | `run_with()`'s host-environment, menu-setup, host-log, terminal-bind and Agent-start failure arms | `T1` | each needs the real `Wry` event loop *and* an induced failure inside it (an unwritable host log, a terminal port already bound, an Agent that cannot start); `run_with` also writes the process-global `APP_HANDLE`, so it cannot be re-entered in one process to try a second flavour | — (the `Ok` halves of all five are covered by the driver leg) |
 | 1751, 2827 | test bodies | `T5` | their own `return` / `panic!` arms | — |
+
+**No longer in this table (round 9): `863-865`, `run()` itself.** It was listed as "needs the real
+`Wry` event loop" while the driver called its inner `run_with`, i.e. the leg that already starts the
+app skipped the one function `src/main.rs` calls. The driver now calls `futureos_lib::run()`
+(`tests/gui_main_thread_drive/body.rs`), so the wrapper is covered by the same run and the entry
+point the leg covers is the production one.
 
 ### 2.7 `src/commands/history_transfer.rs:69` — `T1`-adjacent, **measured**
 
@@ -141,17 +154,18 @@ therefore only be reached with a body that satisfies `threadId`, `before` and `l
 fails, and no such body exists (`Option` accepts a missing key; a raw payload fails one argument
 earlier). Same family as the `bootstall_builtin_skills` note in `commands/skills.rs`.
 
-### 2.8 `src/commands/update.rs` — 191 lines, classified per cluster
+### 2.8 `src/commands/update.rs` — 187 lines, classified per cluster
 
 Until wave 11 this file's row said "the IPC wrappers this lane has not reached yet". That is no
 longer an adequate description: wave 11 measured each boundary, and every line below is now either
 registered here with the mechanism that keeps it out of a test process, or filed as a **product
 decision** (§2.8.1) with the seam that would make it observable. The `DA:0` set is 37 runs; the
-groups below sum to 191.
+groups below sum to 187: round 9 moved `confirm_update_startup`'s call out of the table
+(four of its five lines are covered, §2.9.1).
 
 | lines | n | class | mechanism | positive control |
 |---|---:|---|---|---|
-| 157-161 | 5 | `C` | `confirm_update_startup` is `#[cfg(not(test))]` **and** `pub(crate)`. The lib leg compiles it out, and the driver test crate can only name `pub` items, so neither leg can call it. Its only caller is `run_with`'s startup | the journal half it wraps (`journal::confirm_startup`) has its own cases; this function adds only the report on error |
+| 159 | 1 | `T6` | `confirm_update_startup`'s error report. The function is `#[cfg(not(test))] pub(crate)` and no leg could call it while the driver ended 2 s after `Ready`; round 9 reached it through the watchdog's `Attached::Stable` arm (§2.9.1), and what remains is the `journal::confirm_startup` **failure** arm — the journal write succeeds in the fixture, so the report itself has no test process that produces it | the call is covered and asserted: the driver's 70 s run records 157, 158, 160, 161 while `confirm_update_startup`'s only input, the journal, is already exercised by `update_journal.rs`'s cases |
 | 454-457, 460-461 | 6 | `T1`-adjacent | `check_app_update`'s wrapper and body. Both routes are refused: the product's `generate_handler!` list is built on a `Wry` builder inside `run_with` (`lib.rs:1030`), and any invocation resolves its own manifest URL from the build channel — **measured**: dispatching it from a mock IPC fixture answered with a real `0.0.2-104+nightly` manifest fetched from `dl.future-os.cn` | `perform_app_update_check` (same body, endpoint injected) is covered by `the_scheduled_check_body_passes_its_endpoint_through` |
 | 479 | 1 | platform-unmeasured | the `!platform_allows_updates()` return. This host's build answers `true` — measured, because line 482 (the `Dev`/`Local` branch behind it) is `DA>0` in the same run. Reaching 479 needs a platform where the check fails: a Windows portable ZIP (`bundle_type() == None`) or an unwritable bundle (`access(parent, W_OK)`, `update_macos.rs:27-38`) | `check_manual_update`, which it returns, is covered directly |
 | 760-763 | 4 | `T5` | the install closure of `cleanup_failure_never_enters_installation`. It running **is** the failure that case asserts | `installation_failure_requires_process_recovery_after_successful_cleanup` runs the sibling closure |
@@ -194,6 +208,71 @@ writing moves them. That is the honest reading of a 191-line gap in a 2 000-line
 half is glue between an updater plugin, a native dialog and a platform installer: the file's own
 unit-test surface is already 1 226 executable lines, and 33 of the remaining 191 are a single
 command that cannot be handed a mock handle.
+
+### 2.9 `src/agent_supervisor.rs` — 63 lines, every one classified
+
+Round 9 took this file from 88 to 63 (and to 65 with the driver at its default settle window),
+by covering four things it had been calling "work items":
+
+| lines | case | commit |
+|---|---|---|
+| 186-188 | `agent_status`'s `Phase::Failed(error)` arm. A launch mode the host refuses fails on the calling thread, so `Phase::Failed` carries the text and the status page prints it — `a_launch_that_cannot_select_a_mode_reports_its_error_on_the_status` runs it with `FUTURE_DESKTOP_AGENT_MODE=not-a-mode` and asserts both the phase and `status.error` | `9f72992af` |
+| 283, 284, 290 | `confirm_quit`'s own body (`a_quit_confirmation_is_asked_once_and_the_second_request_answers_it`) and 297, the **owned** message branch (`the_quit_confirmation_of_an_owned_agent_is_built_and_armed`) | `9f72992af` |
+| 72-83, 86-88 | the watchdog's first iteration: probe → `Attached` → `loss.reset` → `reachable_since` → `Attached::of` → `last_notice = None` → `continue`, plus two block-end braces (72, 86) that come with it (§2.9.1) | `637a27981` |
+| 84-85 | the same loop's `Attached::Stable` arm — reachable only after `STABLE_AFTER` (60 s, `packages/rpc/src/supervision.rs:200`), which the settle override makes affordable for a measurement | `637a27981` |
+
+Both confirmations are asserted through the flag the builder arms before it touches the dialog:
+`on_close_requested()` then answers `Confirm { open_dialog: false }` instead of queueing a second
+question. A mock app cannot present a dialog, and `confirm_quit`'s measured behaviour is that it
+returns at once and the plugin's queued show task neither blocks nor presents — the closure inside
+`show` (`285-288`) is the part that needs an answer a test cannot give.
+
+#### 2.9.1 The watchdog: `#[cfg(not(test))]`, one probe every 3 s, and a driver that ended first
+
+`spawn_agent_watchdog` is compiled **out** of the lib leg (`#[cfg(not(test))]`,
+`agent_supervisor.rs:45-51`), so the main-thread driver is its only host. Until this round the
+driver ended two seconds after the `embedded Agent ready` evidence, and the watchdog's first probe
+comes at three: measured with a temporary probe line, one iteration begins at ~0.2 s and the
+process is gone at 2.6-3.0 s (`wave14-driver.log`: `elapsed=2.6s`, `2.7s`). The loop body was
+therefore unreachable **by timing**, which is why every line in it read `0` even though the lines
+around it did not.
+
+> Attribution warning, measured twice: lines 69-71 (`sleep`, `if is_stopping`, `return`) read
+> `DA>0` in every run of that period while the process never lived long enough to execute them.
+> That is the loop head's region count, not an execution. Reading "the check ran and returned" out
+> of those three lines produces the opposite of the truth — the same lesson as `1998`/`2005` in
+> §2.8 (closing braces), one level deeper.
+
+The driver now takes `FUTUREOS_DRIVE_SETTLE_SECS` (default 2 s, the suite's cost unchanged, the
+same shape as the existing `FUTUREOS_DRIVE_READY_BUDGET_SECS`). Measured ladder:
+
+| settle | lane `DA:0` | what it buys |
+|---|---:|---|
+| 2 s (default, `wave14-lcov.info`) | 624 | nothing in the loop body |
+| 12 s (`wave15-lcov.info`) | 608 | one full iteration while the embedded Agent is up: 72-83, 86-88 (−14 here, +1/−2 interleaving elsewhere) |
+| 70 s (`wave16-lcov.info`) | 604 | `Attached::of ≥ 60 s` is `Stable`, so 84-85 run and call `confirm_update_startup` — which covers four of that function's five lines in `update.rs` |
+
+What is left in this file, by class:
+
+| lines | n | class | mechanism | positive control |
+|---|---:|---|---|---|
+| 59-61 | 3 | `T6` | the watchdog's `tokio` runtime build failure (`Builder::build` on a current-thread runtime): it fails only under resource exhaustion | the `Ok` half runs on the same thread in every driver run |
+| 89 | 1 | `T4` | the closing brace of the `Attached` block. Every statement inside it is `DA>0` in `wave15-lcov.info`, and 84-85 in `wave16` — the record is the block end, not an arm | — |
+| 90-98 | 9 | `T1`-adjacent | the `LocalAgentState::Blocked` arm: needs an Agent that answers the RPC *and* fails the readiness handshake. The driver starts the app's own embedded Agent, which is attached (`embedded Agent ready` at ~0.3 s), so `observed` is never `Blocked` there; producing one means a second process holding the socket with a mismatched version | `probe_local_agent`'s own classification is covered in `packages/rpc`; `agent_status`'s `incompatible` arm is covered by `agent_status_requires_the_running_agent_version_to_match` |
+| 101-130 | 23 | `T1`-adjacent | the recovery branch: `Startable` (or an owned host) after `loss.confirmed` and `budget.allow`. The driver's embedded Agent is alive for the whole run, so the probe never reports it gone; killing it mid-run would be a *different* driver, not a longer one | `host.recover` and `restart_delay`/`RestartBudget` have their own cases in `host` and `packages/rpc` |
+| 147, 151 | 2 | `C` | `ensure_agent_ready_for_login`'s refuse arm. `ensure_agent_running` is `Ok(())` unconditionally under `#[cfg(test)]` (`agent_supervisor.rs:139-146`, "Mock Tauri apps must never launch a real default-home Agent"), so `!matches!(…, Ok(Ok(())))` is always false in the lib leg; the login gate's *other* refusal (no ready Agent → `false`) is covered by `an_unreachable_agent_is_an_error_not_a_ready_status` | the same case asserts `ensure_agent_ready_for_login` is `false` without an Agent |
+| 176-178 | 3 | `T1`-adjacent | `agent_status`'s `restart_required` arm. `AgentHost::recovery_requires_restart` (`host/src/agent_host.rs:125-133`) turns true only inside `recover()`, after an **owned** Agent's stop leaves `finished`/`retirement` incomplete (`host/src/agent_host.rs:154-180`) — i.e. a stop that exceeds `STOP_TIMEOUT` (10 s). The fixture can arm a lock or a dead endpoint, but nothing public makes an owned Agent's retirement incomplete | `host/src/agent_host/tests.rs:909` sets the flag directly (same crate), which is what pins the reader; the status arm has no such seam from the desktop crate |
+| 285-289 | 5 | `T1` | the body of the closure `confirm_quit` hands to `MessageDialogBuilder::show`. It runs only when a native dialog is **answered**; the flag its first line clears is asserted from outside (§2.9), the answer is not producible without a window server | `a_quit_confirmation_is_asked_once_and_the_second_request_answers_it` covers the call and the armed flag |
+| 331, 335-336 | 3 | `T6`/`T4` | `force_exit_process`'s body is `#[cfg(not(test))] std::process::exit(0)`, and its only caller is `arm_force_exit`'s **thread-spawn-failure** fallback (342-343). Under `cfg(test)` the function is empty, so 335-336 have no test-leg code and 342-343 need `thread::Builder::spawn` to fail | `forced_exit_deadline_does_not_depend_on_agent_cleanup_or_the_ui_loop` runs the watchdog half that does not need the fallback |
+| 378-382 | 5 | `T1` | the "cleanup failed — exit anyway?" dialog's answer closure inside `request_quit`: needs a native dialog answered *and* a stop that failed (`desktop_shutdown::fail_for_test` produces the latter, but not the former) | `a_failed_stop_is_a_stopping_status_with_its_reason` covers the failed stop itself |
+| 387-389 | 3 | `T6` | the quit waiter's `thread::Builder::spawn` failure arm — the same resource-exhaustion condition as 342-343 | the `Ok` path is the one every quit case runs |
+| 717-722, 756 | 7 | `T5` | test code whose body runs only when the fixture fails: `run_case`'s timeout report and the `accept` probe's error arm | their `Ok` halves are what every green run does |
+
+Nothing in this file is a product decision in the §2.8.1 sense: the remaining blocks are either a
+state the app cannot enter from a test (Blocked, gone, retirement-incomplete, dialog answered) or a
+call the test build compiles out. Two of them — 101-130 and 176-178 — would become reachable with
+one seam each (a probe result, a retirement) and are candidates for a future round's decision table
+rather than for a waiver.
 
 ## 3. Products of the coverage work (not waivers)
 
@@ -238,15 +317,17 @@ What is left:
 
 ### 4.3 The rest of the lane
 
-`update.rs` (191) is now classified cluster by cluster in §2.8, and 129 of it is filed as a product
+`update.rs` (187) is now classified cluster by cluster in §2.8, and 129 of it is filed as a product
 decision there rather than work for a later round — the largest single finding of wave 11 is that
 this file has no reachable lines left that a test can take without a production seam.
-`agent_supervisor.rs` (88) is next by size, then the startup paths in `lib.rs` (§2.6).
+`agent_supervisor.rs` (63) is classified in §2.9 — its two largest remaining blocks (90-98 and
+101-130) need a probe result and an incomplete retirement the desktop crate cannot arm, so they are
+future decision-table entries, not work items. Then the startup paths in `lib.rs` (§2.6).
 `history_transfer.rs` (2) and `update_process.rs` (0) are closed. See `classification.md` for
 the wave-1 class split (R reachable / E error arms / P platform-bound / C `cfg(not(test))` /
 A attribution / T test code) over the original 1427.
 
-## 5. How the wave 6-11 numbers were produced and falsified
+## 5. How the wave 6-11 and round-9 numbers were produced and falsified
 
 Every scenario added in these rounds was made red before it was trusted, and each failure named
 the derived value it was built on (`coverage/2026-11/tauri/wave6.md` §4,
@@ -266,6 +347,9 @@ the derived value it was built on (`coverage/2026-11/tauri/wave6.md` §4,
 | install refuses a stopping Desktop (wave 11) | `is_stopping() && false` | the call falls through to `app.updater_builder()`, which with a plugin-less mock app **panics** (`state() called before manage() for tauri_plugin_updater::UpdaterState`) — the guard is also what keeps this fixture off the updater |
 | the install flag comes back on a refusal (wave 11) | `std::mem::forget(install_guard)` on the return path | the flag is still claimed, so the follow-up `compare_exchange` fails |
 | the wrapper reaches its own guard over IPC (wave 11) | `automatic_install_supported(channel)` → `true` | same updater panic instead of the manual-only refusal |
+| the status carries a failed launch's own text (round 9) | `Phase::Failed(error)` → `Phase::Failed(_)` | the fixture child goes red on `the status carries the worker's own refusal, not a substitute` |
+| a quit confirmation records that one is open (round 9) | `QUIT_DIALOG_OPEN.store(true, …)` removed | `confirm_quit must leave exactly one question open` |
+| an unknown fixture case is refused (round 9) | `panic!("unknown case {case}")` removed | the unknown-case case asserts the child must fail, and it exits 0 |
 
 One check had to be rewritten because it passed for the wrong reason: the persist-failure
 scenario first failed on a *missing record*, not on the directory permission (wave6.md §4.3).
