@@ -176,6 +176,7 @@ impl Supervisor {
     }
     pub async fn shutdown(self: &Arc<Self>, budget: Duration) -> Result<(), crate::Error> {
         let started = std::time::Instant::now();
+        self.access.note("supervisor shutdown");
         self.closed.store(true, Ordering::Release);
         self.stop();
         for task in self.generation_tasks.lock().unwrap().iter() {
@@ -259,6 +260,7 @@ impl Supervisor {
         if !self.closed.load(Ordering::Acquire) {
             return;
         }
+        self.access.note("reset_after_shutdown_for_test");
         assert!(self.state.lock().unwrap().is_empty());
         for jobs in [&self.tasks, &self.retiring, &self.generation_tasks] {
             let mut jobs = jobs.lock().unwrap();
