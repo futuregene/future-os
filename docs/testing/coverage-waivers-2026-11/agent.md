@@ -196,6 +196,72 @@ an **attribution** row, not a behaviour row. The rustfmt-stable fixes are a `let
 restructure or a `match` with an explicit empty arm; neither is claimed here because neither was
 measured, and `cargo fmt` after the change would need its own measurement pass.
 
+## Where the suite's wall time actually is (module profile)
+
+The verifier's budget is the only thing between this lane and completion, so the suite was
+profiled by module: one filtered run per prefix, harness "finished in" figure, quiet-ish host.
+
+| module | tests | test time alone |
+|---|---:|---:|
+| `session::` | 668 | **286.90 s** |
+| `rpc::` | 849 | 85.90 s |
+| `compaction::` | 115 | 33.87 s |
+| `tools::` | 104 | 20.08 s |
+| `sandbox::` | 225 | 18.86 s |
+| `agent::` | 139 | 8.15 s |
+| `models::` | 146 | 4.42 s |
+| `llm::` | 214 | 2.01 s |
+
+The whole suite is ~290 s, so **`session::` is the critical path on its own**: everything else
+fits underneath it. Drilling in:
+
+| submodule | tests | test time alone |
+|---|---:|---:|
+| `session::history` | 55 | **134.93 s** |
+| `session::content` | 143 | 35.34 s |
+| `session::persistence` | 28 | 26.21 s |
+| `session::manager` | 35 | 13.86 s |
+| `session::database` | 43 | 7.92 s |
+| `session::journal_compaction` | 26 | 3.49 s |
+| `session::fork` | 21 | 2.47 s |
+| `session::projection` | 39 | 0.00 s |
+
+and inside `session::history`: `display_index` 71.64 s (14 tests), `paging` 27.60 s,
+`recall` 11.51 s. Per test, `display_index` is: `a_forward_page_stops_at_the_eight_megabyte_budget`
+**15.11 s**, `cold_page_reads_only_selected_bodies` **9.77 s**,
+`ordinary_appends_and_metadata_changes_do_not_rewrite_the_historical_prefix` 4.04 s, and eleven
+tests at ≤1.2 s. Every one of those is a deliberate scale test (a 9.6 MiB history, an 8 MiB page
+budget, a 100 k-entry index) — heavy on purpose, and none of them is wrong.
+
+That is the honest shape of the problem: **four tests own ~35 s of the critical path**, and the
+only ways to shorten them are to shrink what they exercise (weakening) or to make the product
+fast enough that the same scenario costs less (a production change). Neither is this lane's call.
+
+## What the verifier's environment actually is
+
+Every measurement in this file was taken with the environment the lane's own rules require:
+`HOME` pointed at an isolated `target/test-home` and `ulimit -n 8192` set by the shell. The
+declared verifier does **not** do either — it runs `cargo test -p future-agent --lib` from the
+goal kernel, which means:
+
+| | lane measurement | declared verifier |
+|---|---|---|
+| `HOME` | `target/test-home` (isolated) | the real home (`~/.future`, a live agent's store) |
+| `ulimit -n` | 8192 | **256** (the macOS default; hard limit is unlimited) |
+
+Two consequences worth acting on, neither of them the coverage lane's to fix:
+
+- The suite's own rules say tests must not touch the real home; a verifier that supplies the real
+  one runs tests against a live store. That is a plausible cause of the
+  "content seal does not match durable bytes" session-persistence failures this goal has hit.
+- At `ulimit -n 256` the two `rpc::commands::settings_tests::compact_*` tests (and
+  `models::future::tests::fetch_future_models_…`) sit past 60 s each. Raising the budget *inside
+  the test process* was tried and **works** (`setrlimit` 256 → 4096 confirmed by probe) but does
+  **not** remove the slowness: the same tests pass in 0.07 s alone at 256 and stay slow only in
+  the full run, i.e. the cost is contention with the other 2874 tests, not descriptors. The
+  change was reverted rather than shipped unproven — `future-tui` keeps an equivalent helper for
+  a cliff it actually hit, and this crate has not shown one.
+
 ## What the suite costs, and what does not help
 
 The declared verifier is `cargo test -p future-agent --lib`. Measured on this head, warm:
