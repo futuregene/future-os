@@ -177,6 +177,9 @@ impl FutureAgent for MockAgent {
 /// moment this returns (the OS backlog holds the handshake until the server
 /// task first polls accept) — no fixed startup sleep to race under load.
 pub async fn spawn_mock(agent: MockAgent) -> String {
+    // The mock is the first socket most tests open: lift the descriptor ceiling
+    // here so a whole-suite run is not decided by the caller's `ulimit -n`.
+    crate::test_env::ensure_fd_headroom();
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("local_addr");
     listener.set_nonblocking(true).expect("nonblocking");
@@ -338,6 +341,7 @@ impl HttpRoute {
 /// "http://127.0.0.1:<port>". Each connection gets one response (reqwest
 /// opens a fresh connection per request here).
 pub async fn spawn_http(routes: Vec<HttpRoute>) -> String {
+    crate::test_env::ensure_fd_headroom();
     spawn_http_recording(routes, None).await
 }
 

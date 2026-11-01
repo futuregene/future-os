@@ -902,6 +902,15 @@ mod tests {
     #[tokio::test]
     async fn start_launch_success_against_fake_driver() {
         let _guard = crate::test_env::lock_env().await;
+        // The mock endpoint can only appear after the spawn records its port, so
+        // what decides this test must be the poll *noticing* the answer, not the
+        // host scheduling the mock quickly enough for the product's 10 s window —
+        // that is the same load-sensitive construction the neighbouring
+        // `launch_then_become_reachable_reports_started` was fixed for (measured
+        // 5/5 red with a slow driver). The wall-clock window keeps its own test
+        // (`start_launch_never_ready_times_out`), and the 30 s `timeout` below
+        // still bounds this one.
+        let _budget = ReadinessBudgetGuard::set(200);
         *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
         let _reset_platform = PlatformReset;
         // Fake safaridriver: a POSIX shell script that records the port it was

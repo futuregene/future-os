@@ -6,6 +6,59 @@
 //! they never race each other (e.g. `future doctor` tests repointing PATH
 //! while `which` tests look up `sh`).
 
+/// How many file descriptors this test binary is allowed to hold.
+///
+/// `cargo test` runs a binary's tests in threads of **one process**, and this
+/// suite's socket tests each hold a listener plus a connection per unary call
+/// (a gRPC client opens a fresh one). At the default parallelism of a 32-core
+/// machine that peak is a few hundred descriptors, while macOS's soft limit is
+/// **256** unless the calling shell raised it — so the whole suite is decided
+/// by a shell setting nobody wrote down.
+///
+/// Measured 2026-11-01, `--test-threads` at the default 32, on a shell whose
+/// `ulimit -n` was 256: 1439 of 1447 tests passed and the rest panicked with
+/// `Too many open files` while *building a tokio runtime* or opening an app
+/// database — never in an assertion. With `ulimit -n 8192` the same tree passed
+/// 3 of 3. That is the descriptor cliff, not a race.
+///
+/// So the suite raises its own budget instead of asking the caller for one.
+/// The raise is bounded by the hard limit, only ever upward, and idempotent, so
+/// it composes with any test that lowers the limit on purpose to force
+/// `EMFILE` (the agent's sandbox helper does): those restore what they found,
+/// and the next call here raises again if what they found was the old ceiling.
+///
+/// `tui::test_env::ensure_fd_headroom` is the same helper for the same reason.
+#[cfg(unix)]
+pub fn ensure_fd_headroom() {
+    // No `Once`: a test may lower the limit and restore it, so a one-shot guard
+    // would fire into that window and never fire again.
+    const WANT: libc::rlim_t = 4096;
+    let mut limits = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: both calls pass a valid `rlimit` for `RLIMIT_NOFILE`; failure is
+    // reported by the return value and only means "keep the current budget".
+    unsafe {
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limits) != 0 {
+            return;
+        }
+        if limits.rlim_cur >= WANT {
+            return;
+        }
+        let raised = libc::rlimit {
+            rlim_cur: WANT.min(limits.rlim_max),
+            rlim_max: limits.rlim_max,
+        };
+        let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &raised);
+    }
+}
+
+/// Windows has no `RLIMIT_NOFILE`: a process is limited by its handle table,
+/// not by a number a test can raise, so there is nothing to do here.
+#[cfg(not(unix))]
+pub fn ensure_fd_headroom() {}
+
 /// The one lock every env-sensitive test acquires. `tokio::sync::Mutex` is
 /// used so the guard can be held across `.await` points inside `#[tokio::test]`
 /// bodies without tripping `clippy::await_holding_lock`; it also never
@@ -20,6 +73,9 @@ pub struct EnvironmentGuard {
 }
 
 pub async fn lock_env() -> EnvironmentGuard {
+    // Every env-sensitive test passes through here, so it is also where the
+    // suite lifts its own descriptor ceiling before anything opens a socket.
+    ensure_fd_headroom();
     let cli = ENV_LOCK.lock().await;
     // Shared Host/entry tests use this same process environment after migration.
     let host = future_host::TEST_HOME_LOCK
