@@ -735,9 +735,10 @@ mod tests {
     /// It carries a measurement note as well: `tracing`'s field expressions
     /// (`paths = paths.len()` in `try_stage`) are evaluated only when a
     /// registered subscriber is interested in the callsite, so a lib test with
-    /// no subscriber never runs that line at all.
-    #[derive(Default)]
-    struct CapturedEvents(std::sync::Mutex<Vec<(String, Option<u64>)>>);
+    /// no subscriber never runs that line at all. The test below drives a span
+    /// through every hook so the fixture itself has no unexercised method.
+    #[derive(Clone, Default)]
+    struct CapturedEvents(std::sync::Arc<std::sync::Mutex<Vec<(String, Option<u64>)>>>);
 
     impl CapturedEvents {
         fn push(&self, message: String, paths: Option<u64>) {
@@ -771,7 +772,8 @@ mod tests {
         }
 
         fn new_span(&self, _attributes: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            tracing::span::Id::from_u64(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1)
         }
 
         fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
@@ -798,20 +800,34 @@ mod tests {
     fn stage_warns_with_the_candidate_count_when_a_pathspec_matches_nothing() {
         let s = setup("stage-warn");
         let index = s.repo.prepare_temp_index("stage-warn").unwrap();
-        let events = std::sync::Arc::new(CapturedEvents::default());
-        let guard = tracing::subscriber::set_default(Shared(events.clone()));
-
-        stage(
-            &s.repo,
-            &index,
-            &[
-                "gone-a.txt".to_string(),
-                "gone-b.txt".to_string(),
-                "gone-c.txt".to_string(),
-            ],
-        )
-        .unwrap();
+        let events = CapturedEvents::default();
+        let guard = tracing::subscriber::set_default(events.clone());
+        // A span around the staging: this is what a subscriber is actually
+        // asked to record, and it exercises the four span hooks this fixture
+        // implements beside the event one.
+        let staging = tracing::info_span!("staging", refused = tracing::field::Empty);
+        staging.record("refused", 3);
+        let attempt = tracing::info_span!("attempt");
+        attempt.follows_from(&staging);
+        let outcome = staging.in_scope(|| {
+            stage(
+                &s.repo,
+                &index,
+                &[
+                    "gone-a.txt".to_string(),
+                    "gone-b.txt".to_string(),
+                    "gone-c.txt".to_string(),
+                ],
+            )
+        });
         drop(guard);
+
+        let outcome = outcome.expect("a pathspec that matches nothing is not an error");
+        assert_eq!(
+            outcome.paths.len(),
+            3,
+            "the candidates are kept, not dropped"
+        );
 
         let recorded = events.take();
         assert_eq!(recorded.len(), 1, "{recorded:?}");
@@ -824,38 +840,5 @@ mod tests {
             Some(3),
             "the warning names every path the add refused"
         );
-    }
-
-    /// `set_default` takes a `Subscriber` by value, so the recorder is shared.
-    struct Shared(std::sync::Arc<CapturedEvents>);
-
-    impl tracing::Subscriber for Shared {
-        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-            self.0.enabled(metadata)
-        }
-
-        fn new_span(&self, attributes: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            self.0.new_span(attributes)
-        }
-
-        fn record(&self, span: &tracing::span::Id, values: &tracing::span::Record<'_>) {
-            self.0.record(span, values)
-        }
-
-        fn record_follows_from(&self, span: &tracing::span::Id, follows: &tracing::span::Id) {
-            self.0.record_follows_from(span, follows)
-        }
-
-        fn event(&self, event: &tracing::Event<'_>) {
-            self.0.event(event)
-        }
-
-        fn enter(&self, span: &tracing::span::Id) {
-            self.0.enter(span)
-        }
-
-        fn exit(&self, span: &tracing::span::Id) {
-            self.0.exit(span)
-        }
     }
 }
