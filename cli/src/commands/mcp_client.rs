@@ -1209,7 +1209,19 @@ done
         /// waits out its grace period and then kills what is left.
         #[tokio::test]
         async fn shutdown_kills_a_server_that_ignores_its_closed_stdin() {
-            let spec = sh_spec(format!("{SERVE_ONCE}\nsleep 30"), Map::new(), None);
+            // A shell BUILTIN busy loop, not `sleep`: `sleep` is looked up on
+            // PATH at run time, and other tests in this binary repoint the
+            // process-wide PATH at a fixture directory while they run. When that
+            // happened the command was not found, the script exited on its own,
+            // and the shutdown this test measures returned in under a
+            // millisecond (`the grace period must be waited out: 909µs`) —
+            // a failure that named this test and was caused by another one.
+            // A builtin needs no lookup and cannot be affected by PATH.
+            let spec = sh_spec(
+                format!("{SERVE_ONCE}\nwhile :; do :; done"),
+                Map::new(),
+                None,
+            );
             let process = ServerProcess::start("stubborn", &spec, Duration::from_secs(10))
                 .await
                 .expect("the handshake is a normal one");
