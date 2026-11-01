@@ -1913,4 +1913,58 @@ mod tests {
         agent_bridge::drop_observer("sess_observe");
         script_mock_agent(MockScript::default());
     }
+
+    /// The window's list / open / recency reads and the three bookkeeping writes
+    /// it drives them with. Each one is a one-line delegation, so what can be
+    /// wrong here is the *shape* the window receives: the list is in the store's
+    /// order, the pin / archive / restore trio each answer the row they changed,
+    /// and opening a thread is what makes it the recent one.
+    #[test]
+    fn the_list_and_the_three_bookkeeping_writes_answer_the_window() {
+        let _home = init("cmd_thread_reads");
+        let first = make_thread(&_home, None);
+        let second = make_thread(&_home, None);
+
+        let listed = list_threads().expect("list");
+        assert_eq!(listed.len(), 2, "{listed:?}");
+        assert_eq!(
+            get_thread(first.id.clone())
+                .expect("get")
+                .expect("the row")
+                .id,
+            first.id
+        );
+        assert!(get_thread("thread_absent".into()).expect("get").is_none());
+
+        mark_thread_opened(first.id.clone()).expect("opened");
+        assert_eq!(
+            get_recent_thread()
+                .expect("recent")
+                .expect("the opened thread")
+                .id,
+            first.id
+        );
+        // The recency read follows the LAST open, not the first: two threads
+        // created in the same millisecond must still sort by which was opened.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        mark_thread_opened(second.id.clone()).expect("opened");
+        assert_eq!(
+            get_recent_thread()
+                .expect("recent")
+                .expect("the last opened thread")
+                .id,
+            second.id
+        );
+
+        let pinned = pin_thread(store::PinThreadInput {
+            thread_id: first.id.clone(),
+            pinned: true,
+        })
+        .expect("pin");
+        assert!(pinned.pinned, "the row comes back pinned");
+        let archived = archive_thread(first.id.clone()).expect("archive");
+        assert_eq!(archived.status, "archived");
+        let restored = restore_thread(first.id.clone()).expect("restore");
+        assert_eq!(restored.status, "active");
+    }
 }
