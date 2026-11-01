@@ -175,6 +175,41 @@ panics `no entry found for key` and throws away the path the function exists to
 produce. The absent side is now a JSON null. This is test-only code
 (`rpc/commands/test_support.rs` is `#[cfg(test)]`), so no product behaviour moved.
 
+## Wave 28: the 32-thread default is thrashing, and the real work is 1620 CPU-seconds
+
+Everything in waves 23-25 assumed the suite's cost was *work*. It is not, all the way down. The
+same tree, same host, only `RUST_TEST_THREADS` changed (`wave28-threads.log`):
+
+| threads | wall (harness) | user | sys | CPU-s | involuntary switches |
+|---:|---:|---:|---:|---:|---:|
+| 32 (default on this host) | 209.69 s | 473.83 | 4848.24 | **4231** | **18.6 M** |
+| 16 | **187.99 s** | 347.28 | 1997.31 | **2345** | 17.7 M |
+| 8 | 210.65 s | 537.04 | 1082.83 | **1620** | 32.4 M |
+
+Read it twice, because it inverts the intuition: **at 8 threads the suite burns 1620 CPU-s and at
+32 threads it burns 4231 CPU-s for the same result** — the same wall. More threads do not buy
+wall time here; they buy context switches. The honest statement of the suite's work is therefore
+**~1600 CPU-seconds**, not 4231, and at 8 threads the wall (210.65 s) is exactly that work on 8
+cores (203 s) — i.e. the run is perfectly packed and CPU-bound *there*.
+
+Why 32 threads cannot use 32 cores: libtest's threads are not the only threads. Every test that
+opens a store gets a database worker thread, several get a journal writer, and some build a
+two-worker tokio runtime — so ~32 libtest threads is ~64-128 runnable threads on 32 cores, and
+the scheduler spends the difference. The 18.6 M involuntary switches are that bill.
+
+**What this does and does not buy.** It does not make the 120 s gate pass on its own: the best
+measured wall is **188 s at 16 threads**, still 68 s over. It does mean the remaining gap is
+*contention*, not arithmetic — 16 threads with the 8-thread CPU cost would be **101 s**. The
+levers worth measuring next are the per-test thread footprint (one worker per store, one per
+journal) and SQLite's serialized-mode per-connection mutex (`SQLITE_THREADSAFE=1` is what the
+bundled C is compiled with), not more test authoring.
+
+**Not changed in the repo.** `RUST_TEST_THREADS` could be pinned for every `cargo test` through
+`[env]` in `.cargo/config.toml`, and that would take this suite from 210 s to 188 s. It is not
+taken here: it is a workspace-wide setting that would also apply to an 8-core CI runner, where 16
+threads is oversubscription of a different kind, and a coverage lane should not make that choice
+for every crate. It is recorded as a decision for whoever owns the test host settings.
+
 ## Wave 27: the probe file is mostly host-unreachable, and three `?` rows were attribution
 
 `rpc/commands/settings.rs` still showed **41** missed lines after the probe commands were driven
