@@ -3368,6 +3368,107 @@ mod tests {
         // …and under the ~100 ms at which a pause reads as a delay.
         assert!(OPEN_SETTLE <= Duration::from_millis(100));
     }
+
+    fn rows_of(text: &[&str]) -> Vec<String> {
+        text.iter().map(|row| (*row).to_string()).collect()
+    }
+
+    /// A scroll is a claim about the rows *inside* one band. A band of a single
+    /// row makes no such claim (nothing inside it can move), and a band that
+    /// runs off the frame describes rows that are not there — both are refused
+    /// rather than sent as a scroll the terminal cannot honour.
+    #[test]
+    fn a_scroll_is_refused_for_a_band_that_cannot_move() {
+        let shown = rows_of(&["a", "b", "c", "d"]);
+        assert_eq!(
+            scroll_of(&shown, &shown, true, Some((1, 1)), 4),
+            None,
+            "a one-row band was sent as a scroll"
+        );
+        assert_eq!(
+            scroll_of(&shown, &shown, true, Some((2, 9)), 4),
+            None,
+            "a band past the last row was sent as a scroll"
+        );
+        // The positive control: the same geometry with the content moved up by
+        // one row *is* a scroll, so the refusals above are about the band.
+        let moved = rows_of(&["b", "c", "d", "q"]);
+        assert_eq!(
+            scroll_of(&shown, &moved, true, Some((0, 3)), 4),
+            Some((0, 3, 1))
+        );
+    }
+
+    /// A partial mouse report is held for the next read, not typed: half of
+    /// `\x1b[<0;12;7M` in the draft would be the escape bytes.
+    #[test]
+    fn half_a_mouse_report_is_held_rather_than_typed() {
+        assert!(events_of("\x1b[<0;12").is_empty());
+        // …and the rest of it, arriving on its own, is one mouse event.
+        let done = events_of("\x1b[<0;12;7M");
+        assert!(
+            matches!(done.as_slice(), [WbEvent::Mouse(_)]),
+            "a complete report did not decode: {done:?}"
+        );
+    }
+
+    /// Reading more of the terminal must not lose what arrived before the paste
+    /// opened: the text ahead of it is typed, then the paste is held whole so
+    /// the next read can close it.
+    #[test]
+    fn text_before_an_unterminated_paste_is_typed_first() {
+        let events = events_of("ab\x1b[200~rest");
+        assert_eq!(
+            events,
+            vec![
+                WbEvent::Key("a".into()),
+                WbEvent::Key("b".into()),
+                WbEvent::Paste("rest".into()),
+            ],
+            "the keys before the paste were dropped or reordered"
+        );
+    }
+
+    /// The rail's step chords are recognised before the key reaches `quit`, so a
+    /// held key becomes one switch. Both directions are read here, and an
+    /// overlay owns the keys it paints.
+    #[test]
+    fn the_step_chords_are_read_both_ways_and_only_without_an_overlay() {
+        use crate::workbench::preferences::{Action, Keybindings};
+
+        let mut keys = Keybindings::default();
+        keys.bind(Action::PrevSession, "ctrl+u")
+            .expect("a spare chord");
+        keys.bind(Action::NextSession, "ctrl+d")
+            .expect("a spare chord");
+        let mut workbench = Workbench::new();
+        workbench.keys = keys.clone();
+        assert_eq!(
+            session_step_of(&workbench, &WbEvent::Key("ctrl+u".into())),
+            Some(-1),
+            "the previous-session chord was not read as a step back"
+        );
+        assert_eq!(
+            session_step_of(&workbench, &WbEvent::Key("ctrl+d".into())),
+            Some(1)
+        );
+        assert_eq!(
+            session_step_of(&workbench, &WbEvent::Key("ctrl+x".into())),
+            None,
+            "a chord that is not a step was read as one"
+        );
+        assert_eq!(
+            session_step_of(&workbench, &WbEvent::Paste("ctrl+u".into())),
+            None,
+            "pasted text was read as a step chord"
+        );
+        workbench.overlay = Some(crate::workbench::Overlay::Help);
+        assert_eq!(
+            session_step_of(&workbench, &WbEvent::Key("ctrl+u".into())),
+            None,
+            "an overlay's key was taken as a session step"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -4718,6 +4819,171 @@ mod driver_tests {
             assert!(
                 workbench.painted_images.ids.is_empty(),
                 "a deleted placement was kept in the bookkeeping"
+            );
+        }
+
+        /// iTerm2 and sixel paint *into the text grid*, so a frame that rewrote
+        /// the picture's rows erased it and the placement has to be repeated —
+        /// and a frame that left those cells alone must not repeat the bytes.
+        /// The kitty test above is a different road (a layer of its own, placed
+        /// by id); this one is the road that has to compare rows.
+        #[test]
+        fn an_inline_protocol_is_asked_again_only_after_a_row_covered_it() {
+            let _caps = CapabilitiesGuard::pin(ImageProtocol::Iterm2);
+            let mut data = demo::chat();
+            data.preview = Some(demo::preview_image());
+            let mut workbench = Workbench::new();
+            workbench.overlay = Some(Overlay::FilePreview);
+            let _ = workbench.render(&data, 120, 38);
+            let request = workbench
+                .image_requests
+                .first()
+                .expect("the box asks for its picture")
+                .request;
+            let placement = (request.x, request.y, request.columns, request.rows);
+            let mut terminal = Terminal::new().expect("terminal");
+
+            // A frame that repainted the picture's own row: the picture is text
+            // it just overwrote, so it goes back in.
+            crate::terminal::capture::start();
+            super::super::paint_images(&mut terminal, &mut workbench, &[usize::from(request.y)]);
+            let placed = crate::terminal::capture::take();
+            assert!(
+                placed.contains("1337;File="),
+                "an iTerm2 terminal was not asked to place the picture: {:?}",
+                &placed[..placed.len().min(120)]
+            );
+            assert_eq!(
+                workbench.painted_images.inline_shown,
+                vec![(request.source, placement)],
+                "the placement was not remembered, so the next frame would repeat it"
+            );
+
+            // A frame that touched none of those rows: the picture is still on
+            // screen, so the (large) image payload is not sent again.
+            crate::terminal::capture::start();
+            super::super::paint_images(&mut terminal, &mut workbench, &[]);
+            let untouched = crate::terminal::capture::take();
+            assert!(
+                !untouched.contains("1337;File="),
+                "an untouched in-line picture was transmitted again: {:?}",
+                &untouched[..untouched.len().min(120)]
+            );
+            assert_eq!(
+                workbench.painted_images.inline_shown,
+                vec![(request.source, placement)],
+                "the placement was forgotten by a frame that did not disturb it"
+            );
+
+            // …and the next disturbed frame places it once more.
+            crate::terminal::capture::start();
+            super::super::paint_images(&mut terminal, &mut workbench, &[usize::from(request.y)]);
+            let again = crate::terminal::capture::take();
+            assert!(
+                again.contains("1337;File="),
+                "a rewritten picture was not placed again: {:?}",
+                &again[..again.len().min(120)]
+            );
+        }
+
+        /// Sixel is the other in-line protocol, and its payload is a DCS
+        /// sequence rather than an OSC one: the terminal asks for a bitmap and
+        /// gets sixel, not a PNG.
+        #[test]
+        fn a_sixel_terminal_gets_the_bitmap_as_a_sixel_sequence() {
+            let _caps = CapabilitiesGuard::pin(ImageProtocol::Sixel);
+            let mut data = demo::chat();
+            data.preview = Some(demo::preview_image());
+            let mut workbench = Workbench::new();
+            workbench.overlay = Some(Overlay::FilePreview);
+            let _ = workbench.render(&data, 120, 38);
+            assert!(
+                !workbench.image_requests.is_empty(),
+                "a sixel terminal is asked to place the picture"
+            );
+            let mut terminal = Terminal::new().expect("terminal");
+            crate::terminal::capture::start();
+            super::super::paint_images(&mut terminal, &mut workbench, &[0]);
+            let painted = crate::terminal::capture::take();
+            assert!(
+                painted.contains("\x1bP0;1;0q"),
+                "the picture was not encoded as sixel: {:?}",
+                &painted[..painted.len().min(120)]
+            );
+            assert!(
+                painted.contains("\x1b\\"),
+                "the sixel sequence was not terminated: {:?}",
+                &painted[..painted.len().min(120)]
+            );
+        }
+
+        /// A terminal that cannot place pictures at all keeps no bookkeeping:
+        /// the ids and in-line placements recorded by an earlier frame (a
+        /// terminal multiplexer can lose the capability when it is re-attached)
+        /// are dropped rather than left to describe images it is not holding.
+        #[test]
+        fn a_terminal_that_cannot_place_pictures_forgets_what_it_placed() {
+            let _caps = CapabilitiesGuard::pin(ImageProtocol::None);
+            let mut workbench = Workbench::new();
+            workbench.painted_images.remember(7, 3);
+            workbench
+                .painted_images
+                .inline_shown
+                .push((8, (0, 0, 2, 2)));
+            let mut terminal = Terminal::new().expect("terminal");
+            crate::terminal::capture::start();
+            super::super::paint_images(&mut terminal, &mut workbench, &[]);
+            let painted = crate::terminal::capture::take();
+            assert!(
+                painted.is_empty(),
+                "a picture-less terminal was written an image sequence: {painted:?}"
+            );
+            assert!(
+                workbench.painted_images.ids.is_empty(),
+                "the ids described pictures this terminal cannot hold"
+            );
+            assert!(
+                workbench.painted_images.inline_shown.is_empty(),
+                "the in-line placements were kept for a terminal with no pictures"
+            );
+        }
+
+        /// The surface keeps a bounded number of transmitted pictures and gives
+        /// the oldest up: an image the terminal is still holding would otherwise
+        /// stay on screen with nothing left to place or delete it from.
+        #[test]
+        fn the_oldest_picture_is_deleted_when_the_surface_holds_too_many() {
+            let _caps = CapabilitiesGuard::pin(ImageProtocol::Kitty);
+            let pixels = demo::picture_pixels();
+            let mut workbench = Workbench::new();
+            for index in 0..=(crate::workbench::MAX_PAINTED_IMAGES as u64) {
+                workbench
+                    .image_requests
+                    .push(crate::workbench::screen::PlacedPicture {
+                        request: crate::workbench::screen::ImageRequest {
+                            source: 1_000 + index,
+                            x: 0,
+                            y: 0,
+                            columns: 4,
+                            rows: 2,
+                            crop: (0, 0, pixels.width, pixels.height),
+                        },
+                        pixels: pixels.clone(),
+                    });
+            }
+            let mut terminal = Terminal::new().expect("terminal");
+            crate::terminal::capture::start();
+            super::super::paint_images(&mut terminal, &mut workbench, &[]);
+            let painted = crate::terminal::capture::take();
+            assert_eq!(
+                workbench.painted_images.ids.len(),
+                crate::workbench::MAX_PAINTED_IMAGES,
+                "the surface kept more pictures than it is allowed to"
+            );
+            assert!(
+                painted.contains("a=d,d=I,i="),
+                "the evicted picture was not deleted, so it stays on screen: {:?}",
+                &painted[..painted.len().min(160)]
             );
         }
     }
