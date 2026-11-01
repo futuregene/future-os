@@ -47,6 +47,24 @@ fn status(manager: &Manager, session: &str, run: &str) -> String {
         .unwrap()
 }
 
+fn run_error(manager: &Manager, session: &str, run: &str) -> String {
+    let (s, r) = (session.to_owned(), run.to_owned());
+    manager
+        .storage()
+        .unwrap()
+        .db
+        .read(move |db| {
+            let r = BoundIdentity::run(db, &s, &r)?;
+            let s = BoundIdentity::session(db, &s)?;
+            Ok(db.query_row(
+                "SELECT coalesce(error,'') FROM runs WHERE session_id=?1 AND run_id=?2",
+                params![s, r],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap()
+}
+
 fn stream_bytes(manager: &Manager, session: &str) -> Vec<String> {
     let session = session.to_owned();
     manager.storage().unwrap().db.read(move |db| {
@@ -284,6 +302,109 @@ fn a_recovered_tool_input_end_publishes_the_call_without_replaying_its_arguments
             "a reasoning snapshot with no body channel is copied from the event: {thinking}"
         );
     }
+}
+
+/// A stream whose immutable context no longer parses cannot be replayed. Recovery
+/// must **isolate** the run — recording why — rather than publish half a message
+/// or quietly erase the facts it cannot read. This is the fault path the
+/// `with_context` wrappers around the page read exist for.
+#[test]
+fn a_stream_whose_context_does_not_parse_is_isolated_with_its_reason() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("sessions");
+    let manager = Manager::new(directory.clone());
+    let (session, run) = seed(&manager, false);
+
+    let identity = StreamIdentity {
+        session_id: session.clone(),
+        run_id: run.clone(),
+        epoch: 1,
+    };
+    let text = "hi";
+    let mut digest = ContentDigest::default();
+    digest.push(text).unwrap();
+    manager
+        .storage()
+        .unwrap()
+        .db
+        .call(move |db| {
+            commit_batch(
+                db,
+                &identity,
+                vec![ContentAppend {
+                    key: "block".into(),
+                    offset: 0,
+                    text: text.into(),
+                    seal: Some(digest),
+                }],
+                vec![Change {
+                    first_cursor: 0,
+                    last_cursor: 2,
+                    event_type: "message_start".into(),
+                    metadata: json!({
+                        "data": {"entry_id": "e1"},
+                        "timestamp": "2026-11-01T00:00:00Z"
+                    }),
+                    bodies: Vec::new(),
+                }],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    // The immutable descriptor is what every change in the stream is decoded
+    // against; if it cannot be parsed, nothing in the run can be trusted.
+    let (s, r) = (session.clone(), run.clone());
+    manager
+        .storage()
+        .unwrap()
+        .db
+        .call(move |db| {
+            let run = BoundIdentity::run(db, &s, &r)?;
+            db.execute(
+                // The immutable context is trigger-protected, so the fault goes in
+                // the one row the schema leaves writable: the change's metadata.
+                "UPDATE stream_changes SET metadata_json='{}' WHERE stream_id IN (SELECT id FROM stream_runs WHERE run_id=?1)",
+                params![run],
+            )?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .unwrap();
+    drop(manager);
+
+    let manager = Manager::new(directory);
+    manager.initialize().unwrap();
+
+    assert_eq!(
+        status(&manager, &session, &run),
+        "recovery_failed",
+        "a stream that cannot be decoded must be isolated, not settled as recovered"
+    );
+    let error = run_error(&manager, &session, &run);
+    assert!(
+        error.contains("invalid encoded recovery data") || error.contains("decode recovery stream"),
+        "the recorded reason names the decode, not a guess: {error}"
+    );
+    // And the isolation is durable: the original stream rows are still there to
+    // be inspected, which is the point of isolating instead of deleting.
+    let (s, r) = (session.clone(), run.clone());
+    let changes: i64 = manager
+        .storage()
+        .unwrap()
+        .db
+        .read(move |db| {
+            let run = BoundIdentity::run(db, &s, &r)?;
+            Ok(db.query_row(
+                "SELECT count(*) FROM stream_changes WHERE stream_id IN (SELECT id FROM stream_runs WHERE run_id=?1)",
+                params![run],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(
+        changes, 1,
+        "the unreadable stream is preserved, not dropped"
+    );
 }
 
 #[test]
