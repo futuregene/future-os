@@ -3,20 +3,20 @@
 **Metric A** — a line counts as uncovered iff its LCOV record is `DA:<line>,0`. The
 llvm-cov *summary* percentage is not the acceptance number.
 
-**Last measurement**: `test/cov-agent` at `0a70974db` (the wave-25 tree: vendored SQLite at
-`-O3`, statement cache 256), Rust **1.99.1** (`rust-toolchain.toml`), macOS arm64, lcov
-`coverage/2026-11/after/agent/lcov-wave26.info`, run log `wave26-cov.log`. The ledger below was
-regenerated from that lcov and passes its own check (wave 29).
+**Last measurement**: `test/cov-agent` at `08f3225e0` (waves 23-34: statement cache 256, vendored
+SQLite at `-O3` in dev/test), Rust **1.99.1** (`rust-toolchain.toml`), macOS arm64, lcov
+`coverage/2026-11/after/agent/lcov-wave34.info`, run log `wave34-cov.log`. The ledger below was
+regenerated from that lcov and passes its own check.
 
-**Result**: `DA:0` = **1169** lines in **129** files under `agent/src` (wave 33 measurement,
-`lcov-wave33.info`, 2891 tests). This branch has cleared **504** of the 1673 it started from
-(waves 23, 26, 27, 30, 31, 32 and 33; waves 24-25 changed the suite's speed, not which lines it
-reaches). Of the 1169:
+**Result**: `DA:0` = **1154** lines in **129** files under `agent/src` (wave 34 measurement,
+`lcov-wave34.info`, 2892 tests). This branch has cleared **519** of the 1673 it started from
+(waves 23, 26, 27, 30, 31, 32, 33 and 34; waves 24-25 changed the suite's speed, not which lines
+it reaches). Of the 1154:
 
 | state | lines |
 |---|---:|
 | **waived** (mechanism + falsifier named below) | **98** |
-| `open` — **no test and no justification yet** | **1101** |
+| `open` — **no test and no justification yet** | **1086** |
 
 Reconciliation (the rows below describe the 98 waived lines; they were written against the
 1231-line measurement and their line numbers were re-checked against the 1211 one in wave 29):
@@ -177,6 +177,21 @@ Writing the "key on one side only" case found a defect **in the helper**:
 panics `no entry found for key` and throws away the path the function exists to
 produce. The absent side is now a JSON null. This is test-only code
 (`rpc/commands/test_support.rs` is `#[cfg(test)]`), so no product behaviour moved.
+
+## Wave 34: the second fixture, and the largest single-wave drop so far
+
+One test, `08f3225e0`, moved the lane **1169 → 1154** (−15) — more than its own seven rows,
+because driving `prepare_staged` through the `/content/error` copy also exercises the prelinked
+copy path around it (the placeholder branches and their braces). The ledger re-generated and
+checks clean: 812 rows, classes `open` 743, `a` 197, `W6` 152, `W5` 24, `lane` 24, `W1` 11,
+`W7` 3.
+
+The fixture is a **checkpoint-owned reference**, not a run-stream one:
+
+```rust
+bind(&tx, "s", "checkpoint", "ckpt-a", "/content/error", range)?;   // the copy's source
+prepare_staged(&store, "s", vec![entry_with_long_error], "ckpt-")   // the copy itself
+```
 
 ## Wave 33: the fixture's second half, and the arm that needs a different one
 
