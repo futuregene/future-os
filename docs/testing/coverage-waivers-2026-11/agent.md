@@ -496,8 +496,8 @@ concentrated in a small number of hot SQL call sites, not spread evenly over 288
 
 Where the successor should start, by uncached prepares in the files the timed runs named as
 critical path: `session/history/display_index.rs` (4), `session/history/recall.rs` (4),
-`session/sqlite_store/events.rs` (4, the one file that already caches one), `session/history/
-recall.rs`, `session/database/readers.rs`, `session/database/mode` — and every read that goes
+`session/sqlite_store/events.rs` (4, the one file that already caches one),
+`session/database/readers.rs` — and every read that goes
 through the `entry_records`/`sessions` views, which is what the sample's `sqlite3SelectDup`
 frames are compiling.
 
