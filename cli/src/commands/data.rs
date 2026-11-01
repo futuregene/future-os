@@ -1000,13 +1000,15 @@ mod tests {
             b"damaged",
         )
         .unwrap();
-        let mut moves = 0;
-        assert!(finish_restore_with(&home, false, || {
-            moves += 1;
-            Ok(())
-        })
-        .is_err());
-        assert_eq!(moves, 0);
+        // A move that happened would replace this sentinel with its own error,
+        // so the assertion below is "nothing moved **and** the verification
+        // spoke", not merely "something failed". Inline closures keep both
+        // statements on the line that runs.
+        let error = finish_restore_with(&home, false, || bail!("an original moved"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("verification failed"), "{error}");
+        assert!(!error.contains("an original moved"), "{error}");
         assert_title(&home, "new title");
         assert!(pending(&home).exists());
         // Rollback depends on the verified originals, not a damaged replacement.
@@ -1016,6 +1018,120 @@ mod tests {
             fs::read(home.join("app/images/t/original.png")).unwrap(),
             b"new image"
         );
+    }
+
+    /// A manifest that lists a path **under a file** is refused by the
+    /// filesystem, and that refusal is not "missing": `without_links` walks the
+    /// path one component at a time, so the answer for `file/below` is "not a
+    /// directory" rather than the absent-path arm — which would let a forged
+    /// entry be read as "this managed file simply was not there".
+    #[test]
+    fn a_manifest_path_below_a_file_is_refused_by_the_filesystem() {
+        let root = tempfile::tempdir().unwrap();
+        let home = fixture(root.path());
+        let archive = root.path().join("archive");
+        backup(&home, &archive).unwrap();
+
+        // Forge one manifest entry one level below a file the backup really
+        // contains; everything else stays exactly as the backup wrote it. It
+        // has to sit under a *directory* root: a managed file root such as
+        // `agent/agent.db` is refused by name before the filesystem is asked.
+        let mut manifest = verify(&archive).unwrap();
+        let real = manifest
+            .files
+            .iter()
+            .find(|file| file.path == "app/images/t/original.png")
+            .expect("the fixture image is in the backup");
+        manifest.files.push(FileRecord {
+            path: format!("{}/below-a-file", real.path),
+            bytes: real.bytes,
+            sha256: real.sha256.clone(),
+        });
+        write_json(&archive.join("manifest.json"), &manifest).unwrap();
+
+        let error = verify(&archive).unwrap_err();
+        let io = error
+            .downcast_ref::<std::io::Error>()
+            .expect("the filesystem answers, not the manifest");
+        assert_ne!(
+            io.kind(),
+            std::io::ErrorKind::NotFound,
+            "the parent exists as a file, so this is not a missing-path answer: {io}"
+        );
+        assert!(begin_restore(&home, &archive).is_err());
+        assert!(!pending(&home).exists());
+        assert_title(&home, "old title");
+    }
+
+    /// A symlink inside a managed root is hashed **as a link**, never followed.
+    /// The preimage digest is what a rollback proves itself against, so reading
+    /// a link through its target would let a file the backup never owned stand
+    /// in for the original — and retargeting the link would not even change the
+    /// digest.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_preimage_is_hashed_as_a_link_and_not_followed() {
+        let root = tempfile::tempdir().unwrap();
+        let home = fixture(root.path());
+        let archive = root.path().join("archive");
+        backup(&home, &archive).unwrap();
+
+        let outside = root.path().join("outside.txt");
+        fs::write(&outside, b"not managed by the backup").unwrap();
+        std::os::unix::fs::symlink(&outside, home.join("app/images/link")).unwrap();
+
+        prepare_restore(&home, &archive).unwrap();
+        let journal: RestoreJournal =
+            serde_json::from_slice(&fs::read(pending(&home)).unwrap()).unwrap();
+        let item = journal
+            .items
+            .iter()
+            .find(|item| item.path == "app/images")
+            .expect("the managed image root is journalled");
+        let recorded = item.original_digest.clone().expect("the root exists");
+        assert_eq!(
+            root_digest(&home.join("app/images")).unwrap().as_deref(),
+            Some(recorded.as_str()),
+            "the digest is stable for an unchanged tree"
+        );
+
+        // Same file contents, same link text, a different target: the digest
+        // must move, which is only true if the link was hashed as a link.
+        fs::remove_file(home.join("app/images/link")).unwrap();
+        std::os::unix::fs::symlink(home.join("app/app.db"), home.join("app/images/link")).unwrap();
+        assert_ne!(
+            root_digest(&home.join("app/images")).unwrap().as_deref(),
+            Some(recorded.as_str()),
+            "a retargeted link is a different preimage"
+        );
+    }
+
+    /// A link target that is not UTF-8 cannot be hashed into the preimage
+    /// digest, so the restore is **refused** instead of hashing a lossy form of
+    /// it: the digest would then claim to describe a tree it cannot read, and a
+    /// later rollback would verify itself against the wrong preimage.
+    #[cfg(unix)]
+    #[test]
+    fn a_preimage_link_with_a_non_utf8_target_refuses_the_restore() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let home = fixture(root.path());
+        let archive = root.path().join("archive");
+        backup(&home, &archive).unwrap();
+        std::os::unix::fs::symlink(
+            std::ffi::OsStr::from_bytes(b"bad-\xff-target"),
+            home.join("app/images/link"),
+        )
+        .unwrap();
+
+        let error = prepare_restore(&home, &archive).unwrap_err().to_string();
+        assert!(error.contains("not UTF-8"), "{error}");
+        assert!(
+            !pending(&home).exists(),
+            "nothing is journalled for a preimage that cannot be hashed"
+        );
+        assert_title(&home, "old title");
     }
 
     #[test]
