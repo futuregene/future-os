@@ -1217,6 +1217,49 @@ mod tests {
         assert!(message.contains("account seed"), "{message}");
     }
 
+    /// A desktop that is already paired re-registers without an invitation —
+    /// that is how it refreshes a credential after a relay restart. The roster
+    /// it has already collected must survive, and no QR code may reopen.
+    #[tokio::test]
+    async fn re_registering_without_an_invitation_keeps_the_code_closed() {
+        let relay = relay();
+        let host = KeyPair::new_user();
+        let (status, _) = register(&relay, &host).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let phone = KeyPair::new_user();
+        let body = format!(
+            r#"{{"nonce":"{JOIN}","device_id":"phone1","device_public_key":"{}","device_name":"Pixel"}}"#,
+            phone.public_key()
+        );
+        let (status, _) = claim(State(relay.clone()), Bytes::from(body)).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let body = register_body(None);
+        let (status, answer) = register_room(
+            State(relay.clone()),
+            signed(&host, "POST", "/v1/rooms", body.as_bytes()),
+            "/v1/rooms".parse().unwrap(),
+            Bytes::from(body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(answer["pairId"], PAIR);
+
+        let (_, roster) = describe(&relay, &host, PAIR).await;
+        assert_eq!(
+            roster["invitationOpen"], false,
+            "a credential refresh must not reopen the code: {roster:?}"
+        );
+        let devices = roster["devices"].as_array().unwrap();
+        assert_eq!(
+            devices.len(),
+            1,
+            "the paired phone keeps its row: {roster:?}"
+        );
+        assert_eq!(devices[0]["name"], "Pixel");
+    }
+
     /// Every refusal a room route can produce, in the reader's terms: the status
     /// a script branches on, the code it logs, and the sentence it shows.
     #[test]
