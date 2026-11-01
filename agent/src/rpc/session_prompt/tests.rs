@@ -4105,3 +4105,127 @@ async fn a_supersede_whose_receipt_cannot_be_cancelled_leaves_no_successor() {
         "the superseded input must be cancelled too"
     );
 }
+
+// ─── the legacy (non-segmented) conversation path ──────────────────────────
+
+/// A conversation whose storage format is the plain transcript, with the
+/// format selected **before** the session configures its journal: the
+/// broadcaster reads the format once and never reconsiders it, so binding it
+/// afterwards would silently keep the canonical path under test.
+fn run_fixture_legacy(provider: Arc<dyn LLMProvider>, name: &str, session_id: &str) -> RunFixture {
+    let dir = test_path(name);
+    let workspace = dir.join("ws");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let manager = Arc::new(crate::session::Manager::new(dir.join("sessions")));
+    manager
+        .storage()
+        .unwrap()
+        .bind_legacy_events(session_id)
+        .unwrap();
+    let agent_loop = Loop::new(provider, "mock").with_tools(coding_tools());
+    let session = crate::rpc::ServerSession::new_with_queue_budget(
+        session_id.to_string(),
+        Arc::new(tokio::sync::RwLock::new(agent_loop)),
+        manager,
+        workspace.to_string_lossy().as_ref(),
+        Arc::new(crate::rpc::SseBroadcaster::new()),
+        crate::rpc::ApprovalGate::default(),
+        Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
+        Arc::new(crate::runtime::GlobalQueueBudget::defaults()),
+    );
+    RunFixture { workspace, session }
+}
+
+/// A legacy conversation writes each message straight into the transcript and
+/// keeps the session's provenance on the run's own `session_info` entry — the
+/// canonical path deliberately drops `source_meta` (a stream run has no place
+/// for it), so this is the only branch that carries it forward.
+#[tokio::test(flavor = "current_thread")]
+async fn a_legacy_run_writes_plain_transcript_entries_and_keeps_its_provenance() {
+    let provider = ScriptedProvider::new(vec![text_turn("legacy answer")]);
+    let mut fixture = run_fixture_legacy(provider, "legacy-run", "leg-run");
+    let session = &mut fixture.session;
+    session.created_by = "desktop".to_string();
+    session.creator_id = "device-1".to_string();
+    session.source_meta = serde_json::json!({"threadId": "thread-1"});
+
+    session
+        .prompt("hello", &[], &[], Some("run-legacy"), None)
+        .unwrap();
+    wait_for_run_end(session).await;
+
+    assert!(
+        !session.broadcaster.uses_segmented_storage(),
+        "the fixture must exercise the plain transcript path"
+    );
+
+    let loaded = session.session_manager.load("leg-run").unwrap();
+    let info = loaded
+        .entries
+        .iter()
+        .rev()
+        .find(|entry| entry.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO)
+        .and_then(|entry| entry.content.clone())
+        .expect("the run wrote its own session_info entry");
+    assert_eq!(info["created_by"], "desktop", "{info}");
+    assert_eq!(info["creator_id"], "device-1", "{info}");
+    assert_eq!(info["source_meta"]["threadId"], "thread-1", "{info}");
+
+    // The answer is a plain assistant entry: no stream staging on this path.
+    let answer = loaded
+        .entries
+        .iter()
+        .find(|entry| entry.role == "assistant")
+        .expect("the answer was persisted");
+    assert_eq!(answer.entry_type, crate::session::ENTRY_TYPE_ASSISTANT);
+    let rendered = answer
+        .content
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    assert!(rendered.contains("legacy answer"), "{rendered}");
+}
+
+/// A pre-block-array transcript recorded a run's id inside the entry **content**
+/// rather than the journal, so a replayed `run_id` has to be recognised by
+/// scanning the transcript — there is no per-run journal row to ask.
+#[tokio::test(flavor = "current_thread")]
+async fn a_legacy_transcript_answers_a_replayed_run_id_without_a_journal() {
+    let provider = ScriptedProvider::new(vec![text_turn("must not run")]);
+    let mut fixture = run_fixture_legacy(provider, "legacy-dup", "leg-dup");
+    let session = &mut fixture.session;
+    session
+        .session_manager
+        .storage()
+        .unwrap()
+        .replace(
+            "leg-dup",
+            vec![
+                serde_json::json!({"id":"legacy-info","type":"session_info","timestamp":"2024-01-01T00:00:00Z","content":{"cwd":".","model":"mock"}}),
+                serde_json::json!({"id":"legacy-answer","type":"assistant","role":"assistant","timestamp":"2024-01-01T00:00:01Z","content":{"run_id":"run-legacy","text":"old answer"}}),
+            ],
+        )
+        .unwrap();
+
+    // The scan lives on the *enqueue* path: a directly submitted prompt never
+    // carries a client request id, so only a queued admission is deduplicated.
+    let error = session
+        .enqueue_prompt(
+            "hello",
+            &[],
+            &[],
+            Some("run-legacy"),
+            "req-legacy",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .expect_err("the transcript already holds that run id");
+    assert!(
+        error
+            .to_string()
+            .contains("already exists in this Agent instance"),
+        "{error}"
+    );
+    assert!(error.to_string().contains("run-legacy"), "{error}");
+    // Nothing was admitted: no run started and the script is untouched.
+    assert!(session.runtime.snapshot().is_none());
+}
