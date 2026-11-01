@@ -1020,11 +1020,14 @@ mod tests {
         );
     }
 
-    /// A manifest that lists a path **under a file** is refused by the
-    /// filesystem, and that refusal is not "missing": `without_links` walks the
-    /// path one component at a time, so the answer for `file/below` is "not a
-    /// directory" rather than the absent-path arm — which would let a forged
-    /// entry be read as "this managed file simply was not there".
+    /// A manifest that lists a path **under a file** is refused, and that
+    /// refusal is not "missing": `without_links` walks the path one component
+    /// at a time, so on unix the answer for `file/below` is "not a directory"
+    /// rather than the absent-path arm — which would let a forged entry be read
+    /// as "this managed file simply was not there". Windows has no such answer:
+    /// it collapses the same path onto path-not-found, so the walk reports the
+    /// entry as absent and the refusal comes from the verification of the file
+    /// the entry claims — still a refusal, never a silent absence.
     #[test]
     fn a_manifest_path_below_a_file_is_refused_by_the_filesystem() {
         let root = tempfile::tempdir().unwrap();
@@ -1050,13 +1053,25 @@ mod tests {
         write_json(&archive.join("manifest.json"), &manifest).unwrap();
 
         let error = verify(&archive).unwrap_err();
-        let io = error
-            .downcast_ref::<std::io::Error>()
-            .expect("the filesystem answers, not the manifest");
-        assert_ne!(
-            io.kind(),
-            std::io::ErrorKind::NotFound,
-            "the parent exists as a file, so this is not a missing-path answer: {io}"
+        // `below-a-file` sits under an image the backup really contains, so no
+        // reading of the filesystem can produce it — the only question is which
+        // refusal a host answers with.
+        #[cfg(unix)]
+        {
+            let io = error
+                .downcast_ref::<std::io::Error>()
+                .expect("the filesystem answers, not the manifest");
+            assert_ne!(
+                io.kind(),
+                std::io::ErrorKind::NotFound,
+                "the parent exists as a file, so this is not a missing-path answer: {io}"
+            );
+        }
+        #[cfg(not(unix))]
+        assert!(
+            format!("{error:#}").contains("backup file verification failed"),
+            "Windows answers a path under a file with path-not-found, so the walk \
+             passes it and the entry is refused by its own verification: {error:#}"
         );
         assert!(begin_restore(&home, &archive).is_err());
         assert!(!pending(&home).exists());

@@ -154,7 +154,9 @@ input printed the marker-wait sentence — which is exactly how wave 12 produced
   parallelism. What survives is the class, not the arm.
 * **What is not in hand.** A red run **with** the new diagnostic captured to a
   file. That single log line separates (d)/(e) from (b) and closes this item;
-  without it the class is established and the arm is not.
+  without it the class is established and the arm is not. (§7 below is six more
+  runs with the diagnostic in place, at higher load, and not one red — and the
+  arm was identified by an injected control on another branch, `0900e710c`.)
 
 ## 6. Handed to the flake goal, not fixed here
 
@@ -210,3 +212,48 @@ For the instrumented configuration the same loop uses
 `cargo llvm-cov -p future-cli --no-report` instead of `cargo test`, which is the
 only shape that has produced a red so far.
 
+
+## 7. Six more runs with the diagnostic in place — and the arm was (e) (wave 14, 2026-11-01)
+
+§5's "what is not in hand" was a red run **with** the `started.is_finished()` line captured to
+a file. Wave 14 went after it and did not get one. Every run was captured to a file
+(`coverage/2026-11/after/cli/flake-hunt.sh`, never a pipe):
+
+| run | build | load average (1 min, at start) | result |
+|---|---|---|---|
+| `run14.log` | instrumented `cargo llvm-cov -p future-cli` | 38.8 | 1543 passed / 0 failed, 102.66 s |
+| `flake-hunt-rounds1-3.log` r1 | plain `cargo test -p future-cli --lib`, 8 burners | 61.8 | 1543 / 0, 97.33 s |
+| r2 | same | 80.6 | 1543 / 0, **198.01 s** |
+| r3 | same | 63.1 | 1543 / 0, 110.97 s |
+| `flake-hunt.log` r1 | same | 40.6 | 1543 / 0, 81.28 s |
+| r2 | same | 45.8 | 1543 / 0, 89.04 s |
+
+Two facts from those runs:
+
+* The loads were **higher** than the run that produced wave 13's red (which was the slowest of
+  its three, 141 s) and one run took **198 s** — slower than that red — and was green. So
+  "the slowest run decides" is not the mechanism at this size; whatever it is, it is rarer
+  than the load alone.
+* Zero reds in six runs is consistent with §5's 1-in-11 estimate (≈0.57 expected).
+
+### It closed in the same window, on another branch
+
+While this wave was running, `0900e710c` ("a safari launch test is not decided by its own
+clock", the flake workstream) landed on `dev-huichen` and is in the base this wave's final
+measurement is taken against. It **removes the 20 s marker wait** from both launch tests: the
+wait now ends when the fixture's record appears *or* when the launch task finishes, and its
+only bound is the product's probe budget — a count, not a duration. Its injected control is
+the arm identification §5 lacked: a fake driver that sleeps **25 s** before touching its
+marker is **2/2 red** with the old shape (both tests, both with exactly "the driver was never
+spawned, so the poll was never reached") and green with the new one. So the arm was **(e)** —
+`/bin/sh` starved past the test's own clock — and never **(d)**, a foreign listener. The item
+is closed by that fix; this section's six green runs are the un-injected baseline that says
+the ambient rate was low enough to hide behind, not evidence of a remaining defect.
+
+**Deliberately not done: porting the `$2` recording to this test.** §6's step (2) made that
+conditional on a red *naming a foreign listener*, and no red ever named one — the injected
+control above names (e) instead. The sibling's idiom
+(`start_launch_success_against_fake_driver` records the port the CLI resolved and serves the
+mock there) would also add its own external-process wait — the very construction this record
+is about — and test-side `DA:0` lines (the shape wave 13's diagnostic added five of). Porting
+it would have been a change made for a hypothesis the evidence has since refuted.

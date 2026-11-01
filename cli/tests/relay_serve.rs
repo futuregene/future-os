@@ -113,9 +113,21 @@ fn an_https_url_without_a_certificate_is_announced_and_the_bind_failure_explains
     // And why that listener is plaintext despite the `https` public URL.
     assert!(stderr.contains("no certificate is configured"), "{stderr}");
     assert!(stderr.contains("TLS terminator"), "{stderr}");
+    // The OS reason is the last line, asked of this host rather than hard-coded:
+    // unix says "Address already in use", Windows "Only one usage of each socket
+    // address (protocol/network address/port) is normally permitted". Binding
+    // the held port again here produces the wording the child was given.
+    let os_reason = std::net::TcpListener::bind(("127.0.0.1", port))
+        .expect_err("the holder still owns the port")
+        .to_string();
+    let last = stderr
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default();
     assert!(
-        stderr.to_lowercase().contains("in use"),
-        "the OS reason is the last line: {stderr}"
+        last.contains(&os_reason),
+        "the OS reason is the last line: {last:?} vs {os_reason:?}"
     );
     drop(holder);
 }

@@ -11948,10 +11948,13 @@ mod tests {
         // A folder toggle starts the tree read; the answer arrives on its own.
         let workspace = tempfile::tempdir().expect("workspace");
         std::fs::create_dir_all(workspace.path().join("src")).expect("a folder");
-        let get_state = format!(
-            r#"{{"sessionId":"s1","cwd":"{}"}}"#,
-            workspace.path().display()
-        );
+        // Built by `serde_json` so a `\`-spelled Windows path reaches the client
+        // as the path it is, instead of as JSON escapes that do not exist.
+        let get_state = serde_json::json!({
+            "sessionId": "s1",
+            "cwd": workspace.path(),
+        })
+        .to_string();
         let mut live = live_on(&[("get_state", &get_state)]).await;
         live.local_reads = None;
         live.refresh_local();
@@ -12126,7 +12129,17 @@ mod tests {
             "the chat directory is the root's child"
         );
 
-        let get_state = format!(r#"{{"sessionId":"s1","cwd":"{chat}"}}"#);
+        // `serde_json`, never `format!`: a Windows path is spelled with `\`
+        // separators, and dropping one into a JSON string literal raw makes
+        // escapes JSON does not have (`C:\Users\…` → `\U`). The state then
+        // fails to decode, `refresh_state` keeps the empty one, the surface sees
+        // no `cwd` at all, and the row announces a move to the chat directory
+        // the session is already in.
+        let get_state = serde_json::json!({
+            "sessionId": "s1",
+            "cwd": chat,
+        })
+        .to_string();
         let mut live = live_on(&[
             ("get_state", &get_state),
             ("get_session_entries", r#"{"entries":[]}"#),
