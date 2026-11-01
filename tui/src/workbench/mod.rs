@@ -4684,6 +4684,25 @@ mod tests {
         format!("\x1b]8;;{href}\x1b\\{text}\x1b]8;;\x1b\\")
     }
 
+    /// The one action of the shape a case expects, out of what the surface
+    /// answered.
+    ///
+    /// A `let … else { panic!(..) }` puts its message on a line no passing test
+    /// can reach, which the measurement counts as missed however many times the
+    /// case passes (taxonomy (e)/(c)). The message here is built on the
+    /// **passing** path and the narrowing is a closure, whose non-matching arm
+    /// runs for every action that is not the expected one.
+    fn one<T>(actions: &[WbAction], pick: impl Fn(&WbAction) -> Option<T>) -> T {
+        let answered = format!("{actions:?}");
+        let mut taken: Vec<T> = actions.iter().filter_map(pick).collect();
+        let found = taken.len();
+        assert_eq!(
+            found, 1,
+            "expected exactly one matching action; the surface answered {answered}"
+        );
+        taken.pop().expect("one matching action")
+    }
+
     fn plain(rows: &[String]) -> String {
         rows.iter()
             .map(|row| crate::utils::strip_ansi_codes(row))
@@ -4933,16 +4952,18 @@ mod tests {
         data.input.text = "one".into();
         let mut wb = workbench();
         let actions = wb.handle(WbEvent::Key("alt+enter".into()), &data);
-        let [WbAction::EditEditor(editor)] = actions.as_slice() else {
-            panic!("{actions:?}")
-        };
+        let editor = one(&actions, |action| match action {
+            WbAction::EditEditor(editor) => Some(editor.clone()),
+            _ => None,
+        });
         data.input.editor = editor.as_ref().clone();
         data.input.text = editor.text().into();
         assert_eq!(data.input.text, "one\n");
         let actions = wb.handle(WbEvent::Paste("two".into()), &data);
-        let [WbAction::EditEditor(editor)] = actions.as_slice() else {
-            panic!("{actions:?}")
-        };
+        let editor = one(&actions, |action| match action {
+            WbAction::EditEditor(editor) => Some(editor.clone()),
+            _ => None,
+        });
         data.input.editor = editor.as_ref().clone();
         data.input.text = editor.text().into();
         assert_eq!(data.input.text, "one\ntwo");
@@ -6895,6 +6916,126 @@ mod tests {
         }
     }
 
+    /// The refusal table: a stray chord on a surface that does not own it is
+    /// answered with **nothing**, not with a redraw and not with a leaked key.
+    ///
+    /// Every overlay claims a set of keys and refuses the rest; written sixteen
+    /// times by hand that is sixteen chances to leak one, so the rule is stated
+    /// once as a table — each overlay against chords that nothing on the surface
+    /// claims (function keys, which are reserved for the reader's own bindings,
+    /// and a modifier combination the keymap has never heard of).
+    #[test]
+    fn every_overlay_refuses_the_keys_it_does_not_own() {
+        let data = demo::chat();
+        let stray = ["f5", "f12", "ctrl+alt+shift+f9", "ctrl+alt+f2"];
+        let overlays = [
+            Overlay::Help,
+            Overlay::Palette,
+            Overlay::PanelFull,
+            Overlay::Picker(PickerKind::Model),
+            Overlay::Picker(PickerKind::Thinking),
+            Overlay::Queue,
+            Overlay::Approval,
+            Overlay::Diff,
+            Overlay::Git,
+            Overlay::Files,
+            Overlay::Fork,
+            Overlay::Worktree,
+            Overlay::DeleteSession,
+            Overlay::FilePreview,
+            Overlay::Preferences,
+            Overlay::Keybindings,
+        ];
+        for overlay in overlays {
+            for key in stray {
+                let (mut workbench, _rows) = frame(&data, 120, 38);
+                workbench.overlay = Some(overlay);
+                let actions = workbench.handle(WbEvent::Key(key.into()), &data);
+                let answered = format!("{actions:?}");
+                // A refusal is nothing to do, or at most a repaint: what must
+                // never happen is a stray key reaching the conversation behind
+                // the box as an edit, a submission or a command.
+                assert!(
+                    actions.is_empty() || actions == [WbAction::Redraw],
+                    "{overlay:?} answered a stray {key} with {answered}"
+                );
+            }
+        }
+    }
+
+    /// The three events that are not keys and not pointer reports are refused
+    /// whole: a focus report is advisory (the notifier reads it and the surface
+    /// does not), a tick only advances the spinner, and a mouse report on a
+    /// surface that did not ask for mouse capture belongs to the terminal's own
+    /// selection.
+    #[test]
+    fn focus_a_tick_and_an_unclaimed_mouse_report_ask_for_no_action() {
+        let mut data = demo::chat();
+        data.mouse_capture = false;
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        assert!(workbench.handle(WbEvent::Focus(true), &data).is_empty());
+        assert!(workbench.handle(WbEvent::Focus(false), &data).is_empty());
+        assert!(workbench.handle(WbEvent::Tick, &data).is_empty());
+        let press = mouse::MouseEvent {
+            kind: mouse::MouseKind::Press,
+            x: 2,
+            y: 2,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        assert!(
+            workbench.handle(WbEvent::Mouse(press), &data).is_empty(),
+            "a surface without mouse capture answered a pointer report"
+        );
+    }
+
+    /// Every row of the layout menu answers `enter`, and the four rows that open
+    /// a menu of their own refuse a sideways press instead of pretending to be a
+    /// two-state toggle.
+    ///
+    /// The rows are the surface's own table (`preferences::PREFERENCE_ROWS`), so
+    /// walking it is what proves no row was left without a handler; the two
+    /// kinds of row — a toggle and a menu — are what the sideways refusal
+    /// separates, and it is the reason `left`/`right` on `Language` does nothing
+    /// rather than flipping through twenty-two palettes one press at a time.
+    #[test]
+    fn every_preference_row_answers_enter_and_the_menus_refuse_a_sideways_press() {
+        let data = demo::chat();
+        let menus = [
+            preferences::PreferenceRow::Language,
+            preferences::PreferenceRow::Theme,
+            preferences::PreferenceRow::Shortcuts,
+            preferences::PreferenceRow::Reset,
+        ];
+        for row in preferences::PREFERENCE_ROWS {
+            let (mut workbench, _rows) = frame(&data, 120, 38);
+            workbench.overlay = Some(Overlay::Preferences);
+            workbench.preferences_index = row.index();
+            let actions = workbench.handle(WbEvent::Key("enter".into()), &data);
+            let answered = format!("{actions:?}");
+            assert!(
+                !actions.is_empty(),
+                "{row:?} answered enter with nothing: {answered}"
+            );
+
+            if !menus.contains(&row) {
+                continue;
+            }
+            for key in ["left", "right"] {
+                let (mut workbench, _rows) = frame(&data, 120, 38);
+                workbench.overlay = Some(Overlay::Preferences);
+                workbench.preferences_index = row.index();
+                let actions = workbench.handle(WbEvent::Key(key.into()), &data);
+                let answered = format!("{actions:?}");
+                assert!(
+                    actions.is_empty(),
+                    "{row:?} opens a menu and answered {key} with {answered}"
+                );
+            }
+        }
+    }
+
     /// Both ends clamp instead of running off: a rail is never under 30 columns
     /// or over 60, however far the pointer travels in one drag.
     #[test]
@@ -6996,15 +7137,17 @@ mod tests {
         data.input.editor.paste("one two");
         data.input.text = "one two".into();
         let actions = workbench.handle(WbEvent::Key("ctrl+a".into()), &data);
-        let [WbAction::EditEditor(editor)] = actions.as_slice() else {
-            panic!("{actions:?}")
-        };
+        let editor = one(&actions, |action| match action {
+            WbAction::EditEditor(editor) => Some(editor.clone()),
+            _ => None,
+        });
         assert_eq!(editor.cursor(), 0, "ctrl+a is the line's start");
         data.input.editor = editor.as_ref().clone();
         let actions = workbench.handle(WbEvent::Key("ctrl+e".into()), &data);
-        let [WbAction::EditEditor(editor)] = actions.as_slice() else {
-            panic!("ctrl+e must edit the draft, not toggle a view: {actions:?}")
-        };
+        let editor = one(&actions, |action| match action {
+            WbAction::EditEditor(editor) => Some(editor.clone()),
+            _ => None,
+        });
         assert_eq!(editor.cursor(), 7, "ctrl+e is the line's end");
     }
 
@@ -7014,9 +7157,10 @@ mod tests {
         let (mut workbench, _rows) = frame(&data, 120, 38);
         for key in ["h", "i"] {
             let actions = workbench.handle(WbEvent::Key(key.into()), &data);
-            let [WbAction::EditEditor(editor)] = actions.as_slice() else {
-                panic!("{key}: {actions:?}")
-            };
+            let editor = one(&actions, |action| match action {
+                WbAction::EditEditor(editor) => Some(editor.clone()),
+                _ => None,
+            });
             assert_eq!((editor.text(), editor.cursor()), (key, 1), "{key}");
         }
         // The app applies the edit; the next frame sees it. Emulate that.
@@ -8771,11 +8915,13 @@ mod tests {
         }
         let chosen = workbench.palette_selection(&data).expect("a row");
         let actions = workbench.handle(WbEvent::Key("tab".into()), &data);
-        let [WbAction::EditInput { text, cursor }] = actions.as_slice() else {
-            panic!("{actions:?}");
-        };
-        assert_eq!(text, &chosen.fill());
-        assert_eq!(*cursor, text.len(), "the caret is after the command");
+        let (text, cursor) = one(&actions, |action| match action {
+            WbAction::EditInput { text, cursor } => Some((text.clone(), *cursor)),
+            _ => None,
+        });
+        let filled = chosen.fill();
+        assert_eq!(text, filled);
+        assert_eq!(cursor, text.len(), "the caret is after the command");
         assert_eq!(workbench.overlay, None);
     }
 
@@ -8848,11 +8994,12 @@ mod tests {
         assert_eq!(rows[0].label, "tui/src/workbench/screen.rs");
         // Enter replaces the token and nothing else.
         let actions = workbench.handle(WbEvent::Key("enter".into()), &data);
-        let [WbAction::EditInput { text, cursor }] = actions.as_slice() else {
-            panic!("{actions:?}");
-        };
+        let (text, cursor) = one(&actions, |action| match action {
+            WbAction::EditInput { text, cursor } => Some((text.clone(), *cursor)),
+            _ => None,
+        });
         assert_eq!(text, "看 @tui/src/workbench/screen.rs ");
-        assert_eq!(*cursor, text.len());
+        assert_eq!(cursor, text.len());
         assert!(workbench.mention.is_none(), "inserting closes the menu");
     }
 
@@ -8864,9 +9011,10 @@ mod tests {
         let data = with_input(&data, "read @my");
         workbench.render(&data, 120, 38);
         let actions = workbench.handle(WbEvent::Key("enter".into()), &data);
-        let [WbAction::EditInput { text, .. }] = actions.as_slice() else {
-            panic!("{actions:?}");
-        };
+        let (text, ..) = one(&actions, |action| match action {
+            WbAction::EditInput { text, cursor } => Some((text.clone(), *cursor)),
+            _ => None,
+        });
         assert_eq!(text, "read @\"docs/my note.md\" ");
     }
 
@@ -8928,9 +9076,10 @@ mod tests {
         assert!(!rows.is_empty(), "the demo has conversations");
         assert!(rows[0].insert.contains("futureos://session/"), "{rows:?}");
         let actions = workbench.handle(WbEvent::Key("tab".into()), &data);
-        let [WbAction::EditInput { text, .. }] = actions.as_slice() else {
-            panic!("{actions:?}");
-        };
+        let (text, ..) = one(&actions, |action| match action {
+            WbAction::EditInput { text, cursor } => Some((text.clone(), *cursor)),
+            _ => None,
+        });
         assert!(
             text.starts_with(&format!(
                 "[{}](futureos://session/{})",
@@ -9016,9 +9165,10 @@ mod tests {
         assert!(rows < input_top, "{rows} < {input_top}");
         // A click on a candidate inserts it, the way `enter` does.
         let actions = click_region(&mut workbench, &data, 120, 38, "mention.row.1");
-        let [WbAction::EditInput { text, .. }] = actions.as_slice() else {
-            panic!("{actions:?}");
-        };
+        let (text, ..) = one(&actions, |action| match action {
+            WbAction::EditInput { text, cursor } => Some((text.clone(), *cursor)),
+            _ => None,
+        });
         assert_eq!(text, "read @src/lib.rs ");
     }
 
@@ -11014,9 +11164,10 @@ mod tests {
         let data = demo::launchpad();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         let actions = workbench.handle(WbEvent::Paste("粘贴的文本".into()), &data);
-        let [WbAction::EditEditor(editor)] = actions.as_slice() else {
-            panic!("{actions:?}")
-        };
+        let editor = one(&actions, |action| match action {
+            WbAction::EditEditor(editor) => Some(editor.clone()),
+            _ => None,
+        });
         assert_eq!(editor.text(), "粘贴的文本");
         assert_eq!(editor.cursor(), "粘贴的文本".len());
     }
