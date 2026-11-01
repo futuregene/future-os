@@ -80,7 +80,20 @@ pub(super) struct Prepared {
 }
 impl Prepared {
     pub(super) fn new(bytes: &[u8], operation: &journal::Operation) -> Result<Self, String> {
-        let target = bundle()?;
+        Self::prepare_at(bytes, operation, bundle()?)
+    }
+    /// The body of [`Self::new`] with the installed bundle's path injected.
+    ///
+    /// Split out — behaviour unchanged — because `bundle()` derives the path from
+    /// `current_exe()`, which from a test binary is never an `.app`: the staging, signature,
+    /// identity, probe and helper steps behind it can then run against a bundle in a
+    /// temporary directory, and a failure in any of them is reported instead of being
+    /// masked by "this executable is not a bundle".
+    fn prepare_at(
+        bytes: &[u8],
+        operation: &journal::Operation,
+        target: PathBuf,
+    ) -> Result<Self, String> {
         if target.extension().and_then(|s| s.to_str()) != Some("app") {
             return Err(
                 "Install the application in a writable Applications folder before updating".into(),
@@ -283,6 +296,326 @@ pub(super) fn confirm(id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The staging directory is derived from the *installed* bundle's path and from the
+    /// transaction id, and it must stay beside the bundle (that is what makes the final
+    /// rename atomic): both inputs have to reach the answer.
+    #[test]
+    fn staging_is_derived_from_the_bundle_and_the_transaction_id() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("FutureOS.app");
+        let first = staging(&target, "update-2026-11-01T10-00-00").unwrap();
+        // Beside the bundle, not inside it and not in a fixed temp directory.
+        assert_eq!(first.parent(), target.parent());
+        assert_eq!(
+            first.file_name().and_then(|name| name.to_str()),
+            Some(".futureos-update-2026-11-01T10-00-00")
+        );
+        // A different transaction id is a different directory; the same one is stable.
+        let second = staging(&target, "update-2026-11-01T10-00-01").unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            first,
+            staging(&target, "update-2026-11-01T10-00-00").unwrap()
+        );
+        // Anything that is not `update-` plus ASCII alphanumerics would become a directory
+        // name this function created under a caller-supplied path, so it is refused.
+        for id in [
+            "",
+            "install-1",
+            "update_1",
+            "update-a/b",
+            "update-a.b",
+            "UPDATE-1",
+        ] {
+            assert!(
+                staging(&target, id).is_err(),
+                "{id:?} must be refused as a transaction"
+            );
+        }
+        // A bundle with no parent has nowhere to stage beside.
+        assert!(staging(Path::new("/"), "update-1").is_err());
+    }
+
+    /// `sync_tree` walks what it is given: a directory recurses, a symlink is left alone
+    /// (following it could sync a file outside the bundle), a plain file is synced, and a
+    /// path that does not exist is an error rather than a silent success.
+    #[test]
+    fn sync_tree_walks_directories_and_skips_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let bundle = root.path().join("Candidate.app");
+        std::fs::create_dir_all(bundle.join("Contents/MacOS")).unwrap();
+        std::fs::write(bundle.join("Contents/Info.plist"), b"<plist/>").unwrap();
+        std::fs::write(bundle.join("Contents/MacOS/future"), b"binary").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/etc/hosts", bundle.join("Contents/link")).unwrap();
+
+        assert!(sync_tree(&bundle).is_ok(), "a well-formed tree syncs");
+        assert!(
+            sync_tree(&bundle.join("Contents/MacOS/future")).is_ok(),
+            "a plain file syncs"
+        );
+        #[cfg(unix)]
+        assert!(
+            sync_tree(&bundle.join("Contents/link")).is_ok(),
+            "a symlink is skipped, so a dangling one is not an error either"
+        );
+        // The error arm: `symlink_metadata` on a path that does not exist, and on a path
+        // whose child disappears mid-walk is the same call at a different node.
+        assert!(sync_tree(&root.path().join("missing.app")).is_err());
+        let vanished = root.path().join("Vanished.app");
+        std::fs::create_dir(&vanished).unwrap();
+        std::fs::write(vanished.join("entry"), b"x").unwrap();
+        std::fs::remove_file(vanished.join("entry")).unwrap();
+        std::fs::remove_dir(&vanished).unwrap();
+        assert!(
+            sync_tree(&vanished).is_err(),
+            "a directory that is gone cannot be synced"
+        );
+    }
+
+    /// `probe` runs the candidate exactly as the installer will (`--help`) and reads its
+    /// exit status, so a binary that cannot start, one that fails and one that succeeds are
+    /// three different answers.
+    #[test]
+    fn probe_answers_for_a_running_a_failing_and_a_missing_executable() {
+        assert!(
+            probe(Path::new("/bin/echo")).is_ok(),
+            "an executable that exits 0 is accepted"
+        );
+        let failed = probe(Path::new("/usr/bin/false")).expect_err("exit 1 must be refused");
+        assert!(
+            failed.contains("probe failed"),
+            "the diagnostic names the failed probe, got {failed:?}"
+        );
+        let missing = probe(Path::new("/nonexistent/candidate")).expect_err("cannot start");
+        assert!(
+            missing.contains("cannot start"),
+            "the diagnostic names the failed spawn, got {missing:?}"
+        );
+    }
+
+    /// The worker entry point validates its three arguments before touching the filesystem:
+    /// a wrong arity is a named error, and so is a transaction id it would have to build a
+    /// path from.
+    #[test]
+    fn the_worker_refuses_wrong_arguments_before_touching_any_filesystem() {
+        assert!(worker(&[]).is_err());
+        assert!(worker(&["only-target".to_string()]).is_err());
+        let four = vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+        ];
+        assert!(
+            worker(&four).is_err(),
+            "more than three arguments is the same error"
+        );
+        let bad_id = vec![
+            "/tmp/FutureOS.app".to_string(),
+            "install-1".to_string(),
+            "/tmp/record.json".to_string(),
+        ];
+        let error = worker(&bad_id).expect_err("an id the staging path refuses stops the worker");
+        assert_eq!(error, "Invalid transaction identifier");
+    }
+
+    /// One update payload: a gzip'd tar holding exactly the given `<archive path, tree>` pairs.
+    fn tar_gz(entries: &[(&str, &Path)]) -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        let mut archive = tar::Builder::new(encoder);
+        for (name, tree) in entries {
+            if tree.is_dir() {
+                archive.append_dir_all(name, tree).unwrap();
+            } else {
+                archive.append_path_with_name(tree, name).unwrap();
+            }
+        }
+        archive.into_inner().unwrap().finish().unwrap()
+    }
+
+    /// A `.app` tree shaped the way an update carries it: an optional `CFBundleExecutable`
+    /// and a real Mach-O in `Contents/MacOS/future` (`/bin/echo`, whose `--help` exits 0 —
+    /// which is exactly what `probe` runs).
+    ///
+    /// `sign` runs the same ad-hoc signature a locally built bundle gets, so the
+    /// `codesign --verify --deep --strict` inside preparation has something to accept.
+    fn bundle_tree(case: &Path, executable: Option<&str>, sign: bool) -> PathBuf {
+        let app = case.join("payload/FutureOS.app");
+        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        std::fs::copy("/bin/echo", app.join("Contents/MacOS/future")).unwrap();
+        let identity = executable
+            .map(|name| format!("<key>CFBundleExecutable</key><string>{name}</string>"))
+            .unwrap_or_default();
+        std::fs::write(
+            app.join("Contents/Info.plist"),
+            format!(
+                "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict>{identity}\
+                 <key>CFBundleIdentifier</key><string>com.futureos.test</string></dict></plist>"
+            ),
+        )
+        .unwrap();
+        if sign {
+            let status = Command::new("/usr/bin/codesign")
+                .args(["--force", "--deep", "--sign", "-"])
+                .arg(&app)
+                .status()
+                .expect("run codesign on the fixture");
+            assert!(
+                status.success(),
+                "the fixture bundle could not be ad-hoc signed"
+            );
+        }
+        app
+    }
+
+    /// A bound journal case for `Prepared`'s filesystem work: its own updates directory, so
+    /// the staging directory the preparation creates lands in `case`, not in `~/.future`.
+    /// `fixtures` is a directory *outside* `case`: the payload trees live there, because
+    /// [`assert_nothing_left_beside`] asserts that preparation left nothing beside the
+    /// installed bundle, and a fixture tree in the same directory would hide exactly that.
+    type PreparedCase = (
+        crate::auth_store::test_support::HomeGuard,
+        journal::CaseRoot,
+        tempfile::TempDir,
+        tempfile::TempDir,
+    );
+
+    fn prepared_case(name: &'static str) -> PreparedCase {
+        let home = crate::auth_store::test_support::HomeGuard::new(name);
+        (
+            home,
+            journal::CaseRoot::bind(),
+            tempfile::Builder::new()
+                .prefix("macos-update-case-")
+                .tempdir()
+                .unwrap(),
+            tempfile::Builder::new()
+                .prefix("macos-update-fixtures-")
+                .tempdir()
+                .unwrap(),
+        )
+    }
+
+    /// Everything preparation created below `case` is gone: the staging directory is the one
+    /// thing it adds beside the installed bundle, and it must not outlive a failure.
+    fn assert_nothing_left_beside(case: &Path) {
+        let leftovers: Vec<_> = std::fs::read_dir(case)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "preparation cleaned up after itself, found {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn a_target_that_is_not_an_application_bundle_is_refused_before_anything_is_written() {
+        let (_home, _root, case, _fixtures) = prepared_case("macos-prepare-not-a-bundle");
+        let operation = journal::Operation::begin("9.9.9").unwrap();
+        let error = Prepared::prepare_at(b"payload", &operation, case.path().join("FutureOS.zip"))
+            .err()
+            .expect("a non-.app target is refused");
+        assert_eq!(
+            error, "Install the application in a writable Applications folder before updating",
+            "the refusal names the real precondition instead of a staging failure"
+        );
+        assert_nothing_left_beside(case.path());
+    }
+
+    #[test]
+    fn a_payload_that_is_not_a_gzip_archive_is_refused_and_unstaged() {
+        let (_home, _root, case, _fixtures) = prepared_case("macos-prepare-not-an-archive");
+        let operation = journal::Operation::begin("9.9.9").unwrap();
+        let target = case.path().join("FutureOS.app");
+        // The staging directory is created *before* the archive is read, so this failure is
+        // also the one that proves the cleanup arm runs.
+        let error = Prepared::prepare_at(b"not a gzip stream", &operation, target)
+            .err()
+            .expect("an unreadable archive is refused");
+        assert!(!error.is_empty(), "the unpack error is reported");
+        assert_nothing_left_beside(case.path());
+    }
+
+    #[test]
+    fn a_payload_must_hold_exactly_one_application_bundle() {
+        let (_home, _root, case, fixtures) = prepared_case("macos-prepare-bundle-count");
+        let operation = journal::Operation::begin("9.9.9").unwrap();
+        let tree = bundle_tree(fixtures.path(), Some("future"), false);
+        let target = case.path().join("FutureOS.app");
+
+        // Two bundles: which one would be installed is genuinely ambiguous.
+        let two = tar_gz(&[("FutureOS.app", &tree), ("Other.app", &tree)]);
+        let error = Prepared::prepare_at(&two, &operation, target.clone())
+            .err()
+            .expect("two bundles are refused");
+        assert_eq!(error, "Update must contain exactly one application bundle");
+        assert_nothing_left_beside(case.path());
+
+        // One entry, but not a bundle.
+        let not_a_bundle = std::path::Path::new("/bin/echo");
+        let wrong = tar_gz(&[("FutureOS", not_a_bundle)]);
+        let error = Prepared::prepare_at(&wrong, &operation, target)
+            .err()
+            .expect("one non-bundle entry is refused");
+        assert_eq!(error, "Update must contain exactly one application bundle");
+        assert_nothing_left_beside(case.path());
+    }
+
+    #[test]
+    fn an_unsigned_candidate_is_refused_by_the_signature_check() {
+        let (_home, _root, case, fixtures) = prepared_case("macos-prepare-unsigned");
+        let operation = journal::Operation::begin("9.9.9").unwrap();
+        let tree = bundle_tree(fixtures.path(), Some("future"), false);
+        let payload = tar_gz(&[("FutureOS.app", &tree)]);
+        let error = Prepared::prepare_at(&payload, &operation, case.path().join("FutureOS.app"))
+            .err()
+            .expect("an unsigned bundle is refused");
+        assert!(
+            error.starts_with("Candidate application signature is invalid"),
+            "the refusal names the signature, got {error:?}"
+        );
+        assert_nothing_left_beside(case.path());
+    }
+
+    #[test]
+    fn a_signed_candidate_without_an_executable_identity_is_refused() {
+        let (_home, _root, case, fixtures) = prepared_case("macos-prepare-no-identity");
+        let operation = journal::Operation::begin("9.9.9").unwrap();
+        let tree = bundle_tree(fixtures.path(), None, true);
+        let payload = tar_gz(&[("FutureOS.app", &tree)]);
+        let error = Prepared::prepare_at(&payload, &operation, case.path().join("FutureOS.app"))
+            .err()
+            .expect("a bundle with no CFBundleExecutable is refused");
+        assert_eq!(error, "Candidate bundle has no executable identity");
+        assert_nothing_left_beside(case.path());
+    }
+
+    /// The whole successful preparation chain — unpack, signature, identity, both probes,
+    /// fsync — against a bundle in a temporary directory.
+    ///
+    /// It ends in a refusal on purpose: the helper preparation starts is `current_exe()`
+    /// with `--app-update-macos-worker`, and from a test binary that process answers
+    /// `Unrecognized option` instead of the `READY` handshake. That refusal is the
+    /// observable that the chain reached the helper *after* passing every check before it,
+    /// which is what this covers; the handshake itself needs a cooperating child.
+    #[test]
+    fn a_signed_candidate_is_verified_probed_and_handed_to_the_helper() {
+        let (_home, _root, case, fixtures) = prepared_case("macos-prepare-signed");
+        let operation = journal::Operation::begin("9.9.9").unwrap();
+        let tree = bundle_tree(fixtures.path(), Some("future"), true);
+        let payload = tar_gz(&[("FutureOS.app", &tree)]);
+        let error = Prepared::prepare_at(&payload, &operation, case.path().join("FutureOS.app"))
+            .err()
+            .expect("the non-cooperating helper is refused");
+        assert!(
+            error.starts_with("Update preparation was cancelled or refused"),
+            "the chain reached the helper's handshake, got {error:?}"
+        );
+        assert_nothing_left_beside(case.path());
+    }
+
     #[test]
     fn atomic_exchange_retains_both_complete_versions_and_can_be_reversed() {
         let root = tempfile::tempdir().unwrap();
