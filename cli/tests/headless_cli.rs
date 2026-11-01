@@ -125,6 +125,72 @@ fn a_plain_launch_serves_locally_without_an_account() {
     );
 }
 
+/// A `--relay` launch is the one answer to "which account" that does not need
+/// the platform at all: the relay supplies its own, so the entry point must say
+/// so and serve instead of checking a Future credential it will not use.
+///
+/// The relay address is a loopback port nothing listens on. That is deliberate:
+/// the question this test asks is what the *launch* decides, and the decision is
+/// printed before any connection is attempted — a reachable relay would only add
+/// a race for the assertion, not a property.
+#[cfg(unix)]
+#[test]
+fn a_relay_launch_serves_without_a_future_account() {
+    use std::time::Duration;
+
+    let home = tempfile::tempdir().unwrap();
+    let mut guard = ChildGuard(
+        foreground(home.path())
+            .args(["--relay", "http://127.0.0.1:1"])
+            .spawn()
+            .unwrap(),
+    );
+    let child = &mut guard.0;
+    let mut log = Stderr::take(child);
+    log.wait_for(
+        "Self-hosted relay (http://127.0.0.1:1). No Future account is used for phone pairing",
+        Duration::from_secs(300),
+    );
+    // The signed-out sentence belongs to the *other* branch of the same decision.
+    // Seeing it here would mean the account was still consulted on a relay run.
+    log.drain();
+    assert!(
+        !log.collected.contains("Not signed in to FutureOS"),
+        "a relay launch must not be reported as a signed-out one:\n{}",
+        log.collected
+    );
+    // Serving, not stuck: the run reaches the supervision loop and says what the
+    // relay has to serve with (no device is paired, and nothing is minted here).
+    log.wait_for("No device is paired yet", Duration::from_secs(120));
+    log.drain();
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "a relay host with nothing paired must keep serving:\n{}",
+        log.collected
+    );
+    signal(child, "-INT");
+    let status = wait_for_signal_exit(child, &mut log, Duration::from_secs(120));
+    assert!(
+        status.success(),
+        "SIGINT must stop it cleanly: {status}\n{}",
+        log.collected
+    );
+    // The relay is what this launch serves with, so it must not have needed a
+    // platform account to get there. The *file* says nothing — the embedded
+    // Agent writes its own placeholder `auth.json` on startup — but a key in it
+    // would: only the account branch stores one.
+    let auth = std::fs::read_to_string(home.path().join(".future/agent/auth.json"))
+        .expect("the embedded Agent writes its own credential file");
+    let stored: serde_json::Value = serde_json::from_str(&auth).expect("auth.json is JSON");
+    assert!(
+        stored["future"]["key"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty(),
+        "a relay launch must not store a platform key: {auth}"
+    );
+}
+
 /// Successor to `first_setup_refuses_redirected_logs_without_printing_authorization_material`,
 /// which guarded the *safety* property of a non-interactive launch: it must not
 /// write authorization material (a device code, an invitation, a QR) into a
