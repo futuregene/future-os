@@ -577,6 +577,29 @@ mod tests {
         std::env::remove_var("FUTURE_HOME");
     }
 
+    /// Without the override the store is resolved from the application
+    /// directory the same process already reads for its own data, so a GUI
+    /// launched with no `FUTURE_HOME` still opens the task list the tick loop
+    /// writes instead of a second, empty one under the temp directory.
+    #[test]
+    fn without_an_override_the_task_home_is_the_application_directorys_parent() {
+        let _home = init("cmd_tasks_home_default");
+        std::env::remove_var("FUTURE_HOME");
+        let app_dir =
+            future_app_settings::app_dir().expect("an application directory under the fixture");
+        let root = future_home();
+        assert_eq!(
+            Some(root.clone()),
+            app_dir.parent().map(|path| path.to_path_buf()),
+            "the store root is the application directory's parent"
+        );
+        assert!(
+            root.ends_with(".future"),
+            "the fallback root is the FutureOS home, got {}",
+            root.display()
+        );
+    }
+
     /// `enabled` is optional on the update payload; when present it must reach
     /// the stored row (both directions), and when absent the existing value has
     /// to survive the edit.
