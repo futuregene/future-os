@@ -1243,12 +1243,22 @@ done
                 .await
                 .expect("the handshake is a normal one");
 
-            // The drain is a background task: wait (bounded) for the tail to
-            // fill rather than guessing how long it needs.
-            crate::test_env::wait_for(|| {
-                process.stderr_tail().lines().count() == STDERR_TAIL_LINES
+            // The drain is a background task, so wait for the line the child
+            // writes *last* rather than for the ring to reach its size: reaching
+            // 40 lines happens while the child is still on line 42, and the tail
+            // then starts at `stderr-03` although every count and every byte is
+            // correct so far (measured as a whole-suite failure at 32 threads).
+            // Waiting on the last line makes the assertions below read a settled
+            // tail, and it is still bounded.
+            let settled = crate::test_env::wait_for(|| {
+                process.stderr_tail().trim_end().lines().last() == Some("stderr-45")
             })
             .await;
+            assert!(
+                settled,
+                "the tail never reached the last line: {}",
+                process.stderr_tail()
+            );
 
             let tail = process.stderr_tail();
             let lines: Vec<&str> = tail.lines().collect();
