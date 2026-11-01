@@ -180,7 +180,7 @@ impl Prepared {
             sync_tree(&directory)?;
             let program = match helper {
                 Some(helper) => helper.to_path_buf(),
-                None => std::env::current_exe().map_err(|e| e.to_string())?,
+                None => update_helper_program()?,
             };
             let mut command = Command::new(program);
             command
@@ -229,6 +229,16 @@ impl Drop for Prepared {
         }
     }
 }
+/// The program a prepared bundle is handed to in production: **this** executable, which is the
+/// running app, re-invoked as `--app-update-macos-worker`.
+///
+/// Split out from the hand-off so the production arm is a function of its own: every test path
+/// that reaches the hand-off supplies a helper, and `Prepared::new` — the only `None` caller —
+/// cannot run from a test binary at all (`bundle()` refuses a target that is not inside an
+/// `.app`).
+fn update_helper_program() -> Result<PathBuf, String> {
+    std::env::current_exe().map_err(|e| e.to_string())
+}
 /// The whole preparation chain, end to end, for a caller that can supply the helper.
 ///
 /// Differs from the product path in one thing only — *who* the helper is, see
@@ -251,6 +261,25 @@ pub(super) fn prepare_and_commit(
     let prepared = Prepared::prepare_with_helper(bytes, &operation, target, helper)?;
     let completion = prepared.commit()?;
     serde_json::to_string(&completion).map_err(|e| e.to_string())
+}
+/// The same chain, **cancelled** instead of committed: prepared, then dropped.
+///
+/// The drop is the behaviour under test. A prepared update that is never committed must close
+/// the helper and remove the staging directory it created beside the installed bundle — the
+/// directory sits in `/Applications` in the field, so one left behind is a real leftover and a
+/// real test of `Drop`. Returns nothing: what to assert is the directory the caller handed in.
+#[cfg(any(test, feature = "test-support"))]
+pub(super) fn prepare_and_drop(
+    version: &str,
+    bytes: &[u8],
+    target: PathBuf,
+    helper: &Path,
+) -> Result<(), String> {
+    let operation = journal::Operation::begin(version).map_err(|e| e.to_string())?;
+    drop(Prepared::prepare_with_helper(
+        bytes, &operation, target, helper,
+    )?);
+    Ok(())
 }
 fn exchange(a: &Path, b: &Path) -> Result<(), String> {
     use std::os::unix::ffi::OsStrExt;
@@ -471,6 +500,18 @@ mod tests {
         ];
         let error = worker(&bad_id).expect_err("an id the staging path refuses stops the worker");
         assert_eq!(error, "Invalid transaction identifier");
+    }
+
+    /// The production hand-off target. Nothing else can reach it: a `Some` helper is what every
+    /// test path passes, and the `None` caller (`Prepared::new`) is only entered by a running
+    /// app that is inside an `.app`.
+    #[test]
+    fn production_hands_the_prepared_bundle_to_this_executable() {
+        assert_eq!(
+            update_helper_program().unwrap(),
+            std::env::current_exe().unwrap(),
+            "the helper is this executable re-invoked, read at hand-off time rather than remembered"
+        );
     }
 
     /// One update payload: a gzip'd tar holding exactly the given `<archive path, tree>` pairs.

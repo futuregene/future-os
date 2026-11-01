@@ -111,6 +111,17 @@ pub fn prepare_update_bundle_for_tests(
 ) -> Result<String, String> {
     macos::prepare_and_commit(version, bytes, target, helper)
 }
+/// The same chain, prepared and then **dropped** instead of committed — the cancel path, whose
+/// behaviour is `Prepared::drop` removing the staging directory it created beside the bundle.
+#[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
+pub fn prepare_and_cancel_update_for_tests(
+    version: &str,
+    bytes: &[u8],
+    target: std::path::PathBuf,
+    helper: &std::path::Path,
+) -> Result<(), String> {
+    macos::prepare_and_drop(version, bytes, target, helper)
+}
 #[cfg(not(target_os = "windows"))]
 fn helper_result(result: Result<(), String>) -> Result<(), String> {
     if let Err(error) = &result {

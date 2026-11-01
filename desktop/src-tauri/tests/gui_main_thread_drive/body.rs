@@ -644,6 +644,28 @@ fn exercise_update_preparation(root: &std::path::Path) {
                     leftovers.is_empty(),
                     format!("{leftovers:?}"),
                 ));
+
+                // The cancel half, on the same bundle: prepared and then dropped, which must
+                // close the helper and take the staging directory with it. In the field that
+                // directory sits in `/Applications`.
+                let cancelled = futureos_lib::test_support::prepare_and_cancel_update_for_tests(
+                    "9.9.8",
+                    &bytes,
+                    case.join("FutureOS.app"),
+                    &helper,
+                );
+                let after_cancel = directory_entries(&case);
+                checks.push((
+                    "a prepared update that is cancelled leaves no staging directory either",
+                    cancelled.is_ok() && after_cancel.is_empty(),
+                    format!(
+                        "{}; {after_cancel:?}",
+                        match &cancelled {
+                            Ok(()) => "prepared then dropped".to_string(),
+                            Err(error) => error.clone(),
+                        }
+                    ),
+                ));
             }
         }
     }

@@ -41,6 +41,8 @@ pub use crate::commands::prepare_image_preview;
 /// gives each candidate executable 10 s; see `coverage/2026-11/tauri/wave3.md` §4, where the
 /// libtest version of this case failed 2 of 4 rounds on exactly that).
 #[cfg(all(feature = "gui", target_os = "macos"))]
+pub use crate::commands::prepare_and_cancel_update_for_tests;
+#[cfg(all(feature = "gui", target_os = "macos"))]
 pub use crate::commands::prepare_update_bundle_for_tests;
 
 /// How long a fixture waits for a fact about **another process**, and the seam that decides
