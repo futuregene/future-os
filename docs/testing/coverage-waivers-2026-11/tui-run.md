@@ -14,16 +14,18 @@ belong to `live.rs` are in `tui.md`; rows about `run()`'s process wiring are in 
 "`run()`'s remaining branches" table and are **not repeated here** (they are unchanged: the
 same eight branches, the same 19 lines).
 
-**Status of this file: 0 waived.** Everything below is either closed (with the test that
-closes it) or *not waived* with the falsifier that would prove it reachable.
+**Status of this file: 9 lines waived in wave 6** (see "Waived this wave"; the arms this
+metric merely *looks* like it covers are discussed there too). Everything else below is either
+closed (with the test that closes it) or *not waived* with the falsifier that would prove it
+reachable.
 
 ## before / after (this task)
 
-| | 2026-10-31 (task start) | r2 (wave 12) | r4 | **r8 (wave 5, final)** |
-|---|---:|---:|---:|---:|
-| `workbench/run.rs` DA:0 | 333 | 168 | 142 | **136** |
-| `workbench/mod.rs` DA:0 | 316 | 287 | 262 | **236** |
-| lane total DA:0 (with meters) | — | 1486 | — | **1359** |
+| | 2026-10-31 (task start) | r2 (wave 12) | r4 | r8 (wave 5) | r9 | **r10 (wave 6)** |
+|---|---:|---:|---:|---:|---:|---:|
+| `workbench/run.rs` DA:0 | 333 | 168 | 142 | 136 | 116 | **113** |
+| `workbench/mod.rs` DA:0 | 316 | 287 | 262 | 236 | 221 | **221** |
+| lane total DA:0 (with meters) | — | 1486 | — | 1359 | 1321 | **1316** |
 
 Each `rN` is one measurement pass; `lcov` for all of them is in
 `coverage/2026-11/after/tui2/tui2-rN.info`, and every figure in this file was re-derived from
@@ -100,7 +102,7 @@ The guard is held across `await` on purpose (`#[allow(clippy::await_holding_lock
 site): the loop is what spawns the read, nothing the loop runs takes that lock, so the
 lint's deadlock cannot occur here while releasing it early reopens the race.
 
-## Remaining in `run.rs` (136) — grouped, none waived
+## Remaining in `run.rs` (113 at r10; 136 was why these rows were written)
 
 Line numbers are r8 for the product lines (the test module below them grew, the code above it
 did not); `python3 ../tui2/ranges.py <info> <src> workbench/run.rs` re-prints them with the
@@ -118,7 +120,7 @@ source line.
 | 8 | `453-456, 476-479` | **W8** (dead producer) | the failure notice in both call sites: `take_completion_notification` **removes** the run's candidate before it checks the state (`live.rs`: `.position(..).and_then(|i| self.completion_candidates.remove(i))` runs before `should_notify(.., state, ..)`), and both loop sites call the completion gate first — so `take_failure_notification` never sees a candidate, and `alert_for` covers `error`/`approval_request` but not `agent_end state:"failed"`. A failed run is announced by nothing | a `Live`-level case where a filed run's `agent_end` says `failed` and `take_failure_notification` answers `true` — which today holds only if that candidate is never offered to the completion gate first | **not waived** — product defect in `live.rs` (see "What row 8 actually was"); the fix opens all eight lines |
 | 8a | `469` | reachable | the burst drain's completion (`completion = event.run_id…`) | an `agent_end` with `state:"completed"` that arrives **behind** another event in the same breath (the single-event arm at `444` is now covered) | **not waived** |
 | 9 | `742, 959, 1259, 1348, 1409` | reachable | small `match` tails: `resolve_step`'s non-switch actions, `Outcome::Quit`, a tab key that maps to no section, a filter parse's default, a picker's `Some(next)` | one driver key per arm | **not waived** |
-| 10 | `918-919, 1028-1035, 1075-1084, 1088, 1106, 1146, 1153, 1280-1283, 1362-1368, 1772-1773` | **W3 (a)** | the error arms of five panel reads plus `toggle_pin_selected` and its `continue` | a mock that answers `Err` on the read each arm belongs to (the driver's mock answers by command type, so this is one fixture per arm) | **not waived** |
+| 10 | `918-919, 1028-1035, 1075-1084, 1088, 1106, 1146, 1153, 1280-1283, 1362-1368, 1772-1773` | **W3 (a)** | the error arms of five panel reads plus `toggle_pin_selected` and its `continue` | a mock that answers `Err` on the read each arm belongs to (the driver's mock answers by command type, so this is one fixture per arm) | **closed in wave 6 except one tail** — `1028-1034`, `1075-1085`, `1146`, `1362-1364` have their cases; the `Err(join)` arms read `≥1` because a single-expression arm carries the `matches!`/`match` decision's count (see "the metric's own blind spot"), so only the multi-line one, `1366-1369`, is left and it is waived |
 | 11 | `1197-1201, 1208-1213, 1231-1232, 1236-1238, 1243-1249, 1756-1761, 1787, 1793-1802, 1821` | reachable | the mouse-capture and preview verbs: `/preview`, `reset_preview`, `refresh_state`, the clipboard copy's `spawn_blocking`, the picture scope | one driver verb each; `/preview` on a file row needs a workspace with a picture (the loop_edges preview test builds one) | **not waived** |
 | 12 | `1374-1376, 1382-1384, 1435-1436, 2141` | reachable | `copy_last` / `copy_message` and the `ImageProtocol::None` arm | a copy key per row kind; a terminal that reports no picture protocol (the driver's does not, so this is one flag away) | **not waived** |
 | 13 | `1734-1743` | **W7** | "No driver behind this surface (never in the running app): read it here" — the synchronous fallback the driver never takes because `Live` has a load sender | a `Live` with no `load_tx` (the comment is the claim; it has not been measured) | **not waived** |
@@ -171,6 +173,80 @@ The 5 s is not a sleep the test chose: the assertion is that the read happens on
 clock, the clock is `std::time::Instant` inside the child (so `tokio`'s paused clock cannot
 shorten it), and any shorter wait would prove something else. It is `#[cfg(unix)]` at the
 harness's level, so Windows pays nothing.
+
+## Wave 6 (2026-11-01): the doors that refuse a read
+
+Two passes this wave: `r9` (taken from the working tree while both owners of this ledger were
+writing into it, so it carries both halves) and `r10` (after the wave's last test commit,
+`f3c2759fc`, which also added one line above the approval gate — from `918` on, `r10`'s numbers
+are each one line later than `r9`'s, and every figure below is `r10`'s).
+
+| | r8 | r9 | **r10** |
+|---|---:|---:|---:|
+| `workbench/run.rs` DA:0 | 136 | 116 | **113** |
+| `workbench/mod.rs` DA:0 | 236 | 221 | **221** |
+| lane total DA:0 (with meters) | 1359 | 1321 | **1316** |
+
+Eighteen of the twenty `run.rs` lines `r9` closed are the four cases below (`python3 exact.py
+tui2-r8.info tui2-r9.info workbench/run.rs`); `run.rs:1280` (the review's `SelectDiff` re-read)
+and `:1772` (the panel's row detail) closed in the sibling half. Nothing opened in either pass.
+
+| arm | the read that fails | probe |
+|---|---|---|
+| `run.rs:1028-1034` | `/worktree`'s `probe_repo` — the **tool** is missing, not the repository: `git` is spawned by name, so a `PATH` with no `git` on it is the `Ok(Err(..))` arm | `a_repository_read_that_failed_reaches_its_panel` |
+| `run.rs:1146` | the working-tree review's `diff_review::load` — the workspace the panel was read from is gone by the time `d` asks for it | `a_review_of_a_workspace_that_went_away_says_so` |
+| `run.rs:1362-1364` | the clipboard refusing the repository's `y` — a `PATH` with a **stub `git`** and no clipboard tool, so the panel loads and only the copy cannot run | `a_copy_the_clipboard_refuses_is_reported` |
+| `run.rs:1075-1085` | the palette's `/pin` row, which is the **only** door to the loop's `/pin` arm: a typed `/pin` is answered in the surface (`toggle_pin_selected`, `mod.rs:4346`), so `driver.command("/pin")` never reaches `run.rs:1074` | `the_palettes_pin_reaches_the_rail_the_draft_answers_in_the_surface` |
+
+### What the palette's `/pin` showed: a sentence nothing prints
+
+`toggle_pin_selected` answers a launchpad pin with `WbAction::Notice(NoticePinNewSession)`
+(`mod.rs:2156-2159`). The **typed** door reaches the loop's own `Notice` arm (`run.rs:1390`,
+`live.notice = Some(..)`), but the **palette's** door hands the action to `Live::apply`, whose
+`WbAction::Notice` arm is `{}` (`live.rs:1979`) — the reader who pins from the palette with
+nothing on the rail is told nothing at all. Measured, not inferred: the case asserts the
+invariant that survives a fix (`pinnedSessions` is not written) and records the gap here instead
+of asserting the silence as though it were correct.
+
+### The metric's own blind spot on `match` and `matches!` arms — read this before waiving one
+
+`DA:≥1` on an arm is **not** proof the arm ran, and it cost this wave one wrong reading before it
+was caught. Three measurements from `r10`:
+
+- `run.rs:1373-1374` (`if matches!(action, WbAction::CopyLast)` and the `let` under it) read
+  **258** — the decision's own count — while `1375-1377` (the body's remaining lines) read **0**.
+  The arm is never entered (see the waiver below): the `matches!` expansion's spans cover the
+  condition and the first statement, so a one-statement arm reads as reached forever.
+- `run.rs:959` (`Outcome::Quit => Ok(true)`) reads **1** and `960` (`Outcome::Continue =>
+  Ok(false)`, the arm every `/new` takes — `/new` is `to_launchpad`, `live.rs:2194-2200`) reads
+  **0**. The two arms trade their counts.
+- the single-expression `Err` arms — `1146`, `1106`, `1153`, `1281`, `1773` — all read **≥1**
+  although nothing in the suite produces a `JoinError` or a `git` failure at those sites.
+
+The consequence for this ledger: **a waiver is taken on the *tail* of an unreached arm, never on
+its first line**, and the falsifier is always "a case that makes the tail run". Lines the metric
+cannot see at all (`-`: no `DA` record) are not counted by metric A either way.
+
+### Waived this wave (9 lines)
+
+| lines | why no test can reach it | falsifier |
+|---|---|---|
+| `1366-1369` | the `Err` side of the git copy's `spawn_blocking(..).await` (`clipboard::copy_text`): a `JoinError` needs the blocking closure to **panic** — `copy_text` returns `Result` and does not panic on any input the panel passes. Its four render lines stay at `0` because the arm is multi-line (the blind spot above hides only single-statement arms) | any input that makes `copy_text` panic (then this is a product defect, not a missing test) |
+| `1375-1377` | `WbAction::CopyLast` has one producer — the keymap's `Action::Copy` (`mod.rs:1550`) — and the loop answers that action itself before `handle` runs (`run.rs:936-941`), so a `Copy` binding never reaches the arm and a reader who rebinds the chord lands in the intercept for the same reason | a `CopyLast` produced by something other than the keymap's `Action::Copy` (a mouse or paste path would do it) |
+| `959-960` | a `match` over `Outcome` whose arms are constant expressions: the decision's span lands on `959` and `960` reads `0` although `/new` continues (`live.rs:2194-2200`), and `Quit` cannot be produced by `live.apply(WbAction::Command("/new"))` (`Quit` comes only from `WbAction::Quit`, `live.rs:1880`, or the `quit` command, `live.rs:2189`). No test can move either line; the lever is rewriting the `match` as an `if` | an `Outcome` from `Live::apply` that is neither of the two arms |
+
+Eight more lines of this wave are **not** waived: `1036`, `1084`, `1107`, `1154`, `1282`,
+`1284`, `1349`, `1774` are `}` / `};` closing braces with a zero edge (taxonomy **(c)**, like
+`400`/`428`/`926` above). The arms they close execute; single-lining the arm is a code change
+with no behavioural content.
+
+### Row 8 (W8) re-checked, and it stands
+
+`live.rs` is unchanged this wave: `take_completion_notification` still removes the run's
+candidate (`.position(..).and_then(|index| self.completion_candidates.remove(index))`,
+`live.rs:1607-1611`) **before** `should_notify`, and both loop sites call it before
+`take_failure_notification`, so `run.rs:453-456` and `:476-479` stay dark and the waiver's
+falsifier is unchanged. A failed run is still announced by nothing.
 
 ## How to re-measure this file
 
