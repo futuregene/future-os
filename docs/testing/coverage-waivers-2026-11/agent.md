@@ -175,6 +175,41 @@ panics `no entry found for key` and throws away the path the function exists to
 produce. The absent side is now a JSON null. This is test-only code
 (`rpc/commands/test_support.rs` is `#[cfg(test)]`), so no product behaviour moved.
 
+## Wave 27: the probe file is mostly host-unreachable, and three `?` rows were attribution
+
+`rpc/commands/settings.rs` still showed **41** missed lines after the probe commands were driven
+end to end, which looked like an untested handler. Reading the lcov per line says something else:
+the *reachable* lines are covered (the handler entry, the probe call, the response) and what is
+left splits into two kinds, neither of which a test on this host can move.
+
+| lines | what they are | why they cannot run here |
+|---|---|---|
+| 21-24 (old numbering) | `Err(error) => RpcResponse::build_fail(...)` of `handle_probe_sandbox` | `platform_sandbox_probe_product()` returns `Ok` on macOS unconditionally (it stats `/usr/bin/sandbox-exec`); there is no seam that makes it fail, so the arm is an OS-failure branch, class W3 |
+| 33 | `tracing::warn!` "Windows sandbox host probe unavailable" | fires only when the Windows probe returns a diagnostic; on macOS the probe is `unavailable_without_error("platform_not_windows")`, so `diagnostic()` is `None` — class W1 |
+| 43-46, 53-56 | the `Err` arm of `handle_probe_windows_sandbox`, and the `Ok` arm of `handle_reset_windows_sandbox` | both are Windows-only: outside Windows the probe succeeds with `platform_not_windows` and the reset returns `Unsupported` — class W1 |
+| 548-562 | `set_sandbox_policy`'s probe-failure arms | same missing seam as the first row |
+
+Two things were fixable and are fixed (commit `95fd3383f`):
+
+- **The dead serialisation closures.** `serde_json::to_value(result).unwrap_or_else(|_| { json!({…}) })`
+  is a five-line block that can never run (every probe result is a struct of scalars) and that
+  rustfmt spreads over five rows — while the *call arguments* around it stayed `DA:0` because the
+  closure's region swallowed them. Both probes now call a one-line helper
+  (`probe_unavailable("none")`, `windows_probe_unavailable()`); the arguments count as executed
+  and the dead cost is one row per probe instead of four or five.
+- **Three `)?;` attribution rows in `session/database/connection.rs`.** The schema-identity
+  validations used multi-line `query_row(…)` calls, which puts the `?` alone on its own line —
+  a row that only holds the error edge. Hoisting the three SQL texts to consts keeps each call on
+  one line, and they are covered now (`USER_TABLE_COUNT` DA=39, `FOREIGN_TABLES_EXIST` DA=1,
+  `NO_FOREIGN_TABLES` DA=2).
+
+Also gained, by a real test rather than a rewrite: `connection.rs`'s **"incomplete schema
+identity"** refusal. A file that answers to the Agent's `application_id`, carries no schema
+version and holds a table the schema does not own is now asserted to be **refused and left
+byte-identical** — the point of the arm is that adopting it would run `CREATE IF NOT EXISTS` over
+someone's data and then report an empty history for it (`DA=1`, and the foreign table still exists
+afterwards).
+
 ## Wave 26: the first re-measurement on the fast suite (1211 left)
 
 `cargo llvm-cov -p future-agent --no-report` on `0a70974db` (the wave-25 tree with the vendored
