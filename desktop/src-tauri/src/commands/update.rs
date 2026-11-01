@@ -122,6 +122,23 @@ pub fn prepare_and_cancel_update_for_tests(
 ) -> Result<(), String> {
     macos::prepare_and_drop(version, bytes, target, helper)
 }
+/// The **worker** half of the macOS install, for a process that can *be* the helper.
+///
+/// Production never calls this: `dispatch_update_helper` runs it as
+/// `--app-update-macos-worker`, which is how the app re-invokes *itself*. A test target that
+/// is to act as the worker (a `harness = false` driver, not a libtest body) dispatches the
+/// same flag to this and is then the real worker, not a stand-in for it.
+#[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
+pub fn run_update_worker_for_tests(args: &[String]) -> Result<(), String> {
+    macos::worker(args)
+}
+/// [`macos::probe`]: its 10 s deadline can only be *expired* by a candidate that outlives it,
+/// so the arm needs a process without a few hundred parallel libtest cases stalling its own
+/// process creation.
+#[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
+pub fn probe_update_candidate_for_tests(path: &std::path::Path) -> Result<(), String> {
+    macos::probe(path)
+}
 #[cfg(not(target_os = "windows"))]
 fn helper_result(result: Result<(), String>) -> Result<(), String> {
     if let Err(error) = &result {

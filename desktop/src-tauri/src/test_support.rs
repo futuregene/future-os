@@ -45,6 +45,17 @@ pub use crate::commands::prepare_and_cancel_update_for_tests;
 #[cfg(all(feature = "gui", target_os = "macos"))]
 pub use crate::commands::prepare_update_bundle_for_tests;
 
+/// The macOS update **worker**, so a test target can be the helper instead of standing in for
+/// it: production reaches it as `--app-update-macos-worker` on the app's own executable, and a
+/// `harness = false` driver dispatches the same flag here (`tests/gui_main_thread_drive`).
+#[cfg(all(feature = "gui", target_os = "macos"))]
+pub use crate::commands::run_update_worker_for_tests;
+
+/// [`commands::update_macos::probe`], whose timeout arm needs a candidate that outlives the
+/// production deadline — only a process with no parallel suite can afford to wait for it.
+#[cfg(all(feature = "gui", target_os = "macos"))]
+pub use crate::commands::probe_update_candidate_for_tests;
+
 /// How long a fixture waits for a fact about **another process**, and the seam that decides
 /// it.
 ///

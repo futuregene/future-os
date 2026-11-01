@@ -48,7 +48,11 @@ fn sync_tree(path: &Path) -> Result<(), String> {
         .and_then(|file| file.sync_all())
         .map_err(|e| e.to_string())
 }
-fn probe(path: &Path) -> Result<(), String> {
+/// `pub(super)` for `commands::update`'s test facade, behaviour unchanged: its 10 s deadline
+/// is production's, and *expiring* it needs a candidate that outlives that deadline — 11 s of
+/// suite time, in a process whose other few hundred cases are already stalling process
+/// creation (`wave3.md` §4). `tests/gui_main_thread_drive` pays that instead.
+pub(super) fn probe(path: &Path) -> Result<(), String> {
     let mut child = Command::new(path)
         .arg("--help")
         .stdin(std::process::Stdio::null())
@@ -690,6 +694,26 @@ mod tests {
             error.starts_with("Candidate application signature is invalid"),
             "the refusal names the signature, got {error:?}"
         );
+        assert_nothing_left_beside(case.path());
+    }
+
+    /// A `CFBundleExecutable` that names a path rather than a file inside `Contents/MacOS`.
+    ///
+    /// The name is joined onto `Contents/MacOS`, so a `/` in it would let a payload reach
+    /// outside the bundle it was unpacked into — and the two probes would then run whatever
+    /// the payload pointed at. The bundle here is otherwise valid and signed, so the refusal
+    /// is the identity check and not an earlier step; `probe` is never reached, which is also
+    /// why this case may live in the parallel suite.
+    #[test]
+    fn an_executable_identity_that_names_a_path_is_refused() {
+        let (_home, _root, case, fixtures) = prepared_case("macos-prepare-identity-path");
+        let operation = journal::Operation::begin("9.9.9").unwrap();
+        let tree = bundle_tree(fixtures.path(), Some("bin/future"), true, true);
+        let payload = tar_gz(&[("FutureOS.app", &tree)]);
+        let error = Prepared::prepare_at(&payload, &operation, case.path().join("FutureOS.app"))
+            .err()
+            .expect("an identity that is a path is refused");
+        assert_eq!(error, "Invalid candidate executable identity");
         assert_nothing_left_beside(case.path());
     }
 

@@ -430,6 +430,25 @@ fn exercise_image_preview() {
 }
 
 pub fn main() {
+    // The macOS update worker, which production reaches by re-invoking the app itself with
+    // `--app-update-macos-worker`. This target is a process too, so a scenario below can hand
+    // the *real* worker to the preparation chain instead of a fixture script standing in for
+    // it — and the worker is exactly the code that cannot be reached from a libtest body (it
+    // announces `READY` on stdout and blocks on stdin, which there is the runner's own).
+    #[cfg(all(feature = "test-support", target_os = "macos"))]
+    {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        if args.first().map(String::as_str) == Some("--app-update-macos-worker") {
+            let outcome = futureos_lib::test_support::run_update_worker_for_tests(&args[1..]);
+            if let Err(error) = &outcome {
+                eprintln!("gui_main_thread_drive: update worker refused: {error}");
+            }
+            // The real entry point maps the result the same way (`helper_result`): 0 installed
+            // or cancelled, non-zero for a refusal the parent must report.
+            std::process::exit(if outcome.is_ok() { 0 } else { 1 });
+        }
+    }
+
     // A notification child (`ROOT_ENV` set) reuses the primary's root so it lands on the
     // same single-instance socket; a primary makes its own and is the one that removes it.
     // The same flag decides which of the two this process is: only a primary notifies, or
@@ -465,6 +484,12 @@ pub fn main() {
     if !is_companion {
         if let Some(root) = ISOLATED.get() {
             exercise_update_preparation(root);
+            // After the fixture-helper chain: the same chain with *this* process as the
+            // worker, which is where the worker's own body runs, plus the two worker arms
+            // that need a contrarian candidate (a cancel with no `COMMIT`, and a probe that
+            // outlives its deadline).
+            exercise_update_installation(root);
+            exercise_update_probe_timeout(root);
         }
     }
 
@@ -577,7 +602,7 @@ fn exercise_update_preparation(root: &std::path::Path) {
     let case = root.join("update-case");
     let payload = root.join("update-payload");
     let helper = root.join("update-helper");
-    let built = build_update_payload(&payload);
+    let built = build_update_payload(&payload, "driver-fixture");
     let mut checks: Vec<(&str, bool, String)> = Vec::new();
 
     let bundle = match built {
@@ -694,13 +719,327 @@ fn exercise_update_preparation(root: &std::path::Path) {
     let _ = std::fs::remove_dir_all(&payload);
 }
 
-/// A `.app` shaped the way an update carries it, ad-hoc signed (the same signature a locally
+/// Report a scenario's derived values in the vocabulary a leg reader greps for
+/// (`... MISMATCH: <name> (<detail>)`), and never fail this target — its contract is that it
+/// adds no red to a suite whose subject is not its own code.
+#[cfg(all(feature = "test-support", target_os = "macos"))]
+fn report_checks(step: &str, summary: &str, checks: &[(&str, bool, String)]) {
+    let failed: Vec<&str> = checks
+        .iter()
+        .filter(|(_, ok, _)| !ok)
+        .map(|(name, _, detail)| {
+            eprintln!("gui_main_thread_drive: {step} MISMATCH: {name} ({detail})");
+            *name
+        })
+        .collect();
+    eprintln!(
+        "gui_main_thread_drive: {step} {summary} ({}/{}) derived values match{}",
+        checks.len() - failed.len(),
+        checks.len(),
+        if failed.is_empty() {
+            String::new()
+        } else {
+            format!("; failed: {}", failed.join(", "))
+        }
+    );
+}
+
+/// The **real** worker, end to end: this process is the helper.
+///
+/// `exercise_update_preparation` hands the chain a fixture script, which is the right shape
+/// for the parent's half — its subject is preparation. What such a script can never be is
+/// `commands::update_macos::worker` itself: `READY` on stdout, `COMMIT` on stdin, the Agent
+/// lease, the atomic bundle exchange and the journal write. That is a whole separate-process
+/// protocol, and a libtest body's stdin and stdout *are* the runner's.
+///
+/// So the chain runs again with `current_exe()` as the helper — this target's `main`
+/// dispatches `--app-update-macos-worker` to the production facade — and both halves of the
+/// protocol are then real: `Prepared`/`PreparedProcess` on this side, `worker` on the child's.
+/// A committed install *swaps* the two bundles, so what is asserted afterwards is derived from
+/// both trees and from the record the worker wrote, not from the completion line alone.
+#[cfg(all(feature = "test-support", target_os = "macos"))]
+fn exercise_update_installation(root: &std::path::Path) {
+    const INSTALLED: &str = "old-9.9.8";
+    const CANDIDATE: &str = "new-9.9.9";
+    let case = root.join("update-install");
+    let payload = root.join("update-install-payload");
+    let _ = std::fs::remove_dir_all(&case);
+    let _ = std::fs::remove_dir_all(&payload);
+    let mut checks: Vec<(&str, bool, String)> = Vec::new();
+    let target = case.join("FutureOS.app");
+
+    let staged = (|| -> Result<Vec<u8>, String> {
+        write_installed_bundle(&target, INSTALLED)?;
+        build_update_payload(&payload, CANDIDATE)
+    })();
+    let bytes = match staged {
+        Ok(bytes) => Some(bytes),
+        Err(error) => {
+            checks.push((
+                "the installed bundle and the incoming payload are staged",
+                false,
+                error,
+            ));
+            None
+        }
+    };
+
+    if let Some(bytes) = bytes {
+        let helper = std::env::current_exe().expect("this driver's own path");
+        let outcome = futureos_lib::test_support::prepare_update_bundle_for_tests(
+            "9.9.9",
+            &bytes,
+            target.clone(),
+            &helper,
+        );
+        let reported = match &outcome {
+            Ok(completion) => completion.clone(),
+            Err(error) => error.clone(),
+        };
+        let completion: Option<serde_json::Value> = outcome
+            .as_ref()
+            .ok()
+            .and_then(|text| serde_json::from_str(text).ok());
+        checks.push((
+            "the real worker announces READY, takes COMMIT and completes the install",
+            completion.as_ref().is_some_and(|value| value["ok"] == true),
+            reported.clone(),
+        ));
+        checks.push((
+            "a successful install reports no restore, so the old bundle stays staged",
+            completion
+                .as_ref()
+                .is_some_and(|value| value["restored"] == false),
+            reported,
+        ));
+
+        let installed = bundle_version(&target);
+        let staging: Vec<String> = directory_entries(&case)
+            .into_iter()
+            .filter(|name| name.starts_with(".futureos-"))
+            .collect();
+        let retired = staging
+            .first()
+            .map(|name| bundle_version(&case.join(name).join("candidate.app")))
+            .unwrap_or_default();
+        checks.push((
+            "the installed bundle now carries the candidate",
+            installed == CANDIDATE,
+            format!("{installed:?}"),
+        ));
+        checks.push((
+            "the bundle it replaced is retained beside it, for rollback",
+            retired == INSTALLED,
+            format!("{retired:?} in {staging:?}"),
+        ));
+
+        // The worker's own journal write, read back through the record the parent began: the
+        // completion line is the worker's claim, this is the durable trace a restart reads.
+        let id = staging
+            .first()
+            .map(|name| name.trim_start_matches(".futureos-").to_string())
+            .unwrap_or_default();
+        let record: Option<serde_json::Value> = std::env::var_os("FUTURE_HOME")
+            .map(|home| {
+                std::path::PathBuf::from(home)
+                    .join("app/updates")
+                    .join(&id)
+                    .join("result.json")
+            })
+            .and_then(|path| std::fs::read(path).ok())
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+        checks.push((
+            "the worker records the install as awaiting validation",
+            record.as_ref().is_some_and(|value| {
+                value["stage"] == "awaiting-validation"
+                    && value["outcome"] == "pending-validation"
+                    && value["restartSafe"] == true
+            }),
+            format!(
+                "stage {:?}, outcome {:?}",
+                record.as_ref().map(|value| value["stage"].clone()),
+                record.as_ref().map(|value| value["outcome"].clone())
+            ),
+        ));
+    }
+
+    // The worker's cancel arm: `COMMIT` never arrives, so nothing may be replaced and the
+    // staging directory must go. Driven in the worker's own process, because that is who the
+    // parent protocol talks to.
+    {
+        let cancel_case = root.join("update-install-cancel");
+        let _ = std::fs::remove_dir_all(&cancel_case);
+        let target = cancel_case.join("FutureOS.app");
+        let id = "update-driver-cancel";
+        let staging = cancel_case.join(format!(".futureos-{id}"));
+        let record = cancel_case
+            .join("worker-home/app/updates")
+            .join(id)
+            .join("result.json");
+        let prepared = (|| -> Result<(), String> {
+            write_installed_bundle(&target, INSTALLED)?;
+            std::fs::create_dir_all(staging.join("candidate.app"))
+                .map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(record.parent().expect("a record directory"))
+                .map_err(|e| e.to_string())
+        })();
+        let outcome = match prepared {
+            Ok(()) => drive_update_worker_cancel(&target, id, &record),
+            Err(error) => Err(error),
+        };
+        let kept = bundle_version(&target);
+        checks.push((
+            "a worker whose COMMIT never arrives replaces nothing and unstages itself",
+            outcome.is_ok() && !staging.exists() && kept == INSTALLED,
+            format!(
+                "{}; version {kept:?}; staging {}",
+                outcome.err().unwrap_or_else(|| "clean exit".to_string()),
+                if staging.exists() {
+                    "left behind"
+                } else {
+                    "gone"
+                }
+            ),
+        ));
+    }
+
+    report_checks(
+        "update installation",
+        "ran the real worker against temporary bundles",
+        &checks,
+    );
+    let _ = std::fs::remove_dir_all(&payload);
+}
+
+/// The bundle that is already installed: no signature and no executable, because nothing
+/// probes or verifies it — an install only *swaps* it, and `CFBundleVersion` is the marker the
+/// swap is read back through.
+fn write_installed_bundle(app: &std::path::Path, version: &str) -> Result<(), String> {
+    std::fs::create_dir_all(app.join("Contents")).map_err(|e| e.to_string())?;
+    std::fs::write(
+        app.join("Contents/Info.plist"),
+        format!(
+            "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict>\
+             <key>CFBundleVersion</key><string>{version}</string></dict></plist>"
+        ),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// A bundle's `CFBundleVersion`, read through `PlistBuddy` — the same tool, and the same call
+/// shape, that preparation itself uses to read `CFBundleExecutable`. An unreadable bundle is
+/// the empty string, which no expected marker equals.
+fn bundle_version(app: &std::path::Path) -> String {
+    let output = std::process::Command::new("/usr/libexec/PlistBuddy")
+        .args(["-c", "Print :CFBundleVersion"])
+        .arg(app.join("Contents/Info.plist"))
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        }
+        _ => String::new(),
+    }
+}
+
+/// A worker child whose stdin is closed before `COMMIT`: it must announce `READY`, read the
+/// end of input where the authorisation would have been, and undo its staging.
+#[cfg(all(feature = "test-support", target_os = "macos"))]
+fn drive_update_worker_cancel(
+    target: &std::path::Path,
+    id: &str,
+    record: &std::path::Path,
+) -> Result<(), String> {
+    use std::io::BufRead;
+    use std::process::{Command, Stdio};
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut child = Command::new(exe)
+        .arg("--app-update-macos-worker")
+        .arg(target)
+        .arg(id)
+        .arg(record)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("cannot start the worker: {error}"))?;
+    let mut line = String::new();
+    std::io::BufReader::new(child.stdout.take().ok_or("the worker has no stdout")?)
+        .read_line(&mut line)
+        .map_err(|error| format!("cannot read the worker's first line: {error}"))?;
+    if line.trim() != "READY" {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("the worker announced {line:?}, not READY"));
+    }
+    // Closing stdin **is** the cancel: `await_commit` reads end of input and answers "not
+    // committed", and the worker then removes the staging directory and exits normally.
+    drop(child.stdin.take());
+    let status = child.wait().map_err(|error| error.to_string())?;
+    if !status.success() {
+        return Err(format!("the cancelled worker exited with {status}"));
+    }
+    Ok(())
+}
+
+/// `probe`'s timeout arm: a candidate that outlives the deadline is killed and named.
+///
+/// Reaching it needs a program that really is slower than the 10 s budget, so this costs
+/// +10 s — affordable in a driver with no parallel suite, and the reason the budget itself is
+/// not widened in the libtest suite (it is production's; `wave3.md` §4).
+#[cfg(all(feature = "test-support", target_os = "macos"))]
+fn exercise_update_probe_timeout(root: &std::path::Path) {
+    let directory = root.join("update-probe-timeout");
+    let _ = std::fs::remove_dir_all(&directory);
+    let mut checks: Vec<(&str, bool, String)> = Vec::new();
+    let slow = directory.join("slow-candidate");
+    let prepared = std::fs::create_dir_all(&directory)
+        .and_then(|()| std::fs::write(&slow, "#!/bin/sh\nsleep 15\n"))
+        .and_then(|()| {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755))
+        });
+    match prepared {
+        Err(error) => checks.push(("the contrarian candidate exists", false, error.to_string())),
+        Ok(()) => {
+            let started = Instant::now();
+            let outcome = futureos_lib::test_support::probe_update_candidate_for_tests(&slow);
+            let elapsed = started.elapsed();
+            checks.push((
+                "a candidate that outlives the probe deadline is killed and named a timeout",
+                outcome
+                    .as_ref()
+                    .is_err_and(|error| error.contains("probe timed out")),
+                format!(
+                    "{:?} after {:.1}s",
+                    outcome.err().unwrap_or_default(),
+                    elapsed.as_secs_f64()
+                ),
+            ));
+        }
+    }
+    report_checks(
+        "update probe timeout",
+        "expired the production deadline against a slow candidate",
+        &checks,
+    );
+}
+
+/// The `.app` tree a driver payload is built from, ad-hoc signed (the same signature a locally
 /// built bundle gets) and returned as a gzip'd tar with one `FutureOS.app` entry.
 ///
 /// The executable is a shell script, not a copied Mach-O: a re-signed copy of a system binary
 /// has a signature macOS has never seen, so its first exec goes through `amfid`, and that is
 /// the cost `probe`'s budget was being spent on in the libtest version of this case.
-fn build_update_payload(root: &std::path::Path) -> Result<Vec<u8>, String> {
+///
+/// `version` is written to `CFBundleVersion` — **not** as a file of its own — because
+/// `Contents/<anything>` that is not part of the standard layout stops `codesign --verify
+/// --deep --strict` from accepting the bundle after a round trip through this crate's `tar`
+/// (`code object is not signed at all … In subcomponent: …/Contents/version`, measured
+/// 2026-11-01 with the bundle signed, verified, tarred and unpacked in one process; the same
+/// bundle signs, round-trips through BSD `tar` and verifies). A marker inside `Info.plist`
+/// survives it and is the field a real update bundle already carries.
+fn build_update_payload(root: &std::path::Path, version: &str) -> Result<Vec<u8>, String> {
     let app = root.join("FutureOS.app");
     let macos = app.join("Contents/MacOS");
     std::fs::create_dir_all(&macos).map_err(|e| format!("create the fixture bundle: {e}"))?;
@@ -711,9 +1050,12 @@ fn build_update_payload(root: &std::path::Path) -> Result<Vec<u8>, String> {
         .map_err(|e| e.to_string())?;
     std::fs::write(
         app.join("Contents/Info.plist"),
-        "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict>\
-         <key>CFBundleExecutable</key><string>future</string>\
-         <key>CFBundleIdentifier</key><string>com.futureos.driver</string></dict></plist>",
+        format!(
+            "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict>\
+             <key>CFBundleExecutable</key><string>future</string>\
+             <key>CFBundleIdentifier</key><string>com.futureos.driver</string>\
+             <key>CFBundleVersion</key><string>{version}</string></dict></plist>"
+        ),
     )
     .map_err(|e| e.to_string())?;
     let status = std::process::Command::new("/usr/bin/codesign")
