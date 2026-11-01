@@ -175,6 +175,27 @@ panics `no entry found for key` and throws away the path the function exists to
 produce. The absent side is now a JSON null. This is test-only code
 (`rpc/commands/test_support.rs` is `#[cfg(test)]`), so no product behaviour moved.
 
+## Wave 26: the first re-measurement on the fast suite (1211 left)
+
+`cargo llvm-cov -p future-agent --no-report` on `0a70974db` (the wave-25 tree with the vendored
+C at `-O3`) reports **`DA:0` = 1211** across 129 files (`lcov-wave26.info`), against 1231 at
+`lcov-after24.info` — wave 23's 40 lines are what moved it, and the faster build did not change
+which lines the suite reaches.
+
+| file | before | after | how |
+|---|---:|---:|---|
+| `rpc/broadcaster/projection.rs` | 13 | **1** | three tests drive `Projection` directly: `first_idx` is `None` while nothing is held, becomes the pending segment's index as soon as one is coalescing, and survives the flush that closes it; a projection that crosses its byte budget forgets the cursor (it can promise no replay), drops what it held, and ignores every later event instead of re-arming the budget; the pre-coalescing `text_delta` spelling never becomes a projected event. The remaining row is a `}`. |
+
+The rest of the open rows are unchanged: `rpc/commands/settings.rs` 41, `tools/shell/execution.rs`
+41, `session/content/recovery.rs` 38, `agent/run_loop.rs` 36, `rpc/session_prompt.rs` 35 — the
+same files wave 22 named, still the largest.
+
+**A duplicate found and dropped again.** I drafted three `console.rs` tests before noticing the
+module already has `a_line_ends_with_exactly_one_newline` (and a `Broken` writer) — the same
+mistake as wave 23's sandbox probes. The draft was reverted, not merged: `write_line` was already
+covered; only `note_once` is open there, and its `tracing::warn!` body only counts under a
+subscriber, so it needs a subscriber fixture rather than a bare flag assertion.
+
 ## What wave 23 cleared (head `42fbb872c`)
 
 No aggregate `DA:0` is quoted for this head: the full-lane instrumented run was killed by the
