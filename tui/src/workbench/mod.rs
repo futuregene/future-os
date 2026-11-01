@@ -14057,4 +14057,130 @@ mod tests {
         assert!(wb.preview_drag.is_none());
         assert_eq!(wb.preview_pan, (0, 0));
     }
+
+    /// The rail is a list of targets, and each kind of row is its own verb: a
+    /// conversation opens, a workspace heading folds, and a section caption —
+    /// which is a heading, not a verb — only takes the keys.
+    #[test]
+    fn a_click_on_the_rail_takes_the_row_it_landed_on() {
+        let data = demo::workspaces();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.sidebar_visible = true;
+        workbench.panel = PanelId::Workspaces;
+        workbench.render(&data, 120, 38);
+        let rows = workbench.panel_rows(&data);
+        let heading = rows
+            .iter()
+            .position(|row| matches!(row, panels::Row::Workspace(_)))
+            .expect("the workspaces rail lists a heading");
+        let path = match &rows[heading] {
+            panels::Row::Workspace(at) => data.workspaces[*at].path.clone(),
+            _ => unreachable!(),
+        };
+
+        // A workspace heading folds what is under it away, and says so: the
+        // fold is remembered, which is the pair of actions it answers with.
+        assert_eq!(
+            click_region(
+                &mut workbench,
+                &data,
+                120,
+                38,
+                &format!("sidebar.row.{heading}")
+            ),
+            vec![WbAction::Redraw, WbAction::SetPreferences]
+        );
+        assert_eq!(
+            workbench.sidebar_index, heading,
+            "the cursor did not follow"
+        );
+        assert!(workbench.rail.contains(&path), "the fold was not kept");
+        // The next click on the same heading opens it again.
+        assert_eq!(
+            click_region(
+                &mut workbench,
+                &data,
+                120,
+                38,
+                &format!("sidebar.row.{heading}")
+            ),
+            vec![WbAction::Redraw, WbAction::SetPreferences]
+        );
+        assert!(
+            !workbench.rail.contains(&path),
+            "the second click re-folded"
+        );
+
+        // A section caption is a heading, not a verb: the click takes the keys
+        // and stops, because there is nothing under it to open.
+        let rows = workbench.panel_rows(&data);
+        let caption = rows
+            .iter()
+            .position(|row| matches!(row, panels::Row::Section(_)))
+            .expect("the workspaces rail has a section caption");
+        assert_eq!(
+            click_region(
+                &mut workbench,
+                &data,
+                120,
+                38,
+                &format!("sidebar.row.{caption}")
+            ),
+            vec![WbAction::Redraw],
+            "a caption answered a verb"
+        );
+        assert_eq!(workbench.sidebar_index, caption);
+    }
+
+    /// The launchpad's parameter chips are pointer targets: a click runs the
+    /// same verb `tab` + `enter` on that chip does, named by the chip's id.
+    #[test]
+    fn a_click_on_a_launchpad_chip_runs_the_verb_it_names() {
+        let home = demo::launchpad();
+        let (mut workbench, _rows) = frame(&home, 120, 38);
+        for (id, command) in [
+            ("launchpad.workspace", "/launchpad.workspace"),
+            ("launchpad.model", "/launchpad.model"),
+            ("launchpad.effort", "/launchpad.effort"),
+            ("launchpad.approval", "/launchpad.approval"),
+        ] {
+            assert_eq!(
+                click_region(&mut workbench, &home, 120, 38, id),
+                vec![WbAction::Command(command.into())],
+                "{id} answered something else"
+            );
+        }
+    }
+
+    /// The patch is a target as well as a pane: on a narrow frame the box shows
+    /// one of the two, so the patch's first row is the way back to it — the same
+    /// click meaning "the reader aimed at the diff".
+    #[test]
+    fn a_click_on_the_patch_keeps_the_keys_on_it() {
+        let mut data = demo::chat();
+        data.diff = Some(state::DiffView {
+            files: [diff_review::DiffFile {
+                path: "src/main.rs".into(),
+                status: "M".into(),
+            }]
+            .into_iter()
+            .collect(),
+            patch: "diff --git a/src/main.rs b/src/main.rs\n@@ -1 +1 @@\n-old\n+new\n".into(),
+            ..state::DiffView::default()
+        });
+        // 80 columns is under the split: the box has room for one pane, and
+        // `diff.patch` is only painted while the patch is the pane in view.
+        let (mut workbench, _rows) = frame(&data, 80, 30);
+        workbench.overlay = Some(Overlay::Diff);
+        workbench.diff_patch_focus = true;
+        workbench.render(&data, 80, 30);
+        assert_eq!(
+            click_region(&mut workbench, &data, 80, 30, "diff.patch"),
+            vec![WbAction::Redraw]
+        );
+        assert!(
+            workbench.diff_patch_focus,
+            "a click on the patch handed the keys to the file list"
+        );
+    }
 }
