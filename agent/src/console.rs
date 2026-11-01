@@ -178,19 +178,28 @@ const STDIO_LOG_LIMIT: u64 = 4 * 1024 * 1024;
 /// Give a launch that has no terminal somewhere to write, by pointing this
 /// process's standard handles at `path`.
 ///
-/// Windows only, and only when the process has no console window — the shape of
-/// a GUI launch (Explorer, an installer's "run now", an auto-start entry). There
-/// fd 2 has no writable terminal behind it, and `eprintln!` does not merely lose
-/// the line: `std::io::stdio::print_to` panics on the failed write, which ends
-/// the task that emitted it. Measured 2026-11-01 in `app/logs/crash.log` of one
-/// Desktop process: 699 `failed printing to stderr: 拒绝访问 (os error 5)`, one
-/// exactly 11.1 s after each relay authorization rejection — so the diagnostics
-/// that would have explained a stopped remote desktop never reached a file, and
-/// the panic could kill the very task that would have rebuilt the link.
+/// Windows only, and only for the streams that have no destination of their
+/// own: a GUI launch (Explorer, an installer's "run now", an auto-start entry)
+/// starts with no standard handles at all, and there [`std::eprintln!`] does
+/// not merely lose the line: `std::io::stdio::print_to` panics on the failed
+/// write, which ends the task that emitted it. Measured 2026-11-01 in
+/// `app/logs/crash.log` of one Desktop process: 699 `failed printing to
+/// stderr: 拒绝访问 (os error 5)`, one exactly 11.1 s after each relay
+/// authorization rejection — so the diagnostics that would have explained a
+/// stopped remote desktop never reached a file, and the panic could kill the
+/// very task that would have rebuilt the link.
 ///
-/// After this call the same `eprintln!` appends to `path` instead. A launch from
-/// a terminal keeps its terminal: `GetConsoleWindow` answers non-null and this
-/// returns `false` without touching anything.
+/// A stream its caller already pointed somewhere keeps that destination, and
+/// that — never "does this process have a console window" — is the decision.
+/// `GetConsoleWindow` is null for *every* child started by
+/// `Command::output()`, so deciding on it alone moved a test child's stderr
+/// into a log file and the parent's pipe never saw the refusal it asserted on:
+/// `future host` exited 1 with an empty stderr and
+/// `cli/tests/headless_cli.rs` failed on Windows (`Rust Windows test /
+/// tui-cli`, 2026-11-01). The same shape is a shell's `2>` and a CI log
+/// collector. [`stream_has_a_destination`] carries the three cases.
+///
+/// After this call the same `eprintln!` appends to `path` instead.
 ///
 /// Must run before the first write to a standard stream: std may cache the
 /// handle it found on first use.
@@ -203,13 +212,13 @@ pub fn redirect_windowless_standard_streams(path: &std::path::Path) -> std::io::
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FILE_APPEND_DATA, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_ALWAYS,
     };
-    use windows_sys::Win32::System::Console::{
-        GetConsoleWindow, SetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
-    };
+    use windows_sys::Win32::System::Console::{SetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE};
 
-    // A terminal launch: the handles work, and moving them would hide output
-    // from the person who started the process there.
-    if !unsafe { GetConsoleWindow() }.is_null() {
+    // Decided before the file is opened: a launch whose caller captured both
+    // streams has no use for a log of its own and must leave none behind.
+    let stderr_missing = !stream_has_a_destination(STD_ERROR_HANDLE);
+    let stdout_missing = !stream_has_a_destination(STD_OUTPUT_HANDLE);
+    if !stderr_missing && !stdout_missing {
         return Ok(false);
     }
     if let Some(parent) = path.parent() {
@@ -231,13 +240,56 @@ pub fn redirect_windowless_standard_streams(path: &std::path::Path) -> std::io::
     if handle == INVALID_HANDLE_VALUE {
         return Err(std::io::Error::last_os_error());
     }
-    // Both streams: a `println!` on the same launch fails the same way, and one
-    // file keeps the interleaving a reader can follow.
-    unsafe {
-        SetStdHandle(STD_ERROR_HANDLE, handle);
-        SetStdHandle(STD_OUTPUT_HANDLE, handle);
+    // Both streams share one file, so the interleaving a reader can follow is
+    // the one the process produced — but only the streams that were missing a
+    // destination are moved.
+    if stderr_missing {
+        unsafe {
+            SetStdHandle(STD_ERROR_HANDLE, handle);
+        }
+    }
+    if stdout_missing {
+        unsafe {
+            SetStdHandle(STD_OUTPUT_HANDLE, handle);
+        }
     }
     Ok(true)
+}
+
+/// Whether `stream` already writes somewhere its caller chose.
+///
+/// Three answers, and the distinction the version before 2026-11-01 missed is
+/// between the first two:
+///
+/// * a pipe or a disk file — the caller redirected it, which is writable and
+///   deliberate: `Command::output()`, a shell's `>`/`2>`, a CI log collector.
+///   Moving it hides the process's output from whoever asked for it;
+/// * a character device in front of a console window — a launch from a
+///   terminal, watched by the person who started it;
+/// * nothing usable — no handle (`NULL`, `INVALID_HANDLE_VALUE`), a handle
+///   whose type cannot be determined, or a character device with no console
+///   window (the `NUL` device a windowed parent hands its children, or a
+///   console nobody can write to). That is the GUI launch
+///   [`redirect_windowless_standard_streams`] exists for.
+#[cfg(windows)]
+fn stream_has_a_destination(stream: u32) -> bool {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileType, FILE_TYPE_CHAR, FILE_TYPE_DISK, FILE_TYPE_PIPE,
+    };
+    use windows_sys::Win32::System::Console::{GetConsoleWindow, GetStdHandle};
+
+    let handle = unsafe { GetStdHandle(stream) };
+    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+        return false;
+    }
+    match unsafe { GetFileType(handle) } {
+        FILE_TYPE_DISK | FILE_TYPE_PIPE => true,
+        FILE_TYPE_CHAR => !unsafe { GetConsoleWindow() }.is_null(),
+        // `FILE_TYPE_UNKNOWN`, which is also the answer of a failed call: a
+        // handle that cannot be classified is no better than having none.
+        _ => false,
+    }
 }
 
 /// The same decision on platforms whose standard streams are file descriptors:
@@ -381,6 +433,13 @@ mod tests {
     /// (699 such panics in one Desktop process, one every time a relay
     /// rejection was reported). After the redirect the same `eprintln!` appends
     /// to a file and the process exits 0.
+    ///
+    /// Its streams are the `NUL` device rather than the absent handles a real
+    /// GUI launch starts with, but they answer the same question the same way —
+    /// a character device with no console window in front of it has no
+    /// destination — so the child must still be redirected. The counterpart,
+    /// a captured stream that must *not* be moved, is
+    /// [`a_captured_stream_is_left_where_its_caller_put_it`].
     #[cfg(windows)]
     #[test]
     fn a_windowless_launch_writes_its_standard_streams_to_a_file() {
@@ -439,5 +498,83 @@ mod tests {
         // tolerant macros are in scope through `use super::*`.
         ::std::eprintln!("windowless-fixture on a redirected stderr");
         ::std::println!("windowless-fixture on a redirected stdout");
+    }
+
+    /// The redirect target the child half of the captured-stream test is given.
+    #[cfg(windows)]
+    const FIXTURE_CAPTURED: &str = "FUTURE_CONSOLE_CAPTURED_FIXTURE";
+
+    /// A stream its caller captured stays captured.
+    ///
+    /// This is the `Rust Windows test / tui-cli` failure of 2026-11-01.
+    /// `Command::output()` hands a child pipes and no console window, and
+    /// deciding the redirect on "no console window" alone pointed that child's
+    /// stderr at a log file — so `future host`'s "Desktop is already running"
+    /// refusal exited 1 with a completely empty stderr and
+    /// `cli/tests/headless_cli.rs` asserted against nothing. The child below is
+    /// exactly that shape, and the assertions are that the line comes back
+    /// through the pipe and that no log file is created for it.
+    #[cfg(windows)]
+    #[test]
+    fn a_captured_stream_is_left_where_its_caller_put_it() {
+        use std::io::Read;
+        use std::os::windows::process::CommandExt;
+        /// `CREATE_NO_WINDOW`: the console-free shape of the failing child.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("stdio.log");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "console::tests::the_captured_fixture",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env(FIXTURE_CAPTURED, &path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("run the captured fixture");
+        // Both pipes are drained, so the child can never block on a full one.
+        let mut stdout = child.stdout.take().expect("the fixture's stdout");
+        let drained = std::thread::spawn(move || {
+            let mut sink = Vec::new();
+            stdout.read_to_end(&mut sink).expect("drain stdout");
+        });
+        let mut stderr = String::new();
+        child
+            .stderr
+            .take()
+            .expect("the fixture's stderr")
+            .read_to_string(&mut stderr)
+            .expect("read the fixture's stderr");
+        drained.join().expect("join the stdout drain");
+        let status = child.wait().expect("wait for the fixture");
+        assert!(status.success(), "status={status:?} stderr={stderr:?}");
+        assert!(
+            stderr.contains("the caller still sees this line"),
+            "the caller's pipe must receive the line: {stderr:?}"
+        );
+        assert!(
+            !path.exists(),
+            "a launch whose caller captured both streams needs no file: {}",
+            path.display()
+        );
+    }
+
+    /// The child half of [`a_captured_stream_is_left_where_its_caller_put_it`]:
+    /// both streams belong to a parent that reads them.
+    #[cfg(windows)]
+    #[test]
+    fn the_captured_fixture() {
+        let Some(path) = std::env::var_os(FIXTURE_CAPTURED) else {
+            return;
+        };
+        let path = std::path::PathBuf::from(path);
+        let redirected = redirect_windowless_standard_streams(&path).expect("inspect the streams");
+        assert!(!redirected, "a captured stream must keep its destination");
+        ::std::eprintln!("the caller still sees this line");
     }
 }
