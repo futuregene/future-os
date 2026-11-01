@@ -175,18 +175,19 @@ mod tests {
 
     /// The producer side of that gate: raising a control claim goes through
     /// `publish_to_gui`, so a headless host drops it *at the gate* instead of
-    /// reaching a presentation that does not exist — and raising one never
-    /// attaches a sink of its own (the sink is the entry point's to install).
+    /// reaching a presentation that does not exist — and raising one is never
+    /// what attaches a sink (`events::attach` belongs to the entry point, and
+    /// it is process-global and one-shot, so whether a sink exists here depends
+    /// on which other test ran first: the invariant that holds either way is
+    /// that this call does not change it).
     #[test]
-    fn raising_a_control_claim_goes_through_the_presentation_gate() {
-        assert!(
-            !has_presentation(),
-            "a lib test must not attach a presentation sink"
-        );
+    fn raising_a_control_claim_does_not_attach_a_presentation() {
+        let attached = has_presentation();
         emit_control_claimed();
-        assert!(
-            !has_presentation(),
-            "raising the claim must not attach a sink"
+        assert_eq!(
+            has_presentation(),
+            attached,
+            "raising the claim must not attach a presentation sink"
         );
     }
 
