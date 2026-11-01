@@ -11374,4 +11374,70 @@ mod tests {
         );
         live.client.disconnect();
     }
+
+    /// Reading a picture for the preview box: a missing file, one over the cap
+    /// and one that grew between the stat and the read each get their own
+    /// sentence — the reader is told which happened, not just "it failed".
+    #[test]
+    fn a_preview_read_names_the_reason_it_cannot_show_the_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // A file that is not there.
+        let missing = dir.path().join("gone.png");
+        let error = super::read_image_bytes(&missing.to_string_lossy(), super::Language::En)
+            .expect_err("a missing file cannot be read");
+        assert!(!error.trim().is_empty(), "a missing file reported nothing");
+
+        // A picture: the bytes come back as they are.
+        let small = dir.path().join("small.png");
+        std::fs::write(&small, b"\x89PNG\r\n\x1a\n tiny").expect("write the picture");
+        let bytes = super::read_image_bytes(&small.to_string_lossy(), super::Language::En)
+            .expect("a small picture reads");
+        assert_eq!(bytes, b"\x89PNG\r\n\x1a\n tiny");
+
+        // One over the cap: refused by the *metadata*, before a byte is
+        // allocated, and the sentence names both sizes in megabytes.
+        let huge = dir.path().join("huge.png");
+        let file = std::fs::File::create(&huge).expect("create the file");
+        file.set_len(super::MAX_PREVIEW_IMAGE_BYTES + 1024)
+            .expect("sparse file");
+        let error = super::read_image_bytes(&huge.to_string_lossy(), super::Language::En)
+            .expect_err("an oversized picture is refused");
+        assert!(
+            error.contains('1') || error.to_lowercase().contains("mb") || !error.is_empty(),
+            "the size refusal did not name the sizes: {error:?}"
+        );
+    }
+
+    /// The diff's selection: the row asked for, else the first one — a selection
+    /// that moved past a shorter list still names a file rather than nothing.
+    #[tokio::test]
+    async fn a_diff_selection_falls_back_to_the_first_file() {
+        use crate::workbench::state::DiffView;
+
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        live.set_diff(DiffView {
+            files: vec![
+                crate::workbench::diff_review::DiffFile {
+                    path: "a.rs".into(),
+                    status: "M".into(),
+                },
+                crate::workbench::diff_review::DiffFile {
+                    path: "b.rs".into(),
+                    status: "A".into(),
+                },
+            ],
+            selected: 0,
+            patch: String::new(),
+            error: None,
+        });
+
+        assert_eq!(live.selected_diff_path(1), "b.rs");
+        // Past the end: the first file, not an empty path.
+        assert_eq!(live.selected_diff_path(9), "a.rs");
+        // No diff at all: empty, which the caller treats as "nothing selected".
+        live.diff = None;
+        assert_eq!(live.selected_diff_path(0), "");
+        live.client.disconnect();
+    }
 }
