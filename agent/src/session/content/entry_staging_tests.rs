@@ -52,3 +52,55 @@ fn publication_between_staging_pieces_prevents_extension_in_the_same_transaction
         "partial"
     );
 }
+
+/// A reset copies checkpoint-owned references instead of re-staging them, so the
+/// copy replaces each referenced field with a placeholder. A `/content/<n>/error`
+/// field is the exception in one direction: the message stays, truncated to 512
+/// characters — a parser downstream reads it as text and must not receive a
+/// megabyte of it.
+#[test]
+fn a_staged_error_reference_keeps_its_message_truncated_to_512_characters() {
+    let root = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&root.path().join("agent.db")).unwrap();
+    store.reserve_segmented("s").unwrap();
+    store
+        .replace(
+            "s",
+            vec![json!({"id":"info","type":"session_info","timestamp":"2026-10-26T00:00:00Z","content":{}})],
+        )
+        .unwrap();
+    store
+        .db
+        .call(|db| {
+            let tx = crate::session::database::begin_write_transaction(db)?;
+            let id = create(&tx)?;
+            let range = append(&tx, id, 0, "refused by the sandbox")?;
+            // A reset stages its copies under the `checkpoint` owner kind, with
+            // the operation's prefix in front of the entry id.
+            super::super::bind(&tx, "s", "checkpoint", "ckpt-a", "/content/error", range)?;
+            tx.commit()?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .unwrap();
+
+    let long = "e".repeat(600);
+    // The guard names the field exactly , and only a non-conversation
+    // entry keeps an object under  (normalisation rewrites conversational ones).
+    let entry = json!({
+        "id": "a",
+        "type": "compaction_failure",
+        "timestamp": "2026-10-26T00:00:01Z",
+        "content": {"error": long}
+    });
+    let prepared = prepare_staged(&store, "s", vec![entry], "ckpt-").unwrap();
+    let error = prepared[0]["content"]["error"]
+        .as_str()
+        .expect("the error field survives as text");
+    assert_eq!(
+        error.chars().count(),
+        512,
+        "a staged error is truncated, not dropped: {} characters",
+        error.chars().count()
+    );
+    assert!(error.starts_with("eeee"), "{error}");
+}

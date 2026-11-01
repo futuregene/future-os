@@ -1020,4 +1020,105 @@ mod thinking_projection {
             "an already-projected reasoning block is not duplicated"
         );
     }
+    // ─── the tool-role projection ───────────────────────────────────────────
+
+    /// A `tool` entry that recorded only text still has to reach the model as
+    /// a tool result: a plain user-side text block would be answered as a new
+    /// user turn and lose the call it belongs to.
+    #[test]
+    fn a_tool_entry_carrying_only_text_is_projected_as_a_tool_result() {
+        let entry = SessionEntry::new_tool("call-7", "listed 3 files");
+        let messages = entries_to_agent_messages(std::slice::from_ref(&entry), false);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "tool");
+        assert_eq!(messages[0].content.len(), 1, "{:?}", messages[0].content);
+        match &messages[0].content[0] {
+            ContentBlock::ToolResult {
+                tool_call_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_call_id, "call-7");
+                assert_eq!(content, "listed 3 files");
+                assert!(!is_error);
+            }
+            other => panic!("expected a tool result block, got {other:?}"),
+        }
+    }
+
+    /// A tool entry that already carries its result block is passed through
+    /// unchanged — re-wrapping it would send the text twice.
+    #[test]
+    fn a_tool_entry_that_already_carries_its_result_is_not_rewrapped() {
+        let mut entry = SessionEntry::new_tool("call-7", "ignored");
+        entry.content = Some(serde_json::json!([{
+            "type": "tool_result",
+            "tool_call_id": "call-7",
+            "content": "the recorded result",
+            "is_error": true
+        }]));
+        let messages = entries_to_agent_messages(std::slice::from_ref(&entry), false);
+        assert_eq!(messages[0].content.len(), 1, "{:?}", messages[0].content);
+        match &messages[0].content[0] {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
+                assert_eq!(content, "the recorded result");
+                assert!(is_error);
+            }
+            other => panic!("expected the recorded tool result, got {other:?}"),
+        }
+    }
+}
+#[cfg(test)]
+mod recovered_projection {
+    use super::*;
+    use crate::session::SessionEntry;
+    use crate::types::ContentBlock;
+
+    /// A run cut short by a restart leaves reasoning with no provider state to
+    /// replay. Projecting it as reasoning would hand the provider a block it
+    /// cannot resume, so it is announced as interrupted text instead — while a
+    /// reasoning block that still carries its provider state is left alone.
+    #[test]
+    fn a_recovered_partial_reasoning_block_is_announced_as_interrupted_text() {
+        let mut entry = SessionEntry::new_assistant(
+            serde_json::Value::Array(vec![serde_json::to_value(ContentBlock::reasoning(
+                "thought so far",
+                Default::default(),
+            ))
+            .unwrap()]),
+            vec![],
+        );
+        entry.meta = Some(serde_json::json!({"recovered_partial": true}));
+        let messages = entries_to_agent_messages(std::slice::from_ref(&entry), false);
+        match &messages[0].content[0] {
+            ContentBlock::Text { text } => assert_eq!(
+                text,
+                "[Reasoning interrupted by agent restart]\nthought so far"
+            ),
+            other => panic!("expected the interrupted text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_recovered_partial_reasoning_block_that_keeps_its_state_stays_reasoning() {
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("openai".to_string(), serde_json::json!({"item_id": "rs_1"}));
+        let mut entry = SessionEntry::new_assistant(
+            serde_json::Value::Array(vec![serde_json::to_value(ContentBlock::reasoning(
+                "thought so far",
+                metadata,
+            ))
+            .unwrap()]),
+            vec![],
+        );
+        entry.meta = Some(serde_json::json!({"recovered_partial": true}));
+        let messages = entries_to_agent_messages(std::slice::from_ref(&entry), false);
+        assert!(
+            matches!(&messages[0].content[0], ContentBlock::Reasoning { .. }),
+            "{:?}",
+            messages[0].content
+        );
+    }
 }

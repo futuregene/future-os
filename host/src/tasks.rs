@@ -2375,15 +2375,38 @@ mod tests {
     /// that is not a directory), the drop must log rather than panic — a panic in
     /// a drop guard during shutdown would abort the process the guard exists to
     /// clean up after.
+    ///
+    /// It also *records* the failure, because the host is stopping in exactly the
+    /// situation this guard exists for. That arm is driven here rather than left
+    /// to the ambient stop flag, which neighbours set and clear as they please:
+    /// whichever way that race went, this fixture wrote into the process-wide
+    /// cleanup ledger whenever a stopping neighbour overlapped it, and one entry
+    /// left there makes every later HOME change refuse to proceed
+    /// (`cancel_test_tasks` reads the ledger) — measured as 58 unrelated tests
+    /// red in this module's filter set alone. So the fixture borrows the flag,
+    /// keeps the entry inside the HOME lock's serialization, and takes it back
+    /// before the lock is handed on. The borrowed flag is held for one failed
+    /// `Store::open` and nothing else, so a neighbour that needs admission open
+    /// to run its own command still gets it.
     #[test]
     fn a_drop_that_cannot_reach_the_store_does_not_panic() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("tasks-drop-unreachable");
         let (dir, _store) = store();
         let unusable = dir.path().join("not-a-directory");
         std::fs::write(&unusable, b"x").unwrap();
-        let _interrupted = InterruptedTask {
-            home: unusable,
+        let stopping = crate::request_scope::close_admission_guard_for_test();
+        drop(InterruptedTask {
+            home: unusable.clone(),
             id: future_tasks::new_run_id(),
-        };
+        });
+        drop(stopping);
+        let recorded = crate::runtime::take_cleanup_errors();
+        assert!(
+            recorded
+                .iter()
+                .any(|entry| entry.contains(&unusable.display().to_string())),
+            "the stopping drop records its own store failure: {recorded:?}"
+        );
     }
 
     /// The notifier these unit tests hand `run_inner`: they assert on the

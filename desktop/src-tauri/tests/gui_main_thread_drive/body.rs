@@ -46,7 +46,28 @@ fn ready_budget() -> Duration {
 
 /// After the Ready evidence appears: let the emitters, the window geometry and the
 /// terminal server run before the profile is flushed.
+///
+/// Override with `FUTUREOS_DRIVE_SETTLE_SECS` when a **measurement** needs the app to stay
+/// up longer than a suite run should pay for. The Agent supervisor's watchdog
+/// (`agent_supervisor::spawn_agent_watchdog`) sleeps three seconds between probes and is
+/// `#[cfg(not(test))]`, so this target is its only host; with the 2 s default the process
+/// ends before the first probe, and the loop body reads as unreachable. Measured 2026-11-02:
+/// one iteration begins at ~0.2 s and the process exits at 2.6–3.0 s.
 const SETTLE: Duration = Duration::from_secs(2);
+
+/// Environment override for [`SETTLE`], in seconds.
+const SETTLE_ENV: &str = "FUTUREOS_DRIVE_SETTLE_SECS";
+
+/// [`SETTLE`], with the environment override applied.
+fn settle_budget() -> Duration {
+    match std::env::var(SETTLE_ENV)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        Some(secs) => Duration::from_secs(secs),
+        None => SETTLE,
+    }
+}
 
 /// Set on the primary process to publish the data root a **notification child** must share.
 ///
@@ -556,7 +577,7 @@ pub fn main() {
         }
         // Let the callback (delivered on the app's runtime) and the settle window finish,
         // then end the process — the profile is written on a normal exit.
-        std::thread::sleep(SETTLE);
+        std::thread::sleep(settle_budget());
         let readiness = if ready { "with" } else { "without" };
         finish(&format!(
             "driver completed {readiness} {READY_EVIDENCE:?}; listener_up={listener_up} elapsed={:.1}s",
@@ -564,12 +585,13 @@ pub fn main() {
         ));
     });
 
-    // The real entry point, on this process's main thread.
-    let outcome = futureos_lib::run_with();
+    // The real entry point, on this process's main thread — the same `run()` `src/main.rs` calls,
+    // so this leg covers the production entry and not only its inner `run_with`.
+    let outcome = futureos_lib::run();
     match outcome {
-        Ok(()) => finish("driver completed after run_with returned"),
+        Ok(()) => finish("driver completed after run returned"),
         Err(error) => finish(&format!(
-            "run_with could not start the graphical runtime on this host ({error}); \
+            "run could not start the graphical runtime on this host ({error}); \
              skipped rather than failed"
         )),
     }
