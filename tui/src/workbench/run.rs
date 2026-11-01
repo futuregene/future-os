@@ -3622,12 +3622,24 @@ mod driver_tests {
         /// particular repository points the session at it instead of borrowing
         /// whatever the sources were checked out into.
         pub async fn attach_conversation_in(cwd: &std::path::Path) -> Self {
+            Self::attach_conversation_holding(cwd, r#"{"entries":[]}"#).await
+        }
+
+        /// The same conversation with a **transcript the agent already holds**.
+        ///
+        /// `/copy` reads `last_assistant_text` and the chat cursor walks the
+        /// links of what was rendered, so both need messages to exist before the
+        /// test types anything. A streamed `text_chunk` cannot stand in for
+        /// them: `append_to_last_message` appends to an assistant message and,
+        /// with no such message above it, drops the text (measured — the copy
+        /// then reports "nothing to copy" however much was streamed).
+        pub async fn attach_conversation_holding(cwd: &std::path::Path, entries: &str) -> Self {
             let cwd =
                 serde_json::to_string(&cwd.to_string_lossy()).expect("a workspace path serialises");
             let state = format!(r#"{{"sessionId":"s1","model":"future/old","cwd":{cwd}}}"#);
             Self::attach(&[
                 ("get_state", state.as_str()),
-                ("get_session_entries", r#"{"entries":[]}"#),
+                ("get_session_entries", entries),
                 (
                     "list_models",
                     r#"{"models":[{"id":"old","label":"old","provider":"future",
@@ -6263,6 +6275,138 @@ mod driver_tests {
                 driver.workbench.preview_siblings.is_empty(),
                 "the box kept the previous visit's sibling list: {:?}",
                 driver.workbench.preview_siblings
+            );
+        }
+
+        /// `/copy` with an answer on screen puts it on the clipboard, and the
+        /// notice row says which way it went: the success sentence when a tool
+        /// took the text, the refusal — naming the tool — when there is none.
+        ///
+        /// The answer comes from the agent's own entries. A streamed
+        /// `text_chunk` cannot stand in for it: `append_to_last_message` appends
+        /// to an assistant message and drops the text when the transcript has
+        /// none, which is what made this arm look unreachable.
+        #[allow(clippy::await_holding_lock)]
+        #[tokio::test]
+        async fn a_copy_of_the_answer_says_which_way_the_clipboard_went() {
+            use crate::workbench::i18n::{t, Key};
+
+            let entries = r#"{"entries":[
+                {"id":"e2","role":"assistant","blocks":[{"kind":"text","text":"the build is green"}],
+                 "createdAtMs":2}]}"#;
+            let mut keys = Keybindings::default();
+            keys.bind(Action::Copy, "ctrl+y").expect("a spare chord");
+            let mut driver = Driver::attach_conversation_holding(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
+                entries,
+            )
+            .await;
+            driver.workbench.keys = keys;
+            let language = driver.live.language();
+
+            // A tool that takes the text: the row carries the success sentence.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+
+                let _env = a_peer_may_not_swap_the_environment();
+                let tools = tempfile::tempdir().expect("tempdir");
+                // Every clipboard tool a unix host can pick, so the phase does
+                // not depend on which one this machine's build reaches for.
+                for name in ["pbcopy", "xclip", "wl-copy"] {
+                    let stub = tools.path().join(name);
+                    std::fs::write(&stub, "#!/bin/sh\ncat >/dev/null\nexit 0\n")
+                        .expect("write the stub");
+                    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+                        .expect("chmod the stub");
+                }
+                let _path = crate::test_env::EnvVarGuard::set("PATH", tools.path());
+                driver.live.notice = None;
+                assert!(!driver.quit_key("ctrl+y").await, "copy left the app");
+                let notice = driver
+                    .live
+                    .notice
+                    .clone()
+                    .expect("a copy a tool accepted said nothing");
+                assert_eq!(
+                    notice,
+                    t(language, Key::CopyDone),
+                    "the row does not carry the success sentence"
+                );
+            }
+
+            // No tool at all: the refusal is a sentence that names it.
+            {
+                let _env = a_peer_may_not_swap_the_environment();
+                let empty = tempfile::tempdir().expect("tempdir");
+                let _path = crate::test_env::EnvVarGuard::set("PATH", empty.path());
+                driver.live.notice = None;
+                assert!(!driver.quit_key("ctrl+y").await, "copy left the app");
+                let notice = driver
+                    .live
+                    .notice
+                    .clone()
+                    .expect("a refused copy said nothing");
+                assert_ne!(
+                    notice,
+                    t(language, Key::CopyDone),
+                    "a refused copy read as a success"
+                );
+                assert!(
+                    ["pbcopy", "xclip", "wl-copy", "powershell"]
+                        .iter()
+                        .any(|tool| notice.contains(tool)),
+                    "the refusal does not name the tool it could not start: {notice:?}"
+                );
+            }
+        }
+
+        /// A bindings file that cannot be written is a sentence on the notice
+        /// row: the reader has just changed a key and must not believe it was
+        /// saved. One road for every settings write, so the failure is the same
+        /// `NoticeSettingsSaveFailed` the file's own write uses.
+        #[tokio::test]
+        async fn a_keybinding_that_cannot_be_saved_is_reported() {
+            let mut driver = Driver::attach_conversation().await;
+            // A regular file standing where the directory has to be: every write
+            // below it fails with ENOTDIR, which the writer cannot create its
+            // way out of.
+            let blocker = driver
+                .settings_path
+                .parent()
+                .expect("a parent")
+                .join("blocker");
+            std::fs::write(&blocker, b"not a directory").expect("write the blocker");
+            driver.settings_path = blocker.join("settings.json");
+            driver.workbench.overlay = Some(crate::workbench::Overlay::Keybindings);
+            driver.live.notice = None;
+
+            // `r` in the bindings table writes the defaults back out.
+            assert!(!driver.quit_key("r").await, "the reset left the app");
+            let notice = driver
+                .live
+                .notice
+                .clone()
+                .expect("a save that failed was swallowed");
+            assert!(!notice.is_empty(), "the failed save left an empty notice");
+            // The sentence is the settings writer's own, not a generic one: its
+            // template is what every failed write reports.
+            let template = crate::workbench::i18n::t(
+                driver.live.language(),
+                crate::workbench::i18n::Key::NoticeSettingsSaveFailed,
+            );
+            let prefix = template
+                .split("{}")
+                .next()
+                .unwrap_or_default()
+                .trim_end_matches([':', '：', ' ']);
+            assert!(
+                !prefix.is_empty() && notice.starts_with(prefix),
+                "the failed save did not use the settings writer's sentence: {notice:?} vs {template:?}"
+            );
+            assert!(
+                !crate::workbench::preferences::keybindings_path(&driver.settings_path).exists(),
+                "the bindings file exists although its directory cannot hold one"
             );
         }
     }
