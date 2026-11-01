@@ -19,6 +19,11 @@ The lane record beside this file — `host-lane.json` — carries the same numbe
 `scripts/coverage/lane-check.py` fails when the record, this doc and the lcov artifact disagree
 (§8). Run it after every re-measurement; it is the cheap gate this lane can actually carry.
 
+**The numbers in §1–§4 are `b50efdb55`'s.** That commit has since landed on `dev-huichen`, and the
+branch tip then merged `dev-huichen` back in, which rewrote one measured file. A whole-lib probe at
+the tip (`120e3d511`) is green and reads **2394**, not 2392: the two lines it adds are named in
+§10.6, and the next round re-measures A/B at the new tip before quoting either figure.
+
 ```bash
 export PATH=/Users/geilige/.rustup/toolchains/1.99.1-aarch64-apple-darwin/bin:$PATH
 unset CARGO_BUILD_TARGET CARGO_TARGET_DIR CARGO_INCREMENTAL
@@ -761,3 +766,45 @@ is the weaker falsifier for that half and is named as such.
 - `cli_tool.rs`'s 22 open lines are the cli lane's, not read here (§4).
 - No `#[ignore]`, no retry and no widened timeout: the two `select` tests use a probe against an
   endpoint nothing listens on, so they fail rather than wait.
+
+### 10.6 After the merge: the tip reads **2394**, and the two lines that are new
+
+Round 9's A/B pair is measured at `b50efdb55`. That commit is on `dev-huichen` now (landed as the
+merge `4ae1f3f0a`, 21:51), but before that the branch tip `120e3d511` merged `dev-huichen` into
+this branch, and that merge rewrote **`host/src/remote/test_support.rs`** — `+53` lines at 1085,
+`+5` at 1146, `+58` at 1198 and `+50` at 2585, the `FakeNats` publish record (`PublishLog`) and the
+tests that drive it — plus `remote/tests.rs`'s `runtime_tests`. So the record's commit stopped
+being the tip's tree: the suite went **1969 → 1982** tests, and three of the 58 `DA:0` lines the
+record lists for that file (1963, 2193, 2710 — §3 W7) now sit *past* the insertions.
+
+A probe at the tip, same recipe, whole lib, no filter (`round9-tip-A.sh` → `round9-tip-A-run.log`,
+`round9-tip-A-lcov.info`, `round9-tip-A-missed.json`): **1971 passed / 0 failed / 11 ignored in
+460.94 s**, `report rc=0`. Round 9's own seven tests were also re-run on it directly and are green
+(`agent_host::tests` **24 passed**, `remote_host::pairing::http_tests` **36 passed**), so the merge
+did not disturb what this round added.
+
+| | record (`round9-A`, `b50efdb55`) | tip probe (`round9-tip-A`, `120e3d511`) |
+|---|---:|---:|
+| lane total `DA:0` | 2392 | **2394** (+2) |
+| files with any drift | — | **1** — `remote/test_support.rs`, 58 → 60 |
+| tests in the suite | 1969 | 1982 |
+
+The drift is **three renumbered waivers and two new lines**, and the difference matters:
+
+| line at the tip | what it is | why it reads 0 |
+|---|---|---|
+| `1119` | `entries.pop_front()` — the eviction arm of `PublishLog::record` | it runs only once the record is full: `RECORDED_PUBLISHES` is **2048**, and the fixture's heaviest test injects **300** (`for index in 0..300` in `the_publish_record_keeps_a_packet_the_tap_ring_dropped`). The guard on 1118 executed **4423** times and the push on 1120 **4423** times; the body never. Reachable, not reached — a test that publishes 2049 times covers it |
+| `2602` | the `matches!(` inside that same test's `assert!` | macro-expansion attribution, not a statement: the assert executes (2601 reads **1**) and its argument line 2603 reads **1**, while the opening line of the expansion carries a region with 0. Same family as §3's attribution rows |
+| §3 W7: 1963 → **2078**, 2193 → **2308**, 2710 → **2875** | `violations.push(…)`, its `join` in the assert message, `Err(error) => panic!("expected the deferred arm…")` | nothing was covered: the same three failure arms simply moved. Matched **by content**, which is why the per-file diff reads "closed 3 / added 5" — arithmetic, not a claim |
+
+The buckets therefore do **not** close at the tip: 2016 switch lane + 96 waived + 280 open = 2392,
+and the remaining two lines are unassigned — either would be an ordinary §4 row or a §3
+attribution row, but assigning one without a re-measured pair would be a number typed rather than
+measured.
+
+What this means for the next reader, stated so the wrong number is not quoted: `host-lane.json`
+keeps `measurement_commit: b50efdb55` and its **2392**, because that pair is what
+`lane-check.py` validates and A and B agree line for line (§1.1); **the tree the campaign continues
+on reads 2394 at `120e3d511`** = 2392 + those two, which the next round puts in their buckets as
+part of a re-measured pair. No product code and no test changed for this probe — it is a
+measurement, so the two lines stay exactly where the report put them.
