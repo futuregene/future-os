@@ -761,15 +761,21 @@ mod tests {
             served_by: Some("typesafe/jev-1.13-20260917".to_string()),
         };
         let elapsed = std::time::Duration::from_millis(487);
-        // `tracing` recomputes a callsite's interest from the registered
-        // dispatches, so a concurrent test's scoped subscriber (which has no
-        // debug level) can win that race and silence this callsite for the rest
-        // of the process — which is why the `NoKey` line below went missing in
-        // 2 runs in 5 whenever the whole module ran in parallel. The suite's
-        // process-wide sink is that missing evidence: install it here (a no-op
-        // once another test already did) and it both enables every level and
-        // rebuilds the callsites that were cached before it existed.
-        crate::test_support::tracing_sink();
+        // `tracing` recomputes a callsite's interest from a *single* registered
+        // dispatch when only one exists, so a concurrent test's scoped
+        // subscriber (which has no debug level) can win that race and silence
+        // this callsite for the rest of the process — which is why the `NoKey`
+        // line below went missing in 2 runs in 5 whenever the whole module ran
+        // in parallel. A process-wide debug-capable sink gives that
+        // recomputation something to see, and the rebuild re-evaluates the
+        // callsites that were already cached before it.
+        let _ = tracing::subscriber::set_global_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .with_max_level(tracing::Level::DEBUG)
+                .finish(),
+        );
+        tracing::callsite::rebuild_interest_cache();
         tracing::subscriber::with_default(subscriber, || {
             log_outcome(
                 &Outcome::Recommended {
