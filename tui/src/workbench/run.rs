@@ -5023,6 +5023,13 @@ mod driver_tests {
 
         /// `n` is the decline half of a parked approval's `y`/`n`: the card is
         /// answered, so it stops being parked.
+        ///
+        /// There are two doors and they are different lines: with the card on
+        /// screen the key goes to the card (a decision it hands back as an
+        /// action), and with the card closed but the request still parked it is
+        /// the *base surface's* fast path that answers — which is the pair this
+        /// pins, because a reader who dismissed the card still has to be able to
+        /// decline without reopening it.
         #[tokio::test]
         async fn a_parked_approval_is_declined_by_n() {
             let mut driver = Driver::attach_conversation().await;
@@ -5038,6 +5045,7 @@ mod driver_tests {
                 driver.live.approval().is_some(),
                 "the request never parked an approval"
             );
+            // The card is on screen: this `n` is the card's.
             assert!(
                 !driver.quit_key("n").await,
                 "the decline left the workbench"
@@ -5045,6 +5053,34 @@ mod driver_tests {
             assert!(
                 driver.live.approval().is_none(),
                 "the decline did not answer the parked request"
+            );
+
+            // The same request, closed without answering: the next `n` is the
+            // base surface's, and it must still answer it.
+            let _ = driver.agent_tx.send(event(
+                "approval_request",
+                serde_json::json!({"approval_request_id": "ap-2", "title": "again?"}),
+                &session,
+                "run-1",
+            ));
+            let _ = driver.pump(Duration::from_millis(400)).await;
+            assert!(
+                driver.live.approval().is_some(),
+                "the second request never parked"
+            );
+            assert!(!driver.quit_key("escape").await);
+            assert_eq!(driver.workbench.overlay, None, "the card did not close");
+            assert!(
+                driver.live.approval().is_some(),
+                "closing the card answered the request"
+            );
+            assert!(
+                !driver.quit_key("n").await,
+                "declining from the closed card left the workbench"
+            );
+            assert!(
+                driver.live.approval().is_none(),
+                "the base surface's decline was swallowed by the closed card"
             );
         }
 
@@ -5150,7 +5186,27 @@ mod driver_tests {
         /// alerted and written to the transcript.
         #[tokio::test]
         async fn a_burst_announces_what_is_in_it() {
-            let mut driver = Driver::attach_conversation().await;
+            // The ack's run id moves by hand between the submissions: a run is
+            // only "this client's own" while the ack that opened it is the one
+            // the client filed, and the two bursts below are two runs.
+            let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+                ("get_state", r#"{"sessionId":"s1","model":"future/old"}"#),
+                ("get_session_entries", r#"{"entries":[]}"#),
+                (
+                    "list_models",
+                    r#"{"models":[{"id":"old","label":"old","provider":"future",
+                    "thinkingLevel":"default","thinkingLevels":["default"],
+                    "defaultThinkingLevel":"default","isDefault":true}]}"#,
+                ),
+                (
+                    "prompt",
+                    r#"{"run_id":"r-1","run_epoch":1,"accepted_state":"running"}"#,
+                ),
+            ]);
+            let answers = mock.data_by_type.clone();
+            let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+            let mut driver = Driver::attach_at(&addr).await;
+            driver.seen = seen;
             assert!(!driver.type_text("hello").await);
             assert!(!driver.quit_key("enter").await);
             let _ = driver.pump(Duration::from_millis(300)).await;
@@ -5191,6 +5247,36 @@ mod driver_tests {
             assert!(
                 notice.contains("the provider refused"),
                 "the error in the burst never reached the notice row: {notice:?}"
+            );
+
+            // And a *completion* behind a start: the drain asks the same
+            // question of the second event, and the answer is the one the
+            // single-event arm gave — the run is over and it was this client's.
+            answers.lock().expect("answers").insert(
+                "prompt".into(),
+                r#"{"run_id":"r-2","run_epoch":1,"accepted_state":"running"}"#.into(),
+            );
+            assert!(!driver.type_text("again").await);
+            assert!(!driver.quit_key("enter").await);
+            let _ = driver.pump(Duration::from_millis(300)).await;
+            let _ =
+                driver
+                    .agent_tx
+                    .send(event("agent_start", serde_json::json!({}), &session, "r-2"));
+            let _ = driver.agent_tx.send(event(
+                "agent_end",
+                serde_json::json!({"state": "completed"}),
+                &session,
+                "r-2",
+            ));
+            let _ = driver.pump(Duration::from_millis(500)).await;
+            assert!(
+                !driver.live.activity_animating(),
+                "a completed run in a burst left the activity row spinning"
+            );
+            assert!(
+                driver.live.queue_is_empty(),
+                "the burst's completion was raised with a queued follow-up"
             );
         }
 
