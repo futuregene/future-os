@@ -420,3 +420,103 @@ fn a_match_at_a_page_boundary_extends_its_snippet_across_pages() {
     );
     assert!(snippet.starts_with('a'), "the snippet keeps its prefix");
 }
+
+/// A targeted field read loads one block, not the entry: the block pointers
+/// (`/content/<ordinal>/<field>`), the whole-block pointer (`/content/<ordinal>`)
+/// and the structural refusals all go through the same bounded path.
+#[test]
+fn targeted_fields_read_one_block_without_loading_the_entry() {
+    let (_dir, store) = store();
+    store
+        .append(
+            "s",
+            vec![
+                json!({"id":"u","type":"user","role":"user","timestamp":"2026-10-26T00:00:01Z",
+                    "meta":{"run_id":"r"},"content":"跨页🙂"}),
+                json!({"id":"a","type":"assistant","role":"assistant","timestamp":"2026-10-26T00:00:02Z",
+                    "meta":{"run_id":"r"},"content":[
+                        {"type":"text","text":"说明"},
+                        {"type":"tool_call","id":"t","name":"shell","args":{"command":"pwd"}}
+                    ]}),
+            ],
+        )
+        .unwrap();
+    let scope = Snapshot::capture(&store, "s").unwrap();
+    let entry = |id: &str| -> Entry {
+        let id_owned = id.to_owned();
+        store
+            .db
+            .read(move |db| {
+                let stored = crate::session::identity::BoundIdentity::entry(db, "s", &id_owned)?;
+                let position: i64 = db.query_row(
+                    "SELECT position FROM entries WHERE session_id='s' AND entry_id=?1",
+                    [&stored],
+                    |row| row.get(0),
+                )?;
+                Ok(Entry {
+                    position,
+                    id: stored,
+                })
+            })
+            .unwrap()
+    };
+    let user = entry("u");
+    let assistant = entry("a");
+    // One block field, by ordinal: text and arguments decode differently.
+    assert_eq!(
+        scope.field(&store, &assistant, "/content/0/text").unwrap(),
+        Some(json!("说明"))
+    );
+    assert_eq!(
+        scope.field(&store, &assistant, "/content/1/args").unwrap(),
+        Some(json!({"command":"pwd"}))
+    );
+    // A canonical entry keeps no assembled content column, so the whole-block
+    // pointer finds nothing rather than rebuilding the entry to answer it.
+    assert_eq!(scope.field(&store, &assistant, "/content/0").unwrap(), None);
+    // A block field the block does not have is simply absent, not an error.
+    assert_eq!(scope.field(&store, &user, "/content/0/args").unwrap(), None);
+
+    // Structural refusals: a malformed pointer, a negative ordinal and an
+    // unknown field name are errors, never silent nulls.
+    for (pointer, expected) in [
+        ("/meta", "unsupported targeted content field"),
+        ("/content/-1/text", "invalid block ordinal"),
+        ("/content/0/bogus", "unsupported targeted block field"),
+    ] {
+        let error = scope.field(&store, &assistant, pointer).expect_err(pointer);
+        assert!(
+            format!("{error:#}").contains(expected),
+            "{pointer}: {error:#}"
+        );
+    }
+    // A settled snapshot cannot be asked for a later entry.
+    let beyond = Entry {
+        position: assistant.position + 100,
+        id: assistant.id.clone(),
+    };
+    let error = scope.field(&store, &beyond, "/content/0/text").unwrap_err();
+    assert!(
+        format!("{error:#}").contains("beyond the captured transcript"),
+        "{error:#}"
+    );
+
+    // Structural refusals: a malformed pointer, a negative ordinal and an
+    // unknown field name are errors, never silent nulls.
+    for pointer in ["/content", "/meta", "/content/-1/text", "/content/0/bogus"] {
+        assert!(
+            scope.field(&store, &assistant, pointer).is_err(),
+            "{pointer} must be refused"
+        );
+    }
+    // A settled snapshot cannot be asked for a later entry.
+    let beyond = Entry {
+        position: assistant.position + 100,
+        id: assistant.id.clone(),
+    };
+    let error = scope.field(&store, &beyond, "/content/0/text").unwrap_err();
+    assert!(
+        format!("{error:#}").contains("beyond the captured transcript"),
+        "{error:#}"
+    );
+}
