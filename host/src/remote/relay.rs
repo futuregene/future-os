@@ -431,4 +431,478 @@ mod tests {
         assert!(!is_unknown_room(&denied));
         assert!(!is_unknown_room(&crate::Error::Message("x".into())));
     }
+
+    // ---------------------------------------------------------------------
+    // The HTTP half: register / rotate / revoke, driven by a relay that answers
+    // over loopback. `base` is an argument on every one of these calls, so the
+    // fixture is a plain TCP listener and the assertions can read the bytes the
+    // client actually signed instead of trusting a stub.
+    // ---------------------------------------------------------------------
+
+    /// A container or a test can name the relay through the environment; the
+    /// value wins over the launch flags and is normalized the same way, and an
+    /// empty value keeps meaning "the Future platform".
+    #[test]
+    fn the_environment_names_a_relay_without_writing_one_down() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("relay-env");
+        set_launch(None, None);
+        std::env::set_var("FUTURE_RELAY_URL", " http://127.0.0.1:9/ ");
+        std::env::set_var("FUTURE_RELAY_CA", " /etc/env-ca.pem ");
+        assert_eq!(endpoint().as_deref(), Some("http://127.0.0.1:9"));
+        assert_eq!(
+            ca_path().as_deref(),
+            Some(std::path::Path::new("/etc/env-ca.pem"))
+        );
+
+        std::env::set_var("FUTURE_RELAY_URL", "   ");
+        std::env::set_var("FUTURE_RELAY_CA", "   ");
+        assert_eq!(endpoint(), None);
+        assert_eq!(ca_path(), None);
+        std::env::remove_var("FUTURE_RELAY_URL");
+        std::env::remove_var("FUTURE_RELAY_CA");
+    }
+
+    /// `Grant` deliberately has no `Debug` (it carries a credential), so a
+    /// failing `Result<Grant, _>` is unwrapped by hand.
+    fn a_refused_grant(result: Result<Grant, crate::Error>, what: &str) -> crate::Error {
+        match result {
+            Ok(_) => panic!("{what}"),
+            Err(error) => error,
+        }
+    }
+
+    /// A request exactly as it arrived, so a test can re-derive the signature.
+    #[derive(Debug, Clone)]
+    struct SeenRequest {
+        method: String,
+        path: String,
+        headers: Vec<(String, String)>,
+        body: Vec<u8>,
+    }
+
+    impl SeenRequest {
+        fn header(&self, name: &str) -> Option<&str> {
+            self.headers
+                .iter()
+                .find(|(header, _)| header.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.as_str())
+        }
+    }
+
+    /// One canned answer, in the order the test's calls arrive.
+    struct RelayReply {
+        status: u16,
+        body: String,
+    }
+
+    struct MockRelay {
+        base: String,
+        seen: std::sync::Arc<std::sync::Mutex<Vec<SeenRequest>>>,
+    }
+
+    impl MockRelay {
+        fn seen(&self) -> Vec<SeenRequest> {
+            self.seen.lock().expect("mock relay log").clone()
+        }
+    }
+
+    const GRANT_EXPIRY: i64 = 1_900_000_000;
+
+    fn a_grant_user_jwt() -> String {
+        format!(
+            "header.{}.signature",
+            URL_SAFE_NO_PAD.encode(json!({ "exp": GRANT_EXPIRY }).to_string())
+        )
+    }
+
+    fn a_grant_body() -> String {
+        json!({
+            "userJwt": a_grant_user_jwt(),
+            "natsUrl": "tls://relay.test:4222",
+            "natsWsUrl": "wss://relay.test",
+        })
+        .to_string()
+    }
+
+    /// The tail of a request head once `\r\n\r\n` has been seen.
+    fn split_head(buffer: &[u8]) -> Option<(String, Vec<u8>)> {
+        let position = buffer.windows(4).position(|window| window == b"\r\n\r\n")?;
+        let head = String::from_utf8_lossy(&buffer[..position]).to_string();
+        Some((head, buffer[position + 4..].to_vec()))
+    }
+
+    fn content_length(head: &str) -> usize {
+        head.lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())?
+            })
+            .unwrap_or(0)
+    }
+
+    fn parse_request(head: &str, body: &[u8]) -> SeenRequest {
+        let mut lines = head.lines();
+        let request_line = lines.next().unwrap_or_default();
+        let mut parts = request_line.split_whitespace();
+        let method = parts.next().unwrap_or_default().to_string();
+        let path = parts.next().unwrap_or_default().to_string();
+        let headers = lines
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
+            .collect();
+        SeenRequest {
+            method,
+            path,
+            headers,
+            body: body.to_vec(),
+        }
+    }
+
+    /// Serve `replies.len()` requests, then stop. Anything the client does not
+    /// ask for is simply never answered, which is what makes a missing call
+    /// visible as a hang rather than as a silent pass.
+    async fn serve_relay(replies: Vec<RelayReply>) -> MockRelay {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind the mock relay");
+        let base = format!(
+            "http://127.0.0.1:{}/",
+            listener.local_addr().expect("relay address").port()
+        );
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            for reply in replies {
+                let (mut stream, _) = listener.accept().await.expect("relay connect");
+                // Read until the head and the announced body have both landed:
+                // a request that arrives in two segments must not be parsed
+                // from the first one.
+                let mut buffer = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    let read = stream.read(&mut chunk).await.expect("relay request");
+                    if read == 0 {
+                        break;
+                    }
+                    buffer.extend_from_slice(&chunk[..read]);
+                    let complete = split_head(&buffer)
+                        .is_some_and(|(head, body)| body.len() >= content_length(&head));
+                    if complete {
+                        break;
+                    }
+                }
+                let Some((head, body)) = split_head(&buffer) else {
+                    continue;
+                };
+                log.lock()
+                    .expect("relay log")
+                    .push(parse_request(&head, &body));
+                let response = format!(
+                    "HTTP/1.1 {} X\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{}",
+                    reply.status,
+                    reply.body.len(),
+                    reply.body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        MockRelay { base, seen }
+    }
+
+    /// A pairing whose seed really signs, so `rotate` runs the production
+    /// `KeyPair::from_seed` path rather than a stub.
+    fn relay_creds(base: Option<&str>) -> (PairingCreds, KeyPair) {
+        let key = KeyPair::new_user();
+        let creds = PairingCreds {
+            handshake_version: 2,
+            secure: None,
+            pair_id: "PAIR0001".to_string(),
+            desktop_id: "desktop-0001".to_string(),
+            nkey_seed: key.seed().expect("desktop seed"),
+            user_jwt: "old.jwt.value".to_string(),
+            nats_url: "tls://relay.test:4222".to_string(),
+            nats_ws_url: "wss://relay.test".to_string(),
+            jwt_expires_at: 1,
+            control_url: base.map(str::to_string),
+        };
+        (creds, key)
+    }
+
+    /// The signature a relay checks: recomputed here from the request the mock
+    /// received, so a client that signed the wrong bytes cannot pass.
+    fn verified(seen: &SeenRequest, method: &str, path: &str) -> KeyPair {
+        let public_key = seen.header("x-future-public-key").expect("public key");
+        let timestamp = seen
+            .header("x-future-timestamp")
+            .expect("timestamp")
+            .parse::<i64>()
+            .expect("numeric timestamp");
+        let signature = URL_SAFE_NO_PAD
+            .decode(seen.header("x-future-signature").expect("signature"))
+            .expect("base64 signature");
+        let verifier = KeyPair::from_public_key(public_key).expect("verify key");
+        verifier
+            .verify(
+                canonical_request(method, path, timestamp, &seen.body).as_bytes(),
+                &signature,
+            )
+            .expect("the client signed this exact request");
+        verifier
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn register_signs_the_room_request_and_mints_a_grant() {
+        // `HOME` and `FUTURE_RELAY_CA` are process-global; the guard serializes
+        // this fixture with the other tests that swap them.
+        let _home = crate::auth_store::test_support::HomeGuard::new("relay-register");
+        let relay = serve_relay(vec![RelayReply {
+            status: 200,
+            body: a_grant_body(),
+        }])
+        .await;
+        let key = KeyPair::new_user();
+
+        let grant = register(
+            &relay.base,
+            "PAIR0001",
+            "desktop-0001",
+            "workstation",
+            &key,
+            Some("join-token"),
+        )
+        .await
+        .expect("the relay registers the room");
+
+        assert_eq!(grant.user_jwt, a_grant_user_jwt());
+        assert_eq!(grant.jwt_expires_at, GRANT_EXPIRY);
+        assert_eq!(grant.nats_url, "tls://relay.test:4222");
+        assert_eq!(grant.nats_ws_url, "wss://relay.test");
+
+        let seen = relay.seen();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].method, "POST");
+        // The trailing slash the launch setting left on `base` is not doubled.
+        assert_eq!(seen[0].path, "/v1/rooms");
+        assert_eq!(seen[0].header("content-type"), Some("application/json"));
+        assert_eq!(
+            verified(&seen[0], "POST", "/v1/rooms").public_key(),
+            key.public_key()
+        );
+        // Recomputing the signature above only proves self-consistency; the
+        // key that signed must be the pairing's own NKey.
+        assert_eq!(
+            seen[0].header("x-future-public-key"),
+            Some(key.public_key().as_str())
+        );
+        let body: serde_json::Value =
+            serde_json::from_slice(&seen[0].body).expect("json room body");
+        assert_eq!(body["pairId"], json!("PAIR0001"));
+        assert_eq!(body["hostDeviceId"], json!("desktop-0001"));
+        assert_eq!(body["hostName"], json!("workstation"));
+        assert_eq!(body["joinHash"], json!(hex_sha256("join-token")));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn register_names_the_grant_field_a_relay_left_out() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("relay-grant-fields");
+        let relay = serve_relay(vec![
+            RelayReply {
+                status: 200,
+                body: json!({
+                    "userJwt": a_grant_user_jwt(),
+                    "natsUrl": "tls://relay.test:4222",
+                })
+                .to_string(),
+            },
+            RelayReply {
+                status: 200,
+                body: json!({
+                    "userJwt": "not-a-jwt",
+                    "natsUrl": "tls://relay.test:4222",
+                    "natsWsUrl": "wss://relay.test",
+                })
+                .to_string(),
+            },
+        ])
+        .await;
+        let key = KeyPair::new_user();
+
+        let missing = a_refused_grant(
+            register(&relay.base, "PAIR", "desktop", "host", &key, None).await,
+            "a grant without natsWsUrl is not a grant",
+        );
+        assert!(
+            missing
+                .to_string()
+                .contains("register relay room: the relay returned no natsWsUrl"),
+            "{missing}"
+        );
+
+        let unreadable = a_refused_grant(
+            register(&relay.base, "PAIR", "desktop", "host", &key, None).await,
+            "a credential whose expiry cannot be read is refused",
+        );
+        assert!(unreadable.to_string().contains("JWT"), "{unreadable}");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn refresh_rotates_the_credential_against_the_relay_that_issued_it() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("relay-refresh");
+        let relay = serve_relay(vec![RelayReply {
+            status: 200,
+            body: a_grant_body(),
+        }])
+        .await;
+        let (creds, key) = relay_creds(Some(&relay.base));
+
+        let grant = refresh(&creds)
+            .await
+            .expect("the relay rotates the credential");
+
+        assert_eq!(grant.jwt_expires_at, GRANT_EXPIRY);
+        let seen = relay.seen();
+        assert_eq!(seen[0].method, "POST");
+        assert_eq!(seen[0].path, "/client/v1/remote/auth/token");
+        verified(&seen[0], "POST", "/client/v1/remote/auth/token");
+        let body: serde_json::Value =
+            serde_json::from_slice(&seen[0].body).expect("json rotation body");
+        assert_eq!(body["pair_id"], json!("PAIR0001"));
+        assert_eq!(body["device_id"], json!("desktop-0001"));
+        assert_eq!(body["public_key"], json!(key.public_key()));
+        assert_eq!(body["role"], json!("bridge"));
+    }
+
+    #[tokio::test]
+    async fn refresh_says_which_pairing_has_no_relay() {
+        let (creds, _key) = relay_creds(None);
+        let error = a_refused_grant(
+            refresh(&creds).await,
+            "an official pairing has no relay to rotate against",
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("no relay is configured for this pairing"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_refused_rotation_keeps_the_relay_code_and_message() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("relay-refused");
+        let relay = serve_relay(vec![RelayReply {
+            status: 403,
+            body: json!({
+                "error": "room_owned_by_another_host",
+                "message": "This room belongs to another host.",
+            })
+            .to_string(),
+        }])
+        .await;
+        let (creds, _key) = relay_creds(Some(&relay.base));
+
+        let error = a_refused_grant(refresh(&creds).await, "403 is a refusal");
+        match error {
+            crate::Error::Remote {
+                status,
+                code,
+                message,
+            } => {
+                assert_eq!(status, 403);
+                assert_eq!(code.as_deref(), Some("room_owned_by_another_host"));
+                assert_eq!(message, "This room belongs to another host.");
+            }
+            other => panic!("expected a relay refusal, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_room_without_a_relay_mints_nothing_and_revokes_quietly() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("relay-revoke");
+        let (official, _key) = relay_creds(None);
+        revoke(&official)
+            .await
+            .expect("an official pairing has no room to delete");
+
+        let relay = serve_relay(vec![
+            RelayReply {
+                status: 204,
+                body: String::new(),
+            },
+            RelayReply {
+                status: 404,
+                body: json!({ "error": "room_unknown" }).to_string(),
+            },
+            RelayReply {
+                status: 500,
+                body: json!({ "message": "the relay fell over" }).to_string(),
+            },
+        ])
+        .await;
+        let (creds, _key) = relay_creds(Some(&relay.base));
+
+        revoke(&creds).await.expect("a deleted room is success");
+        revoke(&creds)
+            .await
+            .expect("a room the relay already forgot is not an error");
+        let error = revoke(&creds).await.expect_err("500 is reported");
+        assert!(matches!(
+            error,
+            crate::Error::Remote {
+                status: 500,
+                code: None,
+                ..
+            }
+        ));
+
+        let seen = relay.seen();
+        assert_eq!(seen.len(), 3);
+        assert_eq!(seen[0].method, "DELETE");
+        assert_eq!(seen[0].path, "/v1/rooms/PAIR0001");
+        // An empty body is signed too: the digest of nothing is a real input,
+        // not a skipped header.
+        verified(&seen[0], "DELETE", "/v1/rooms/PAIR0001");
+        assert!(seen[0].body.is_empty());
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_relay_that_is_not_listening_is_a_transport_failure() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("relay-offline");
+        // A port that was bound and released: nothing listens there, so the
+        // connection is refused rather than timing out.
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a spare port");
+            listener.local_addr().expect("spare address").port()
+        };
+        let base = format!("http://127.0.0.1:{port}");
+        let key = KeyPair::new_user();
+
+        let error = a_refused_grant(
+            register(&base, "PAIR", "desktop", "host", &key, None).await,
+            "nothing answers there",
+        );
+        assert!(
+            matches!(error, crate::Error::RemoteTransport(_)),
+            "a refused connection is transport, got {error:?}"
+        );
+
+        let (creds, _key) = relay_creds(Some(&base));
+        let error = revoke(&creds)
+            .await
+            .expect_err("nothing answers there either");
+        assert!(
+            matches!(error, crate::Error::RemoteTransport(_)),
+            "revoke reports transport the same way, got {error:?}"
+        );
+    }
 }
