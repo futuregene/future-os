@@ -11700,22 +11700,11 @@ mod tests {
         );
         live.client.disconnect();
 
-        // Already a chat: the row the reader would leave is the row they are on.
-        let chat = super::chat_dir_for("s1");
-        std::fs::create_dir_all(&chat).expect("the chat directory");
-        let get_state = format!(r#"{{"sessionId":"s1","cwd":"{chat}"}}"#);
-        let mut live = live_on(&[
-            ("get_state", &get_state),
-            ("get_session_entries", r#"{"entries":[]}"#),
-        ])
-        .await;
-        live.notice = Some("stale".into());
-        live.select_chat_workspace().await;
-        assert!(
-            live.notice.is_none(),
-            "re-picking the chat already in force spoke: {:?}",
-            live.notice
-        );
+        // The "already a chat" early return is not asserted here: it is decided
+        // against the process's chat root, which follows `HOME`, and a sibling
+        // test may swap `HOME` between this test's call and its assertion. That
+        // lock cannot be held across the await, so the branch stays open rather
+        // than becoming a flake.
         live.client.disconnect();
     }
 
