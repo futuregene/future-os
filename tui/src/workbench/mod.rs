@@ -13759,4 +13759,89 @@ mod tests {
             "a page back on a detail view did not come back a page"
         );
     }
+
+    /// The actions that ship without a chord are still reachable: the shortcut
+    /// editor binds one, and a bound chord dispatches exactly like a default.
+    ///
+    /// `""` is "no chord", chosen for the verbs that are rare or destructive —
+    /// so nothing reaches these arms until a reader binds one, and a test that
+    /// did not bind one would be testing a key that does not exist.
+    #[test]
+    fn a_chord_a_reader_binds_reaches_the_verbs_that_ship_without_one() {
+        let data = demo::chat();
+        let mut workbench = workbench();
+        workbench.render(&data, 120, 38);
+        for (action, chord) in [
+            (preferences::Action::Help, "f2"),
+            (preferences::Action::Language, "f3"),
+            (preferences::Action::Copy, "f4"),
+            (preferences::Action::Mouse, "f5"),
+            (preferences::Action::DeleteSession, "f6"),
+        ] {
+            assert_eq!(
+                action.default_key(),
+                "",
+                "{action:?} ships with a chord, so this case would test the default"
+            );
+            workbench
+                .keys
+                .bind(action, chord)
+                .unwrap_or_else(|err| panic!("the editor refused {chord}: {err}"));
+        }
+
+        // The help box, opened by the reader's own chord rather than by `?` —
+        // and it opens at the top.
+        workbench.overlay_scroll = 7;
+        assert_eq!(
+            workbench.handle(WbEvent::Key("f2".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.overlay, Some(Overlay::Help));
+        assert_eq!(workbench.overlay_scroll, 0, "the help opened halfway down");
+        workbench.overlay = None;
+
+        // The language chooser is the `/lang` command, so the chord and the
+        // typed verb cannot drift apart.
+        assert_eq!(
+            workbench.handle(WbEvent::Key("f3".into()), &data),
+            vec![WbAction::Command("/lang".into())]
+        );
+        // `/copy` on the last answer, and the mouse toggle beside it.
+        assert_eq!(
+            workbench.handle(WbEvent::Key("f4".into()), &data),
+            vec![WbAction::CopyLast]
+        );
+        assert_eq!(
+            workbench.handle(WbEvent::Key("f5".into()), &data),
+            vec![WbAction::ToggleMouse]
+        );
+
+        // Deleting asks first: the chord opens the box naming the conversation
+        // it would delete, and produces no delete of its own.
+        assert_eq!(
+            workbench.handle(WbEvent::Key("f6".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.overlay, Some(Overlay::DeleteSession));
+        assert_eq!(
+            workbench
+                .delete_target
+                .as_ref()
+                .map(|target| target.id.as_str()),
+            Some("s1"),
+            "the box names no conversation"
+        );
+
+        // …and with nothing to name, the box is not opened at all: a box that
+        // names nothing is a dead end, so the notice row says so instead.
+        workbench.overlay = None;
+        let mut empty = demo::launchpad();
+        empty.sessions.clear();
+        let actions = workbench.handle(WbEvent::Key("f6".into()), &empty);
+        assert!(
+            matches!(actions.as_slice(), [WbAction::Notice(_)]),
+            "a delete with nothing to delete answered {actions:?}"
+        );
+        assert_eq!(workbench.overlay, None, "a box opened naming nothing");
+    }
 }
