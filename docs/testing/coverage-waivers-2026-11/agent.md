@@ -8,14 +8,15 @@ llvm-cov *summary* percentage is not the acceptance number.
 `coverage/2026-11/after/agent/lcov-wave26.info`, run log `wave26-cov.log`. The ledger below was
 regenerated from that lcov and passes its own check (wave 29).
 
-**Result**: `DA:0` = **1181** lines in **129** files under `agent/src` (wave 31 measurement,
-`lcov-wave31.info`). This branch has cleared **492** of the 1673 it started from (waves 23, 26,
-27, 30 and 31; waves 24-25 changed the suite's speed, not which lines it reaches). Of the 1181:
+**Result**: `DA:0` = **1173** lines in **129** files under `agent/src` (wave 32 measurement,
+`lcov-wave32.info`, 2891 tests). This branch has cleared **500** of the 1673 it started from
+(waves 23, 26, 27, 30, 31 and 32; waves 24-25 changed the suite's speed, not which lines it
+reaches). Of the 1173:
 
 | state | lines |
 |---|---:|
 | **waived** (mechanism + falsifier named below) | **98** |
-| `open` — **no test and no justification yet** | **1113** |
+| `open` — **no test and no justification yet** | **1105** |
 
 Reconciliation (the rows below describe the 98 waived lines; they were written against the
 1231-line measurement and their line numbers were re-checked against the 1211 one in wave 29):
@@ -176,6 +177,51 @@ Writing the "key on one side only" case found a defect **in the helper**:
 panics `no entry found for key` and throws away the path the function exists to
 produce. The absent side is now a JSON null. This is test-only code
 (`rpc/commands/test_support.rs` is `#[cfg(test)]`), so no product behaviour moved.
+
+## Wave 32: the fixture that unlocks `tool_input_end` — and what it cost to build
+
+Wave 31 said this arm needed a fixture rather than a rewrite; this wave built it (commits
+`795446ae9`, `be65f7fd7`). `session/content/recovery_tests.rs` now drives the interrupted-call
+path end to end:
+
+```
+message_start → tool_start → tool_input_end (two staged bodies) → message_end
+      ↓  restart's Manager::initialize()
+run settles to "interrupted"; the assistant entry is published with the call
+```
+
+### The four constraints the fixture has to satisfy (each was a failed run)
+
+1. **A run's changes tile its cursor without overlap.** `commit_batch` requires
+   `change.first_cursor == previous.last_cursor + 1`; equal or overlapping windows answer
+   `semantic change has a gap or conflicting overlap`, and a shared window reads as
+   `conflicting semantic change retry`. The windows here are `(0,1) (2,3) (4,5) (6,13)`.
+2. **A body link's `field` must name a real pointer in the change's metadata** — `/data/tool_args`
+   needs a `tool_args` key in `metadata.data`, or the batch is refused with
+   `content link does not name a metadata field`.
+3. **`tool_slot` needs `content_key`** on both the `tool_start` and the `tool_input_end` event;
+   without it recovery answers `recovery tool input has no content identity` and the run is
+   isolated as `recovery_failed` — which is how the first three attempts "passed" the commit and
+   still ended with no published entry.
+4. **The published arguments are materialized from the body link, not left empty.**
+   The first assertion written here expected `args == ""` (the value the draft stores before
+   projection) and failed with `{"cmd":"ls"}`. That is the arm's actual contract: the *draft*
+   holds a link, and the reader rehydrates the committed bytes — so the test now asserts the
+   staged arguments arrive, which is the stronger claim.
+
+### What it bought, measured
+
+The trunk of the arm (`389-422`) turned out to be **already covered** by
+`a_crashed_shell_result_is_recovered_with_both_of_its_bodies`; the first version of this test
+therefore moved the number by zero, even though it passed. What was genuinely dark is the
+**provider-metadata channel**: without a `/data/provider_metadata` body the call takes the event's
+copied value and the `provider_range.is_some()` half never runs. Staging that second sealed body
+covers `recovery.rs:401`, `405` and `423-427` — verified against `lcov-wave31.info` as the only
+test that reaches them.
+
+That is the lesson worth carrying: **a passing fixture test is not evidence of new lines**; the
+first version of this one was green and worth nothing to the metric, and only the second body
+made it pay. Measure the specific rows, not the test.
 
 ## Wave 31: five more rows, and where the cheap rewrites run out
 
