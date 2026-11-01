@@ -175,6 +175,49 @@ panics `no entry found for key` and throws away the path the function exists to
 produce. The absent side is now a JSON null. This is test-only code
 (`rpc/commands/test_support.rs` is `#[cfg(test)]`), so no product behaviour moved.
 
+## What wave 23 cleared (head `42fbb872c`)
+
+No aggregate `DA:0` is quoted for this head: the full-lane instrumented run was killed by the
+host at 2869/2876 lib tests (`coverage/2026-11/after/agent/wave23-before.log` — no
+`test result` line, no lcov written) while other worktrees measured. The claim is instead
+line-for-line from `lcov-wave23-targeted2.info`, which contains **only** the six new tests:
+
+| file | before → after | how |
+|---|---:|---|
+| `models/mod.rs` | 6 → **0** | `Registry::same_provider_replacement` moves to another model, never to another vendor. The recommended text model wins over the alphabetically first one (both are inserted through `test_insert`, so they are user-defined and need no credential), an image-only model is not a text fallback, a same-named model of another provider is not a candidate, and `"a-plain"` / `"/a-plain"` return `None` because neither names a provider to defend. |
+| `rpc/prompt_helpers.rs` | 12 → **1** | `run_event_to_sse_for_storage(.., segmented: true)` names every entry point a released client renders (`message_start`, `message_end`, `text_start`, `text_chunk`, `thinking_end`, `text_end`, `tool_input_end`) with the id it joins on; a missing initial tool argument is asserted to be `""` (the value a client already reads as "not streamed yet"), not an absent field; and a segmented stream still passes a run-level event (`stream_resumed`) through the entry layer unchanged. |
+| `session/content/reader_recall.rs` | 14 → **0** | `slice` is a byte budget, so it shortens a page instead of splitting a multi-byte character (`"汉a"` at budgets 2/3/4), treats an offset at the end as the empty tail, and refuses a start offset inside a character. |
+| `session/projection.rs` | 10 → **1** | A run cut short by a restart leaves reasoning with no provider state to replay; `entries_to_agent_messages` announces it as `[Reasoning interrupted by agent restart]` text, and a reasoning block that still carries its provider state is left as reasoning. |
+
+Two rows this wave leaves as candidates rather than claims:
+
+- `rpc/prompt_helpers.rs:811` — `if cfg!(windows) {`. Compile-time branch, false on this host;
+  class W1, and only the Windows CI job can execute the other half.
+- `session/projection.rs:147` — the closing brace of `for block in &mut content`. Its head and
+  body are `DA:1` in both new tests; the lone brace is a loop-tail attribution row (taxonomy c).
+
+### A dead arm, measured rather than argued
+
+`reader_recall::slice` ends its fragment as
+`start.checked_add(limit).context("history fragment length overflow")?`. On a 64-bit target
+`start` and `limit` are both `usize::try_from(i64)` values, so their sum is at most `2^64 - 2`:
+**no input can make that addition fail.** On a 32-bit target the `try_from` above it rejects the
+same values first. The disproof attempt is itself the evidence — `slice(b"abc", i64::MAX - 1,
+i64::MAX)` does not overflow, it panics at the slice with `range start index
+9223372036854775806 out of range for slice of length 3`.
+
+That panic is a second finding, recorded and not fixed here (production change): `end` is
+clamped to `bytes.len()` but `start` is not, so `offset > len` panics instead of returning an
+error. Every current caller passes `offset <= length`, so nothing is broken today.
+
+### Stale rows in wave 22's report
+
+`rpc/commands/settings.rs`'s three probe handlers were listed open (15 lines), but
+`42fbb872c` already carries `sandbox_probe_commands_answer_with_the_host_product`, which drives
+`probe_sandbox`, `probe_windows_sandbox` and `reset_windows_sandbox` end to end. This wave wrote
+those three tests, found the existing one, and dropped them again. Re-measure before reading an
+old lcov against a newer head.
+
 ## What waves 17–18 cleared (1321 left of 1372)
 
 Two files were **wholly untested on the paths this wave measured**, so both are real tests
