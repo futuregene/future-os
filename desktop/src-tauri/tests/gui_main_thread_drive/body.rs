@@ -596,6 +596,10 @@ pub fn main() {
 /// * a **payload and a target** — a real ad-hoc-signed `.app` in a temporary directory, tarred
 ///   the way an update carries it, because the signature and identity steps are code under
 ///   test too.
+///
+/// Gated on `test-support` + macOS, like its call site and `exercise_update_installation`: the
+/// re-exports it calls do not exist in a default build.
+#[cfg(all(feature = "test-support", target_os = "macos"))]
 fn exercise_update_preparation(root: &std::path::Path) {
     // Beside each other on purpose: "preparation left nothing behind" must be a question about
     // the case directory, and a payload tree inside it would answer for it.
@@ -1073,12 +1077,14 @@ fn exercise_update_installation(root: &std::path::Path) {
 
 /// What a worker child reported: its parsed completion (absent when it was cancelled before
 /// the install) and how it ended.
+#[cfg(all(feature = "test-support", target_os = "macos"))]
 struct WorkerOutcome {
     completion: Option<serde_json::Value>,
     status: String,
 }
 
 /// One line for a check's detail: the child's status plus the caller's own derived facts.
+#[cfg(all(feature = "test-support", target_os = "macos"))]
 fn describe(outcome: &Result<WorkerOutcome, String>, extra: String) -> String {
     match outcome {
         Ok(worker) => format!(
@@ -1109,6 +1115,7 @@ fn restore_directory_permissions(directory: &std::path::Path) -> Result<(), Stri
 
 /// The record a worker reads when it reports an outcome, in the shape the journal writes:
 /// `result.json` under `<home>/app/updates/<id>/`, four of whose ancestors name the Agent home.
+#[cfg(all(feature = "test-support", target_os = "macos"))]
 fn write_update_record(directory: &std::path::Path, id: &str) -> Result<(), String> {
     std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
     std::fs::write(
@@ -1131,6 +1138,7 @@ fn write_update_record(directory: &std::path::Path, id: &str) -> Result<(), Stri
 /// The bundle that is already installed: no signature and no executable, because nothing
 /// probes or verifies it — an install only *swaps* it, and `CFBundleVersion` is the marker the
 /// swap is read back through.
+#[cfg(all(feature = "test-support", target_os = "macos"))]
 fn write_installed_bundle(app: &std::path::Path, version: &str) -> Result<(), String> {
     std::fs::create_dir_all(app.join("Contents")).map_err(|e| e.to_string())?;
     std::fs::write(
@@ -1146,6 +1154,7 @@ fn write_installed_bundle(app: &std::path::Path, version: &str) -> Result<(), St
 /// A bundle's `CFBundleVersion`, read through `PlistBuddy` — the same tool, and the same call
 /// shape, that preparation itself uses to read `CFBundleExecutable`. An unreadable bundle is
 /// the empty string, which no expected marker equals.
+#[cfg(all(feature = "test-support", target_os = "macos"))]
 fn bundle_version(app: &std::path::Path) -> String {
     let output = std::process::Command::new("/usr/libexec/PlistBuddy")
         .args(["-c", "Print :CFBundleVersion"])
@@ -1281,6 +1290,7 @@ fn exercise_update_probe_timeout(root: &std::path::Path) {
 /// 2026-11-01 with the bundle signed, verified, tarred and unpacked in one process; the same
 /// bundle signs, round-trips through BSD `tar` and verifies). A marker inside `Info.plist`
 /// survives it and is the field a real update bundle already carries.
+#[cfg(all(feature = "test-support", target_os = "macos"))]
 fn build_update_payload(root: &std::path::Path, version: &str) -> Result<Vec<u8>, String> {
     let app = root.join("FutureOS.app");
     let macos = app.join("Contents/MacOS");
@@ -1325,6 +1335,7 @@ fn build_update_payload(root: &std::path::Path, version: &str) -> Result<Vec<u8>
 /// `restored: true` is chosen, not incidental: `Prepared::commit` removes the staging directory
 /// when the helper reports a restore, which is what makes "nothing left beside the bundle"
 /// answerable after a *successful* chain.
+#[cfg(all(feature = "test-support", target_os = "macos"))]
 fn write_helper(path: &std::path::Path) -> Result<(), String> {
     std::fs::write(
         path,
@@ -1341,6 +1352,7 @@ fn write_helper(path: &std::path::Path) -> Result<(), String> {
 
 /// The names in `directory`, sorted, so a mismatch names what is there instead of only that
 /// something is. A missing directory reads as empty: preparation never has to create it.
+#[cfg(all(feature = "test-support", target_os = "macos"))]
 fn directory_entries(directory: &std::path::Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return Vec::new();
