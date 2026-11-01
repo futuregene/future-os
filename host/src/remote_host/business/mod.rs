@@ -199,6 +199,9 @@ pub(super) async fn reply_unit(sink: &dyn ReplySink, result: Result<(), crate::E
 
 #[cfg(test)]
 mod tests {
+    // The mock agent is process-global: the tests that script it hold its lock
+    // across the awaits that consume the script, exactly as the bridge tests do.
+    #![allow(clippy::await_holding_lock)]
     use super::*;
     use crate::remote::test_support::{HomeGuard, RecordingSink};
 
