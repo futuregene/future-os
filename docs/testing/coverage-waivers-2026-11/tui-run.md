@@ -15,23 +15,25 @@ belong to `live.rs` are in `tui.md`; rows about `run()`'s process wiring are in 
 same eight branches, the same 19 lines).
 
 **Status of this file: 9 lines waived in wave 6** (see "Waived this wave"), **10 as W7 in wave
-7** (see "W7: `open_git_panel`'s …") and **3 as W7 in wave 8** (see "W7 in wave 8") — 22 lines,
-each with its mechanism, positive control and falsifier. Everything else below is either
-closed (with the test that closes it) or *not waived* with the falsifier that would prove it
-reachable.
+7** (see "W7: `open_git_panel`'s …"), **3 as W7 in wave 8** (see "W7 in wave 8") and **1 as W7 in
+wave 9** (`mod.rs:3594`, the drag's zero-width edge) — 23 lines, each with its mechanism, positive
+control and falsifier. `mod.rs:1563` is **not waived**: it is a line-attribution artefact and its
+section says what would falsify that. Everything else below is either closed (with the test that
+closes it) or *not waived* with the falsifier that would prove it reachable.
 
 ## before / after (this task)
 
-| | 2026-10-31 (task start) | r2 (wave 12) | r4 | r8 (wave 5) | r9 | r10 (wave 6) | r12 (wave 7) | **r19 (wave 8)** |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `workbench/run.rs` DA:0 | 333 | 168 | 142 | 136 | 116 | 113 | 95 | **94** |
-| `workbench/mod.rs` DA:0 | 316 | 287 | 262 | 236 | 221 | 221 | 221 | **97** |
-| lane total DA:0 | — | 1486¹ | — | 1359¹ | 1321¹ | 1316¹ | 1298¹ | **1336²** |
+| | 2026-10-31 (task start) | r2 (wave 12) | r4 | r8 (wave 5) | r9 | r10 (wave 6) | r12 (wave 7) | r19 (wave 8, one commit stale) | **r20** | **r21 (wave 9)** |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `workbench/run.rs` DA:0 | 333 | 168 | 142 | 136 | 116 | 113 | 95 | 94 | **94** | **94** |
+| `workbench/mod.rs` DA:0 | 316 | 287 | 262 | 236 | 221 | 221 | 221 | 97 | **57** | **55** |
+| lane total DA:0 | — | 1486¹ | — | 1359¹ | 1321¹ | 1316¹ | 1298¹ | 1336² | **1298²** | **1293²** |
 
 ¹ `METERS=1` passes. ² `METERS=0`. The two are **not** the same lane: a `METERS=0` pass drops
 the 151 lines inside the `#[ignore = "meter, not a check"]` tests, so `1336` here is higher than
 `1298` there while both files it fronts are lower. Compare within a column shape only — see
-"Wave 8" for the evidence and for the `r16`/`r17` reproducibility pair.
+"Wave 8" for the evidence and for the `r16`/`r17` reproducibility pair, and "Wave 9" for why the
+`97` above reads 57 on the same tree one commit later.
 
 Each `rN` is one measurement pass; `lcov` for all of them is in
 `coverage/2026-11/after/tui2/tui2-rN.info`, and every figure in this file was re-derived from
@@ -381,21 +383,128 @@ defensive code".
 | `mod.rs:3413` `return Vec::new();` under `if !data.mouse_capture` | `handle_mouse` has exactly one caller (`handle`, line 1276) and that arm is `WbEvent::Mouse(event) if data.mouse_capture`, so the parameter this guard tests has already been tested to be `true`. `handle`'s own `WbEvent::Mouse(_) => Vec::new()` (line 1277) is the same answer for the other case, and *it* is measured. | `rebound_context_keys_and_a_released_mouse_still_reach_the_surface` sets `data.mouse_capture = false` and reads the empty answer — through 1277, which is the live line for that reader. | A second call site for `handle_mouse`, or the guard at 1276 losing its `if` — either makes 3413 a live branch. |
 | `mod.rs:3541` `return Vec::new();` under `let Some(overlay) = self.overlay else` | `handle_surface_mouse` has exactly one caller (`handle_mouse`, line 3433) and that call is guarded by `self.overlay.is_some() && !matches!(self.overlay, Some(Overlay::Picker(_)))`. The `else` is therefore the case the caller excludes. | Every overlay case in this ledger enters `handle_surface_mouse` with `overlay` already `Some`: the close-chip case, the wheel cases and the drag cases all read the box they opened. | A second entry into `handle_surface_mouse` (a panel that paints without setting `overlay`, say), or the `is_some()` in the caller's guard being dropped. |
 
-**Still at zero after this wave, and named rather than waived** — `mod.rs:3594` (the `}` closing
-the `if percent != self.git_split_percent` in the `/git` drag; every path through it is measured
-— the drag that changes the ratio, the drag that does not, and the clamp — so this reads like a
-region artefact and needs the `llvm-cov show` per-region read before it is called either
-reachable or dead) and `mod.rs:1563` (`match key`, where an unbound chord's `_ => {}` at 1561 is
-measured but the `match` on the line after it is not — same shape of question).
+**Resolved in wave 9 — both now have a per-region read.** `mod.rs:3594` is a real branch (the
+`None` path of the drag's `checked_div`) that no frame can reach, and is waived as **W7**;
+`mod.rs:1563` is a line-attribution artefact of the `match`'s scrutinee. See "Wave 9" for the
+segment tables, the mechanism, the positive control and the falsifier of each.
+
+## Wave 9 (2026-11-01, r20/r21): the ledger was a commit stale, 97 → 55
+
+This wave was handed `mod.rs` at **97** with eight rows named to close. **Six were already
+covered**, and the reason is a measurement error in this file rather than a missing test:
+`tui2-r19.info` was built from a tree one commit older than the source its rows were then printed
+against.
+
+- `r19` is from **14:15**. `acea6952c` was committed at **14:20** and `dfaad08d2` ("the mention's
+  debug and narrowing, a document that scrolls, and three clicks that name nothing") at **14:31**.
+- Re-measured on the committed tree, `r20` reads `mod.rs` **57** with no test added in between, and
+  the eight named rows fall where the two later commits put them: `244-251` (`Debug for Mention`,
+  asserted by `format!("{open:?}")` in `a_narrowed_mention_starts_its_highlight_over`),
+  `2991-2992` / `2998-3000` / `3032-3036` (the repository panel's `0`, `tab`+`up` and `home`, all
+  pressed by `the_repository_list_pans_and_its_cursor_jumps_home`), `3906-3907` (the press on
+  `input`), `3939`/`3951`/`3964` and `4322` by `dfaad08d2`'s own cases. Of the eight, **two were
+  real** — `2938` and `3939` — and both are closed below.
+
+**Rule this wave adds: an `.info` is evidence only for the tree that built it.** `missed_exact.py`
+prints the *current* source against the *file's* line numbers, so a stale `.info` never looks
+broken — it prints plausible text against the wrong lines (here `8107` read as
+`vec![WbAction::Redraw]`, which it is, sixteen lines later). Before quoting a number, compare
+`git log -1 --format=%ci` with the `.info`'s mtime; every row in this file should name the commit
+its pass measured.
+
+Reproducibility: `r20` and `r21` are the same tree two passes apart, with only the two cases below
+committed between them — `mod.rs` **57 → 55**, `run.rs` **94 → 94** (untouched), `live.rs` 337 →
+335, the ±2 the wave-8 note already attributes to an async arm.
+
+| | r19 (stale) | **r20** | **r21** |
+|---|---:|---:|---:|
+| `run.rs` DA:0 | 94 | **94** | **94** |
+| `mod.rs` DA:0 | 97 | **57** | **55** |
+| lane total DA:0 | 1336 | **1298** | **1293** |
+
+| was | how it closed |
+|---|---|
+| `mod.rs:2938` `self.panel_scroll[slot] = index;` | `home_brings_the_files_window_back_to_the_row_it_names`. The files panel and the rail's 文件 section share one `panel_scroll` slot, and the wheel over the rail is the only thing that lowers it (`select_file` is what raises it again), so the case wheels the rail down a burst, opens `/files`, puts the cursor on the last row and presses `home`: both the cursor *and* the window are asserted at 0. Without the line the window stays at 3 and the assertion fails. |
+| `mod.rs:3939` `vec![WbAction::Redraw]` under `if actions.is_empty()` after a clicked link | `a_click_that_names_a_link_the_frame_no_longer_holds_is_a_repaint`. A press resolves an id from the last painted frame, and a reply rewriting the row it is on keeps the row count while changing the content — so a `chat.link.1` born of a frame with two links names nothing once there is one. The cursor is left at `None`, `stop_reveal` is false, and the answer is a repaint. (The span cache is keyed on `data.revision` and the row count, not on content: writing `messages` without bumping `revision` leaves the old spans in place and the click still opened the link — how the first draft of this case failed, and worth knowing before writing another.) |
+
+### `mod.rs:3594` — a real branch no frame can reach (**W7**)
+
+`llvm-cov show` prints region *entries*, and every one of `3593`, `3594`, `3595` is one — so the
+question is which region each belongs to. `llvm-cov export` answers it (columns are 1-based, the
+third field is the count):
+
+| segment | source | what it is |
+|---|---|---|
+| `line=3588 col=52 count=24` | `if let Some(percent) = (want * 100 + inner / 2).checked_div(inner) {` | the `if let`, entered 24 times |
+| `line=3593 col=33 count=20` | `}` | the *inner* `if`'s false edge — 24 − 4, the four drags that moved the ratio |
+| `line=3594 col=29 count=0` | `}` | **the `if let`'s `None` edge** — the only counter on it, and it is 0 |
+| `line=3596 col=32 count=21` | `return Vec::new();` | the press that is not a drag |
+
+So `3594` is not a brace artefact: it is the `None` path of `checked_div`, which is `inner == 0`.
+
+**Mechanism.** `git_split_span.0` has exactly two writers — the `(0, 0)` default (`mod.rs:924`)
+and `set_git_geometry(inner, left_w)` (`mod.rs:4196`), whose only caller is the split painter at
+`screen.rs:2512` with `inner = columns.saturating_sub(2)` under `columns >= GIT_SPLIT_COLUMNS`,
+which is **108**. A frame that painted a `git.divider` therefore leaves the span at **≥ 106**. The
+`(0, 0)` default cannot pair with a drag either: `git_drag` is set only by a press on the
+`git.divider` hit region (`mod.rs:3773-3781`), a region the same paint created.
+
+**Positive control.** `dragging_the_git_divider_re_balances_the_panes` and its two siblings drive
+the drag both ways: `3588`, `3589` and `3590` read 24, `3591`/`3592` 4, `3593` 20. Every other
+edge of the same `if let` is measured; only the zero-width one is not.
+
+**Falsifier.** Any third writer of `git_split_span`; `GIT_SPLIT_COLUMNS` at or below 2; or a paint
+that calls `set_git_geometry` before `split` is decided. Each makes `inner == 0` reachable with a
+drag in flight and voids this waiver.
+
+### `mod.rs:1563` — the scrutinee's counter, not a decision
+
+| segment | source | what it is |
+|---|---|---|
+| `line=1561 col=18 count=351` | `_ => {}` | the *previous* match's fall-through: 351 keys reached this one |
+| `line=1563 col=15 count=0` | `key` | the only region on the line — the scrutinee, cols 15-17 |
+| `line=1564 col=13 count=351` | `"ctrl+q"` | the first arm's *pattern* comparison, on the very next line |
+
+The value cannot be compared 351 times without being read, so there is no control-flow path
+through `1563` that the arms do not take: the scrutinee's copy was folded into the comparison
+chain and its counter sits on one edge of that chain. The same construct elsewhere in this file
+shows the same signature from the other side — `match key` at **2954** reads **2** against **106**
+on its own `"tab"` arm — so a `match key` line whose count is far below its arms is this file's
+normal, not a defect.
+
+**What this does not claim:** the `"ctrl+q"` arm's *body* never runs (the reader's quit is
+`ctrl+x`), and `1564` still reads covered — a string arm's pattern shares the line with its body.
+That is the mirror direction of "The metric's own blind spot on `match` and `matches!` arms"
+above, and one more reason this file reads arms by what they *do* and not by the line they sit on.
+
+**Falsifier.** A second region on `1563` — any segment besides the scrutinee at col 15 — staying 0
+while the arms run.
+
+### The per-region read, and the binary it has to be pointed at
+
+```bash
+cd /Users/geilige/future-os/.worktrees/cov-tui2
+LC=~/.rustup/toolchains/1.99.1-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-cov
+# the lib target is the one r21-test.log names under "Running unittests src/lib.rs"
+BIN=target/llvm-cov-target/debug/deps/future_tui-80b655b233b84e48
+$LC export "$BIN" -instr-profile=target/llvm-cov-target/cov-tui2.profdata > /tmp/x.json
+# then: segments are [line, col, count, hasCount, isRegionEntry, isGapRegion]
+```
+
+**The binary matters.** `cargo llvm-cov` leaves several `future_tui-*` executables in `deps/`, and
+pointing this at the wrong one does not fail — it prints the source with almost every line at
+zero (measured: 282 non-zero region lines of 14 536 on the wrong binary, 8 792 on the right one),
+which reads exactly like a lane where nothing ran.
 
 ## How to re-measure this file
 
 ```bash
 cd coverage/2026-11/after/tui2
-TAG=r20 METERS=0 ./run-cov-tui2.sh
-python3 missed_run.py tui2-r20.info workbench/run.rs        # counts
-python3 missed_exact.py tui2-r20.info ../../../.worktrees/cov-tui2/tui/src/workbench/mod.rs workbench/mod.rs
-python3 total.py tui2-r20.info                              # the lane's own DA:0
+git -C ../../../.worktrees/cov-tui2 log -1 --format='%ci %h'   # the tree the pass will measure
+TAG=r22 METERS=0 ./run-cov-tui2.sh
+python3 missed_run.py tui2-r22.info workbench/run.rs        # counts
+python3 missed_exact.py tui2-r22.info ../../../.worktrees/cov-tui2/tui/src/workbench/mod.rs workbench/mod.rs
+python3 total.py tui2-r22.info                              # the lane's own DA:0
 ```
 
 `missed_exact.py` rather than `ranges.py` for the lines that follow: `ranges.py` merges anything
@@ -403,6 +512,11 @@ within three lines, so a printed range can hide covered lines inside it (`1550-1
 three misses when `1551` was measured twice). `METERS=0` unless the row you are checking is a
 meter: a `METERS=1` pass and a `METERS=0` pass are not the same lane number (see the wave-8
 note above — they differ by the 151 lines inside the ignored tests).
+
+**Record the commit with every pass.** A `.info` is evidence for one tree only, and the rows print
+the current source either way, so a stale pass is invisible until a row is chased that was already
+closed (wave 9 chased six). `r19` was one commit behind its own description; `r20`/`r21` are the
+first two passes in this ledger whose tree is named.
 
 `rm -rf target/llvm-cov-target` afterwards: the instrumented build is ~4 GB and nothing but
 this lane reads it.
