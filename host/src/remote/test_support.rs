@@ -153,6 +153,17 @@ pub fn leave_fixture_scope() {
 ///    on identity alone refused the worker too and reddened seven
 ///    `shutdown::services::` tests plus a `TestHome` drop (measured, one full
 ///    run: `after-run-1.log`), which is why the role test is explicit here.
+///
+/// What this does **not** cover, and must not be read as covered: the entry
+/// points below are the host's own (`remote stop`, `unpair`, `stop_gracefully`,
+/// `handle_system_suspend`). A control dispatch reaches the same teardown
+/// *inside* `future-remote-server` instead — `pair_new_device` on an empty book
+/// is `re_pair` → `Supervisor::unpair` → `stop_with`, none of which passes
+/// through here (measured: with the F7 fixture removed,
+/// `serving_one_request_answers_it_and_removes_every_trace` still performs the
+/// stop unguarded). F7's prevention is therefore the **fixture**, which
+/// serializes that test against every other fixture on `TEST_HOME_LOCK`; this
+/// check is the tripwire for the direct-call shape of the same mistake.
 #[cfg(test)]
 pub fn assert_fixture_scope(what: &str) {
     // Never escalate while a test is already unwinding: a panic on the way out
