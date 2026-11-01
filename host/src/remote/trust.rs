@@ -349,9 +349,70 @@ mod tests {
 #[cfg(test)]
 mod fixtures {
     use super::*;
-    use std::process::{Command, Stdio};
+    use std::process::{Command, Output, Stdio};
 
     const CASE: &str = "FUTURE_RELAY_CA_BUNDLE_CASE";
+
+    /// One isolated home and the command that re-executes this binary for it.
+    ///
+    /// Every case builds its own command in its own test, so there is no
+    /// "unknown case" arm to leave uncovered: the case string only reaches the
+    /// child, which switches on nothing.
+    struct Fixture {
+        dir: tempfile::TempDir,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let parent =
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/host-fixtures");
+            std::fs::create_dir_all(&parent).expect("fixture parent");
+            Fixture {
+                dir: tempfile::tempdir_in(&parent).expect("fixture dir"),
+            }
+        }
+
+        fn write(&self, name: &str, text: &str) -> PathBuf {
+            let path = self.dir.path().join(name);
+            std::fs::write(&path, text).expect("write fixture file");
+            path
+        }
+
+        fn absent(&self, name: &str) -> PathBuf {
+            self.dir.path().join(name)
+        }
+
+        fn command(&self, case: &str) -> Command {
+            let mut command = Command::new(std::env::current_exe().expect("test binary"));
+            command
+                .args([
+                    "--exact",
+                    "remote::trust::fixtures::bundle_fixture",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(CASE, case)
+                .env("HOME", self.dir.path())
+                .env("USERPROFILE", self.dir.path())
+                .env("FUTURE_HOME", self.dir.path().join(".future"))
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            command
+        }
+    }
+
+    /// Run one case and hand back what it printed. The child's own exit status
+    /// is asserted here, once, so every case inherits "it ran at all" without
+    /// restating it.
+    fn run(case: &str, mut command: Command) -> (String, String) {
+        let output: Output = command.output().expect("run the fixture");
+        // Hoisted: an `assert!` message argument is evaluated only on failure,
+        // so an inline `from_utf8_lossy` would be a residual line of its own.
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(output.status.success(), "{case}: {stdout} {stderr}");
+        (stdout, stderr)
+    }
 
     /// A file the operator named that holds no certificate. The bundle must be
     /// refused with the file named: a silent `None` here looks exactly like "no
@@ -359,24 +420,31 @@ mod fixtures {
     /// operator was trying to add a root beside.
     #[test]
     fn a_relay_ca_file_that_holds_no_certificate_is_refused_by_name() {
-        let output = run_case("no-certificate");
-        assert!(
-            stderr(&output).contains("holds no certificate"),
-            "{}",
-            stderr(&output)
-        );
+        let fixture = Fixture::new();
+        let ca = fixture.write("relay-ca.pem", "this is not a certificate\n");
+        let mut command = fixture.command("no-certificate");
+        command.env("FUTURE_RELAY_CA", &ca);
+        let (_, reported) = run("no-certificate", command);
+        let named = reported.contains("holds no certificate");
+        assert!(named, "{reported}");
+        let path_named = reported.contains("relay-ca.pem");
+        assert!(path_named, "{reported}");
     }
 
     /// A file the operator named that cannot even be read (a typo, a path a
     /// sandboxed Desktop cannot see). Same sentence, and the path is in it.
     #[test]
     fn a_relay_ca_file_that_cannot_be_read_is_refused_by_name() {
-        let output = run_case("unreadable");
-        let reported = stderr(&output);
-        assert!(
-            reported.contains("could not read the relay CA file"),
-            "{reported}"
-        );
+        let fixture = Fixture::new();
+        let ca = fixture.absent("absent.pem");
+        let mut command = fixture.command("unreadable");
+        command.env("FUTURE_RELAY_CA", &ca);
+        let (_, reported) = run("unreadable", command);
+        let named = reported.contains("could not read the relay CA file");
+        assert!(named, "{reported}");
+        let path_named = reported.contains("absent.pem");
+        assert!(path_named, "{reported}");
+        assert!(!ca.exists(), "the fixture proved a missing file");
     }
 
     /// The bundle cannot be written — the only arm that leaves async-nats to do
@@ -384,71 +452,23 @@ mod fixtures {
     /// does not exist, which is what a Desktop with an unusable `TMPDIR` sees.
     #[test]
     fn a_bundle_that_cannot_be_written_leaves_the_platform_load_in_place() {
-        let output = run_case("unwritable");
-        let reported = stderr(&output);
-        assert!(
-            reported.contains("could not write the relay trust bundle"),
-            "{reported}"
+        let fixture = Fixture::new();
+        let ca = fixture.write(
+            "relay-ca.pem",
+            "-----BEGIN CERTIFICATE-----\nZGVyaXZlZA==\n-----END CERTIFICATE-----\n",
         );
-    }
-
-    fn stderr(output: &std::process::Output) -> String {
-        // Hoisted: an `assert!` message argument is evaluated only on failure,
-        // so an inline `from_utf8_lossy` would be a residual line of its own.
-        String::from_utf8_lossy(&output.stderr).into_owned()
-    }
-
-    fn run_case(case: &str) -> std::process::Output {
-        let parent = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/host-fixtures");
-        std::fs::create_dir_all(&parent).expect("fixture parent");
-        let dir = tempfile::tempdir_in(&parent).expect("fixture dir");
-        let ca = dir.path().join("relay-ca.pem");
-        let mut command = Command::new(std::env::current_exe().expect("test binary"));
-        command
-            .args([
-                "--exact",
-                "remote::trust::fixtures::bundle_fixture",
-                "--nocapture",
-                "--test-threads=1",
-            ])
-            .env(CASE, case)
-            .env("HOME", dir.path())
-            .env("USERPROFILE", dir.path())
-            .env("FUTURE_HOME", dir.path().join(".future"))
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        match case {
-            // The bytes only have to lack the marker; nothing here is parsed.
-            "no-certificate" => {
-                std::fs::write(&ca, "this is not a certificate\n").expect("write the CA");
-                command.env("FUTURE_RELAY_CA", &ca);
-            }
-            // Never created: the read fails with ENOENT, the arm under test.
-            "unreadable" => {
-                command.env("FUTURE_RELAY_CA", dir.path().join("absent.pem"));
-            }
-            // A valid CA and a temp directory that does not exist, so the
-            // write is the step that fails rather than the read.
-            "unwritable" => {
-                std::fs::write(
-                    &ca,
-                    "-----BEGIN CERTIFICATE-----\nZGVyaXZlZA==\n-----END CERTIFICATE-----\n",
-                )
-                .expect("write the CA");
-                command
-                    .env("FUTURE_RELAY_CA", &ca)
-                    .env("TMPDIR", dir.path().join("no-such-tmp"));
-            }
-            other => panic!("unknown case {other}"),
-        }
-        let output = command.output().expect("run the fixture");
+        let tmp = fixture.absent("no-such-tmp");
+        let mut command = fixture.command("unwritable");
+        command.env("FUTURE_RELAY_CA", &ca).env("TMPDIR", &tmp);
+        let (_, reported) = run("unwritable", command);
+        let named = reported.contains("could not write the relay trust bundle");
+        assert!(named, "{reported}");
+        // The bundle is written into the temp directory the environment names,
+        // so a `TMPDIR` that does not exist is what the write fails on.
         assert!(
-            output.status.success(),
-            "{case}: {} {}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            !tmp.exists(),
+            "the fixture's temp directory must stay absent"
         );
-        output
     }
 
     /// The child half: one case per process, one construction of the bundle.
