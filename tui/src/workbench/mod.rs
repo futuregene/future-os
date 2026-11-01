@@ -12622,4 +12622,112 @@ mod tests {
         let _ = click_region(&mut wb, &data, 120, 38, &closed);
         assert_eq!(wb.overlay, None, "the close chip did not leave the box");
     }
+    /// The workflow boxes' keys: a detail view scrolls, the diff is a list *and* a
+    /// patch (whichever pane has the keys decides), `r` re-reads, and the
+    /// approval's answers are the driver's actions rather than a repaint.
+    #[test]
+    fn the_workflow_boxes_move_scroll_and_answer() {
+        let data = demo::chat();
+
+        // The approval's three answers, and the card closes on each of them.
+        for (key, approved) in [("y", true), ("n", false)] {
+            let mut wb = workbench();
+            wb.overlay = Some(Overlay::Approval);
+            let actions = wb.handle(WbEvent::Key(key.into()), &data);
+            assert!(
+                actions.iter().any(|action| matches!(
+                    action,
+                    WbAction::ApprovalDecision { approved: got, .. } if *got == approved
+                )),
+                "`{key}` did not answer the approval: {actions:?}"
+            );
+            assert_eq!(wb.overlay, None, "`{key}` answered but left the card up");
+        }
+
+        // "Always allow" with no suggested rule: nothing to save, so nothing is
+        // answered — a rule the agent never proposed would be a different grant.
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Approval);
+        let actions = wb.handle(WbEvent::Key("a".into()), &data);
+        assert!(
+            !actions
+                .iter()
+                .any(|action| matches!(action, WbAction::ApprovalDecision { .. })),
+            "an approval with no rule to save answered anyway: {actions:?}"
+        );
+        assert_eq!(
+            wb.overlay,
+            Some(Overlay::Approval),
+            "a refused rule left the card up, which is right"
+        );
+
+        // The diff is both a list and a patch: `tab` moves the keys, and the pane
+        // that has them decides whether `down` moves a cursor or scrolls.
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Diff);
+        wb.render(&data, 120, 38);
+        // The box opens with the keys on the patch (`diff_patch_focus` starts
+        // true); `tab` moves them to the file list and `left` brings them back.
+        assert!(
+            wb.diff_patch_focus,
+            "the diff opens with the keys on the patch"
+        );
+        let _ = wb.handle(WbEvent::Key("tab".into()), &data);
+        assert!(
+            !wb.diff_patch_focus,
+            "`tab` did not move the keys to the file list"
+        );
+        let _ = wb.handle(WbEvent::Key("tab".into()), &data);
+        assert!(wb.diff_patch_focus, "a second `tab` did not come back");
+        let scroll = wb.overlay_scroll;
+        let cursor = wb.workflow_index;
+        let _ = wb.handle(WbEvent::Key("down".into()), &data);
+        assert!(wb.overlay_scroll > scroll, "the patch did not scroll");
+        assert_eq!(
+            wb.workflow_index, cursor,
+            "scrolling the patch moved the file list"
+        );
+        let _ = wb.handle(WbEvent::Key("left".into()), &data);
+        assert!(!wb.diff_patch_focus, "`left` did not return to the list");
+
+        // `r` is the box's own re-read: the patch in the diff, the panel in the
+        // worktree box.
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Diff);
+        let actions = wb.handle(WbEvent::Key("r".into()), &data);
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, WbAction::OpenDiff)),
+            "`r` in the diff box did not ask for the patch: {actions:?}"
+        );
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Worktree);
+        let actions = wb.handle(WbEvent::Key("r".into()), &data);
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                WbAction::Command(command) if command == "/worktree"
+            )),
+            "`r` in the worktree box did not re-read the list: {actions:?}"
+        );
+
+        // `pageDown` on a detail view scrolls by a page, not by a row.
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Approval);
+        let page = wb.list_page.max(1);
+        let _ = wb.handle(WbEvent::Key("pageDown".into()), &data);
+        assert_eq!(
+            wb.overlay_scroll, page,
+            "a page key on a detail view did not scroll a page"
+        );
+
+        // `escape` leaves every one of them.
+        for overlay in [Overlay::Diff, Overlay::Worktree, Overlay::Approval] {
+            let mut wb = workbench();
+            wb.overlay = Some(overlay);
+            let _ = wb.handle(WbEvent::Key("escape".into()), &data);
+            assert_eq!(wb.overlay, None, "escape did not close {overlay:?}");
+        }
+    }
 }
