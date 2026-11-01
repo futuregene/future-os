@@ -494,6 +494,13 @@ CPU-s before it asserts anything.
 Both numbers point the same way: the suite's cost is **statement preparation**, and it is
 concentrated in a small number of hot SQL call sites, not spread evenly over 2886 tests.
 
+Where the successor should start, by uncached prepares in the files the timed runs named as
+critical path: `session/history/display_index.rs` (4), `session/history/recall.rs` (4),
+`session/sqlite_store/events.rs` (4, the one file that already caches one), `session/history/
+recall.rs`, `session/database/readers.rs`, `session/database/mode` — and every read that goes
+through the `entry_records`/`sessions` views, which is what the sample's `sqlite3SelectDup`
+frames are compiling.
+
 ### A wall-time floor underneath the CPU one
 
 `sample <pid> 6` on the `session::persistence` run caught the whole sample inside **one test**
