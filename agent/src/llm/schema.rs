@@ -1923,4 +1923,172 @@ mod tests {
         let error = ResolvedModelTarget::from_model(&model, "key".into(), None, None).unwrap_err();
         assert!(error.to_string().contains("compat.reasoningEffort"));
     }
+
+    #[test]
+    fn normalize_thinking_levels_drops_overlong_names_and_caps_the_list() {
+        // A name longer than MAX_THINKING_LEVEL_LEN is dropped rather than
+        // shortened: a truncated spelling would not match anything the provider
+        // accepts, so guessing is worse than leaving it out.
+        let overlong = "x".repeat(MAX_THINKING_LEVEL_LEN + 1);
+        let declared = vec![
+            " high ".to_string(),
+            overlong,
+            "low".to_string(),
+            "low".to_string(),
+            String::new(),
+            DEFAULT_THINKING_LEVEL.to_string(),
+        ];
+        assert_eq!(
+            normalize_thinking_levels("p", "m", declared),
+            vec!["low".to_string(), "high".to_string()]
+        );
+
+        // Past MAX_THINKING_LEVELS the tail is dropped: a picker with more than
+        // that many entries is already unusable, and the provider's own list is
+        // the authority for the rest.
+        let declared: Vec<String> = (0..MAX_THINKING_LEVELS + 4)
+            .map(|index| format!("wire-{index}"))
+            .collect();
+        let normalized = normalize_thinking_levels("p", "m", declared);
+        assert_eq!(normalized.len(), MAX_THINKING_LEVELS);
+        assert_eq!(normalized.first().map(String::as_str), Some("wire-0"));
+        assert_eq!(
+            normalized.last(),
+            Some(&format!("wire-{}", MAX_THINKING_LEVELS - 1))
+        );
+    }
+
+    #[test]
+    fn normalize_thinking_levels_sorts_known_levels_ahead_of_wire_values() {
+        // The picker shows this list untouched, so the known scale must come
+        // first in its fixed order and unknown wire values keep the order the
+        // configuration declared them in.
+        let declared = vec![
+            "turbo".to_string(),
+            "high".to_string(),
+            "minimal".to_string(),
+            "zap".to_string(),
+        ];
+        assert_eq!(
+            normalize_thinking_levels("p", "m", declared),
+            vec![
+                "minimal".to_string(),
+                "high".to_string(),
+                "turbo".to_string(),
+                "zap".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn vocabulary_parse_rejects_each_malformed_field_shape() {
+        let error = |value: Value| {
+            ReasoningEffortVocabulary::parse("p", "m", &value)
+                .unwrap_err()
+                .to_string()
+        };
+        // A non-string entry inside `values` (a number, not the whole field).
+        assert!(error(json!({"values": ["low", 2]})).contains("must be an array of strings"));
+        // `integer` accepts only min/max, and a non-object is refused with the
+        // shape it wanted rather than defaulted.
+        assert!(error(json!({"values": ["low"], "integer": {"step": 5}}))
+            .contains("integer has unknown key `step`"));
+        assert!(
+            error(json!({"values": ["low"], "integer": 5})).contains("must be an object such as")
+        );
+        // A non-string `param` would silently write at some path the provider
+        // never reads, so it is an error rather than a fallback.
+        assert!(error(json!({"values": ["low"], "param": 5})).contains("param must be a string"));
+    }
+
+    #[test]
+    fn vocabulary_lists_and_accepts_exactly_what_it_declared() {
+        let vocabulary = deepseek_v4_vocab();
+        assert_eq!(vocabulary.values(), ["low", "high", "xhigh", "max"]);
+        // Listed spellings, and integers inside the declared range, are accepted.
+        assert!(vocabulary.accepts(&json!("high")));
+        assert!(!vocabulary.accepts(&json!("medium")));
+        assert!(vocabulary.accepts(&json!(1)));
+        assert!(vocabulary.accepts(&json!(100)));
+        assert!(!vocabulary.accepts(&json!(0)));
+        assert!(!vocabulary.accepts(&json!(101)));
+        // A fractional number has no integer spelling on this wire.
+        assert!(!vocabulary.accepts(&json!(1.5)));
+        // Neither does a boolean or null.
+        assert!(!vocabulary.accepts(&json!(true)));
+        assert!(!vocabulary.accepts(&json!(null)));
+
+        // Without a declared integer range a number is never accepted: the
+        // absence of a range must not be read as an unbounded one.
+        let spellings_only = vocab(json!({"values": ["low"]}));
+        assert!(!spellings_only.accepts(&json!(1)));
+    }
+
+    #[test]
+    fn effort_value_is_none_for_the_inert_spellings() {
+        assert_eq!(effort_value(""), None);
+        assert_eq!(effort_value("   "), None);
+        assert_eq!(effort_value(DEFAULT_THINKING_LEVEL), None);
+        assert_eq!(effort_value(" off "), None);
+        assert_eq!(effort_value(" high "), Some("high"));
+    }
+
+    #[test]
+    fn applying_an_effort_to_a_non_object_body_starts_a_fresh_object() {
+        // Protocol builders hand in whatever the caller's body is; writing the
+        // effort must replace a shape it cannot extend instead of panicking.
+        let mut body = json!(["not", "an", "object"]);
+        apply_effort_param(&mut body, "high", Some(&deepseek_v4_vocab()));
+        assert_eq!(
+            body,
+            json!({"chat_template_kwargs": {"reasoning_effort": "high"}})
+        );
+    }
+
+    #[test]
+    fn nearest_ignores_listed_values_outside_the_product_scale() {
+        // A hand-written wire value the product does not name must not win the
+        // distance comparison: `low` still picks the closest known spelling.
+        let vocabulary = vocab(json!({"values": ["turbo", "high"]}));
+        assert_eq!(
+            vocabulary.mapping("low"),
+            EffortMapping::Nearest("high".into())
+        );
+    }
+
+    #[test]
+    fn report_names_a_level_no_vocabulary_spelling_reaches() {
+        // An unknown configured level (a typo, or a spelling from another
+        // provider) has no rank on the product scale, so there is no nearest
+        // spelling: the report must take the "sends nothing" arm instead of
+        // claiming a wire value the provider never accepts.
+        let mut model = crate::models::Model {
+            id: "report-none".into(),
+            provider: "report".into(),
+            ..Default::default()
+        };
+        model.thinking_levels = vec!["turbo".into()];
+        let vocabulary = vocab(json!({"values": ["low"]}));
+        assert_eq!(vocabulary.mapping("turbo"), EffortMapping::None);
+        report_unexpressible_levels(&model, &vocabulary);
+    }
+
+    #[test]
+    fn chat_config_reads_the_tool_stream_flag_and_rejects_a_non_boolean() {
+        let mut model = crate::models::Model {
+            id: "m".into(),
+            provider: "p".into(),
+            api: "openai-completions".into(),
+            ..Default::default()
+        };
+        model.compat.insert("toolStream".into(), Value::Bool(true));
+        let target = ResolvedModelTarget::from_model(&model, "key".into(), None, None).unwrap();
+        assert!(expect_chat(target.protocol).tool_stream);
+
+        model
+            .compat
+            .insert("toolStream".into(), Value::String("yes".into()));
+        let error = ResolvedModelTarget::from_model(&model, "key".into(), None, None).unwrap_err();
+        assert!(error.to_string().contains("toolStream must be a boolean"));
+    }
 }
