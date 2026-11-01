@@ -1,8 +1,8 @@
 import type { AgentMessage } from "@future-os/thread-projection";
 import type { SetStateAction } from "react";
 import type { StoredRun, StoredThread } from "../../integrations/storage/threadStore";
-import { beforeEach, describe, expect, it, vi } from "vitest";
 import { listen } from "@tauri-apps/api/event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { sendPromptToFutureAgent } from "../../integrations/agent/agentClient";
 import { createRun, getRun, listRunEvents, listRunEventsSince, updateRunStatus } from "../../integrations/storage/threadStore";
 import { buildReferenceContext } from "./buildReferencePrompt";
@@ -154,7 +154,6 @@ beforeEach(() => {
 });
 
 describe("runSendPipeline terminal-status handling", () => {
-
   it("keeps model-only reference context out of the user message", async () => {
     vi.mocked(getRun).mockResolvedValue(storedRun({ status: "completed", endedAt: 2_000 }));
     vi.mocked(buildReferenceContext).mockResolvedValue("Referenced FutureOS objects:\n1. file:utils/a.py");
@@ -294,7 +293,6 @@ describe("runSendPipeline terminal-status handling", () => {
 });
 
 describe("runSendPipeline stream/failure edges", () => {
-
   it("marks the run failed when the stream closes incomplete and the row is still active", async () => {
     vi.mocked(getRun).mockResolvedValue(storedRun());
     vi.mocked(sendPromptToFutureAgent).mockResolvedValue({
@@ -661,7 +659,6 @@ it("does not refresh the sidebar when a failed send was superseded", async () =>
 });
 
 describe("runSendPipeline queued behind a running reply", () => {
-
   /** The Agent's ack when the session was already executing a run. */
   function queuedReply() {
     return {
