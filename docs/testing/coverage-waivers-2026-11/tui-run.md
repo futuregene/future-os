@@ -14,25 +14,31 @@ belong to `live.rs` are in `tui.md`; rows about `run()`'s process wiring are in 
 "`run()`'s remaining branches" table and are **not repeated here** (they are unchanged: the
 same eight branches, the same 19 lines).
 
-**Status of this file: 9 lines waived in wave 6** (see "Waived this wave") **and 10 as W7 in wave
-7** (see "W7: `open_git_panel`'s …") — 19 lines, each with its mechanism, positive control and
-falsifier. Everything else below is either
+**Status of this file: 9 lines waived in wave 6** (see "Waived this wave"), **10 as W7 in wave
+7** (see "W7: `open_git_panel`'s …") and **3 as W7 in wave 8** (see "W7 in wave 8") — 22 lines,
+each with its mechanism, positive control and falsifier. Everything else below is either
 closed (with the test that closes it) or *not waived* with the falsifier that would prove it
 reachable.
 
 ## before / after (this task)
 
-| | 2026-10-31 (task start) | r2 (wave 12) | r4 | r8 (wave 5) | r9 | r10 (wave 6) | **r12 (wave 7)** |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| `workbench/run.rs` DA:0 | 333 | 168 | 142 | 136 | 116 | 113 | **95** |
-| `workbench/mod.rs` DA:0 | 316 | 287 | 262 | 236 | 221 | 221 | **221** |
-| lane total DA:0 (with meters) | — | 1486 | — | 1359 | 1321 | 1316 | **1298** |
+| | 2026-10-31 (task start) | r2 (wave 12) | r4 | r8 (wave 5) | r9 | r10 (wave 6) | r12 (wave 7) | **r19 (wave 8)** |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `workbench/run.rs` DA:0 | 333 | 168 | 142 | 136 | 116 | 113 | 95 | **94** |
+| `workbench/mod.rs` DA:0 | 316 | 287 | 262 | 236 | 221 | 221 | 221 | **97** |
+| lane total DA:0 | — | 1486¹ | — | 1359¹ | 1321¹ | 1316¹ | 1298¹ | **1336²** |
+
+¹ `METERS=1` passes. ² `METERS=0`. The two are **not** the same lane: a `METERS=0` pass drops
+the 151 lines inside the `#[ignore = "meter, not a check"]` tests, so `1336` here is higher than
+`1298` there while both files it fronts are lower. Compare within a column shape only — see
+"Wave 8" for the evidence and for the `r16`/`r17` reproducibility pair.
 
 Each `rN` is one measurement pass; `lcov` for all of them is in
 `coverage/2026-11/after/tui2/tui2-rN.info`, and every figure in this file was re-derived from
-the one it cites (`missed_run.py` for a count, `ranges.py` for the rows). Wave 5 rebased onto
-`origin/dev-huichen` first (16 commits from the sibling lanes), so `r5` — not `r4` — is this
-round's baseline: run.rs **138**, mod.rs **262**.
+the one it cites (`missed_run.py` for a count, `missed_exact.py` for the rows — `ranges.py`
+groups anything within three lines and can print covered lines inside a range). Wave 5 rebased
+onto `origin/dev-huichen` first (16 commits from the sibling lanes), so `r5` — not `r4` — is
+that round's baseline: run.rs **138**, mod.rs **262**.
 
 ## Wave 5 (2026-11-01): mod.rs −26, run.rs −2/−8 that turned out to be dead producer
 
@@ -328,14 +334,75 @@ is the definition of a W7 line in this ledger.
 having run — a second entry point into the panel, or a driver that stops handing one over — makes
 this a live branch and the waiver void.
 
+## Wave 8 (2026-11-01, r19): the pointer — the whole second half of this file
+
+`workbench/mod.rs` **97** at `r19`, down from **176** at `r13b`/`r14` (**−79**); `run.rs` unchanged
+at **94** (this wave touched no run.rs arm; wave 7 had already closed `1208-1213`, `1231-1232`,
+`1236-1238`, `1787`, `1793-1797`, `1821`). The lane total moved `1360` (`r16`, the first pass of
+this wave) → `1339` (`r18`) → **`1336`** (`r19`).
+
+**The lane number changed meaning in this wave, and that is a measurement finding, not a
+regression.** Every `.info` before `r16` (`r10`…`r14`, and `r13b` — byte-identical to `r15`)
+carries the `#[ignore = "meter, not a check"]` bodies, because those passes ran with `METERS=1`
+and the merged profile kept them; `r13b` and `r15` are in fact the *same* profile printed twice.
+A `METERS=0` pass in a freshly cleaned target dir (`r16`) therefore reads `live.rs` at **337**
+rather than 188 — the 151 lines of `session_rail_cost_meter` and its neighbours, which is what a
+tests-only lane should read. `r16`…`r19` are all `METERS=0` and comparable with each other;
+`r14`'s `1250` is not comparable with `r19`'s `1336`. Reproducibility: `r16` and `r17` are the
+same tree two passes apart — `1360` vs `1358` lane, `111` vs `111` on `mod.rs` — so `mod.rs` is
+stable to the line and the lane carries a ±2 that lives in `live.rs` (an async arm), not here.
+
+| lines | what runs | case |
+|---|---|---|
+| `3818-3825`, `3848`, `3852` | a chooser by pointer: the wheel walks it a row a turn (and previews the theme it lands on), a press on the box's own frame is absorbed, and motion is not a gesture | `the_pointer_in_a_chooser_walks_the_list_and_its_frame_absorbs_a_press` |
+| `3385-3387`, `3389`, `3392-3393` | a thinking row applied where a session is (`SetThinking`) and staged where it is not (`SetPendingThinking`); the approval row's one setter | `a_thinking_row_applies_where_a_session_is_and_is_staged_where_it_is_not` |
+| `3787-3788`, `3802-3805`, `3804-3805` | a click on a preferences row moves the cursor there; a workflow row takes the row *and* applies it (`enter`) | `a_click_on_a_list_row_takes_the_row_the_way_enter_does` |
+| `3558-3570` | the wheel over a box is that box's key: the patch scrolls while it holds the keys, the file list walks when it does, and every other box reads one row a turn | `the_wheel_over_a_box_answers_the_way_its_keys_do` |
+| `3185` | `pageUp` on a detail view comes back by a page | same case |
+| `1479-1481`, `1505`, `1542-1544`, `1550`, `1552` | the five verbs that ship with `""` (help, language, delete, copy, mouse) reached by a chord a reader binds, plus the delete that has nothing to name and answers with the notice | `a_chord_a_reader_binds_reaches_the_verbs_that_ship_without_one` |
+| `1421`, `1437`, `1445`, `3872-3876`, `3879`, `3882-3884` | the mention menu hands back the keys and the clicks it does not own: `↑` at the top stays, a letter still edits the draft, `tab` with nothing matching inserts nothing, the box's frame absorbs, and a click past it closes the menu and still lands | `the_mention_menu_gives_back_every_key_and_every_click_it_does_not_own`, `a_click_past_the_mention_menu_closes_it_and_still_lands` |
+| `3507-3510`, `3601-3602`, `3604`, `3623`, `3594` | a pointer with nothing held: a release with no grab, motion during neither, and a drag that lands back on the cell it took hold of (all four answer with nothing) | `a_pointer_with_nothing_held_moves_nothing` |
+| `4037-4039`, `4042-4044`, `4052-4055` | the rail's rows by pointer: a workspace heading folds and remembers it, a section caption takes the keys and stops, a launchpad chip runs the verb its id names | `a_click_on_the_rail_takes_the_row_it_landed_on`, `a_click_on_a_launchpad_chip_runs_the_verb_it_names` |
+| `3650-3651` | the patch re-states that it holds the keys (its hit region exists only on a frame narrow enough to show one pane, and only while the patch *is* that pane) | `a_click_on_the_patch_keeps_the_keys_on_it` |
+| `3661-3662`, `3665-3666` | a preference row that is a menu: the click moves the cursor to the row and opens it, so `esc` lands back on `/preferences` at that row | `a_click_on_a_preference_row_opens_the_menu_it_names` |
+
+`screen.rs` also fell **93 → 86** across the same passes: those frames (80×30 and 160×38, the
+narrow diff and the split repository browser) are the sizes the new cases paint at, and the
+hit-map rows they reach had no other case visiting them.
+
+## W7 in wave 8: three lines that no reader can reach
+
+Each is a guard the *caller* already made, and each is waived on that mechanism — not on "it is
+defensive code".
+
+| lines | mechanism | positive control | falsifier |
+|---|---|---|---|
+| `mod.rs:1473` `Some(Action::Quit) => return vec![WbAction::Quit]` | `handle_key` answers `action(key) == Some(Quit)` eight lines earlier (`1464`) with the same `WbAction::Quit`, before the overlay check and before this `match`; the arm is a second copy of that answer and `match`'s subject is unchanged in between, so no key reaches it. | Every quit the suite exercises lands on `1464`: `ctrl+x` and the palette's quit both read `vec![WbAction::Quit]`, and `every_overlay_refuses_the_keys_it_does_not_own` shows a modal does not swallow it. | Any assignment to `self.overlay` or `self.keys` between `1464` and `1472` — the two are adjacent and both reads are of `self.keys.action`, so a reordering that put the overlay check first makes this arm the live one and voids the waiver. |
+| `mod.rs:3413` `return Vec::new();` under `if !data.mouse_capture` | `handle_mouse` has exactly one caller (`handle`, line 1276) and that arm is `WbEvent::Mouse(event) if data.mouse_capture`, so the parameter this guard tests has already been tested to be `true`. `handle`'s own `WbEvent::Mouse(_) => Vec::new()` (line 1277) is the same answer for the other case, and *it* is measured. | `rebound_context_keys_and_a_released_mouse_still_reach_the_surface` sets `data.mouse_capture = false` and reads the empty answer — through 1277, which is the live line for that reader. | A second call site for `handle_mouse`, or the guard at 1276 losing its `if` — either makes 3413 a live branch. |
+| `mod.rs:3541` `return Vec::new();` under `let Some(overlay) = self.overlay else` | `handle_surface_mouse` has exactly one caller (`handle_mouse`, line 3433) and that call is guarded by `self.overlay.is_some() && !matches!(self.overlay, Some(Overlay::Picker(_)))`. The `else` is therefore the case the caller excludes. | Every overlay case in this ledger enters `handle_surface_mouse` with `overlay` already `Some`: the close-chip case, the wheel cases and the drag cases all read the box they opened. | A second entry into `handle_surface_mouse` (a panel that paints without setting `overlay`, say), or the `is_some()` in the caller's guard being dropped. |
+
+**Still at zero after this wave, and named rather than waived** — `mod.rs:3594` (the `}` closing
+the `if percent != self.git_split_percent` in the `/git` drag; every path through it is measured
+— the drag that changes the ratio, the drag that does not, and the clamp — so this reads like a
+region artefact and needs the `llvm-cov show` per-region read before it is called either
+reachable or dead) and `mod.rs:1563` (`match key`, where an unbound chord's `_ => {}` at 1561 is
+measured but the `match` on the line after it is not — same shape of question).
+
 ## How to re-measure this file
 
 ```bash
 cd coverage/2026-11/after/tui2
-TAG=r5 METERS=1 ./run-cov-tui2.sh
-python3 missed_run.py tui2-r5.info workbench/run.rs        # counts
-python3 ranges.py tui2-r5.info ../../../.worktrees/cov-tui2/tui/src/workbench/run.rs workbench/run.rs
+TAG=r20 METERS=0 ./run-cov-tui2.sh
+python3 missed_run.py tui2-r20.info workbench/run.rs        # counts
+python3 missed_exact.py tui2-r20.info ../../../.worktrees/cov-tui2/tui/src/workbench/mod.rs workbench/mod.rs
+python3 total.py tui2-r20.info                              # the lane's own DA:0
 ```
+
+`missed_exact.py` rather than `ranges.py` for the lines that follow: `ranges.py` merges anything
+within three lines, so a printed range can hide covered lines inside it (`1550-1552` read as
+three misses when `1551` was measured twice). `METERS=0` unless the row you are checking is a
+meter: a `METERS=1` pass and a `METERS=0` pass are not the same lane number (see the wave-8
+note above — they differ by the 151 lines inside the ignored tests).
 
 `rm -rf target/llvm-cov-target` afterwards: the instrumented build is ~4 GB and nothing but
 this lane reads it.
