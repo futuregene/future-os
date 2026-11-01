@@ -1,15 +1,17 @@
 {
  "lane": "host/rust-lib",
- "measurement_commit": "b50efdb55",
+ "measurement_commit": "0bf7f96d9",
  "toolchain": "1.99.1",
  "scope_prefix": "/host/src/",
  "command": "cargo llvm-cov -p future-host --lib --no-report && cargo llvm-cov report --lcov",
- "da0_total": 2392,
+ "da0_total": 2378,
  "switch_lane": 2016,
- "waived": 96,
- "open": 280,
- "before_da0": 2464,
- "artifact": "coverage/2026-11/after/host/round9-A-lcov.info",
- "inventory": "coverage/2026-11/after/host/round9-A-missed.json",
- "doc": "docs/testing/coverage-waivers-2026-11/host.md"
+ "waived": 95,
+ "open": 267,
+ "before_da0": 2394,
+ "artifact": "coverage/2026-11/after/host/round11-C-lcov.info",
+ "inventory": "coverage/2026-11/after/host/round11-C-missed.json",
+ "doc": "docs/testing/coverage-waivers-2026-11/host.md",
+ "pair": "coverage/2026-11/after/host/round11-A-lcov.info / round11-B-lcov.info (2375 / 2377 at c6b7b4979; pass C adds the three movers §1.2 names, so this record's 2378 is 2375 + 3)",
+ "buckets": "coverage/2026-11/after/host/buckets11c.py"
 }
