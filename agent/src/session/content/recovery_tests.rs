@@ -1,4 +1,5 @@
 use super::*;
+use crate::session::content::ContentDigest;
 use crate::session::{content::journal::Writer, identity::BoundIdentity, Manager};
 
 fn seed(manager: &Manager, malformed: bool) -> (String, String) {
@@ -100,6 +101,140 @@ fn one_invalid_native_run_does_not_block_startup_or_erase_its_original_facts() {
         .unwrap()
         .count();
     assert_eq!(backups, 1, "explicit retry preserves a pre-retry snapshot");
+}
+
+/// A run interrupted between `tool_input_start` and `message_end` leaves the
+/// tool call's arguments staged but unpublished. Recovery must publish the call
+/// itself — id, name, and a provider-metadata slot — and attach the staged
+/// arguments through the body link, so the reader materializes exactly the bytes
+/// that were committed and nothing is replayed from the model.
+#[test]
+fn a_recovered_tool_input_end_publishes_the_call_without_replaying_its_arguments() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("sessions");
+    let manager = Manager::new(directory.clone());
+    let (session, run) = seed(&manager, false);
+
+    let identity = StreamIdentity {
+        session_id: session.clone(),
+        run_id: run.clone(),
+        epoch: 1,
+    };
+    let arguments = r#"{"cmd":"ls"}"#;
+    let mut digest = ContentDigest::default();
+    digest.push(arguments).unwrap();
+    let append = ContentAppend {
+        key: "args".into(),
+        offset: 0,
+        text: arguments.into(),
+        seal: Some(digest),
+    };
+    let cursor = i64::try_from(arguments.len()).unwrap();
+    // Each change owns a distinct cursor window: the table keys a run's changes
+    // by cursor, and a shared window reads as a conflicting retry.
+    let change = move |(first, last): (i64, i64),
+                       event: &str,
+                       data: serde_json::Value,
+                       bodies: Vec<BodyLink>| Change {
+        first_cursor: first,
+        last_cursor: last,
+        event_type: event.into(),
+        metadata: json!({"data": data, "timestamp": "2026-11-01T00:00:00Z"}),
+        bodies,
+    };
+    let args_body = move || {
+        vec![BodyLink {
+            field: "/data/tool_args".into(),
+            encoding: Encoding::Json,
+            key: "args".into(),
+            offset: 0,
+            length: cursor,
+        }]
+    };
+    manager
+        .storage()
+        .unwrap()
+        .db
+        .call(move |db| {
+            commit_batch(
+                db,
+                &identity,
+                vec![append],
+                vec![
+                    change(
+                        (0, 1),
+                        "message_start",
+                        json!({"entry_id": "e1"}),
+                        Vec::new(),
+                    ),
+                    change(
+                        (2, 3),
+                        "tool_start",
+                        json!({
+                            "entry_id": "e1",
+                            "phase": "input",
+                            "tc_index": 0,
+                            "tool_id": "t1",
+                            "tool_name": "shell",
+                            "content_key": "call-1"
+                        }),
+                        Vec::new(),
+                    ),
+                    change(
+                        (4, 5),
+                        "tool_input_end",
+                        // The link names a metadata field, so the field must exist.
+                        json!({
+                            "entry_id": "e1",
+                            "tc_index": 0,
+                            "tool_id": "t1",
+                            "tool_name": "shell",
+                            "content_key": "call-1",
+                            "tool_args": ""
+                        }),
+                        args_body(),
+                    ),
+                    change(
+                        (6, cursor),
+                        "message_end",
+                        json!({"entry_id": "e1"}),
+                        Vec::new(),
+                    ),
+                ],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        status(&manager, &session, &run),
+        "running",
+        "the fixture's run must be live for recovery to claim it"
+    );
+    drop(manager);
+
+    let manager = Manager::new(directory);
+    manager.initialize().unwrap();
+    assert_eq!(
+        status(&manager, &session, &run),
+        "interrupted",
+        "recovery settles the interrupted run instead of leaving it running"
+    );
+
+    let entries = manager.storage().unwrap().entries(&session).unwrap();
+    let recovered = entries
+        .iter()
+        .find(|entry| entry["type"] == "assistant")
+        .unwrap_or_else(|| panic!("recovery must publish the interrupted message: {entries:?}"));
+    let block = &recovered["content"][0];
+    assert_eq!(block["type"], "tool_call", "{block}");
+    assert_eq!(block["id"], "t1", "{block}");
+    assert_eq!(block["name"], "shell", "{block}");
+    assert_eq!(
+        block["args"],
+        json!({"cmd": "ls"}),
+        "the staged arguments reach the published call through the body link"
+    );
+    assert!(block.get("provider_metadata").is_some(), "{block}");
 }
 
 #[test]
