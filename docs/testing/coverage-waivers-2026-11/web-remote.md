@@ -184,7 +184,14 @@ nothing happened, which is what makes the guarded press unproducible:
   by R2.1 on every future run, so drift shows up as a failed audit rather than a
   stale paragraph.
 
-## The 26 lines
+## The 40 lines
+
+Rows **27-40** were adopted in the web lane's close-out (batch 2): they are the
+lines outside this group that the lane audit classified as unreachable-by-
+construction and that no other document had registered. They live here because
+this file is the one the goal owner asked this session to write; the groups that
+own them may move them into `web.md` at any time, and `audit-lane.py` reads both
+files the same way.
 
 Category names (`W1`–`W8`) are the ones defined in `.future/memory/coverage-llvm-cov.md`.
 Only **W2** (defensive dead arm), **W5** (attribution artifact) and **W8** (dead
@@ -219,6 +226,21 @@ filesystem, or a race that cannot be scheduled from a test.
 | 24 | `features/settings/CustomProviderDialog.tsx:303` | **W2** | post-loop `if (probeRunRef.current !== runId) return` | `CustomProviderDialog.probe.test.tsx` :: *drops a failed level probe that arrives after the dialog closed* |
 | 25 | `features/settings/UpdatePage.tsx:82` | **W2** | `handleInstall`'s `if (!status?.hasUpdate) return` | `UpdatePage.flow.test.tsx` :: *offers the install control only while an update exists* |
 | 26 | `features/settings/UpdatePage.tsx:145` | **W2** | `handleRepairAcknowledgement`'s `if (!recovery) return` | `UpdatePage.flow.test.tsx` :: *treats a refused acknowledgement as a no-op, not as an error* |
+| 27 | `components/layout/OnboardingGate.tsx:217` | **W2** | `handleStart`'s `if (starting) return` — the start control is disabled while a login is in flight | `src/components/layout/OnboardingGate.test.tsx` :: *locks the gate and offers Cancel while a login is in flight* |
+| 28 | `features/agent/ApprovalPrompt.tsx:97` | **W2** | `decide`'s `if (deciding) return` — both answers carry `disabled={deciding}` | `src/features/agent/ApprovalPrompt.test.tsx` :: *approves and rejects once, showing the in-flight label* |
+| 29 | `features/agent/ApprovalPrompt.tsx:143` | **W2** | `confirmCapabilityRules`' `if (deciding \|\| !saveSuggestion?.rules) return` — the confirm control renders only with rules, and is disabled while deciding | `src/features/agent/ApprovalPrompt.test.tsx` :: *saves an edited workspace rule and then approves once* |
+| 30 | `features/agent/runtime/useThreadCompaction.ts:31` | **W2** | `compact`'s `if (!thread) return` — the compact action is offered only for a live thread | `src/features/agent/runtime/useThreadCompaction.test.ts` :: *settles cancellation while the request is still pending and handles a late rejection* |
+| 31 | `features/agent/useQuestionNav.ts:189` | **W2** | `landingOffset`'s `if (!container) return null` — the nav control is rendered with the scrolling container it measures | `src/features/agent/useQuestionNav.test.ts` (the container is a mount precondition of every case) |
+| 32 | `features/artifacts/ArtifactsPanel.tsx:58` | **W2** | `handleUpload`'s `if (uploading) return` — the upload control is disabled while an upload is outstanding | `src/features/artifacts/ArtifactsPanel.test.tsx` (the picker is only reachable while idle) |
+| 33 | `features/artifacts/ArtifactsPanel.tsx:166` | **W2** | `handleAttach`'s `if (!artifact.path) return` — the *Attach* menu row is built only when `artifact.path` is set | `src/features/artifacts/ArtifactsPanel.test.tsx` (the row does not exist without a path) |
+| 34 | `features/artifacts/PdfPreview.tsx:102` | **W2** | the render effect's `if (cancelled \|\| !container) return` — `cancelled` is the effect's own cleanup flag, which takes the container with it | `src/features/artifacts/PdfPreview.test.tsx` :: *keeps both buttons disabled for a single-page document* |
+| 35 | `features/skills/SkillsView.tsx:217` | **W2** | `runUninstall`'s `if (!skill) return` — the row's uninstall control exists only for a skill in `displayedInstalled` | `src/features/skills/SkillsView.test.tsx` (the menu is drawn from that list) |
+| 36 | `features/skills/SkillsView.tsx:249` | **W2** | `upgradeAll`'s `if (skillUpgrades.length === 0) return` — the upgrade-all control is disabled on the same count | `src/features/skills/SkillsView.test.tsx` :: *shows a spinner while an install request is in flight* |
+| 37 | `features/terminal/TerminalView.tsx:74` | **W2** | the mount effect's `if (!container) return` — a mount effect runs after the commit that attached the ref | `src/features/terminal/TerminalView.test.tsx` (every case mounts the container) |
+| 38 | `features/agent/MentionEditor.tsx:449` | **W2** | `insertSession`'s `if (!editor \|\| !context) return` — both callers sit inside `sessionMenuOpen`, which requires the very hash context this guard re-checks | `src/features/agent/MentionEditor.menus.test.tsx` :: *stays closed with no workspace, while disabled, and for a huge query* |
+| 39 | `features/markdown/streamingMarkdownBlocks.ts:95` | **W5** | `tableCheckpoint`'s `if (bodyStart === undefined \|\| tailStart === undefined) return null` — both offsets are read from `children[1].position.start.offset` after a `children.length < 2` guard, so they are undefined only together, only for a child the parser left without a position | `src/features/markdown/streamingMarkdown.worker.test.ts` (the checkpoint path is exercised there) |
+| 40 | `components/layout/hooks/useRemotePeers.ts:467` | **W2** | `readNumber`'s `if (typeof value !== "object" \|\| value === null) return null` — the payload is rejected by the version gate before this reader runs | `src/components/layout/hooks/useRemotePeers.test.tsx` (payload-shape cases) |
+| 41 | `features/agent/composer/ComposerControls.tsx:28` | **W2** | `stepRing`'s `if (ring.length === 0) return undefined` — every caller is bound behind `modelOptions.length > 1` / `thinkingRing.length > 1` (`:104`, `:115`) | `src/features/agent/composer/ComposerControls.test.tsx` (the keyboard pairs only exist with more than one value) |
 
 ## 1. The three "same condition disables the control, so the guard never fires" rows
 

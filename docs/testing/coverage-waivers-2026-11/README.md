@@ -12,7 +12,7 @@
 | 文件 | lane | 行数 | 覆盖范围 | 最新 `DA:0` |
 |---|---|---:|---|---|
 | [web.md](web.md) | web（desktop vitest），布局与交互组 | 37（33 `W2` + 4 `W8`） | `desktop/src/components/layout/`、`features/vibe/`、`features/agent/`、`features/palette/`、`features/tasks/`、`terminal/`、`artifacts/`… | lane 102，其中 37 条在此 |
-| [web-remote.md](web-remote.md) | web（desktop vitest），远端 / 设置组 | 26（23 `W2` + 1 `W5` + 2 `W8`） | `desktop/src/features/remote/`、`features/remote-peer/`、`features/settings/` | 26 条在此 |
+| [web-remote.md](web-remote.md) | web（desktop vitest），远端 / 设置组 + 收口批次 2 采纳的 15 条 | 41（37 `W2` + 2 `W5` + 2 `W8`） | `desktop/src/features/remote/`、`features/remote-peer/`、`features/settings/`；行 27-41 来自 lane 审计（见文件内说明） | 41 条在此 |
 | [tui.md](tui.md) | tui（rust, llvm-cov） | 2 | `tui/src/workbench/live.rs` 的两处 | 见该文件头部 |
 | [mobile.md](mobile.md) | mobile（jest） | 8 | `mobile/src` | 见该文件头部 |
 
@@ -25,13 +25,13 @@
 
 | | value |
 |---|---:|
-| `DA:0`（整条 web lane） | **102** 行 / **52** 文件 |
-| 已在 `web.md` + `web-remote.md` 登记 | **63** |
-| 已登记行的审计结果 | **63 / 63 通过**（仍为 `DA:0`，引用的构造仍在原位） |
-| 未登记但仍为 `DA:0` | **39**（逐文件三分类：可覆盖 25 / 需豁免 11 / 待探针 3） |
+| `DA:0`（整条 web lane） | **99** 行 / **51** 文件 |
+| 已在 `web.md` + `web-remote.md` 登记 | **81**（web.md 40 + web-remote 41） |
+| 已登记行的审计结果 | **81 / 81 通过**（仍为 `DA:0`，引用的构造仍在原位） |
+| 未登记但仍为 `DA:0` | **18**（逐文件分类：可覆盖 16 / 待定 2） |
 | **未归类（必须为 0）** | **0** |
 
-结论：**没有静默缺口**。39 行工作项不等于 100 %，它们是可写测试或待登记的豁免；
+结论：**没有静默缺口**。18 行工作项不等于 100 %，它们是可写测试或待定的边界；
 "覆盖 + 豁免 + 已归类工作项 = 全部行"这一条成立。
 
 ## 规矩
@@ -58,7 +58,7 @@ python3 coverage/2026-11/after/web2/audit-lane.py \
     --docs docs/testing/coverage-waivers-2026-11 \
     --root desktop/src \
     --work-items coverage/2026-11/after/web2/lane-audit.md
-# → registered rows: 63  pass: 63  fail: 0
+# → registered rows: 81  pass: 81  fail: 0
 # → UNACCOUNTED (must be 0): 0
 ```
 
