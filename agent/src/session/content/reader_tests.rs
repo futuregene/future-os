@@ -382,3 +382,41 @@ fn an_inline_page_never_splits_a_character() {
     let error = Snapshot::recall(&store, "s", "tiny", 4, 4).unwrap_err();
     assert!(format!("{error:#}").contains("UTF-8 boundary"), "{error:#}");
 }
+
+/// A match near the end of a bounded read page needs more bytes for its snippet
+/// than that page holds, so the search has to pull the remainder before it can
+/// answer — the snippet is the window around the hit, not just the page.
+#[test]
+fn a_match_at_a_page_boundary_extends_its_snippet_across_pages() {
+    let (_dir, store) = store();
+    let hit = READ_BYTES as i64 - 10;
+    let text = format!(
+        "{}{}{}",
+        "a".repeat(usize::try_from(hit).unwrap()),
+        "NEEDLE",
+        "b".repeat(4096)
+    );
+    store
+        .append(
+            "s",
+            vec![json!({"id":"wide","type":"assistant","role":"assistant",
+                "timestamp":"2026-10-26T00:00:01Z","meta":{"run_id":"r"},
+                "content":[{"type":"text","text":text}]})],
+        )
+        .unwrap();
+
+    let hits = Snapshot::search(&store, "s", "needle", 5).unwrap();
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0]["entryId"], "wide");
+    assert_eq!(hits[0]["byteOffset"], hit);
+    let snippet = hits[0]["snippet"].as_str().unwrap();
+    // The 120 bytes before the hit and the text after it are both present,
+    // even though the second half lived past the first page.
+    assert!(snippet.contains("NEEDLE"), "{snippet}");
+    assert!(
+        snippet.len() > 120 + "NEEDLE".len(),
+        "the snippet continues past the hit: {} bytes",
+        snippet.len()
+    );
+    assert!(snippet.starts_with('a'), "the snippet keeps its prefix");
+}
