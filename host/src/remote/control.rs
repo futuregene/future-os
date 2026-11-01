@@ -1094,6 +1094,7 @@ pub(crate) fn read_reply(path: &Path) -> Option<Reply> {
 mod tests {
     use super::*;
     use crate::remote::{RemoteFailureReason, RemotePhase, RemoteStatus};
+    use std::time::Instant;
 
     /// An isolated `~/.future`, with the app directory the control channel lives
     /// in already created.
@@ -2413,5 +2414,332 @@ mod tests {
             unknown.to_string().contains("nothing to remove"),
             "{unknown}"
         );
+    }
+
+    /// The answers below are the ones a request can only get from a Desktop that
+    /// is *serving*: a bridge, a pairing book and a platform. They are driven
+    /// against the crate's own fixtures (a real supervisor, a scripted platform,
+    /// a real book on disk), not against a stub for `perform`, because the arm
+    /// under test *is* the glue to those services — a stub there would assert the
+    /// stub.
+    mod serving {
+        use super::*;
+        use crate::remote::test_support::{
+            init_store, pairing_creds, sign_in, unique, FakeNats, HomeGuard, MockPlatform,
+        };
+
+        /// A Desktop that is on asks the platform for the invitation. This is the
+        /// other side of `perform_refuses_an_invitation_while_the_switch_is_off`:
+        /// same call, same fixture platform, one difference — the switch.
+        #[tokio::test]
+        #[allow(clippy::await_holding_lock)]
+        async fn an_invitation_from_a_desktop_that_is_on_reaches_the_platform() {
+            let _home = HomeGuard::new("control-invite-on");
+            init_store();
+            let platform = MockPlatform::start().await;
+            let nats = FakeNats::start().await;
+            sign_in(platform.url());
+            let pair_id = format!("pair_{}", unique("control-invite"));
+            let minted = platform.respond_pair_code_for(&pair_id, nats.url());
+            let switched = crate::remote::enable()
+                .await
+                .expect("an empty machine still answers the switch");
+            assert!(crate::remote::is_on(switched.phase), "{switched:?}");
+
+            let root = Root::new();
+            let reply_path = root.dir.path().join("reply.json");
+            let status = perform(&request(OP_ADD_DEVICE, &reply_path, None))
+                .await
+                .expect("a Desktop that is on mints an invitation");
+
+            let shown = status
+                .pairing_code
+                .clone()
+                .expect("an invitation is shown, not merely logged");
+            assert!(
+                shown.contains(&minted),
+                "the invitation the Desktop displays must be the one the platform minted: {shown}"
+            );
+            assert_eq!(
+                status.pair_id, pair_id,
+                "and it is minted for the device the platform named: {status:?}"
+            );
+            assert!(
+                matches!(status.phase, RemotePhase::Ready),
+                "a Desktop that just minted an invitation is serving it: {status:?}"
+            );
+            let seen = platform.requests();
+            let asked = seen
+                .iter()
+                .any(|(_, path, _)| path.ends_with("/remote/pair/code"));
+            assert!(asked, "the invitation is minted, not invented: {seen:?}");
+            crate::remote::stop();
+        }
+
+        /// A removal goes through the supervisor, which is the whole reason this
+        /// request exists: a terminal editing the book alone leaves the bridge
+        /// serving a device the user just removed.
+        #[tokio::test]
+        #[allow(clippy::await_holding_lock)]
+        async fn a_removal_reaches_the_running_supervisor_and_the_book() {
+            let _home = HomeGuard::new("control-remove-device");
+            init_store();
+            let creds = pairing_creds("pair_control_removed");
+            crate::remote::pairing::save_creds(&creds).expect("save the device's credential");
+
+            let root = Root::new();
+            let reply_path = root.dir.path().join("reply.json");
+            let status = perform(&request(
+                OP_REMOVE_DEVICE,
+                &reply_path,
+                Some(&creds.pair_id),
+            ))
+            .await
+            .expect("a saved device is removable");
+
+            assert!(
+                status
+                    .devices
+                    .iter()
+                    .all(|device| device.pair_id != creds.pair_id),
+                "the answer must not still list the device: {status:?}"
+            );
+            assert!(
+                crate::remote::pairing::load_slots()
+                    .iter()
+                    .all(|slot| slot.pair_id != creds.pair_id),
+                "and the book is what a restart reads"
+            );
+        }
+
+        /// Two devices, one bridge: the served one hands the machine over (the
+        /// `Ok` arm), and a book entry saved after the start has no runtime here,
+        /// which is the `device_offline` code a terminal cannot act on. Both sides
+        /// in one fixture, because the difference between them *is* the state map.
+        #[tokio::test]
+        #[allow(clippy::await_holding_lock)]
+        async fn a_takeover_hands_the_machine_over_or_names_a_device_with_no_bridge() {
+            let _home = HomeGuard::new("control-takeover");
+            init_store();
+            let platform = MockPlatform::start().await;
+            let nats = FakeNats::start().await;
+            sign_in(platform.url());
+            let served = pairing_creds(&format!("pair_{}", unique("control-served")));
+            // The bridge installs by *connecting*, so the credential has to point
+            // at the broker this fixture runs.
+            let served = crate::remote::pairing::PairingCreds {
+                nats_url: nats.url().to_string(),
+                nats_ws_url: nats.url().replace("nats://", "ws://"),
+                ..served
+            };
+            crate::remote::pairing::save_creds(&served).expect("save the served credential");
+            // The start renews the grant before it connects; a platform that does
+            // not answer that is a start that never reaches the broker.
+            platform.respond_refresh(nats.url());
+            let switched = crate::remote::enable().await.expect("the switch answers");
+            assert!(crate::remote::is_on(switched.phase), "{switched:?}");
+            // Saved *after* the start on purpose: the book is read once, at
+            // start, so this device is paired but has no bridge in this process.
+            let unserved = pairing_creds(&format!("pair_{}", unique("control-unserved")));
+            crate::remote::pairing::save_creds(&unserved).expect("save the unserved credential");
+
+            let root = Root::new();
+            let reply_path = root.dir.path().join("reply.json");
+            let taken = perform(&request(OP_TAKEOVER, &reply_path, Some(&served.pair_id)))
+                .await
+                .expect("the bridge serves this device, so it can be handed the machine");
+            assert_eq!(
+                taken.pair_id, served.pair_id,
+                "the answer describes the device that now drives it: {taken:?}"
+            );
+            assert!(
+                taken
+                    .devices
+                    .iter()
+                    .any(|device| device.pair_id == served.pair_id),
+                "and it is listed with the control it just took: {taken:?}"
+            );
+            assert_eq!(
+                taken.nats_url,
+                nats.url(),
+                "the bridge that answered is the one this fixture started"
+            );
+
+            let error = perform(&request(OP_TAKEOVER, &reply_path, Some(&unserved.pair_id)))
+                .await
+                .expect_err("a device with no bridge cannot take control");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("is not connected to this Desktop"),
+                "the code itself is not an answer a terminal can act on: {error}"
+            );
+            crate::remote::stop();
+        }
+
+        /// The terminal's switch is the window's switch, and it is stored: the
+        /// Remote page and `future remote status` must not disagree after a
+        /// restart. Both directions, because the default is `true` and an
+        /// assertion that only reads `true` cannot fail.
+        #[tokio::test]
+        #[allow(clippy::await_holding_lock)]
+        async fn the_terminal_switch_turns_the_desktop_off_and_on_and_stores_it() {
+            let _home = HomeGuard::new("control-switch");
+            init_store();
+            let platform = MockPlatform::start().await;
+            sign_in(platform.url());
+            let root = Root::new();
+            let reply_path = root.dir.path().join("reply.json");
+            assert!(
+                crate::store::get_app_settings()
+                    .expect("settings")
+                    .auto_connect_remote,
+                "the default is on, so the off half below is the one that moves"
+            );
+
+            let off = perform(&request(OP_DISABLE, &reply_path, None))
+                .await
+                .expect("the switch answers");
+            assert!(!crate::remote::is_on(off.phase), "{off:?}");
+            assert!(
+                !crate::store::get_app_settings()
+                    .expect("settings")
+                    .auto_connect_remote,
+                "off has to survive a restart, or the next launch serves again"
+            );
+
+            let on = perform(&request(OP_ENABLE, &reply_path, None))
+                .await
+                .expect("the switch answers");
+            assert!(crate::remote::is_on(on.phase), "{on:?}");
+            assert!(
+                crate::store::get_app_settings()
+                    .expect("settings")
+                    .auto_connect_remote,
+                "and so does on"
+            );
+            crate::remote::stop();
+        }
+    }
+
+    /// `requests` is how the loop learns there is work: a `run/` directory that
+    /// cannot be read (a Desktop whose home was deleted under it) answers "no
+    /// requests", which the loop treats as an idle poll rather than a failure.
+    #[test]
+    fn a_directory_that_cannot_be_read_lists_no_requests() {
+        let root = Root::new();
+        assert!(requests(&root.dir.path().join("no-such-run-dir")).is_empty());
+    }
+
+    /// `spawn_host` is the process-lifetime loop both Desktops run so a
+    /// terminal's request is answered by whichever process owns the data
+    /// directory. It has no cancel path of its own, so this fixture aborts it
+    /// through the task registry the shutdown paths use — but everything it does
+    /// before that is the real loop: create the directory, sweep the requests
+    /// nobody can still be waiting for, and answer a live one off disk.
+    #[test]
+    fn the_control_loop_creates_its_directory_and_answers_what_it_finds() {
+        use crate::remote::test_support::HomeGuard;
+
+        let _home = HomeGuard::new("control-loop");
+        let directory = directory().expect("the control directory under the fixture home");
+        // Hoisted: a message argument is evaluated on failure alone, so an inline
+        // `display()` here would be a residual line in every run.
+        let where_it_is = directory.display().to_string();
+        assert!(
+            !directory.exists(),
+            "the loop must be the one that creates it: {where_it_is}"
+        );
+        std::fs::create_dir_all(&directory).unwrap();
+
+        // A request from a Desktop that was restarting: its asker is long gone,
+        // and leaving it would make every later poll re-read a dead file.
+        let stale = directory.join(terminal_name(
+            SystemTime::now() - ABANDONED_AFTER - Duration::from_secs(60),
+        ));
+        std::fs::write(&stale, b"{}").unwrap();
+
+        let root = Root::new();
+        let reply_path = root.dir.path().join("reply.json");
+        let live = directory.join(terminal_name(SystemTime::now()));
+        std::fs::write(
+            &live,
+            serde_json::to_string(&request(OP_STATUS, &reply_path, None)).unwrap(),
+        )
+        .unwrap();
+
+        spawn_host();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !reply_path.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "the loop never answered in {where_it_is}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let reply = read_reply(&reply_path).expect("the answer is a reply");
+        assert!(
+            reply.status.is_some(),
+            "a status request answers with the projection: {reply:?}"
+        );
+        assert!(
+            !stale.exists(),
+            "the sweep removes the request nobody can be waiting for"
+        );
+        assert!(!live.exists(), "and the served one is consumed");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&directory).unwrap().permissions().mode();
+            assert_eq!(
+                mode & 0o777,
+                0o700,
+                "the directory another account would have to traverse is owner-only"
+            );
+        }
+        crate::runtime::cancel_test_tasks();
+    }
+
+    /// A `run` path that is a *file* cannot hold requests. The loop reports it
+    /// once and returns — it must not sit in the poll loop waiting for a
+    /// directory that will never appear, which is what the second half proves:
+    /// once the path is free, the loop that gave up does not answer.
+    #[test]
+    fn the_control_loop_gives_up_on_a_directory_it_cannot_create() {
+        use crate::remote::test_support::HomeGuard;
+
+        let _home = HomeGuard::new("control-loop-blocked");
+        let blocked = crate::store::future_dir().expect("future dir").join("run");
+        std::fs::create_dir_all(blocked.parent().unwrap()).unwrap();
+        std::fs::write(&blocked, b"not a directory").unwrap();
+        let directory = directory().expect("the control directory under the fixture home");
+
+        spawn_host();
+        // Long enough for a loop that ignored the failure to poll at least twice;
+        // the assertion is about the path it could not create.
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            std::fs::metadata(&directory).is_err(),
+            "a `run` file cannot become a directory"
+        );
+
+        // Free the path and leave work for a loop that is still running. The one
+        // above has returned, so the request stays unserved.
+        std::fs::remove_file(&blocked).unwrap();
+        std::fs::create_dir_all(&directory).unwrap();
+        let root = Root::new();
+        let reply_path = root.dir.path().join("reply.json");
+        std::fs::write(
+            directory.join(terminal_name(SystemTime::now())),
+            serde_json::to_string(&request(OP_STATUS, &reply_path, None)).unwrap(),
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(800));
+        assert!(
+            !reply_path.exists(),
+            "the loop that could not create its directory must have stopped"
+        );
+        crate::runtime::cancel_test_tasks();
     }
 }
