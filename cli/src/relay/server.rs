@@ -1091,25 +1091,70 @@ mod tests {
         assert_eq!(answer["ok"], true);
     }
 
+    /// Wait until the wall clock is at the very start of a whole second.
+    ///
+    /// `now()` is whole UNIX seconds and a room's lifetime is measured in them,
+    /// so a test that must observe a room *before* it expires wants the whole
+    /// second ahead of it rather than whatever tail of one it happened to land
+    /// in. Returns immediately when it is already early enough in the second.
+    async fn wait_for_a_fresh_second() {
+        const SLACK_MS: u128 = 100;
+        loop {
+            let offset = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|since| since.as_millis() % 1_000)
+                .unwrap_or_default();
+            if offset < SLACK_MS {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis((1_000 - offset) as u64)).await;
+        }
+    }
+
+    /// Long enough that `register` → `claim` cannot straddle it, short enough
+    /// that the test still expires the room inside a test. See the doc comment
+    /// on `a_revoke_against_an_expired_room_says_the_room_is_gone`.
+    const ROOM_TTL_SECONDS: i64 = 3;
+
     /// A room that reaches its TTL is gone for the client too: the revoke is
     /// answered with the room error rather than with the "already gone" success,
     /// and the registry drops the credential with the room instead of keeping a
     /// device that can never authenticate again.
     ///
-    /// **The one wall-clock assumption in this file, and why it is sound.** The
-    /// room is registered with `room_ttl_seconds: 1`, which makes
-    /// `expires_at = t + 1` for the whole second `t` the registration happens
-    /// in, and `authorize_refresh` refuses once `now >= expires_at`. `now()` is
-    /// whole UNIX seconds, so waiting 1.1 s is not a race against the clock:
-    /// 1.1 >= 1 means `floor(t + 1.1) >= floor(t) + 1` for every `t`, i.e. the
-    /// refusal condition is already true when the sleep returns. The sleep is
-    /// also a lower bound (tokio never returns early), so a loaded machine or a
-    /// stalled scheduler only adds slack to an assertion that is on the correct
-    /// side of it. Nothing here retries or polls, so there is no window in which
-    /// a slower run flips the result.
+    /// **The two wall-clock windows in this test, and why neither can flip.**
+    /// A room lives `expires_at = now + room_ttl` over whole UNIX seconds
+    /// (`now()`), and every credential path refuses once `now >= expires_at`.
+    /// That leaves two spans of real time the test depends on, and both are
+    /// pinned instead of trusting an idle machine:
+    ///
+    /// * **`register` → `claim` has to finish before the room expires.** At
+    ///   `room_ttl = 1` the room dies at the next second boundary, so the claim
+    ///   gets only the tail of the second the registration landed in: a
+    ///   scheduler hiccup on a loaded runner and `room_for_join` looks at a room
+    ///   that is already gone, answering `403 pairing_code_invalid` before the
+    ///   expiry path is ever reached. So the test starts on a fresh second
+    ///   (`wait_for_a_fresh_second`) *and* gives the room
+    ///   `ROOM_TTL_SECONDS = 3`: the whole second `register` runs in plus two
+    ///   more, ~2.9 s of wall clock for two in-memory calls, which is not a
+    ///   budget a stalled thread spends.
+    /// * **`claim` → `revoke` has to outlast it.** `RoomRegistry::join` pushes
+    ///   `expires_at` to `claim_time + ROOM_TTL_SECONDS`, so the sleep is
+    ///   derived from the TTL rather than written down: waiting
+    ///   `ROOM_TTL_SECONDS * 1000 + 100` ms from the claim gives
+    ///   `floor(claim_ms + 3100) >= floor(claim_ms) + 3 = expires_at` for every
+    ///   sub-second offset `claim_ms` can carry, i.e. the refusal condition
+    ///   already holds when the sleep returns. The sleep is a lower bound
+    ///   (tokio never returns early), so a loaded machine or a stalled scheduler
+    ///   only adds slack to an assertion that is on the correct side of it.
+    ///
+    /// Nothing here retries or polls, so there is no window in which a slower
+    /// run flips the result.
     #[tokio::test]
     async fn a_revoke_against_an_expired_room_says_the_room_is_gone() {
-        let relay = relay_with_room_ttl(1);
+        // Start the clock at a fresh second so `register` and `claim` share the
+        // full TTL ahead of them instead of racing the boundary they landed on.
+        wait_for_a_fresh_second().await;
+        let relay = relay_with_room_ttl(ROOM_TTL_SECONDS);
         let host = KeyPair::new_user();
         let (status, _) = register(&relay, &host).await;
         assert_eq!(status, StatusCode::OK);
@@ -1127,7 +1172,10 @@ mod tests {
             .to_string();
         assert_eq!(relay.rooms.len(), 1, "the room exists inside its TTL");
 
-        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(
+            ROOM_TTL_SECONDS.unsigned_abs() * 1_000 + 100,
+        ))
+        .await;
 
         let revoke = format!(
             r#"{{"pair_id":"{PAIR}","device_id":"phone1","public_key":"{}","refresh_token":"{refresh}"}}"#,
