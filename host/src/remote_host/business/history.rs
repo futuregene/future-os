@@ -433,20 +433,24 @@ mod tests {
             ..Default::default()
         };
 
-        // 1. No request at all.
+        // 1. No request at all. Each reason is bound first: an assert's format
+        // arguments are only evaluated on failure, so reading the reply inside
+        // one would leave the read itself unmeasured.
         execute(&base(None), &sink).await;
+        let missing = sink.error_text();
+        let missing_reply = sink.last();
         assert!(
-            sink.error_text().contains("contentRequest is required"),
-            "{:?}",
-            sink.last()
+            missing.contains("contentRequest is required"),
+            "{missing_reply:?}"
         );
 
         // 2. A request that is not a content request.
         execute(&base(Some(json!({"cursor": "not a number"}))), &sink).await;
+        let invalid = sink.error_text();
+        let invalid_reply = sink.last();
         assert!(
-            sink.error_text().contains("invalid contentRequest"),
-            "{:?}",
-            sink.last()
+            invalid.contains("invalid contentRequest"),
+            "{invalid_reply:?}"
         );
 
         // 3. The Agent's own refusal is forwarded as the reason.
