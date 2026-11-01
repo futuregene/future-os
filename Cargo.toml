@@ -65,3 +65,17 @@ incremental = true
 debug = 0
 strip = false
 
+# The bundled SQLite is C, so the dev/test profiles compile it at `-O0`. Query
+# *compilation* is this schema's dominant cost — `SELECT … FROM entry_records`
+# measured 26 ms to prepare against 0.2 ms to execute (see
+# docs/testing/coverage-waivers-2026-11/agent.md) — and that cost is the C
+# compiler's optimiser being absent, not the query being hard. Optimising just
+# the vendored C keeps every Rust crate on the debug profile (fast incremental
+# builds, full debug assertions) while the library the tests spend their time
+# inside runs at the speed it was written for.
+[profile.dev.package.libsqlite3-sys]
+opt-level = 3
+
+[profile.test.package.libsqlite3-sys]
+opt-level = 3
+
