@@ -2786,6 +2786,167 @@ mod tests {
         // error, and the loop keeps ticking.
     }
 
+    /// The first reconcile pass of a tick speaks only when it *acted*: a deletion
+    /// intent no client can ever deliver is released once the Agent says the
+    /// session is still there, and the tick reports the count. The intent is the
+    /// shape [`crate::store::undeliverable_agent_session_deletes`] selects —
+    /// settled at least once, with no ownership evidence left — and the Agent
+    /// still reporting the session *present* is what makes it deliverable again.
+    #[tokio::test]
+    async fn a_discovery_tick_releases_a_deletion_intent_no_client_can_deliver() {
+        let home = TestHome::new("observer-discovery-releasable-intent");
+        let mock = mock_agent();
+        let conn =
+            rusqlite::Connection::open(home.path().join(".future/app/app.db")).expect("open db");
+        conn.execute(
+            "INSERT INTO agent_delete_outbox (session_id, requested_at, attempts)\n             VALUES ('sess_fenced', 1, 1)",
+            [],
+        )
+        .expect("seed the undeliverable intent");
+        drop(conn);
+        // This tick has no mirrored conversation at all, so the fence's session is
+        // the only one the pass can ask about: one answer shape, no ordering.
+        mock.default_data("list_sessions", serde_json::json!({ "sessions": [] }));
+        mock.default_data("list_session_ids", serde_json::json!({ "ids": [] }));
+        mock.default_data(
+            "get_session_presence",
+            serde_json::json!({
+                "databaseId": "database-peer",
+                "restoreGeneration": "generation",
+                "sessions": [{ "sessionId": "sess_fenced", "status": "present" }],
+            }),
+        );
+        let _interval = crate::test_support::EnvGuard::set(
+            "FUTURE_TEST_DISCOVERY_INTERVAL_MS",
+            std::ffi::OsStr::new("10"),
+        );
+        spawn_session_discovery();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while fenced_intents(home.path()) != 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the pass never released the fence for a session the Agent still holds"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        TEST_DISCOVERY_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        assert_eq!(
+            fenced_intents(home.path()),
+            0,
+            "an intent with no ownership evidence is released once the Agent still holds the \
+             session, so the next import may mirror that conversation again"
+        );
+    }
+
+    /// A conversation the Agent reports *deleted* against the database this
+    /// Desktop mirrored it from is gone from the Agent, so the same tick takes
+    /// the mirror with it and says how many. The other reading — gone from the
+    /// catalogue but with no matching database identity — is a partial restore
+    /// and is deliberately left alone (`reconcile_preserves_history_when_an_agent_database_is_missing`).
+    #[tokio::test]
+    async fn a_discovery_tick_removes_a_conversation_the_agent_confirmed_deleted() {
+        let home = TestHome::new("observer-discovery-confirmed-deletion");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws-peer");
+        let conn =
+            rusqlite::Connection::open(home.path().join(".future/app/app.db")).expect("open db");
+        conn.execute(
+            "INSERT INTO threads (\n                 id, workspace_id, mode, title, agent_session_id, created_at, updated_at\n             ) VALUES ('t-peer', ?1, 'chat', 'T', 'sess_peer', 1, 1)",
+            rusqlite::params![workspace.id],
+        )
+        .expect("seed the conversation the Agent deleted");
+        // A run is what keeps the emptiness pass from touching this row: the
+        // deletion the Agent confirms is the one that removes it.
+        conn.execute(
+            "INSERT INTO runs (id, thread_id, status, error_type, created_at, updated_at)\n             VALUES ('r-peer', 't-peer', 'completed', NULL, 2, 2)",
+            [],
+        )
+        .expect("seed run");
+        drop(conn);
+        crate::store::record_thread_source("t-peer", "sess_peer", "database-peer", "generation")
+            .expect("bind the source the Agent reports");
+        // No fence in this tick, so the orphan pass's own question is the only
+        // presence read the loop makes: one answer shape, no ordering.
+        mock.default_data("list_sessions", serde_json::json!({ "sessions": [] }));
+        mock.default_data(
+            "list_session_ids",
+            serde_json::json!({ "ids": ["sess_peer"] }),
+        );
+        mock.default_data(
+            "get_session_presence",
+            serde_json::json!({
+                "databaseId": "database-peer",
+                "restoreGeneration": "generation",
+                "sessions": [{ "sessionId": "sess_peer", "status": "deleted" }],
+            }),
+        );
+        let _interval = crate::test_support::EnvGuard::set(
+            "FUTURE_TEST_DISCOVERY_INTERVAL_MS",
+            std::ffi::OsStr::new("10"),
+        );
+        spawn_session_discovery();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while crate::store::get_thread("t-peer").expect("get").is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the orphan pass never acted on the deletion the Agent confirmed"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        TEST_DISCOVERY_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        assert!(
+            crate::store::get_thread("t-peer").expect("get").is_none(),
+            "a deletion the Agent confirms against the same database takes the conversation"
+        );
+    }
+
+    /// How many fences the outbox still holds: the release is a delete, so the
+    /// count going to zero *is* the act, and reading it back is what keeps the
+    /// assertion about the store rather than about the loop's own bookkeeping.
+    fn fenced_intents(home: &std::path::Path) -> i64 {
+        let conn = rusqlite::Connection::open(home.join(".future/app/app.db")).expect("open db");
+        conn.query_row(
+            "SELECT count(*) FROM agent_delete_outbox WHERE session_id = 'sess_fenced'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count the intent")
+    }
+
+    /// The first reconcile pass of a tick is *reported* when it cannot read its
+    /// own candidates: the table a delete intent lives in can be gone under a
+    /// Desktop whose database was replaced. That must be a log line and a tick
+    /// that comes back, not a dead discovery loop.
+    #[tokio::test]
+    async fn a_missing_delete_outbox_is_reported_and_the_loop_keeps_ticking() {
+        let home = TestHome::new("observer-discovery-no-outbox");
+        let mock = mock_agent();
+        for _ in 0..8 {
+            mock.push_typed_data("list_sessions", serde_json::json!({ "sessions": [] }));
+            mock.push_data("list_session_ids", serde_json::json!({ "ids": [] }));
+        }
+        let conn =
+            rusqlite::Connection::open(home.path().join(".future/app/app.db")).expect("open db");
+        conn.execute_batch("DROP TABLE agent_delete_outbox;")
+            .expect("drop the outbox");
+        drop(conn);
+
+        let _interval = crate::test_support::EnvGuard::set(
+            "FUTURE_TEST_DISCOVERY_INTERVAL_MS",
+            std::ffi::OsStr::new("10"),
+        );
+        spawn_session_discovery();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        TEST_DISCOVERY_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        // Reaching this line is the assertion: the pass logged its failure and
+        // the loop went on to the next tick.
+    }
+
     #[tokio::test]
     async fn handle_event_projects_and_settles_an_owned_run() {
         let home = TestHome::new("observer-owned-run");
@@ -3301,6 +3462,124 @@ mod tests {
         cancel_tx.send(()).unwrap();
         handle.await.unwrap();
         std::env::remove_var("FUTURE_TEST_OBSERVER_BACKOFF_MS");
+    }
+
+    /// A source the Agent no longer vouches for is *deferred*, not fatal: the
+    /// observer says which check failed, backs off and tries the whole attach
+    /// again. Attaching anyway would mirror a conversation into a thread whose
+    /// database the next restore can swap out from under it.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn run_observer_defers_an_attach_whose_source_it_cannot_verify() {
+        let home = TestHome::new("observer-source-deferred");
+        let mock = mock_agent();
+        let _backoff = crate::test_support::EnvGuard::set(
+            "FUTURE_TEST_OBSERVER_BACKOFF_MS",
+            std::ffi::OsStr::new("40"),
+        );
+        // `deleted` is an answer the presence check understands and refuses: the
+        // session this Desktop mirrored is not the one the Agent holds.
+        for _ in 0..4 {
+            mock.push_data(
+                "get_session_presence",
+                serde_json::json!({
+                    "databaseId": "database-gone",
+                    "restoreGeneration": "generation",
+                    "sessions": [{ "sessionId": "sess-sv", "status": "deleted" }],
+                }),
+            );
+        }
+
+        let shared = Arc::new(bound_observer_shared(&home, "sess-sv"));
+        let (cancel_tx, handle) = spawn_run_observer("sess-sv", shared);
+        // Two deferral cycles, the second cancelled inside its own backoff.
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        cancel_tx.send(()).unwrap();
+        handle.await.unwrap();
+
+        assert!(
+            mock.requests_of("get_session_presence").len() >= 2,
+            "the observer has to ask again, not give up on the first refusal"
+        );
+        assert!(
+            mock.requests_of("get_session_events_since").is_empty(),
+            "nothing may be replayed before the source is verified"
+        );
+    }
+
+    /// A re-attach that lands on a *different* restore generation of the same
+    /// Agent database is a different history: the cursor and the run binding the
+    /// previous attach built would silently skip the restored journal's own
+    /// events (`a_restored_or_restarted_source_replays_from_its_own_cursor_origin`
+    /// is the same rule one layer down). The generation is what can change while
+    /// the database identity stays — a swap of the database itself is refused one
+    /// layer earlier, by the source check above.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn run_observer_resets_its_cursors_when_the_source_changes() {
+        let home = TestHome::new("observer-source-changed");
+        let mock = mock_agent();
+        let _backoff = crate::test_support::EnvGuard::set(
+            "FUTURE_TEST_OBSERVER_BACKOFF_MS",
+            std::ffi::OsStr::new("50"),
+        );
+        // Cycle 1 streams a run-scoped event, which is what marks the run active.
+        mock.push_data(
+            "get_session_presence",
+            serde_json::json!({
+                "databaseId": "database-sc",
+                "restoreGeneration": "generation-before",
+                "sessions": [{ "sessionId": "sess-sc", "status": "present" }],
+            }),
+        );
+        mock.push_data(
+            "get_session_events_since",
+            serde_json::json!({"events": []}),
+        );
+        mock.push_data(
+            "get_state",
+            serde_json::json!({"activeRun": {"runId": "run-sc"}}),
+        );
+        mock.push_stream(StreamScript::Events(
+            vec![stream_event("agent_start", "run-sc", 0)],
+            None,
+        ));
+        // Cycle 2: same database, restored into a new generation. Its stream never
+        // yields, so the observer parks there instead of starting a third attach:
+        // the run mark can only go away through the reset.
+        mock.push_data(
+            "get_session_presence",
+            serde_json::json!({
+                "databaseId": "database-sc",
+                "restoreGeneration": "generation-after",
+                "sessions": [{ "sessionId": "sess-sc", "status": "present" }],
+            }),
+        );
+        mock.push_data(
+            "get_session_events_since",
+            serde_json::json!({"events": []}),
+        );
+        mock.push_data("get_state", serde_json::json!({"isStreaming": false}));
+        mock.push_stream(StreamScript::Hang);
+
+        let shared = Arc::new(bound_observer_shared(&home, "sess-sc"));
+        let (cancel_tx, handle) = spawn_run_observer("sess-sc", shared.clone());
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        cancel_tx.send(()).unwrap();
+        handle.await.unwrap();
+
+        assert!(
+            mock.requests_of("get_session_presence").len() >= 2,
+            "the observer re-attaches and verifies the source each time; a single read would \
+             mean the second cycle never started"
+        );
+        assert!(
+            !shared
+                .has_active_run
+                .load(std::sync::atomic::Ordering::Relaxed),
+            "the changed source clears the run binding; without the reset it would still be \
+             true from the first attach's `agent_start`"
+        );
     }
 
     #[tokio::test]

@@ -3242,6 +3242,40 @@ mod runtime_tests {
         *SUPERVISOR.last_error_code.lock().unwrap() = None;
     }
 
+    /// A suspension outliving its test must not survive into the next fixture.
+    ///
+    /// `suspended` is process-global and `reset_after_shutdown_for_test` only
+    /// resets a server that was *closed*, so a suspend with no resume stayed set
+    /// for the whole process — and the next `start` took the
+    /// `!start_requested || suspended` arm, answering an empty status: no
+    /// bridge and no invitation. Measured in a full `--lib` run, where
+    /// `remote::control`'s paired-machine fixture failed with "the host shows no
+    /// invitation" because of this and nothing about its own pairing. The guard
+    /// is the release itself: `HomeGuard` drains the host role before it hands
+    /// the next test a HOME.
+    #[tokio::test]
+    async fn a_suspension_does_not_outlive_the_fixture_that_set_it() {
+        let home = HomeGuard::new("remote-suspend-leak");
+        SUPERVISOR.start_requested.store(true, Ordering::Release);
+        handle_system_suspend().await;
+        assert!(
+            SUPERVISOR.suspended.load(Ordering::Acquire),
+            "the leaked shape is a suspension the teardown has to clear"
+        );
+        drop(home);
+
+        let _next = HomeGuard::new("remote-suspend-leak-next");
+        assert!(
+            !SUPERVISOR.suspended.load(Ordering::Acquire),
+            "a new fixture must acquire a machine that is not suspended: a start against one \
+             answers an empty status, which reads as a host that minted no invitation"
+        );
+        assert!(
+            !SUPERVISOR.start_requested.load(Ordering::Acquire),
+            "and nothing may still be asking it to serve"
+        );
+    }
+
     #[tokio::test]
     async fn handle_system_resume_rotates_epoch_and_recovers() {
         let _home = HomeGuard::new("remote-resume");

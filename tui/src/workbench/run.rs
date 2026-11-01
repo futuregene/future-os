@@ -6540,10 +6540,21 @@ mod driver_tests {
                 let tools = tempfile::tempdir().expect("tempdir");
                 // Every clipboard tool a unix host can pick, so the phase does
                 // not depend on which one this machine's build reaches for.
+                //
+                // The stub drains stdin with shell builtins only. `PATH` below
+                // is this tempdir, so a `cat >/dev/null` stub cannot resolve
+                // `cat`: dash (Linux) dies with 127 before reading a byte and
+                // the writer gets EPIPE, while bash (macOS) merely prints the
+                // miss and happens to exit late enough to win the race. A
+                // reader that does not depend on `PATH` makes both platforms
+                // deterministic instead of racing a dying child.
                 for name in ["pbcopy", "xclip", "wl-copy"] {
                     let stub = tools.path().join(name);
-                    std::fs::write(&stub, "#!/bin/sh\ncat >/dev/null\nexit 0\n")
-                        .expect("write the stub");
+                    std::fs::write(
+                        &stub,
+                        "#!/bin/sh\nwhile IFS= read -r line; do :; done\nexit 0\n",
+                    )
+                    .expect("write the stub");
                     std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
                         .expect("chmod the stub");
                 }

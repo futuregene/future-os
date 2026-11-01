@@ -26,6 +26,9 @@ mod instance;
 pub mod launch;
 #[cfg(all(test, windows, feature = "gui"))]
 mod test_process;
+/// Test-only seams; absent from a default build (`test-support` is not in `default`).
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 /// Sandbox children enter the existing Agent helper before constructing GUI
 /// or headless state. The helper never starts a service or takes its lock.

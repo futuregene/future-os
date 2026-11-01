@@ -1403,6 +1403,107 @@ mod tests {
         assert!(with_stopped_home(&home, || Ok(())).is_err());
     }
 
+    /// Nest directories under `root` until the path itself is `target` bytes
+    /// long. A component is at most 255 bytes on every filesystem this lane
+    /// runs on, so the padding is split into one component per remaining byte
+    /// budget instead of overshooting into a path that cannot be created.
+    fn nested_home(root: &Path, target: usize) -> PathBuf {
+        let mut current = root.to_path_buf();
+        while current.as_os_str().len() < target {
+            let remaining = target - current.as_os_str().len();
+            let width = remaining.saturating_sub(1).clamp(1, 200);
+            current.push("n".repeat(width));
+        }
+        fs::create_dir_all(&current).unwrap();
+        current
+    }
+
+    /// `work` reads an absent restore directory as "no restore has started",
+    /// which is the ordinary case; the only way to reach its error arm is a
+    /// directory name the filesystem refuses. A home nested deep enough that
+    /// `<home>/.restore-work-<id>` crosses `PATH_MAX` is that name, and a nested
+    /// home is an ordinary deployment shape — no fault is injected, the OS is
+    /// answering about the path it was handed.
+    ///
+    /// The depth is derived from the platform's own `PATH_MAX` — 1024 bytes on
+    /// macOS/BSD, 4096 on Linux — because it is the kernel's limit, not a
+    /// property of this test: a home that clears it on one lane does not clear
+    /// it on the other.
+    #[test]
+    #[cfg(unix)]
+    fn a_restore_work_directory_the_filesystem_cannot_name_is_an_error_not_an_absence() {
+        // A path this long is refused by the kernel; every path this test needs
+        // to keep resolving has to stay strictly under it.
+        const PATH_MAX: usize = libc::PATH_MAX as usize;
+        let root = tempfile::tempdir().unwrap();
+        // The work directory is `<home>/.restore-work-<id>`, so the width of the
+        // restore identity — not a constant of this test — is what decides how
+        // far above the home the name lands.
+        let id = future_app_workspaces::new_id("restore");
+        let work_directory = |home: &Path| home.join(format!(".restore-work-{id}"));
+        // Park the home 39 bytes below `PATH_MAX`: 1024 - 39 is the 985 bytes
+        // this test used to hard-code, and 4096 - 39 is the same home for
+        // Linux. The window is set by the two paths that must fall on opposite
+        // sides of the limit: the work directory adds 45 bytes (a separator,
+        // `.restore-work-` and the identity) and has to cross it, while the
+        // pending marker adds 24 and the deepest managed root 22, so the home
+        // must stop at least 25 bytes short. 39 sits inside 25..45, and lands on
+        // 985 + 45 = 1030 against 1024 on macOS and 4057 + 45 = 4102 against
+        // 4096 on Linux — over the limit on both, while the marker reaches only
+        // 1009 and 4081.
+        const MARGIN: usize = 39;
+        let home = nested_home(root.path(), PATH_MAX - MARGIN);
+        // The premise, asserted instead of assumed. Without it the arithmetic
+        // going wrong on some platform shows up as `unwrap_err` panicking on an
+        // `Ok(())` with nothing about the cause — which is how the 1024-byte
+        // literal above reached Linux in the first place.
+        assert!(
+            home.as_os_str().len() < PATH_MAX,
+            "the home itself must be nameable: {} bytes against {PATH_MAX}",
+            home.as_os_str().len()
+        );
+        for logical in ROOTS {
+            let path = home.join(logical);
+            assert!(
+                path.as_os_str().len() < PATH_MAX,
+                "{logical} must stay nameable, or the restore fails for a reason \
+                 other than its work directory: {} bytes against {PATH_MAX}",
+                path.as_os_str().len()
+            );
+        }
+        let marker = pending(&home);
+        assert!(
+            marker.as_os_str().len() < PATH_MAX,
+            "the pending marker must stay nameable, or `begin_restore` refuses \
+             before it reaches the work directory: {} bytes against {PATH_MAX}",
+            marker.as_os_str().len()
+        );
+        assert!(
+            work_directory(&home).as_os_str().len() > PATH_MAX,
+            "the work directory must cross PATH_MAX ({} bytes, {} over a home of \
+             {}), or there is nothing for `begin_restore` to refuse here",
+            work_directory(&home).as_os_str().len(),
+            work_directory(&home).as_os_str().len() - home.as_os_str().len(),
+            home.as_os_str().len()
+        );
+        let archive = root.path().join("archive");
+        fs::create_dir_all(home.join("agent/sessions")).unwrap();
+        fs::create_dir_all(home.join("app/images")).unwrap();
+        backup(&home, &archive).unwrap();
+        assert!(
+            fs::symlink_metadata(home.join("agent/sessions")).is_ok(),
+            "the managed roots are still nameable, which is what makes the work \
+             directory the one path over the limit"
+        );
+
+        let error = begin_restore(&home, &archive).unwrap_err().to_string();
+        assert!(error.contains("too long"), "{error}");
+        assert!(
+            !pending(&home).exists(),
+            "a refused restore must not leave a startup fence"
+        );
+    }
+
     /// The two reasons a lock cannot be taken have different fixes, and the one
     /// that is *not* a running process must not send the reader to quit one.
     #[test]

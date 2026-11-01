@@ -125,6 +125,72 @@ fn a_plain_launch_serves_locally_without_an_account() {
     );
 }
 
+/// A `--relay` launch is the one answer to "which account" that does not need
+/// the platform at all: the relay supplies its own, so the entry point must say
+/// so and serve instead of checking a Future credential it will not use.
+///
+/// The relay address is a loopback port nothing listens on. That is deliberate:
+/// the question this test asks is what the *launch* decides, and the decision is
+/// printed before any connection is attempted — a reachable relay would only add
+/// a race for the assertion, not a property.
+#[cfg(unix)]
+#[test]
+fn a_relay_launch_serves_without_a_future_account() {
+    use std::time::Duration;
+
+    let home = tempfile::tempdir().unwrap();
+    let mut guard = ChildGuard(
+        foreground(home.path())
+            .args(["--relay", "http://127.0.0.1:1"])
+            .spawn()
+            .unwrap(),
+    );
+    let child = &mut guard.0;
+    let mut log = Stderr::take(child);
+    log.wait_for(
+        "Self-hosted relay (http://127.0.0.1:1). No Future account is used for phone pairing",
+        Duration::from_secs(300),
+    );
+    // The signed-out sentence belongs to the *other* branch of the same decision.
+    // Seeing it here would mean the account was still consulted on a relay run.
+    log.drain();
+    assert!(
+        !log.collected.contains("Not signed in to FutureOS"),
+        "a relay launch must not be reported as a signed-out one:\n{}",
+        log.collected
+    );
+    // Serving, not stuck: the run reaches the supervision loop and says what the
+    // relay has to serve with (no device is paired, and nothing is minted here).
+    log.wait_for("No device is paired yet", Duration::from_secs(120));
+    log.drain();
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "a relay host with nothing paired must keep serving:\n{}",
+        log.collected
+    );
+    signal(child, "-INT");
+    let status = wait_for_signal_exit(child, &mut log, Duration::from_secs(120));
+    assert!(
+        status.success(),
+        "SIGINT must stop it cleanly: {status}\n{}",
+        log.collected
+    );
+    // The relay is what this launch serves with, so it must not have needed a
+    // platform account to get there. The *file* says nothing — the embedded
+    // Agent writes its own placeholder `auth.json` on startup — but a key in it
+    // would: only the account branch stores one.
+    let auth = std::fs::read_to_string(home.path().join(".future").join("agent").join("auth.json"))
+        .expect("the embedded Agent writes its own credential file");
+    let stored: serde_json::Value = serde_json::from_str(&auth).expect("auth.json is JSON");
+    assert!(
+        stored["future"]["key"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty(),
+        "a relay launch must not store a platform key: {auth}"
+    );
+}
+
 /// Successor to `first_setup_refuses_redirected_logs_without_printing_authorization_material`,
 /// which guarded the *safety* property of a non-interactive launch: it must not
 /// write authorization material (a device code, an invitation, a QR) into a
@@ -1088,6 +1154,88 @@ fn a_switched_off_remote_desktop_stays_up_and_comes_back_without_a_restart() {
         "SIGINT must stop the run cleanly ({exit}):\n{}",
         log.collected
     );
+}
+
+/// A login that arrives while the switch is **off** is adopted, and the entry
+/// still does not start serving: the switch is the user's decision, so the
+/// adopted account changes what this run *could* serve and nothing more.
+///
+/// The distinction is a line of its own in `AccountAction::Adopt` — the switch-on
+/// arm calls `remote::enable()`, the off one only re-reads `remote::status()`.
+/// The assertion is therefore both directions of one call: the adopting run asks
+/// the platform for nothing, and `future remote enable` afterwards still starts
+/// serving from the *same* process, which it could not if adoption had closed the
+/// control channel or dropped the account.
+#[cfg(unix)]
+#[test]
+fn a_login_adopted_while_the_switch_is_off_serves_nothing_until_the_switch_returns() {
+    use std::time::Duration;
+
+    let home = tempfile::tempdir().unwrap();
+    let platform = FakePlatform::start(Platform::PairingDown);
+
+    // The user's own switch, set before anything runs: stored, and nothing else.
+    let off = second_terminal(home.path(), &["remote", "disable"]);
+    assert!(
+        off.status.success(),
+        "`remote disable` must store the switch without a Desktop: {}",
+        String::from_utf8_lossy(&off.stderr)
+    );
+
+    let mut guard = ChildGuard(foreground(home.path()).spawn().unwrap());
+    let child = &mut guard.0;
+    let mut log = Stderr::take(child);
+
+    log.wait_for("Not signed in to FutureOS", Duration::from_secs(300));
+    log.wait_for(
+        "The remote desktop switch is off, so this entry serves nothing yet",
+        Duration::from_secs(120),
+    );
+
+    // The login arrives under the running host — the same durable state
+    // `future auth login` writes from another terminal.
+    signed_in_home(home.path(), &platform.url);
+    log.wait_for("Platform account signed in", Duration::from_secs(60));
+
+    // Adopted, and still off: give the loop two iterations and require that the
+    // switch, not the login, decided. A token call here would mean the adopt ran
+    // `remote::enable()`.
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        !platform
+            .served()
+            .iter()
+            .any(|path| path.ends_with("/client/v1/remote/auth/token")),
+        "a switch that is off must survive the login: {:?}",
+        platform.served()
+    );
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "the run must keep serving locally after adopting the login:\n{}",
+        log.collected
+    );
+
+    // …and the account the run adopted is the one the switch-on arm now uses.
+    let on = second_terminal(home.path(), &["remote", "enable"]);
+    assert!(
+        on.status.success(),
+        "`remote enable` must be accepted by the running host: {}\n{}",
+        String::from_utf8_lossy(&on.stdout),
+        String::from_utf8_lossy(&on.stderr)
+    );
+    log.wait_for("Remote: Reconnecting", Duration::from_secs(120));
+    assert!(
+        platform
+            .served()
+            .iter()
+            .any(|path| path.ends_with("/client/v1/remote/auth/token")),
+        "the adopted account must be what the switched-on run pairs with: {:?}",
+        platform.served()
+    );
+
+    signal(child, "-INT");
+    let status = wait_for_signal_exit(child, &mut log, Duration::from_secs(120));
+    assert!(status.success(), "{status}\n{}", log.collected);
 }
 
 /// A stored account key the platform no longer honours is named as such, and it

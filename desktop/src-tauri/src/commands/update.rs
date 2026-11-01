@@ -508,39 +508,66 @@ mod tests {
     /// that one command — and the borrowed `PATH` is restored by
     /// `cli_tool::EnvGuard` even if an assertion panics (a leaked `PATH` is
     /// FLAKES item 27: 25 later tests failed spawning `git`).
+    ///
+    /// What it asserts is what discovery *captured*, so it must not be decided
+    /// by the probe's 3 s production budget: under the full parallel suite the
+    /// fixture's `sh` lost that race against this host's scheduler and the test
+    /// read `CLI discovery timed out` (measured 2026-11-01, 387 passed / 1
+    /// failed; alone it passed 3 of 3). The seam is `ProbeDeadlineGuard`, as in
+    /// `skills_bootstrap`, and it is armed on *this* thread because
+    /// `app_maintenance_status` offloads the probe to `spawn_blocking` and
+    /// carries the armed deadline across itself — the arm that pins the
+    /// production budget to 3 s is `cli_tool`'s own
+    /// `a_silent_cli_is_killed_and_reported_as_a_timeout`, not this one.
+    /// A real executable answering `<cli> version --json` with this build's
+    /// declared contract, put first on `PATH`. `CliCapabilities::default()` is
+    /// a valid contract for this build (the CLI's own discovery tests use it
+    /// the same way). Both halves of the fixture are undone on drop, panic or
+    /// not: the `PATH` restores before the temporary directory disappears.
     #[cfg(unix)]
-    #[tokio::test]
-    async fn app_maintenance_status_reports_the_cli_it_discovered() {
-        if future_host::test_support::reexec_test() {
-            return;
-        }
+    fn cli_on_path(
+        version: &str,
+    ) -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        crate::cli_tool::EnvGuard,
+    ) {
         use std::os::unix::fs::PermissionsExt;
-
-        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-update-maintenance");
-        crate::store::initialize_app_store().expect("init store");
 
         let root = tempfile::tempdir().expect("tempdir");
         let bin = root.path().join("bin");
         std::fs::create_dir_all(&bin).expect("bin dir");
         let cli = bin.join("future");
-        // `CliCapabilities::default()` is a valid contract for this build (the
-        // CLI's own discovery tests use it the same way).
         let reply = json!({
-            "version": "test-cli-1.0",
+            "version": version,
             "desktopCapabilities": future_rpc::cli_capabilities::CliCapabilities::default(),
         });
         std::fs::write(&cli, format!("#!/bin/sh\nprintf '%s' '{}'\n", reply))
             .expect("write the fixture CLI");
         std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 
-        // Prepended, not replaced: this test only adds a candidate, it never
-        // takes `git` or `sh` away from anything else in the process.
+        // Prepended, not replaced: these tests only add a candidate, they never
+        // take `git` or `sh` away from anything else in the process.
         let existing = std::env::var_os("PATH").unwrap_or_default();
         let path = std::env::join_paths(
             std::iter::once(bin.clone()).chain(std::env::split_paths(&existing)),
         )
         .expect("join PATH");
-        let _path = crate::cli_tool::EnvGuard::set("PATH", &path);
+        (root, bin, crate::cli_tool::EnvGuard::set("PATH", &path))
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn app_maintenance_status_reports_the_cli_it_discovered() {
+        if future_host::test_support::reexec_test() {
+            return;
+        }
+        let _deadline = future_host::cli_tool::ProbeDeadlineGuard::without_deadline();
+
+        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-update-maintenance");
+        crate::store::initialize_app_store().expect("init store");
+
+        let (_root, bin, _path) = cli_on_path("test-cli-1.0");
 
         let status = app_maintenance_status().await.expect("maintenance status");
         assert_eq!(
@@ -559,6 +586,43 @@ mod tests {
         );
     }
 
+    /// The deadline a test arms on its own thread has to survive
+    /// `app_maintenance_status`'s hop to the blocking pool: `spawn_blocking`
+    /// carries no thread-locals and the override is thread-local on purpose,
+    /// so the command re-arms it on the thread that probes. A zero deadline
+    /// makes the probe kill its child before its first `try_wait`, so the
+    /// timeout error appears *only* while that carry works — drop the carry and
+    /// this fails deterministically, instead of the capture test above going
+    /// back to flaking under load (which is how it was found: 387 passed / 1
+    /// failed, passing 3 of 3 alone).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_armed_probe_deadline_reaches_the_probe_behind_spawn_blocking() {
+        if future_host::test_support::reexec_test() {
+            return;
+        }
+        let _deadline = future_host::cli_tool::ProbeDeadlineGuard::set(Some(Duration::ZERO));
+
+        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-update-probe-carry");
+        crate::store::initialize_app_store().expect("init store");
+
+        let (_root, _bin, _path) = cli_on_path("must-not-be-read");
+
+        let status = app_maintenance_status().await.expect("maintenance status");
+        assert!(
+            status["cli"]["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("CLI discovery timed out")),
+            "the fixture CLI must not have been read: the armed zero deadline \
+             has to reach the probe on the blocking thread: {status}"
+        );
+        assert_eq!(
+            status["cli"]["tool"],
+            serde_json::Value::Null,
+            "a probe that timed out reports no tool: {status}"
+        );
+    }
+
     #[test]
     fn windows_resume_arguments_preserve_empty_quotes_slashes_and_option_like_values() {
         assert_eq!(quote_windows_argument(""), "\"\"");
@@ -568,6 +632,75 @@ mod tests {
             quote_windows_argument("C:\\some path\\"),
             "\"C:\\some path\\\\\""
         );
+    }
+
+    /// Only the initialisation subcommand is an update helper. Any other argv is
+    /// left to the ordinary desktop startup, which is what keeps this dispatch
+    /// from swallowing a normal launch.
+    #[test]
+    fn an_argv_that_is_not_an_update_helper_subcommand_is_not_consumed() {
+        assert!(dispatch_update_helper(&[]).is_none());
+        assert!(dispatch_update_helper(&["--version".to_string()]).is_none());
+        assert!(dispatch_update_helper(&["--app-update-worker".to_string()]).is_none());
+    }
+
+    /// The helper dispatch reports the worker's failure instead of hiding it, and
+    /// passes success through untouched. The `Err` arm also writes the `ERROR`
+    /// diagnostics line through `console::`; that line cannot be asserted here
+    /// because `console` writes straight to the process's stdout rather than
+    /// through `std`'s captured printer (see `agent/src/console.rs`), so the
+    /// observable contract is the returned result.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn helper_result_passes_the_result_through_and_reports_a_failure() {
+        assert_eq!(helper_result(Ok(())), Ok(()));
+        assert_eq!(
+            helper_result(Err("installer refused".into())),
+            Err("installer refused".to_string())
+        );
+    }
+
+    /// The worker subcommand is consumed and its refusal is dispatched: with no
+    /// plan arguments the macOS worker stops before it opens the bundle, so this
+    /// reaches the dispatch arm without an installer.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_update_helper_argv_is_consumed_and_the_workers_refusal_is_reported() {
+        let outcome = dispatch_update_helper(&["--app-update-macos-worker".to_string()])
+            .expect("the worker subcommand is consumed");
+        assert_eq!(
+            outcome.unwrap_err(),
+            "Invalid macOS update worker arguments"
+        );
+    }
+
+    /// Every native update dialog resolves its text from the bundled settings
+    /// translations, in the language the window asks for. A missing key or a
+    /// language that fell through to the wrong dictionary would surface here
+    /// rather than as an untranslated dialog at install time.
+    #[test]
+    fn every_native_update_dialog_has_its_own_text_in_both_languages() {
+        const KEYS: [&str; 8] = [
+            "installTitle",
+            "installConfirmation",
+            "installConfirm",
+            "installDefer",
+            "repairTitle",
+            "repairConfirmation",
+            "repairConfirm",
+            "repairCancel",
+        ];
+        for key in KEYS {
+            let english = update_dialog_text(None, key);
+            let chinese = update_dialog_text(Some("zh-CN"), key);
+            assert!(!english.is_empty(), "{key} has no English text");
+            assert!(!chinese.is_empty(), "{key} has no Chinese text");
+            assert_ne!(chinese, english, "{key} was not translated");
+            // Only a `zh*` tag selects Chinese; every other tag gets English.
+            assert_eq!(update_dialog_text(Some("zh-TW"), key), chinese);
+            assert_eq!(update_dialog_text(Some("en-US"), key), english);
+            assert_eq!(update_dialog_text(Some("de"), key), english);
+        }
     }
 
     #[test]
@@ -1401,7 +1534,16 @@ async fn install_app_update_impl<R: tauri::Runtime>(
 
 #[tauri::command]
 pub async fn app_maintenance_status() -> Result<serde_json::Value, AppError> {
-    tokio::task::spawn_blocking(|| {
+    // `discover` probes on a blocking-pool thread, which inherits no
+    // thread-local from this one — and the probe-deadline seam is deliberately
+    // thread-local, so a test that asserts what the probe *captured* would be
+    // decided here by the production 3 s budget instead. Carry it across the
+    // hop; nothing is armed in a shipped build, where both lines compile out.
+    #[cfg(any(test, feature = "test-support"))]
+    let probe_deadline = future_host::cli_tool::ProbeDeadlineGuard::inherited();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _probe_deadline = probe_deadline.map(future_host::cli_tool::ProbeDeadlineGuard::set);
         let cli = match crate::cli_tool::discover(None) {
             Ok(descriptor) => serde_json::json!({"tool": descriptor}),
             Err(error) => serde_json::json!({"error": error.to_string()}),

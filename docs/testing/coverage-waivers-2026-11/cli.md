@@ -7,23 +7,69 @@ llvm-cov *summary* percentages are not the acceptance number.
 target), rust **1.99.1** pinned by `rust-toolchain.toml`. The relay lane also runs
 `--test relay_nats_auth -- --ignored` against a real `nats-server`
 (`FUTURE_RELAY_NATS_SERVER`), and the profile of both passes is merged into one report —
-`coverage/2026-11/after/cli/measure13.sh` is the whole thing, `cli-lcov-13.info` the artifact.
+`coverage/2026-11/after/cli/measure17.sh` is the whole thing, `cli-lcov-17.info` the artifact
+(earlier waves kept their own: `measure16.sh`/`cli-lcov-16.info`, `measure15.sh`/`cli-lcov-15.info`).
 
-**This file's status: 16 rows / 53 lines registered, and it is not a claim of per-line 100 %.** The
-lane reads **266 `DA:0`** out of 55 051 lines (99.52 %): 79 of those are one class
-(closing tokens, below), 49 are statements registered here, **130 are work items** with a
-falsifier each, and **8 await a product decision** (a section of their own, below). Nothing
-in the 266 is silently missing — the section *Not waived* exists so that "not covered" and
-"cannot be covered" are never the same sentence, and the decision block exists so that
-"reachable in principle" and "reachable today" are not either.
+**This file's status: 24 rows / 83 lines registered, and it is not a claim of per-line 100 %.** The
+lane reads **234 `DA:0`** out of 55 314 lines (99.58 %): 83 are registered here, **8 await a
+product decision** (a section of their own, below), and **143 are work items** with a
+falsifier each. By line shape the 234 divide into **73 closing tokens** (one class, below: 10 of
+them sit inside registered rows, 2 in the decision block, 61 in work items) and **161
+statements** (73 registered, 6 decision, 82 work items). Nothing in the 234 is silently
+missing — the section *Not waived* exists so that "not covered" and "cannot be covered" are
+never the same sentence.
 
-Two of this wave's own numbers go **up**: `browser/safari/safari_manager.rs` reads 14 `DA:0`
-instead of 9, because the launch test's failure diagnosis was ported from its sibling
-(5 test-side panic arms; §*The launch test that could not say why it failed*). Net for the
-wave is still negative, and the gate it buys is the ability to close
-[`cli-safari-gate-flake.md`](cli-safari-gate-flake.md)'s open item at the next red run.
-A third file, `test_server.rs`, went 3 → 14 (+11) from **another lane's** commits (`9fdabcb03`
-platform-gates an fd diagnostic); those eleven are that lane's test-side arms, listed here
+Wave 17 closes **eight** lines with tests and registers **twelve** in one row:
+
+| what | lines | how |
+|---|---:|---|
+| `commands/session_journal.rs` **8 → 0** | 300, 329, 364 | the three `--json` documents: `journal --json`, `journal --reclaim --json` (the plan, printed before the "add --yes" advice), and the final slice of an applied sweep. All three were filed in this file as **W2 — serialising this module's own structs cannot fail**, which was wrong in kind: the arms cannot fail, but they had never *run*, because no test passed `--json`. The missing input was one flag. |
+| | 350-353 | the `MAX_SLICES` refusal. The old row said it needed "a journal of 64+ slices"; the constant is **256**, and what a mock needs is not 256 slices of journal but 256 answers — a server that keeps saying `hasMore: true`, which is the only state the cap exists for. |
+| | 367 | the `}` of `if report["hasMore"] …`, reached **512** times by that same test. Filed as a closing token, which was also wrong: llvm-cov gives this brace a counter, and it read 0 only because no run had ever left `hasMore` true. |
+
+The arithmetic is therefore −8 covered by this wave: 242 → 234. The twelve registered lines are
+`commands/doctor.rs`'s, which §*Not waived* used to carry as a work item and row 24 now carries as
+a waiver — a bookkeeping gap this lane caught in its own table, not a measurement change.
+
+Wave 16 closes **eight** lines with tests and registers **nine** more placements in four rows:
+
+| what | lines | how |
+|---|---:|---|
+| `commands/session_wait.rs` **5 → 1** | 202, 215, 231, 238 | two mock-agent waits: a stream that ends with no `agent_end` at all (the text that arrived is a prefix, so the run is `interrupted`), and an `agent_end` that carries an error whatever `state` it also names (`error`) — the two `finish_of` returns and the `token()`/`detail()` arms they print |
+| `commands/mcp_client.rs` **8 → 5** | 473-475 (474 and 475 are the statement and its closing token) | `ServerProcess::start` on an HTTP-endpoint spec: the refusal that names the transport instead of exec'ing an empty program name |
+| `commands/mcp_servers.rs` **5 → 4** | 1136 | a `--header ': value'` pair — a colon but no name — refused, and the message quotes the pair so this arm is distinguishable from the no-colon one beside it |
+| `commands/session_wait.rs` **row 20** | 208 | `detail()`'s `Answer` arm: the only caller is the non-`Answer` arm of the match that prints it |
+| `commands/mcp_client.rs` **row 21** | 320-322 | `impl Rpc for Session`'s `notify` — every handshake that notifies holds a concrete `Session`, where the inherent method wins |
+| `commands/mcp_http.rs` **row 22** | 314-317 | "acknowledged without answering": `exchange` answers `None` only on the notification path, and `request` never takes it |
+| `commands/mcp_servers.rs` **row 23** | 351 | `mcp status`'s `let Some(spec) = … else { continue }`: `targets` is a name `resolve` has just accepted or the key list itself |
+
+The arithmetic is therefore −8 covered by this wave: 250 → 242. `commands/configure.rs` is
+**not** in the work-item table any more either, but it closed nothing — its two remaining
+`DA:0` braces are the closing-token class and the other five are a test's assertion messages;
+§*A brace that executes and still reads zero* below is the measurement behind that sentence.
+
+Wave 15 closed **nine** lines with tests, registered **five** as a dead accessor, and inherited
+**two** from another lane:
+
+| what | lines | how |
+|---|---:|---|
+| `relay/config.rs` **4 → 0** | 116, 119, 127, 132 | three tests over `validate()`: a whitespace seed, a TTL of zero, and a certificate field that is set but empty |
+| `relay/sign.rs` **2 → 0** | 80, 82 | one handler test over the roster route: a signature header that is not base64 (`signature_malformed`), and one made by another key (`signature_invalid`) — both leave through `VerifyError::code`, which only `Missing`/`Stale` had reached |
+| `commands/data.rs` **21 → 19** | 638 + 1 closing token | a restore into a home nested past `PATH_MAX`, so `<home>/.restore-work-<id>` is the one path the filesystem refuses |
+| `headless/mod.rs` **18 → 17** | 451 | a launch: the switch is off, a login appears under the running host, and the adopt arm reports `remote::status()` instead of starting anything |
+| `relay/jwt.rs` **5, now registered** | 45-48, 50 | `Role::as_str` has no caller in this tree — row 19, a W8 row, not a test |
+| `browser/safari/safari_manager.rs` **11 → 13** | 287, 357, 460-469, 625, 1110-1111, 1117, 1132 | **another lane's**: the flake workstream's rewrite (`5b6b574f5`, `4887e65fb`) landed after wave 14's report was taken, and every added line is a diagnostic arm that runs only when a launch has already failed |
+
+Wave 15's arithmetic was −9 covered by that wave, +2 inherited, −1 closing token that the
+long-home restore also re-enters: 257 → 250.
+
+Wave 14 closes six lines of `headless/mod.rs` (24 → 18) with two **launch** arms rather than
+any lib test: a `--relay` run, and a model-catalogue refresh the *Agent* refuses
+(§*Two launch arms that had never run*, below). Both are integration targets, so they add no
+instrumented lines of their own — every one of the six is a line a product path now really
+executes. Three more come off `browser/safari/safari_manager.rs` (14 → 11) from **another
+lane's** rewrite of the two launch tests (`0900e710c`, merged into the base this wave was
+finally measured on); those three are that lane's test-side arms, and this file lists them
 only so the total is not read as this wave's doing.
 
 ## Headline
@@ -36,43 +82,48 @@ only so the total is not read as this wave's doing.
 | wave 10 (`cli-lcov-10.info`) | **355** | 54 882 |
 | wave 11 (`cli-lcov-11.info`) | **288** | 54 892 |
 | wave 12 (`cli-lcov-12.info`) | **284** | 54 893 |
-| **this wave (`cli-lcov-13.info`)** | **266** | 55 051 |
-| — closing tokens (one class, see below) | 79 | |
-| — statements | 187 | |
-| — of those, registered as waivers (16 rows, this file; 49 of the 53 are statements, 4 are closing tokens) | **49** | |
-| — of those, work items named below (not waived) | 130 | |
-| — of those, awaiting a product decision (below) | 8 | |
+| wave 13 (`cli-lcov-13.info`) | **266** | 55 051 |
+| **wave 14 (`cli-lcov-14.info`)** | **257** | 55 033 |
+| wave 15 (`cli-lcov-15.info`) | 250 | 55 163 |
+| wave 16 (`cli-lcov-16.info`) | 242 | 55 250 |
+| **this wave (`cli-lcov-17.info`)** | **234** | 55 314 |
+| — registered here (24 rows, 83 lines) | 83 | |
+| — of those 83, closing tokens | 10 | |
+| — awaiting a product decision (below) | 8 | |
+| — work items named below (61 of them closing tokens) | 143 | |
 
-Per file, wave 12 → this wave (top of the list only; `delta.py cli-lcov-12.info
-cli-lcov-13.info w12 w13` prints the whole table and both totals):
+Per file, wave 16 → this wave (`delta.py cli-lcov-16.info cli-lcov-17.info w16 w17` prints the
+whole table and both totals; every file not listed here is +0):
 
 ```
-file                                    w12    w13   delta
-commands/session.rs                       11      1     -10
-commands/models.rs                        12      0     -12
-commands/session_journal.rs               15      8      -7
-commands/remote_peers.rs                  24     20      -4
-commands/remote.rs                        31     31      +0   (14 rows + 2 closing tokens + 15 test-side)
-browser/safari/safari_manager.rs           9     14      +5   (the ported failure diagnosis, test-side)
-headless/mod.rs                           24     24      +0   (line numbers moved; see the rows below)
-test_server.rs                             3     14     +11   (another lane's fd diagnostic)
+file                                    w16    w17   delta
+commands/session_journal.rs               8      0      -8   (the three --json documents, the slice cap, its closing token)
 ```
 
-The wave was measured twice, because the integration branch moved by twelve commits between
+This wave was measured on `923c2360f` (wave 16's squash merge). The `DA:0` count moved
+242 → 234 and the instrumented total 55 250 → 55 314: the 64 extra lines are the four new
+tests' own bodies, and every one of them is covered — the report went up by 8 closed lines
+and **zero** opened (which is what `diff17.py cli-lcov-16.info cli-lcov-17.info` exists to
+check; its first run is what caught a `DA:0` line in this wave's own test). No product line
+was written and no line of this crate was renumbered.
+
+Wave 13 was measured twice, because the integration branch moved by twelve commits between
 the first report and the hand-off: on wave 12's base the lane read **254 / 55 028**, and on
-this wave's base (`origin/dev-huichen` at `71f93f804`) it reads **266 / 55 051**. The
+wave 13's base (`origin/dev-huichen` at `71f93f804`) it reads **266 / 55 051**. The
 difference is not this lane's: three upstream commits touched this crate (`9fdabcb03`,
 `71f93f804`, `5d371857d`), which added the eleven `test_server.rs` lines above and moved
 line numbers inside `commands/remote.rs` and `headless/mod.rs` — the registered rows below
-were re-mapped onto the new numbers and re-checked (`checked=53 stale=0`), rather than left
+were re-mapped onto the new numbers and re-checked (`checked=57 stale=0`), rather than left
 describing the old file.
 
-The line total grew by 158, and none of it is product code: the nine tests added in this
-wave live inside the lib (five in `session_journal`'s and `session`'s test modules, two in
+That line total grew by 158 in wave 13, and none of it is product code: the nine tests added
+then live inside the lib (five in `session_journal`'s and `session`'s test modules, two in
 `models`', one in `remote_peers`'), so their bodies are instrumented and the denominator
 grows with them. `commands/models.rs` and `commands/session.rs` are therefore both at
 metric A's floor: `models.rs` reads **0**, and `session.rs`'s single remaining line is a
-closing brace.
+closing brace. Wave 14 adds no line at all: both of its tests are **integration targets**
+(`cli/tests/`), which the report does not instrument, so its whole arithmetic is the six
+lines it closes.
 
 `delta.py` keyed its rows on the absolute `SF:` path until this wave, which made every file
 look new whenever the two reports were measured in different worktrees (`cov-cli`, then
@@ -83,26 +134,78 @@ row on the left. It now keys on the path inside `cli/src/`.
 
 ```bash
 cd coverage/2026-11/after/cli
-./measure13.sh                                # lib + every integration target, then the nats-only pass
-python3 perfile.py cli-lcov-13.info           # per file, highest first
-python3 missed.py cli-lcov-13.info relay/server.rs /path/to/cli/src/relay/server.rs
-                                              # the DA:0 lines of one file, with their text
-python3 classify.py cli-lcov-13.info          # closing-token class vs statements
-python3 delta.py cli-lcov-12.info cli-lcov-13.info w12 w13   # per-file movement between two waves
-python3 waiver_check.py cli-lcov-13.info "relay/cli.rs:519-522,526-528,530,532,584,588-590,421,245" \
+./measure17.sh                                # lib + every integration target, then the nats-only pass
+python3 perfile.py cli-lcov-17.info           # per file, highest first
+python3 missed.py cli-lcov-17.info "cli/src/headless/mod.rs"
+                                              # the DA:0 lines of one file
+python3 classify.py cli-lcov-17.info          # closing-token class vs statements
+python3 shape17.py cli-lcov-17.info           # the same split for registered / decision / work items
+python3 diff17.py cli-lcov-16.info cli-lcov-17.info          # which DA:0 lines moved, and where
+python3 delta.py cli-lcov-15.info cli-lcov-16.info w15 w16   # per-file movement between two waves
+python3 waiver_check.py cli-lcov-17.info "relay/cli.rs:519-522,526-528,530,532,584,588-590,421,245" \
     "relay/server.rs:239" "relay/room.rs:168-170" "prompt.rs:37,59,67-74,104,127,140,151" \
+    "relay/jwt.rs:45-48,50" \
     "commands/remote.rs:533,1341,1578,2474,2432-2433,2807,2809-2810,2627-2631" \
-    "commands/remote_peers.rs:684,687-690,692"
+    "commands/remote_peers.rs:684,687-690,692,985-987,991" \
+    "commands/session_wait.rs:208" "commands/mcp_client.rs:320-322" \
+    "commands/mcp_http.rs:314-317" "commands/mcp_servers.rs:351" \
+    "commands/doctor.rs:140,173,183,186,189,197-201,387,419"
                                               # every registered row, re-read against this report
 ./safari-load-repro.sh 3 8                    # the gate flake's reproduction (see cli-safari-gate-flake.md)
 ```
 
-`measure13.sh` pins `HOME` to `target/test-home`, clears `CARGO_BUILD_TARGET`/
+`measure17.sh` pins `HOME` to `target/test-home`, clears `CARGO_BUILD_TARGET`/
 `CARGO_TARGET_DIR` (they leak from other sessions' shells) and puts the 1.99.1 toolchain
 first on `PATH` (Homebrew's rustup shim shadows it otherwise). It must be run as
-`sh ./measure13.sh` (or after `chmod +x`): the file is checked in without the executable
-bit, and `./measure13.sh` then fails in milliseconds with no output at all — which reads
+`sh ./measure17.sh` (or after `chmod +x`): the file is checked in without the executable
+bit, and `./measure17.sh` then fails in milliseconds with no output at all — which reads
 exactly like "the measurement finished instantly".
+
+The wave-17 report was taken on `923c2360f` (wave 16's squash merge): `1556 passed; 0 failed`
+in **94.97 s** for the lib target, every integration target green — the same fourteen targets, and
+the same counts, as the wave-16 run below — and the nats-only pass `2 passed`. The four new
+tests are the `1556 − 1552`.
+
+Two things about that run are worth more than the number. First, the nats leg **failed on its
+first instrumented pass**: `relay_credentials_are_accepted_and_scoped_by_the_broker` hit
+`expect_delivery`'s 5 s deadline (`Elapsed(())`, `cli/tests/relay_nats_auth.rs:337`) while
+three coverage builds shared the machine; uninstrumented the same test passed **3/3**
+(3.88-3.90 s), and the re-run through `measure17b-resume-nats.sh` passed too. Nothing was
+retried in-process, no deadline was raised and no test was changed — this is a *real*
+wall-clock dependency in that lane, unlike the TTL margin §*The relay expiry test's one
+wall-clock assumption* defends, and it is recorded rather than papered over. Second, the first
+take of the report counted **235**, not 234: one of this wave's *own* test lines
+(`session_journal.rs:651`) read `DA:0`, because a message handed to `unwrap_or_else` is
+evaluated only when the closure runs. The test was restructured (parse, then `assert!` on the
+`Result` with the message on the assertion's own line) and the lane re-measured to 234 — the
+same trap wave 16 hit from the other side, where five `configure.rs` assertion arguments
+(1068-1072) could never be counted for the same reason.
+
+The wave-16 report was taken on the base wave 15 merged into (`a3201a7eb`): `1552 passed;
+0 failed` in **114.70 s** for the lib target, every integration target green
+(`bin` 28, `headless_cli` 18, `remote_start_refusal` 14, `remote_unpair_prompt` 5,
+`relay_serve` 4, `event_wire_contract` 2, `main` 2, `windows_stack` 0 — cfg-gated, so it
+builds and asserts nothing — and four one-test targets: `headless_catalogue_refusal`,
+`remote_peers_add_json`, `remote_peers_add_running_desktop`, `version_discovery`. This
+sentence used to say "five single-test targets" and name none of them; the list has four, and
+naming it here is what stops the count from drifting again), and the nats-only
+pass `2 passed`. The wave was measured twice: the first report also carried a fourth test
+(a unit test over the two numeric prompts in `commands/configure.rs`), and §*A brace that
+executes and still reads zero* below is why it was dropped rather than kept — the first
+report read 244, the re-measure 242.
+
+The wave-15 report was taken on the base wave 14 merged into (`2b9e9ef36`): `1549 passed;
+0 failed` in **179.13 s** for the lib target, every integration target green, and the
+nats-only pass `2 passed`. Its predecessor waves' numbers are kept below rather than
+replaced, because the runs are the record of a lane measured across a moving base.
+
+The wave-14 report was first taken at load average **38**, and then re-taken after the
+integration branch moved ~80 commits (load **45–80**): `1543 passed; 0 failed` in
+**102.66 s** and then **173.75 s** for the lib target, every integration target green both
+times, and the nats-only pass `2 passed`. No run of this wave had to be re-taken for a
+failure, which is itself part of the answer to the safari question: the wave-13 diagnostic
+is in place, and six runs of this wave (two measured, four hunted) did not produce the red
+it is for — see `cli-safari-gate-flake.md` §7.
 
 ## Rows registered as waivers
 
@@ -128,6 +231,13 @@ line, W7 mock closure, W8 dead producer.
 | 14 | `commands/remote.rs:2432-2433, 2807, 2809-2810` | **W4** | `platform_api_key`'s `NotFound` and other-I/O arms, and `revoke`'s arm that queues the revoke for that error. The caller has already proved this file readable: `future_api_key()` (2390) returned the key out of `<home>/agent/auth.json` through `auth_store::read`, and `platform_api_key()` resolves the *same* path (`future_agent::utils::default_config_dir()` = `future_home()/agent`, the same root as `auth_store::agent_dir()`) and reads it again microseconds later, with no `await` in between. Any of these five lines needs the file to be deleted, replaced or emptied exactly in that window. | a concurrent `future auth logout` (or an editor) landing between the two reads — which a test cannot place without a seam — or the two functions resolving different paths, which would be a defect of its own rather than a line to cover | `an_undeliverable_platform_revoke_is_queued_for_the_next_desktop` pins the guard's own outcome: the "not signed in" warning is what a machine with no `auth.json` gets, and it is produced at 2391-2400, before either read can differ |
 | 15 | `commands/remote.rs:2627-2631` | **W4** | `take_control`'s "no longer paired to this machine: the pairing book changed while this ran" — `book.edit`'s closure finding the wanted device gone. The book is read twice in this function (`Book::load()` at 2580, `Self::load()` inside `edit`), and nothing between them awaits: `desktop_running()` and `switch_is_on()` are file reads, so another process cannot be placed in that gap by a test. | an `await` between the two reads (the Desktop round trip moved before the write, which the comment at 2593-2595 says is deliberate), or a load seam | `use_persists_the_controller_and_keeps_unmodelled_fields` takes the `Ok` arm of the same closure — `book.edit` writing a controller that is still there; `use_accepts_a_stripped_or_partial_id` reaches the same write by prefix |
 | 16 | `commands/remote_peers.rs:684, 687-690, 692` | **W2** | `add`'s `Some(live) => "The pairing is stored, but the connection did not come up{…}"`. `peer.live.connected` is `PeerSummary.connected` as `pair_with_emitter` returned it, and the only assignment to that field on an `Ok` path is `summary.connected = true` (`packages/remote-client/src/runtime.rs:1806`); every failed connection returns `Err` (1765-1789), which `add` turns into `describe_pairing_error` and a failed command instead of this arm. The arm reports a state the runtime cannot produce. | a runtime that returns an `Ok` summary with `connected == false` — i.e. stores the pairing and answers before the first connect, which is the contract this arm was written for | the connected arm is driven twice, by `add_says_which_machine_it_paired_and_who_connects_it` (text) and `add_json_prints_the_machine_it_paired_and_who_keeps_it_connected` (JSON, `cli/tests/`) |
+| 17 | `commands/remote_peers.rs:985-987` | **W4** | `rename`'s `return Err("{desktop_id} is no longer paired with this machine: the book changed while this ran.")` inside `book.edit`'s closure. The id is read from a book loaded at 967 (`book.position(&selector)`), and the closure re-reads the same file; nothing between the two reads awaits — `Book::load` and `edit` are both file I/O — so the row has to be *removed* by another process in that microsecond window. The line is then the one arm `edit` cannot avoid reaching if it did. | a concurrent `remote peers remove` (or an editor, or a Desktop round trip inserted between the reads) landing between `Book::load()` and `book.edit`'s re-read, which no test can place without a seam | `rename_writes_the_label_and_keeps_the_credential` and `rename_clear_goes_back_to_the_machine_id` take the closure's success arm — the row is found, written or cleared, and the credential is read back; `an_ambiguous_prefix_asks_for_a_longer_one` pins the selector refusal that is the *other* way this arm could have been reached, and it happens in `position` before the closure runs || 18 | `commands/remote_peers.rs:991` | **W2** | `record.as_object_mut().ok_or_else(|| "The pairing book holds an entry that is not a JSON object.")` — the *entry* the `find` above returned is by construction an object: the predicate is `peer.get("desktopId").and_then(Value::as_str) == Some(id)`, and `Value::get` with a string key answers `None` for an array, a string, a number, a bool and null alike. So the row that satisfied `find` has an object at its root, and `as_object_mut` cannot be `None`. | a `find` predicate widened to something `Value::get` does not bound (e.g. matching a nested path, or `== Value::String(id)` on the peer itself) | every test in `remote_peers/tests.rs` goes through this closure: `rename_writes_the_label_and_keeps_the_credential` and `rename_clear_goes_back_to_the_machine_id` both take the `Some` side of the same `ok_or_else`, and the entries they carry came from the product's own writers |
+| 19 | `relay/jwt.rs:45-48, 50` | **W8** | `Role::as_str`, the render direction of the role vocabulary. Nothing in this tree calls it: `Role::parse` is the only direction a token request uses (`server.rs` parses `role` and never renders one), and no log line, claim or error message formats a `Role`. The role string that crosses the wire is written by the *clients*, not by this crate. | a second consumer that renders a role — a log line, a JWT claim, or an error message naming the caller's role. If the honest answer is "there will never be one", the accessor is dead code and deleting it is the fix, not covering it. | `a_correctly_signed_request_verifies_and_reports_its_key` and `sign_user`'s claim assertions pin the *parse* direction and the permissions each role gets; nothing asserts the string back because nothing produces one |
+| 20 | `commands/session_wait.rs:208` | **W2** | `Finish::detail`'s `Finish::Answer => "the run answered"`. The only caller of `detail()` is the `other => Err(format!("run {target_run} ended as {}: {}", other.token(), other.detail()))` arm of the match one screen below, and that arm is taken when `finish != Answer` — so the `Answer` sentence is unreachable from the one place it could be printed. | a caller that prints `detail()` for a run that *succeeded* (a `--verbose` summary, or a log line that reports every finish) — a product change, not an input | the same `match` reports `EmptyAnswer`, `Interrupted` and `Error` (all three are asserted by the three finish tests); `token()`'s `Answer` arm is covered, because the JSON document writes `finishReason` for every outcome including the successful one |
+| 21 | `commands/mcp_client.rs:320-322` | **W8** | `impl Rpc for Session`'s `notify`. The trait's other verb, `request`, is live — `list_tools`/`call_tool` take `T: Rpc` and every stdio command goes through them — but `notify` is not: `Session::initialize` calls `self.notify(..)` on a **concrete** `Session`, where the inherent method wins over the trait's method, and the only `Rpc::notify` call in the tree is `HttpSession`'s own handshake (`mcp_http.rs:127`). `Connection` dispatches `list_tools`/`call_tool` through inherent methods too. | a handshake written once for both transports — a free `async fn initialize<T: Rpc>(rpc: &mut T)`, the shape `list_tools`/`call_tool` already have, or simply `Session::initialize` delegating through `Rpc::notify` as its HTTP twin does. That is one line of product change (and arguably the fix, since the duplication is what makes the arm dead), not an input a test can supply. | `Rpc::notify` for the HTTP transport is exercised by every HTTP handshake test (the `202` acknowledgement); `Session`'s inherent `notify` is exercised by every stdio handshake test, including the one that fails it |
+| 22 | `commands/mcp_http.rs:314-317` | **W2** | `request`'s "the MCP server '{}' acknowledged '{method}' without answering it". `exchange` returns `Ok(None)` from exactly one place — the `let Some(id) = id else` notification branch, where nothing is awaited and the body is dropped — and `request` always calls it with `Some(id)`. On that path the answer is either `Some` (`read_json_answer`, `read_event_stream` → `Ok(Some(..))`) or an `Err`; a `202` with an empty body to a *request* leaves through `read_json_answer`'s "sent an unreadable frame" instead. | an `exchange` that answers `None` for a request — i.e. a transport that reports "accepted, no answer" as a *state* rather than an error, which is the reading this message was written for. Today the same wire shape is a parse error one frame later, so the sentence this arm prints can never be the operator's explanation. | the notification path that produces the `None` is pinned by `a_json_answered_session_handshakes_lists_and_calls` (its route table answers the notification `202` with no body); `read_event_stream`'s "closed its response before answering" and `read_json_answer`'s unreadable-frame error are what a request-shaped `202` actually produces |
+| 23 | `commands/mcp_servers.rs:351` | **W2** | `mcp status`'s `let Some(spec) = config.servers.get(name) else { continue; }`. `targets` has two producers (331-337): a listed name, which `resolve(&config, name)?` has just accepted — and `resolve` is an exact lookup that errors for an unknown name *and* for a disabled one — or `config.servers.keys().cloned()`, i.e. the keys of the same map. The lookup therefore cannot miss, and `resolve`'s own refusal is what a caller naming a server that is not there actually gets. | `resolve` learning prefixes or aliases (it would then accept a name that is not a key, and this `continue` would silently report nothing for it — a defect, not a feature), or `targets` being built from anything else, e.g. a `--all` that also lists disabled entries. | `resolve_reports_a_disabled_server_and_names_the_alternatives` and the unknown-name test pin the two refusals that keep the key set honest; `mcp status` over a config with a disabled entry asserts the `disabled` report that the *earlier* branch produces |
+| 24 | `commands/doctor.rs:140, 173, 183, 186, 189, 197-201, 387, 419` | **W1 + W2** | Two groups. **W1** — the OS-sandbox probe, 9 lines. `future_agent::sandbox::platform_sandbox_probe_product()` (`agent/src/sandbox/mod.rs:1082`) has a per-target arm, and on macOS that arm is a literal: `available = Path::new("/usr/bin/sandbox-exec").exists()`, `code` is `"available"` or `"binary_missing"` and nothing else, `version: None`, and it **cannot** return `Err`. So on this host `version={version}` (183) has no value to print, `available_write_only` (186) is not one of macOS's two codes, `cfg!(target_os = "linux")` is compile-time false in front of `sandbox_remedy` (189), and `Err` (197-201) has no producer — the only `?` in the function is in the **Windows** arm. `Status::Warn` (173) is the exception: it needs the probe to be unavailable, i.e. a macOS host where `/usr/bin/sandbox-exec` is absent. **W2** — 3 defensive lines: the empty-key guard (140) after an accessor that already normalises `""` to `None` (`auth.rs:525-544`, the `.filter(..)` that drops an empty key), the `Stdio::piped` pair (387) of a child spawned with `.stdout(piped()).stderr(piped())` and `take()`n once, and the drain tasks' `JoinError` (419) for tasks whose body is `tokio::io::copy(..)` with the result discarded and no abort handle kept. | **W1**: the same lane on Linux (185-189, 197-201) or Windows (197-201); for 173, a macOS host without `/usr/bin/sandbox-exec` — SIP protects it on a normal install, so removing it is not a test's move. **W2**: an accessor that stops filtering empty keys (140), a spawn that omits `.stdout(piped())` (387), or a drain task that can panic (419). | 140: `login_with_an_empty_key_reads_as_not_logged_in` asserts `key == None` for `""` **and** `""`-is-not-the-boundary by then logging in with `"k"` — the guard is unreachable *because* that assertion holds. 173: `doctor_all_checks_passed` already carries the else-branch for a host whose probe is unavailable — it expects `OS sandbox`/`code=` and **no** all-clear, which is what 173 produces. 183/186/189/197-201: the same test takes the `Ok` + `available` path and prints the `backend=/code=/available=` row (175-178). 387/419: `a_probe_that_cannot_be_started_is_reported_as_such`, `doctor_captures_partial_version_from_hanging_binary` and `binary_version_kills_a_probe_that_never_exits` all reach the drain tasks and their completed joins |
 
 > A line whose text is nothing but a closing token (`}`, `})`, `});`, `))`, `));`, `)?;`,
 > `}),`, `],`) reads `DA:0` whenever the *construct it closes* is not re-entered on the last
@@ -135,17 +245,65 @@ line, W7 mock closure, W8 dead producer.
 > statement whose only execution is "fall through to the brace" has no counter to increment.
 
 Nothing is lost by excluding it from the numerator's accounting **as a class** — and nothing
-is gained by waiving it line by line, which would turn 80 measurements into 80 assertions.
-The count is printed by `classify.py` on every run so it cannot grow silently: `80` at this
-measurement, `86` at wave 10, `97` at wave 3, `119` at wave 2.
+is gained by waiving it line by line, which would turn 73 measurements into 73 assertions.
+The count is printed by `classify.py` on every run so it cannot grow silently: `73` at this
+measurement, `75` at wave 16, `76` at wave 15, `77` at wave 14, `79` at wave 13, `86` at
+wave 10, `97` at wave 3, `119` at wave 2. The two that left the class are
+`commands/mcp_client.rs:475` — the `));` of the `format!` a new test now reaches at wave 16 —
+and, one wave later, `commands/session_journal.rs:367`, which wave 17 found was never a
+closing token at all: it is the `}` of an `if` whose body `break`s, and llvm-cov gives it a
+counter (see §*Eight lines in one file…*).
 
-All 53 registered lines were re-read against `cli-lcov-13.info` when this wave landed
-(`waiver_check.py`, `checked=53 stale=0`), so no row is stale. Four of them
-(`relay/cli.rs:245`, `relay/cli.rs:522`, `commands/remote.rs:2631`, `commands/remote.rs:2810`)
-are also closing tokens, which is why the class count is 79 of the 266, the registered
-statements are 49 and not 53, and 79 + 49 + 130 + 8 = 266.
+All 83 registered lines were re-read against `cli-lcov-17.info` when wave 17 landed
+(`waiver_check.py`, `checked=83 stale=0`), so no row is stale. Ten of them
+(`relay/cli.rs:245`, `relay/cli.rs:522`, `commands/remote.rs:2631`,
+`commands/remote.rs:2810`, `prompt.rs:74`, `relay/room.rs:170`, `relay/jwt.rs:50`,
+wave 16's `commands/mcp_client.rs:322` and `commands/mcp_http.rs:317`, and row 24's
+`commands/doctor.rs:201`, the `},` of the sandbox probe's `Err` arm) are also closing tokens,
+which is why the class count is 73 of the 234 and the registered statements are 73 and not
+83. Two more of the 73 are the decision block's (`headless/mod.rs:494-495`), so the 234
+divides as **83 registered + 8 decision + 143 work items**, and the 143 work items carry
+**82 statements and 61 closing tokens**.
 
-Four of this wave's seven new rows were written *after* trying to cover them, and each of
+That reading corrects the previous wave's arithmetic in two places, both of which the same
+`shape16.py` now prints on every run: wave 15's 62 registered lines divide as **7 closing
+tokens and 55 statements**, not the five and 57 written there (it counted `prompt.rs:74` and
+`relay/room.rs:170` as statements), and its 180 work items were 113 statements and 67
+closing tokens, not 111 and 69. The totals those two waves reported — 250 and 76/174 — were
+right; only the split inside the registered rows was off by two.
+
+### A brace that executes and still reads zero
+
+`commands/configure.rs:660` and `:804` are the `}` of `if let Ok(number) = …` in
+`ask_non_negative_f64` and `ask_positive_i32`. Their text says "closing token", so
+`classify.py` files them in the class — but the class rule is an *attribution* rule, and it
+was not obvious here that the lines are unreachable, because the fallthrough that reaches
+them is a real input: a price that parses and is negative.
+
+It is already exercised. `unusable_answers_are_refused_and_the_next_one_is_taken`
+(`configure.rs:2066`) feeds `-1` as the input price and `0` as the context window, and
+asserts both refusal sentences — `out.log_err` sits on the line *after* each brace, so on
+every run of that test the source position is walked through and the counters still read 0.
+
+Measured rather than assumed: this wave first added a dedicated unit test over the two
+prompts (`FakePrompter` answering `-1` then `2.5`, and `0` then `16384`), falsified both
+halves (each red on its own assertion when the input is made valid), and re-measured. The
+first report was **244**: the braces were still `DA:0`, and the only lines the new test
+added were two of its own assertion messages. The test was dropped and the report re-taken
+(**242**), because the refusal it pinned is already pinned one function away, and paying two
+permanent `DA:0` lines for no product line is the wrong trade.
+
+So the class holds for a line whose body `return`s: llvm-cov gives the closing brace no
+counter of its own, and no input can change that. What the experiment bought is the certainty
+that these two are in it for that reason and not because the path is never taken.
+
+Rows 17 and 18 are the last unregistered lines of `commands/remote_peers.rs`: with them the
+file's 20 `DA:0` lines divide exactly into **11 closing tokens** (`411`, `671`, `692`, `806`,
+`906`, `988`, `992`, `1009`, `1045`, `1065`, `1118`), **5 statements in row 16**
+(684, 687-690) and **4 statements in rows 17-18** (985-987, 991). The file has no work item
+left, which is why it moved from the *Not waived* table to a sentence in this one.
+
+Four of wave 13's seven new rows were written *after* trying to cover them, and each of
 them names the measurement that changed the answer rather than a guess:
 
 * row 16 was assigned as "add's disconnected arm, build it a second bridge". The arm cannot
@@ -184,6 +342,19 @@ fail (to evaluate their messages) or a host with no CA store — both worse than
 measurement they would buy. `classify.py` prints them as ordinary statements, so they stay
 visible in this file rather than disappearing into a class.
 
+### The six test-side lines outside `commands/remote.rs`
+
+The same rule applies to two other files, and they are listed here for the same reason — a
+`DA:0` inside `#[cfg(test)]` is instrumented, so it has to be counted somewhere:
+
+| lines | what they are | why 0 |
+|---|---|---|
+| `commands/configure.rs:1068-1072` | the `seeded.len()` / `serde_json::from_str(..).and_then(..)` / `auth_json_path() == auth_path` arguments of `existing_future_token_can_keep_current_login`'s "seed replaced before configure" message | an assertion's message arguments are evaluated only when the assertion fails; this one passes on every run, and the *value* it protects (the seed surviving `configure`) is asserted right below by the file's contents |
+| `commands/mcp_client.rs:1296` | `process.stderr_tail()` as the argument of `the tail never reached the last line: {}` in the stderr-ring test | same rule: the assertion is the `settled` flag, which the test then proves independently by reading the tail and comparing its first and last line |
+
+Both were re-read against `cli-lcov-16.info`; neither can be moved by an input, and making
+them `DA:1` would mean writing an assertion that fails on purpose.
+
 ## The launch test that could not say why it failed (5 test-side lines, wave 13)
 
 `browser::safari::safari_manager::tests::launch_then_become_reachable_reports_started`
@@ -208,7 +379,63 @@ in **0.04 s**; before the change the same input printed the marker-wait sentence
 full 20 s. That is the diagnostic's positive control, and the reason this wave's per-file
 count for the file went *up* by five while the lane's went down by thirty.
 
+**Where that landed (wave 14).** The flake workstream closed the item on a different branch
+(`0900e710c`, in this wave's final base): the 20 s wait is gone, the wait now ends when the
+fixture's record appears *or* when the launch task finishes, and its bound is the product's
+probe budget — a count, not a duration. Its injected control (a driver that sleeps 25 s
+before touching its marker) was **2/2 red** with the old shape and green with the new one, so
+the arm was (e), `/bin/sh` starved past the test's own clock, and never a foreign listener.
+The `DA:0` lines this section counted moved with that rewrite: the file reads 11, not 14, on
+the base this wave is measured against, and they remain test-side arms. `$2` was therefore
+not ported — see `cli-safari-gate-flake.md` §7.
 
+
+
+## Two launch arms that had never run (6 lines, wave 14)
+
+Both of these are in `headless::session`, and both were registered as "needs the whole
+heavyweight `headless_cli` fixture, not a unit test". They were right about the *shape* and
+wrong about the cost: the fixture existed, and each arm is **one** more launch in it.
+
+**`--relay` (302/306).** The flag had only ever been *parsed*:
+`relay_flags_are_accepted_in_both_spellings` stops at `--help`, and no test in this crate had
+started a relay run. A launch now really runs: `future host --relay
+http://127.0.0.1:1` serves, prints "Self-hosted relay (…). No Future account is used for phone
+pairing", takes the `None` account branch and stays up (`No device is paired yet`), then
+stops cleanly on SIGINT. The port is a loopback one nothing listens on **on purpose**: the
+decision is printed before any connection is attempted, so a reachable relay would add a race
+without adding a property. The test asserts the *absence* of the signed-out sentence (the
+other branch of the same decision) and reads the credential file back — the embedded Agent
+writes a placeholder `auth.json` of its own, so the file's existence means nothing, while a
+key in it would prove the account branch had run. Measured: the first version asserted the
+file's *non-existence* and failed in 5.42 s on that placeholder; the key is the assertion
+that measures the decision.
+
+**The catalogue the *Agent* refuses (656-658).** This one is not reachable by an unreachable
+Agent: `host::agent_bridge::queries::sync_future_models` answers a **zeroed result**
+(`synced: false`) for an Agent it cannot connect to — "best-effort" by its own doc comment,
+pinned by `sync_future_models_variants` (`Down agent → zeroed result`). The only input that
+reaches the error arm is an Agent that answers and *rejects*, which is exactly what
+`future_host::test_support::agent`'s scripted mock is for. So the test pins
+`FUTURE_AGENT_GRPC_ADDR` at that mock, scripts
+`reject_default("sync_future_models", …)`, serves the platform's profile endpoint from a
+loopback listener (the account must be adopted for a refresh to happen at all), and waits for
+the product's own sentence:
+
+```
+Model catalog refresh failed; existing configured models remain available: the platform\
+catalogue is unavailable
+```
+
+It then asserts the run went on to `Preparing the remote connection...`, that it did not call
+itself signed out, and that SIGINT still stops it cleanly. The target is
+`cli/tests/headless_catalogue_refusal.rs` and it holds **one** test: `mock_agent()` points a
+process-wide `FUTURE_AGENT_GRPC_ADDR` at itself, and a single-test process is the only way to
+use it without the value leaking into another test's child. Row 16's lesson, applied instead
+of re-learned.
+
+Neither target adds an instrumented line: both live in `cli/tests/`, which the report does
+not cover. So the wave's arithmetic is the six lines it closes and nothing else.
 
 ## Rows this wave closed
 
@@ -217,6 +444,15 @@ names the input that reaches it:
 
 | was | now covered by |
 |---|---|
+| `commands/session_journal.rs` **8 → 0** (wave 17): the three `--json` documents (300, 329, 364), the `MAX_SLICES` refusal (350-353), and the `}` of `if report["hasMore"] …` (367) | four `MockAgent` tests, one per branch: `a_report_as_json_is_the_agents_payload_verbatim` (`--json`), `a_dry_run_as_json_prints_the_plan_then_the_advice` (`--reclaim --json`, asserting the document precedes the advice), `an_applied_sweep_as_json_prints_the_final_slice` (a response *sequence* so the plan and the slice carry different counts — otherwise the plan's document satisfies every assertion on the slice's), and `a_sweep_that_never_finishes_stops_at_the_cap_and_says_how_to_resume` (a server answering `hasMore: true` for ever; 257 recorded commands = one plan + 256 slices). Falsified one mutant each: the branch deleted, the plan branch deleted, the slice branch deleted, and `MAX_SLICES` set to 255 — each turned exactly one test red on its own assertion. The fourth mutation is also the assertion that the constant is load-bearing rather than decorative. |
+| `commands/session_wait.rs` **5 → 1** (wave 16): `finish_of`'s `let Some(terminal) = … else { return Finish::Interrupted }` (231) and its `error` return (238), plus the `Finish::Error` arms of `token()` (202) and `detail()` (215) whose sentences those returns produce | `a_stream_that_closes_without_an_end_is_reported_as_interrupted` and `an_error_terminal_is_reported_as_an_error` — two `MockAgent` runs: one whose event list ends after a `text_chunk` (no `agent_end` at all), one whose `agent_end` carries `"error": "the model refused"` *and* `"state": "completed"`. The first asserts the token, the detail sentence and that the partial text is still printed; the second asserts the error token wins over the completed state. Both falsified first: giving the first run a terminal event, and dropping the `error` field from the second, each turned the same test red on its `expect_err`. |
+| `commands/mcp_client.rs` **8 → 5** (wave 16): `ServerProcess::start_with_frame_cap`'s "server … has no \"command\" — it is configured as an HTTP endpoint" (473-475; 475 is the `));` of its `format!`) | `an_http_endpoint_is_not_started_as_a_stdio_server`: a `ServerSpec` whose only transport setting is `url`, handed to the stdio starter. Falsified: with a `command` in the spec the same call answers "could not start the MCP server …: No such file or directory", so the assertion is about the transport and not about a missing binary. |
+| `commands/mcp_servers.rs` **5 → 4** (wave 16): `mcp_add`'s empty-key `--header` refusal (1136) | one more row in `add_stores_an_http_endpoint_and_its_headers`'s table: `--header ': value'`, asserted with the offending pair in the message (`got ': value'`) so it cannot be the no-colon arm beside it answering. Falsified: with the empty-key guard removed the same call stores a header with an empty name, i.e. the row panics on `unwrap_err()` of an `Ok`. |
+| `relay/config.rs` **4 → 0** (wave 15): the seed refusal (116), the two TTL refusals (119, 127), and the empty certificate field (132) | `an_account_seed_nobody_generated_is_refused_by_name`, `a_ttl_that_has_already_elapsed_is_refused`, `a_certificate_field_that_is_set_but_empty_is_refused` — three tests over `validate()`, each asserting the sentence *and* the field it names, because an operator reads the sentence and greps for the field. None of them is a new rule: the four refusals existed and had never been run. |
+| `relay/sign.rs` **2 → 0** (wave 15): `VerifyError::code`'s `Malformed` (80) and `BadSignature` (82) arms | `an_unreadable_or_foreign_signature_is_named_on_the_wire` — two requests to the roster route: a signature header that is not base64, and a genuine signature made by a key other than the one the header names. `Missing` and `Stale` were already on the wire; these two were the codes no test had asked for. The same test then takes the host's own signature and gets `200`, so both refusals are about the signature and not the request. |
+| `commands/data.rs` **21 → 19** (wave 15): `work`'s `symlink_metadata` error arm (638) and one closing token | `a_restore_work_directory_the_filesystem_cannot_name_is_an_error_not_an_absence` — a restore target home nested to 985 bytes, so `<home>/.restore-work-<id>` (46 bytes below it) is the one path the filesystem refuses while the home, its `app`/`agent` children and the pending marker all still resolve. Falsified before it was kept: at 300 bytes the same test panics on `unwrap_err()` of an `Ok`, i.e. the restore really succeeds and the assertion is not vacuous. |
+| `headless/mod.rs` **18 → 17** (wave 15): 451, `AccountAction::Adopt`'s `remote::status()` — the switch-off arm of "a login appeared" | `a_login_adopted_while_the_switch_is_off_serves_nothing_until_the_switch_returns` (`cli/tests/headless_cli.rs`) — a launch: the switch is stored off, the entry starts signed out, `auth.json` appears under the running host, and the run adopts it **without** asking the platform for a token; `future remote enable` afterwards starts serving from the same process, which is what proves the adopted account is still there. Falsified: with the switch left on, the same test fails on the no-token assertion because the arm took `remote::enable()` instead. |
+| `headless/mod.rs` **24 → 18** (wave 14): the `--relay` sentence and the `None` account it decides (302, 306), and the catalogue-refusal report (656-657; 658 `);` and 456 `}` are closing tokens) | `a_relay_launch_serves_without_a_future_account` (`cli/tests/headless_cli.rs`) and `a_catalogue_refresh_the_agent_refuses_is_reported_and_the_run_keeps_serving` (`cli/tests/headless_catalogue_refusal.rs`) — see *Two launch arms that had never run*. |
 | `commands/models.rs` **12 lines → 0** (wave 13): `refresh_failure_reason`'s platform-failure sentence (380-381), the arm that reports it (350), and the `source: "cache"` document a script reads instead of the sentence (354-362) | `a_failed_platform_fetch_is_reported_as_the_network_not_the_login` — a credential pointing at a refused port, so the local fetch fails *and* the credential exists, which is the only input that separates the network sentence from the login one (the file's existing tests reached neither: one has no credential, the other's fetch succeeds). `a_local_refresh_reports_itself_as_the_cache_in_json` — the same real platform fixture, asking for the document. The file now reads 0 `DA:0`. |
 | `commands/session.rs` **11 → 1** (wave 13): `session prune`'s dispatch (1471), `list`'s own argument shape — `--parent` with no value (1514-1515), `--help` (1520-1522), an unknown option (1524-1526) — and `option_label`'s unmodelled-key label (1427) | `the_dispatcher_reaches_prune`, `list_refuses_its_own_unknown_and_valueless_options`, `an_unmodelled_setting_keeps_a_generic_label`. The one line left is a closing brace (1338). |
 | `commands/session_journal.rs` **15 → 8** (wave 13): `number`'s string arm and its unknown-shape arm (121-122), `short`'s truncation (134), `local_time`'s "never" (140), the report's "never" and "none recorded" rows (222, 260), and a kept journal's reason (273) | `counters_read_a_string_and_degrade_an_unknown_shape_to_zero`, `long_run_ids_are_shortened_and_short_ones_are_not`, `an_absent_instant_reads_as_never`, `a_report_with_no_history_says_never_and_none_recorded`, `a_kept_journal_prints_the_reason_it_was_kept`. All five are pure functions of a report document, so none of them needs an Agent. |
@@ -226,6 +462,150 @@ names the input that reaches it:
 | `commands/remote_peers.rs` 78 → 29 (49 lines) — `add`'s pairing and its report (638-700), `takeover` on an empty book (862-866), `remove` on a Desktop that holds the lock and never answers (1084-1087), and the row a Desktop reports that the book does not hold (545) | `add_says_which_machine_it_paired_and_who_connects_it` — a **real** pairing: a host bridge on the in-process broker, a claim the mock platform grants, one Noise handshake, and the book written where the next start reads it. Plus `takeover` in `an_action_on_an_empty_book_names_the_paired_command`, `remove_proceeds_here_when_the_desktop_never_answers`, `list_keeps_a_pairing_the_book_and_the_desktop_disagree_about`. |
 | `headless/mod.rs` 42 → 24 (18 lines) — the switch-off report (382/387), the idle notice (511-517), the refused-key refusal (326/329/330) and the transport failure while verifying (334) | `a_switched_off_remote_desktop_stays_up_and_comes_back_without_a_restart` (one run: the switch is off, nothing is served, and `future remote enable` from another terminal starts serving **without a restart**), `a_stored_key_the_platform_refuses_leaves_the_machine_serving_locally`, `an_unreachable_platform_while_verifying_is_reported_as_a_failure`. |
 | `headless/mod.rs` 249 + 951-953 — the loop's own stop cause | `a_loop_that_returns_is_its_own_stop_cause`: the session arm of `until_shutdown` returns `StopCause::Session`, whose reason is `headless_exit` and whose terminal words are "an internal stop" — not one of the three signal names. |
+
+## Nine lines in four places, and the arms that stayed out of reach (wave 15)
+
+Each of these was a *statement* that read `DA:0` and that no wave had written down, so the
+finding worth keeping is not the test — it is which part of the arm was the obstacle.
+
+**The relay's four config refusals and its two signature codes had never run.**
+`RelayConfig::validate` refuses a whitespace `account_seed`, a TTL of zero and a certificate
+field that is set but empty; every one of the four `bail!` lines was uncovered, because the
+file's tests cover the *other* four refusals (empty endpoint, long-lived JWT, half a
+certificate, and the round trip). Nothing new is measured by running them — which is exactly
+why they had drifted, and why the tests assert the sentence *and* the field name: the sentence
+is what an operator reads and the field is what they grep for.
+
+`VerifyError::code` had the same shape from the other side. `Missing` and `Stale` reach the
+wire (the roster route answers `401 signature_missing` / `401 signature_stale`), so the two
+arms that a client-visible code had never produced were `Malformed` and `BadSignature`. Both
+are input-driven: a signature header that is not base64, and a genuine signature made by a key
+other than the one the header names. The test drives the real handler twice and then takes the
+host's own signature to a `200`, so the refusals cannot be about the room or the request.
+
+**A restore work directory the filesystem cannot name (`commands/data.rs:638`).** `work` reads
+an absent `.restore-work-<id>` as "no restore has started", so the arm between that and a real
+error needs an OS failure other than `NotFound`. `ENAMETOOLONG` is one a *path* produces
+without any injection: on macOS the limit is 1023 bytes, the work directory is 46 bytes below
+the home, and the pending marker is 25, so a home of 985 bytes leaves the work directory as the
+single path over the limit while everything around it still resolves. The test builds exactly
+that (`nested_home`) and calls `begin_restore`; the error is `File name too long (os error 63)`.
+
+It was falsified before it was kept: at 300 bytes the same test panics on `unwrap_err()` of an
+`Ok` — the restore really succeeds — so the assertion is not "some error happened".
+
+**Why the same trick does not reach the other three (`293`, `359`, `591`).** This is the
+measurement this wave adds to `commands/data.rs`'s row, and it is negative on purpose. All four
+lines look alike — `Err(error) => return Err(error.into())` after a `symlink_metadata` — but only
+`work`'s is reachable that way. `collect` and `inventory` both resolve their path through
+`relative(..)`, which calls `without_links`, and `without_links` `lstat`s *every component in
+order*: at the component where the path crosses the limit it returns its own error, one frame
+before the arm under discussion. `root_digest`'s caller (`finish_restore_with`) builds its path
+from `work(home, ..)`, which is under the limit or the restore never started. So those three
+need a *transient* failure of a path the filesystem just resolved — `EIO`, `ESTALE`, or the
+directory disappearing between two reads — which is a race window (W4), not an input. The row
+now says so instead of implying the whole family is one `ENAMETOOLONG` away.
+
+**The login that arrives while the switch is off (`headless/mod.rs:451`).** The adopt arm has
+two halves — `remote::enable()` when the switch is on, `remote::status()` when it is off — and
+only the first had a launch. The new target is the existing switched-off test crossed with the
+existing login-appears test: start signed out with the switch stored off, write `auth.json`
+under the running host, and require that nothing is asked of the platform for the next three
+seconds. Falsified the same way: with the switch left on, the identical test fails on precisely
+that assertion (`["/client/v1/remote/auth/token", …]`), because the arm took `enable`. Then
+`future remote enable` from another terminal starts serving from the same process, which is what
+proves the adopted account was kept rather than merely reported.
+
+**What that test cannot say.** The sentence this arm prints is
+"Platform account signed in (…): starting the remote desktop for it." — and when the switch is
+off it starts nothing (see observation 5 below). The test therefore does not assert the sentence;
+it asserts the two effects that distinguish the arms (no token request now, a token request after
+the switch returns). A message can lie about which line ran; the platform's request log cannot.
+
+## Eight lines in three files, and a fourth test that was thrown away (wave 16)
+
+The group this wave was handed was "one or two refusal/report arms per place" — `configure.rs`,
+`mcp_client.rs`, `session_wait.rs`, `mcp_http.rs`, `mcp_servers.rs`, 30 lines between them.
+By shape they are 21 statements and 9 closing tokens, and each line is now in exactly one
+bucket: of the statements, **8 run under a test** and **7 became rows 20-23**; **6 are test-side**
+(5 of them `configure.rs`'s assertion arguments, 1 in `mcp_client.rs`); and of the 9 closing
+tokens, 2 are inside the new rows and the other 7 are the class. What is left of `configure.rs`
+— 2 closing tokens and 5 test-side lines — is written down in two paragraphs below and in
+§*A brace that executes and still reads zero*, which is the measurement behind the first two.
+
+**`session_wait`'s two dead finishes were the real gap.** `finish_of` returns
+`Interrupted` for a stream that closed with no `agent_end` and `Error` for a terminal event
+carrying an error; the whole three-state vocabulary around them (`token()`'s `error`,
+`detail()`'s `error`) existed for those two returns, and every existing test streamed an
+`agent_end` with `{}` or a `state`, which is the `Answer`/`EmptyAnswer`/`Interrupted` path.
+Two `MockAgent` runs closed it — the event list is a *replay*, so "the stream ends here" is
+written by simply not appending a terminal event, which is what makes the arm reachable
+without a seam.
+
+**`mcp_client`'s refusal and `mcp_servers`'s header pair were one refusal each.** The first is
+the transport mix-up a user actually makes (`--url` entry, stdio starter); the second is a
+`--header ': value'` pair, which is the *second* refusal in that loop — the no-colon one
+already had a test, so the new row asserts the message *including* the offending pair, which
+is the only way to tell the two arms apart from outside.
+
+**`mcp_http`'s "acknowledged without answering" is a message nothing can print.** It reads
+like the right thing to say when a server answers `202` to a request, and that is exactly why
+it was worth checking rather than waiving on sight: `exchange` returns `Ok(None)` from the
+notification branch alone, and `request` always passes an id, so the arm is dead — while a
+`202` to a request really leaves through `read_json_answer`'s "sent an unreadable frame"
+one frame later. Row 22 records both halves, because the interesting finding is that the
+sentence an operator would want is unreachable *and* something else is what they get.
+
+**`mcp_client`'s `impl Rpc for Session` is half live** (row 21), the same shape one level
+down: the trait exists so stdio and HTTP share one handshake, the HTTP side goes through
+`Rpc::notify`, and the stdio side calls the inherent method on a concrete `Session`, where
+the trait's method can never win. One line (`Rpc::notify(self, …)` in `Session::initialize`,
+as its twin already writes) would make it live; that is a product edit this lane does not
+make for a counter, so it is written down as the falsifier instead.
+
+## Eight lines in one file, and twelve that were never going to run (wave 17)
+
+The group was `commands/session_journal.rs`'s eight lines and `commands/doctor.rs`'s twelve.
+The first eight closed with four tests. The second twelve did not close, and the reason is the
+substance of this wave: every one of them had already been explained in this file, in full
+prose, under a heading that claims *reachable* — and the prose said otherwise on every line.
+
+**The three `--json` arms were misfiled as W2.** `journal --json`, `journal --reclaim --json`
+and the applied sweep's final slice all end in
+`serde_json::to_string_pretty(..).map_err(|e| e.to_string())?`, and the old row read that as a
+*defensive* arm: "serialising this module's own structs cannot fail". That is true and it was
+the wrong sentence, because the arm is not a failure path — it is the success path of a flag.
+`Value` came from the Agent, and the `?` is reached by *every* `--json` run that succeeds.
+Nothing had ever passed `--json` to this module, so the arm had never run at all. Three tests,
+one flag each. The general lesson, which is what makes it worth writing down: **"this cannot
+fail" is a property of the line; "this never ran" is a property of the input** — and a W2
+waiver for the first is not evidence for the second.
+
+**The cap had a number wrong and a class wrong.** The old row said the `MAX_SLICES` refusal
+(350-353) needed "a journal of 64+ slices". The constant is **256**
+(`session_journal.rs:345`), so the row named an input that would still have read `DA:0` at
+64. And what the state actually needs is not slices of journal at all: the cap fires on a
+server that answers `hasMore: true` for ever, which a `MockAgent` supplies in one line and
+256 local round trips — 0.3 s for the whole test, no sleep, no seam. The same run then also
+closed 367, which had been filed as a **closing token**: it is the `}` of `if report["hasMore"]
+…`, llvm-cov gives it a counter, and it was dark for the same reason the body was — no run had
+ever left `hasMore` true. So this wave closes one line this file treated as a closing token
+(a class it does not promise to cover) and four more that it described with an input that could
+not have reached them.
+
+**`doctor.rs`'s twelve are a bookkeeping gap, not a measurement.** They were in the
+*Not waived — reachable* table, whose preamble says "each names the input that would make the
+line run; none of them is claimed as unreachable" — while its own cell for `doctor.rs` named
+`W1` and `W2`, cited `cfg!(target_os = "linux")` for 189, and said the `Err` arm "has no macOS
+producer". Every sentence there is a waiver argument. Moving them to row 24 changed no
+measurement and no count of lines; it changed which bucket twelve lines sit in, and it took
+the work-item table from ten rows to eight. The *Not waived* heading is now true of everything
+under it.
+
+**A flake in the lane's own relay pass, recorded rather than fixed.** The nats leg failed once
+on its first instrumented run (`expect_delivery`'s 5 s deadline, 3/3 green uninstrumented) —
+see §*How this lane is measured*. It is a genuine wall-clock dependency in a test this lane
+does not own, and raising the deadline would have hidden it rather than answered it.
 
 ## The `future-host/test-support` decision — taken, in this wave
 
@@ -268,19 +648,38 @@ Wave 10 left this open and framed it as a lane decision. It is settled:
 These are work items. Each names the input that would make the line run; none of them is
 claimed as unreachable. `commands/remote.rs` is **not** in this table any more: its 31
 `DA:0` lines are 14 registered rows, 2 closing tokens and 15 test-side lines, all accounted
-above.
+above. Neither is `commands/remote_peers.rs`: wave 14 registered its last four statements
+(rows 17-18), and its 20 lines now divide into 11 closing tokens, 5 registered statements in
+row 16 and 4 in rows 17-18 — every one of them named above. Wave 17 took two more files out:
+`commands/session_journal.rs` closed all 8 of its lines with tests, and `commands/doctor.rs`
+moved to row 24 — the second is the bookkeeping gap this lane had left in its own table, where
+twelve lines were explained in full prose under a heading that says *reachable* while every
+sentence in them said otherwise.
 
 | area | `DA:0` | the input that would take it |
 |---|---:|---|
-| `commands/remote_peers.rs` | 20 | 8 of them are closing tokens (`411`, `671`, `806`, `906`, `1009`, `1045`, `1065`, `1118`); `988`, `992` and `692` close the two arms below. Six are registered (row 16). The remaining **6 statements** are one `Book::edit` arm: `rename`'s "the book changed while this ran" (985-987) and its "an entry that is not a JSON object" sibling (991 — `Value::get` on an array entry never matches `desktopId`, so a row that satisfies the `find` is an object by construction: **W2**). The first is **W4**: the closure finds its row gone, so a concurrent writer must land between `Book::load()` at the top of the function and `book.edit`'s re-read — with no `await` between them, which is why no test can place one. **(Wave 13 closed `remove`'s failed-unpair arm, 1105-1108, with a book only this command can read.)** |
-| `headless/mod.rs` | 24 | four groups, after the `NeedsAccount` notice moved out of this table into the product decision below. (a) 128: `start_logging` failing — a read-only data root or a full disk, while the entry keeps serving. (b) 302/306: a `--relay` launch (the "no Future account is used" line, and the `None` account it decides) — `FUTURE_RELAY_URL` or `--relay` reaches it, but only through the entry point itself, so it needs the whole heavyweight `headless_cli` fixture, not a unit test. (c) 451/456: a login adopted while the switch is **off** (adopted, but `remote::status()` instead of a start). (d) 523 (`Stopped` with the switch on and something to serve), 656-658 (a model-catalogue refresh the *Agent* refuses), 857-859 (`stop`'s runtime build failing — W2), and 951-953 plus 1183, which are two test-side arms: the closure body a "startup was dropped" test must never poll, and a fixture-discovery `panic!` (covered until wave 13; an upstream commit re-shaped the fixture that used to take it, so it is uncovered again and belongs to that commit's owner). |
+| `headless/mod.rs` | 17 | three groups, after the `NeedsAccount` notice (8 lines, below) and the login-while-off arm (451, **closed in wave 15**) are out of this table. (a) 128: `start_logging` failing — a read-only data root or a full disk, while the entry keeps serving. (b) 523 (`Stopped` with the switch on and something to serve), 857-859 (`stop`'s runtime build failing — W2), and 951-953 plus 1183, which are two test-side arms: the closure body a "startup was dropped" test must never poll, and a fixture-discovery `panic!` (covered until wave 13; an upstream commit re-shaped the fixture that used to take it, so it is uncovered again and belongs to that commit's owner). Two closing tokens (`494-495`) belong to the decision block rather than here. **Wave 14 closed 302/306 and 656-658; wave 15 closed 451** — see *Two launch arms that had never run* and *The login that arrives while the switch is off* below. |
 | `test_server.rs` | 14 | **another lane's** (upstream `9fdabcb03`/`71f93f804`): the mock listener's fd-pressure report and its platform gates — diagnostic arms a passing run cannot execute. Listed so this lane's total is fully accounted for; it is not a work item here. |
-| `commands/session_journal.rs` | 8 | three `serde_json::to_string_pretty(..).map_err(..)?` arms (300, 329, 364) — **W2**, serialising this module's own structs cannot fail —, the `MAX_SLICES` exhaustion refusal (350-353, a journal of 64+ slices), and one closing token (367). |
-| `commands/data.rs` | 21 | **4 statements** are the `Err(error) => return Err(error.into())` arms of `symlink_metadata` in `digest`/`collect`/`inventory`/`work` (293, 359, 591, 638) — **W3**: reached when the OS fails with something other than `NotFound` (`EIO`, `ESTALE`, `ENAMETOOLONG`). Permission denial does **not** reach them, and that was measured, not assumed: with the parent at `0o444` macOS still resolves `lstat` of a child, `read_dir` opens, and the *iteration* is what fails — a line `every_move_boundary…` already covers. The other **17** are closing tokens. |
-| `commands/doctor.rs` | 12 | **W1 + W2**: the **OS-sandbox probe** arms. On macOS `platform_sandbox_probe_product()` always returns `Ok`, always reports `version: None`, and its `code` is only `available`/`binary_missing` — so `Status::Warn` (173) needs `/usr/bin/sandbox-exec` **absent**, `version={version}` (183) can never print, `available_write_only` (186) and `sandbox_remedy` (189) are Linux-only, and the `Err` arm (197-201) has no macOS producer. The remaining two are defensive: an empty key the accessor has already normalised to `None` (140) and a `Stdio::piped` pair that is piped by construction (387), plus one `join` error from a copy task that cannot panic (419). |
+| `commands/data.rs` | 19 | **3 statements** are the `Err(error) => return Err(error.into())` arms of `symlink_metadata` in `root_digest`/`collect`/`inventory` (293, 359, 591), plus **16 closing tokens**. Wave 15 closed the fourth of that family (`work`, 638) with a long home *and* measured why the same trick does not reach these three — see *A restore work directory the filesystem cannot name* below: `relative`/`without_links` refuses the identical path one frame earlier, so the arm behind them needs a *transient* OS error (`EIO`, `ESTALE`), not a long one. Permission denial does not reach them either, and that was measured in wave 12, not assumed. |
 | `relay/cli.rs` | 15 | registered above (rows 1-5): process lifetime, W3, W1 |
+| `relay/jwt.rs` | 5 | registered above (row 19), `Role::as_str`: a dead accessor, not a work item |
+| `relay/config.rs`, `relay/sign.rs` | 0 + 0 | at metric A's floor since wave 15 (both were work items with no row: a validation refusal never run and two error codes never asked for) |
 | `commands/session.rs`, `models.rs` | 1 + 0 | both are now at metric A's floor (`session.rs` has one closing brace left) — no work item remains in either |
-| `commands/configure.rs`, `mcp_*`, `browser/*`, `headless/agent.rs` | 7+18+14+14 | one refusal/report arm each. `headless/agent.rs`'s 14 are named in the `supervise` section below. |
+| `browser/*`, `headless/agent.rs` | 14 + 14 | one refusal/report arm each. `headless/agent.rs`'s 14 are named in the `supervise` section below. Wave 16 took `commands/configure.rs` and the three `mcp_*` files out of this row — see the paragraph below and rows 20-23. |
+
+Wave 16 finishes the group that shared that row. `commands/session_wait.rs` (1), the three
+`mcp_*` files (5 + 5 + 4) and `commands/configure.rs` (7) now divide exactly, with nothing
+left as a work item: 4 registered statements and 1 registered closing token plus 4 covered
+lines in `session_wait.rs`; 2 registered statements, 1 registered closing token, 1 covered
+line and 1 test-side line in `mcp_client.rs`; 4 registered statements and 1 closing token in
+`mcp_http.rs`; 1 registered statement, 1 covered statement and 3 closing tokens in
+`mcp_servers.rs`; and in `configure.rs` **2 closing tokens** (660, 804 — the braces of the two
+numeric prompts, whose fall-through input an existing test already supplies; §*A brace that
+executes and still reads zero* is the measurement) and **5 test-side lines** (1068-1072, an
+assertion's message arguments).
+
+`browser/*` keeps its 14 because they are another lane's diagnostic arms (the sitemap and
+Chromium-manager report paths), and `headless/agent.rs`'s 14 stay named in `supervise` below.
 
 ### A product decision, not a waiver: `headless/mod.rs:488-495`
 
@@ -335,9 +734,9 @@ PhaseAction::NeedsAccount => {            // Failed(AccountAuthorization) && !se
    a W2 row: a W2 row would claim "the input does not exist", and what is measured is
    narrower — "no CLI input exists *today*".
 
-For the arithmetic: these 8 lines are neither in the 49 registered nor in the work items
-below; they are the third category (79 closing tokens + 49 registered + 130 work items +
-8 decision-pending = 266).
+For the arithmetic: these 8 lines are neither in the 83 registered nor in the 143 work items
+above; they are the third category (**83 registered + 8 decision-pending + 143 work items =
+234**), and two of them (`494`, `495`) are closing tokens.
 
 ### `supervise` — the wave-3 plan, executed in wave 10
 
@@ -371,7 +770,7 @@ is whole seconds — so `floor(t + 1.1) >= t + 1` for **every** `t`. The sleep i
 so there is no window in which a slower run flips the result. What would make it a flake is
 a clock that could return early or a fractional `now()` — neither is in this code.
 
-## Three product observations made while writing these tests
+## Four product observations made while writing these tests
 
 None is a coverage matter, and none was fixed here (no product semantics were changed in
 this lane):
@@ -396,16 +795,28 @@ this lane):
    pairing with a warning, or a failed command. Whoever owns `packages/remote-client` should
    pick one; the coverage row follows from the answer, and the arm is the only place the
    first contract is written down.
+5. `headless`'s adopt arm prints "Platform account signed in (…): starting the remote desktop
+   for it." on **both** halves of its own decision — and the switch-off half starts nothing
+   (it re-reads `remote::status()`). An operator who turns the switch off, then signs in from
+   another terminal, is told the remote desktop is starting when it is not, and the next line
+   they see is `Remote desktop is off (the switch is off)`. The sentence is the one place the
+   contract is written down: either it should say "…: the switch is off, so nothing started"
+   on that branch, or the branch itself is wrong. Wave 15's test asserts the *effects* (no
+   token request while the switch is off, one afterwards) rather than the sentence, so fixing
+   the wording does not invalidate the measurement.
 
 ## What this file cannot claim
 
-- **Not per-line 100 %.** 266 lines read 0. The lane's compliance statement is the one
+- **Not per-line 100 %.** 234 lines read 0. The lane's compliance statement is the one
   `docs/testing/coverage-waivers-2026-11/README.md` makes for the web lane: no silent gap
-  (79 one-class + 49 registered statements + 130 work items + 8 decision-pending = 266), no
-  stale row (all 53 registered lines re-read against `cli-lcov-13.info` by
-  `waiver_check.py`, `stale=0`), no product change made for coverage (no seam, no `pub`, no
-  signature — the `test-support` decision is a dev-dependency this crate already had, and its
-  whole diff is test code, including the two integration targets added in wave 12).
+  (83 registered + 8 decision-pending + 143 work items = 234, of which 73 are closing
+  tokens), no stale row (all 83 registered lines re-read against `cli-lcov-17.info` by
+  `waiver_check.py`, `checked=83 stale=0`), no product change made for coverage (no seam, no
+  `pub`, no signature — the `test-support` decision is a dev-dependency this crate already
+  had, and its whole diff is test code: the four integration targets added in waves 12 and 14,
+  one more test inside the existing `headless_cli.rs` in wave 15, five unit tests inside the
+  lib in wave 15, three tests plus one case inside an existing test in wave 16, and four unit
+  tests inside `commands/session_journal.rs` in wave 17).
 - **No stale exemptions.** If a later wave covers a registered line, the row is wrong rather
   than old and must be deleted, not reworded: `classify.py` prints the registered lines'
   current counts on every run, so the check is one command.
@@ -416,7 +827,15 @@ this lane):
   `entry?` instead of the `lstat` arms they were meant for. In wave 11, the first version
   of the `add` test drove **two** pairings in one process and failed with
   `remote_client_stopped`; the cause was not the command but the fixture's one-bridge rule,
-  and the test is now one pairing with that rule written down where it bit.
+  and the test is now one pairing with that rule written down where it bit. Wave 15's two new
+  arms were falsified the same way before they were kept: the long-home restore test panics on
+  an `Ok` at 300 bytes, and the switch-off login test fails on its own no-token assertion when
+  the switch is left on. Wave 17 repeated the exercise four times: each of its `--json`
+  branches and the slice cap were deleted in turn, and each deletion turned exactly one test
+  red — the third of those four took *two* attempts, because the first version of the slice
+  test passed with its branch deleted (the mock answered the plan and the slice with the same
+  payload, so the plan's document satisfied every assertion on the slice's), which is what
+  the response *sequence* in the kept test exists to prevent.
 - **Wave 13's own first attempt broke a neighbouring test, and the fix is in the test, not in
   the report**: the new `remove` test reached `install_runtime()` before any test had
   installed a *process-lifetime* handle, so `future_host::runtime::set`'s `OnceLock` took the

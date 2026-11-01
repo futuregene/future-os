@@ -289,6 +289,146 @@ fn build_the_menu() {
     }
 }
 
+/// Drive the one IPC command whose *body* needs the real runtime.
+///
+/// `commands::files::prepare_image_preview` takes `tauri::AppHandle` — the concrete
+/// `AppHandle<Wry>` — so the unit test beside it can only reach the generic seam behind it
+/// (`prepare_image_preview_with::<R>`); `tauri::test::mock_app()` yields
+/// `AppHandle<MockRuntime>`, a different type. This process has the real handle — the app's
+/// `setup` hook publishes it — so the command's own six lines run here.
+///
+/// Gated on the `test-support` feature: the accessor and the re-export do not exist in a
+/// default build, so the default build of this target compiles exactly as it did before.
+///
+/// Reported, not asserted: this driver must never add a red to a job whose subject is not
+/// this unit (see the module docs), so each check prints its own verdict and the summary
+/// line says how many matched — a reader of the leg's log sees the values, not just a pass.
+#[cfg(all(feature = "test-support", feature = "gui"))]
+fn exercise_image_preview() {
+    use tauri::Manager;
+
+    // `setup` runs inside `Builder::build`, so the handle appears before `Ready`; poll rather
+    // than assume which of the two wins the race.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let handle = loop {
+        if let Some(handle) = futureos_lib::test_support::app_handle() {
+            break handle.clone();
+        }
+        if Instant::now() >= deadline {
+            eprintln!(
+                "gui_main_thread_drive: the app published no handle within 10s; \
+                 prepare_image_preview is NOT covered by this run"
+            );
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    // Deliberately **outside** every scope `tauri.conf.json` grants up front
+    // (`$APPCACHE`, `$APPDATA`, `$HOME/.future`, `$TEMP` — all of which resolve under this
+    // process's isolated temp root). Anywhere under the isolated root would already be
+    // readable, so the `allow_file` this command performs would be unobservable; measured
+    // once with the fixtures under the isolated root: `is_allowed` said `true` for a sibling
+    // that had never been prepared, which is what made the check below discriminating.
+    // `/private/tmp` (not `std::env::temp_dir()`, i.e. not `$TEMP`) is the nearest one.
+    let directory = std::path::Path::new("/private/tmp").join(format!(
+        "futureos-drive-{}-preview",
+        std::process::id()
+    ));
+    if let Err(error) = std::fs::create_dir_all(&directory) {
+        eprintln!("gui_main_thread_drive: cannot create {}: {error}", directory.display());
+        return;
+    }
+    let image = directory.join("pixel.png");
+    let sibling = directory.join("sibling.png");
+    // Content is irrelevant to this command (it validates the *path*, not the bytes).
+    for path in [&image, &sibling] {
+        if let Err(error) = std::fs::write(path, b"\x89PNG\r\n\x1a\npreview fixture") {
+            eprintln!("gui_main_thread_drive: cannot write {}: {error}", path.display());
+            return;
+        }
+    }
+
+    let canonical = match image.canonicalize() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("gui_main_thread_drive: cannot canonicalize the fixture: {error}");
+            return;
+        }
+    };
+    let first = match futureos_lib::test_support::prepare_image_preview(
+        handle.clone(),
+        image.display().to_string(),
+    ) {
+        Ok(asset) => asset,
+        Err(error) => {
+            eprintln!("gui_main_thread_drive: prepare_image_preview FAILED ({error})");
+            return;
+        }
+    };
+    let second = match futureos_lib::test_support::prepare_image_preview(
+        handle.clone(),
+        format!("  {}  ", image.display()),
+    ) {
+        Ok(asset) => asset,
+        Err(error) => {
+            eprintln!("gui_main_thread_drive: prepare_image_preview (retry) FAILED ({error})");
+            return;
+        }
+    };
+
+    // Every value below is derived from the arguments the command was given, so a wrapper
+    // that dropped or mangled them changes one of them:
+    //   * the returned path is the *canonical* form of the path passed in (padding included
+    //     in the second call, so trimming is exercised too);
+    //   * the version is re-derived per call (the WebView cache key), so two preparations of
+    //     the same file must differ;
+    //   * the asset scope holds the canonical file and nothing its sibling — that scope write
+    //     is what makes a preview readable at all, and it only happens if the call reached it.
+    let first: serde_json::Value = serde_json::to_value(&first).unwrap_or_default();
+    let second: serde_json::Value = serde_json::to_value(&second).unwrap_or_default();
+    let canonical_text = canonical.display().to_string();
+    let checks: [(&str, bool, String); 3] = [
+        (
+            "path is the canonical file",
+            first["path"].as_str() == Some(canonical_text.as_str()),
+            format!("{} != {canonical_text}", first["path"]),
+        ),
+        (
+            "the version is re-derived per call",
+            second["version"].as_str().is_some_and(|version| {
+                !version.is_empty() && Some(version) != first["version"].as_str()
+            }),
+            format!("{} then {}", first["version"], second["version"]),
+        ),
+        (
+            "the asset scope holds the file and only it",
+            handle.asset_protocol_scope().is_allowed(&canonical)
+                && !handle
+                    .asset_protocol_scope()
+                    .is_allowed(directory.join("sibling.png")),
+            format!("allowed={}", handle.asset_protocol_scope().is_allowed(&canonical)),
+        ),
+    ];
+    let failed: Vec<&str> = checks
+        .iter()
+        .filter(|(_, ok, _)| !ok)
+        .map(|(name, _, detail)| {
+            eprintln!("gui_main_thread_drive: image preview MISMATCH: {name} ({detail})");
+            *name
+        })
+        .collect();
+    eprintln!(
+        "gui_main_thread_drive: prepare_image_preview ran with the real Wry handle \
+         ({}/{}) derived values match{}",
+        checks.len() - failed.len(),
+        checks.len(),
+        if failed.is_empty() { String::new() } else { format!("; failed: {}", failed.join(", ")) }
+    );
+    // Not under the driver's isolated root, so `finish` will not remove it for us.
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
 pub fn main() {
     // A notification child (`ROOT_ENV` set) reuses the primary's root so it lands on the
     // same single-instance socket; a primary makes its own and is the one that removes it.
@@ -366,6 +506,13 @@ pub fn main() {
                  window arms plus the setup-hook coverage stay host-state dependent)",
                 ready_budget().as_secs()
             );
+        }
+        // One IPC wrapper's body needs the real (Wry) handle the app published; a companion
+        // is here to *be* a notification and exits inside `Builder::build`, so it never has
+        // one. See `exercise_image_preview`.
+        #[cfg(all(feature = "test-support", feature = "gui"))]
+        if !is_companion {
+            exercise_image_preview();
         }
         // One notification, once. A companion never does this: it is here to *be* a
         // notification, or the children would notify each other forever.
