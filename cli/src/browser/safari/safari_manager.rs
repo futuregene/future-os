@@ -57,55 +57,107 @@ impl Drop for DriverPathReset {
     }
 }
 
-/// What ends the readiness poll: `None` is production (the 10 s wall-clock
-/// window), `Some(max)` is the test seam (stop after `max` probes).
+/// What ends the readiness poll while a test is running: production has no
+/// override, so the poll ends on the product's own 10 s window.
 ///
 /// The seam exists because a test that asserts "the driver is launched and the
 /// poll then finds it" would otherwise be a race between the product's 10 s
 /// window and the host: the endpoint cannot be up before the spawn (an endpoint
 /// that answered earlier takes the `already_running` arm), so an external
 /// process — the test's mock, or a driver script of its own — has to start
-/// inside the window. With a probe-count budget the outcome is decided by the
-/// retry loop noticing the answer, not by the host's scheduler; the wall-clock
-/// window keeps its own test (`start_launch_never_ready_times_out`, which
-/// asserts the 10 s wait and the `did not respond … within 10s` error).
-fn readiness_budget() -> Option<u32> {
-    #[cfg(test)]
-    if let Some(max) = *READINESS_BUDGET_OVERRIDE.lock().unwrap() {
-        return Some(max);
-    }
-    None
-}
-
-#[cfg(test)]
-static READINESS_BUDGET_OVERRIDE: std::sync::Mutex<Option<u32>> = std::sync::Mutex::new(None);
-
-/// Sets [`READINESS_BUDGET_OVERRIDE`] and restores the previous value on drop,
-/// so a panicking test cannot leak a probe budget into the rest of the binary
-/// and a nested guard gives its caller back what it found.
+/// inside the window.
 ///
-/// The budget is a **probe count**, not a duration: that is the whole point of
-/// the seam — the poll's outcome is decided by the loop noticing the answer, not
-/// by how long the host took to schedule the driver. Its users hold `ENV_LOCK`
-/// (see [`set_driver_path_for_tests`] for why the slot cannot be thread-local).
+/// The seam used to be a **probe count** (`set(200)` → 200 probes, 250 ms
+/// apart). That is a duration in disguise — 50 s whose length the test neither
+/// chose nor could observe — so on a host that needed longer than that to get
+/// the fixture's child as far as its first write, the count itself became the
+/// verdict. It is now an object the **test owns** ([`ReadinessWindow`]): while a
+/// window is held open the poll has neither a deadline nor a count, and it ends
+/// when the answer arrives or when the test closes the window. The product's own
+/// window keeps its own test (`start_launch_never_ready_times_out`, which
+/// asserts the 10 s wait and the `did not respond … within 10s` error), and the
+/// closed-early arm has one too
+/// (`start_stops_polling_when_the_test_closes_its_window`).
 #[cfg(test)]
-pub(crate) struct ReadinessBudgetGuard {
-    previous: Option<u32>,
+fn readiness_window() -> Option<std::sync::Arc<ReadinessWindow>> {
+    READINESS_WINDOW.lock().unwrap().clone()
 }
 
 #[cfg(test)]
-impl ReadinessBudgetGuard {
-    pub(crate) fn set(max_probes: u32) -> Self {
-        ReadinessBudgetGuard {
-            previous: (*READINESS_BUDGET_OVERRIDE.lock().unwrap()).replace(max_probes),
+static READINESS_WINDOW: std::sync::Mutex<Option<std::sync::Arc<ReadinessWindow>>> =
+    std::sync::Mutex::new(None);
+
+/// A readiness window a test holds in its own hand. Open means "keep probing":
+/// the poll has no deadline of its own while it lasts, so nothing about the
+/// host's scheduling can end it — only the answer, or [`Self::close`].
+#[cfg(test)]
+pub(crate) struct ReadinessWindow {
+    open: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(test)]
+impl ReadinessWindow {
+    fn is_open(&self) -> bool {
+        self.open.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// Puts a [`ReadinessWindow`] in the slot for as long as it lives and restores
+/// the previous value on drop, so a panicking test cannot leave a window open
+/// for the rest of the binary and a nested guard gives its caller back what it
+/// found.
+///
+/// Its users hold `ENV_LOCK` (see [`set_driver_path_for_tests`] for why the slot
+/// cannot be thread-local: the poll runs on a runtime worker thread, not on the
+/// test's own).
+#[cfg(test)]
+pub(crate) struct ReadinessWindowGuard {
+    window: std::sync::Arc<ReadinessWindow>,
+    previous: Option<std::sync::Arc<ReadinessWindow>>,
+}
+
+#[cfg(test)]
+impl ReadinessWindowGuard {
+    /// A window that is open: the poll keeps probing until this guard is
+    /// dropped or [`Self::close`]d, so a fixture that takes its time is never
+    /// outrun by a deadline or a count.
+    pub(crate) fn open() -> Self {
+        Self::holding(true)
+    }
+
+    /// A window that is already closed: the poll ends before its first probe.
+    /// This is the "no answer is coming, do not spend the window on it" arm the
+    /// probe budget used to express as `set(1)`.
+    pub(crate) fn closed() -> Self {
+        Self::holding(false)
+    }
+
+    fn holding(open: bool) -> Self {
+        let window = std::sync::Arc::new(ReadinessWindow {
+            open: std::sync::atomic::AtomicBool::new(open),
+        });
+        ReadinessWindowGuard {
+            previous: READINESS_WINDOW.lock().unwrap().replace(window.clone()),
+            window,
         }
     }
+
+    /// Ends the poll the window was holding open. The test owns this decision,
+    /// which is the whole point of the seam: nothing about the host ends it.
+    pub(crate) fn close(&self) {
+        self.window
+            .open
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 #[cfg(test)]
-impl Drop for ReadinessBudgetGuard {
+impl Drop for ReadinessWindowGuard {
     fn drop(&mut self) {
-        *READINESS_BUDGET_OVERRIDE.lock().unwrap() = self.previous.take();
+        // Close before restoring: a poll that re-reads the slot between these
+        // two statements must not see `None` and start a fresh 10 s window.
+        self.close();
+        *READINESS_WINDOW.lock().unwrap() = self.previous.take();
     }
 }
 
@@ -217,24 +269,25 @@ pub async fn safari_start(
         .map_err(|e| format!("Failed to launch safaridriver: {e}"))?;
     let pid = child.id().unwrap_or(0) as i64;
 
-    // Wait for it to be ready.
-    let budget = readiness_budget();
+    // Wait for it to be ready. What ends the poll is the answer, the product's
+    // own 10 s window — or, in a test, the window that test holds (see
+    // [`readiness_window`]): re-read on every probe, so a test that closes its
+    // window (or unwinds out of the test body and drops the guard) hands the
+    // loop back to the product's window instead of leaving it with nothing to
+    // stop on. There is no probe count: a count would be a duration the test
+    // did not choose, which is the race this seam exists to avoid.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let mut probes: u32 = 0;
     loop {
-        match budget {
-            None => {
-                if std::time::Instant::now() >= deadline {
-                    break;
-                }
-            }
-            Some(max) => {
-                if probes >= max {
-                    break;
-                }
-            }
+        #[cfg(test)]
+        let poll_on = match readiness_window() {
+            Some(window) => window.is_open(),
+            None => std::time::Instant::now() < deadline,
+        };
+        #[cfg(not(test))]
+        let poll_on = std::time::Instant::now() < deadline;
+        if !poll_on {
+            break;
         }
-        probes += 1;
         if endpoint_reachable(&driver_endpoint).await {
             let session_id = create_session_with_translation(&driver_endpoint).await?;
             return Ok(SafariStartResult {
@@ -382,6 +435,33 @@ mod tests {
     /// itself: the product's own answer is the failure text — a spawn error, a
     /// port error, a refusal — never this test's wait. Returns `!`, so a wait
     /// loop cannot fall through to another poll after reporting.
+    /// How long the fixture's own record may take before the *fixture* is
+    /// declared broken.
+    ///
+    /// This is the fixture's liveness, not the product's verdict, and the
+    /// difference is the whole point: 120 s is ~8x what this group costs on an
+    /// idle host (12-15 s) and 2.7x the worst case measured under load 47 with a
+    /// 25 s artificial child delay (44 s of probing). It is reachable only when
+    /// the child the product forked was never scheduled at all — the one thing
+    /// neither the product nor the test can observe — and reaching it fails
+    /// with that name instead of hanging the binary. It can never turn a healthy
+    /// run red, because a run that gets its fixture record does not wait on it.
+    const FIXTURE_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
+
+    /// Fails with the fixture's own name when its child made no progress at all
+    /// inside [`FIXTURE_BUDGET`] — the arm that used to be "the product's probe
+    /// budget ran out", which reported a product answer for a fixture problem.
+    fn assert_fixture_progress(record: &std::path::Path, started_at: std::time::Instant) {
+        assert!(
+            started_at.elapsed() < FIXTURE_BUDGET,
+            "the fixture's driver never recorded {} within {:?}: the child it was \
+             launched as was never scheduled, so no product answer exists to report \
+             (the readiness window is still open)",
+            record.display(),
+            FIXTURE_BUDGET
+        );
+    }
+
     fn report_early_launch<T>(joined: Result<Result<T, String>, tokio::task::JoinError>) -> ! {
         match joined {
             Ok(Ok(_)) => panic!("safari_start answered without spawning a driver"),
@@ -516,36 +596,35 @@ mod tests {
         let marker = dir.path().join("driver-ran.txt");
         let script = driver_script(dir.path(), &marker);
         let _driver = set_driver_path_for_tests(&script.display().to_string());
-        // Enough probes for the spawn → mock-up → answer sequence, none of them
-        // charged against the product's 10 s. The outcome is then decided by the
-        // poll noticing the answer, not by the host starting the test's mock
-        // inside the window (a driver that took 12 s to touch its marker used to
-        // make this test report `did not respond … within 10s`, 5/5 red).
-        let _budget = ReadinessBudgetGuard::set(200);
+        // The poll is held open by a window this test owns, so neither a
+        // deadline nor a probe count decides the outcome: what ends it is the
+        // poll noticing the answer below. (Measured 2026-11-01: a driver that
+        // took 12 s to touch its marker made this test report `did not respond
+        // … within 10s` 5/5 under the product's window, and the 20 s deadline
+        // that replaced it failed 2/2 under a 25 s child delay.)
+        let _window = ReadinessWindowGuard::open();
 
         let port = free_port();
         let mut started = tokio::spawn(async move { safari_start(port, None).await });
 
         // No clock of this test's own decides the outcome. The marker is what
         // puts the mock's appearance *after* the spawn (an endpoint answering
-        // earlier takes the `already_running` branch), and the wait for it is
-        // bounded by the product: the launch either finishes — and its own
-        // answer is then the failure text — or the poll is still spending its
-        // probe budget, which is a count, not a duration, so a host that
-        // forks the child but delays its first write only delays the answer.
+        // earlier takes the `already_running` branch), and the wait for it ends
+        // on two events only: the fixture's own record, or the product's answer
+        // (the launch finishing says why it will never be reached).
         //
         // Measured 2026-11-01: with a 20 s deadline here (the previous shape),
         // a driver script that sleeps 25 s before touching its marker failed
         // **2/2** — both launch tests, both with "the driver was never spawned,
         // so the poll was never reached" — which is exactly the message the
         // full suite produced on a host at load 47.5 (1 of 11 runs,
-        // `coverage/flaky/raw/cli-lib-clean-6.log`). With the wait below, the
-        // same injected delay is green while the budget still ends the poll if
-        // the driver never starts at all (`start_stops_polling_when_the_probe_budget_runs_out`).
+        // `coverage/flaky/raw/cli-lib-clean-6.log`).
+        let fixture_started = std::time::Instant::now();
         while !marker.exists() {
             if started.is_finished() {
                 report_early_launch((&mut started).await);
             }
+            assert_fixture_progress(&marker, fixture_started);
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
 
@@ -891,17 +970,51 @@ mod tests {
         assert!(started.elapsed().as_secs() >= 10);
     }
 
-    /// The budgeted twin of the test above: the poll is stopped by the probe
-    /// budget rather than by the product's 10 s window. The driver spawns and
-    /// never answers (the `cfg(test)` default driver is `/bin/sh`), so the loop
-    /// leaves through `probes >= max` — the arm every fast launch test relies on
-    /// but none takes, because their endpoint answers first.
+    /// The twin of the test above: the poll is ended by the **test's own
+    /// window**, not by the product's 10 s one and not by a probe count. The
+    /// driver spawns and never answers (the `cfg(test)` default driver is
+    /// `/bin/sh`, which exits without serving), so the poll keeps probing for as
+    /// long as the window is open — that is the arm every fast launch test
+    /// relies on to survive a host that schedules its child late, and no other
+    /// test takes it, because their endpoint answers first.
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
-    async fn start_stops_polling_when_the_probe_budget_runs_out() {
+    async fn start_stops_polling_when_the_test_closes_its_window() {
         let _guard = crate::test_env::lock_env().await;
         let _reset = force_macos_gate();
-        let _budget = ReadinessBudgetGuard::set(2);
+        let window = ReadinessWindowGuard::open();
+        let port = free_port();
+        let started = tokio::spawn(async move { safari_start(port, Some("https://x")).await });
+
+        // Left alone, an open window outlives any probe count and the product's
+        // window: three seconds in, nothing has ended the poll but the test.
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        assert!(
+            !started.is_finished(),
+            "an open window keeps the poll going: no deadline and no probe count ends it"
+        );
+
+        // Closing it is what ends the poll — the answer the product then gives
+        // is "did not respond", because the window is not the readiness answer.
+        window.close();
+        let err = started
+            .await
+            .expect("the task does not panic")
+            .err()
+            .unwrap();
+        assert!(err.contains("did not respond"), "{err}");
+    }
+
+    /// A window that is already closed ends the poll before its first probe:
+    /// the "no answer is coming, do not spend a window on it" arm (what the
+    /// probe budget used to express as `set(1)`), reachable for other modules'
+    /// tests through [`ReadinessWindowGuard::closed`].
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_closed_window_ends_the_poll_before_its_first_probe() {
+        let _guard = crate::test_env::lock_env().await;
+        let _reset = force_macos_gate();
+        let _window = ReadinessWindowGuard::closed();
         let started = std::time::Instant::now();
         let err = safari_start(free_port(), Some("https://x"))
             .await
@@ -909,8 +1022,8 @@ mod tests {
             .unwrap();
         assert!(err.contains("did not respond"), "{err}");
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(5),
-            "the probe budget ended the poll, not the 10 s window: {:?}",
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "a closed window costs no probe at all: {:?}",
             started.elapsed()
         );
     }
@@ -949,10 +1062,10 @@ mod tests {
         // host scheduling the mock quickly enough for the product's 10 s window —
         // that is the same load-sensitive construction the neighbouring
         // `launch_then_become_reachable_reports_started` was fixed for (measured
-        // 5/5 red with a slow driver). The wall-clock window keeps its own test
-        // (`start_launch_never_ready_times_out`), and the 30 s `timeout` below
-        // still bounds this one.
-        let _budget = ReadinessBudgetGuard::set(200);
+        // 5/5 red with a slow driver). The window this test owns, not a probe
+        // count, is what keeps the poll alive until then; the product's window
+        // keeps its own test (`start_launch_never_ready_times_out`).
+        let _window = ReadinessWindowGuard::open();
         let _reset_platform = force_macos_gate();
         // Fake safaridriver: a POSIX shell script that records the port it was
         // launched with (`$2`) and then stays alive (`exec`, so the pid the CLI
@@ -985,9 +1098,10 @@ mod tests {
         // is what witnesses the driver answering. The port is the CLI's own
         // resolved one, never an assumption about `requested`.
         //
-        // Same rule as its twin above: the wait has no deadline of this test's
-        // own, so the product's answer (or its probe budget running out, which is
-        // a count) decides — a host that delays the child only delays the run.
+        // Same rule as its twin above: the wait ends on the fixture's own record
+        // or on the product's answer (the launch finishing), and its budget is
+        // the fixture's liveness — never the product's probe count.
+        let fixture_started = std::time::Instant::now();
         let port: i64 = loop {
             if let Ok(raw) = std::fs::read_to_string(&port_file) {
                 if let Ok(port) = raw.trim().parse::<i64>() {
@@ -1002,13 +1116,14 @@ mod tests {
             if started.is_finished() {
                 report_early_launch((&mut started).await);
             }
+            assert_fixture_progress(&port_file, fixture_started);
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         };
         let server = serve_webdriver(port).await;
         let result = started
             .await
             .expect("the task does not panic")
-            .expect("a driver that answers inside the probe budget is a success");
+            .expect("a driver that answers while the fixture's window is open is a success");
         let answered = server.stop().await;
 
         // Reap the fake-driver child this test spawned on exit (even on panic).
