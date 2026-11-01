@@ -2425,7 +2425,7 @@ mod tests {
     mod serving {
         use super::*;
         use crate::remote::test_support::{
-            init_store, pairing_creds, sign_in, FakeNats, HomeGuard, MockPlatform, unique,
+            init_store, pairing_creds, sign_in, unique, FakeNats, HomeGuard, MockPlatform,
         };
 
         /// A Desktop that is on asks the platform for the invitation. This is the
@@ -2468,14 +2468,11 @@ mod tests {
                 matches!(status.phase, RemotePhase::Ready),
                 "a Desktop that just minted an invitation is serving it: {status:?}"
             );
-            assert!(
-                platform
-                    .requests()
-                    .iter()
-                    .any(|(_, path, _)| path.ends_with("/remote/pair/code")),
-                "the invitation is minted, not invented: {:?}",
-                platform.requests()
-            );
+            let seen = platform.requests();
+            let asked = seen
+                .iter()
+                .any(|(_, path, _)| path.ends_with("/remote/pair/code"));
+            assert!(asked, "the invitation is minted, not invented: {seen:?}");
             crate::remote::stop();
         }
 
@@ -2492,9 +2489,13 @@ mod tests {
 
             let root = Root::new();
             let reply_path = root.dir.path().join("reply.json");
-            let status = perform(&request(OP_REMOVE_DEVICE, &reply_path, Some(&creds.pair_id)))
-                .await
-                .expect("a saved device is removable");
+            let status = perform(&request(
+                OP_REMOVE_DEVICE,
+                &reply_path,
+                Some(&creds.pair_id),
+            ))
+            .await
+            .expect("a saved device is removable");
 
             assert!(
                 status
@@ -2535,9 +2536,7 @@ mod tests {
             // The start renews the grant before it connects; a platform that does
             // not answer that is a start that never reaches the broker.
             platform.respond_refresh(nats.url());
-            let switched = crate::remote::enable()
-                .await
-                .expect("the switch answers");
+            let switched = crate::remote::enable().await.expect("the switch answers");
             assert!(crate::remote::is_on(switched.phase), "{switched:?}");
             // Saved *after* the start on purpose: the book is read once, at
             // start, so this device is paired but has no bridge in this process.
@@ -2571,7 +2570,9 @@ mod tests {
                 .expect_err("a device with no bridge cannot take control");
 
             assert!(
-                error.to_string().contains("is not connected to this Desktop"),
+                error
+                    .to_string()
+                    .contains("is not connected to this Desktop"),
                 "the code itself is not an answer a terminal can act on: {error}"
             );
             crate::remote::stop();
@@ -2628,19 +2629,20 @@ mod tests {
         #[tokio::test]
         #[allow(clippy::await_holding_lock)]
         async fn a_client_role_change_runs_against_the_paired_machine() {
-            let (_home, fixture) = crate::remote_peer::testing::fixture("control-peer-change").await;
+            let (_home, fixture) =
+                crate::remote_peer::testing::fixture("control-peer-change").await;
             let desktop = fixture.paired.creds.desktop_id.clone();
-            let listed = |outcome: &PeerOutcome| {
-                outcome
-                    .peers
-                    .iter()
-                    .any(|peer| peer.desktop_id == desktop)
-            };
+            let listed =
+                |outcome: &PeerOutcome| outcome.peers.iter().any(|peer| peer.desktop_id == desktop);
 
             let connected = perform_peer(&peer_request(OP_PEER_CONNECT, Some(&desktop)))
                 .await
                 .expect("a paired machine connects");
-            assert!(listed(&connected), "the answer reads the list: {:?}", connected.peers);
+            assert!(
+                listed(&connected),
+                "the answer reads the list: {:?}",
+                connected.peers
+            );
             assert!(
                 connected.took_over.is_none(),
                 "connecting never moves the pointer"
@@ -2669,6 +2671,13 @@ mod tests {
             );
             assert!(stopped.took_over.is_none());
 
+            // The platform cannot confirm the revoke this time. The pairing still
+            // has to be gone locally — an unreachable platform must not leave a
+            // machine the user removed still paired — and the note is the only
+            // place the operator learns the cleanup is owed.
+            fixture
+                .platform
+                .push("/client/v1/remote/pair/revoke", 500, serde_json::json!({}));
             let removed = perform_peer(&peer_request(OP_PEER_REMOVE, Some(&desktop)))
                 .await
                 .expect("a removal answers");
@@ -2702,10 +2711,12 @@ mod tests {
 
         let _home = HomeGuard::new("control-loop");
         let directory = directory().expect("the control directory under the fixture home");
+        // Hoisted: a message argument is evaluated on failure alone, so an inline
+        // `display()` here would be a residual line in every run.
+        let where_it_is = directory.display().to_string();
         assert!(
             !directory.exists(),
-            "the loop must be the one that creates it: {}",
-            directory.display()
+            "the loop must be the one that creates it: {where_it_is}"
         );
         std::fs::create_dir_all(&directory).unwrap();
 
@@ -2730,8 +2741,7 @@ mod tests {
         while !reply_path.exists() {
             assert!(
                 Instant::now() < deadline,
-                "the loop never answered in {}",
-                directory.display()
+                "the loop never answered in {where_it_is}"
             );
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -2773,16 +2783,13 @@ mod tests {
         let directory = directory().expect("the control directory under the fixture home");
 
         spawn_host();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while std::fs::metadata(&directory).is_ok() {
-            assert!(
-                Instant::now() < deadline,
-                "a `run` file cannot become a directory: {}",
-                directory.display()
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        std::thread::sleep(Duration::from_millis(400));
+        // Long enough for a loop that ignored the failure to poll at least twice;
+        // the assertion is about the path it could not create.
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            std::fs::metadata(&directory).is_err(),
+            "a `run` file cannot become a directory"
+        );
 
         // Free the path and leave work for a loop that is still running. The one
         // above has returned, so the request stays unserved.
