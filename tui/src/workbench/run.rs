@@ -6409,6 +6409,94 @@ mod driver_tests {
                 "the bindings file exists although its directory cannot hold one"
             );
         }
+
+        /// The `[复制]` control under one message is the same clipboard road
+        /// `/copy` takes — one message instead of the last answer — and the
+        /// loop, not the surface, owns the clipboard.
+        ///
+        /// Reached the way a reader reaches it: `tab` walks the transcript's
+        /// stops and `enter` presses the chip, so the case cannot pass by
+        /// handing the loop the action it means to check. What the clipboard
+        /// received is read back from the tool, which is the only proof that
+        /// *that* message was copied rather than the last answer.
+        #[cfg(unix)]
+        #[allow(clippy::await_holding_lock)]
+        #[tokio::test]
+        async fn a_copy_of_one_message_takes_that_message_and_says_so() {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            use crate::components::chat_area::RowAction;
+            use crate::workbench::i18n::{t, Key};
+            use crate::workbench::ChatStop;
+
+            let entries = r#"{"entries":[
+                {"id":"e1","role":"user","blocks":[{"kind":"text","text":"the question"}],
+                 "createdAtMs":1},
+                {"id":"e2","role":"assistant","blocks":[{"kind":"text","text":"the build is green"}],
+                 "createdAtMs":2}]}"#;
+            let mut driver = Driver::attach_conversation_holding(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
+                entries,
+            )
+            .await;
+
+            // A tool that keeps what it was handed: every clipboard a unix build
+            // can pick, so the phase does not depend on which one this host has.
+            let _env = a_peer_may_not_swap_the_environment();
+            let tools = tempfile::tempdir().expect("tempdir");
+            let taken = tools.path().join("clipboard.txt");
+            for name in ["pbcopy", "xclip", "wl-copy"] {
+                let stub = tools.path().join(name);
+                // `cat` by absolute path: the stub runs with the same PATH the
+                // test swapped, which carries no coreutils at all.
+                std::fs::write(&stub, format!("#!/bin/sh\n/bin/cat > {}\n", taken.display()))
+                    .expect("write the stub");
+                std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+                    .expect("chmod the stub");
+            }
+            let _path = crate::test_env::EnvVarGuard::set("PATH", tools.path());
+
+            // Walk the transcript's stops until the cursor is on a copy chip.
+            let mut on_a_copy = false;
+            for _ in 0..12 {
+                assert!(!driver.quit_key("tab").await, "tab left the app");
+                let frame = driver.frame();
+                let data = driver.live.data(&frame);
+                let index = driver.workbench.chat_index;
+                let stop = index.and_then(|at| {
+                    driver.workbench.chat_stops(&data).into_iter().nth(at)
+                });
+                let copy = match stop {
+                    Some(ChatStop::Row(row)) => matches!(row.action, RowAction::Copy { .. }),
+                    _ => false,
+                };
+                if copy {
+                    on_a_copy = true;
+                    break;
+                }
+            }
+            assert!(on_a_copy, "no copy chip among the transcript's stops");
+
+            driver.live.notice = None;
+            assert!(!driver.quit_key("enter").await, "enter left the app");
+            let language = driver.live.language();
+            let notice = driver
+                .live
+                .notice
+                .clone()
+                .expect("a copy of one message said nothing");
+            assert_eq!(
+                notice,
+                t(language, Key::CopiedMessage),
+                "the row does not carry the copy's own sentence"
+            );
+            let copied = std::fs::read_to_string(&taken)
+                .expect("the clipboard tool kept nothing: the copy never reached it");
+            assert_eq!(
+                copied, "the build is green",
+                "the clipboard holds something other than the message under the cursor"
+            );
+        }
     }
 
     mod preview_doors {
@@ -6695,14 +6783,21 @@ mod driver_tests {
             let mut driver = Driver::attach_conversation_in(repo.path()).await;
             let _path = crate::test_env::EnvVarGuard::set("PATH", tools.path());
             assert!(!driver.quit_key("ctrl+g").await, "ctrl+g left the app");
+            // `y` copies the *selected row*, so a view with no rows is not the
+            // precondition this case needs: the panel's read carries a
+            // three-second query budget, and a view that missed it is `Some`
+            // with an error in it and nothing under the cursor — which reads as
+            // "the copy said nothing" while the cause is one level up. Wait for
+            // the row, not for the view.
             assert!(
                 driver
                     .wait_for(Duration::from_secs(10), |driver| driver
                         .live
                         .git()
-                        .is_some())
+                        .is_some_and(|git| !git.rows.is_empty()))
                     .await,
-                "the panel read nothing through the stub git"
+                "the panel read no row through the stub git: {:?}",
+                driver.live.git().map(|git| git.error.clone())
             );
             assert!(!driver.quit_key("y").await, "the copy key left the app");
             let notice = driver
