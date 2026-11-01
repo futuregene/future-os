@@ -153,3 +153,71 @@ fn database_failures_are_not_downgraded_to_isolated_runs() {
     assert_eq!(status(&manager, &session, &run), "running");
     assert_eq!(manager.storage_health().unwrap()["failedRunRecoveries"], 0);
 }
+
+/// A crash after a shell tool finished but before its result entry was written:
+/// recovery rebuilds the tool entry from the canonical facts and re-links both
+/// bodies (the model text and the structured facts) instead of copying them.
+#[test]
+fn a_crashed_shell_result_is_recovered_with_both_of_its_bodies() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("sessions");
+    let manager = Manager::new(directory.clone());
+    let (session, run) = seed(&manager, false);
+    let store = manager.storage().unwrap().clone();
+    let result = future_rpc::shell_result::ShellResult {
+        command: "exit 3".into(),
+        cwd: "/w".into(),
+        duration_ms: 7,
+        status: future_rpc::shell_result::ShellStatus::Exited,
+        exit_code: Some(3),
+        is_soft_fail: false,
+        is_error: true,
+        attempts: vec![future_rpc::shell_result::ShellAttempt {
+            status: future_rpc::shell_result::ShellStatus::Exited,
+            exit_code: Some(3),
+            duration_ms: 7,
+            output: "boom\n".into(),
+            output_truncated: false,
+            escalated: false,
+        }],
+        approval: None,
+        note: None,
+    };
+    let summary = future_rpc::shell_result::model_summary(&result);
+    Writer::default()
+        .persist(
+            &store,
+            &session,
+            &[json!({
+                "session_id":session,"run_id":run,"epoch":1,"idx":0,"session_idx":-1,
+                "timestamp":"2026-10-28T00:00:01Z","event_type":"tool_end",
+                "data":serde_json::json!({
+                    "entry_id":"tool-entry-1","tool_id":"tool-1","tool_name":"shell","text":summary,
+                    "shell_result":serde_json::to_value(&result).unwrap(),
+                }).to_string()
+            })],
+        )
+        .unwrap();
+    drop(manager);
+
+    // The next start recovers the unfinished run.
+    let manager = Manager::new(directory);
+    manager.initialize().unwrap();
+    assert_eq!(status(&manager, &session, &run), "interrupted");
+    let entries = manager.storage().unwrap().entries(&session).unwrap();
+    let tool = entries
+        .iter()
+        .find(|entry| entry["type"] == "tool")
+        .unwrap_or_else(|| panic!("no recovered tool entry: {entries:?}"));
+    assert_eq!(tool["meta"]["recovered_partial"], true);
+    assert_eq!(tool["meta"]["run_id"], run);
+    // The structured facts came back through their own reference, and the model
+    // text through the summary reference of the same body.
+    assert_eq!(
+        tool["meta"]["shell_result"]["exit_code"],
+        serde_json::json!(3),
+        "{tool}"
+    );
+    assert_eq!(tool["content"][0]["content"], summary, "{tool}");
+    assert_eq!(tool["content"][0]["is_error"], true);
+}
