@@ -12117,9 +12117,12 @@ mod tests {
         let _own = super::test_chat_root::Guard::own(root.path().to_path_buf());
         let chat = super::chat_dir_for("s1");
         std::fs::create_dir_all(&chat).expect("the chat directory");
+        // The directory is the platform's own join of the two: written as a
+        // `/`-spelled string it is the POSIX shape only, and a Windows host
+        // answers `C:\…\s1` (`docs/testing/module-cli-tui.md` §3.1).
         assert_eq!(
             chat,
-            format!("{}/s1", root.path().display()),
+            root.path().join("s1").to_string_lossy().to_string(),
             "the chat directory is the root's child"
         );
 

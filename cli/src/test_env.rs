@@ -6,6 +6,55 @@
 //! they never race each other (e.g. `future doctor` tests repointing PATH
 //! while `which` tests look up `sh`).
 
+/// How many file descriptors this test binary is allowed to hold.
+///
+/// `cargo test` runs a binary's tests in threads of **one process**, and this
+/// suite's socket tests each hold a listener plus a connection per unary call
+/// (a gRPC client opens a fresh one). At the default parallelism of a 32-core
+/// machine that peak is a few hundred descriptors, while macOS's soft limit is
+/// **256** unless the calling shell raised it — so the whole suite is decided
+/// by a shell setting nobody wrote down.
+///
+/// Measured 2026-11-01, `--test-threads` at the default 32, on a shell whose
+/// `ulimit -n` was 256: 1439 of 1447 tests passed and the rest panicked with
+/// `Too many open files` while *building a tokio runtime* or opening an app
+/// database — never in an assertion. With `ulimit -n 8192` the same tree passed
+/// 3 of 3. That is the descriptor cliff, not a race.
+///
+/// So the suite raises its own budget instead of asking the caller for one.
+/// The raise is bounded by the hard limit, only ever upward, and idempotent, so
+/// it composes with any test that lowers the limit on purpose to force
+/// `EMFILE` (the agent's sandbox helper does): those restore what they found,
+/// and the next call here raises again if what they found was the old ceiling.
+///
+/// `tui::test_env::ensure_fd_headroom` is the same helper for the same reason.
+#[cfg(unix)]
+pub fn ensure_fd_headroom() {
+    // No `Once`: a test may lower the limit and restore it, so a one-shot guard
+    // would fire into that window and never fire again.
+    const WANT: libc::rlim_t = 4096;
+    let mut limits = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: both calls pass a valid `rlimit` for `RLIMIT_NOFILE`; a failure
+    // only means "keep the current budget", and the ceiling is never lowered.
+    unsafe {
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limits) == 0 && limits.rlim_cur < WANT {
+            let raised = libc::rlimit {
+                rlim_cur: WANT.min(limits.rlim_max),
+                rlim_max: limits.rlim_max,
+            };
+            let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &raised);
+        }
+    }
+}
+
+/// Windows has no `RLIMIT_NOFILE`: a process is limited by its handle table,
+/// not by a number a test can raise, so there is nothing to do here.
+#[cfg(not(unix))]
+pub fn ensure_fd_headroom() {}
+
 /// The one lock every env-sensitive test acquires. `tokio::sync::Mutex` is
 /// used so the guard can be held across `.await` points inside `#[tokio::test]`
 /// bodies without tripping `clippy::await_holding_lock`; it also never
@@ -20,6 +69,9 @@ pub struct EnvironmentGuard {
 }
 
 pub async fn lock_env() -> EnvironmentGuard {
+    // Every env-sensitive test passes through here, so it is also where the
+    // suite lifts its own descriptor ceiling before anything opens a socket.
+    ensure_fd_headroom();
     let cli = ENV_LOCK.lock().await;
     // Shared Host/entry tests use this same process environment after migration.
     let host = future_host::TEST_HOME_LOCK
@@ -167,10 +219,18 @@ pub fn reserved_port() -> i64 {
         })
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    for _ in 0..(RESERVED_PORT_BAND.1 - RESERVED_PORT_BAND.0) {
+    free_port_in(&mut next, RESERVED_PORT_BAND)
+}
+
+/// Walk `band` from `next`, wrapping at its end, and hand back the first port
+/// that can actually be bound. The band is a parameter so the walk itself can be
+/// tested at both edges: a full band is the one case a caller cannot construct
+/// from the real band without holding nine thousand sockets.
+fn free_port_in(next: &mut u16, band: (u16, u16)) -> i64 {
+    for _ in 0..(band.1 - band.0) {
         let candidate = *next;
-        *next = if candidate + 1 >= RESERVED_PORT_BAND.1 {
-            RESERVED_PORT_BAND.0
+        *next = if candidate + 1 >= band.1 {
+            band.0
         } else {
             candidate + 1
         };
@@ -179,10 +239,7 @@ pub fn reserved_port() -> i64 {
             return i64::from(candidate);
         }
     }
-    panic!(
-        "no free port in the reserved band {}..{}",
-        RESERVED_PORT_BAND.0, RESERVED_PORT_BAND.1
-    );
+    panic!("no free port in the reserved band {}..{}", band.0, band.1);
 }
 
 /// The band [`reserved_port`] hands out from: entirely below every supported
@@ -257,6 +314,20 @@ mod tests {
             "{second} is outside the reserved band {low}..{high}"
         );
         assert_ne!(first, second, "a reserved port must not repeat");
+    }
+
+    /// A band with nothing free is reported rather than handed out, and the
+    /// message names both ends so the reader knows which range was searched.
+    ///
+    /// A one-port band also walks the wrap arm: that band's first port *is* its
+    /// last, so the walk's very first step goes back to the band's start.
+    #[test]
+    #[should_panic(expected = "no free port in the reserved band")]
+    fn a_band_with_nothing_free_is_reported() {
+        let held = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a port to hold");
+        let port = held.local_addr().unwrap().port();
+        let mut next = port;
+        super::free_port_in(&mut next, (port, port + 1));
     }
 
     #[tokio::test]
@@ -352,5 +423,63 @@ mod tests {
     async fn wait_for_exhaustion_returns_false() {
         assert!(!super::wait_for(|| false).await);
         assert!(super::wait_for(|| true).await);
+    }
+
+    /// The descriptor raise runs only when the ambient ceiling is low, which is
+    /// exactly the case the suite must survive and exactly the case a shell that
+    /// already raised it hides. So lower the ceiling one descriptor below the
+    /// target first: the raise is then decided by this test rather than by how
+    /// the process was started, and 4095 descriptors stay available to whoever
+    /// else is running.
+    #[cfg(unix)]
+    #[test]
+    fn the_descriptor_ceiling_is_raised_and_never_lowered() {
+        let _host = future_host::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        const TARGET: libc::rlim_t = 4096;
+        let mut before = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: a valid `rlimit` for `RLIMIT_NOFILE`; the restore at the end
+        // puts the process back where it was even if an assertion fails.
+        unsafe {
+            assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut before), 0);
+            let want = TARGET.min(before.rlim_max);
+            if before.rlim_cur <= want {
+                let lowered = libc::rlimit {
+                    rlim_cur: want - 1,
+                    rlim_max: before.rlim_max,
+                };
+                assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &lowered), 0);
+
+                super::ensure_fd_headroom();
+
+                let mut raised = libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                };
+                assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut raised), 0);
+                assert_eq!(
+                    raised.rlim_cur, want,
+                    "the suite lifts its own ceiling to the target, bounded by the hard limit"
+                );
+                assert_eq!(
+                    raised.rlim_max, before.rlim_max,
+                    "the hard limit is never touched"
+                );
+
+                // Idempotent: a second call cannot move it again.
+                super::ensure_fd_headroom();
+                let mut again = libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                };
+                assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut again), 0);
+                assert_eq!(again.rlim_cur, want);
+            }
+            assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &before), 0);
+        }
     }
 }

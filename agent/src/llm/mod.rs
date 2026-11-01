@@ -946,6 +946,7 @@ mod tests {
 
         // Nothing listening: a connect error.
         let closed = {
+            crate::test_support::ensure_fd_headroom();
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.local_addr().unwrap()
         };
@@ -964,6 +965,7 @@ mod tests {
         // A body that stops short of its declared length. `hyper` surfaces this as
         // a *decode* failure (the message is incomplete), which the classifier must
         // report as such rather than claiming the peer closed the connection.
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -988,6 +990,7 @@ mod tests {
         // a decode failure by this hyper/reqwest pair (`Invalid chunk size line`),
         // not as `is_body`. Pin both facts: the mapping follows the predicate, and
         // this toolchain never reports a framing failure as a body error.
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -1019,6 +1022,7 @@ mod tests {
         // `BodyDataStream::new(self.res.into_body().map_err(crate::error::decode))`),
         // so no framing failure can arrive here as `is_body` or `is_request`.
         // Pinned as a measurement, not an assumption.
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -1271,6 +1275,7 @@ mod tests {
     async fn a_request_deadline_is_reported_as_a_response_timeout() {
         // A server that accepts and then says nothing: only the client deadline
         // can end this request, and it must end it as a timeout.
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -1300,6 +1305,7 @@ mod tests {
         // error is forwarded verbatim, because inventing a timeout label there
         // would make a dead provider look like a slow one.
         let closed = {
+            crate::test_support::ensure_fd_headroom();
             let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             probe.local_addr().unwrap()
         };
@@ -1325,6 +1331,7 @@ mod tests {
     /// silently dropped or decoded into a panic.
     #[tokio::test]
     async fn a_frame_with_a_truncated_utf8_sequence_is_a_model_response_error() {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -1370,6 +1377,7 @@ mod tests {
     /// cut short by us rather than by the peer.
     #[tokio::test]
     async fn a_stalled_stream_body_is_reported_as_a_timeout() {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -1425,6 +1433,7 @@ mod tests {
     #[tokio::test]
     async fn a_truncated_stream_body_is_an_upstream_disconnect_not_a_parse_error() {
         let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"par\"}}]}\n\n";
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -1484,6 +1493,7 @@ mod tests {
     /// the event stream would otherwise look like a clean completion.
     #[tokio::test]
     async fn a_frame_whose_payload_is_not_valid_json_is_a_model_response_error() {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -1570,6 +1580,7 @@ mod tests {
             }
         }
 
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -1639,6 +1650,7 @@ mod tests {
         respond: impl Fn(&str) -> (u16, &'static str, String) + Send + 'static,
         read_timeout: std::time::Duration,
     ) -> MockServer {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().unwrap().port();
         let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -2000,6 +2012,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_model_transport_disconnect_reports_progress_and_error_chain() {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -2055,6 +2068,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_model_processes_usage_frames_after_finish_reason() {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -2114,6 +2128,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn stream_model_consumer_drop_closes_the_upstream_connection() {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let disconnected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -2161,6 +2176,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_model_reports_body_read_errors() {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -2228,6 +2244,7 @@ mod tests {
 
     #[tokio::test]
     async fn responses_transport_error_cleans_unfinished_items_before_retry() {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
@@ -2441,6 +2458,7 @@ mod tests {
 
     #[tokio::test]
     async fn chat_disconnect_after_finish_does_not_retry_a_completed_response() {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
@@ -2537,6 +2555,7 @@ mod tests {
     async fn stream_model_reports_invalid_utf8_in_buffered_tail() {
         // Invalid UTF-8 flushed by `decoder.finish()` is a malformed model
         // response, not a clean incomplete finish.
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -2579,6 +2598,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_model_reports_invalid_utf8_in_sse() {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
