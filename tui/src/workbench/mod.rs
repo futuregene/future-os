@@ -13952,4 +13952,109 @@ mod tests {
             "the transcript is not at its tail"
         );
     }
+
+    /// A pointer with nothing held moves nothing — and a box with a drag of its
+    /// own lets go of it the same way.
+    ///
+    /// The rail's divider is the only grab on the base surface, so a release
+    /// with no grab, and motion during neither, are the events a real terminal
+    /// sends all the time: these are the arms that must answer with nothing
+    /// rather than resizing something the reader never took hold of.
+    #[test]
+    fn a_pointer_with_nothing_held_moves_nothing() {
+        let bare = demo::chat();
+        let (mut surface, _rows) = frame(&bare, 120, 38);
+        for kind in [
+            mouse::MouseKind::Move,
+            mouse::MouseKind::Release,
+            mouse::MouseKind::Drag,
+        ] {
+            assert!(
+                surface
+                    .handle(WbEvent::Mouse(at(kind, 40, 12)), &bare)
+                    .is_empty(),
+                "{kind:?} with nothing held answered the reader"
+            );
+        }
+
+        // The repository browser's divider: a release with no grab, a drag that
+        // lands back on the cell it took hold of, and motion between the two.
+        let mut data = demo::chat();
+        data.git = Some(demo::git());
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Git);
+        wb.render(&data, 160, 38);
+        let seam = wb
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| *id == "git.divider")
+            .map(|(rect, _)| (rect.x, rect.y))
+            .expect("the divider is a hit region");
+        let before = wb.git_split_percent;
+        assert!(
+            wb.handle(
+                WbEvent::Mouse(at(mouse::MouseKind::Release, seam.0, seam.1)),
+                &data
+            )
+            .is_empty(),
+            "a release with no grab ended a drag that never began"
+        );
+        assert!(wb.git_drag.is_none());
+
+        wb.handle(
+            WbEvent::Mouse(at(mouse::MouseKind::Press, seam.0, seam.1)),
+            &data,
+        );
+        assert!(wb.git_drag.is_some(), "the press did not grab the seam");
+        // Motion is not a drag: the pointer reports it while the button is held,
+        // and the seam must not follow it.
+        assert!(wb
+            .handle(
+                WbEvent::Mouse(at(mouse::MouseKind::Move, seam.0 + 9, seam.1)),
+                &data
+            )
+            .is_empty());
+        assert_eq!(
+            wb.git_split_percent, before,
+            "motion moved a seam nobody dragged"
+        );
+        // A drag that lands on the cell it took hold of is the ratio it already
+        // has: nothing to repaint, nothing to resend.
+        assert!(
+            wb.handle(
+                WbEvent::Mouse(at(mouse::MouseKind::Drag, seam.0, seam.1)),
+                &data
+            )
+            .is_empty(),
+            "a drag that changed nothing answered with an action"
+        );
+        assert_eq!(wb.git_split_percent, before);
+        assert_eq!(
+            wb.handle(
+                WbEvent::Mouse(at(mouse::MouseKind::Release, seam.0, seam.1)),
+                &data
+            ),
+            vec![WbAction::Redraw],
+            "the release did not end the drag"
+        );
+        assert!(wb.git_drag.is_none());
+
+        // The preview box: motion and a release that held nothing are not a pan.
+        let mut data = demo::chat();
+        data.preview = Some(demo::preview_image());
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::FilePreview);
+        wb.preview_zoom = 4;
+        wb.render(&data, 120, 38);
+        for kind in [mouse::MouseKind::Move, mouse::MouseKind::Release] {
+            assert!(
+                wb.handle(WbEvent::Mouse(at(kind, 40, 12)), &data)
+                    .is_empty(),
+                "{kind:?} in the preview box panned a picture nobody grabbed"
+            );
+        }
+        assert!(wb.preview_drag.is_none());
+        assert_eq!(wb.preview_pan, (0, 0));
+    }
 }
