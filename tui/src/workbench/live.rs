@@ -11718,4 +11718,83 @@ mod tests {
         );
         live.client.disconnect();
     }
+
+    /// What the frame is built from, on the two sides that measured zero: the
+    /// skills a *state* names (described from the local read when it knows them)
+    /// and the model list's labels, which fall back to the id when a provider
+    /// reports none.
+    #[tokio::test]
+    async fn the_frames_data_describes_skills_and_labels_models() {
+        use crate::workbench::state::SkillRow;
+
+        // A state that names two skills: the local read describes one of them,
+        // the other keeps an empty description rather than a wrong one.
+        let mut live = live_on(&[(
+            "get_state",
+            r#"{"sessionId":"s1","skills":["pdf","review"]}"#,
+        )])
+        .await;
+        live.local_skills = Some(vec![SkillRow {
+            name: "pdf".into(),
+            description: "read a pdf".into(),
+        }]);
+        let frame = frame();
+        let data = live.data(&frame);
+        assert_eq!(
+            data.skills
+                .iter()
+                .map(|skill| (skill.name.as_str(), skill.description.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("pdf", "read a pdf"), ("review", "")],
+            "the agent's order, described by the local read where it can be"
+        );
+
+        // No skills from the state: the local read is the whole list (an older
+        // agent reports none).
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        live.local_skills = Some(vec![SkillRow {
+            name: "pdf".into(),
+            description: "read a pdf".into(),
+        }]);
+        let data = live.data(&frame);
+        assert_eq!(
+            data.skills
+                .iter()
+                .map(|skill| skill.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["pdf"],
+            "an agent that names no skills leaves the local list"
+        );
+
+        // A model whose label is blank is shown by its id, never as an empty row.
+        let mut live = live_on(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            (
+                "list_models",
+                r#"{"models":[
+                    {"id":"future/old","label":"","provider":"future",
+                     "thinkingLevel":"default","thinkingLevels":["default"],
+                     "defaultThinkingLevel":"default","isDefault":true},
+                    {"id":"future/named","label":"Named","provider":"future",
+                     "thinkingLevel":"default","thinkingLevels":["default"],
+                     "defaultThinkingLevel":"default"}]}"#,
+            ),
+        ])
+        .await;
+        let data = live.data(&frame);
+        let labels: Vec<(&str, &str)> = data
+            .models
+            .iter()
+            .map(|model| (model.id.as_str(), model.label.as_str()))
+            .collect();
+        assert!(
+            labels.contains(&("future/old", "future/old")),
+            "an unlabelled model was not named by its id: {labels:?}"
+        );
+        assert!(
+            labels.contains(&("future/named", "Named")),
+            "a labelled model lost its label: {labels:?}"
+        );
+        live.client.disconnect();
+    }
 }
