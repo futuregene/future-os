@@ -17,6 +17,9 @@
 //!   book is untouched.
 //! * [`enter_alone_cancels_the_all_question_too`] — the same answer to the
 //!   `--all` question: neither device is unpaired, and the command says so.
+//! * [`enter_alone_cancels_a_peer_removal_too`] — the same confirmation in front
+//!   of the *other* book, `future remote peers remove`: two books, one prompt,
+//!   and the default must be a no in both.
 //!
 //! The home each child gets holds a two-device book and no `auth.json`, so the
 //! revoke is queued instead of delivered: nothing here touches the real
@@ -342,6 +345,10 @@ fn isolated(command: &mut portable_pty::CommandBuilder, home: &Path) {
 
 const BOOK: &str = "remote_pairings.json";
 
+/// The other book: pairings where **this** machine is driven by another one.
+/// Its own file, its own commands (`future remote peers`), the same prompt.
+const PEERS: &str = "remote_peers.json";
+
 /// Which device the fixture asks to remove — the row `future remote devices`
 /// prints second, so the command reads exactly as it does for a user.
 const SECOND: &str = "024E1F1C08A644579F7ED64B27558187";
@@ -395,6 +402,47 @@ fn paired_devices(home: &Path) -> Vec<String> {
             slot["pairId"]
                 .as_str()
                 .expect("every slot names its device")
+                .to_string()
+        })
+        .collect()
+}
+
+/// A home whose `remote_peers.json` holds two remote desktops this machine is
+/// paired with — the other book, read by `future remote peers`.
+fn peers_home(tag: &str) -> PathBuf {
+    let home = std::env::temp_dir().join(format!("fos-peers-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let future = home.join(".future");
+    std::fs::create_dir_all(&future).expect("create the isolated data root");
+    // Only what the command reads before it asks: the label, and the machine it
+    // names. A peer row without a `desktopId` is refused by the loader, so this
+    // fixture is the smallest book that is *valid*, not the smallest that parses.
+    let book = json!({
+        "peers": [
+            { "pairId": "pair_a", "desktopId": "desktop_AAAA", "name": "work" },
+            { "pairId": "pair_b", "desktopId": "desktop_BBBB" },
+        ],
+    });
+    std::fs::write(
+        future.join(PEERS),
+        serde_json::to_vec(&book).expect("encode the peer book"),
+    )
+    .expect("write the peer book");
+    home
+}
+
+fn paired_desktops(home: &Path) -> Vec<String> {
+    let text = std::fs::read_to_string(home.join(".future").join(PEERS))
+        .expect("the peer book must still be on disk");
+    let book: Value = serde_json::from_str(&text).expect("the peer book is JSON");
+    book["peers"]
+        .as_array()
+        .expect("peers is an array")
+        .iter()
+        .map(|peer| {
+            peer["desktopId"]
+                .as_str()
+                .expect("every peer names its machine")
                 .to_string()
         })
         .collect()
@@ -522,5 +570,44 @@ fn enter_alone_cancels_the_all_question_too() {
         paired_devices(&home),
         vec![FIRST.to_string(), SECOND.to_string()],
         "no device may be unpaired by a default answer"
+    );
+}
+
+/// The same confirmation guards the other book.
+///
+/// `future remote peers remove` unpairs a *remote desktop* — the machines this
+/// one can drive — instead of a device driving this one, and it asks its own
+/// question first. That question is the prompt's second caller, so the default
+/// answer has to be a no here too, on the same one-key rule: a stray Enter must
+/// not drop a pairing that took two machines to make.
+#[test]
+fn enter_alone_cancels_a_peer_removal_too() {
+    let home = peers_home("pressed-enter-peer");
+    let mut terminal = Terminal::spawn(home.clone(), &["remote", "peers", "remove", "1"]);
+    assert!(
+        terminal.wait_for("[y/N]", BUDGET),
+        "the prompt must appear before anything is typed; transcript:\n{}",
+        terminal.text()
+    );
+    assert!(
+        terminal.text().contains("Remove the pairing with work"),
+        "the question names the pairing it would drop: {}",
+        terminal.text()
+    );
+    terminal.press(b"\r");
+    assert!(
+        terminal.success(),
+        "a cancelled peer removal is not a failure; transcript:\n{}",
+        terminal.text()
+    );
+    let transcript = terminal.text();
+    assert!(
+        transcript.contains("Cancelled. Nothing was changed."),
+        "transcript:\n{transcript}"
+    );
+    assert_eq!(
+        paired_desktops(&home),
+        vec!["desktop_AAAA".to_string(), "desktop_BBBB".to_string()],
+        "no pairing may be dropped by a default answer"
     );
 }

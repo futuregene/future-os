@@ -272,6 +272,40 @@ async fn list_reports_the_state_the_running_desktop_answered_with() {
     assert!(posed[0].get("desktopId").is_none(), "{}", posed[0]);
 }
 
+/// A row the Desktop holds and the book does not is a pairing that was made
+/// between the two reads. It is listed from the Desktop's own answer, because a
+/// pairing that exists but is invisible is worse than one that appears a moment
+/// early: the user just made it on the window, and this list is where they look.
+#[tokio::test]
+async fn list_keeps_a_pairing_the_book_and_the_desktop_disagree_about() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    let mut single = book(PLATFORM_TOKEN);
+    single["peers"].as_array_mut().unwrap().pop();
+    home.write(BOOK_FILE, &single.to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    answer_requests(
+        &home,
+        json!({ "peers": [live_row(ONE, true), live_row(TWO, true)] }),
+    );
+
+    let (code, stdout, stderr) = run(&["remote", "peers"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    // The book's own row, then the one only the Desktop knew about — with the
+    // state it answered, not the default this command would have guessed.
+    assert!(stdout.contains("2 remote desktops are paired"), "{stdout}");
+    assert!(stdout.contains(ONE), "{stdout}");
+    assert!(stdout.contains(TWO), "{stdout}");
+    assert!(stdout.contains("connected"), "{stdout}");
+    assert!(
+        !stdout.contains("not connected"),
+        "a row taken from the Desktop must keep the state it answered with: {stdout}"
+    );
+    // The row the book lost is never written back: this command reads.
+    let stored: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
+    assert_eq!(stored["peers"].as_array().unwrap().len(), 1, "{stored}");
+}
+
 #[tokio::test]
 async fn list_says_the_state_is_unknown_when_the_desktop_stays_silent() {
     let _guard = crate::test_env::lock_env().await;
@@ -483,6 +517,10 @@ async fn an_action_on_an_empty_book_names_the_paired_command() {
         (
             vec!["remote", "peers", "remove", ONE, "--yes"],
             "not paired with any remote desktop",
+        ),
+        (
+            vec!["remote", "peers", "takeover", ONE],
+            "future remote peers add",
         ),
     ] {
         let (code, _, stderr) = run(&args).await;
@@ -828,6 +866,40 @@ async fn remove_with_no_desktop_unpairs_here_and_revokes_where_it_can() {
     assert_eq!(code, 0, "{stderr}");
     assert!(stdout.contains("no longer paired"), "{stdout}");
     assert!(stderr.is_empty(), "{stderr}");
+    let after: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
+    let remaining = after["peers"].as_array().unwrap();
+    assert_eq!(remaining.len(), 1, "{after}");
+    assert_eq!(remaining[0]["desktopId"], ONE, "{after}");
+}
+
+/// A Desktop that holds this data root's lock but never answers is the case the
+/// note exists for: the window is wedged, or its control loop has not started,
+/// and the user asked to drop a pairing *now*. The removal happens here, and the
+/// sentence says so — the alternative, refusing because the other process is
+/// quiet, would leave a pairing the user has to fight a hung window to drop.
+#[tokio::test]
+async fn remove_proceeds_here_when_the_desktop_never_answers() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    let server = crate::test_server::spawn_http(vec![
+        crate::test_server::HttpRoute::json("/client/v1/remote/auth/token", 200, "{}"),
+        crate::test_server::HttpRoute::json("/client/v1/remote/pair/revoke", 200, "{}"),
+    ])
+    .await;
+    let token_url = format!("{server}/client/v1/remote/auth/token");
+    home.write(BOOK_FILE, &book(&token_url).to_string());
+    // The lock proves a Desktop is there; nothing answers the request, so every
+    // ask runs into the command's own (short, test-build) deadline.
+    let _desktop = RunningDesktop::claim(&home);
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "remove", TWO, "--yes"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stderr.contains("the running Desktop did not answer")
+            && stderr.contains("removing it here, so it is gone at the next start"),
+        "the note must say where the removal happened: {stderr}"
+    );
+    assert!(stdout.contains("no longer paired"), "{stdout}");
     let after: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
     let remaining = after["peers"].as_array().unwrap();
     assert_eq!(remaining.len(), 1, "{after}");
