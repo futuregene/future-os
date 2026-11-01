@@ -26,6 +26,12 @@ const TAIL_CHUNK: u64 = 8 * 1024;
 pub fn prepare_process() {
     static PREPARED: std::sync::Once = std::sync::Once::new();
     PREPARED.call_once(|| {
+        // First, before anything can write to a terminal: a GUI launch has no
+        // writable stderr, and the panic a failed write raises ends the task
+        // that emitted it — including, on this path, the task that would have
+        // rebuilt a dropped remote link. See
+        // `future_agent::console::redirect_windowless_standard_streams`.
+        redirect_windowless_stdio();
         future_agent::logfile::init_embedded_tracing();
         crate::install_rustls_provider();
         future_agent::sandbox::hydrate_from_login_shell();
@@ -40,6 +46,16 @@ pub fn prepare_process() {
         // launch can learn what killed an earlier one.
         crate::crash_log::install();
     });
+}
+
+/// Point this launch's standard streams at a file when it has no terminal.
+///
+/// Best effort by design: if the file cannot be opened there is nothing to say
+/// so on the stream that just failed, and the launch must still start. The
+/// writers that matter go through [`report`] anyway.
+fn redirect_windowless_stdio() {
+    let path = future_rpc::home::future_home().join("app/logs/desktop.stdio.log");
+    let _ = future_agent::console::redirect_windowless_standard_streams(&path);
 }
 
 pub fn start_logging() -> Result<(), crate::Error> {
