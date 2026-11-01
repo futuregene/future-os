@@ -13,6 +13,11 @@ regenerated from that lcov and passes its own check.
 (waves 23, 26, 27, 30, 31, 32, 33, 34 and 35; waves 24-25 changed the suite's speed, not which
 lines it reaches). Of the 1160:
 
+> **The total is a range, not a number: 1150-1160 on the same binary.** Wave 36's repeats settle
+> what wave 35 could only observe (see *Wave 36* below): the aggregate moves by ten lines between
+> two runs of identical code, entirely inside `rpc/commands/providers.rs`, because those rows'
+> regions are attributed unstably. Quote the ledger's named rows, not this total.
+>
 > **The total went up by 6 with no regression in it.** Wave 35 covered three new rows
 > (`recovery.rs` 277-278, `compact.rs` 381) and lost nine it had no business losing:
 > `rpc/commands/providers.rs:370-375, 389-391` flipped from covered to missed between two runs of
@@ -209,6 +214,39 @@ Two consequences the lane has to live with, both now recorded:
    claims 100 % will have to show the `providers.rs` rows covered in the same run as everything
    else, or the number is a draw from a distribution. The honest target is the named-row ledger
    with every row either covered or exempted, which is what this file already is.
+
+## Wave 36: the "state-dependent" rows are an attribution artifact, proven three ways
+
+Wave 35 hypothesised that `providers.rs:370-375, 389-391` were **state-dependent** (a provider
+that declares `thinkingLevels` being absent from the catalogue in some runs). Three experiments
+kill that hypothesis and replace it with a stronger one:
+
+| experiment | result |
+|---|---|
+| run the *covering* test alone under llvm-cov (`list_models_sends_each_models_thinking_levels_and_starting_level`) | those rows: **DA=0** |
+| run the whole suite again with the **same binary**, no source change (`lcov-wave36-repeat.info`) | those rows: **DA=2**, lane **1150** (the first run of that binary said 1160) |
+| the same test's assertion | **passes**: `row("narrow")["thinkingLevels"] == ["default","low","high"]` |
+
+The third row is the decisive one. That value is produced by exactly the closure at
+`369-375`; if the assertion holds, the closure ran, and a coverage record that says the line did
+not is **wrong about the line, not about the behaviour**. So these rows are an attribution
+artifact of this shape:
+
+- the closure is only ever reached through a `map`, so LLVM records its body under an
+  instantiation that the v0-mangled per-function records do not merge back onto the source line;
+- which instantiation "owns" the line varies between runs, hence the ten-line swing.
+
+**Consequences, and the correction to what wave 35 wrote:**
+
+1. "State-dependent coverage" was the wrong diagnosis. Nothing about the data or the test order
+   changed; the recorder did.
+2. Rows of this shape belong in the waiver table as **W6** (attribution), with the assertion that
+   proves execution as the evidence — not as `open`, and not chased with fixtures.
+3. A single instrumented run cannot certify a per-line percentage for this suite. Any claim has
+   to be stable across repeats, and the two runs above differ by ten lines with identical code.
+
+The lane measurement quoted at the top of this file is therefore the **range** 1150-1160, with
+`lcov-wave36-repeat.info` (1150) and `lcov-wave35.info` (1160) as its two ends.
 
 ## Wave 35: fault injection, and the two walls the schema puts in front of it
 
