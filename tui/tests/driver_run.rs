@@ -75,8 +75,18 @@ struct Run {
 
 impl Run {
     fn spawn(addr: &str) -> Self {
+        Self::spawn_with(addr, None)
+    }
+
+    /// `settings`: written before the child starts, exactly as a reader's own
+    /// file would be (the surface reads it on its first frame).
+    fn spawn_with(addr: &str, seeded: Option<&str>) -> Self {
         let dir = tempfile::tempdir().expect("temp dir");
         let settings = dir.path().join("tui").join("settings.json");
+        if let Some(body) = seeded {
+            std::fs::create_dir_all(settings.parent().expect("parent")).expect("settings dir");
+            std::fs::write(&settings, body).expect("settings file");
+        }
         let mut command = Command::new(std::env::current_exe().expect("test binary path"));
         command
             .args(["--exact", CHILD_TEST, "--nocapture"])
@@ -324,6 +334,99 @@ fn the_real_entry_point_paints_a_frame_and_leaves_a_settings_file() {
     );
     server.abort();
     drop(runtime);
+}
+
+/// `notify`'s body is `for sequence in center.push(id, event, config,
+/// terminal.is_tty())`: a process without a terminal is *told* not to ring the
+/// desktop, so this is the only place it can run. The agent streams one approval
+/// and the terminal should get the notification's escape sequence.
+#[test]
+fn an_approval_streamed_to_a_real_terminal_rings_the_desktop() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime");
+    let (addr, server) = runtime.block_on(async {
+        use future_rpc::proto::future_agent_server::FutureAgentServer;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let incoming = tonic::transport::server::TcpIncoming::from_listener(listener, true, None)
+            .expect("tcp incoming");
+        let server = tokio::spawn(
+            tonic::transport::Server::builder()
+                .add_service(FutureAgentServer::new(ApprovalMock))
+                .serve_with_incoming(incoming),
+        );
+        (addr, server)
+    });
+
+    // The reader's own file, with notifications on: the surface reads it on its
+    // first frame, so it has to exist before the child starts.
+    let seeded = r#"{"notify":{"enabled":true,"bell":true,"osc9":true,"title":false}}"#;
+    let mut run = Run::spawn_with(&addr, Some(seeded));
+    assert!(
+        run.wait_for("FUTURE OS", EXIT_TIMEOUT),
+        "the first frame never reached the terminal; the child said: {:?}",
+        run.tail()
+    );
+    // OSC 9 is the desktop notification the terminal shows.
+    assert!(
+        run.wait_for("\x1b]9;", Duration::from_secs(15)),
+        "the streamed approval did not ring the desktop; the child said: {:?}",
+        run.tail()
+    );
+    run.type_bytes(b"\x18");
+    let status = run.wait_exit(Duration::from_secs(10));
+    assert_eq!(status.and_then(|status| status.code()), Some(0));
+    server.abort();
+    drop(runtime);
+}
+
+/// An agent that streams exactly one approval and then stays open.
+struct ApprovalMock;
+
+#[tonic::async_trait]
+impl future_rpc::proto::future_agent_server::FutureAgent for ApprovalMock {
+    async fn execute_command(
+        &self,
+        request: tonic::Request<future_rpc::proto::RpcCommand>,
+    ) -> Result<tonic::Response<future_rpc::proto::RpcResponse>, tonic::Status> {
+        AttachMock.execute_command(request).await
+    }
+
+    type StreamEventsStream = std::pin::Pin<
+        Box<
+            dyn tokio_stream::Stream<Item = Result<future_rpc::proto::StreamEvent, tonic::Status>>
+                + Send,
+        >,
+    >;
+
+    async fn stream_events(
+        &self,
+        _request: tonic::Request<future_rpc::proto::StreamRequest>,
+    ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
+        let approval = future_rpc::proto::StreamEvent {
+            r#type: "approval_request".into(),
+            data: serde_json::json!({
+                "approval_request_id": "a-1",
+                "tool_name": "bash",
+                "summary": "run: rm -rf build",
+            })
+            .to_string(),
+            session_id: "s-driver".into(),
+            event_id: "e-1".into(),
+            run_id: "run-1".into(),
+            ..Default::default()
+        };
+        // One event, then nothing: the loop keeps running with an approval parked
+        // on the surface, which is the state the notification is for.
+        use futures_util::StreamExt as _;
+        // One event, then nothing: the loop keeps running with the approval
+        // parked on the surface.
+        let stream =
+            futures_util::stream::iter(vec![Ok(approval)]).chain(futures_util::stream::pending());
+        Ok(tonic::Response::new(Box::pin(stream)))
+    }
 }
 
 /// An agent that answers what a start needs: the readiness handshake, the state,
