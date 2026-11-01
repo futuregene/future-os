@@ -611,6 +611,227 @@ mod tests {
         assert_eq!(body["messages"][1]["role"], "user");
     }
 
+    fn chat_target(config: OpenAiChatConfig, generation: GenerationConfig) -> ResolvedModelTarget {
+        test_target(ProtocolConfig::OpenAiChat(config), generation)
+    }
+
+    fn simple_request(tools: Vec<crate::types::ToolDef>) -> ModelRequest {
+        ModelRequest {
+            model: "m".into(),
+            system_prompt: "system".into(),
+            messages: vec![crate::types::AgentMessage::new_user("user", json!("hello"))],
+            tools,
+        }
+    }
+
+    #[test]
+    fn a_non_chat_target_is_refused_by_name() {
+        let target = test_target(
+            ProtocolConfig::OpenAiResponses(Default::default()),
+            GenerationConfig::default(),
+        );
+        let error = OpenAiChatAdapter
+            .build_body(&target, &simple_request(Vec::new()))
+            .expect_err("the chat adapter only speaks chat-completions");
+        assert!(error.to_string().contains("non-chat"), "{error}");
+    }
+
+    #[test]
+    fn tools_and_generation_knobs_reach_the_chat_body() {
+        let mut config = OpenAiChatConfig::default();
+        config.tool_stream = true;
+        config.max_tokens_field = crate::llm::schema::ChatMaxTokensField::MaxCompletionTokens;
+        config.reasoning = ChatReasoningFormat::DeepSeek;
+        let target = chat_target(
+            config,
+            GenerationConfig {
+                temperature: Some(0.25),
+                max_output_tokens: Some(4096),
+                thinking_level: "high".into(),
+                ..Default::default()
+            },
+        );
+        let request = simple_request(vec![crate::types::ToolDef {
+            tool_type: "function".into(),
+            function: crate::types::FunctionDef {
+                name: "shell".into(),
+                description: "run a command".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"],
+                }),
+            },
+        }]);
+        let body = OpenAiChatAdapter.build_body(&target, &request).unwrap();
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert_eq!(body["tools"][0]["function"]["name"], "shell");
+        assert_eq!(body["tools"][0]["function"]["description"], "run a command");
+        assert_eq!(
+            body["tools"][0]["function"]["parameters"]["properties"]["command"]["type"],
+            "string"
+        );
+        assert_eq!(body["tools"][0].get("strict"), None);
+        assert_eq!(body["tool_stream"], true);
+        assert_eq!(body["temperature"], 0.25);
+        // The declared field renames the budget parameter; the old key is gone.
+        assert_eq!(body["max_completion_tokens"], 4096);
+        assert!(body.get("max_tokens").is_none());
+        // DeepSeek's thinking format carries the toggle and the level itself.
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["reasoning_effort"], "high");
+    }
+
+    #[test]
+    fn a_request_without_tools_or_knobs_sends_neither() {
+        let target = chat_target(OpenAiChatConfig::default(), GenerationConfig::default());
+        let body = OpenAiChatAdapter
+            .build_body(&target, &simple_request(Vec::new()))
+            .unwrap();
+        assert!(body.get("tools").is_none());
+        assert!(body.get("tool_stream").is_none());
+        assert!(body.get("temperature").is_none());
+        assert!(body.get("max_tokens").is_none());
+        // A default thinking level sends nothing at all.
+        assert!(body.get("reasoning_effort").is_none());
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn token_counts_accept_the_gateway_encodings() {
+        let adapter = OpenAiChatAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(json!({
+                    "choices": [{"delta": {"content": "hi"}}],
+                    "usage": {
+                        "prompt_tokens": "12.0",
+                        "completion_tokens": 3.75,
+                        "total_tokens": "not a number",
+                        "credit_cost": "0.5",
+                        "prompt_tokens_details": {"cached_tokens": 4}
+                    }
+                })),
+                state.as_mut(),
+            )
+            .unwrap();
+        let usage = events
+            .iter()
+            .find_map(|event| match event {
+                ModelStreamEvent::Usage(usage) => Some(usage.clone()),
+                _ => None,
+            })
+            .expect("the usage block is reported");
+        assert_eq!(usage.prompt_tokens, 12, "a numeric string is its number");
+        assert_eq!(usage.completion_tokens, 3, "a float is truncated");
+        assert_eq!(
+            usage.total_tokens, 0,
+            "an unparseable count stays zero instead of failing the frame"
+        );
+        assert_eq!(usage.cache_read_tokens, Some(4));
+        assert_eq!(usage.credit_cost, Some(0.5));
+    }
+
+    fn raw_frame(data: &str) -> SseFrame {
+        SseFrame {
+            event: None,
+            data: data.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_stream_is_complete_only_after_its_terminal_frame() {
+        let adapter = OpenAiChatAdapter;
+        let mut state = adapter.new_stream_state();
+        assert!(!adapter.is_stream_complete(state.as_ref()));
+        // A keep-alive frame carries no event and does not propagate anything.
+        assert!(adapter
+            .decode_frame(&raw_frame("  "), state.as_mut())
+            .unwrap()
+            .is_empty());
+        adapter
+            .decode_frame(
+                &frame(json!({
+                    "choices": [{"delta": {"content": "a"}, "finish_reason": "stop"}],
+                })),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(
+            !adapter.is_stream_complete(state.as_ref()),
+            "a finish_reason still waits for the [DONE] marker"
+        );
+        // The marker repeats a finish that already happened, so it adds nothing.
+        assert!(adapter
+            .decode_frame(&raw_frame("[DONE]"), state.as_mut())
+            .unwrap()
+            .is_empty());
+        assert!(adapter.is_stream_complete(state.as_ref()));
+        // Finishing again reports nothing: the stream is already closed.
+        assert!(adapter
+            .decode_frame(&raw_frame("[DONE]"), state.as_mut())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn a_marker_that_arrives_first_still_closes_the_stream() {
+        let adapter = OpenAiChatAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(&raw_frame("[DONE]"), state.as_mut())
+            .unwrap();
+        match events.as_slice() {
+            [ModelStreamEvent::Finish { reason, usage }] => {
+                assert_eq!(*reason, FinishReason::Incomplete);
+                assert!(usage.is_none());
+            }
+            other => panic!("expected one incomplete finish, got {other:?}"),
+        }
+        assert!(adapter.is_stream_complete(state.as_ref()));
+    }
+
+    #[test]
+    fn an_error_chunk_ends_the_stream_with_its_message() {
+        let adapter = OpenAiChatAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(&frame(json!({"error": {"message": "quota exhausted"}})), state.as_mut())
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ModelStreamEvent::Error { message } => assert_eq!(message, "quota exhausted"),
+            other => panic!("expected an error event, got {other:?}"),
+        }
+        assert!(adapter.is_stream_complete(state.as_ref()));
+        // An error frame without a message keeps a readable default.
+        let mut other_state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(&frame(json!({"error": {"code": "boom"}})), other_state.as_mut())
+            .unwrap();
+        match &events[0] {
+            ModelStreamEvent::Error { message } => {
+                assert_eq!(message, "OpenAI-compatible stream error")
+            }
+            other => panic!("expected an error event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_stream_state_of_the_wrong_type_is_a_reported_error() {
+        let adapter = OpenAiChatAdapter;
+        let mut not_chat = 7u8;
+        assert!(!adapter.is_stream_complete(&not_chat));
+        let error = adapter.finish_stream(&mut not_chat).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid OpenAI Chat stream state"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn decodes_incremental_parallel_tool_calls() {
         let adapter = OpenAiChatAdapter;
