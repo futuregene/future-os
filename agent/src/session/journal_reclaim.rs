@@ -252,7 +252,7 @@ impl SqliteStore {
         // the explicit sweep does to rank runs by size — is exactly the cost this
         // entry cannot afford at startup.
         let candidates = self.db.call_as("journal_reclaim", move |db| {
-            let mut statement = db.prepare(&format!(
+            let mut statement = db.prepare_cached(&format!(
                 "SELECT r.session_id,r.run_id
                  FROM runs r
                  WHERE r.status IN {SETTLED}
@@ -341,7 +341,7 @@ impl SqliteStore {
 
         // 1. Inert leftovers of an earlier, interrupted retirement.
         let leftovers = self.db.call(|db| {
-            let mut statement = db.prepare(
+            let mut statement = db.prepare_cached(
                 "SELECT e.session_id,e.run_id,count(*) n,
                         coalesce(sum(length(CAST(e.payload AS BLOB))),0) b
                  FROM run_events e
@@ -423,7 +423,7 @@ impl SqliteStore {
             "0"
         };
         let candidates = self.db.call_as("journal_reclaim", move |db| {
-            let mut statement = db.prepare(&format!(
+            let mut statement = db.prepare_cached(&format!(
                 "SELECT r.session_id,r.run_id,count(*) n,{byte_expr} b
                  FROM runs r JOIN run_events e
                    ON e.session_id=r.session_id AND e.run_id=r.run_id

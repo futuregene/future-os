@@ -886,6 +886,67 @@ async fn prompt_ephemeral_session_skips_persistence() {
     );
 }
 
+/// An ephemeral session has no transcript, so a failed run has no run terminal
+/// to persist: the live stream is the only place its failure can be told, and a
+/// client that never sees it would show a run that simply stopped. The run must
+/// therefore emit the `error` event and *still* close with an `agent_end` that
+/// names the state, the error and the run's usage.
+#[tokio::test(flavor = "current_thread")]
+async fn an_ephemeral_run_that_fails_reports_the_error_in_its_agent_end() {
+    let provider = ScriptedProvider::new(vec![Script::Fail("upstream is down".to_string())]);
+    let fixture = run_fixture(provider, "ephemeral-error");
+    let mut session = fixture.session;
+    session.set_ephemeral(true).unwrap();
+    session.set_auto_retry(false); // fail once, no 2s/4s/8s backoff
+    let mut events = session.broadcaster.subscribe();
+    session.prompt("hi", &[], &[], None, None).unwrap();
+
+    let mut event_types = Vec::new();
+    let mut reported = None;
+    let end = loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+            .await
+            .expect("run event timeout")
+            .expect("run event");
+        event_types.push(event.event_type.clone());
+        match event.event_type.as_str() {
+            "error" => {
+                reported = Some(serde_json::from_str::<serde_json::Value>(&event.data).unwrap());
+            }
+            "agent_end" => break serde_json::from_str::<serde_json::Value>(&event.data).unwrap(),
+            _ => {}
+        }
+    };
+    let reported = reported.expect("a failed run reports an error event before it ends");
+    assert!(
+        reported["error"]
+            .as_str()
+            .unwrap()
+            .contains("upstream is down"),
+        "{reported}"
+    );
+    assert_eq!(end["type"], "agent_end");
+    assert_eq!(end["state"], crate::session::RUN_STATE_ERROR);
+    assert!(
+        end["error"].as_str().unwrap().contains("upstream is down"),
+        "the terminal event carries the failure, not just its state: {end}"
+    );
+    assert!(
+        end["usage"]["output_tokens"].is_u64(),
+        "a failed run still reports its usage: {end}"
+    );
+    assert!(end["duration_ms"].is_i64(), "{end}");
+    assert_eq!(
+        event_types.last().map(String::as_str),
+        Some("agent_end"),
+        "nothing may follow the terminal event: {event_types:?}"
+    );
+    assert!(
+        !session.session_manager.contains("s1").unwrap(),
+        "ephemeral sessions never touch the transcript"
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn enqueue_prompt_starts_immediately_with_a_large_live_attachment_reference() {
     let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("got it")]), "enqueue");

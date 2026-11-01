@@ -98,6 +98,47 @@ fn bounded_facts_and_seal_share_one_commit_and_retry_after_atomic_failure() {
     assert_eq!(data["extension"], false);
 }
 
+/// A page limit is an instruction, not a hint: `Some(0)` means the caller wants
+/// no events, and the replay loop must honour it before it reads anything. The
+/// subtraction that computes the remaining budget is what makes a zero limit
+/// safe (`unwrap_or(usize::MAX).saturating_sub(0)` would otherwise read the
+/// whole stream), so it is worth a boundary test of its own — the same stream
+/// answers three events to an unlimited caller.
+#[test]
+fn a_zero_event_limit_returns_no_events_and_reads_no_page() {
+    let (_root, store) = store();
+    let mut writer = Writer::default();
+    writer
+        .persist(
+            &store,
+            "s",
+            &[
+                event(
+                    0,
+                    "thinking_delta",
+                    json!({"entry_id":"a","content_key":"a:thinking:0","content_offset":0,"content_bytes":3,"text":"one"}),
+                ),
+                event(1, "usage", json!({"output_tokens":1})),
+                event(2, "usage", json!({"output_tokens":2})),
+            ],
+        )
+        .unwrap();
+
+    let empty = store
+        .segmented_replay("s", "r", -1, false, Some(0))
+        .unwrap();
+    assert!(empty.known, "the stream exists, so the page knows it");
+    assert!(empty.events.is_empty(), "{:?}", empty.events);
+    assert!(empty.snapshot.is_none());
+
+    let all = store.segmented_replay("s", "r", -1, false, None).unwrap();
+    assert_eq!(
+        all.events.len(),
+        3,
+        "an unlimited caller still sees all three"
+    );
+}
+
 #[test]
 fn oversized_fragment_flushes_its_pending_prefix_before_staging() {
     let (_root, store) = store();
