@@ -6411,6 +6411,104 @@ mod driver_tests {
         }
     }
 
+    mod preview_doors {
+        use super::*;
+        use crate::workbench::preferences::{Action, Keybindings};
+        use crate::workbench::{Overlay, PreviewScope};
+
+        /// The composer's own picture opens the box: the attachment the reader
+        /// pasted is what `PreviewAttachment` hands to the adapter, and the box
+        /// comes up on the conversation the picture belongs to.
+        ///
+        /// The path is **pasted**, not typed: a whole line is what the composer
+        /// resolves into an attachment (`resolve_image_path` sniffs the bytes),
+        /// and a path typed one byte at a time stays text.
+        #[tokio::test]
+        async fn an_attachment_preview_opens_the_box_on_the_draft_picture() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let shot = dir.path().join("shot.png");
+            std::fs::write(&shot, b"\x89PNG\r\n\x1a\nrest of the file").expect("write the picture");
+
+            let mut keys = Keybindings::default();
+            // The action ships with no chord of its own (the composer's title is
+            // its visible door), so a reader who wants a key binds one — which is
+            // exactly what this presses.
+            keys.bind(Action::PreviewAttachment, "ctrl+y")
+                .expect("a spare chord");
+            let mut driver = Driver::attach_conversation().await;
+            driver.workbench.keys = keys;
+
+            driver.data(&format!("\x1b[200~{}\x1b[201~", shot.display()));
+            let _ = driver.pump(Duration::from_millis(300)).await;
+            let frame = driver.frame();
+            let draft = driver.live.data(&frame).input.editor.text().to_string();
+            assert!(
+                draft.contains("[Image #1]"),
+                "the pasted picture did not become an attachment: {draft:?}"
+            );
+
+            assert!(!driver.quit_key("ctrl+y").await, "the chord left the app");
+            assert_eq!(
+                driver.workbench.overlay,
+                Some(Overlay::FilePreview),
+                "the attachment opened no box"
+            );
+            assert_eq!(
+                driver.workbench.preview_scope,
+                PreviewScope::Conversation,
+                "the box stepped through the folder instead of the conversation"
+            );
+            assert!(
+                driver.workbench.preview_siblings.is_empty(),
+                "the box kept a list the attachment door never gave it: {:?}",
+                driver.workbench.preview_siblings
+            );
+        }
+
+        /// A file the conversation names is a picture in its own scope: `tab`
+        /// walks the transcript's links, and `enter` on the file one opens the
+        /// box over the conversation — not over the folder the path happens to
+        /// sit in.
+        #[tokio::test]
+        async fn a_file_the_answer_links_opens_the_box_over_the_conversation() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let shot = dir.path().join("chart.png");
+            std::fs::write(&shot, b"\x89PNG\r\n\x1a\nrest of the file").expect("write the picture");
+
+            let text = format!("the build is green — see [the chart]({})", shot.display());
+            let entries = serde_json::json!({"entries": [{
+                "id": "e2",
+                "role": "assistant",
+                "blocks": [{"kind": "text", "text": text}],
+                "createdAtMs": 2
+            }]})
+            .to_string();
+            let mut driver = Driver::attach_conversation_holding(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
+                &entries,
+            )
+            .await;
+
+            assert!(!driver.quit_key("tab").await, "tab left the app");
+            assert_eq!(
+                driver.workbench.chat_index,
+                Some(0),
+                "the cursor never walked onto the answer's link"
+            );
+            assert!(!driver.quit_key("enter").await, "enter left the app");
+            assert_eq!(
+                driver.workbench.overlay,
+                Some(Overlay::FilePreview),
+                "the linked file opened no box"
+            );
+            assert_eq!(
+                driver.workbench.preview_scope,
+                PreviewScope::Conversation,
+                "a conversation's own picture opened in the folder's scope"
+            );
+        }
+    }
+
     mod bursts {
         use super::*;
 
