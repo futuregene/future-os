@@ -5241,6 +5241,116 @@ mod driver_tests {
             );
         }
 
+        /// Every read the driver makes for a box can fail, and each failure is
+        /// reported **where the reader is looking**: the notice row for a verb,
+        /// the box's own error line for the list it could not fill, and the
+        /// detail gutter for a row. A bare `Err(_) => {}` would leave the reader
+        /// with a box that opened and a list that never arrives.
+        ///
+        /// The failure is made honest rather than injected: the reads all shell
+        /// out (`git`, the clipboard tool), so a `PATH` holding neither is this
+        /// machine unable to answer — the same shape as a stripped environment.
+        /// The whole test holds the crate's lock, because `PATH` is
+        /// process-global and a peer test's git read would fail inside this
+        /// window (see `a_peer_may_not_swap_the_environment`).
+        #[allow(clippy::await_holding_lock)]
+        #[tokio::test]
+        async fn a_read_that_cannot_be_made_is_reported_where_the_reader_is_looking() {
+            let empty = tempfile::tempdir().expect("a directory to be PATH");
+            let _env = a_peer_may_not_swap_the_environment();
+            let _path = crate::test_env::EnvVarGuard::set("PATH", empty.path());
+
+            let mut driver = Driver::attach_conversation().await;
+
+            // `/worktree` asks the repository and reports what it could not read.
+            assert!(!driver.command("/worktree").await);
+            let notice = driver.live.notice.clone().unwrap_or_default();
+            assert!(
+                notice.contains("git"),
+                "a workspace whose git could not be run was reported as {notice:?}"
+            );
+
+            // The panel's row detail: a view with a row is what the reader has
+            // after a successful open, and the *re-read* is what fails here.
+            let row = crate::workbench::state::GitRow {
+                key: Some("abc1234".into()),
+                columns: Vec::new(),
+                prefix: "● ".into(),
+                pieces: vec!["a commit".into()],
+                kinds: Vec::new(),
+            };
+            driver.live.set_git(Some(crate::workbench::state::GitView {
+                repo: "gone".into(),
+                section: crate::workbench::state::GitSection::Commits,
+                rows: vec![row],
+                selected: 0,
+                detail: Vec::new(),
+                filter: None,
+                error: None,
+            }));
+            driver.workbench.overlay = Some(Overlay::Git);
+            assert!(!driver.quit_key("j").await);
+            let detail = driver
+                .live
+                .git()
+                .map(|git| git.detail.clone())
+                .unwrap_or_default();
+            assert_eq!(
+                detail.len(),
+                1,
+                "the detail gutter holds the failure and nothing else: {detail:?}"
+            );
+            assert!(
+                detail[0].contains("git"),
+                "the gutter does not say what failed: {detail:?}"
+            );
+
+            // The working-tree review says so in the box itself.
+            assert!(!driver.quit_key("d").await);
+            let frame = driver.frame();
+            let data = driver.live.data(&frame);
+            let view = data
+                .diff
+                .as_ref()
+                .expect("the review that could not be read did not open at all");
+            let error = view.error.clone().unwrap_or_default();
+            assert!(
+                error.contains("No such file"),
+                "a review that could not be read opened as {error:?}"
+            );
+
+            // …and the notice row again for the file it cannot re-read, which is
+            // the second half of the same box: `enter` on a row reads that file.
+            driver.live.set_diff(crate::workbench::state::DiffView {
+                files: vec![crate::workbench::diff_review::DiffFile {
+                    path: "a.txt".into(),
+                    status: "M".into(),
+                }],
+                selected: 0,
+                patch: String::new(),
+                error: None,
+            });
+            driver.workbench.overlay = Some(Overlay::Diff);
+            driver.live.notice = None;
+            assert!(!driver.quit_key("enter").await);
+            let notice = driver.live.notice.clone().unwrap_or_default();
+            assert!(
+                notice.contains("No such file"),
+                "re-reading a file the tools cannot read said {notice:?}"
+            );
+
+            // The clipboard is the same story: `y` copies a row, and a copy that
+            // cannot run is a notice rather than a silent no-op.
+            driver.workbench.overlay = Some(Overlay::Git);
+            driver.live.notice = None;
+            assert!(!driver.quit_key("y").await);
+            let notice = driver.live.notice.clone().unwrap_or_default();
+            assert!(
+                notice.contains("No such file"),
+                "a copy that could not run answered {notice:?}"
+            );
+        }
+
         /// A picture read from a panel steps through the pictures beside it: the
         /// list arrives with the decoded image, on the loop's own wake-up.
         #[tokio::test]
