@@ -164,23 +164,33 @@ fn readiness_budget() -> Option<u32> {
 #[cfg(test)]
 static READINESS_BUDGET_OVERRIDE: std::sync::Mutex<Option<u32>> = std::sync::Mutex::new(None);
 
-/// Sets [`READINESS_BUDGET_OVERRIDE`] and restores it on drop, so a panicking
-/// test cannot leak a probe budget into the rest of the binary.
+/// Sets [`READINESS_BUDGET_OVERRIDE`] and restores the previous value on drop,
+/// so a panicking test cannot leak a probe budget into the rest of the binary
+/// and a nested guard gives its caller back what it found.
+///
+/// Note the **matching slot in `browser/safari/safari_manager.rs`**: that one is
+/// a window the test owns (no probe count), because the Safari launch tests
+/// depended on it; this one still counts probes for its own poll. Two names for
+/// one concept — see `coverage/flaky/rust/f1-f3/round.md` for why the chromium
+/// twin was not changed in the same round.
 #[cfg(test)]
-struct ReadinessBudgetGuard;
+struct ReadinessBudgetGuard {
+    previous: Option<u32>,
+}
 
 #[cfg(test)]
 impl ReadinessBudgetGuard {
     fn set(max_probes: u32) -> Self {
-        *READINESS_BUDGET_OVERRIDE.lock().unwrap() = Some(max_probes);
-        ReadinessBudgetGuard
+        ReadinessBudgetGuard {
+            previous: (*READINESS_BUDGET_OVERRIDE.lock().unwrap()).replace(max_probes),
+        }
     }
 }
 
 #[cfg(test)]
 impl Drop for ReadinessBudgetGuard {
     fn drop(&mut self) {
-        *READINESS_BUDGET_OVERRIDE.lock().unwrap() = None;
+        *READINESS_BUDGET_OVERRIDE.lock().unwrap() = self.previous.take();
     }
 }
 
@@ -3362,10 +3372,11 @@ mod tests {
     async fn start_with_browser_safari_dispatches_to_the_safari_manager() {
         let (_g, _e, _d) = isolated_home().await;
         // The dispatch is the claim; how long the manager's own readiness poll
-        // runs is not. The wall-clock arm of that poll keeps its own test
-        // (`safari_manager::start_launch_never_ready_times_out`), so this one
-        // runs under the probe budget rather than adding ten seconds here.
-        let _budget = crate::browser::safari::safari_manager::ReadinessBudgetGuard::set(1);
+        // runs is not. The window arm of that poll keeps its own tests
+        // (`safari_manager::start_launch_never_ready_times_out`,
+        // `…_when_the_test_closes_its_window`), so this one closes the Safari
+        // manager's window up front instead of spending it here.
+        let _window = crate::browser::safari::safari_manager::ReadinessWindowGuard::closed();
         let err = browser_start(&args(&[
             ("browser", json!("safari")),
             ("port", json!(free_port())),
