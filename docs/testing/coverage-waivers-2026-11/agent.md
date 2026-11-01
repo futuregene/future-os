@@ -3,7 +3,7 @@
 **Metric A** — a line counts as uncovered iff its LCOV record is `DA:<line>,0`. The
 llvm-cov *summary* percentage is not the acceptance number.
 
-**Last measurement**: `test/cov-agent` at `72915114c` (cut from `origin/dev-huichen@79bd2bd37`),
+**Last measurement**: `test/cov-agent` at `c2bcdf282` (cut from `origin/dev-huichen@79bd2bd37`),
 Rust **1.99.1** (`rust-toolchain.toml`), macOS arm64.
 
 **Result**: `DA:0` = **1416** lines in **131** files under `agent/src` (82 840 executable,
@@ -108,7 +108,7 @@ These need tests, not classification. Ranked by size, with the mechanism already
 | file | `DA:0` | mechanism |
 |---|---:|---|
 | `rpc/session_prompt.rs` | 61 | injected persistence failures on the admission path (`PersistenceUnavailable` arms, compensating `cancel_queued`), the legacy transcript scan (`306-314`), and the propagated loop-error branch (`1740-1758`) |
-| `rpc/commands/settings.rs` | 13 | what is left after the 29 waived lines: `332-338` (thread-spawn failure, W3) and the per-arm refusals |
+| `rpc/commands/settings.rs` | 12 | what is left after the 29 waived lines: `332-338` (thread-spawn failure, W3) and the per-arm refusals |
 | `rpc/session.rs` | 41 | `schedule_idle_history_release` (27-35) and the cancelled-receipt compensation arms (505-506) |
 | `tools/shell/execution.rs` | 41 | 24 of these are the waived Linux helper block; the other 17 are the exit-status edge and the timeout drain |
 | `session/content/reader_recall.rs` | 39 | `find()`'s cross-page carry tail and `slice()`'s remaining UTF-8 arms |
