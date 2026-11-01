@@ -81,6 +81,40 @@ fn relay_flags_are_accepted_in_both_spellings() {
     }
 }
 
+/// A data root whose `logs` path is not a directory: the launch says the log is
+/// unavailable and then starts anyway.
+///
+/// `headless::run` calls `start_logging` (127) and reports its failure (128)
+/// instead of returning one, because "a read-only install or a full disk must
+/// not stop a headless host". Nothing on this lane had ever taken that arm, so
+/// the sentence was unverified. The input is a clobbered data directory — a
+/// regular file where the log's own directory belongs — not a permission trick,
+/// so the fixture is identical on macOS, Linux and Windows.
+#[test]
+fn a_host_whose_log_cannot_be_opened_reports_it_and_still_starts() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".future/app")).unwrap();
+    // `start_logging` creates `<home>/app/logs` and opens `desktop.log` in it.
+    std::fs::write(home.path().join(".future/app/logs"), b"not a directory\n").unwrap();
+
+    // The invalid `FUTURE_AGENT_GRPC_ADDR` this harness sets is what makes the
+    // run end: the test is about the startup order in front of it.
+    let out = headless(home.path()).output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("host log unavailable:"),
+        "the missing log has to be named, not swallowed: {stderr}"
+    );
+    assert!(
+        stderr.contains("startup progress is logged to"),
+        "the launch continues past the log failure: {stderr}"
+    );
+    assert!(
+        home.path().join(".future/app/logs").is_file(),
+        "the fixture's clobbered path is still the file it was: {stderr}"
+    );
+}
+
 /// Successor to `a_plain_launch_needs_no_headless_flag`, which guarded two
 /// properties at once:
 ///
