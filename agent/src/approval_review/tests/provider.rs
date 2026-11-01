@@ -113,6 +113,7 @@ fn rounded_ties_are_uncertain_and_non_maximum_choices_still_fail_closed() {
 #[tokio::test(start_paused = true)]
 async fn a_gateway_that_never_answers_is_classified_as_a_reviewer_timeout() {
     use tokio::io::AsyncReadExt;
+    crate::test_support::ensure_fd_headroom();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
@@ -142,6 +143,7 @@ async fn a_gateway_that_never_answers_is_classified_as_a_reviewer_timeout() {
 #[tokio::test(flavor = "multi_thread")]
 async fn shared_gateway_transport_retries_transient_errors_with_same_identity() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    crate::test_support::ensure_fd_headroom();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
@@ -214,6 +216,7 @@ struct ScriptedGateway {
 
 async fn scripted_gateway(answers: Vec<(String, String)>) -> ScriptedGateway {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    crate::test_support::ensure_fd_headroom();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
     let requests = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
@@ -360,6 +363,7 @@ async fn gateway_statuses_bodies_and_transport_failures_map_to_fixed_codes() {
 
     // Nothing is listening on this port: the connection error is retried once
     // and then classified, never surfaced as a panic or a hang.
+    crate::test_support::ensure_fd_headroom();
     let dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let dead_url = format!("http://{}/v1/systemone", dead.local_addr().unwrap());
     drop(dead);

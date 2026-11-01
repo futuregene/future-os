@@ -5149,3 +5149,137 @@ mod slot_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod switch_and_invitation_tests {
+    use super::*;
+    use crate::test_support::agent::{break_home, mock_agent, restore_home, TestHome};
+
+    fn status(phase: RemotePhase, code: Option<&str>, expires_at: Option<i64>) -> RemoteStatus {
+        RemoteStatus {
+            devices: Vec::new(),
+            client: None,
+            phase,
+            reason: None,
+            recovery: None,
+            agent_available: true,
+            nats_url: String::new(),
+            credential_expires_at: None,
+            pair_id: "pair_AAAA".into(),
+            pairing_code: code.map(str::to_string),
+            pairing_code_expires_at: expires_at,
+            desktop_id: "desktop_test".into(),
+            desktop_public_key: "UTEST".into(),
+            web_url: None,
+            web_lan_url: None,
+            warning_code: None,
+            cleared_invitations: Vec::new(),
+        }
+    }
+
+    /// The switch's stored value is what the next launch reads back, and the
+    /// window and `future remote enable|disable` share it. A failure to store is
+    /// reported and swallowed: the bridge is already in the state the switch
+    /// shows, so an unwritten preference must not become a caller error.
+    #[test]
+    fn the_remote_switch_is_stored_and_survives_an_unwritable_home() {
+        let _home = TestHome::new("remote-switch");
+        let _mock = mock_agent();
+
+        remember_switch(true);
+        assert!(
+            crate::store::get_app_settings()
+                .expect("settings")
+                .auto_connect_remote,
+            "the switch is read back by the next launch"
+        );
+        remember_switch(false);
+        assert!(
+            !crate::store::get_app_settings()
+                .expect("settings")
+                .auto_connect_remote,
+            "turning it off is stored too"
+        );
+
+        // A home that cannot hold a database: the write fails and the call still
+        // returns, leaving the bridge in whatever state it already had.
+        let previous = break_home();
+        remember_switch(true);
+        restore_home(previous);
+    }
+
+    /// Three phases read as "off" — stopped, failed, revoked — and everything
+    /// else is a machine still trying to serve, which is what the user asked for
+    /// by turning it on. A retrying start must not flip the switch off.
+    #[test]
+    fn only_a_stopped_failed_or_revoked_machine_reads_as_off() {
+        for off in [
+            RemotePhase::Stopped,
+            RemotePhase::Failed,
+            RemotePhase::Revoked,
+        ] {
+            assert!(!is_on(off), "{off:?} must read as off");
+        }
+        for on in [
+            RemotePhase::Enabled,
+            RemotePhase::Connecting,
+            RemotePhase::Ready,
+            RemotePhase::Reconnecting,
+            RemotePhase::Refreshing,
+        ] {
+            assert!(is_on(on), "{on:?} must read as on");
+        }
+    }
+
+    /// An invitation is offered only while it is still a live, complete
+    /// `futureos://remote/pair` v2/v3 link: a missing or past expiry, or any
+    /// other shape, is no invitation at all rather than a QR the phone rejects.
+    #[test]
+    fn an_invitation_is_offered_only_while_it_is_live_and_complete() {
+        let now = unix_timestamp() as i64;
+        let link = "futureos://remote/pair?v=2&code=a&desktopId=d&desktopKey=U&secret=S";
+        assert_eq!(
+            invitation_link(&status(RemotePhase::Ready, Some(link), Some(now + 60))).as_deref(),
+            Some(link)
+        );
+        assert_eq!(
+            invitation_link(&status(RemotePhase::Ready, None, Some(now + 60))),
+            None,
+            "no code is no invitation"
+        );
+        assert_eq!(
+            invitation_link(&status(RemotePhase::Ready, Some(link), None)),
+            None,
+            "an invitation with no expiry cannot be shown as live"
+        );
+        assert_eq!(
+            invitation_link(&status(RemotePhase::Ready, Some(link), Some(now - 1))),
+            None,
+            "an expired invitation is not scannable"
+        );
+        assert_eq!(
+            invitation_link(&status(RemotePhase::Ready, Some(link), Some(now))),
+            None,
+            "the expiry is inclusive: at the instant it passes, it is gone"
+        );
+
+        // Shapes the phone cannot verify: another scheme, host or path, a v1
+        // link, one with no version, a version that is not v2/v3, and a string
+        // that is not a URL at all.
+        for wrong in [
+            "https://remote/pair?v=2",
+            "futureos://other/pair?v=2",
+            "futureos://remote/join?v=2",
+            "futureos://remote/pair?v=1",
+            "futureos://remote/pair",
+            "futureos://remote/pair?v=4",
+            "not a url",
+        ] {
+            assert_eq!(
+                invitation_link(&status(RemotePhase::Ready, Some(wrong), Some(now + 60))),
+                None,
+                "{wrong} is not a v2/v3 invitation"
+            );
+        }
+    }
+}

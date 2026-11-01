@@ -63,15 +63,21 @@ describe("keyProbeAvailable", () => {
 describe("the default storage reader", () => {
   it("answers nothing when storage itself throws", () => {
     // A locked-down webview: reading may throw rather than return null, and the
-    // readout simply stays off.
-    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
-      throw new Error("denied");
+    // readout simply stays off. The global itself is replaced, not the
+    // `Storage` prototype: this file runs in the node environment, where
+    // `localStorage` is the suite's in-memory object and `Storage` is not a
+    // global at all — so a prototype spy throws `ReferenceError` before it can
+    // reach the store the code reads.
+    vi.stubGlobal("localStorage", {
+      getItem: () => {
+        throw new Error("denied");
+      },
     });
     try {
       expect(keyProbeAvailable(false)).toBe(false);
     }
     finally {
-      getItem.mockRestore();
+      vi.unstubAllGlobals();
     }
   });
 });

@@ -406,4 +406,88 @@ mod tests {
         };
         super::execute(&cmd, &sink).await;
     }
+
+    /// The content-range command is how a lean client reads a field it was told
+    /// to fetch by reference. Three things can go wrong before the Agent is
+    /// asked (no request at all, a request that does not decode, a request the
+    /// Agent refuses), and each must come back as a failed reply with a reason —
+    /// a silent success would make the client render an empty message.
+    #[tokio::test]
+    async fn a_content_range_read_reports_every_way_it_can_fail() {
+        use crate::remote::test_support::RecordingSink;
+        use crate::test_support::agent::{mock_agent, Reply, TestHome};
+        use future_remote_protocol::IncomingCmd;
+        use serde_json::json;
+
+        let _home = TestHome::new("bridge-content-range");
+        // The handler under test is this module's `execute`, not the dispatcher.
+        use super::execute;
+        let mock = mock_agent();
+        let sink = RecordingSink::default();
+        let base = |request: Option<serde_json::Value>| IncomingCmd {
+            cmd_type: "get_event_content_range".into(),
+            id: "content-request".into(),
+            session_id: "sess-content".into(),
+            run_id: "run-content".into(),
+            content_request: request,
+            ..Default::default()
+        };
+
+        // 1. No request at all. Each reason is bound first: an assert's format
+        // arguments are only evaluated on failure, so reading the reply inside
+        // one would leave the read itself unmeasured.
+        execute(&base(None), &sink).await;
+        let missing = sink.error_text();
+        let missing_reply = sink.last();
+        assert!(
+            missing.contains("contentRequest is required"),
+            "{missing_reply:?}"
+        );
+
+        // 2. A request that is not a content request.
+        execute(&base(Some(json!({"cursor": "not a number"}))), &sink).await;
+        let invalid = sink.error_text();
+        let invalid_reply = sink.last();
+        assert!(
+            invalid.contains("invalid contentRequest"),
+            "{invalid_reply:?}"
+        );
+
+        // 3. The Agent's own refusal is forwarded as the reason.
+        let request = json!({
+            "databaseId": "db",
+            "restoreGeneration": "gen",
+            "epoch": 3,
+            "cursor": 12,
+            "field": "text",
+            "offset": 0,
+            "maxBytes": 512,
+        });
+        mock.push(
+            "get_event_content_range",
+            Reply::Reject("range no longer available".into()),
+        );
+        execute(&base(Some(request.clone())), &sink).await;
+        assert_eq!(sink.error_text(), "range no longer available");
+
+        // 4. And a range comes back whole, with the coordinates the phone sent.
+        mock.push_data(
+            "get_event_content_range",
+            json!({"text": "the rest of the message", "complete": true}),
+        );
+        execute(&base(Some(request)), &sink).await;
+        let data = sink.ok_data();
+        assert_eq!(data["text"], json!("the rest of the message"));
+        assert_eq!(data["complete"], json!(true));
+        let requests = mock.requests_of("get_event_content_range");
+        assert_eq!(requests.len(), 2, "one per accepted request");
+        assert_eq!(requests[1].run_id, "run-content");
+        let sent = requests[1]
+            .content_request
+            .as_ref()
+            .expect("the request is forwarded");
+        assert_eq!(sent.cursor, 12);
+        assert_eq!(sent.field, "text");
+        assert_eq!(sent.max_bytes, 512);
+    }
 }

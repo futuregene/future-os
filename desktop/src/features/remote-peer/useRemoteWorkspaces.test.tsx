@@ -163,3 +163,39 @@ it("re-reads on request", async () => {
   expect(list).toHaveBeenCalledTimes(2);
   await view.unmount();
 });
+
+/**
+ * The same rule for a read that *fails*: a machine the reader already left has
+ * nothing to say about the one on screen, and its error least of all.
+ *
+ * The sentence is what makes this worth a test rather than symmetry — "that
+ * computer did not answer" printed over another machine's folder list reads as
+ * a fact about the host in front of the reader.
+ */
+it("drops a failure that lost the race with a newer read", async () => {
+  let failFirst!: (error: unknown) => void;
+  const first = new Promise<RemoteWorkspaceRow[]>((_resolve, reject) => {
+    failFirst = reject;
+  });
+  const second = deferred<RemoteWorkspaceRow[]>();
+  list.mockImplementation(desktopId => (desktopId === "desktop_a" ? first : second.promise));
+
+  const view = await mount("desktop_a");
+  await view.switchTo("desktop_b");
+  await act(async () => {
+    second.resolve(rows("on-b"));
+    await Promise.resolve();
+  });
+  await view.settle();
+  expect(view.get().rows.map(row => row.name)).toEqual(["on-b"]);
+
+  await act(async () => {
+    failFirst(new Error("peer_not_connected"));
+    await Promise.resolve();
+  });
+  await view.settle();
+
+  expect(view.get().error).toBeNull();
+  expect(view.get().rows.map(row => row.name)).toEqual(["on-b"]);
+  await view.unmount();
+});

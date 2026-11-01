@@ -73,4 +73,27 @@ mod tests {
             Some(("database-a".into(), "restore-2".into()))
         );
     }
+
+    /// A binding without an identity is refused rather than written: the pair
+    /// (database, generation) is what later lets a reader tell "same data" from
+    /// "same path, different database", and an empty pair would match anything.
+    #[test]
+    fn a_binding_without_a_database_identity_is_refused() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("thread-source-empty-id");
+        crate::store::initialize_app_store().expect("init store");
+
+        for (database_id, generation) in [("", "gen"), ("db", ""), ("", "")] {
+            let error = record_thread_source("thread_1", "sess_1", database_id, generation)
+                .expect_err("an empty identity is not a binding");
+            assert_eq!(
+                error.to_string(),
+                "Agent database identity is missing.",
+                "({database_id:?}, {generation:?})"
+            );
+        }
+        assert!(
+            thread_source("thread_1").expect("read back").is_none(),
+            "nothing was written for a refused binding"
+        );
+    }
 }

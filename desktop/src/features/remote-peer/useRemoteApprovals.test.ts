@@ -323,3 +323,39 @@ describe("useRemoteApprovals", () => {
     expect(listeners).toEqual([]);
   });
 });
+
+/**
+ * A host that sends the body already decoded still produces a card.
+ *
+ * The wire normally carries `data` as a JSON string, and a reader that assumed
+ * so would drop every approval from a host that learned to send the object —
+ * which is the one frame a user must never silently lose: the run waits on it.
+ */
+it("accepts a request whose body arrived already decoded", async () => {
+  const hook = renderHook(() => useRemoteApprovals("desktop_a", "sess_1"));
+  await settle();
+
+  emit({
+    sessionId: "sess_1",
+    type: "approval_request",
+    eventId: "evt_decoded",
+    timestamp: "2026-01-01T00:00:00Z",
+    data: {
+      approval_request_id: "ap_decoded",
+      tool_name: "Write",
+      title: "Write a file",
+      summary: "/tmp/report.md",
+      risk_level: "low",
+    },
+  });
+  await settle();
+
+  expect(hook.current.approvals).toHaveLength(1);
+  expect(hook.current.approvals[0]).toMatchObject({
+    id: "ap_decoded",
+    summary: "/tmp/report.md",
+    title: "Write a file",
+    toolName: "Write",
+  });
+  hook.unmount();
+});

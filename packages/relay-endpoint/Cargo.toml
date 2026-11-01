@@ -14,3 +14,5 @@ rustls-native-certs = "0.8"
 
 [dev-dependencies]
 tempfile.workspace = true
+# The integration test drives an async entry point and its own UDP nameserver.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

@@ -272,7 +272,7 @@ impl Supervisor {
                     .commit(epoch, || {
                         *self.last_error_code.lock().unwrap() = None;
                         if let Some(line) = self.start_failures.recovered() {
-                            eprintln!("{line}");
+                            future_remote_protocol::remote_log!("{line}");
                         }
                         self.start_retry_attempts.store(0, Ordering::Release);
                         self.start_retry_since.store(0, Ordering::Release);
@@ -432,7 +432,7 @@ impl Supervisor {
             if creds.handshake_version != 2 || creds.secure.is_none() {
                 // Credentials created before the signed mutual handshake have no
                 // QR-bound peer identity. They cannot be upgraded safely in place.
-                eprintln!("remote: replacing legacy pairing [PA003]");
+                future_remote_protocol::remote_log!("remote: replacing legacy pairing [PA003]");
                 self.forget_slot(&pair_id)?;
                 continue;
             }
@@ -443,7 +443,7 @@ impl Supervisor {
                     // someone revoked it. It is not this machine's device any more,
                     // and leaving it on disk would make every start retry a
                     // credential that can never succeed.
-                    eprintln!("remote: a pairing was revoked [PA001 invalid_remote_credential]; forgetting that device");
+                    future_remote_protocol::remote_log!("remote: a pairing was revoked [PA001 invalid_remote_credential]; forgetting that device");
                     self.forget_slot(&pair_id)?;
                     // Only the first one is kept: one reason names the event, and
                     // a machine whose book held several revoked devices has the
@@ -616,7 +616,9 @@ impl Supervisor {
                     surface.lan_url,
                 ),
                 Err(error) => {
-                    eprintln!("remote: web client bind failed [LC002]: {error}");
+                    future_remote_protocol::remote_log!(
+                        "remote: web client bind failed [LC002]: {error}"
+                    );
                     (None, None, None)
                 }
             }
@@ -754,12 +756,20 @@ impl Supervisor {
         }
 
         let attempt = self.record_runtime_failure(unix_millis());
-        eprintln!(
-            "remote: critical task stopped [RT001]; rebuilding generation ({attempt}/{MAX_RUNTIME_RECONNECT_ATTEMPTS})"
-        );
-        if attempt > MAX_RUNTIME_RECONNECT_ATTEMPTS {
-            *self.last_error_code.lock().unwrap() = Some("reconnect_required".to_string());
-            return;
+        // The burst budget bounds the *cadence*, not the total. Giving up on the
+        // fourth attempt is what turned a spent budget into silence: the rebuild
+        // below never ran, so nothing was left watching that generation and only
+        // the client pulling again brought the device back. A slow retry is spent
+        // only after `reconnect_step` has waited out its cooldown, so the loop is
+        // bounded by `RUNTIME_COOLDOWN_MAX` rather than by the attempt count.
+        if attempt <= MAX_RUNTIME_RECONNECT_ATTEMPTS {
+            future_remote_protocol::remote_log!(
+                "remote: critical task stopped [RT001]; rebuilding generation ({attempt}/{MAX_RUNTIME_RECONNECT_ATTEMPTS})"
+            );
+        } else {
+            future_remote_protocol::remote_log!(
+                "remote: critical task stopped [RT001]; slow retry (attempt {attempt})"
+            );
         }
         self.spawn({
             let server = self.clone();
@@ -772,7 +782,9 @@ impl Supervisor {
                     Ok(status) if retryable_start_status(&status) => server.spawn_start_retry(),
                     Ok(_) => server.rearm_generation_watch(&pair_id, generation_id),
                     Err(error) => {
-                        eprintln!("remote: automatic bridge reconnect failed [RT001]: {error}");
+                        future_remote_protocol::remote_log!(
+                            "remote: automatic bridge reconnect failed [RT001]: {error}"
+                        );
                         *server.last_error_code.lock().unwrap() =
                             Some("reconnect_required".to_string());
                         server.rearm_generation_watch(&pair_id, generation_id);
@@ -858,7 +870,9 @@ impl Supervisor {
             Err(error) if pairing::is_invalid_or_revoked_error(&error) => {
                 // Only the classified, fixed code is logged, never a platform
                 // response body/message that could reflect credentials.
-                eprintln!("remote: invalid_remote_credential; forgetting that device");
+                future_remote_protocol::remote_log!(
+                    "remote: invalid_remote_credential; forgetting that device"
+                );
                 self.forget_slot(pair_id)?;
                 return Ok(self.empty());
             }
@@ -879,9 +893,21 @@ impl Supervisor {
                 .store(now, Ordering::Release);
             self.runtime_reconnect_attempts.store(0, Ordering::Release);
         }
-        self.runtime_reconnect_attempts
-            .fetch_add(1, Ordering::AcqRel)
-            + 1
+        // Saturating, not wrapping: a generation that keeps failing now spends
+        // attempts past the burst budget (each one after a cooldown), so this
+        // counter is no longer bounded by `MAX_RUNTIME_RECONNECT_ATTEMPTS`.
+        //
+        // `try_update` is the current name of this operation; `fetch_update` is
+        // deprecated, and `clippy -D warnings` (which CI runs over the whole
+        // workspace) turns that deprecation into an error. Same arguments, same
+        // always-`Some` closure, so the increment is unchanged.
+        let previous = self
+            .runtime_reconnect_attempts
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |attempts| {
+                Some(attempts.saturating_add(1))
+            })
+            .unwrap_or(u8::MAX);
+        previous.saturating_add(1)
     }
 
     pub fn spawn_runtime_supervisor(self: &Arc<Self>, pair_id: String, generation_id: u64) {
@@ -905,7 +931,7 @@ impl Supervisor {
         }
         let epoch = self.access.current();
         let attempt = self.web_reconnect_attempts.fetch_add(1, Ordering::AcqRel) + 1;
-        eprintln!(
+        future_remote_protocol::remote_log!(
             "remote: local web listener unavailable; retrying ({attempt}/{MAX_WEB_RECONNECT_ATTEMPTS})"
         );
         self.spawn({
@@ -930,7 +956,9 @@ impl Supervisor {
                             state.web_url = web_url;
                             state.web_lan_url = web_lan_url;
                             server.web_reconnect_attempts.store(0, Ordering::Release);
-                            eprintln!("remote: local web listener reconnected [LC002]");
+                            future_remote_protocol::remote_log!(
+                                "remote: local web listener reconnected [LC002]"
+                            );
                             true
                         });
                         if installed == Some(true) {
@@ -938,7 +966,9 @@ impl Supervisor {
                         }
                     }
                     Err(error) => {
-                        eprintln!("remote: local web listener reconnect failed [LC002]: {error}")
+                        future_remote_protocol::remote_log!(
+                            "remote: local web listener reconnect failed [LC002]: {error}"
+                        )
                     }
                 }
                 let _ = server.access.commit(epoch, || {
@@ -955,7 +985,7 @@ impl Supervisor {
         match pairing::error_code(&error) {
             Some(code) => {
                 if let Some(line) = self.start_failures.record(code, &error) {
-                    eprintln!("{line}");
+                    future_remote_protocol::remote_log!("{line}");
                 }
                 *self.last_error_code.lock().unwrap() = Some(code.to_string());
                 Ok(RemoteStatus {
@@ -987,6 +1017,9 @@ impl Supervisor {
 
     async fn watch_generation(self: Arc<Self>, pair_id: String, generation_id: u64) {
         let mut healthy_secs = 0u8;
+        // One cooldown per watcher: the wait below happens once, and the lap it
+        // resumes on spends the attempt it waited for.
+        let mut cooldown_spent = false;
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             if !self.start_requested.load(Ordering::Acquire) {
@@ -1025,16 +1058,22 @@ impl Supervisor {
                 }
                 continue;
             }
-            if self.runtime_reconnect_attempts.load(Ordering::Acquire)
-                >= MAX_RUNTIME_RECONNECT_ATTEMPTS
-            {
-                let since = self.runtime_failure_window_started.load(Ordering::Acquire);
-                if unix_millis().saturating_sub(since) <= RUNTIME_FAILURE_WINDOW_MS {
-                    // Keep the generation's existing watcher as the single
-                    // retry owner. Exhaustion cools down; it must not require a
-                    // user reconnect after an ordinary network outage. The next
-                    // lap rechecks user intent and the installed generation.
-                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            let attempts = self.runtime_reconnect_attempts.load(Ordering::Acquire);
+            let since = self.runtime_failure_window_started.load(Ordering::Acquire);
+            // Exhaustion cools down; it must not require a user reconnect after an
+            // ordinary network outage, and it must not idle the window out either.
+            // Waiting here and then falling through to the attempt keeps this
+            // watcher the single retry owner while the longest step between
+            // attempts is a cooldown (30 s, doubling, capped at 10 min) instead of
+            // whatever is left of the ten-minute failure window.
+            if !cooldown_spent {
+                if let ReconnectStep::Wait(wait) = reconnect_step(attempts, since, unix_millis()) {
+                    cooldown_spent = true;
+                    tokio::time::sleep(wait).await;
+                    // Re-validate intent, the installed generation and its health
+                    // on the next lap: the wait is long enough for the client to
+                    // reconnect on its own, and a healthy generation must not be
+                    // rebuilt on top of one that already recovered.
                     continue;
                 }
             }

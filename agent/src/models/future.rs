@@ -1452,6 +1452,7 @@ mod tests {
 
     /// HTTP server: answers up to 8 requests with a canned (status, body).
     fn mock_json_server(status: u16, body: String) -> String {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -1560,6 +1561,7 @@ mod tests {
     async fn fetch_future_models_reuses_connection_with_current_credentials() {
         use std::io::{BufRead, BufReader, Write};
 
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {

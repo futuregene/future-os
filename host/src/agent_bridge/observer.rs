@@ -1836,6 +1836,19 @@ mod tests {
             .is_none());
     }
 
+    /// A session the desktop never mirrored reconciles to "nothing removed": the
+    /// Agent can announce an id before any conversation claimed it, and that
+    /// must not read as a deletion that happened.
+    #[tokio::test]
+    async fn an_unowned_session_reconciles_to_nothing_removed() {
+        let _home = TestHome::new("observer-unowned");
+        let _mock = crate::agent_bridge::test_support::mock_agent();
+        assert!(
+            !super::reconcile_deleted_session("s-never-imported").expect("reconcile"),
+            "no local conversation was removed"
+        );
+    }
+
     #[tokio::test]
     async fn missed_head_on_first_sight_forces_reattach() {
         let shared = Arc::new(ObserverShared::new("thread-order"));
@@ -3521,5 +3534,199 @@ mod tests {
         cancel_tx.send(()).unwrap();
         handle.await.unwrap();
         std::env::remove_var("FUTURE_TEST_IDLE_CHECK_MS");
+    }
+}
+
+/// The projection's refusal arms: an event whose required body cannot be read,
+/// and a snapshot whose projected events cannot be applied, must be refused
+/// rather than mirrored. Every one of these returns `false` — "re-attach and
+/// replay" — so the assertion that matters is not only the return value but
+/// that the cursors did not move: a refused event that advanced a cursor would
+/// be silently skipped for the rest of the session.
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+    use crate::agent_bridge::test_support::{mock_agent, Reply};
+
+    /// A body the Agent stored out of line: coordinates, no text.
+    const REFERENCED: &str = r#"{"role":"user","message":"","content_refs":{"message":{"databaseId":"db","restoreGeneration":"gen","epoch":1,"cursor":7,"field":"/data/message"}}}"#;
+
+    fn event(kind: &str, run_id: &str, idx: i64, data: &str) -> future_rpc::proto::StreamEvent {
+        future_rpc::proto::StreamEvent {
+            r#type: kind.to_string(),
+            data: data.to_string(),
+            run_id: run_id.to_string(),
+            idx,
+            projection_snapshot: false,
+            snapshot_events: vec![],
+            snapshot_cursor: 0,
+            session_id: "sess-projection".to_string(),
+            epoch: 1,
+            event_id: String::new(),
+            timestamp: String::new(),
+            session_idx: -1,
+            run_sequence: 1,
+            payload: None,
+        }
+    }
+
+    fn projected(kind: &str, idx: i64, data: &str) -> future_rpc::proto::ProjectedRunEvent {
+        future_rpc::proto::ProjectedRunEvent {
+            r#type: kind.to_string(),
+            data: data.to_string(),
+            idx,
+            payload: None,
+        }
+    }
+
+    /// An event carrying a content reference is materialized against the Agent
+    /// before anything is persisted or mirrored. When the Agent cannot be
+    /// reached at all, the event is refused — not projected with the reference
+    /// still in place, which would render as an empty message and would also
+    /// hand every mirror a body it can never resolve.
+    #[tokio::test]
+    async fn a_referenced_body_with_no_agent_to_read_it_is_refused() {
+        let mock = mock_agent();
+        let previous =
+            std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("the mock guard sets the endpoint");
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+
+        let shared = Arc::new(ObserverShared::new("thread-hydration-down"));
+        let mut state = ObserverState::default();
+        let event = event("user_message", "run-down", 0, REFERENCED);
+        let delivered =
+            handle_event_from("sess-down", &shared, &mut state, event, EventOrigin::Live).await;
+
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", previous);
+
+        assert!(!delivered, "an unreadable body must not be projected");
+        assert!(
+            !state.cursors.contains_key("run-down"),
+            "a refused event must not advance the run cursor"
+        );
+        assert_eq!(state.session_cursor, -1, "nor the session cursor");
+        assert!(
+            mock.requests_of("get_event_content_range").is_empty(),
+            "the unreachable Agent was never asked"
+        );
+    }
+
+    /// The Agent is reachable and refuses the read: same refusal, one round
+    /// trip later. The request is the event's own coordinates, so a host that
+    /// read the session's *current* run instead would be caught here.
+    #[tokio::test]
+    async fn a_body_the_agent_refuses_to_serve_is_refused() {
+        let mock = mock_agent();
+        mock.push(
+            "get_event_content_range",
+            Reply::Reject("no such field".into()),
+        );
+
+        let shared = Arc::new(ObserverShared::new("thread-hydration-refused"));
+        let mut state = ObserverState::default();
+        let event = event("user_message", "run-refused", 0, REFERENCED);
+        let delivered = handle_event_from(
+            "sess-refused",
+            &shared,
+            &mut state,
+            event,
+            EventOrigin::Live,
+        )
+        .await;
+
+        assert!(!delivered, "a refused body must not be projected");
+        assert!(!state.cursors.contains_key("run-refused"));
+        let reads = mock.requests_of("get_event_content_range");
+        assert_eq!(reads.len(), 1, "one referenced field, one read");
+        assert_eq!(reads[0].run_id, "run-refused");
+        let request = reads[0]
+            .content_request
+            .as_ref()
+            .expect("the reference is forwarded as a content request");
+        assert_eq!(request.field, "/data/message");
+        assert_eq!(request.cursor, 7);
+    }
+
+    /// A projection snapshot replaces the run's replica wholesale, so an
+    /// unreadable projected event cannot be dropped from it — the snapshot
+    /// would then lie about the run. The whole event is refused instead.
+    #[tokio::test]
+    async fn a_projection_snapshot_with_an_unreadable_event_is_refused() {
+        let _mock = mock_agent();
+        let shared = Arc::new(ObserverShared::new("thread-projection-json"));
+        let mut state = ObserverState::default();
+        let mut snapshot = event("agent_end", "run-json", 0, "{}");
+        snapshot.projection_snapshot = true;
+        snapshot.snapshot_cursor = 4;
+        snapshot.snapshot_events = vec![
+            projected("text_chunk", 1, r#"{"text":"ok"}"#),
+            projected("text_chunk", 2, "{not json"),
+        ];
+
+        let delivered = handle_event_from(
+            "sess-json",
+            &shared,
+            &mut state,
+            snapshot,
+            EventOrigin::Replay,
+        )
+        .await;
+
+        assert!(!delivered, "a snapshot with an unreadable event is refused");
+        assert!(
+            !state.cursors.contains_key("run-json"),
+            "the snapshot cursor is not adopted"
+        );
+    }
+
+    /// A projected canonical fragment that starts past byte zero is a hole in
+    /// the rebuilt body — appending it would produce plausible corrupted text.
+    #[tokio::test]
+    async fn a_projection_snapshot_with_a_content_hole_is_refused() {
+        let _mock = mock_agent();
+        let shared = Arc::new(ObserverShared::new("thread-projection-hole"));
+        let mut state = ObserverState::default();
+        let mut snapshot = event("agent_end", "run-hole", 0, "{}");
+        snapshot.projection_snapshot = true;
+        snapshot.snapshot_cursor = 4;
+        snapshot.snapshot_events = vec![projected(
+            "text_chunk",
+            1,
+            r#"{"content_key":"answer","content_offset":5,"content_bytes":3,"text":"abc"}"#,
+        )];
+
+        let delivered = handle_event_from(
+            "sess-hole",
+            &shared,
+            &mut state,
+            snapshot,
+            EventOrigin::Replay,
+        )
+        .await;
+
+        assert!(!delivered, "a fragment with no prefix is refused");
+        assert!(!state.cursors.contains_key("run-hole"));
+    }
+
+    /// The same hole outside a snapshot: the live path applies canonical
+    /// content before persisting, so a fragment past byte zero is refused and
+    /// the run cursor stays where it was — the event is replayed, not lost.
+    #[tokio::test]
+    async fn a_live_fragment_with_a_content_hole_is_refused() {
+        let _mock = mock_agent();
+        let shared = Arc::new(ObserverShared::new("thread-live-hole"));
+        let mut state = ObserverState::default();
+        let event = event(
+            "text_chunk",
+            "run-live-hole",
+            0,
+            r#"{"content_key":"answer","content_offset":5,"content_bytes":3,"text":"abc"}"#,
+        );
+
+        let delivered =
+            handle_event_from("sess-live", &shared, &mut state, event, EventOrigin::Live).await;
+
+        assert!(!delivered, "a fragment with no prefix is refused");
+        assert!(!state.cursors.contains_key("run-live-hole"));
     }
 }

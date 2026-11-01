@@ -628,7 +628,11 @@ mod tests {
     #[tokio::test]
     async fn a_custom_plan_resolves_a_name_the_system_cannot() {
         crate::install_tls_provider();
-        let nameserver = spawn_nameserver(vec!["198.51.100.9".parse().unwrap()]);
+        // Loopback, not a documentation range: the assertion is "the connect was
+        // attempted", and a refused loopback port answers at once while a
+        // TEST-NET address (`198.51.100.0/24`) swallows the SYN and costs the
+        // suite its 75-second connect timeout.
+        let nameserver = spawn_nameserver(vec!["127.0.0.1".parse().unwrap()]);
         let config = config_with(None, Some(&nameserver.to_string()), None, &[]);
         let client = attach_with(reqwest::Client::builder(), leaked(config))
             .build()

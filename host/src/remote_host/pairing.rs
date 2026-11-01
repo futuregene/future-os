@@ -1655,4 +1655,276 @@ mod http_tests {
             "the throttled entry must be retried once more"
         );
     }
+
+    // ---------------------------------------------------------------------
+    // The self-hosted relay half. A relay speaks HTTP, so the platform mock
+    // serves it too: the same server, a different set of paths — and the
+    // difference that matters is that these requests are signed with the
+    // pairing's own NKey instead of an account bearer.
+    // ---------------------------------------------------------------------
+
+    /// Point this process at `url` for the duration of the test. The relay is a
+    /// per-launch choice read from the environment, so it is process-global and
+    /// has to be put back.
+    struct RelayEnv(Option<std::ffi::OsString>);
+
+    impl RelayEnv {
+        fn point_at(url: &str) -> Self {
+            let previous = std::env::var_os("FUTURE_RELAY_URL");
+            std::env::set_var("FUTURE_RELAY_URL", url);
+            RelayEnv(previous)
+        }
+    }
+
+    impl Drop for RelayEnv {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => std::env::set_var("FUTURE_RELAY_URL", value),
+                None => std::env::remove_var("FUTURE_RELAY_URL"),
+            }
+        }
+    }
+
+    /// What `POST /v1/rooms` and the rotation endpoint answer with.
+    fn relay_grant() -> Value {
+        json!({
+            "userJwt": jwt(now_secs() + 3600),
+            "natsUrl": "tls://relay.test:4222",
+            "natsWsUrl": "wss://relay.test",
+        })
+    }
+
+    fn fixture_relay_creds(base: &str) -> PairingCreds {
+        PairingCreds {
+            control_url: Some(base.to_string()),
+            ..fixture_creds()
+        }
+    }
+
+    /// A self-hosted invitation is minted entirely against the relay: the room,
+    /// the join token and the bridge credential. Nothing is asked of the Future
+    /// platform, and the invitation says so (v3 + `relay`) so a client can
+    /// refuse to send its join token somewhere its allowlist does not know.
+    #[tokio::test]
+    async fn a_self_hosted_invitation_is_minted_against_the_relay_room() {
+        let _home = HomeGuard::new("pairing-relay-mint");
+        let relay = MockPlatform::start().await;
+        relay.push("/v1/rooms", 200, relay_grant());
+        let _env = RelayEnv::point_at(relay.url());
+
+        let Invitation {
+            creds,
+            code,
+            expires_at,
+            cleared,
+        } = create_pairing(true, &[])
+            .await
+            .expect("the relay mints the room");
+
+        assert!(
+            cleared.is_empty(),
+            "a relay room has no platform rows to clear"
+        );
+        assert_eq!(creds.control_url.as_deref(), Some(relay.url()));
+        assert_eq!(creds.nats_url, "tls://relay.test:4222");
+        assert_eq!(creds.nats_ws_url, "wss://relay.test");
+        assert!(creds.jwt_expires_at > now_secs());
+        assert!(creds.secure.is_some(), "a relay pairing is a secure one");
+        assert_eq!(creds.pair_id.len(), 32);
+        // The invitation lives for its own TTL, which is much shorter than the
+        // credential it advertises: the QR is a bearer credential.
+        let lifetime = expires_at.expect("an invitation always expires") - now_secs();
+        assert!(
+            (299..=300).contains(&lifetime),
+            "invitation lifetime was {lifetime}s"
+        );
+
+        let invitation = reqwest::Url::parse(&code).expect("the invitation is a URL");
+        let fields: std::collections::HashMap<_, _> = invitation.query_pairs().collect();
+        assert_eq!(
+            fields["v"], "3",
+            "a v2 reader must refuse a relay invitation"
+        );
+        assert_eq!(
+            fields["desktopId"],
+            creds.desktop_id.as_str(),
+            "the invitation names the machine the relay knows"
+        );
+        let payload: Value = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(fields["code"].as_bytes())
+                .expect("the code is base64url"),
+        )
+        .expect("the code is a JSON payload");
+        assert_eq!(payload["v"], json!(2), "the phone reads the v2 shape");
+        assert_eq!(
+            payload["claim_url"],
+            json!(format!("{}/client/v1/remote/pair/claim", relay.url()))
+        );
+        assert_eq!(payload["relay"], json!(relay.url()));
+        assert_eq!(payload["exp"], json!(expires_at.unwrap()));
+        let nonce = payload["nonce"].as_str().expect("a join token");
+        assert!(nonce.len() >= 40, "{nonce}");
+
+        let requests = relay.requests();
+        assert_eq!(requests.len(), 1, "one room, one request");
+        assert_eq!(requests[0].0, "POST");
+        assert_eq!(requests[0].1, "/v1/rooms");
+        let body: Value = serde_json::from_str(&requests[0].2).unwrap();
+        assert_eq!(body["pairId"], json!(creds.pair_id));
+        assert_eq!(body["hostName"], json!(HOST_NAME));
+        assert_eq!(body["hostDeviceId"], json!(creds.desktop_id));
+        // The relay only ever sees the invitation's hash: the token that opens
+        // the room never leaves this machine.
+        let hash = body["joinHash"].as_str().expect("a join hash");
+        assert_eq!(hash.len(), 64, "{hash}");
+        assert!(
+            !requests[0].2.contains(nonce),
+            "the token is sent as a hash"
+        );
+    }
+
+    /// A relay pairing rotates its credential at the relay that issued it, and
+    /// keeps the pointer: nothing about the pairing moves.
+    #[tokio::test]
+    async fn a_relay_credential_rotates_at_the_relay_that_issued_it() {
+        let _home = HomeGuard::new("pairing-relay-refresh");
+        let relay = MockPlatform::start().await;
+        relay.push("/client/v1/remote/auth/token", 200, relay_grant());
+        let creds = fixture_relay_creds(relay.url());
+        let before = creds.jwt_expires_at;
+
+        let rotated = refresh_bridge_jwt(creds).await.expect("the relay rotates");
+
+        assert_eq!(rotated.nats_url, "tls://relay.test:4222");
+        assert_eq!(rotated.nats_ws_url, "wss://relay.test");
+        assert_eq!(rotated.control_url.as_deref(), Some(relay.url()));
+        assert!(rotated.jwt_expires_at >= before);
+        let requests = relay.requests();
+        assert_eq!(
+            requests.len(),
+            1,
+            "no platform call is made for a relay pairing"
+        );
+        assert_eq!(requests[0].1, "/client/v1/remote/auth/token");
+        let body: Value = serde_json::from_str(&requests[0].2).unwrap();
+        assert_eq!(body["pair_id"], json!("pair_test"));
+        assert_eq!(body["role"], json!("bridge"));
+    }
+
+    /// A relay that lost its rooms is disposable: the desktop re-registers the
+    /// same room from its own credentials instead of failing the user's phone.
+    #[tokio::test]
+    async fn a_forgotten_relay_room_is_registered_again() {
+        let _home = HomeGuard::new("pairing-relay-reregister");
+        let relay = MockPlatform::start().await;
+        relay.push(
+            "/client/v1/remote/auth/token",
+            404,
+            json!({ "error": "room_unknown", "message": "No such room." }),
+        );
+        relay.push("/v1/rooms", 200, relay_grant());
+        let creds = fixture_relay_creds(relay.url());
+
+        let rotated = refresh_bridge_jwt(creds).await.expect("the room is remade");
+
+        assert_eq!(rotated.nats_url, "tls://relay.test:4222");
+        let requests = relay.requests();
+        assert_eq!(requests.len(), 2, "rotate, then register");
+        assert_eq!(requests[1].1, "/v1/rooms");
+        let body: Value = serde_json::from_str(&requests[1].2).unwrap();
+        assert_eq!(
+            body["pairId"],
+            json!("pair_test"),
+            "the same room comes back"
+        );
+        assert_eq!(
+            body["joinHash"],
+            Value::Null,
+            "a refresh opens no invitation"
+        );
+    }
+
+    /// Any other refusal is the user's problem to see, not a reason to make a
+    /// new room behind their back.
+    #[tokio::test]
+    async fn a_relay_failure_other_than_an_unknown_room_is_reported() {
+        let _home = HomeGuard::new("pairing-relay-refresh-refused");
+        let relay = MockPlatform::start().await;
+        relay.push(
+            "/client/v1/remote/auth/token",
+            403,
+            json!({ "error": "room_owned_by_another_host", "message": "no" }),
+        );
+        let creds = fixture_relay_creds(relay.url());
+
+        let error = refresh_bridge_jwt(creds)
+            .await
+            .expect_err("a refusal is not a missing room");
+        assert_eq!(remote_error_parts(error).0, 403);
+        assert_eq!(relay.requests().len(), 1, "and no room is registered");
+    }
+
+    /// Unpairing a relay pairing deletes the room; there is no platform row and
+    /// no queued delivery to wait for.
+    #[tokio::test]
+    async fn unpairing_a_relay_pairing_deletes_its_room() {
+        let _home = HomeGuard::new("pairing-relay-revoke");
+        let relay = MockPlatform::start().await;
+        relay.push("/v1/rooms/pair_test", 204, json!(null));
+        let creds = fixture_relay_creds(relay.url());
+
+        revoke_pairing(&creds).await.expect("the room is deleted");
+
+        let requests = relay.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].0, "DELETE");
+        assert_eq!(requests[0].1, "/v1/rooms/pair_test");
+    }
+
+    /// A relay invitation is a room, not a platform row: there is nothing for
+    /// the queued-revoke delivery to do, so nothing is queued.
+    #[test]
+    fn a_relay_invitation_queues_no_platform_revoke() {
+        let _home = HomeGuard::new("pairing-relay-queue");
+        let _env = RelayEnv::point_at("http://127.0.0.1:1");
+
+        queue_revoke_invitation("pair_room").expect("nothing to queue is not an error");
+
+        let file = pairing_path()
+            .unwrap()
+            .with_file_name("remote_pending_revokes.json");
+        assert!(!file.exists(), "{} was written", file.display());
+    }
+
+    /// The origin a relay invitation declares, which the client compares its
+    /// claim URL against: scheme, host and the port only when there is one.
+    #[test]
+    fn a_relay_origin_is_scheme_host_and_port_or_a_refusal() {
+        assert_eq!(
+            relay_origin("https://relay.example").unwrap(),
+            "https://relay.example"
+        );
+        assert_eq!(
+            relay_origin("http://127.0.0.1:8099/").unwrap(),
+            "http://127.0.0.1:8099"
+        );
+        assert!(relay_origin("not a url").is_err(), "unparseable is refused");
+        assert!(
+            relay_origin("file:///tmp/relay").is_err(),
+            "a relay with no host has no origin to declare"
+        );
+    }
+
+    /// An invitation row with no timestamp is left alone: guessing "old enough"
+    /// is how a live code gets revoked.
+    #[test]
+    fn an_invitation_without_a_creation_time_is_never_swept() {
+        let mut row: PlatformDevice =
+            serde_json::from_value(device_row("pair_old", "desktop_a", "pending", 600, false))
+                .expect("a device row");
+        row.created_at = None;
+
+        assert!(!is_sweepable(&row, "desktop_a", &[], chrono::Utc::now()));
+    }
 }

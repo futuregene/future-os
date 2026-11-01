@@ -43,11 +43,25 @@ vi.mock("./ThreadHeader", () => ({
 }));
 vi.mock("./search/ThreadSearch", () => ({ ThreadSearch: () => <div data-search="" /> }));
 vi.mock("./Composer", () => ({
-  Composer: (props: { onEmptySubmit?: () => void }) => (
+  Composer: (props: {
+    onEmptySubmit?: () => void;
+    onSend?: (payload: { attachments: unknown[]; content: string }, resolve: () => void, reject: (error: unknown) => void) => void;
+  }) => (
     <div data-composer="" data-empty-submit={String(typeof props.onEmptySubmit === "function")}>
       {/* The editor is the one thing that makes this composer a place to dictate
           into; the real component's contentEditable is what this stands for. */}
       <div contentEditable data-editor="" suppressContentEditableWarning />
+      {/* What the real composer does with a send: hand the payload over with the two
+          callbacks it awaits. The view's own behaviour is what reads them. */}
+      {props.onSend
+        ? (
+            <button
+              data-send=""
+              onClick={() => void props.onSend!({ attachments: [], content: "a sentence" }, () => {}, () => {})}
+              type="button"
+            />
+          )
+        : null}
     </div>
   ),
 }));
@@ -247,6 +261,33 @@ describe("chrome: input", () => {
     expect(container.querySelector("[data-composer]")!.getAttribute("data-empty-submit")).toBe("false");
     render({ chrome: "input", onLeaveInput: () => {} });
     expect(container.querySelector("[data-composer]")!.getAttribute("data-empty-submit")).toBe("true");
+  });
+
+  it("leaves the layer when a sentence is sent from it", () => {
+    // The input layer exists to ask one question: once the draft is handed over (the
+    // composer has already cleared it) the panel goes back to reading, so the answer
+    // does not land behind the editor.
+    const onLeaveInput = vi.fn();
+    render({ chrome: "input", onLeaveInput });
+
+    act(() => {
+      container.querySelector<HTMLElement>("[data-send]")!.click();
+    });
+
+    expect(onLeaveInput).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays put when a sentence is sent from the full chrome", () => {
+    // The main window's composer sends into a conversation that stays on screen; there
+    // is no layer to leave, and the callback is not even handed over.
+    const onLeaveInput = vi.fn();
+    render({ onLeaveInput });
+
+    act(() => {
+      container.querySelector<HTMLElement>("[data-send]")!.click();
+    });
+
+    expect(onLeaveInput).not.toHaveBeenCalled();
   });
 
   it("never claims an approval card of its own", () => {

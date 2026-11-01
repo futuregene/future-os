@@ -330,9 +330,9 @@ fn terminal_signals_cancel_startup_and_leave_the_external_endpoint_alone() {
 // ---------------------------------------------------------------------------
 
 /// What a loopback platform answers on its *pairing* endpoints. The account
-/// profile endpoint always answers 200: no arm here depends on the entry point
-/// asking the platform about the account any more (that is the remote
-/// supervisor's job now), so the fixture only has to keep requests answered.
+/// profile endpoint answers 200 except in [`Platform::AccountRefused`], where the
+/// refusal is the point: every other arm needs a run that gets past login, and
+/// one needs a run that does not.
 #[cfg(unix)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Platform {
@@ -342,6 +342,11 @@ enum Platform {
     PairingDown,
     /// The platform says the stored pairing credential is revoked.
     PairingRevoked,
+    /// The platform refuses the *account* key: the profile check answers as the
+    /// platform answers a key it no longer honours. This is the one input that
+    /// reaches the entry point's "authorization is no longer valid" arm, and it
+    /// is deliberately not a 5xx — a server fault is the arm above.
+    AccountRefused,
 }
 
 /// A loopback platform API. Every request is answered — with the status the arm
@@ -457,14 +462,20 @@ fn answer(
         .unwrap_or_default()
         .to_string();
     let (status, body) = if path.ends_with("/client/v1/account/profile") {
-        ("200 OK", r#"{"email":"operator@example.com"}"#)
+        match mode {
+            Platform::AccountRefused => (
+                "403 Forbidden",
+                r#"{"error":"invalid_api_key","message":"key revoked"}"#,
+            ),
+            _ => ("200 OK", r#"{"email":"operator@example.com"}"#),
+        }
     } else {
         match mode {
             Platform::PairingDown => (
                 "500 Internal Server Error",
                 r#"{"message":"pairing service unavailable"}"#,
             ),
-            Platform::PairingRevoked => (
+            Platform::PairingRevoked | Platform::AccountRefused => (
                 "401 Unauthorized",
                 r#"{"error":"invalid_remote_credential","message":"gone"}"#,
             ),
@@ -570,6 +581,16 @@ fn foreground(home: &Path) -> Command {
     let mut command = headless(home);
     command.env_remove("FUTURE_AGENT_GRPC_ADDR");
     command
+}
+
+/// Another terminal on the same machine, while a host is running in this home:
+/// the second half of every "a command from another terminal" pair.
+#[cfg(unix)]
+fn second_terminal(home: &Path, args: &[&str]) -> std::process::Output {
+    isolated_command(env!("CARGO_BIN_EXE_future"), home)
+        .args(args)
+        .output()
+        .expect("run the CLI from a second terminal")
 }
 
 /// Kill the child if the test fails early, so a red test never leaves a server
@@ -979,6 +1000,200 @@ fn a_revoked_pairing_stops_the_run_with_the_reason_and_drops_the_credential() {
     assert!(
         !pairing.exists(),
         "an unusable credential must be dropped instead of served forever"
+    );
+}
+
+/// The switch is the user's decision, and a server obeys it: a machine whose
+/// remote desktop was turned off must not start serving just because a process
+/// restarted — and it must not exit either, because staying up is what lets
+/// `future remote enable` turn it back on with no restart.
+///
+/// Both halves in one run, because the pair is the whole claim: the notice that
+/// nothing is served is printed once by the entry, the idle notice once by the
+/// loop, and the enable from another terminal has to reach **this** process for
+/// the deferred phase to appear.
+#[cfg(unix)]
+#[test]
+fn a_switched_off_remote_desktop_stays_up_and_comes_back_without_a_restart() {
+    use std::time::Duration;
+
+    let home = tempfile::tempdir().unwrap();
+    let platform = FakePlatform::start(Platform::PairingDown);
+    signed_in_home(home.path(), &platform.url);
+
+    // The user's own switch, set the way a user sets it: no Desktop is running
+    // yet, so this stores the preference and nothing else.
+    let off = second_terminal(home.path(), &["remote", "disable"]);
+    assert!(
+        off.status.success(),
+        "`remote disable` must store the switch without a Desktop: {}",
+        String::from_utf8_lossy(&off.stderr)
+    );
+
+    let mut guard = ChildGuard(foreground(home.path()).spawn().unwrap());
+    let child = &mut guard.0;
+    let mut log = Stderr::take(child);
+
+    // The preamble ran (the account file was read), and the switch was obeyed:
+    // this sentence is printed instead of starting the remote desktop.
+    log.wait_for("Platform account signed in", Duration::from_secs(300));
+    log.wait_for(
+        "The remote desktop switch is off, so this entry serves nothing yet",
+        Duration::from_secs(60),
+    );
+    // …and the loop reports the same state as idle, which is a different
+    // sentence from a stopped bridge on a switched-on machine.
+    log.wait_for(
+        "Remote desktop is off (the switch is off)",
+        Duration::from_secs(60),
+    );
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "a switched-off remote desktop must not stop the entry:\n{}",
+        log.collected
+    );
+    assert!(
+        !platform
+            .served()
+            .iter()
+            .any(|path| path.ends_with("/client/v1/remote/auth/token")),
+        "the switch off must reach the supervisor, not just the report: {:?}",
+        platform.served()
+    );
+
+    // The other terminal turns it on. The request goes to the process above over
+    // the control channel, and *that* process starts serving — so the deferred
+    // phase can only appear if the switch came back with no restart.
+    let on = second_terminal(home.path(), &["remote", "enable"]);
+    assert!(
+        on.status.success(),
+        "`remote enable` must be accepted by the running host: {}\n{}",
+        String::from_utf8_lossy(&on.stdout),
+        String::from_utf8_lossy(&on.stderr)
+    );
+    log.wait_for("Remote: Reconnecting", Duration::from_secs(120));
+    assert!(
+        platform
+            .served()
+            .iter()
+            .any(|path| path.ends_with("/client/v1/remote/auth/token")),
+        "the enable must have started the remote desktop in the running process: {:?}",
+        platform.served()
+    );
+
+    signal(child, "-INT");
+    let exit = wait_for_exit(child, &mut log, &platform, Duration::from_secs(120));
+    assert!(
+        exit.success(),
+        "SIGINT must stop the run cleanly ({exit}):\n{}",
+        log.collected
+    );
+}
+
+/// A stored account key the platform no longer honours is named as such, and it
+/// is **not** a logout: the machine keeps serving everything local, and the
+/// refused key is not offered again on the next iteration.
+///
+/// The distinction is the whole point of the arm: a 5xx while verifying is a
+/// transport failure (the arm below), a key the platform refuses is a credential
+/// the operator has to replace, and neither may be reported as the other.
+#[cfg(unix)]
+#[test]
+fn a_stored_key_the_platform_refuses_leaves_the_machine_serving_locally() {
+    use std::time::Duration;
+
+    let home = tempfile::tempdir().unwrap();
+    let platform = FakePlatform::start(Platform::AccountRefused);
+    signed_in_home(home.path(), &platform.url);
+
+    let mut guard = ChildGuard(foreground(home.path()).spawn().unwrap());
+    let child = &mut guard.0;
+    let mut log = Stderr::take(child);
+
+    log.wait_for(
+        "Platform authorization is no longer valid. Please sign in again.",
+        Duration::from_secs(300),
+    );
+    // The refusal is about the account, so nothing was pinned and nothing was
+    // served: this is the signed-out state, not a broken host.
+    log.wait_for("Remote: Stopped", Duration::from_secs(60));
+    let refused_at = platform.served().len();
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "a refused key is not a logout: the entry keeps serving locally:\n{}",
+        log.collected
+    );
+    assert!(
+        !log.collected.contains("Remote connection stopped"),
+        "a refused key must not stop the run as a remote phase would:\n{}",
+        log.collected
+    );
+    // The refused key is remembered, so the profile is not asked again on every
+    // iteration — that would be a login loop against a platform that said no.
+    let extra: Vec<String> = platform.served().into_iter().skip(refused_at).collect();
+    assert!(
+        !extra
+            .iter()
+            .any(|path| path.ends_with("/client/v1/account/profile")),
+        "a refused key must not be offered again: {extra:?}"
+    );
+
+    signal(child, "-INT");
+    let exit = wait_for_exit(child, &mut log, &platform, Duration::from_secs(120));
+    assert!(
+        exit.success(),
+        "SIGINT must stop the run cleanly ({exit}):\n{}",
+        log.collected
+    );
+}
+
+/// A platform this machine cannot reach while verifying the account is a
+/// transport failure, and it is reported as one: the run fails naming the error
+/// instead of quietly degrading to "signed out", which would tell the operator
+/// their login is gone when the network is.
+#[cfg(unix)]
+#[test]
+fn an_unreachable_platform_while_verifying_is_reported_as_a_failure() {
+    use std::time::Duration;
+
+    // A loopback port nothing listens on: the connection is refused at once, so
+    // this arm costs no timeout and cannot be mistaken for a slow platform.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let unreachable = format!("http://{}", closed.local_addr().unwrap());
+    drop(closed);
+
+    let home = tempfile::tempdir().unwrap();
+    signed_in_home(home.path(), &unreachable);
+    let platform = FakePlatform::start(Platform::PairingDown);
+
+    let mut guard = ChildGuard(foreground(home.path()).spawn().unwrap());
+    let child = &mut guard.0;
+    let mut log = Stderr::take(child);
+    let status = wait_for_exit(child, &mut log, &platform, Duration::from_secs(300));
+
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "an unreachable platform must fail the run:\n{}",
+        log.collected
+    );
+    assert!(
+        log.collected.contains(&unreachable),
+        "the failure must name the endpoint it could not reach:\n{}",
+        log.collected
+    );
+    // The two wrong answers this arm exists to rule out: "you are signed in"
+    // (nothing was verified) and "not signed in" (the key was never judged).
+    assert!(
+        !log.collected.contains("Platform account signed in"),
+        "an unreachable platform cannot have authorized the account:\n{}",
+        log.collected
+    );
+    assert!(
+        !log.collected.contains("Not signed in to FutureOS"),
+        "a transport failure is not a logout:\n{}",
+        log.collected
     );
 }
 
