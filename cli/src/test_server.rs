@@ -341,7 +341,6 @@ impl HttpRoute {
 /// "http://127.0.0.1:<port>". Each connection gets one response (reqwest
 /// opens a fresh connection per request here).
 pub async fn spawn_http(routes: Vec<HttpRoute>) -> String {
-    crate::test_env::ensure_fd_headroom();
     spawn_http_recording(routes, None).await
 }
 
@@ -380,6 +379,9 @@ async fn spawn_http_impl(
     routes: Vec<HttpRoute>,
     requests: Option<Arc<Mutex<Vec<String>>>>,
 ) -> (String, HttpShutdown) {
+    // Every HTTP mock comes through here, so the descriptor ceiling is lifted
+    // once, before the first listener, whichever spawner the caller used.
+    crate::test_env::ensure_fd_headroom();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
@@ -394,7 +396,11 @@ async fn spawn_http_impl(
                 accepted = listener.accept() => {
                     // Invariant: accept on a live mock listener only fails
                     // on OS-level resource exhaustion.
-                    let (mut socket, _) = accepted.expect("mock listener accept");
+                    let (mut socket, _) = accepted.unwrap_or_else(|e| {
+                        let mut l = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+                        unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut l); }
+                        panic!("mock listener accept: {e} (soft limit now {})", l.rlim_cur);
+                    });
                     let routes = routes.clone();
                     let requests = requests.clone();
                     tokio::spawn(async move {

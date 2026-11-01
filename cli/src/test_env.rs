@@ -37,20 +37,16 @@ pub fn ensure_fd_headroom() {
         rlim_cur: 0,
         rlim_max: 0,
     };
-    // SAFETY: both calls pass a valid `rlimit` for `RLIMIT_NOFILE`; failure is
-    // reported by the return value and only means "keep the current budget".
+    // SAFETY: both calls pass a valid `rlimit` for `RLIMIT_NOFILE`; a failure
+    // only means "keep the current budget", and the ceiling is never lowered.
     unsafe {
-        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limits) != 0 {
-            return;
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limits) == 0 && limits.rlim_cur < WANT {
+            let raised = libc::rlimit {
+                rlim_cur: WANT.min(limits.rlim_max),
+                rlim_max: limits.rlim_max,
+            };
+            let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &raised);
         }
-        if limits.rlim_cur >= WANT {
-            return;
-        }
-        let raised = libc::rlimit {
-            rlim_cur: WANT.min(limits.rlim_max),
-            rlim_max: limits.rlim_max,
-        };
-        let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &raised);
     }
 }
 
@@ -408,5 +404,63 @@ mod tests {
     async fn wait_for_exhaustion_returns_false() {
         assert!(!super::wait_for(|| false).await);
         assert!(super::wait_for(|| true).await);
+    }
+
+    /// The descriptor raise runs only when the ambient ceiling is low, which is
+    /// exactly the case the suite must survive and exactly the case a shell that
+    /// already raised it hides. So lower the ceiling one descriptor below the
+    /// target first: the raise is then decided by this test rather than by how
+    /// the process was started, and 4095 descriptors stay available to whoever
+    /// else is running.
+    #[cfg(unix)]
+    #[test]
+    fn the_descriptor_ceiling_is_raised_and_never_lowered() {
+        let _host = future_host::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        const TARGET: libc::rlim_t = 4096;
+        let mut before = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: a valid `rlimit` for `RLIMIT_NOFILE`; the restore at the end
+        // puts the process back where it was even if an assertion fails.
+        unsafe {
+            assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut before), 0);
+            let want = TARGET.min(before.rlim_max);
+            if before.rlim_cur <= want {
+                let lowered = libc::rlimit {
+                    rlim_cur: want - 1,
+                    rlim_max: before.rlim_max,
+                };
+                assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &lowered), 0);
+
+                super::ensure_fd_headroom();
+
+                let mut raised = libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                };
+                assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut raised), 0);
+                assert_eq!(
+                    raised.rlim_cur, want,
+                    "the suite lifts its own ceiling to the target, bounded by the hard limit"
+                );
+                assert_eq!(
+                    raised.rlim_max, before.rlim_max,
+                    "the hard limit is never touched"
+                );
+
+                // Idempotent: a second call cannot move it again.
+                super::ensure_fd_headroom();
+                let mut again = libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                };
+                assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut again), 0);
+                assert_eq!(again.rlim_cur, want);
+            }
+            assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &before), 0);
+        }
     }
 }
