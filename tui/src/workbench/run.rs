@@ -5241,34 +5241,24 @@ mod driver_tests {
             );
         }
 
-        /// Every read the driver makes for a box can fail, and each failure is
-        /// reported **where the reader is looking**: the notice row for a verb,
-        /// the box's own error line for the list it could not fill, and the
-        /// detail gutter for a row. A bare `Err(_) => {}` would leave the reader
-        /// with a box that opened and a list that never arrives.
+        /// The two failed reads of the repository panel that nothing else pins:
+        /// the **row detail** (`SelectGit` → the gutter says what failed rather
+        /// than staying empty) and the **file re-read** behind the review's
+        /// `enter` (a notice, not a box that keeps the patch it had).
         ///
-        /// The failure is made honest rather than injected: the reads all shell
-        /// out (`git`, the clipboard tool), so a `PATH` holding neither is this
-        /// machine unable to answer — the same shape as a stripped environment.
-        /// The whole test holds the crate's lock, because `PATH` is
-        /// process-global and a peer test's git read would fail inside this
-        /// window (see `a_peer_may_not_swap_the_environment`).
+        /// The other three of this family — `/worktree`'s probe, `OpenDiff` and
+        /// the clipboard's `y` — are `a_repository_read_that_failed_reaches_its_panel`,
+        /// `a_review_of_a_workspace_that_went_away_says_so` and
+        /// `a_copy_the_clipboard_refuses_is_reported`, which build a real
+        /// repository so only the one tool they mean is missing. These two need a
+        /// view that is already on screen, so they seed it and then take git away:
+        /// a `PATH` with no `git` on it is this machine unable to answer.
         #[allow(clippy::await_holding_lock)]
         #[tokio::test]
-        async fn a_read_that_cannot_be_made_is_reported_where_the_reader_is_looking() {
+        async fn a_detail_that_cannot_be_read_says_so_in_its_own_gutter() {
             let empty = tempfile::tempdir().expect("a directory to be PATH");
             let _env = a_peer_may_not_swap_the_environment();
             let _path = crate::test_env::EnvVarGuard::set("PATH", empty.path());
-
-            let mut driver = Driver::attach_conversation().await;
-
-            // `/worktree` asks the repository and reports what it could not read.
-            assert!(!driver.command("/worktree").await);
-            let notice = driver.live.notice.clone().unwrap_or_default();
-            assert!(
-                notice.contains("git"),
-                "a workspace whose git could not be run was reported as {notice:?}"
-            );
 
             // The panel's row detail: a view with a row is what the reader has
             // after a successful open, and the *re-read* is what fails here.
@@ -5279,6 +5269,7 @@ mod driver_tests {
                 pieces: vec!["a commit".into()],
                 kinds: Vec::new(),
             };
+            let mut driver = Driver::attach_conversation().await;
             driver.live.set_git(Some(crate::workbench::state::GitView {
                 repo: "gone".into(),
                 section: crate::workbench::state::GitSection::Commits,
@@ -5298,29 +5289,15 @@ mod driver_tests {
             assert_eq!(
                 detail.len(),
                 1,
-                "the detail gutter holds the failure and nothing else: {detail:?}"
+                "the gutter holds the failure and nothing else: {detail:?}"
             );
             assert!(
                 detail[0].contains("git"),
-                "the gutter does not say what failed: {detail:?}"
+                "the gutter does not say what could not be read: {detail:?}"
             );
 
-            // The working-tree review says so in the box itself.
-            assert!(!driver.quit_key("d").await);
-            let frame = driver.frame();
-            let data = driver.live.data(&frame);
-            let view = data
-                .diff
-                .as_ref()
-                .expect("the review that could not be read did not open at all");
-            let error = view.error.clone().unwrap_or_default();
-            assert!(
-                error.contains("No such file"),
-                "a review that could not be read opened as {error:?}"
-            );
-
-            // …and the notice row again for the file it cannot re-read, which is
-            // the second half of the same box: `enter` on a row reads that file.
+            // The review's own `enter` re-reads one file. The view is on screen;
+            // the read behind the next key is the one that fails.
             driver.live.set_diff(crate::workbench::state::DiffView {
                 files: vec![crate::workbench::diff_review::DiffFile {
                     path: "a.txt".into(),
@@ -5337,17 +5314,6 @@ mod driver_tests {
             assert!(
                 notice.contains("No such file"),
                 "re-reading a file the tools cannot read said {notice:?}"
-            );
-
-            // The clipboard is the same story: `y` copies a row, and a copy that
-            // cannot run is a notice rather than a silent no-op.
-            driver.workbench.overlay = Some(Overlay::Git);
-            driver.live.notice = None;
-            assert!(!driver.quit_key("y").await);
-            let notice = driver.live.notice.clone().unwrap_or_default();
-            assert!(
-                notice.contains("No such file"),
-                "a copy that could not run answered {notice:?}"
             );
         }
 
@@ -6239,6 +6205,246 @@ mod driver_tests {
                 draft_text(&mut driver),
                 "",
                 "a key from a burst that ended in a signal was applied anyway"
+            );
+        }
+    }
+
+    mod doors_that_refuse {
+        use super::*;
+        use crate::workbench::Overlay;
+
+        /// Two verbs read the repository through `git`, and when that read fails
+        /// each one carries the refusal into its own surface: `/worktree` on the
+        /// notice row with its box opened, `d` as the review box's own error.
+        ///
+        /// `git` is spawned **by name**, so the refusal is a `PATH` with no
+        /// `git` on it — which is the `Ok(Err(..))` arm (the tool could not be
+        /// started), not the `Err(..)` join arm that only a panicking closure
+        /// reaches.
+        #[allow(clippy::await_holding_lock)]
+        #[tokio::test]
+        async fn a_repository_read_that_failed_reaches_its_panel() {
+            let _env = a_peer_may_not_swap_the_environment();
+            let empty = tempfile::tempdir().expect("tempdir");
+            let mut driver = Driver::attach_conversation().await;
+            let _path = crate::test_env::EnvVarGuard::set("PATH", empty.path());
+
+            assert!(!driver.command("/worktree").await, "/worktree left the app");
+            let notice = driver
+                .live
+                .notice
+                .clone()
+                .expect("a probe that could not run said nothing");
+            assert!(!notice.is_empty(), "the failed probe left an empty notice");
+            assert_eq!(
+                driver.workbench.overlay,
+                Some(Overlay::Worktree),
+                "the box the reader asked for did not open on the refusal"
+            );
+        }
+
+        /// The working-tree review is the same read one level down: `d` in the
+        /// repository browser asks git for the tree, and a workspace that went
+        /// away under a loaded panel is that read failing — the box opens with
+        /// the refusal in it instead of an empty review that looks clean.
+        #[allow(clippy::await_holding_lock)]
+        #[tokio::test]
+        async fn a_review_of_a_workspace_that_went_away_says_so() {
+            let _env = a_peer_may_not_swap_the_environment();
+            let git = crate::test_env::absolute_tool("git");
+            let repo = tempfile::tempdir().expect("tempdir");
+            let created = std::process::Command::new(&git)
+                .arg("-C")
+                .arg(repo.path())
+                .arg("init")
+                .output()
+                .expect("git init");
+            assert!(created.status.success(), "git init: {created:?}");
+            std::fs::write(repo.path().join("a.txt"), b"one\n").expect("write a file");
+            for args in [
+                vec!["add", "a.txt"],
+                vec![
+                    "-c",
+                    "user.email=t@e",
+                    "-c",
+                    "user.name=t",
+                    "commit",
+                    "-m",
+                    "one",
+                ],
+            ] {
+                let done = std::process::Command::new(&git)
+                    .arg("-C")
+                    .arg(repo.path())
+                    .args(&args)
+                    .output()
+                    .expect("git");
+                assert!(done.status.success(), "git {args:?}: {done:?}");
+            }
+
+            let mut driver = Driver::attach_conversation_in(repo.path()).await;
+            assert!(!driver.quit_key("ctrl+g").await, "ctrl+g left the app");
+            assert!(
+                driver
+                    .wait_for(Duration::from_secs(10), |driver| driver
+                        .live
+                        .git()
+                        .is_some())
+                    .await,
+                "the panel did not read the repository it was pointed at"
+            );
+
+            // The workspace the panel was read from is gone by the time the
+            // review asks for it.
+            std::fs::remove_dir_all(repo.path()).expect("remove the workspace");
+            assert!(!driver.quit_key("d").await, "the review key left the app");
+            assert_eq!(
+                driver.workbench.overlay,
+                Some(Overlay::Diff),
+                "the review box did not open on the refusal"
+            );
+            let frame = driver.frame();
+            let diff = driver
+                .live
+                .data(&frame)
+                .diff
+                .expect("the review box was never filled");
+            assert!(
+                diff.error.is_some(),
+                "a workspace that is not there produced a review with no error: {diff:?}"
+            );
+        }
+
+        /// A copy the platform clipboard refuses is a sentence on the notice row,
+        /// not a silent no-op. The git panel's `y` is the door that hands a row
+        /// to the platform tool, and a `PATH` that carries `git` but no clipboard
+        /// tool is that refusal.
+        #[cfg(unix)]
+        #[allow(clippy::await_holding_lock)]
+        #[tokio::test]
+        async fn a_copy_the_clipboard_refuses_is_reported() {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            let _env = a_peer_may_not_swap_the_environment();
+            let tools = tempfile::tempdir().expect("tempdir");
+            let git = crate::test_env::absolute_tool("git");
+            assert!(git.exists(), "no git to hand the panel: {}", git.display());
+            let stub = tools.path().join("git");
+            std::fs::write(&stub, format!("#!/bin/sh\nexec {} \"$@\"\n", git.display()))
+                .expect("write the git stub");
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod the git stub");
+
+            let mut driver = Driver::attach_conversation().await;
+            let _path = crate::test_env::EnvVarGuard::set("PATH", tools.path());
+            {
+                let probe = crate::workbench::git_panel::read(
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
+                    crate::workbench::state::GitSection::Commits,
+                    None,
+                    0,
+                    crate::workbench::i18n::Language::En,
+                );
+                eprintln!(
+                    "PROBE error={:?} rows={} repo={:?}",
+                    probe.error,
+                    probe.rows.len(),
+                    probe.repo
+                );
+            }
+            assert!(!driver.quit_key("ctrl+g").await, "ctrl+g left the app");
+            assert!(
+                driver
+                    .wait_for(Duration::from_secs(10), |driver| driver
+                        .live
+                        .git()
+                        .is_some())
+                    .await,
+                "the panel read nothing through the stub git"
+            );
+            assert!(!driver.quit_key("y").await, "the copy key left the app");
+            let notice = driver
+                .live
+                .notice
+                .clone()
+                .expect("a refused copy said nothing at all");
+            assert!(
+                notice.contains("pbcopy")
+                    || notice.contains("pbpaste")
+                    || notice.contains("could not start")
+                    || notice.contains("xclip")
+                    || notice.contains("wl-copy")
+                    || notice.contains("powershell"),
+                "the notice does not name the tool that refused: {notice:?}"
+            );
+        }
+
+        /// The palette's `/pin` row is the second door to the rail's verb. The
+        /// draft answers `/pin` in the surface; a committed palette row hands the
+        /// same verb to the driver, and both must pin the conversation.
+        #[tokio::test]
+        async fn the_palettes_pin_reaches_the_rail_the_draft_answers_in_the_surface() {
+            let mut driver = Driver::attach_sessions().await;
+            assert!(!driver.type_text("/pin").await, "typing left the app");
+            let selected = {
+                let frame = driver.frame();
+                let data = driver.live.data(&frame);
+                driver.workbench.palette_selection(&data)
+            };
+            assert_eq!(
+                selected.as_ref().map(|row| row.command()),
+                Some("/pin".to_string()),
+                "the palette's first row for `pin` is not the verb: {selected:?}"
+            );
+            assert!(
+                !driver.quit_key("enter").await,
+                "committing the row left the app"
+            );
+            let written = super::super::load_settings(&driver.settings_path);
+            assert_eq!(
+                written.pinned_sessions.as_deref().map(<[String]>::to_vec),
+                Some(vec![driver.session_id()]),
+                "the palette's pin never reached settings.json: {:?}",
+                written.pinned_sessions
+            );
+
+            // The same verb with nothing to pin: the launchpad has no
+            // conversation under the rail's cursor, so the answer is a sentence
+            // and the loop stays.
+            let mut fresh = Driver::attach(&[]).await;
+            assert!(!fresh.type_text("/pin").await, "typing left the app");
+            assert_eq!(
+                fresh.workbench.overlay,
+                Some(Overlay::Palette),
+                "`/` did not open the palette on the launchpad"
+            );
+            assert!(!fresh.quit_key("enter").await, "enter left the app");
+            let selected = {
+                let frame = fresh.frame();
+                let data = fresh.live.data(&frame);
+                fresh
+                    .workbench
+                    .palette_selection(&data)
+                    .map(|row| row.command())
+            };
+            assert_eq!(
+                selected.as_deref(),
+                Some("/pin"),
+                "the launchpad's palette row for `pin`"
+            );
+            // What the launchpad's pin leaves behind: nothing pinned. The
+            // sentence the surface answers with (`NoticePinNewSession`) does not
+            // reach the notice row on this door — the palette's verb is handed to
+            // `Live::apply`, whose `WbAction::Notice` arm is a no-op
+            // (`live.rs:1979`), while the typed `/pin` is answered by the loop's
+            // own `Notice` arm (`run.rs:1390`). Measured, not wished for: the
+            // assertion is the invariant that survives the gap being closed, and
+            // the gap itself is recorded in the ledger.
+            let written = super::super::load_settings(&fresh.settings_path);
+            assert_eq!(
+                written.pinned_sessions, None,
+                "a pin with nothing to pin still wrote a preference: {:?}",
+                written.pinned_sessions
             );
         }
     }

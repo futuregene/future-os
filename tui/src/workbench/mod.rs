@@ -7036,6 +7036,92 @@ mod tests {
         }
     }
 
+    /// Three boxes with nothing in them: a palette query that matches no row, a
+    /// repository panel whose log came back empty, and a picker whose list is
+    /// empty. Each answers the keys that would move a cursor or commit a row
+    /// with nothing, and none of them runs a verb off a row that is not there.
+    ///
+    /// The other half of the refusal table: the first one is keyed on a chord
+    /// nothing owns, this one on a **state** nothing can act in.
+    #[test]
+    fn a_box_with_no_rows_refuses_the_keys_that_would_move_it() {
+        let data = demo::chat();
+
+        // The palette: a query nothing matches, then the keys that act on a row.
+        for key in ["enter", "tab", "down", "up"] {
+            let (mut workbench, _rows) = frame(&data, 120, 38);
+            workbench.overlay = Some(Overlay::Palette);
+            workbench.palette_query = "zzzz-no-such-verb".into();
+            workbench.palette_index = 0;
+            let actions = workbench.handle(WbEvent::Key(key.into()), &data);
+            let answered = format!("{actions:?}");
+            assert!(
+                !actions.iter().any(|action| matches!(
+                    action,
+                    WbAction::Command(_) | WbAction::EditInput { .. } | WbAction::Submit(_)
+                )),
+                "the empty palette answered {key} with {answered}"
+            );
+            assert_eq!(
+                workbench.palette_index, 0,
+                "a row that is not there moved the cursor"
+            );
+        }
+
+        // The repository panel with an empty log: `home`/`end` have no row to
+        // land on, so the cursor stays where the reader left it.
+        for key in ["home", "end", "g", "G"] {
+            let mut data = demo::chat();
+            data.git = Some(crate::workbench::state::GitView {
+                repo: "empty".into(),
+                section: crate::workbench::state::GitSection::Commits,
+                rows: Vec::new(),
+                selected: 0,
+                detail: Vec::new(),
+                filter: None,
+                error: None,
+            });
+            let (mut workbench, _rows) = frame(&data, 120, 38);
+            workbench.overlay = Some(Overlay::Git);
+            workbench.workflow_index = 0;
+            let actions = workbench.handle(WbEvent::Key(key.into()), &data);
+            let answered = format!("{actions:?}");
+            assert!(
+                !actions
+                    .iter()
+                    .any(|action| matches!(action, WbAction::SelectGit(_))),
+                "an empty log answered {key} with a selection: {answered}"
+            );
+            assert_eq!(workbench.workflow_index, 0, "an empty log moved the cursor");
+        }
+
+        // A picker whose list is empty: nothing to step onto, and `enter` has no
+        // row to commit — it is the same gesture as `escape` there (the box
+        // closes rather than committing a row that is not there).
+        let mut empty = demo::chat();
+        empty.sessions.clear();
+        for press in [("down", true), ("up", true), ("enter", false)] {
+            let (key, stays) = press;
+            let mut workbench = workbench();
+            workbench.open_picker(PickerKind::Sessions, &empty);
+            let actions = workbench.handle(WbEvent::Key(key.into()), &empty);
+            let answered = format!("{actions:?}");
+            assert!(
+                !actions.iter().any(|action| matches!(
+                    action,
+                    WbAction::SwitchSession(_) | WbAction::Command(_) | WbAction::SetKeybindings
+                )),
+                "an empty picker answered {key} with {answered}"
+            );
+            assert_eq!(
+                matches!(workbench.overlay, Some(Overlay::Picker(_))),
+                stays,
+                "an empty picker was {} on {key}: {answered}",
+                if stays { "closed" } else { "left open" }
+            );
+        }
+    }
+
     /// Navigation scrolls the box the reader is in and never leaves it: `up`,
     /// `down`, the page keys and the vim letters move a cursor or a scroll
     /// offset, and the overlay that owns them is still the overlay on screen.
@@ -7084,6 +7170,138 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The shortcut editor's cursor is a bounded index plus a two-state flag, and
+    /// the second table of this file is keyed on the **state** rather than on the
+    /// key: every row starts from a given cursor and capture flag, presses one
+    /// key, and states where the editor must end.
+    ///
+    /// The ends are what matter: `pageUp` on the first row and `pageDown` on the
+    /// last are the presses that used to run the index off the list (an
+    /// underflow is a panic in debug and a wrap in release), and a capture that
+    /// is in flight must take `escape` back rather than scroll.
+    #[test]
+    fn the_shortcut_editor_clamps_and_its_capture_state_decides_the_key() {
+        let data = demo::chat();
+        let last = preferences::ACTIONS.len() - 1;
+        struct Press {
+            from: usize,
+            capturing: bool,
+            key: &'static str,
+            to: usize,
+            capturing_after: bool,
+        }
+        let presses = [
+            // The ends: the page keys and the arrows both clamp.
+            Press {
+                from: 0,
+                capturing: false,
+                key: "pageUp",
+                to: 0,
+                capturing_after: false,
+            },
+            Press {
+                from: 0,
+                capturing: false,
+                key: "up",
+                to: 0,
+                capturing_after: false,
+            },
+            Press {
+                from: last,
+                capturing: false,
+                key: "pageDown",
+                to: last,
+                capturing_after: false,
+            },
+            Press {
+                from: last,
+                capturing: false,
+                key: "down",
+                to: last,
+                capturing_after: false,
+            },
+            // …and the middle still moves.
+            Press {
+                from: 3,
+                capturing: false,
+                key: "down",
+                to: 4,
+                capturing_after: false,
+            },
+            // A capture in flight takes `escape` and nothing else.
+            Press {
+                from: 3,
+                capturing: true,
+                key: "escape",
+                to: 3,
+                capturing_after: false,
+            },
+        ];
+        for press in presses {
+            let (mut workbench, _rows) = frame(&data, 120, 38);
+            workbench.overlay = Some(Overlay::Keybindings);
+            workbench.keybinding_index = press.from;
+            workbench.awaiting_keybinding = press.capturing;
+            let actions = workbench.handle(WbEvent::Key(press.key.into()), &data);
+            let answered = format!("{actions:?}");
+            assert_eq!(
+                workbench.keybinding_index, press.to,
+                "{} from {} left the cursor at {}: {answered}",
+                press.key, press.from, workbench.keybinding_index
+            );
+            assert_eq!(
+                workbench.awaiting_keybinding, press.capturing_after,
+                "{} from {} left the capture flag at {}: {answered}",
+                press.key, press.from, workbench.awaiting_keybinding
+            );
+        }
+    }
+
+    /// The rail's walk stops at its ends and steps *over* a heading: a step off
+    /// the first or the last conversation has nowhere to go and answers none,
+    /// and a cursor standing on a heading still names the conversation beside it
+    /// — which is what a prefetch asks before a step is taken.
+    #[test]
+    fn the_rail_walk_stops_at_its_ends_and_steps_over_a_heading() {
+        let data = demo::workspaces();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.panel = PanelId::Workspaces;
+        let rows = workbench.panel_rows(&data);
+        let first = panels::first_session(&rows, 0).expect("a conversation in the rail");
+        let last = (0..rows.len())
+            .rev()
+            .find(|index| rows[*index].selectable())
+            .expect("a selectable row");
+
+        // No direction is no walk.
+        assert_eq!(workbench.session_beside(&data, 0), None);
+        // The ends answer none, in both directions.
+        workbench.sidebar_index = last;
+        assert_eq!(
+            workbench.session_beside(&data, 1),
+            None,
+            "a step past the last row named a conversation: {last} of {}",
+            rows.len()
+        );
+        workbench.sidebar_index = first;
+        assert_eq!(
+            workbench.session_beside(&data, -1),
+            None,
+            "a step before the first conversation named one"
+        );
+        // A heading is not a stop, but the conversation beside it is what a
+        // cursor parked on the heading steps onto.
+        let heading = rows
+            .iter()
+            .position(|row| !row.selectable())
+            .expect("the rail is a tree, so a heading is above its conversations");
+        workbench.sidebar_index = heading;
+        assert!(
+            workbench.session_beside(&data, 1).is_some(),
+            "a cursor on a heading found no conversation below it"
+        );
     }
 
     /// Both ends clamp instead of running off: a rail is never under 30 columns
