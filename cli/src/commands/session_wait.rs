@@ -360,6 +360,75 @@ mod tests {
         }
     }
 
+    /// A stream that closes with no `agent_end` at all has not answered: the
+    /// text that arrived is a prefix, so the wait reports the run as
+    /// interrupted instead of handing the prefix back as its answer.
+    #[tokio::test]
+    async fn a_stream_that_closes_without_an_end_is_reported_as_interrupted() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut responses = std::collections::HashMap::new();
+        responses.insert(
+            "get_state".into(),
+            serde_json::json!({"activeRun": {"runId": "r-1"}}).to_string(),
+        );
+        let agent = MockAgent {
+            responses,
+            // One chunk and no terminal event: the stream ends under the run.
+            events: vec![stream_event_with_run(
+                "text_chunk",
+                "{\"text\":\"half an answer\"}",
+                "r-1",
+            )],
+            ..Default::default()
+        };
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        let error = run(&args(&["s1", "--run", "r-1"]), &out)
+            .await
+            .expect_err("a run whose stream closed has not answered");
+        assert!(error.contains("ended as interrupted"), "{error}");
+        assert!(error.contains("stopped or restarted"), "{error}");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(
+            stdout.contains("half an answer"),
+            "the text that did arrive is still printed: {stdout}"
+        );
+    }
+
+    /// An `agent_end` that carries an error is an error whatever `state` it
+    /// also names — a run whose model refused is not its `completed` text.
+    #[tokio::test]
+    async fn an_error_terminal_is_reported_as_an_error() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut responses = std::collections::HashMap::new();
+        responses.insert(
+            "get_state".into(),
+            serde_json::json!({"activeRun": {"runId": "r-1"}}).to_string(),
+        );
+        let agent = MockAgent {
+            responses,
+            events: vec![
+                stream_event_with_run("text_chunk", "{\"text\":\"before\"}", "r-1"),
+                stream_event_with_run(
+                    "agent_end",
+                    r#"{"state":"completed","error":"the model refused"}"#,
+                    "r-1",
+                ),
+            ],
+            ..Default::default()
+        };
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, _cap) = Output::memory();
+        let error = run(&args(&["s1", "--run", "r-1"]), &out)
+            .await
+            .expect_err("a run that reported an error is not a success");
+        assert!(
+            error.contains("run r-1 ended as error"),
+            "the token names the error arm: {error}"
+        );
+        assert!(error.contains("reported an error"), "{error}");
+    }
+
     /// The JSON form still answers in full — the caller that asked for it can
     /// read `finishReason` instead of inferring from an empty `text`.
     #[tokio::test]
