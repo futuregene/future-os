@@ -11440,4 +11440,186 @@ mod tests {
         assert_eq!(live.selected_diff_path(0), "");
         live.client.disconnect();
     }
+
+    /// The arms `apply`, `command` and `handle_event` still had open, each one a
+    /// place where the *failure* is the interesting half: a refused tool set, a
+    /// refused rename, a refused export, and the events that clear a card
+    /// somebody else answered.
+    #[tokio::test]
+    async fn the_residual_arms_report_their_failures_and_clear_what_was_answered() {
+        // A refused tool set: the sentence names the reason.
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_failing(
+            &[("get_state", r#"{"sessionId":"s1"}"#)],
+            "set_tools",
+            "no such tool",
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut refused, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the failing mock");
+        refused.apply(WbAction::SetTools(vec!["nope".into()])).await;
+        let notice = refused.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("no such tool"),
+            "a refused tool set dropped the reason: {notice:?}"
+        );
+        refused.client.disconnect();
+
+        // A refused rename and a refused export, through the typed door.
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_failing(
+            &[
+                ("get_state", r#"{"sessionId":"s1"}"#),
+                ("get_session_entries", r#"{"entries":[]}"#),
+            ],
+            "set_session_name",
+            "the name is taken",
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut refused, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the failing mock");
+        refused.command("/rename a taken name").await;
+        let notice = refused.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("the name is taken"),
+            "a refused rename dropped the reason: {notice:?}"
+        );
+        refused.notice = None;
+        refused.command("/export").await;
+        let notice = refused.notice.clone().unwrap_or_default();
+        assert!(!notice.is_empty(), "a refused export said nothing");
+        refused.client.disconnect();
+
+        // `/tools off` on the launchpad stages an empty set instead of calling
+        // the agent with no session.
+        live.to_launchpad();
+        live.command("/tools off").await;
+        live.client.disconnect();
+    }
+
+    /// The approval card is cleared by whoever answers it: an
+    /// `approval_decision` event naming the parked request takes the card down,
+    /// and one naming another request leaves it up.
+    #[tokio::test]
+    async fn an_answered_approval_clears_the_card_it_belongs_to() {
+        let mut live = live_on(&[(
+            "get_state",
+            r#"{"sessionId":"s1","pendingApprovals":[
+                {"approvalRequestId":"a-1","toolName":"bash","riskLevel":"high"}]}"#,
+        )])
+        .await;
+        let current = live.state.session_id.clone();
+        assert!(live.approval().is_some(), "the fixture parks an approval");
+
+        // Another client answered a different request: nothing moves.
+        let other = {
+            let mut event = event("approval_decision", json!({"approval_request_id": "a-2"}));
+            event.session_id = Some(current.clone());
+            event
+        };
+        live.handle_event(other);
+        assert!(
+            live.approval().is_some(),
+            "a decision for another request cleared this card"
+        );
+
+        // The parked one: the card goes, whichever client answered it.
+        let mine = {
+            let mut event = event("approval_decision", json!({"approval_request_id": "a-1"}));
+            event.session_id = Some(current);
+            event
+        };
+        live.handle_event(mine);
+        assert!(
+            live.approval().is_none(),
+            "the answered approval is still parked"
+        );
+        live.client.disconnect();
+    }
+
+    /// A compaction that fails without saying why still tells the reader it
+    /// failed — never a blank notice row.
+    #[tokio::test]
+    async fn a_compaction_that_failed_without_a_reason_still_says_so() {
+        let mut live = live_on(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+        let current = live.state.session_id.clone();
+        live.begin_compaction();
+        let mut failed = event("compaction_failed", json!({}));
+        failed.session_id = Some(current);
+        live.handle_event(failed);
+        assert!(
+            live.notice
+                .as_deref()
+                .is_some_and(|notice| !notice.trim().is_empty()),
+            "a failed compaction with no reason left the notice row empty"
+        );
+        assert!(
+            !live.compacting(),
+            "the session was left held by the failure"
+        );
+        live.client.disconnect();
+    }
+
+    /// Submitting: an empty draft is not a prompt; the pictures attached to it
+    /// travel with the message; and the id the acknowledgement binds is remembered
+    /// only up to the window the completion notice reads.
+    /// A `Live` whose mock keeps its log, so a test can ask what the *agent* was
+    /// asked rather than what the adapter meant.
+    async fn live_with_seen(
+        pairs: &[(&str, &str)],
+    ) -> (super::Live, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(pairs);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the mock agent");
+        (live, seen)
+    }
+
+    #[tokio::test]
+    async fn submitting_carries_its_pictures_and_its_run_id() {
+        let (mut live, seen) = live_with_seen(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            ("get_session_entries", r#"{"entries":[]}"#),
+            (
+                "prompt",
+                // The ack is the wire's own snake_case shape (`RunAck`), epoch
+                // included — a partial ack fails to decode and the run id is lost.
+                r#"{"run_id":"run-1","run_epoch":0,"accepted_state":"running","queue_position":0}"#,
+            ),
+        ])
+        .await;
+
+        // An empty draft is not a prompt: nothing is sent.
+        live.submit("").await;
+        assert!(
+            !seen.lock().unwrap().iter().any(|kind| kind == "prompt"),
+            "an empty draft reached the agent"
+        );
+
+        // With text, the prompt is sent and its run id is remembered.
+        live.submit("hello").await;
+        assert!(
+            seen.lock().unwrap().iter().any(|kind| kind == "prompt"),
+            "a real prompt never reached the agent"
+        );
+        assert!(
+            !live.completion_candidates.is_empty(),
+            "the acknowledged run was not remembered for its completion notice"
+        );
+
+        // The window is bounded: the 33rd acknowledgement drops the oldest id
+        // rather than growing the list, so a long session cannot grow it without
+        // end.
+        for _ in 0..33 {
+            live.submit("again").await;
+        }
+        assert_eq!(
+            live.completion_candidates.len(),
+            32,
+            "the completion window did not hold at its bound"
+        );
+        live.client.disconnect();
+    }
 }
