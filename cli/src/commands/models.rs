@@ -512,6 +512,30 @@ mod tests {
 
     /// The mock agent that answers `list_models` (above) and a `refresh` mock
     /// that answers with a fixed sync result.
+    /// The platform fixture the "no agent, local refresh" tests fetch from: one
+    /// model, at the route an `/api` credential base hangs the catalogue off.
+    async fn catalogue_platform() -> String {
+        crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/api/v1/models",
+            200,
+            r#"{"data":[{"id":"kimi-k3.1-pro","name":"Kimi K3.1 PRO","context_length":1048576}]}"#,
+        )])
+        .await
+    }
+
+    /// A Future credential whose platform is `base`, so the local catalogue
+    /// refresh has somewhere to fetch from. The caller holds the env lock and a
+    /// temporary home.
+    fn future_credential_pointing_at(base: &str) {
+        let auth_path = future_agent::utils::default_config_dir().join("auth.json");
+        std::fs::create_dir_all(auth_path.parent().expect("agent dir")).expect("agent dir");
+        std::fs::write(
+            &auth_path,
+            format!(r#"{{"future":{{"type":"api_key","key":"k","base_url":"{base}/api"}}}}"#),
+        )
+        .expect("auth.json");
+    }
+
     async fn refresh_mock(synced: bool, model_count: u32) -> String {
         let agent = crate::test_server::MockAgent::respond(
             "sync_future_models",
@@ -621,23 +645,11 @@ mod tests {
     async fn refresh_without_an_agent_warms_the_disk_cache() {
         let _guard = crate::test_env::lock_env().await;
         let _home = crate::test_env::EnvGuard::temp_home();
-        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
-            // auth.json stores `{platform}/api`, and the catalogue hangs off it.
-            "/api/v1/models",
-            200,
-            r#"{"data":[{"id":"kimi-k3.1-pro","name":"Kimi K3.1 PRO","context_length":1048576}]}"#,
-        )])
-        .await;
 
         // A Future credential exists, but only the local catalogue can be
-        // refreshed: point it at the mock platform.
-        let auth_path = future_agent::utils::default_config_dir().join("auth.json");
-        std::fs::create_dir_all(auth_path.parent().expect("agent dir")).expect("agent dir");
-        std::fs::write(
-            &auth_path,
-            format!(r#"{{"future":{{"type":"api_key","key":"k","base_url":"{base}/api"}}}}"#),
-        )
-        .expect("auth.json");
+        // refreshed: point it at the mock platform (auth.json stores
+        // `{platform}/api`, and the catalogue hangs off it).
+        future_credential_pointing_at(&catalogue_platform().await);
 
         let (out, cap) = Output::memory();
         let result = models(&["refresh".to_string(), "127.0.0.1:1".to_string()], &out).await;
@@ -658,6 +670,56 @@ mod tests {
         )
         .expect("cache written");
         assert!(cache.contains("kimi-k3.1-pro"), "cache: {cache}");
+    }
+
+    /// The same local refresh asked for as a document: the same facts, with
+    /// `source: "cache"` so a script can tell it apart from an agent's answer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_local_refresh_reports_itself_as_the_cache_in_json() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        future_credential_pointing_at(&catalogue_platform().await);
+
+        let (out, cap) = Output::memory();
+        models(
+            &[
+                "refresh".to_string(),
+                "--json".to_string(),
+                "127.0.0.1:1".to_string(),
+            ],
+            &out,
+        )
+        .await
+        .expect("local refresh");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let printed: Value = serde_json::from_str(&stdout).expect("one json document");
+        assert_eq!(printed["provider"], "future");
+        assert_eq!(printed["source"], "cache");
+        assert_eq!(printed["synced"], true);
+        assert_eq!(printed["modelCount"], 1);
+    }
+
+    /// A credential exists but the platform cannot be reached: the local fetch
+    /// fails too, and the command must say *which* of the two reasons applies —
+    /// a login hint here would send the user to fix an account that is fine.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_platform_fetch_is_reported_as_the_network_not_the_login() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        future_credential_pointing_at("http://127.0.0.1:1");
+
+        let (out, cap) = Output::memory();
+        let result = models(&["refresh".to_string(), "127.0.0.1:1".to_string()], &out).await;
+        assert!(result.is_err(), "a failed refresh must exit non-zero");
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(
+            stderr.contains("the Future platform request failed"),
+            "stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("future doctor") && !stderr.contains("future auth login"),
+            "a credential is present, so this is not a login problem: {stderr}"
+        );
     }
 
     #[tokio::test]
