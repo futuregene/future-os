@@ -41,6 +41,14 @@ W6 ghost line, W7 mock closure, W8 dead producer.
 | `open_external`'s happy path and its "no opener" arm (`live.rs:4417-4445`) | a stub `open`/`xdg-open` script on `PATH` (under `test_env::lock` + `EnvVarGuard`), and an empty `PATH` for the failure. Probe: `opening_a_link_spawns_the_opener_and_reports_a_missing_one` (`#[cfg(unix)]`). |
 | `poll_tree_read`'s two reachable arms, `toggle_folder` (`live.rs:705-725, 3830-3841`) | the fixture clears `local_reads` before `refresh_local()` (the scan only starts when the directory *changed*), so the tree lands rows. Probe: `the_file_panel_installs_a_scan_and_toggles_a_folder`. |
 
+## What is reachable but needs a real terminal (not waived, not W-class)
+
+| file:line | what it needs | why the in-process driver cannot take it |
+|---|---|---|
+| `tui/src/workbench/run.rs:106-246` (`run()`) | a PTY child process | the function is the *process entry*: `Terminal::start` spawns the reader thread, installs the exit-signal handlers and owns the update check. `tui/tests/signal_shutdown.rs` already runs a real PTY in this crate — that harness is the way to measure it. |
+| `tui/src/workbench/run.rs:1870-1880` (`notify`) | a PTY child process | its body is `for sequence in center.push(id, event, config, terminal.is_tty())`: a process whose stdout is not a terminal is *told* not to ring the desktop, so the loop never runs there. The identity it is called with (`alert_id`) is covered in-process by `a_notification_is_identified_by_the_events_own_id`. |
+| `tui/src/workbench/live.rs:3982-4004` (`paste_clipboard`'s `JoinError` arm) | a blocking task that panics | the arm is the `spawn_blocking` join failure; nothing in `ClipboardCapture::capture` panics, so there is no producer to inject without a seam in the paste module. |
+
 ## The two rows that remain candidates
 
 | # | file:line | category | the code that would have to be defeated | falsifier | status |

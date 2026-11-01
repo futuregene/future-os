@@ -4595,4 +4595,258 @@ mod driver_tests {
             assert!(frames(&painted) >= 1);
         }
     }
+
+    mod image_paint {
+        use super::*;
+        use crate::terminal_image::{CapabilitiesGuard, ImageProtocol};
+        use crate::workbench::{demo, Overlay};
+
+        /// What a frame does with a picture on screen: the terminal is asked to
+        /// place it, asked again only when the frame disturbed the cells it
+        /// covers, and told to delete it when it goes away.
+        ///
+        /// `paint_images` measured zero because the capability probe answers
+        /// "no pictures" on a host with no image protocol in its environment.
+        /// The guard pins the answer a kitty terminal gives, and the frame here
+        /// is the demo's own picture — the same fixture the preview box's own
+        /// test uses.
+        #[test]
+        fn a_frame_places_the_picture_only_while_it_is_disturbed() {
+            let _caps = CapabilitiesGuard::pin(ImageProtocol::Kitty);
+            let mut data = demo::chat();
+            data.preview = Some(demo::preview_image());
+            let mut workbench = Workbench::new();
+            workbench.overlay = Some(Overlay::FilePreview);
+            let rows = workbench.render(&data, 120, 38);
+            assert_eq!(rows.len(), 38, "the frame is the height it was asked for");
+            assert!(
+                !workbench.image_requests.is_empty(),
+                "a kitty terminal is asked to place the picture"
+            );
+            let mut terminal = Terminal::new().expect("terminal");
+
+            // A frame that rewrote the picture's rows asks for it again.
+            let all_rows: Vec<usize> = (0..38).collect();
+            crate::terminal::capture::start();
+            super::super::paint_images(&mut terminal, &mut workbench, &all_rows);
+            let placed = crate::terminal::capture::take();
+            assert!(
+                placed.contains("\x1b_Ga=T"),
+                "the frame did not transmit the picture's pixels: {:?}",
+                &placed[..placed.len().min(120)]
+            );
+            assert!(
+                !workbench.painted_images.ids.is_empty(),
+                "the placement was not remembered, so the next frame would repeat it"
+            );
+
+            // The same frame again, with none of its rows rewritten: the picture
+            // is already there, so nothing is sent (the measured cost of
+            // repeating it is the picture itself, every frame).
+            crate::terminal::capture::start();
+            super::super::paint_images(&mut terminal, &mut workbench, &[]);
+            let untouched = crate::terminal::capture::take();
+            assert!(
+                !untouched.contains("a=T"),
+                "an untouched picture had its pixels transmitted again: {:?}",
+                &untouched[..untouched.len().min(120)]
+            );
+            assert!(
+                untouched.contains("a=p"),
+                "the placement was dropped from an otherwise unchanged frame: {:?}",
+                &untouched[..untouched.len().min(120)]
+            );
+
+            // The box closes: what was placed is deleted rather than left on top
+            // of the rows painted over it.
+            workbench.overlay = None;
+            let _ = workbench.render(&data, 120, 38);
+            assert!(
+                workbench.image_requests.is_empty(),
+                "a closed box still asks for the picture"
+            );
+            crate::terminal::capture::start();
+            super::super::paint_images(&mut terminal, &mut workbench, &[]);
+            let cleared = crate::terminal::capture::take();
+            assert!(
+                cleared.contains("a=d"),
+                "the picture was not deleted when its box closed: {:?}",
+                &cleared[..cleared.len().min(120)]
+            );
+            assert!(
+                workbench.painted_images.ids.is_empty(),
+                "a deleted placement was kept in the bookkeeping"
+            );
+        }
+    }
+
+    mod pin_copy_notify {
+        use super::*;
+        use crate::workbench::preferences::{Action, Keybindings};
+
+        /// `/pin` is a preference of this client's rail: it lands in
+        /// `settings.json` beside the layout, and the launchpad's staged model is
+        /// remembered the same way — the driver's `persist_pending` writes only
+        /// when something actually changed.
+        #[tokio::test]
+        async fn a_pin_and_a_staged_model_reach_the_settings_file() {
+            let mut driver = Driver::attach_sessions().await;
+            assert!(!driver.command("/pin").await, "/pin does not leave");
+            let written = super::super::load_settings(&driver.settings_path);
+            assert_eq!(
+                written.pinned_sessions.as_deref().map(|pins| pins.len()),
+                Some(1),
+                "the pin never reached settings.json: {:?}",
+                written.pinned_sessions
+            );
+
+            // The launchpad's model chip stages a choice and the driver writes it
+            // as the next session's default (`persist_pending`). The typed
+            // `/model` opens a picker instead, so the helper is driven here.
+            let mut staged = Driver::attach(&[("get_state", r#"{"sessionId":"s1"}"#)]).await;
+            staged
+                .live
+                .apply(crate::workbench::WbAction::SetPendingModel(
+                    "future/new".into(),
+                ))
+                .await;
+            staged
+                .live
+                .apply(crate::workbench::WbAction::SetPendingThinking(
+                    "high".into(),
+                ))
+                .await;
+            super::super::persist_pending(
+                &mut staged.live,
+                &mut staged.settings,
+                &staged.settings_path,
+            );
+            let written = super::super::load_settings(&staged.settings_path);
+            assert_eq!(
+                written.default_model.as_deref(),
+                Some("future/new"),
+                "a staged model was not remembered for the next session"
+            );
+            assert_eq!(
+                written.default_thinking_level.as_deref(),
+                Some("high"),
+                "a staged level was not remembered either"
+            );
+
+            // Nothing staged: the file is left exactly as it is.
+            let before = std::fs::read(&staged.settings_path).expect("the file");
+            super::super::persist_pending(
+                &mut staged.live,
+                &mut staged.settings,
+                &staged.settings_path,
+            );
+            let after = std::fs::read(&staged.settings_path).expect("the file");
+            assert_eq!(before, after, "an unchanged stage rewrote settings.json");
+        }
+
+        /// A copy asks the platform's clipboard for the last answer: a success and
+        /// a refusal both reach the notice row, and neither ends the app.
+        #[tokio::test]
+        async fn copying_the_last_answer_reports_what_happened() {
+            let mut keys = Keybindings::default();
+            keys.bind(Action::Copy, "ctrl+y").expect("a spare chord");
+            let mut driver = Driver::attach_conversation().await;
+            driver.workbench.keys = keys;
+
+            // Nothing said yet: `copy_last` has no text, and the notice says so.
+            assert!(!driver.quit_key("ctrl+y").await, "copy does not leave");
+            assert!(
+                driver.live.notice.is_some(),
+                "copying an empty conversation said nothing"
+            );
+
+            // With an answer on screen the copy goes to the clipboard: on a host
+            // with no clipboard tool that is the failure sentence, which is the
+            // sentence this arm owes the reader either way.
+            {
+                // An answer on screen: a streamed chunk is how one gets there
+                // through the public surface.
+                let mut answer = crate::rpc::types::AgentEvent {
+                    r#type: "text_chunk".into(),
+                    data: serde_json::json!({"text": "the build is green"}),
+                    session_id: Some(driver.session_id()),
+                    run_id: Some("run-1".into()),
+                    ..Default::default()
+                };
+                driver.live.handle_event(answer.clone());
+                answer.r#type = "agent_end".into();
+                driver.live.handle_event(answer);
+            }
+            driver.live.notice = None;
+            assert!(!driver.quit_key("ctrl+y").await);
+            assert!(
+                driver.live.notice.is_some(),
+                "a copy with text reported nothing at all"
+            );
+        }
+
+        /// The identity a notification is de-duplicated by: an approval uses the
+        /// request id the agent minted, everything else its event id — so the same
+        /// approval arriving twice is one notification and two different errors
+        /// are two.
+        #[test]
+        fn a_notification_is_identified_by_the_events_own_id() {
+            use crate::rpc::types::AgentEvent;
+
+            let approval = AgentEvent {
+                r#type: "approval_request".into(),
+                data: serde_json::json!({"approval_request_id": "a-1"}),
+                event_id: Some("e-1".into()),
+                ..Default::default()
+            };
+            assert_eq!(
+                super::super::alert_id(&approval),
+                "approval_request:a-1",
+                "an approval is identified by its request id"
+            );
+
+            let error = AgentEvent {
+                r#type: "error".into(),
+                data: serde_json::json!({}),
+                event_id: Some("e-2".into()),
+                ..Default::default()
+            };
+            assert_eq!(super::super::alert_id(&error), "error:e-2");
+
+            // A payload with neither id: the kind alone, which still rings once
+            // per kind rather than never.
+            let bare = AgentEvent {
+                r#type: "error".into(),
+                data: serde_json::json!({}),
+                ..Default::default()
+            };
+            assert_eq!(super::super::alert_id(&bare), "error:");
+        }
+
+        /// A file preview is the driver's box to open: the bytes are the
+        /// adapter's, the box and its sibling list are the surface's.
+        #[tokio::test]
+        async fn opening_the_preview_box_resets_it_and_takes_the_scope() {
+            let mut driver = Driver::attach_conversation().await;
+            driver
+                .workbench
+                .set_preview_siblings((vec!["/tmp/other.png".into()], 1));
+            super::super::open_preview_box(
+                &mut driver.live,
+                &mut driver.workbench,
+                "/tmp/picture.png",
+                crate::workbench::PreviewScope::Folder,
+            );
+            assert_eq!(
+                driver.workbench.preview_scope,
+                crate::workbench::PreviewScope::Folder,
+                "the box did not take the scope it was opened with"
+            );
+            assert!(
+                driver.workbench.preview_siblings.is_empty(),
+                "the box kept the previous visit's sibling list: {:?}",
+                driver.workbench.preview_siblings
+            );
+        }
+    }
 }
