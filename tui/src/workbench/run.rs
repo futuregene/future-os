@@ -6449,8 +6449,11 @@ mod driver_tests {
                 let stub = tools.path().join(name);
                 // `cat` by absolute path: the stub runs with the same PATH the
                 // test swapped, which carries no coreutils at all.
-                std::fs::write(&stub, format!("#!/bin/sh\n/bin/cat > {}\n", taken.display()))
-                    .expect("write the stub");
+                std::fs::write(
+                    &stub,
+                    format!("#!/bin/sh\n/bin/cat > {}\n", taken.display()),
+                )
+                .expect("write the stub");
                 std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
                     .expect("chmod the stub");
             }
@@ -6463,9 +6466,8 @@ mod driver_tests {
                 let frame = driver.frame();
                 let data = driver.live.data(&frame);
                 let index = driver.workbench.chat_index;
-                let stop = index.and_then(|at| {
-                    driver.workbench.chat_stops(&data).into_iter().nth(at)
-                });
+                let stop =
+                    index.and_then(|at| driver.workbench.chat_stops(&data).into_iter().nth(at));
                 let copy = match stop {
                     Some(ChatStop::Row(row)) => matches!(row.action, RowAction::Copy { .. }),
                     _ => false,
@@ -6739,66 +6741,37 @@ mod driver_tests {
         #[allow(clippy::await_holding_lock)]
         #[tokio::test]
         async fn a_copy_the_clipboard_refuses_is_reported() {
-            use std::os::unix::fs::PermissionsExt as _;
-
             let _env = a_peer_may_not_swap_the_environment();
-            let tools = tempfile::tempdir().expect("tempdir");
-            let git = crate::test_env::absolute_tool("git");
-            assert!(git.exists(), "no git to hand the panel: {}", git.display());
-            let stub = tools.path().join("git");
-            std::fs::write(&stub, format!("#!/bin/sh\nexec {} \"$@\"\n", git.display()))
-                .expect("write the git stub");
-            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
-                .expect("chmod the git stub");
+            // No tool of any kind on `PATH`: the only read this case needs is the
+            // clipboard's, and that is the one that cannot run.
+            let empty = tempfile::tempdir().expect("tempdir");
+            let _path = crate::test_env::EnvVarGuard::set("PATH", empty.path());
 
-            // A repository of the test's own, not this one. The panel's read
-            // carries a three-second query budget, and a checkout this size can
-            // miss it under a parallel suite — which reads as "the panel read
-            // nothing" and hides the arm this case is about, exactly the kind of
-            // measurement the ledger refuses to call a measurement.
-            let repo = tempfile::tempdir().expect("tempdir");
-            let quiet = |args: &[&str]| {
-                let output = std::process::Command::new(&git)
-                    .args(args)
-                    .current_dir(repo.path())
-                    .envs([
-                        ("GIT_AUTHOR_NAME", "tui"),
-                        ("GIT_AUTHOR_EMAIL", "tui@example.invalid"),
-                        ("GIT_COMMITTER_NAME", "tui"),
-                        ("GIT_COMMITTER_EMAIL", "tui@example.invalid"),
-                    ])
-                    .output()
-                    .expect("spawn the real git");
-                assert!(
-                    output.status.success(),
-                    "git {args:?} failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            };
-            quiet(&["init", "--quiet"]);
-            std::fs::write(repo.path().join("a.txt"), "one line\n").expect("write the file");
-            quiet(&["add", "a.txt"]);
-            quiet(&["commit", "--quiet", "-m", "the only commit"]);
+            // The panel is seeded rather than read. `y` copies the row under the
+            // cursor, and the *read* is a different measurement: it carries a
+            // three-second query budget, so under an instrumented parallel suite
+            // it can time out and leave a view with no row in it — which made this
+            // case fail on "the copy said nothing" while the cause was one level
+            // up (`timed out after 3s`, r14). The read's own failures are the
+            // wave-6 cases; this one is about what happens after it succeeded.
+            let mut driver = Driver::attach_conversation().await;
+            driver.live.set_git(Some(crate::workbench::state::GitView {
+                repo: "seeded".into(),
+                section: crate::workbench::state::GitSection::Commits,
+                rows: vec![crate::workbench::state::GitRow {
+                    key: Some("abc1234".into()),
+                    columns: Vec::new(),
+                    prefix: "● ".into(),
+                    pieces: vec!["a commit".into()],
+                    kinds: Vec::new(),
+                }],
+                selected: 0,
+                detail: Vec::new(),
+                filter: None,
+                error: None,
+            }));
+            driver.workbench.overlay = Some(Overlay::Git);
 
-            let mut driver = Driver::attach_conversation_in(repo.path()).await;
-            let _path = crate::test_env::EnvVarGuard::set("PATH", tools.path());
-            assert!(!driver.quit_key("ctrl+g").await, "ctrl+g left the app");
-            // `y` copies the *selected row*, so a view with no rows is not the
-            // precondition this case needs: the panel's read carries a
-            // three-second query budget, and a view that missed it is `Some`
-            // with an error in it and nothing under the cursor — which reads as
-            // "the copy said nothing" while the cause is one level up. Wait for
-            // the row, not for the view.
-            assert!(
-                driver
-                    .wait_for(Duration::from_secs(10), |driver| driver
-                        .live
-                        .git()
-                        .is_some_and(|git| !git.rows.is_empty()))
-                    .await,
-                "the panel read no row through the stub git: {:?}",
-                driver.live.git().map(|git| git.error.clone())
-            );
             assert!(!driver.quit_key("y").await, "the copy key left the app");
             let notice = driver
                 .live
@@ -6806,12 +6779,9 @@ mod driver_tests {
                 .clone()
                 .expect("a refused copy said nothing at all");
             assert!(
-                notice.contains("pbcopy")
-                    || notice.contains("pbpaste")
-                    || notice.contains("could not start")
-                    || notice.contains("xclip")
-                    || notice.contains("wl-copy")
-                    || notice.contains("powershell"),
+                ["pbcopy", "pbpaste", "xclip", "wl-copy", "powershell"]
+                    .iter()
+                    .any(|tool| notice.contains(tool)),
                 "the notice does not name the tool that refused: {notice:?}"
             );
         }
