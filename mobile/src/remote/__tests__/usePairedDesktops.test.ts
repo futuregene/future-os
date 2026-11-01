@@ -135,6 +135,11 @@ describe("usePairedDesktops", () => {
     cast<jest.Mock>(loadActiveDesktopId).mockResolvedValue(null);
     cast<jest.Mock>(loadPendingRevoke).mockResolvedValue(null);
     cast<jest.Mock>(claimPairingCode).mockResolvedValue(null);
+    // `clearAllMocks` clears calls, not implementations: the revoke tests below
+    // pin a failure with `mockRejectedValue`, which would otherwise stay the
+    // implementation the next test drains against.
+    cast<jest.Mock>(attemptPendingRevoke).mockResolvedValue(undefined);
+    cast<jest.Mock>(serverRevoke).mockResolvedValue(undefined);
   });
 
   afterEach(async () => {
