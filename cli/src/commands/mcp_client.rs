@@ -1102,6 +1102,30 @@ mod tests {
         assert_eq!(json_kind(&json!({ "a": 1 })), "an object");
     }
 
+    /// A spec that is an HTTP endpoint is not a command to spawn: `start` names
+    /// the transport instead of exec'ing an empty program name, so the mistake
+    /// reads as what it is — the wrong transport was chosen.
+    #[tokio::test]
+    async fn an_http_endpoint_is_not_started_as_a_stdio_server() {
+        let spec = ServerSpec {
+            command: None,
+            args: Vec::new(),
+            env: Map::new(),
+            cwd: None,
+            url: Some("https://example.test/mcp".to_string()),
+            headers: BTreeMap::new(),
+            enabled: true,
+        };
+        let error = ServerProcess::start("remote", &spec, Duration::from_secs(5))
+            .await
+            .err()
+            .expect("an HTTP endpoint has no command to spawn");
+        assert_eq!(
+            error,
+            "server 'remote' has no \"command\" — it is configured as an HTTP endpoint"
+        );
+    }
+
     /// The environment is validated *before* anything is spawned: a JSON
     /// number is a configuration mistake, not something to stringify.
     #[tokio::test]

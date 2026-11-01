@@ -939,3 +939,103 @@ fn a_host_that_has_not_stopped_refuses_to_start_again() {
         assert_eq!(host.phase(), phase, "a refused start changes nothing");
     }
 }
+
+/// The entry drives `select` from a probe runtime of its own; a lib test has to
+/// give it one.
+fn probe_block_on<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("probe runtime")
+        .block_on(future)
+}
+
+/// `FUTURE_DESKTOP_AGENT_MODE` is the operator's word on what this launch may
+/// do. A value the entry does not understand is refused before any probe, so a
+/// typo neither starts an embedded service nor silently attaches to whatever
+/// happened to answer.
+#[test]
+fn a_start_mode_the_entry_does_not_understand_is_refused_before_any_probe() {
+    let _home = crate::remote::test_support::HomeGuard::new("agent-host-mode");
+    let host = AgentHost::default();
+    {
+        let mut state = host.0.state();
+        state.phase = Phase::Starting;
+    }
+    let previous = std::env::var_os("FUTURE_DESKTOP_AGENT_MODE");
+    std::env::set_var("FUTURE_DESKTOP_AGENT_MODE", "embedded");
+    let error = probe_block_on(host.select("auto")).map(|_| ()).unwrap_err();
+    match previous {
+        Some(value) => std::env::set_var("FUTURE_DESKTOP_AGENT_MODE", value),
+        None => std::env::remove_var("FUTURE_DESKTOP_AGENT_MODE"),
+    }
+    assert_eq!(
+        error.to_string(),
+        "FUTURE_DESKTOP_AGENT_MODE must be auto or external"
+    );
+    assert_eq!(
+        host.phase(),
+        Phase::Starting,
+        "a refused mode never reaches a start"
+    );
+}
+
+/// A local-start permission is what the probe hands back when nothing answered,
+/// and the entry honours it only while the host is still the one starting:
+/// attach-only mode refuses it outright, and a host that stopped while the probe
+/// ran leaves the service to whoever owns it now.
+#[test]
+fn a_local_start_permission_is_honoured_only_while_the_host_is_still_starting() {
+    let _home = crate::remote::test_support::HomeGuard::new("agent-host-local-start");
+
+    let permitted = |host: &AgentHost| {
+        let selected =
+            probe_block_on(host.select("auto")).expect("a probe with nothing listening answers");
+        assert!(
+            matches!(
+                selected.result,
+                Ok(Some(future_rpc::connection::AgentSelection::LocalStart(_)))
+            ),
+            "the fixture must reach the permit, not an external Agent"
+        );
+        selected
+    };
+
+    // Attach-only: the probe found no Agent and offered exactly the local start
+    // this mode exists to refuse.
+    let host = AgentHost::default();
+    {
+        let mut state = host.0.state();
+        state.phase = Phase::Starting;
+    }
+    let mut selected = permitted(&host);
+    selected.mode = "external".into();
+    let error = host.run_selected(selected, |_| Ok(())).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "External Agent is unavailable; attach-only mode never starts an embedded service"
+    );
+    assert_eq!(
+        host.phase(),
+        Phase::Starting,
+        "a refused start changes nothing"
+    );
+
+    // The same permission after the host stopped: the start it was granted for
+    // is gone, so the entry declines instead of taking the service anyway.
+    let host = AgentHost::default();
+    {
+        let mut state = host.0.state();
+        state.phase = Phase::Starting;
+    }
+    let selected = permitted(&host);
+    {
+        let mut state = host.0.state();
+        state.phase = Phase::Stopped;
+        state.finished = true;
+    }
+    host.run_selected(selected, |_| Ok(()))
+        .expect("an overtaken start is not an error");
+    assert_eq!(host.phase(), Phase::Stopped, "and it does not take it");
+    assert!(!host.owns_agent());
+}

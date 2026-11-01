@@ -1944,6 +1944,18 @@ mod tests {
                 ],
                 "--header expects 'Name: value'",
             ),
+            // A header pair with a colon but no name is refused too, and the
+            // message quotes the pair so the two refusals are told apart.
+            (
+                vec![
+                    "header-empty",
+                    "--url",
+                    "https://e.com/mcp",
+                    "--header",
+                    ": value",
+                ],
+                "--header expects 'Name: value', got ': value'",
+            ),
         ] {
             let error = mcp_add(&args(&argv), &out).unwrap_err();
             assert!(error.contains(expected), "{argv:?}: {error}");

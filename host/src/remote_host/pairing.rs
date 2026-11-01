@@ -1327,6 +1327,193 @@ mod http_tests {
         );
     }
 
+    /// Housekeeping is best effort in both directions. A platform that cannot
+    /// even list this desktop's devices leaves the original refusal as the
+    /// answer — deleting something on a guess is how a live code dies — and the
+    /// mint is not asked again, because nothing was freed.
+    #[tokio::test]
+    async fn a_sweep_that_cannot_list_devices_leaves_the_refusal_alone() {
+        let _home = HomeGuard::new("pairing-sweep-list-failed");
+        let platform = MockPlatform::start().await;
+        sign_in(platform.url());
+        refuse_for_the_cap(&platform);
+        platform.push(
+            "/client/v1/remote/devices",
+            500,
+            json!({ "error": "internal", "message": "device index unavailable" }),
+        );
+
+        let error = create_pairing(true, &[]).await.map(|_| ()).unwrap_err();
+        match error {
+            crate::Error::Remote { status, code, .. } => {
+                assert_eq!(status, 409, "the cap refusal is what the caller sees");
+                assert_eq!(code.as_deref(), Some("pairing_limit_reached"));
+            }
+            other => panic!("expected the platform refusal, got {other:?}"),
+        }
+        let requests = platform.requests();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|(method, _, _)| method == "DELETE")
+                .count(),
+            0,
+            "a list that never arrived cannot justify a delete"
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|(_, path, _)| path.ends_with("/pair/code"))
+                .count(),
+            1,
+            "nothing was freed, so the mint is not retried"
+        );
+    }
+
+    /// The other half of "best effort": the list arrives, the row is this
+    /// desktop's own abandoned invitation, and the platform refuses to delete
+    /// it. The delete is attempted once, named, and the refusal still stands.
+    #[tokio::test]
+    async fn a_stale_invitation_the_platform_will_not_delete_survives() {
+        let _home = HomeGuard::new("pairing-sweep-delete-failed");
+        let platform = MockPlatform::start().await;
+        sign_in(platform.url());
+        let desktop = crate::device_identity::device_id().unwrap();
+        refuse_for_the_cap(&platform);
+        platform.push(
+            "/client/v1/remote/devices",
+            200,
+            json!({ "devices": [
+                // Past the age floor, unclaimed, and this desktop's own row:
+                // the sweep has every reason to take it.
+                device_row("pair_stuck", &desktop, "pending", 600, false),
+            ]}),
+        );
+        platform.push(
+            "/client/v1/remote/devices/pair_stuck",
+            500,
+            json!({ "error": "internal", "message": "revoke unavailable" }),
+        );
+
+        let error = create_pairing(true, &[]).await.map(|_| ()).unwrap_err();
+        match error {
+            crate::Error::Remote { status, code, .. } => {
+                assert_eq!(status, 409, "the cap refusal is what the caller sees");
+                assert_eq!(code.as_deref(), Some("pairing_limit_reached"));
+            }
+            other => panic!("expected the platform refusal, got {other:?}"),
+        }
+
+        let requests = platform.requests();
+        let deleted: Vec<&str> = requests
+            .iter()
+            .filter(|(method, _, _)| method == "DELETE")
+            .map(|(_, path, _)| path.as_str())
+            .collect();
+        assert_eq!(
+            deleted,
+            vec!["/client/v1/remote/devices/pair_stuck"],
+            "one attempt at the row it could not clear, and no second guess"
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|(_, path, _)| path.ends_with("/pair/code"))
+                .count(),
+            1,
+            "a sweep that freed nothing does not retry the mint"
+        );
+    }
+
+    /// Removing the last device deletes both files. When the second unlink
+    /// fails the caller is told by name — the book is already gone, and an
+    /// unpair that reported success would leave a credential file behind that
+    /// still answers "this machine is paired".
+    #[test]
+    fn removing_the_last_slot_that_cannot_be_unlinked_is_an_error() {
+        let _home = HomeGuard::new("pairing-remove-unlink-failed");
+        save_creds(&fixture_creds()).unwrap();
+        // A directory where the legacy credential file belongs: `exists()` is
+        // true and `remove_file` fails, the way a locked or foreign-owned file
+        // would, without needing a second process.
+        let legacy = pairing_path().unwrap();
+        let _ = std::fs::remove_file(&legacy);
+        std::fs::create_dir(&legacy).unwrap();
+
+        let error = remove_slot("pair_test").unwrap_err();
+        assert!(
+            error.to_string().contains("remove pairing creds"),
+            "{error}"
+        );
+        assert!(
+            legacy.is_dir(),
+            "the path it could not remove is still there: {}",
+            legacy.display()
+        );
+    }
+
+    /// A self-hosted room is deleted *now*, detached, so an unreachable relay
+    /// cannot make unpair hang. A refusal is logged and nothing is queued: a
+    /// retry needs an account, and this pairing has none.
+    #[tokio::test]
+    async fn a_relay_room_that_cannot_be_deleted_is_logged_and_never_queued() {
+        let _home = HomeGuard::new("pairing-relay-delete-failed");
+        let relay = MockPlatform::start().await;
+        relay.push(
+            "/v1/rooms/pair_test",
+            500,
+            json!({ "error": "internal", "message": "room delete unavailable" }),
+        );
+        let creds = fixture_relay_creds(relay.url());
+
+        queue_revoke(&creds).expect("an unreachable relay cannot make unpair hang");
+
+        let pending = pairing_path()
+            .unwrap()
+            .with_file_name("remote_pending_revokes.json");
+        assert!(
+            !pending.exists(),
+            "a relay pairing queues nothing: {} was written",
+            pending.display()
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while relay.requests().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the detached room delete never reached the relay"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let requests = relay.requests();
+        assert_eq!(requests[0].0, "DELETE");
+        assert_eq!(requests[0].1, "/v1/rooms/pair_test");
+    }
+
+    /// Retiring a revoke that a new invitation made obsolete is bookkeeping.
+    /// A storage failure there is logged and the invitation is still handed
+    /// back — failing it would cost the user the code they just asked for.
+    #[tokio::test]
+    async fn an_invitation_survives_a_bookkeeping_failure() {
+        let _home = HomeGuard::new("pairing-retire-failed");
+        let platform = MockPlatform::start().await;
+        sign_in(platform.url());
+        let code = platform.respond_pair_code("nats://127.0.0.1:4222");
+        // A directory where the pending-revokes file belongs, so reading it
+        // fails with something other than "not found".
+        let pending = pairing_path()
+            .unwrap()
+            .with_file_name("remote_pending_revokes.json");
+        std::fs::create_dir_all(&pending).unwrap();
+
+        let invitation = create_pairing(false, &[])
+            .await
+            .expect("bookkeeping never costs the user the code");
+        let link = reqwest::Url::parse(&invitation.code).unwrap();
+        let fields: std::collections::HashMap<_, _> = link.query_pairs().collect();
+        assert_eq!(fields["code"], code, "the platform's own code comes back");
+        assert!(pending.is_dir(), "nothing replaced the path that failed");
+    }
+
     #[tokio::test]
     async fn create_pairing_maps_network_and_server_failures() {
         let _home = HomeGuard::new("pairing-create-errors");

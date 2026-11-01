@@ -81,6 +81,40 @@ fn relay_flags_are_accepted_in_both_spellings() {
     }
 }
 
+/// A data root whose `logs` path is not a directory: the launch says the log is
+/// unavailable and then starts anyway.
+///
+/// `headless::run` calls `start_logging` (127) and reports its failure (128)
+/// instead of returning one, because "a read-only install or a full disk must
+/// not stop a headless host". Nothing on this lane had ever taken that arm, so
+/// the sentence was unverified. The input is a clobbered data directory — a
+/// regular file where the log's own directory belongs — not a permission trick,
+/// so the fixture is identical on macOS, Linux and Windows.
+#[test]
+fn a_host_whose_log_cannot_be_opened_reports_it_and_still_starts() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".future/app")).unwrap();
+    // `start_logging` creates `<home>/app/logs` and opens `desktop.log` in it.
+    std::fs::write(home.path().join(".future/app/logs"), b"not a directory\n").unwrap();
+
+    // The invalid `FUTURE_AGENT_GRPC_ADDR` this harness sets is what makes the
+    // run end: the test is about the startup order in front of it.
+    let out = headless(home.path()).output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("host log unavailable:"),
+        "the missing log has to be named, not swallowed: {stderr}"
+    );
+    assert!(
+        stderr.contains("startup progress is logged to"),
+        "the launch continues past the log failure: {stderr}"
+    );
+    assert!(
+        home.path().join(".future/app/logs").is_file(),
+        "the fixture's clobbered path is still the file it was: {stderr}"
+    );
+}
+
 /// Successor to `a_plain_launch_needs_no_headless_flag`, which guarded two
 /// properties at once:
 ///
@@ -1154,6 +1188,88 @@ fn a_switched_off_remote_desktop_stays_up_and_comes_back_without_a_restart() {
         "SIGINT must stop the run cleanly ({exit}):\n{}",
         log.collected
     );
+}
+
+/// A login that arrives while the switch is **off** is adopted, and the entry
+/// still does not start serving: the switch is the user's decision, so the
+/// adopted account changes what this run *could* serve and nothing more.
+///
+/// The distinction is a line of its own in `AccountAction::Adopt` — the switch-on
+/// arm calls `remote::enable()`, the off one only re-reads `remote::status()`.
+/// The assertion is therefore both directions of one call: the adopting run asks
+/// the platform for nothing, and `future remote enable` afterwards still starts
+/// serving from the *same* process, which it could not if adoption had closed the
+/// control channel or dropped the account.
+#[cfg(unix)]
+#[test]
+fn a_login_adopted_while_the_switch_is_off_serves_nothing_until_the_switch_returns() {
+    use std::time::Duration;
+
+    let home = tempfile::tempdir().unwrap();
+    let platform = FakePlatform::start(Platform::PairingDown);
+
+    // The user's own switch, set before anything runs: stored, and nothing else.
+    let off = second_terminal(home.path(), &["remote", "disable"]);
+    assert!(
+        off.status.success(),
+        "`remote disable` must store the switch without a Desktop: {}",
+        String::from_utf8_lossy(&off.stderr)
+    );
+
+    let mut guard = ChildGuard(foreground(home.path()).spawn().unwrap());
+    let child = &mut guard.0;
+    let mut log = Stderr::take(child);
+
+    log.wait_for("Not signed in to FutureOS", Duration::from_secs(300));
+    log.wait_for(
+        "The remote desktop switch is off, so this entry serves nothing yet",
+        Duration::from_secs(120),
+    );
+
+    // The login arrives under the running host — the same durable state
+    // `future auth login` writes from another terminal.
+    signed_in_home(home.path(), &platform.url);
+    log.wait_for("Platform account signed in", Duration::from_secs(60));
+
+    // Adopted, and still off: give the loop two iterations and require that the
+    // switch, not the login, decided. A token call here would mean the adopt ran
+    // `remote::enable()`.
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        !platform
+            .served()
+            .iter()
+            .any(|path| path.ends_with("/client/v1/remote/auth/token")),
+        "a switch that is off must survive the login: {:?}",
+        platform.served()
+    );
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "the run must keep serving locally after adopting the login:\n{}",
+        log.collected
+    );
+
+    // …and the account the run adopted is the one the switch-on arm now uses.
+    let on = second_terminal(home.path(), &["remote", "enable"]);
+    assert!(
+        on.status.success(),
+        "`remote enable` must be accepted by the running host: {}\n{}",
+        String::from_utf8_lossy(&on.stdout),
+        String::from_utf8_lossy(&on.stderr)
+    );
+    log.wait_for("Remote: Reconnecting", Duration::from_secs(120));
+    assert!(
+        platform
+            .served()
+            .iter()
+            .any(|path| path.ends_with("/client/v1/remote/auth/token")),
+        "the adopted account must be what the switched-on run pairs with: {:?}",
+        platform.served()
+    );
+
+    signal(child, "-INT");
+    let status = wait_for_signal_exit(child, &mut log, Duration::from_secs(120));
+    assert!(status.success(), "{status}\n{}", log.collected);
 }
 
 /// A stored account key the platform no longer honours is named as such, and it

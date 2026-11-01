@@ -28,35 +28,57 @@ use tauri::Emitter;
 #[cfg(feature = "gui")]
 pub fn start<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     crate::runtime::set(tauri::async_runtime::handle().inner().clone());
-    let update_app = app.clone();
-    spawn_fixed_interval(&APP_UPDATE_JOB, move || {
-        let app = update_app.clone();
-        async move {
-            let endpoint = crate::commands::manifest_url(crate::build_info::channel());
-            let result = crate::commands::perform_app_update_check(app.clone(), endpoint).await;
-            emit_app_update_result(app, result).await;
-        }
-    });
+    let endpoint = crate::commands::manifest_url(crate::build_info::channel());
+    spawn_fixed_interval(
+        &APP_UPDATE_JOB,
+        repeat(app.clone(), move |app| run_app_update_job(app, endpoint)),
+    );
+    spawn_fixed_interval(&FUTURE_BALANCE_JOB, repeat(app.clone(), run_balance_job));
+    spawn_fixed_interval(&FUTURE_MODELS_JOB, repeat(app, run_models_job));
+}
 
-    let balance_app = app.clone();
-    spawn_fixed_interval(&FUTURE_BALANCE_JOB, move || {
-        let app = balance_app.clone();
-        async move {
-            let pass = balance_pass(future_signed_in(), crate::future_login::fetch_balance).await;
-            emit_balance_pass(app, pass).await;
-        }
-    });
+/// Adapt one round of a job to the loop's `FnMut` signature: every round gets a
+/// fresh handle, because a round consumes its future.
+///
+/// The rounds themselves are named functions rather than closures written here,
+/// for the reason [`emit_app_update_result`] gives: a closure written inside
+/// [`start`] only runs after a full interval has elapsed, so a test can never
+/// reach it, and the round it wraps would go unmeasured. This wrapper is what a
+/// test drives to run exactly one round.
+#[cfg(feature = "gui")]
+fn repeat<R, F, B>(app: tauri::AppHandle<R>, round: B) -> impl FnMut() -> F + Send + 'static
+where
+    R: tauri::Runtime,
+    B: Fn(tauri::AppHandle<R>) -> F + Send + 'static,
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    move || round(app.clone())
+}
 
-    spawn_fixed_interval(&FUTURE_MODELS_JOB, move || {
-        let app = app.clone();
-        async move {
-            if !future_signed_in() {
-                return;
-            }
-            let result = crate::agent_bridge::sync_future_models().await;
-            emit_models_result(app, result).await;
-        }
-    });
+/// One round of the automatic update check: resolve nothing, check, and report.
+/// The endpoint is the one [`start`] resolved for this build's channel.
+#[cfg(feature = "gui")]
+async fn run_app_update_job<R: tauri::Runtime>(app: tauri::AppHandle<R>, endpoint_url: &str) {
+    let result = crate::commands::perform_app_update_check(app.clone(), endpoint_url).await;
+    emit_app_update_result(app, result).await;
+}
+
+/// One round of the account pass, and its projection.
+#[cfg(feature = "gui")]
+async fn run_balance_job<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
+    let pass = balance_pass(future_signed_in(), crate::future_login::fetch_balance).await;
+    emit_balance_pass(app, pass).await;
+}
+
+/// One round of the catalogue sync, and its projection. Signed out there is
+/// nothing to ask the agent for, so the round ends before it starts a connection.
+#[cfg(feature = "gui")]
+async fn run_models_job<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
+    if !future_signed_in() {
+        return;
+    }
+    let result = crate::agent_bridge::sync_future_models().await;
+    emit_models_result(app, result).await;
 }
 
 /// Report one automatic update check to the window. Split out of the job
@@ -144,6 +166,52 @@ mod tests {
         assert_eq!(FUTURE_AUTH_CHANGED_EVENT, "scheduler-future-auth-changed");
         assert_eq!(FUTURE_MODELS_EVENT, "scheduler-future-models");
     }
+    /// A mock app that can serve both update paths: with the updater plugin
+    /// registered and no endpoint of its own, the signed path fails as an
+    /// ordinary error instead of a missing-plugin panic, while the manual path
+    /// uses the endpoint its caller supplies.
+    #[cfg(feature = "gui")]
+    fn mock_app_with_updater_plugin() -> tauri::App<tauri::test::MockRuntime> {
+        let mut context = tauri::test::mock_context(tauri::test::noop_assets());
+        context.config_mut().plugins.0.insert(
+            "updater".to_string(),
+            serde_json::json!({ "endpoints": [], "pubkey": "dummy" }),
+        );
+        tauri::test::mock_builder()
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .build(context)
+            .expect("mock app with updater")
+    }
+
+    /// One round of each loop, driven through the same wrapper [`start`] hands to
+    /// the scheduler. The loops themselves run a round only after a full
+    /// interval, so this is the reachable equivalent: the work and its
+    /// projection live in the round, and the wrapper is what clones the handle
+    /// the round consumes.
+    #[cfg(feature = "gui")]
+    #[tokio::test]
+    async fn one_round_of_each_loop_runs_and_reports_its_outcome() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("scheduler-rounds");
+        let app = mock_app_with_updater_plugin();
+
+        // A dead loopback endpoint: the check fails as an ordinary error without
+        // a network, and that `Err` is what the round reports.
+        let mut update_round = repeat(app.handle().clone(), |app| {
+            run_app_update_job(app, "http://127.0.0.1:1/")
+        });
+        update_round().await;
+
+        // Signed out, the account pass reports the credential change and never
+        // calls the fetch it was handed.
+        let mut balance_round = repeat(app.handle().clone(), run_balance_job);
+        balance_round().await;
+
+        // Signed out there is nothing to ask the agent for, so the round ends
+        // before it opens a connection.
+        let mut models_round = repeat(app.handle().clone(), run_models_job);
+        models_round().await;
+    }
+
     /// The three job bodies project their outcome onto the window. Driven from a
     /// mock app because the projection, not the check, is what the loop does
     /// after the network — and the loop itself cannot be awaited.
@@ -210,18 +278,7 @@ mod tests {
     #[tokio::test]
     async fn an_explicit_update_check_uses_the_endpoint_it_is_given() {
         crate::install_rustls_provider();
-        // Register the updater plugin with no endpoints of its own: the signed
-        // path then fails as an ordinary error instead of a missing-plugin
-        // panic, while the manual path uses the endpoint passed in below.
-        let mut context = tauri::test::mock_context(tauri::test::noop_assets());
-        context.config_mut().plugins.0.insert(
-            "updater".to_string(),
-            serde_json::json!({ "endpoints": [], "pubkey": "dummy" }),
-        );
-        let app = tauri::test::mock_builder()
-            .plugin(tauri_plugin_updater::Builder::new().build())
-            .build(context)
-            .expect("mock app with updater");
+        let app = mock_app_with_updater_plugin();
         let result = check_app_update_now(app.handle().clone(), "http://127.0.0.1:1/").await;
         assert!(
             result.is_err(),

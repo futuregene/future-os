@@ -62,10 +62,13 @@ pub async fn start_host(platform: &MockPlatform, nats: &FakeNats) -> (String, St
     let pair_id = crate::remote::test_support::unique("pair");
     platform.respond_pair_code_for(&pair_id, nats.url());
     let status = start(RemoteStartInput {}).await.expect("host bridge start");
-    let invitation = status
-        .pairing_code
-        .clone()
-        .expect("host shows an invitation");
+    // The whole status, not just the missing field: a start that answered with
+    // no invitation is either a peer-driven failure (a `reason`) or one that
+    // never got as far as minting (`phase` still `Stopped`), and the two have
+    // nothing in common but this line.
+    let Some(invitation) = status.pairing_code.clone() else {
+        panic!("a host bridge that started must show an invitation; it answered {status:?}")
+    };
     (status.pair_id, invitation)
 }
 

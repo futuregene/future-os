@@ -427,6 +427,14 @@ pub fn mock_agent_with_cleanup(cleanup: fn()) -> MockAgentGuard {
     let mut timing = crate::test_support::timing::FixtureTiming::start("MockAgentGuard", "agent");
     let lock = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     timing.mark("lock_wait");
+    // The process-global agent loops (`config_observer`, `session_events`) are
+    // not the session observers `cleanup` cancels: they re-attach a plain
+    // subscription after every reconnect, and the mock hands a scripted stream
+    // to whoever attaches first, so a copy left by an earlier test takes the
+    // script this one is about to push — and this test then waits on an
+    // unscripted stream, which the mock parks forever. Stop them here, under
+    // the lock, before the script is written.
+    crate::agent_bridge::stop_global_agent_observers_for_test();
     // A finished test's observers keep re-attaching on the ambient runtime;
     // drop them now so their get_state/stream_events calls can't consume the
     // replies this test is about to script.

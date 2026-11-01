@@ -165,6 +165,18 @@ pub mod test_support {
         crate::request_scope::reset_for_test();
         crate::tasks::reset_for_test();
         crate::remote_peer::runtime::reset_after_shutdown_for_test();
+        // A *stopped* host role, not merely a re-armed closed one:
+        // `reset_after_shutdown_for_test` only resets a server that was shut
+        // down, so a suspension with no resume — the shape
+        // `handle_system_suspend_stops_the_running_generation` leaves behind
+        // when it clears `start_requested` at the end — kept `suspended` set
+        // for the whole process. Every later `start` then took
+        // `start_generation`'s `!start_requested || suspended` arm and
+        // answered an *empty* status: no bridge, no invitation, and the next
+        // fixture's failure read as "the host shows no invitation" instead of
+        // the reason. Draining here is the same rule the lines above follow —
+        // nothing process-global outlives the fixture that set it.
+        crate::remote::stop();
         crate::remote::reset_after_shutdown_for_test();
         crate::store::reset_run_event_writer_for_test();
         crate::store::close_pool();

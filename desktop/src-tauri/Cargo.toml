@@ -40,6 +40,11 @@ gui = [
 # it for every shipped binary; sources outside the Tauri CLI (`make
 # install-local`, a bare `cargo build --profile local`) have to ask for it.
 custom-protocol = ["tauri/custom-protocol"]
+# Test-only seams (`src/test_support.rs`), **not** in `default`: the module and its
+# symbols do not exist in a shipped build. The coverage lane turns it on
+# (`cargo llvm-cov -p futureos --features test-support …`) because one IPC wrapper's
+# body needs the real `Wry` handle the running app publishes.
+test-support = []
 
 [dev-dependencies]
 future-host = { path = "../../host", features = ["test-support"] }

@@ -2621,6 +2621,73 @@ mod tests {
             );
             crate::remote::stop();
         }
+
+        /// The client role's changing half, against a **real** host bridge on the
+        /// in-process broker — the same fixture the peer runtime's own tests use.
+        /// The four operations a terminal sends are the four arms of `perform_peer`,
+        /// and each answers with the list read back after the change.
+        #[tokio::test]
+        #[allow(clippy::await_holding_lock)]
+        async fn a_client_role_change_runs_against_the_paired_machine() {
+            let (_home, fixture) =
+                crate::remote_peer::testing::fixture("control-peer-change").await;
+            let desktop = fixture.paired.creds.desktop_id.clone();
+            let listed =
+                |outcome: &PeerOutcome| outcome.peers.iter().any(|peer| peer.desktop_id == desktop);
+
+            let connected = perform_peer(&peer_request(OP_PEER_CONNECT, Some(&desktop)))
+                .await
+                .expect("a paired machine connects");
+            assert!(
+                listed(&connected),
+                "the answer reads the list: {:?}",
+                connected.peers
+            );
+            assert!(
+                connected.took_over.is_none(),
+                "connecting never moves the pointer"
+            );
+
+            // A lone device is promoted at start, so this desktop is already
+            // driving the host: `changed: false` is the host's answer, and the
+            // contract says a silent `false` is a result, not a refusal.
+            let taken = perform_peer(&peer_request(OP_PEER_TAKEOVER, Some(&desktop)))
+                .await
+                .expect("the host answers a takeover");
+            assert_eq!(
+                taken.took_over,
+                Some(false),
+                "the host says the pointer did not move, which is only readable if it answered"
+            );
+            assert!(listed(&taken), "{:?}", taken.peers);
+
+            let stopped = perform_peer(&peer_request(OP_PEER_DISCONNECT, Some(&desktop)))
+                .await
+                .expect("disconnecting answers with the list");
+            assert!(
+                listed(&stopped),
+                "a disconnect keeps the pairing: {:?}",
+                stopped.peers
+            );
+            assert!(stopped.took_over.is_none());
+
+            // The platform cannot confirm the revoke this time. The pairing still
+            // has to be gone locally — an unreachable platform must not leave a
+            // machine the user removed still paired — and the note is the only
+            // place the operator learns the cleanup is owed.
+            fixture
+                .platform
+                .push("/client/v1/remote/pair/revoke", 500, serde_json::json!({}));
+            let removed = perform_peer(&peer_request(OP_PEER_REMOVE, Some(&desktop)))
+                .await
+                .expect("a removal answers");
+            assert!(
+                !listed(&removed),
+                "a removal is the one operation that empties the row: {:?}",
+                removed.peers
+            );
+            crate::remote_peer::testing::teardown(&fixture.pair_id).await;
+        }
     }
 
     /// `requests` is how the loop learns there is work: a `run/` directory that
