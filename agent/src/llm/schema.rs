@@ -723,12 +723,17 @@ pub fn report_unexpressible_levels(
         if !first {
             continue;
         }
+        // Built as statements: llvm-cov attributes a plain identifier inside the
+        // macro to the call site, but a method call written in the field list to
+        // a region of its own that never counts.
+        let wire = wire.as_deref().unwrap_or("(none)");
+        let accepted = vocabulary.describe();
         tracing::warn!(
             provider = %model.provider,
             model = %model.id,
             level = %level,
-            wire = wire.as_deref().unwrap_or("(none)"),
-            accepted = %vocabulary.describe(),
+            wire = wire,
+            accepted = %accepted,
             "[models] thinking level has no exact spelling in compat.reasoningEffort; {advice}"
         );
     }
