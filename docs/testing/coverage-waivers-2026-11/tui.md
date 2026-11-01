@@ -6,10 +6,14 @@ llvm-cov *summary* percentages (Lines/Functions) are not the acceptance number.
 **Lane**: `cargo llvm-cov -p future-tui` (crate `future-tui`), rust **1.99.1** pinned by
 `rust-toolchain.toml`, with that toolchain's own `llvm-tools-preview`.
 
-**This file's status: no waiver is claimed.** Both candidates that survived wave 5 are
-reachable in principle and are waiting on a probe or another platform's run, not on an
-exemption — the repo's rule is that a waiver which cannot name its own falsifier is not
-evidence (`docs/testing/waiver-ledger.md`).
+**This file's status: 0 waived.** Every row below is marked *not waived*, with the reason it
+is not covered yet and the falsifier that would prove it reachable. A waiver that cannot name
+its own falsifier is not evidence (`docs/testing/waiver-ledger.md`).
+
+**This file is re-read against the lcov every wave, and entries a later test covered are
+deleted** — a stale exemption is worse than a missing one: the next reader would start from a
+premise that is no longer true. The wave-10 pass removed two (below) and corrected three line
+numbers that had shifted.
 
 ## How this lane is measured
 
@@ -20,6 +24,8 @@ METERS=1 ./run-cov-tui.sh            # DA:0 with the `#[ignore = "meter, not a c
 python3 ../../../tools/lcov-missed.py tui-after.info --filter tui/src --json after-missed.json
 python3 per_file.py after-missed.json          # per file
 python3 missed_by_fn.py <source.rs> after-missed.json <path-suffix>   # per function
+python3 arms.py after-missed.json <source.rs> <lo>-<hi>               # which lines in a range
+python3 check_claims.py after-missed.json <path-suffix> <lo>-<hi>     # is this row still true?
 ```
 
 `METERS=1` adds a second instrumented pass with `--include-ignored` and merges its profile:
@@ -33,33 +39,44 @@ Category names are the ones in `.future/memory/coverage-llvm-cov.md`: W1 cfg(win
 **W2 defensive dead arm**, W3 OS failure injection, W4 race window, W5 attribution artifact,
 W6 ghost line, W7 mock closure, W8 dead producer.
 
-## Closed since wave 4 (they were candidates, not waivers)
+## Closed in an earlier wave (candidates, never waivers)
 
 | was | how it closed |
 |---|---|
-| `paste_clipboard`'s four answers (`live.rs:3974-4004`) | `ClipboardCapture::with_runner` is the paste module's own seam: a fake tool writes the 1x1 PNG a probe would write, and a runner that errors carries the reason. Probe: `the_clipboard_pastes_a_picture_or_says_why_it_cannot`. The `Unavailable("")` arm is reached through it too, so it is covered rather than waived. |
-| `open_external`'s happy path and its "no opener" arm (`live.rs:4417-4445`) | a stub `open`/`xdg-open` script on `PATH` (under `test_env::lock` + `EnvVarGuard`), and an empty `PATH` for the failure. Probe: `opening_a_link_spawns_the_opener_and_reports_a_missing_one` (`#[cfg(unix)]`). |
+| `paste_clipboard`'s four answers (`live.rs:3974-4004`) | `ClipboardCapture::with_runner` is the paste module's own seam: a fake tool writes the 1x1 PNG a probe would write, a runner that errors carries the reason, and the text tool's answer reaches the draft. Probe: `the_clipboard_pastes_a_picture_or_says_why_it_cannot`. |
+| `open_external`'s macOS half (`live.rs:4417-4445`) | a stub `open` script on `PATH` (under `test_env::lock` + `EnvVarGuard`) covers the accepted path, an empty `PATH` the refusal. Probe: `opening_a_link_spawns_the_opener_and_reports_a_missing_one` (`#[cfg(unix)]`). |
 | `poll_tree_read`'s two reachable arms, `toggle_folder` (`live.rs:705-725, 3830-3841`) | the fixture clears `local_reads` before `refresh_local()` (the scan only starts when the directory *changed*), so the tree lands rows. Probe: `the_file_panel_installs_a_scan_and_toggles_a_folder`. |
+| **`notify` (`run.rs:1870-1880`) — deleted in wave 10** | covered by the PTY harness: the reader's settings turn notifications on, the agent streams one approval, and the terminal receives the OSC 9 sequence. Probe: `an_approval_streamed_to_a_real_terminal_rings_the_desktop` (`tui/tests/driver_run.rs`). The row that stood here said it "needs a PTY child process"; that harness now exists, so the row was removed rather than reworded. |
+| **`run()`'s process wiring (`run.rs:106-246`) — deleted as a blanket row in wave 10** | 82 of its 101 lines now execute in `the_real_entry_point_paints_a_frame_and_leaves_a_settings_file` (`tui/tests/driver_run.rs`): the terminal start, the reader thread, the first frame, the key loop and the exit-time persistence of `settings.json`. The row used to claim the whole function needed a PTY; the 19 lines that still do are listed below, by branch. |
 
-## What is reachable but needs a real terminal (not waived, not W-class)
+## Reachable, but not yet taken — `run()`'s remaining branches (`run.rs`)
 
-| file:line | what it needs | why the in-process driver cannot take it |
+Measured 2026-11-01 (`python3 check_claims.py after-missed.json workbench/run.rs 106-246` →
+19 lines). None of them needs a new harness: the PTY one already runs the process.
+
+| line | branch | what the harness has to be given |
 |---|---|---|
-| `tui/src/workbench/run.rs:106-246` (`run()`) | a PTY child process | the function is the *process entry*: `Terminal::start` spawns the reader thread, installs the exit-signal handlers and owns the update check. `tui/tests/signal_shutdown.rs` already runs a real PTY in this crate — that harness is the way to measure it. |
-| `tui/src/workbench/run.rs:1870-1880` (`notify`) | a PTY child process | its body is `for sequence in center.push(id, event, config, terminal.is_tty())`: a process whose stdout is not a terminal is *told* not to ring the desktop, so the loop never runs there. The identity it is called with (`alert_id`) is covered in-process by `a_notification_is_identified_by_the_events_own_id`. |
-| `tui/src/workbench/live.rs:3982-4004` (`paste_clipboard`'s `JoinError` arm) | a blocking task that panics | the arm is the `spawn_blocking` join failure; nothing in `ClipboardCapture::capture` panics, so there is no producer to inject without a seam in the paste module. |
+| 118-122 | the settings file could not be read → notice | a *corrupt* `settings.json` in the child's home (one byte of junk) |
+| 137 | `--continue` → `attach_most_recent()` | `Options { continue_recent: true }` |
+| 153 | a first message on the command line | `Options { initial_prompt: Some("…") }` |
+| 162-166 | the startup update check | `Options { offline: false }` — this one reaches the **network**, so it needs an injectable manifest URL or a local stub before it is worth measuring |
+| 191-192 | the reader thread's resize callback | a `TIOCSWINSZ` on the pty from the parent, or `SIGWINCH` |
+| 200-201 | the reader thread's signal callback | a signal sent to the child (the `signal_shutdown` test already does this) |
+| 226 | an explicit theme carried over to the next start | a theme change before quitting (e.g. the `/theme` picker's row) |
+| 242-243 | `run()` returning `Err` | an agent that refuses the attach, or an unwritable settings path |
 
-## The two rows that remain candidates
+## Rows that remain candidates (still **not waived**)
 
 | # | file:line | category | the code that would have to be defeated | falsifier | status |
 |---|---|---|---|---|---|
-| 1 | `tui/src/workbench/live.rs:722-725` | **W2** | `poll_tree_read`'s `Err(std::sync::mpsc::TryRecvError::Disconnected)` arm. It runs only when the spawned reader thread ends **without** `tx.send(tree)`. Both producers — `refresh_tree` (`live.rs:4009`) and `toggle_folder` (`live.rs:3830`) — end with an unconditional `let _ = tx.send(tree);`, and their thread body is `tree.rescan()` / `tree.toggle(&path)`: pure in-memory operations that return `()`. | a panic inside `FileTree::rescan`/`toggle` (the thread dies before the send), or a seam that drops the sender | **not waived** — the positive control now exists (`the_file_panel_installs_a_scan_and_toggles_a_folder` pins the two reachable arms by name), so only the injection seam is missing |
-| 2 | `tui/src/workbench/live.rs:4436-4441` (`open_external`, Windows half) | **platform-unmeasured** | the `cmd /C start` branch is compiled out here, and the Windows opener is a shell builtin, so a `PATH` stub cannot stand in for it. | a Windows CI run that measures this file (the branch is `cfg!(windows)`, so the line exists but only that runtime executes it) | **not waived** — it is a measurement gap: run the lane on Windows before calling it anything else |
+| 1 | `tui/src/workbench/live.rs:724-725` | **W2** | `poll_tree_read`'s `Err(std::sync::mpsc::TryRecvError::Disconnected)` arm: it runs only when the spawned reader thread ends **without** `tx.send(tree)`. Both producers — `refresh_tree` (`live.rs:4009`) and `toggle_folder` (`live.rs:3830`) — end with an unconditional `let _ = tx.send(tree);`, and their thread body is `tree.rescan()` / `tree.toggle(&path)`: pure in-memory operations that return `()`. | a panic inside `FileTree::rescan`/`toggle` (the thread dies before the send), or a seam that drops the sender | **not waived** — positive control is `the_file_panel_installs_a_scan_and_toggles_a_folder`; only the injection seam is missing |
+| 2 | `tui/src/workbench/live.rs:717` | **W3** | the same function's `self.notice = Some(error)` — a *directory read* failed (`FileTree.error`). | a directory under the workspace the process cannot read (mode 000, or a file where a directory is expected) | **not waived** — an ordinary `chmod` fixture on unix reaches it; Windows would need the equivalent ACL case |
+| 3 | `tui/src/workbench/live.rs:3998-4004` | **W3** | `paste_clipboard`'s `spawn_blocking(..).await` **join error**: the closure is `capture.capture(os, pid, now)`, which returns a value and does not panic, so nothing produces the failure. | a panic inside `ClipboardCapture::capture` (the seam would have to be a runner that panics rather than answers) | **not waived** |
+| 4 | `tui/src/workbench/live.rs:4426-4432` | **platform-unmeasured** | `open_external`'s two non-macOS branches: `Command::new("cmd").args(["/C","start","",target])` and `Command::new("xdg-open")`. On macOS `cfg!(windows)` is false at run time and `cfg!(target_os = "macos")` picks the first arm, so neither line executes here. | the same lane on Windows (the `cmd` branch) and on Linux (the `xdg-open` branch) | **not waived** — a measurement gap, not unreachability: run the lane on those platforms |
 
 Nothing in this file is W4 (race window), W5 (attribution artifact) or W6 (ghost line): the
-`cfg(test)` twins that produced attribution artifacts in this crate are gone from the
-report's `DA:0` list. `run.rs`'s `run()` (the process entry) is **not** waived either — it
-needs a PTY child process, which `tui/tests/signal_shutdown.rs` already demonstrates.
+`cfg(test)` twins that produced attribution artifacts are gone from `DA:0`, and a line that
+reads 0 only because of a macro/brace attribution would be a bug in the report, not a waiver.
 
 ## What a waiver row must carry when it is filed
 
