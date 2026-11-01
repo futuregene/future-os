@@ -400,6 +400,110 @@ HOME=$PWD/target/test-home cargo test -p future-agent --test cli_smoke
   what makes the test fail instead of hanging, and the unbounded waits are what make a hang
   visible in CI. It is a scheduling property of the measurement host.
 
+### The measured floor: 6206 CPU-seconds for the whole `--lib` suite
+
+Every earlier budget argument in this file was about wall time, which moves with the host. This
+wave measured the quantity that does not: **total CPU** of the declared verification, with
+`/usr/bin/time -l cargo test -p future-agent --lib` on `1c114c49e`
+(`coverage/2026-11/after/agent/wave24-cpu-default.log`):
+
+```
+      375.44 real       586.49 user      5619.80 sys
+test result: ok. 2886 passed; 0 failed; 5 ignored; finished in 316.08s
+```
+
+- **6206 CPU-seconds** (user + sys) for 2886 tests — **2.15 s of CPU per test**, and **90 % of it
+  is kernel time** (`sys`), not user code. The suite is not "slow because it is big"; every test
+  pays roughly two seconds of system calls for a few milliseconds of assertion.
+- The runner is already extracting about **20× parallelism** (6206 / 316), which is what a
+  32-core host with 2886 individually-runnable tests looks like.
+- Therefore the **best possible wall time on this host is 6206 / 32 = 194 s**, before any build,
+  freshness check, or scheduling loss. The declared validator kills the command at **120 s**.
+
+That is the whole story of the 29 consecutive `timeout after 120000ms` verdicts: **no amount of
+test authoring can fit this suite into 120 s on a 32-core machine**, because the machine must
+execute 6206 CPU-seconds of work and has only 3840 core-seconds inside the budget. The gate is
+not failing because the tests are flaky or uncommitted; it is failing arithmetic.
+
+**What would have to change** — both options are outside a coverage lane's write set, so neither
+is attempted here:
+
+1. **Raise the budget.** Observed wall times on this host: **316 s** quiet, **375 s** with
+   `/usr/bin/time` overhead, **522 s** at load average 46 (three other worktrees measuring).
+   A 600 s budget passes every one of those; 700 s leaves room for a cold build.
+2. **Cut the CPU by more than 38 % and keep perfect parallelism.** The per-test kernel cost is
+   the target, and the shape of it is now known (below). It is a fixture/product change, not a
+   test-authoring change.
+
+### Where the 6206 CPU-seconds are
+
+Per-module timed runs (`wave24-modules.log`), same environment, `/usr/bin/time -l` each:
+
+| filter | tests | wall | user | sys | CPU-s per test | parallelism |
+|---|---:|---:|---:|---:|---:|---:|
+| `session::history` | 55 | 109.25 s | 121.60 | **626.57** | **13.6** | 6.9× |
+| `session::content` | 145 | 34.78 s | 83.89 | 221.46 | 2.1 | 8.8× |
+| `session::persistence` | 28 | 25.51 s | 21.69 | 276.51 | **10.6** | 11.7× |
+| `rpc::` | 853 | 88.29 s | 109.46 | **1691.14** | 2.1 | 20.4× |
+| `rpc::commands::` | 311 | 54.10 s | 54.64 | 1024.80 | 3.5 | 20.0× |
+
+Two different problems, and they need different fixes:
+
+- **`session::history` is CPU-real and badly parallelized** (6.9×). Its four scale tests own most
+  of it — the 8 MiB page budget, the 100 k-entry index, the 9.6 MiB history — and the earlier
+  `sample` put the busy frames in `serde_json::format_escaped_str_contents`, i.e. re-serializing
+  text the page assembly already holds. Shortening them means shrinking what they exercise
+  (weakening) or making the page assembly faster (production code).
+- **`rpc::` and `session::persistence` are sys-call real** (`sys` is 15–20× `user`). `rpc::`'s 853
+  tests each build an `AppState`: an isolated home, a session manager, a migrated SQLite store, a
+  tokio runtime, a broadcaster. That fixed cost is now measured at **2.1 CPU-s per test**, 90 %
+  kernel. It is the largest single lever in the suite, and it is a fixture question: whether a
+  migrated store can be produced by copying a template database once per binary instead of
+  replaying the schema per test.
+
+### The kernel time is SQLite statement compilation, not I/O
+
+An 8 s `sample` of the test binary running `rpc::` (853 tests, the largest sys consumer) puts
+**18 of the 20 most frequent frames inside SQLite's statement compiler**, with the remaining two
+in its mutex waits (`coverage/2026-11/after/agent/wave24-sample-rpc-frames.txt`, frame counts; the raw 189 MB `sample` transcript is transient):
+
+```
+33594 sqlite3ExprDup        32816 sqlite3ExprCodeTarget   26117 sqlite3ExprDeleteNN
+25948 sqlite3Malloc         25412 sqlite3_mutex_enter      25203 __psynch_mutexwait
+22464 sqlite3DbMallocRawNN  19613 sqlite3ExprListDup       17173 sqlite3ExprDelete
+16910 sqlite3ExprCode       16047 sqlite3ExprListDelete    15651 sqlite3_mutex_leave
+15352 __psynch_mutexdrop    14401 sqlite3_free            13950 sqlite3SelectDup
+11377 sqlite3DbNNFreeNN      9662 sqlite3ExprCodeExprList    9551 sqlite3Select
+ 8694 sqlite3SelectDelete    5220 sqlite3SrcListDup
+```
+
+`sqlite3ExprDup` / `sqlite3SelectDup` / `sqlite3ExprCode` run when a statement is **prepared**,
+not when it is executed. So the suite's 5620 s of `sys`-adjacent cost is mostly **re-preparing
+the same complex statements** (this crate's reads go through large view-backed queries), which is
+the same defect this repository already fixed once on the TUI lane — the memory entry
+`.future/memory/sqlite-view-prepare-cost.md` records `prepare` → `prepare_cached` taking
+`list_sessions` from 4.6 s to 54 ms. This crate still has **92 `.prepare(` call sites against 29
+`.prepare_cached(`**.
+
+And the fixture itself is not free: a probe test (added, measured, then removed — the tree carries no probe) timing the
+standard `session::persistence` fixture — `Manager::new(dir)` + first `save` — reports
+**~100 ms to create the store and ~180 ms to fixture + save**, ten times in a row
+(114/101/172/101/107/99/100/100/115/110 ms). A test that opens two stores therefore spends ~0.2
+CPU-s before it asserts anything.
+
+Both numbers point the same way: the suite's cost is **statement preparation**, and it is
+concentrated in a small number of hot SQL call sites, not spread evenly over 2886 tests.
+
+### A wall-time floor underneath the CPU one
+
+`sample <pid> 6` on the `session::persistence` run caught the whole sample inside **one test**
+parked in `receive_ack` (`persistence.rs:560`, `std::sync::mpsc` recv) waiting for an idle
+deadline: `idle_retirement_never_acknowledges_a_lost_command` is that module's entire 25 s wall.
+Those waits are real timers, so they are pure wall time even on an idle machine. They are
+convertible to a paused clock (`tokio::time::pause`/`advance`) where the code under test is
+async — the agent crate's dev-dependencies already carry `test-util`? **Not verified this wave —
+this is the next check, not a claim.**
+
 ### Why the whole suite cannot fit a 120 s gate
 
 Measured on a subset (`cargo test -p future-agent --lib session::content`): 143 tests,
