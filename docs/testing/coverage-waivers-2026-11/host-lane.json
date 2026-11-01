@@ -1,14 +1,14 @@
 {
-  "lane": "host/rust-lib",
-  "measurement_commit": "b9ba7e5fb",
-  "toolchain": "1.99.1",
-  "scope_prefix": "/host/src/",
-  "command": "cargo llvm-cov -p future-host --lib --no-report && cargo llvm-cov report --lcov",
-  "da0_total": 2589,
-  "switch_lane": 2009,
-  "waived": 41,
-  "open": 539,
-  "before_da0": 2667,
-  "artifact": "coverage/2026-11/after/host/final-lcov.info",
-  "doc": "docs/testing/coverage-waivers-2026-11/host.md"
+ "lane": "host/rust-lib",
+ "measurement_commit": "b4b8f605e",
+ "toolchain": "1.99.1",
+ "scope_prefix": "/host/src/",
+ "command": "cargo llvm-cov -p future-host --lib --no-report && cargo llvm-cov report --lcov",
+ "da0_total": 2553,
+ "switch_lane": 2016,
+ "waived": 74,
+ "open": 463,
+ "before_da0": 2589,
+ "artifact": "coverage/2026-11/after/host/round5-A-lcov.info",
+ "doc": "docs/testing/coverage-waivers-2026-11/host.md"
 }
