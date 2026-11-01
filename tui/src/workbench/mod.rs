@@ -9304,6 +9304,221 @@ mod tests {
         );
     }
 
+    /// The palette's two columns and its page keys: a horizontal step names the
+    /// row at the same visual line in the other column and never leaves the
+    /// list, and a page step moves by the page — or not at all at the top.
+    #[test]
+    fn the_palettes_columns_and_page_keys_move_only_within_the_list() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 60);
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        let rows = workbench.palette_rows(&data);
+        let commands = rows.iter().take_while(|row| !row.is_skill()).count();
+        assert!(
+            commands > 0 && commands < rows.len(),
+            "the palette lists both kinds: {commands} of {}",
+            rows.len()
+        );
+
+        // At the top of the command column: `left` has nowhere to go, `right`
+        // names the row at the same visual line in the skill column.
+        assert_eq!(workbench.palette_index, 0);
+        workbench.handle(WbEvent::Key("left".into()), &data);
+        assert_eq!(workbench.palette_index, 0, "left has no column to its left");
+        workbench.handle(WbEvent::Key("right".into()), &data);
+        assert_eq!(
+            workbench.palette_index, commands,
+            "the skill drawn on the same line"
+        );
+
+        // From the skill column back, and `right` has nowhere to go.
+        workbench.handle(WbEvent::Key("right".into()), &data);
+        assert_eq!(
+            workbench.palette_index, commands,
+            "the last column is the last"
+        );
+        workbench.handle(WbEvent::Key("left".into()), &data);
+        assert_eq!(workbench.palette_index, 0, "back on the command column");
+
+        // The page keys: one page down, one page up, and no further up.
+        let page = workbench.list_page.max(1);
+        workbench.handle(WbEvent::Key("pageDown".into()), &data);
+        assert_eq!(
+            workbench.palette_index,
+            page.min(rows.len() - 1),
+            "one page down"
+        );
+        workbench.handle(WbEvent::Key("pageUp".into()), &data);
+        assert_eq!(workbench.palette_index, 0, "one page up is back at the top");
+        workbench.handle(WbEvent::Key("pageUp".into()), &data);
+        assert_eq!(workbench.palette_index, 0, "the top is the top");
+
+        // `backspace` on an empty query changes nothing: there is nothing to
+        // shorten and the highlight is already at the top.
+        assert!(workbench.palette_query.is_empty());
+        workbench.handle(WbEvent::Key("backspace".into()), &data);
+        assert!(
+            workbench.palette_query.is_empty(),
+            "backspace invented a character"
+        );
+        // And typing then shortening leaves the highlight at the top of the new
+        // list rather than on the row the old one kept.
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        workbench.handle(WbEvent::Key("q".into()), &data);
+        assert_eq!(workbench.palette_index, 0, "a narrower list starts at its top");
+        workbench.handle(WbEvent::Key("backspace".into()), &data);
+        assert!(workbench.palette_query.is_empty(), "the query was shortened");
+    }
+
+    /// The chooser's search line: a letter narrows the list and sends the
+    /// highlight to its top, `backspace` gives the letter back, and an empty
+    /// line has nothing to give.
+    #[test]
+    fn the_choosers_search_line_takes_a_letter_and_gives_it_back() {
+        let mut data = demo::chat();
+        data.input.text = "/lang".into();
+        data.input.cursor = 6;
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.handle(WbEvent::Key("enter".into()), &data);
+        assert_eq!(
+            workbench.overlay,
+            Some(Overlay::Picker(PickerKind::Language))
+        );
+        assert!(
+            workbench.picker.query.is_empty(),
+            "the chooser opens unfiltered"
+        );
+
+        // An empty search: `backspace` still repaints, and invents no letter.
+        assert_eq!(
+            workbench.handle(WbEvent::Key("backspace".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert!(
+            workbench.picker.query.is_empty(),
+            "backspace invented a letter out of an empty search"
+        );
+
+        // A letter joins the search and the highlight returns to its top: the
+        // row it was on named an older list.
+        workbench.picker.index = 1;
+        workbench.handle(WbEvent::Key("中".into()), &data);
+        assert_eq!(workbench.picker.query, "中", "the letter never joined");
+        assert_eq!(workbench.picker.index, 0, "the highlight kept an old ordinal");
+        workbench.handle(WbEvent::Key("backspace".into()), &data);
+        assert!(
+            workbench.picker.query.is_empty(),
+            "the letter did not come back"
+        );
+    }
+
+    /// A list box answers only the keys it owns, and a panel that has read
+    /// nothing yet closes on `escape` like any other.
+    #[test]
+    fn a_list_box_ignores_what_it_does_not_own() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+
+        // `/worktree` with no rows: a key none of its rows answers is at most a
+        // repaint, and never a verb.
+        workbench.overlay = Some(Overlay::Worktree);
+        let stray = workbench.handle(WbEvent::Key("f13".into()), &data);
+        assert!(
+            stray.iter().all(|action| matches!(action, WbAction::Redraw)),
+            "the worktree box answered a key it does not own with {stray:?}"
+        );
+        assert_eq!(
+            workbench.overlay,
+            Some(Overlay::Worktree),
+            "a stray key closed the box"
+        );
+
+        // A `/git` panel before anything was read: a cursor key is a repaint on
+        // nothing, and `escape` closes it.
+        assert!(data.git.is_none(), "this rail holds a repository already");
+        workbench.overlay = Some(Overlay::Git);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("j".into()), &data),
+            vec![WbAction::Redraw],
+            "a cursor key on an empty panel did more than repaint"
+        );
+        assert_eq!(
+            workbench.overlay,
+            Some(Overlay::Git),
+            "a cursor key closed the panel"
+        );
+        workbench.handle(WbEvent::Key("escape".into()), &data);
+        assert_eq!(workbench.overlay, None, "escape left an empty panel open");
+    }
+
+    /// The preferences menu is walked with the arrows and never leaves its list:
+    /// `up` on the first row stays there.
+    #[test]
+    fn the_preferences_menu_walks_without_leaving_its_list() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.overlay = Some(Overlay::Preferences);
+        workbench.preferences_index = 1;
+        assert_eq!(
+            workbench.handle(WbEvent::Key("up".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(
+            workbench.preferences_index, 0,
+            "up did not move the highlight"
+        );
+        assert_eq!(
+            workbench.handle(WbEvent::Key("up".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(
+            workbench.preferences_index, 0,
+            "the first row is the first"
+        );
+    }
+
+    /// A width of nothing has no pane to split: the body's own cell count is
+    /// what the split is computed from, and a zero body asks for nothing.
+    #[test]
+    fn a_split_body_with_no_cells_has_no_list_width() {
+        let data = demo::chat();
+        let (workbench, _rows) = frame(&data, 120, 38);
+        assert_eq!(
+            workbench.git_list_width(0),
+            0,
+            "a body with no cells still named a pane"
+        );
+        // And a body with cells keeps both panes: neither can be dragged shut.
+        let wide = workbench.git_list_width(80);
+        assert!(
+            wide > 0 && wide < 80,
+            "a split body of 80 cells gave the list {wide}"
+        );
+    }
+
+    /// An offset that lands inside a character is pulled back to the character
+    /// before it; one past the end is the end. A caret in the middle of a wide
+    /// glyph would otherwise split it.
+    #[test]
+    fn an_offset_inside_a_character_lands_before_it() {
+        // Two CJK glyphs, three bytes each.
+        let text = "中文";
+        for at in 0..=text.len() {
+            let floored = floor_char_boundary(text, at);
+            assert!(
+                floored <= at.min(text.len()),
+                "{at} floored forward to {floored}"
+            );
+            assert!(
+                text.is_char_boundary(floored),
+                "{at} floored to {floored}, which is inside a character"
+            );
+        }
+        assert_eq!(floor_char_boundary(text, 1), 0, "into the first glyph");
+        assert_eq!(floor_char_boundary(text, 4), 3, "into the second glyph");
+        assert_eq!(floor_char_boundary(text, 99), text.len(), "past the end");
+    }
+
     /// A copy of `data` whose draft holds `typed`, caret at the end.
     fn with_input(data: &WorkbenchData, typed: &str) -> WorkbenchData {
         let mut data = data.clone();
