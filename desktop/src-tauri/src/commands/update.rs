@@ -97,6 +97,55 @@ pub fn dispatch_update_helper(args: &[String]) -> Option<Result<(), String>> {
         _ => None,
     }
 }
+/// Run the macOS update-preparation chain end to end against a bundle in a temporary
+/// directory, with `helper` standing in for the privileged worker.
+///
+/// Re-exported through [`crate::test_support`]. See `macos::prepare_and_commit` for why the
+/// helper is a parameter, and why the caller must be a process without a parallel suite.
+#[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
+pub fn prepare_update_bundle_for_tests(
+    version: &str,
+    bytes: &[u8],
+    target: std::path::PathBuf,
+    helper: &std::path::Path,
+) -> Result<String, String> {
+    macos::prepare_and_commit(version, bytes, target, helper)
+}
+/// The same chain, prepared and then **dropped** instead of committed — the cancel path, whose
+/// behaviour is `Prepared::drop` removing the staging directory it created beside the bundle.
+#[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
+pub fn prepare_and_cancel_update_for_tests(
+    version: &str,
+    bytes: &[u8],
+    target: std::path::PathBuf,
+    helper: &std::path::Path,
+) -> Result<(), String> {
+    macos::prepare_and_drop(version, bytes, target, helper)
+}
+/// The **worker** half of the macOS install, for a process that can *be* the helper.
+///
+/// Production never calls this: `dispatch_update_helper` runs it as
+/// `--app-update-macos-worker`, which is how the app re-invokes *itself*. A test target that
+/// is to act as the worker (a `harness = false` driver, not a libtest body) dispatches the
+/// same flag to this and is then the real worker, not a stand-in for it.
+#[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
+pub fn run_update_worker_for_tests(args: &[String]) -> Result<(), String> {
+    macos::worker(args)
+}
+/// [`macos::probe`]: its 10 s deadline can only be *expired* by a candidate that outlives it,
+/// so the arm needs a process without a few hundred parallel libtest cases stalling its own
+/// process creation.
+#[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
+pub fn probe_update_candidate_for_tests(path: &std::path::Path) -> Result<(), String> {
+    macos::probe(path)
+}
+/// `macos::confirm` with the installed bundle's path injected: production reads that path from
+/// `current_exe()`, which a test binary is never inside, so the step that removes a confirmed
+/// install's staging directory would otherwise be unreachable.
+#[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
+pub fn confirm_update_for_tests(target: &std::path::Path, id: &str) -> Result<(), String> {
+    macos::confirm_at(target, id)
+}
 #[cfg(not(target_os = "windows"))]
 fn helper_result(result: Result<(), String>) -> Result<(), String> {
     if let Err(error) = &result {

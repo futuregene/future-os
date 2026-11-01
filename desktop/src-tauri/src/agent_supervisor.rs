@@ -461,10 +461,33 @@ mod tests {
 
     /// The recovery status is the same status: it never replaces a service it
     /// cannot own, so a poll through it cannot disagree with the plain poll.
+    // The guards below serialize *fixtures* (the shared endpoint, the HOME root
+    // and the canonical mock), not data this test reads: the awaits between them
+    // are the two polls under test, and nothing they call can wait on a lock this
+    // test holds. `commands::agent`'s fixtures are allowed the same way.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn the_recovery_poll_reports_the_same_phase_as_the_plain_poll() {
-        // Both polls compare the same service, not a sibling fixture changing
-        // readiness or shutdown state between two reads of global state.
+        // Both polls compare the same service, so the whole test pins *which*
+        // service they are polling. Two reads of process-global state only agree
+        // if nothing moves between them, and both lock families below are
+        // needed because the endpoint is shared by two independent fixtures:
+        //
+        // * `mock_agent_lock` (the scripted-command mock, `MOCK_SER`) is what
+        //   every `ensure_mock_agent` / `script_mock_agent` caller holds, and
+        //   those calls re-point `FUTURE_AGENT_GRPC_ADDR` at *that* server and
+        //   `reset_test_connection()`. Measured 2026-11-01: running this test
+        //   beside `commands::agent::tests::
+        //   agent_status_requires_the_running_agent_version_to_match` — which
+        //   scripts a `"version":"older"` readiness answer — turned 2 of 25
+        //   rounds red with `left: "incompatible" (ready)`, because the second
+        //   poll's fresh handshake landed on the sibling's incompatible script.
+        //   That sibling locks `MOCK_SER`, not `MOCK_LOCK`, so holding only the
+        //   canonical fixture's lock did not exclude it.
+        // * `mock_agent` (`MOCK_LOCK`) then owns the canonical server's script.
+        //   Order is the documented one: scripted-command mock, then HOME, then
+        //   the canonical mock.
+        let _shared_endpoint = crate::commands::agent_mock::mock_agent_lock();
         let _home = crate::auth_store::test_support::HomeGuard::new("supervision-recovery-poll");
         let _mock = crate::agent_bridge::test_support::mock_agent();
         let app = tauri::test::mock_builder()

@@ -758,4 +758,164 @@ mod tests {
 
         drop(op);
     }
+
+    /// Writes the pointer + record a crashed worker would leave behind, without going through
+    /// `Operation`, so a case can choose a stage/outcome pair `Operation` can no longer reach
+    /// directly. Returns the operation directory.
+    fn seed(stage: &str, outcome: Option<&str>, target: Option<&str>) -> PathBuf {
+        let id = "update-seeded";
+        let directory = root().join(id);
+        std::fs::create_dir_all(&directory).unwrap();
+        let record = serde_json::json!({
+            "formatVersion": 1,
+            "operationId": id,
+            "fromVersion": "old",
+            "targetVersion": target,
+            "stage": stage,
+            "outcome": outcome,
+            "diagnostic": null,
+            "restartSafe": false,
+        });
+        std::fs::write(directory.join("result.json"), record.to_string()).unwrap();
+        std::fs::write(root().join("latest.json"), format!("\"{id}\"")).unwrap();
+        directory
+    }
+
+    /// A recovery directory the process cannot write into (a locked-down backup, a
+    /// read-only mount) leaves the outcome *undecided*. Deciding anyway would report a
+    /// running installation as interrupted — or as a safe download — on the strength of a
+    /// permission error.
+    #[cfg(unix)]
+    #[test]
+    fn latest_hands_back_an_undecided_record_when_the_observer_lock_is_unwritable() {
+        use std::os::unix::fs::PermissionsExt;
+        let _home = crate::auth_store::test_support::HomeGuard::new("update-journal-observer-perm");
+        let _root = CaseRoot::bind();
+        let directory = seed("installing", None, Some("new"));
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let record = latest()
+            .expect("a record that cannot be inspected is still reported")
+            .expect("the pointer is intact");
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            record.outcome, None,
+            "the record stays undecided when its observer lock cannot be examined"
+        );
+        let persisted: Record =
+            serde_json::from_slice(&std::fs::read(directory.join("result.json")).unwrap()).unwrap();
+        assert_eq!(persisted.outcome, None, "and nothing was written behind it");
+    }
+
+    /// Every failure *other* than "someone else holds it" is an error, not a verdict: the
+    /// record is not silently handed back as if it had been inspected.
+    #[test]
+    fn latest_refuses_an_observer_lock_that_fails_for_an_unexpected_reason() {
+        let _home =
+            crate::auth_store::test_support::HomeGuard::new("update-journal-observer-eisdir");
+        let _root = CaseRoot::bind();
+        let directory = seed("installing", None, Some("new"));
+        std::fs::create_dir(directory.join("observer.lock")).unwrap();
+        assert!(
+            latest().is_err(),
+            "an unopenable observer lock is reported, not treated as undecidable"
+        );
+    }
+
+    /// A record interrupted *after* shutdown began must not be reclassified as a safe
+    /// download: the program files may already be half replaced, so it is `interrupted` and
+    /// explicitly not restart-safe.
+    #[test]
+    fn a_record_interrupted_after_shutdown_is_not_reclassified_as_a_safe_download() {
+        let _home =
+            crate::auth_store::test_support::HomeGuard::new("update-journal-interrupted-stage");
+        let _root = CaseRoot::bind();
+        let directory = seed("installing", None, Some("new"));
+        let record = latest().unwrap().expect("the record is present");
+        assert_eq!(record.outcome.as_deref(), Some("interrupted"));
+        assert!(!record.restart_safe, "an interrupted install is never safe");
+        assert!(record
+            .diagnostic
+            .as_deref()
+            .unwrap()
+            .contains("interrupted after shutdown began"));
+        let persisted: Record =
+            serde_json::from_slice(&std::fs::read(directory.join("result.json")).unwrap()).unwrap();
+        assert_eq!(
+            persisted.outcome.as_deref(),
+            Some("interrupted"),
+            "the verdict is persisted, not only returned"
+        );
+    }
+
+    /// Startup confirmation is a transaction like any other: while another one holds the
+    /// lease this process steps aside and confirms nothing, rather than racing the writer.
+    #[test]
+    fn confirm_startup_steps_aside_while_another_transaction_holds_the_lease() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("update-journal-confirm-busy");
+        let _root = CaseRoot::bind();
+        let directory = seed("installing", None, Some("new"));
+        let lease = transaction_lock().unwrap();
+        lease.lock_exclusive().unwrap();
+        confirm_startup("new").expect("a busy lease is not an error");
+        lease.unlock().unwrap();
+        let record: Record =
+            serde_json::from_slice(&std::fs::read(directory.join("result.json")).unwrap()).unwrap();
+        assert_eq!(
+            record.outcome, None,
+            "a confirmation that could not take the lease wrote nothing"
+        );
+    }
+
+    /// A live observer — the process that is still holding this operation's `observer.lock` — is
+    /// not a confirmation target: the startup path steps aside instead of writing the record
+    /// another process is working on.
+    #[test]
+    fn confirm_startup_steps_aside_while_an_observer_holds_the_operation() {
+        let _home =
+            crate::auth_store::test_support::HomeGuard::new("update-journal-confirm-observer");
+        let _root = CaseRoot::bind();
+        let directory = seed("installing", None, Some("new"));
+        let observer = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(directory.join("observer.lock"))
+            .unwrap();
+        observer.lock_exclusive().unwrap();
+        confirm_startup("new").expect("a live observer is not an error");
+        observer.unlock().unwrap();
+        let record: Record =
+            serde_json::from_slice(&std::fs::read(directory.join("result.json")).unwrap()).unwrap();
+        assert_eq!(
+            record.outcome, None,
+            "the confirmation of an operation someone else is watching was skipped"
+        );
+    }
+
+    /// The confirmation itself, on the platforms whose `validate_startup` is a no-op: a record
+    /// waiting for validation of *this* version becomes `installed` and leaves
+    /// `pending-validation` behind. (`linux` instead re-reads the installed DEB through
+    /// `dpkg`, which no unit fixture can provide.)
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn confirm_startup_records_the_new_version_once_the_lease_is_free() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("update-journal-confirm");
+        let _root = CaseRoot::bind();
+        let directory = seed("installing", None, Some("new"));
+        confirm_startup("new").unwrap();
+        let record: Record =
+            serde_json::from_slice(&std::fs::read(directory.join("result.json")).unwrap()).unwrap();
+        assert_eq!(record.outcome.as_deref(), Some("installed"));
+        assert_eq!(record.stage, "finished");
+        assert_eq!(
+            record.diagnostic, None,
+            "a confirmed install clears the diagnostic"
+        );
+        // A second confirmation is not a second transaction: same record, no error.
+        confirm_startup("new").unwrap();
+        let again: Record =
+            serde_json::from_slice(&std::fs::read(directory.join("result.json")).unwrap()).unwrap();
+        assert_eq!(again.outcome.as_deref(), Some("installed"));
+    }
 }

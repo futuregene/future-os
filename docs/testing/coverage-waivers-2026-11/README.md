@@ -17,8 +17,11 @@
 | [tui.md](tui.md) | tui（rust, llvm-cov） | 2 | `tui/src/workbench/live.rs` 的两处 | 见该文件头部 |
 | [cli.md](cli.md) | cli（rust, llvm-cov） | 53（16 行登记 + 79 行一类关闭符） | `relay/`（cli、server、room 的 HTTP 与注册表）、`prompt` 的行回退与 OS 失败臂、`commands/remote_peers` 的 add/list/rename、`commands/remote` 的报告与面板臂、`headless/agent` 的 `supervise` | **266**（49 行登记、130 行工作项、8 行待产品决定，均不是豁免）；另见 [cli-safari-gate-flake.md](cli-safari-gate-flake.md) |
 | [mobile.md](mobile.md) | mobile（jest） | 8 | `mobile/src` | 见该文件头部 |
+| [tauri.md](tauri.md) | tauri（rust, llvm-cov，`desktop/src-tauri` 的 lib + driver 两条腿） | 6（3 `T1` + 2 `T4` + 1 `OPEN`） | `src/commands/update_macos.rs`、`update_process.rs`；其余文件的账目见文件内 §1/§4 | **819**（lane 总数；已登记 5 条覆盖的是 9 行中的 5 行，`update_journal` 41 行是工作项不是豁免） |
 
 `mobile.md` 与 `tui.md` 的权威数字在各自文件头部，本索引不复述——复述过的数字迟早会不一致。
+
+`tauri.md` 的 `DA:0` 总数同样只在该文件头部与 §1 维护；本表那一格是 2026-11-01 的快照。
 
 ## 2026-11 web lane 最终口径（结案）
 
