@@ -944,7 +944,7 @@ const SCRIPT: &str = r##"
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{AgentMessage, ContentBlock};
+    use crate::types::{AgentMessage, ContentBlock, ImageUrlData};
 
     fn user(text: &str) -> AgentMessage {
         AgentMessage {
@@ -1245,6 +1245,255 @@ mod tests {
         let html = render(&[message]);
         assert!(html.contains("report.pdf"), "{html}");
         assert!(html.contains("chip-kind"), "{html}");
+    }
+
+    #[test]
+    fn a_picture_without_a_source_leaves_the_page_alone() {
+        // A provider may echo an image block with no URL, or with one that is
+        // only whitespace; neither is a figure.
+        let missing = AgentMessage {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Image {
+                image_url: ImageUrlData { url: None },
+            }],
+            ..Default::default()
+        };
+        let blank = AgentMessage {
+            role: "user".to_string(),
+            content: vec![ContentBlock::image("   ")],
+            ..Default::default()
+        };
+        let html = render(&[missing, blank]);
+        assert!(!html.contains("<img"), "{html}");
+        assert!(!html.contains("<figure"), "{html}");
+        assert_eq!(html.matches("turn user").count(), 2, "{html}");
+    }
+
+    #[test]
+    fn a_remote_picture_becomes_a_link_and_a_local_one_a_chip() {
+        let messages = vec![
+            AgentMessage {
+                role: "user".to_string(),
+                content: vec![ContentBlock::image("https://example.com/a.png")],
+                ..Default::default()
+            },
+            AgentMessage {
+                role: "user".to_string(),
+                content: vec![ContentBlock::image("http://example.com/b.png")],
+                ..Default::default()
+            },
+            AgentMessage {
+                role: "user".to_string(),
+                content: vec![ContentBlock::image("/var/fixtures/pic.png")],
+                ..Default::default()
+            },
+        ];
+        let html = render(&messages);
+        assert!(
+            html.contains(
+                "<a href=\"https://example.com/a.png\" rel=\"noreferrer\">https://example.com/a.png</a>"
+            ),
+            "{html}"
+        );
+        assert!(html.contains("href=\"http://example.com/b.png\""), "{html}");
+        // An export opened offline must not fetch anything by itself.
+        assert!(!html.contains("<img src=\"http"), "{html}");
+        assert!(
+            html.contains("<span class=\"chip-kind\">image</span>/var/fixtures/pic.png"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_picture_inside_an_answer_is_embedded_in_its_card() {
+        let message = AgentMessage {
+            role: "assistant".to_string(),
+            content: vec![
+                ContentBlock::text("here it is:"),
+                ContentBlock::image("data:image/png;base64,BBBB"),
+            ],
+            ..Default::default()
+        };
+        let html = render(&[user("show me"), message]);
+        assert!(
+            html.contains("<img src=\"data:image/png;base64,BBBB\""),
+            "{html}"
+        );
+        assert_eq!(html.matches("turn assistant").count(), 1, "{html}");
+    }
+
+    #[test]
+    fn a_blank_block_renders_nothing_at_all() {
+        // Guards on both the user and the assistant path drop a whitespace-only
+        // text block instead of painting an empty paragraph.
+        let messages = vec![
+            AgentMessage {
+                role: "user".to_string(),
+                content: vec![ContentBlock::text("  \n ")],
+                ..Default::default()
+            },
+            AgentMessage {
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::text("   "),
+                    ContentBlock::reasoning("   ", Default::default()),
+                ],
+                ..Default::default()
+            },
+        ];
+        let html = render(&messages);
+        // No markdown block and no folded thinking panel were opened.
+        assert!(!html.contains("<div class=\"md\">"), "{html}");
+        assert!(!html.contains("fold thinking"), "{html}");
+        assert!(html.contains("turn user"), "{html}");
+    }
+
+    #[test]
+    fn a_user_turn_keeps_only_prose_and_pictures() {
+        // A prompt that also carries a tool result or a reasoning block (an
+        // imported transcript) renders as a question, not as tool chrome.
+        let message = AgentMessage {
+            role: "user".to_string(),
+            content: vec![
+                ContentBlock::reasoning("internal note", Default::default()),
+                ContentBlock::text("what is in a.rs?"),
+                ContentBlock::tool_result("c9", "leaked tool body", false),
+            ],
+            ..Default::default()
+        };
+        let html = render(&[message]);
+        assert!(html.contains("what is in a.rs?"), "{html}");
+        assert!(!html.contains("internal note"), "{html}");
+        assert!(!html.contains("leaked tool body"), "{html}");
+        assert!(!html.contains("fold tool"), "{html}");
+    }
+
+    #[test]
+    fn tool_arguments_given_as_a_json_string_still_name_their_target() {
+        // Some providers echo the raw argument text instead of an object.
+        let message = AgentMessage {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::ToolCall {
+                id: "c1".to_string(),
+                name: "shell".to_string(),
+                args: Value::String(r#"{"command":"cargo test"}"#.to_string()),
+                provider_metadata: Default::default(),
+            }],
+            ..Default::default()
+        };
+        let html = render(&[message]);
+        assert!(
+            html.contains("<span class=\"tool-hint\">cargo test</span>"),
+            "{html}"
+        );
+        // The input panel shows the parsed object, not the raw JSON text.
+        assert!(
+            html.contains("&quot;command&quot;: &quot;cargo test&quot;"),
+            "{html}"
+        );
+        assert!(!html.contains(r#"{\&quot;command\&quot;"#), "{html}");
+    }
+
+    #[test]
+    fn string_arguments_that_are_not_json_are_shown_verbatim() {
+        let message = AgentMessage {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::ToolCall {
+                id: "c1".to_string(),
+                name: "shell".to_string(),
+                args: Value::String("half a command".to_string()),
+                provider_metadata: Default::default(),
+            }],
+            ..Default::default()
+        };
+        let html = render(&[message]);
+        assert!(html.contains("half a command"), "{html}");
+        // No key to name the target with, so the summary carries no hint (the
+        // stylesheet's `.tool-hint` rule is not a rendered hint).
+        assert!(!html.contains("<span class=\"tool-hint\">"), "{html}");
+    }
+
+    #[test]
+    fn non_object_arguments_have_no_hint_but_still_render() {
+        for args in [serde_json::json!([1, 2, 3]), serde_json::json!(7)] {
+            let message = AgentMessage {
+                role: "assistant".to_string(),
+                content: vec![tool_call("c1", "shell", args.clone())],
+                ..Default::default()
+            };
+            let html = render(&[message]);
+            assert!(!html.contains("<span class=\"tool-hint\">"), "{args} {html}");
+            let expected = serde_json::to_string_pretty(&args).expect("pretty prints");
+            assert!(html.contains(&escape_html(&expected)), "{args} {html}");
+        }
+    }
+
+    #[test]
+    fn a_long_argument_is_folded_to_one_truncated_line() {
+        let command = format!("echo {}\nsecond line", "y".repeat(120));
+        let message = AgentMessage {
+            role: "assistant".to_string(),
+            content: vec![tool_call("c1", "shell", serde_json::json!({"command": command}))],
+            ..Default::default()
+        };
+        let html = render(&[message]);
+        let hint = html
+            .split("<span class=\"tool-hint\">")
+            .nth(1)
+            .and_then(|rest| rest.split("</span>").next())
+            .expect("the hint is rendered");
+        assert!(hint.ends_with('…'), "{hint}");
+        assert_eq!(hint.chars().count(), 97, "{hint}");
+        assert!(!hint.contains('\n'), "{hint}");
+        // The input panel still carries the whole argument.
+        assert!(html.contains(&"y".repeat(120)), "{html}");
+    }
+
+    #[test]
+    fn an_orphan_error_result_is_marked_as_failed() {
+        let html = render(&[tool_result("gone", "exit 2", true)]);
+        assert!(html.contains("fold tool error"), "{html}");
+        assert!(
+            html.contains("<span class=\"status\">error</span>"),
+            "{html}"
+        );
+        assert!(html.contains("exit 2"), "{html}");
+    }
+
+    #[test]
+    fn a_result_with_no_output_says_so() {
+        let html = render(&[tool_result("gone", "  \n ", false)]);
+        assert!(
+            html.contains("<p class=\"muted\">No output recorded.</p>"),
+            "{html}"
+        );
+        assert!(!html.contains("block out"), "{html}");
+    }
+
+    #[test]
+    fn a_picture_attachment_is_not_repeated_as_a_chip() {
+        let mut metadata = serde_json::Map::new();
+        metadata.insert(
+            "attachments".to_string(),
+            serde_json::json!([
+                {"kind": "image", "path": "/tmp/diagram.png", "name": "diagram.png"},
+                {"kind": "file", "path": "/tmp/report.pdf"}
+            ]),
+        );
+        let message = AgentMessage {
+            role: "user".to_string(),
+            content: vec![
+                ContentBlock::text("see both"),
+                ContentBlock::image("data:image/png;base64,CCCC"),
+            ],
+            metadata: Some(metadata),
+            ..Default::default()
+        };
+        let html = render(&[message]);
+        // The picture is already a figure on the page; the chip list keeps only
+        // what has no other rendering, and falls back to the file name.
+        assert!(!html.contains("diagram.png"), "{html}");
+        assert!(html.contains(">file</span>report.pdf</span>"), "{html}");
     }
 
     #[test]
