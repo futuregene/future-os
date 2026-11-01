@@ -694,3 +694,130 @@ async fn an_unknown_action_is_a_usage_error() {
     assert!(stderr.contains("Unknown argument: poke"), "{stderr}");
     assert!(stderr.contains("future remote peers"), "{stderr}");
 }
+
+// -- the book on disk -------------------------------------------------------
+
+/// Every way the pairing file can be wrong is refused with the file named, and
+/// none of them is repaired by overwriting it: this file holds credentials, so a
+/// command that cannot read it must not replace it.
+#[tokio::test]
+async fn an_unusable_pairing_file_is_named_and_left_alone() {
+    let _guard = crate::test_env::lock_env().await;
+    for (contents, expected) in [
+        ("{ not json", "is not valid JSON"),
+        ("[]", "The root of"),
+        (r#"{"peers": "one"}"#, "`peers` must be an array"),
+        (r#"{"peers": ["desktop_AAAA"]}"#, "must be a JSON object"),
+        (
+            r#"{"peers": [{"pairId": "pair_ONE"}]}"#,
+            "has no `desktopId`",
+        ),
+    ] {
+        let home = Home::new();
+        home.write(BOOK_FILE, contents);
+        let (code, _, stderr) = run(&["remote", "peers"]).await;
+        assert_eq!(code, 1, "{contents}");
+        assert!(stderr.contains(expected), "{contents} → {stderr}");
+        // A pairing file that could not be read is still the only copy of those
+        // credentials: the refusal must leave it byte for byte as it was.
+        assert_eq!(home.read(BOOK_FILE), contents);
+    }
+}
+
+/// A book with no `peers` key at all is an empty book, not a broken one: an
+/// installation that has never paired anything, or a file another tool wrote.
+#[tokio::test]
+async fn a_book_without_a_peer_list_is_empty_rather_than_broken() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, "{}");
+
+    let (code, stdout, stderr) = run(&["remote", "peers"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stdout.contains("not paired with any remote desktop"),
+        "{stdout}"
+    );
+}
+
+/// Two machines that share the start of their id cannot both answer to it: the
+/// refusal names how many matched and asks for more, instead of picking one.
+#[tokio::test]
+async fn an_ambiguous_prefix_asks_for_a_longer_one() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    let mut book = book(PLATFORM_TOKEN);
+    book["peers"][1]["desktopId"] = json!("desktop_AAAACCCCDDDDEEEE");
+    home.write(BOOK_FILE, &book.to_string());
+
+    let (code, _, stderr) = run(&["remote", "peers", "rename", "aaaa", "first"]).await;
+    assert_eq!(code, 1);
+    assert!(
+        stderr.contains("`aaaa` matches 2 machines. Give a longer prefix."),
+        "{stderr}"
+    );
+    // Nothing was renamed by a selector that did not name one machine.
+    let after: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
+    assert_eq!(after["peers"][0]["name"], json!("work"));
+    assert!(after["peers"][1].get("name").is_none(), "{after}");
+
+    // The longer prefix does name one.
+    let (code, _, stderr) = run(&["remote", "peers", "rename", "aaaacccc", "second"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    let after: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
+    assert_eq!(after["peers"][1]["name"], json!("second"));
+}
+
+/// `list` is a list, so a machine given to it is a mistake worth saying out
+/// loud rather than one row silently answered.
+#[tokio::test]
+async fn list_refuses_to_be_given_a_machine() {
+    let _guard = crate::test_env::lock_env().await;
+    let _home = Home::new();
+
+    let (code, _, stderr) = run(&["remote", "peers", "list", ONE]).await;
+    assert_eq!(code, 1);
+    assert!(
+        stderr.contains("`list` takes no machine: it lists them all (drop "),
+        "{stderr}"
+    );
+    assert!(stderr.contains(ONE), "{stderr}");
+}
+
+/// A link failure is the user's only clue, so each one that has a fix names it —
+/// and a failure with no known fix keeps its own words instead of borrowing
+/// advice that does not apply.
+#[test]
+fn each_link_fault_names_what_to_do_about_it() {
+    let remote = |code: Option<&str>, message: &str| future_host::Error::Remote {
+        status: 400,
+        code: code.map(str::to_string),
+        message: message.to_string(),
+    };
+
+    let expired = describe_pairing_error(&remote(Some("PA002"), "pairing_link_expired"));
+    assert!(expired.contains("The invitation has expired"), "{expired}");
+    assert!(expired.contains("PA002"), "{expired}");
+    assert!(expired.contains("pairing_link_expired"), "{expired}");
+
+    for message in [
+        "pairing_link_malformed",
+        "pairing_link_invalid_field",
+        "pairing_link_unsupported_version",
+    ] {
+        let refused = describe_pairing_error(&remote(Some("PA002"), message));
+        assert!(
+            refused.contains("not a usable `futureos://remote/pair`"),
+            "{refused}"
+        );
+        assert!(refused.contains(message), "{refused}");
+    }
+
+    // An unknown fault is not given advice that might be wrong for it...
+    let unknown = describe_pairing_error(&remote(None, "something_else"));
+    assert!(unknown.starts_with("Pairing failed: "), "{unknown}");
+    // ...and a link fault that arrived without a support code still names the
+    // default one a person would be asked for.
+    let uncoded = describe_pairing_error(&remote(None, "pairing_link_expired"));
+    assert!(uncoded.contains("PA002"), "{uncoded}");
+}
