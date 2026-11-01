@@ -108,7 +108,7 @@ function installMockDefaults() {
   jest.mocked(LegacyFileSystem.StorageAccessFramework.createFileAsync).mockReset();
   jest.mocked(LegacyFileSystem.StorageAccessFramework.writeAsStringAsync).mockReset();
   jest.mocked(Network.getNetworkStateAsync).mockResolvedValue({ type: Network.NetworkStateType.WIFI } as never);
-  jest.mocked(File).mockImplementation((uri: string) => ({ uri, size: 3 }) as never);
+  jest.mocked(File).mockImplementation(((uri: string) => ({ uri, size: 3 })) as never);
 }
 
 beforeEach(() => {

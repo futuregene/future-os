@@ -1,7 +1,7 @@
 import { AppState, Platform } from "react-native";
 import { AppAlert as Alert } from "../../components/appAlerts";
 import * as Notifications from "expo-notifications";
-import { notifyTaskFinished, prepareTaskNotifications } from "../taskNotifications";
+import { notifyTaskFinished } from "../taskNotifications";
 import { setTaskFinishedReminders } from "../preferences";
 
 jest.mock("../../i18n", () => ({ __esModule: true, default: { t: jest.fn((key: string) => key) } }));
@@ -151,6 +151,7 @@ type MockedNotifications = {
   setNotificationHandler: jest.Mock;
   setNotificationChannelAsync: jest.Mock;
   getPermissionsAsync: jest.Mock;
+  requestPermissionsAsync: jest.Mock;
   addNotificationResponseReceivedListener: jest.Mock;
   getLastNotificationResponse: jest.Mock;
   clearLastNotificationResponse: jest.Mock;
