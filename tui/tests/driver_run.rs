@@ -81,6 +81,14 @@ impl Run {
     /// `settings`: written before the child starts, exactly as a reader's own
     /// file would be (the surface reads it on its first frame).
     fn spawn_with(addr: &str, seeded: Option<&str>) -> Self {
+        Self::spawn_sized(addr, seeded, None)
+    }
+
+    /// `size`: the window the child is handed, for a surface that lays itself
+    /// out differently at different widths — the rail is only drawn on a
+    /// terminal at least [`future_tui::workbench::layout::NARROW_WIDTH`] columns
+    /// wide, and the size a child sees is the one its own `TIOCGWINSZ` reports.
+    fn spawn_sized(addr: &str, seeded: Option<&str>, size: Option<(u16, u16)>) -> Self {
         let dir = tempfile::tempdir().expect("temp dir");
         let settings = dir.path().join("tui").join("settings.json");
         if let Some(body) = seeded {
@@ -105,6 +113,9 @@ impl Run {
         // paints on fd 1, so redirecting stdout to a file would leave the parent
         // reading an empty master (measured: a 20 s wait and no frame).
         let (master, slave) = open_pty();
+        if let Some((cols, rows)) = size {
+            set_pty_size(&slave, cols, rows);
+        }
         let out = dup_fd(&slave);
         let err = dup_fd(&slave);
         command.stdin(Stdio::from(slave));
@@ -232,6 +243,18 @@ fn open_pty() -> (OwnedFd, OwnedFd) {
         assert!(libc::fcntl(master, libc::F_SETFL, flags | libc::O_NONBLOCK) >= 0);
         (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave))
     }
+}
+
+/// Give the pty a window size before the child starts: the child reads its own
+/// with `TIOCGWINSZ`, so this is the only place a test can decide how wide the
+/// surface it is painting is.
+fn set_pty_size(slave: &OwnedFd, cols: u16, rows: u16) {
+    use std::os::fd::AsRawFd as _;
+    let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+    size.ws_col = cols;
+    size.ws_row = rows;
+    let set = unsafe { libc::ioctl(slave.as_raw_fd(), libc::TIOCSWINSZ, &mut size) };
+    assert_eq!(set, 0, "TIOCSWINSZ on the pty slave failed");
 }
 
 // ─── The one run ──────────────────────────────────────────────────────────
@@ -378,6 +401,122 @@ fn an_approval_streamed_to_a_real_terminal_rings_the_desktop() {
     run.type_bytes(b"\x18");
     let status = run.wait_exit(Duration::from_secs(10));
     assert_eq!(status.and_then(|status| status.code()), Some(0));
+    server.abort();
+    drop(runtime);
+}
+
+/// An agent that answers like [`AttachMock`] and counts how often the client
+/// re-reads its conversation list.
+struct CountingMock {
+    sessions_reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[tonic::async_trait]
+impl future_rpc::proto::future_agent_server::FutureAgent for CountingMock {
+    async fn execute_command(
+        &self,
+        request: tonic::Request<future_rpc::proto::RpcCommand>,
+    ) -> Result<tonic::Response<future_rpc::proto::RpcResponse>, tonic::Status> {
+        if request.get_ref().r#type == "list_sessions" {
+            self.sessions_reads
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        AttachMock.execute_command(request).await
+    }
+
+    type StreamEventsStream =
+        <AttachMock as future_rpc::proto::future_agent_server::FutureAgent>::StreamEventsStream;
+
+    async fn stream_events(
+        &self,
+        request: tonic::Request<future_rpc::proto::StreamRequest>,
+    ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
+        AttachMock.stream_events(request).await
+    }
+}
+
+/// The rail's list is re-read on its own clock while the rail is on screen: the
+/// ages and the streaming markers of *other* conversations have no source but
+/// `list_sessions`, and the agent pushes nothing about them, so a rail that only
+/// read at attach would show a frozen spinner and stale ages for ever.
+///
+/// Only a real terminal can show this. The rail is drawn on a window at least
+/// `layout::NARROW_WIDTH` columns wide, and the in-process driver's terminal
+/// reports 80 under a redirected stdout — every `cargo test` run — so the loop's
+/// own arm is unreachable from there. The pty is given 120 columns instead, and
+/// the reader's settings file opens the rail.
+#[test]
+fn the_rail_re_reads_its_list_on_its_own_clock() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime");
+    let reads = Arc::new(AtomicUsize::new(0));
+    let (addr, server) = runtime.block_on(async {
+        use future_rpc::proto::future_agent_server::FutureAgentServer;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let incoming = tonic::transport::server::TcpIncoming::from_listener(listener, true, None)
+            .expect("tcp incoming");
+        let server = tokio::spawn(
+            tonic::transport::Server::builder()
+                .add_service(FutureAgentServer::new(CountingMock {
+                    sessions_reads: Arc::clone(&reads),
+                }))
+                .serve_with_incoming(incoming),
+        );
+        (addr, server)
+    });
+
+    // The reader's own file, with the rail open — written before the child
+    // starts, because the surface reads it on its first frame.
+    let seeded = r#"{"sidebarVisible":true,"sidebarWidth":36}"#;
+    let mut run = Run::spawn_sized(&addr, Some(seeded), Some((120, 40)));
+    assert!(
+        run.wait_for("FUTURE OS", EXIT_TIMEOUT),
+        "the first frame never reached the terminal; the child said: {:?}",
+        run.tail()
+    );
+    // The attach reads the list once; that read is the baseline. Waiting for it
+    // rather than taking the count at the first frame is what keeps the
+    // assertion about the *clock* and not about the attach's own read landing a
+    // moment later.
+    let attached = Instant::now();
+    while reads.load(Ordering::SeqCst) == 0 && Instant::now() < attached + EXIT_TIMEOUT {
+        run.read();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let at_attach = reads.load(Ordering::SeqCst);
+    assert!(
+        at_attach > 0,
+        "the rail never read its list at all: {:?}",
+        run.tail()
+    );
+
+    // `SESSIONS_POLL` is five seconds: two intervals is proof the shift is the
+    // clock and not a retry.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while reads.load(Ordering::SeqCst) <= at_attach && Instant::now() < deadline {
+        run.read();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        reads.load(Ordering::SeqCst) > at_attach,
+        "the rail never re-read its list on its own clock ({} reads in 20 s): {:?}",
+        reads.load(Ordering::SeqCst),
+        run.tail()
+    );
+
+    run.type_bytes(b"\x18");
+    let status = run.wait_exit(Duration::from_secs(10));
+    assert_eq!(
+        status.and_then(|status| status.code()),
+        Some(0),
+        "the child did not leave cleanly"
+    );
     server.abort();
     drop(runtime);
 }
