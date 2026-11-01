@@ -1565,4 +1565,212 @@ mod tests {
             "no title is generated for a conversation that no longer exists"
         );
     }
+
+    /// The abort path's own refusal arms, each one a race the Agent can really
+    /// produce: the run vanished together with its session between the abort and
+    /// the probe, the session vanished between the probe and the queued cancel,
+    /// and a refusal that carries no message at all.
+    #[tokio::test]
+    async fn an_abort_refusal_names_the_operation_and_a_vanished_session_is_not_an_error() {
+        let _home = TestHome::new("rc-abort-refusal-arms");
+        let mock = mock_agent();
+        let mut client = connect_agent().await.expect("mock client");
+        let not_found = future_rpc::session_errors::SESSION_NOT_FOUND_CODE;
+
+        // The run is gone and so is the session it belonged to: the probe is
+        // what tells them apart, and the answer is "nothing to abort".
+        mock.push(
+            "abort",
+            Reply::Reject("run `r1` is no longer active; current run is `r9`".into()),
+        );
+        mock.push(
+            "get_state#r1",
+            Reply::RejectCode(not_found, "session not found".into()),
+        );
+        assert_eq!(
+            abort_run_on_agent(&mut client, "abort", "session-r1", Some("r1".into()))
+                .await
+                .expect("a vanished session has nothing to abort"),
+            AbortSessionOutcome::SessionMissing
+        );
+
+        // Queued when probed, and its session is gone by the time the cancel
+        // lands: the same answer instead of a failure no caller can act on.
+        mock.push(
+            "abort",
+            Reply::Reject("run `r2` is no longer active".into()),
+        );
+        mock.push(
+            "get_state#r2",
+            Reply::Data(serde_json::json!({"queuedRuns": [{"runId": "r2"}]}).to_string()),
+        );
+        mock.push(
+            "cancel_queued_run",
+            Reply::RejectCode(not_found, "session not found".into()),
+        );
+        assert_eq!(
+            abort_run_on_agent(&mut client, "abort", "session-r2", Some("r2".into()))
+                .await
+                .expect("a session that vanished mid-cancel has nothing to abort"),
+            AbortSessionOutcome::SessionMissing
+        );
+        assert_eq!(mock.requests_of("cancel_queued_run").len(), 1);
+
+        // A refusal with no message is still reported, and it names what failed
+        // rather than surfacing an empty error to the composer.
+        mock.push("abort", Reply::Reject(String::new()));
+        let error = abort_run_on_agent(&mut client, "abort", "session-r3", None)
+            .await
+            .expect_err("a refusal is reported");
+        assert_eq!(
+            error.to_string(),
+            "Future Agent rejected the abort request."
+        );
+    }
+
+    /// The state probe's refusal has the same shape: the Agent's own sentence
+    /// when it sent one, and a sentence naming the request when it did not — an
+    /// empty error must never reach the UI as an empty bubble.
+    #[tokio::test]
+    async fn a_rejected_state_probe_names_the_request_it_could_not_answer() {
+        let _home = TestHome::new("rc-state-refusal-empty");
+        let mock = mock_agent();
+        mock.push_state_for_session("sess-blank", Reply::Reject(String::new()));
+        let error = abort_session("sess-blank")
+            .await
+            .expect_err("a rejected probe is an error");
+        assert_eq!(
+            error.to_string(),
+            "Future Agent rejected the state request."
+        );
+
+        mock.push_state_for_session("sess-own", Reply::Reject("agent is loading".into()));
+        let error = abort_session("sess-own")
+            .await
+            .expect_err("a rejected probe is an error");
+        assert_eq!(error.to_string(), "agent is loading");
+    }
+
+    /// Stopping a run through another conversation's id is refused before any
+    /// Agent call: the row belongs to a different thread, and aborting it from
+    /// here would cancel another conversation's live turn.
+    #[tokio::test]
+    async fn aborting_a_run_from_the_wrong_conversation_is_refused() {
+        let home = TestHome::new("rc-abort-wrong-thread");
+        let _mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-wrong-thread"));
+        let run = seed_run(&thread.id);
+
+        let error = abort_run("some-other-thread".into(), run.id.clone())
+            .await
+            .expect_err("a run of another conversation is not aborted");
+        assert_eq!(error.to_string(), "Run does not belong to this thread.");
+        assert_eq!(
+            store::get_run(&run.id)
+                .expect("read run")
+                .expect("run")
+                .status,
+            "running",
+            "a refused abort leaves the run row as it was"
+        );
+    }
+
+    /// A titleable conversation with no Agent session cannot be named: there is
+    /// no session to ask for a title about, and inventing one would spend a model
+    /// call on something that does not exist.
+    #[tokio::test]
+    async fn a_conversation_with_no_agent_session_is_left_unnamed() {
+        let home = TestHome::new("rc-title-no-session");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        enable_title_generation("en");
+        // A conversation created without an Agent session is minted with its own
+        // title as the seed, so the only thing missing is the session itself.
+        let thread = seed_thread(&workspace.id, None);
+        assert_eq!(thread.title_seed.as_deref(), Some(thread.title.as_str()));
+        assert!(thread.agent_session_id.is_none());
+        let run = seed_run(&thread.id);
+
+        complete_and_wait(&run.id).await;
+
+        assert!(
+            mock.requests_of("generate_session_title").is_empty(),
+            "no title is generated without an Agent session"
+        );
+        assert_eq!(
+            store::get_thread(&thread.id)
+                .expect("read thread")
+                .expect("thread")
+                .title,
+            thread.title
+        );
+    }
+
+    /// Two things can change while the completion job waits for the Agent to go
+    /// idle, and both make the title it was about to write stale work: the user
+    /// sent another turn (that turn's own completion will name the
+    /// conversation), or naming was turned off in Settings.
+    #[tokio::test]
+    async fn a_title_is_dropped_when_a_turn_becomes_owed_or_naming_is_turned_off_mid_wait() {
+        let home = TestHome::new("rc-title-race-mid-wait");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        enable_title_generation("en");
+
+        // A turn becomes owed while the idle poll is in flight.
+        let owed_thread = seed_titleable_thread(&workspace.id, "sess-owed");
+        let owed_run = seed_run(&owed_thread.id);
+        let (entered, observed) = tokio::sync::oneshot::channel();
+        let (answer, data) = tokio::sync::oneshot::channel();
+        mock.push("get_state", Reply::Deferred { entered, data });
+        let task =
+            mark_run_completed_if_active(Some(&owed_run.id)).expect("a completion job runs");
+        tokio::time::timeout(std::time::Duration::from_secs(5), observed)
+            .await
+            .expect("the idle poll started")
+            .expect("the poll reports entry");
+        let _next_turn = seed_run(&owed_thread.id);
+        answer
+            .send(get_state_payload("sess-owed", false))
+            .expect("answer the idle poll");
+        task.await.expect("title task");
+        assert!(
+            mock.requests_of("generate_session_title").is_empty(),
+            "a conversation that owes a turn is not named"
+        );
+
+        // Naming is turned off while the idle poll is in flight.
+        let off_thread = seed_titleable_thread(&workspace.id, "sess-off");
+        let off_run = seed_run(&off_thread.id);
+        let (entered, observed) = tokio::sync::oneshot::channel();
+        let (answer, data) = tokio::sync::oneshot::channel();
+        mock.push("get_state", Reply::Deferred { entered, data });
+        let task = mark_run_completed_if_active(Some(&off_run.id)).expect("a completion job runs");
+        tokio::time::timeout(std::time::Duration::from_secs(5), observed)
+            .await
+            .expect("the idle poll started")
+            .expect("the poll reports entry");
+        store::update_app_settings(store::UpdateAppSettingsInput {
+            auto_title_first_turn: Some(false),
+            ..Default::default()
+        })
+        .expect("turn naming off");
+        answer
+            .send(get_state_payload("sess-off", false))
+            .expect("answer the idle poll");
+        task.await.expect("title task");
+        assert!(
+            mock.requests_of("generate_session_title").is_empty(),
+            "a setting turned off mid-wait is honoured before the model call"
+        );
+        assert_eq!(
+            store::get_thread(&off_thread.id)
+                .expect("read thread")
+                .expect("thread")
+                .title,
+            off_thread.title,
+            "the minted title is left in place"
+        );
+    }
 }
