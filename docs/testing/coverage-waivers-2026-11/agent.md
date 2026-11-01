@@ -501,6 +501,35 @@ critical path: `session/history/display_index.rs` (4), `session/history/recall.r
 through the `entry_records`/`sessions` views, which is what the sample's `sqlite3SelectDup`
 frames are compiling.
 
+### Wave 24's fix: the cache was smaller than the working set
+
+The measurements above turned a "the gate is impossible" verdict into a fixable defect, so it was
+fixed rather than re-argued. Three parts, all measured on the full suite:
+
+| change | real | user | sys | CPU-s | Δ CPU |
+|---|---:|---:|---:|---:|---:|
+| baseline (`1c114c49e`) | 375.44 | 586.49 | 5619.80 | **6206** | — |
+| `prepare_cached` in the paged readers + 17 hot sites | 303.87 | 465.02 | 5444.60 | 5909 | −4.8 % |
+| **+ statement cache 16 → 256** | **298.01** | **473.83** | **4848.24** | **5322** | **−14.2 %** |
+
+- `SELECT payload FROM entry_records` costs **26 ms to prepare and 0.2 ms to execute** (a trivial
+  table read costs 20 µs) — measured on a fresh connection, which is exactly what a new test gets.
+- rusqlite's per-connection cache holds **16** statements (`STATEMENT_CACHE_DEFAULT_CAPACITY`);
+  this crate prepares ~130 distinct ones, so the deep views were evicted between calls and
+  recompiled. `initialize_connection` now sets 256.
+- The paged readers built their SQL at runtime and used `prepare`, so every page paid a compile:
+  history recovery's 64-row loop, display paging, and the events page read are now
+  `prepare_cached` (a runtime-built string is a fine cache key).
+
+`session::history` alone went 748 → 644 CPU-s on the three paged sites before the cache resize.
+No behaviour changes: the same statements are compiled once per connection instead of once per
+call, and the suite is green at 2886 tests after each step.
+
+**Still not a 120 s suite.** The floor is now 5322 / 32 = **166 s**, against 194 s before. The
+budget question does not go away by itself; it shrinks. What the fix buys the *product* is real
+too — this is the same class of defect `.future/memory/sqlite-view-prepare-cost.md` records, and
+it was costing every real session the same 26 ms per recompile.
+
 ### A wall-time floor underneath the CPU one
 
 `sample <pid> 6` on the `session::persistence` run caught the whole sample inside **one test**
