@@ -3,11 +3,11 @@
 **Metric A** — a line counts as uncovered iff its LCOV record is `DA:<line>,0`. The
 llvm-cov *summary* percentage is not the acceptance number.
 
-**Last measurement**: `test/cov-agent` at `db0191ec3` (cut from `origin/dev-huichen@79bd2bd37`),
+**Last measurement**: `test/cov-agent` at `a5537aa30` (cut from `origin/dev-huichen@79bd2bd37`),
 Rust **1.99.1** (`rust-toolchain.toml`), macOS arm64.
 
-**Result**: `DA:0` = **1407** lines in **131** files under `agent/src` (83 014 executable,
-98.31 % per-line). This wave cleared **266** of the 1673 it started from. Of the 1416:
+**Result**: `DA:0` = **1400** lines in **131** files under `agent/src` (83 014 executable,
+98.31 % per-line). This wave cleared **273** of the 1673 it started from. Of the 1416:
 
 | state | lines |
 |---|---:|
@@ -114,7 +114,7 @@ These need tests, not classification. Ranked by size, with the mechanism already
 | `rpc/commands/settings.rs` | 12 | what is left after the 29 waived lines: `332-338` (thread-spawn failure, W3) and the per-arm refusals |
 | `rpc/session.rs` | 33 | the stop-before-recovery edge and the scheduler-pause diagnostics |
 | `tools/shell/execution.rs` | 41 | 24 of these are the waived Linux helper block; the other 17 are the exit-status edge and the timeout drain |
-| `session/content/reader_recall.rs` | 30 | `find()`'s cross-page carry tail and the derived-body arm |
+| `session/content/reader_recall.rs` | 32 | `find()`'s cross-page carry tail and the snippet arms |
 | `session/content/recovery.rs` | 38 | recovery of partially committed message drafts |
 | `agent/run_loop.rs` | 36 | tool-approval denial arms and the truncation reporter |
 | `rpc/commands/session_lifecycle.rs` | 36 | clone/fork failure arms |
