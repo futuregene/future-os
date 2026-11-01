@@ -1162,6 +1162,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_builtin_skill_bootstrap_runs_the_cli() {
+        // The assertion is about *what the probe captured*, not how long it may
+        // take: under the 3 s production budget a busy host decides this test,
+        // and the fixture's `version` reply takes milliseconds only when the
+        // scheduler gets to it. The deadline seam exists for exactly this arm.
+        let _deadline = future_host::cli_tool::ProbeDeadlineGuard::without_deadline();
         let root = tempfile::tempdir().unwrap();
         let marker = root.path().join("init-ran");
         let directory = root.path().join("bin");
@@ -1196,6 +1201,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_failing_builtin_skill_bootstrap_is_ignored() {
+        // Same seam as above: the fixture's non-zero exit is what this test
+        // asserts, and it must not be decided by a production probe deadline.
+        let _deadline = future_host::cli_tool::ProbeDeadlineGuard::without_deadline();
         let root = tempfile::tempdir().unwrap();
         let marker = root.path().join("init-ran");
         let directory = root.path().join("bin");
@@ -1226,6 +1234,10 @@ mod tests {
     fn a_cli_whose_interpreter_vanished_after_discovery_is_reported_and_skipped() {
         use std::os::unix::fs::PermissionsExt;
 
+        // `discovered.is_ok()` is an assertion about the capture, and the
+        // fixture answers in milliseconds — the production budget is not part
+        // of what this test is about.
+        let _deadline = future_host::cli_tool::ProbeDeadlineGuard::without_deadline();
         let root = tempfile::tempdir().unwrap();
         let marker = root.path().join("init-ran");
         let directory = root.path().join("bin");
