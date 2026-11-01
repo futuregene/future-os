@@ -4495,10 +4495,10 @@ mod driver_tests {
                     view.section, *section,
                     "tab {key} did not land on {section:?}"
                 );
+                let name = section_name(*section);
                 assert!(
                     view.error.is_none(),
-                    "{} could not be read in a repository: {:?}",
-                    section_name(*section),
+                    "{name} could not be read in a repository: {:?}",
                     view.error
                 );
             }
@@ -4521,7 +4521,7 @@ mod driver_tests {
         /// checkout's history: CI clones one commit deep (`actions/checkout`
         /// without `fetch-depth: 0`) and a source tarball has no repository at
         /// all, so neither is a place to measure "the second row".
-        fn repo_with_two_commits() -> tempfile::TempDir {
+        pub(super) fn repo_with_two_commits() -> tempfile::TempDir {
             let dir = tempfile::tempdir().expect("a temp directory");
             // Pinned, not `git` from `PATH`: a sibling test in this binary swaps
             // the process-global `PATH` while it runs, and a spawn in that window
@@ -4534,11 +4534,8 @@ mod driver_tests {
                     .args(args)
                     .output()
                     .expect("run git");
-                assert!(
-                    output.status.success(),
-                    "git {args:?}: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                assert!(output.status.success(), "git {args:?}: {stderr}");
             };
             git(&["init", "-q", "-b", "main"]);
             git(&["config", "user.email", "tui@example.invalid"]);
@@ -4735,10 +4732,411 @@ mod driver_tests {
         }
     }
 
+    mod menus_and_verbs {
+        use super::*;
+        use crate::workbench::preferences::{Action, Keybindings};
+        use crate::workbench::state::GitSection;
+        use crate::workbench::{picker::PickerKind, Overlay};
+
+        /// How long a background read (a repository section, a directory tree)
+        /// may take before the test calls it stuck.
+        const READ_BUDGET: Duration = Duration::from_secs(20);
+
+        /// Give the driver a binding table with `pairs` pressed in, so a test
+        /// names the verb it is testing rather than whatever chord ships today.
+        fn bind(driver: &mut Driver, pairs: &[(Action, &str)]) {
+            let mut keys = Keybindings::default();
+            for (action, chord) in pairs {
+                keys.bind(*action, chord).expect("a spare chord");
+            }
+            driver.workbench.keys = keys;
+        }
+
+        /// The preferences menu is a list of *writes*: every row it changes has
+        /// to reach `settings.json` in the same gesture, or a reader who picks a
+        /// width and loses the terminal finds it gone.
+        #[tokio::test]
+        async fn the_preferences_menu_writes_every_row_it_changes() {
+            let mut driver = Driver::attach_conversation().await;
+            bind(&mut driver, &[(Action::Preferences, "ctrl+o")]);
+            assert!(!driver.quit_key("ctrl+o").await, "the menu left by itself");
+            assert_eq!(driver.workbench.overlay, Some(Overlay::Preferences));
+
+            // `宽度` is the fourth row: `right` widens the rail and the file
+            // follows it.
+            for _ in 0..3 {
+                assert!(!driver.quit_key("down").await);
+            }
+            let was = driver.workbench.sidebar_w;
+            assert!(!driver.quit_key("right").await);
+            assert_ne!(
+                driver.workbench.sidebar_w, was,
+                "the width row did not widen the rail"
+            );
+            assert_eq!(
+                super::super::load_settings(&driver.settings_path).sidebar_width,
+                Some(driver.workbench.sidebar_w),
+                "the width the menu showed was not what the next start will read"
+            );
+
+            // `鼠标` is the two doors' shared toggle: both answers are written,
+            // and each says which state it left.
+            for _ in 0..2 {
+                assert!(!driver.quit_key("down").await);
+            }
+            let was = driver.workbench.mouse_capture;
+            assert!(!driver.quit_key("enter").await);
+            assert_ne!(
+                driver.workbench.mouse_capture, was,
+                "the mouse row did not flip the capture"
+            );
+            let off = driver.live.notice.clone().expect("the toggle said nothing");
+            assert_eq!(
+                super::super::load_settings(&driver.settings_path).mouse_capture,
+                Some(driver.workbench.mouse_capture),
+                "the toggle was not written"
+            );
+            assert!(!driver.quit_key("enter").await);
+            assert_eq!(
+                driver.workbench.mouse_capture, was,
+                "the second toggle did not put the capture back"
+            );
+            let on = driver
+                .live
+                .notice
+                .clone()
+                .expect("the second toggle was silent");
+            assert_ne!(on, off, "both directions reported the same state");
+
+            // `快捷键` opens the binding table, and `r` there writes the
+            // defaults back out.
+            for _ in 0..3 {
+                assert!(!driver.quit_key("down").await);
+            }
+            assert!(!driver.quit_key("enter").await);
+            assert_eq!(
+                driver.workbench.overlay,
+                Some(Overlay::Keybindings),
+                "the shortcuts row did not open the table"
+            );
+            assert!(!driver.quit_key("r").await);
+            assert!(
+                crate::workbench::preferences::keybindings_path(&driver.settings_path).exists(),
+                "the reset bindings were not written"
+            );
+
+            // `恢复默认` is the whole menu above it: the layout, the language and
+            // the palette that follows the terminal again, all in one gesture.
+            assert!(!driver.quit_key("escape").await);
+            assert_eq!(driver.workbench.overlay, Some(Overlay::Preferences));
+            assert!(!driver.quit_key("down").await);
+            assert!(!driver.quit_key("enter").await);
+            let written = super::super::load_settings(&driver.settings_path);
+            assert_eq!(
+                written.theme_id, None,
+                "the reset kept a palette the reader asked to forget"
+            );
+            assert_eq!(
+                driver.workbench.palette.id,
+                crate::workbench::theme::resolve(None).id,
+                "the palette did not go back to following the terminal"
+            );
+            assert_eq!(
+                written.language.as_deref(),
+                Some("system"),
+                "the reset did not put the language back to the system's"
+            );
+        }
+
+        /// `/theme` and `/lang` are pickers, and committing one is a write: the
+        /// next start paints the palette and speaks the language the reader
+        /// chose.
+        #[tokio::test]
+        async fn a_theme_and_a_language_picked_from_the_menu_are_written() {
+            let mut driver = Driver::attach_conversation().await;
+            assert!(!driver.command("/theme").await, "/theme left");
+            assert_eq!(
+                driver.workbench.overlay,
+                Some(Overlay::Picker(PickerKind::Theme))
+            );
+            // Off the current row, so the commit is a change the file can show.
+            assert!(!driver.quit_key("down").await);
+            assert!(!driver.quit_key("enter").await);
+            assert_eq!(driver.workbench.overlay, None, "the picker stayed open");
+            let theme = driver.workbench.palette.id.to_string();
+            assert_eq!(
+                driver.settings.theme_id.as_deref(),
+                Some(theme.as_str()),
+                "the committed theme was not staged for the settings file"
+            );
+            assert_eq!(
+                super::super::load_settings(&driver.settings_path)
+                    .theme_id
+                    .as_deref(),
+                Some(theme.as_str()),
+                "the theme never reached settings.json"
+            );
+
+            assert!(!driver.command("/lang").await, "/lang left");
+            assert_eq!(
+                driver.workbench.overlay,
+                Some(Overlay::Picker(PickerKind::Language))
+            );
+            assert!(!driver.quit_key("down").await);
+            assert!(!driver.quit_key("enter").await);
+            let wire = driver.workbench.language_pref.as_wire().to_string();
+            assert_eq!(
+                driver.settings.language.as_deref(),
+                Some(wire.as_str()),
+                "the picked language was not staged"
+            );
+            assert_eq!(
+                super::super::load_settings(&driver.settings_path)
+                    .language
+                    .as_deref(),
+                Some(wire.as_str()),
+                "the language never reached settings.json"
+            );
+        }
+
+        /// `/worktree` reads the repository beside the surface, `/worktree new`
+        /// creates the checkout it names, and a second one by the same name is
+        /// refused with a sentence instead of a half-created directory.
+        #[tokio::test]
+        async fn the_worktree_verbs_plan_create_and_refuse_a_second_copy() {
+            let repo = super::workspace_panel::repo_with_two_commits();
+            let mut driver = Driver::attach_conversation_in(repo.path()).await;
+            assert!(!driver.command("/worktree").await, "/worktree left");
+            assert_eq!(driver.workbench.overlay, Some(Overlay::Worktree));
+            assert!(
+                driver.live.notice.is_none(),
+                "reading a repository reported {:?}",
+                driver.live.notice
+            );
+            // The box owns the keys while it is open; the create is typed into
+            // the draft, so the reader leaves the box first.
+            assert!(!driver.quit_key("escape").await);
+            assert_eq!(driver.workbench.overlay, None);
+
+            assert!(!driver.command("/worktree new cov-branch").await);
+            let created = repo.path().join(".worktrees").join("cov-branch");
+            assert!(
+                created.is_dir(),
+                "the worktree was not created at {}: {:?}",
+                created.display(),
+                driver.live.notice
+            );
+
+            // The same name again: the second create must refuse before it runs
+            // git, and say so.
+            assert!(!driver.command("/worktree new cov-branch").await);
+            let notice = driver
+                .live
+                .notice
+                .clone()
+                .expect("a refused create said nothing");
+            assert!(
+                notice.contains("cov-branch"),
+                "the refusal does not name what it refused: {notice:?}"
+            );
+        }
+
+        /// The repository browser's verbs land on the driver: `y` copies the
+        /// row, `d` opens the working-tree review, `enter` selects a file there
+        /// and filters the log by a ref.
+        #[tokio::test]
+        async fn the_repository_verbs_are_answered_by_the_driver() {
+            let repo = super::workspace_panel::repo_with_two_commits();
+            // A working-tree change, so the review has a file to show.
+            std::fs::write(repo.path().join("a.txt"), "three\n").expect("write the change");
+            let mut driver = Driver::attach_conversation_in(repo.path()).await;
+            assert!(!driver.quit_key("ctrl+g").await);
+            assert!(
+                driver
+                    .wait_for(READ_BUDGET, |driver| driver.live.git().is_some())
+                    .await,
+                "the log never installed"
+            );
+
+            // `y` copies the selected commit's id.
+            assert!(!driver.quit_key("y").await, "copy left the panel");
+            let notice = driver.live.notice.clone().expect("a copy said nothing");
+            assert!(
+                !notice.is_empty(),
+                "the copy was reported as an empty… nothing"
+            );
+
+            // `d` opens the review of the working tree.
+            assert!(!driver.quit_key("d").await, "the review key left");
+            assert_eq!(driver.workbench.overlay, Some(Overlay::Diff));
+            let frame = driver.frame();
+            let data = driver.live.data(&frame);
+            let view = data.diff.as_ref().expect("the review opened with no view");
+            assert!(
+                !view.files.is_empty(),
+                "a modified file was not in the review: {:?}",
+                view.error
+            );
+
+            // `enter` on a file re-reads just that file's patch.
+            assert!(!driver.quit_key("enter").await);
+            let frame = driver.frame();
+            let data = driver.live.data(&frame);
+            let selected = data.diff.as_ref().expect("the review closed");
+            assert_eq!(selected.selected, 0, "the selection moved unexpectedly");
+
+            // Back in the panel: `enter` on a ref filters the log by it, and
+            // `backspace` clears the filter again.
+            assert!(!driver.quit_key("escape").await);
+            assert_eq!(driver.workbench.overlay, None);
+            assert!(!driver.quit_key("ctrl+g").await);
+            assert!(!driver.quit_key("2").await);
+            assert!(
+                driver
+                    .wait_for(READ_BUDGET, |driver| driver
+                        .live
+                        .git()
+                        .is_some_and(|view| view.section == GitSection::Refs))
+                    .await,
+                "the refs never installed"
+            );
+            assert!(!driver.quit_key("enter").await);
+            assert!(
+                driver
+                    .wait_for(READ_BUDGET, |driver| driver
+                        .live
+                        .git()
+                        .is_some_and(|view| view.filter.is_some()))
+                    .await,
+                "the ref was not used as a filter: {:?}",
+                driver.live.git().map(|view| view.filter.clone())
+            );
+            assert!(!driver.quit_key("backspace").await);
+            assert!(
+                driver
+                    .wait_for(READ_BUDGET, |driver| driver
+                        .live
+                        .git()
+                        .is_some_and(|view| view.filter.is_none()))
+                    .await,
+                "backspace did not clear the filter"
+            );
+        }
+
+        /// A worktree row is a place: `enter` moves the session there and the
+        /// panel re-reads from the new checkout.
+        #[tokio::test]
+        async fn entering_a_worktree_moves_the_session_to_it() {
+            let repo = super::workspace_panel::repo_with_two_commits();
+            let mut driver = Driver::attach_conversation_in(repo.path()).await;
+            assert!(!driver.command("/worktree new cov-move").await);
+            let created = repo.path().join(".worktrees").join("cov-move");
+            assert!(created.is_dir(), "the fixture's worktree was not created");
+
+            assert!(!driver.quit_key("ctrl+g").await);
+            assert!(
+                driver
+                    .wait_for(READ_BUDGET, |driver| driver.live.git().is_some())
+                    .await,
+                "the log never installed"
+            );
+            // The worktrees tab lists the checkout the session is in first, so
+            // the pointer moves to the created one before `enter`.
+            assert!(!driver.quit_key("5").await);
+            assert!(
+                driver
+                    .wait_for(READ_BUDGET, |driver| driver.live.git().is_some_and(
+                        |view| view.section == GitSection::Worktrees && view.rows.len() > 1
+                    ))
+                    .await,
+                "the worktrees tab never listed both checkouts: {:?}",
+                driver.live.git().map(|view| view.rows.len())
+            );
+            assert!(!driver.quit_key("down").await);
+            assert!(!driver.quit_key("enter").await);
+            let seen = driver.seen.lock().expect("seen").clone();
+            assert!(
+                seen.iter().any(|kind| kind == "set_cwd"),
+                "entering a worktree did not move the session: {seen:?}"
+            );
+            assert_eq!(driver.workbench.overlay, Some(Overlay::Git));
+        }
+
+        /// A file row opens the preview box, and a key for an attachment that
+        /// is not there is a no-op rather than an error: the surface has nothing
+        /// to show and nothing to say.
+        #[tokio::test]
+        async fn a_file_row_opens_the_preview_and_an_absent_attachment_is_quiet() {
+            let dir = tempfile::tempdir().expect("a temp directory");
+            std::fs::write(dir.path().join("readme.md"), "# hi\n").expect("write the file");
+            let mut driver = Driver::attach_conversation_in(dir.path()).await;
+            // The workspace listing starts with the session and lands on a tick,
+            // which is why the box is opened after it: `/files` re-reads the
+            // tree it already has, and a box opened on the empty default would
+            // be waiting for a root it never learned.
+            let deadline = tokio::time::Instant::now() + READ_BUDGET;
+            loop {
+                let frame = driver.frame();
+                if !driver.live.data(&frame).tree.is_empty() {
+                    break;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "the workspace tree never arrived"
+                );
+                // A tick is what polls the read, and a pump shorter than one
+                // tick would return before it fires.
+                let _ = driver.pump(Duration::from_millis(300)).await;
+            }
+            assert!(!driver.command("/files").await, "/files left");
+            assert_eq!(driver.workbench.overlay, Some(Overlay::Files));
+            let _ = driver.pump(Duration::from_millis(300)).await;
+            assert!(!driver.quit_key("enter").await);
+            assert_eq!(
+                driver.workbench.overlay,
+                Some(Overlay::FilePreview),
+                "a file row did not open the box"
+            );
+
+            // Nothing attached: the key asks the adapter for an attachment the
+            // session does not have, and the surface stays as it was.
+            let mut driver = Driver::attach_conversation().await;
+            bind(&mut driver, &[(Action::PreviewAttachment, "ctrl+o")]);
+            assert!(!driver.quit_key("ctrl+o").await);
+            assert_eq!(
+                driver.workbench.overlay, None,
+                "an absent attachment opened a box"
+            );
+        }
+
+        /// The helper that waits for an effect is honest about the other answer:
+        /// a budget that runs out reports "no", it does not claim the effect
+        /// arrived.
+        #[tokio::test]
+        async fn a_budget_that_runs_out_reports_that_it_did_not_arrive() {
+            let mut driver = Driver::attach_conversation().await;
+            assert!(
+                !driver.wait_for(Duration::ZERO, |_| false).await,
+                "a wait that never saw its effect reported success"
+            );
+            assert!(
+                driver.wait_for(Duration::ZERO, |_| true).await,
+                "a condition that already holds was not read at once"
+            );
+        }
+    }
+
     mod image_paint {
         use super::*;
         use crate::terminal_image::{CapabilitiesGuard, ImageProtocol};
         use crate::workbench::{demo, Overlay};
+
+        /// The first 120 bytes of a capture: enough to see which escape sequence
+        /// was written, without printing a picture into a failure message.
+        fn head(painted: &str) -> &str {
+            let end = painted.len().min(120);
+            &painted[..end]
+        }
 
         /// What a frame does with a picture on screen: the terminal is asked to
         /// place it, asked again only when the frame disturbed the cells it
@@ -4773,10 +5171,10 @@ mod driver_tests {
             crate::terminal::capture::start();
             super::super::paint_images(&mut terminal, &mut workbench, &all_rows);
             let placed = crate::terminal::capture::take();
+            let shown = head(&placed);
             assert!(
                 placed.contains("\x1b_Ga=T"),
-                "the frame did not transmit the picture's pixels: {:?}",
-                &placed[..placed.len().min(120)]
+                "the frame did not transmit the picture's pixels: {shown:?}"
             );
             assert!(
                 !workbench.painted_images.ids.is_empty(),
@@ -4789,15 +5187,14 @@ mod driver_tests {
             crate::terminal::capture::start();
             super::super::paint_images(&mut terminal, &mut workbench, &[]);
             let untouched = crate::terminal::capture::take();
+            let shown = head(&untouched);
             assert!(
                 !untouched.contains("a=T"),
-                "an untouched picture had its pixels transmitted again: {:?}",
-                &untouched[..untouched.len().min(120)]
+                "an untouched picture had its pixels transmitted again: {shown:?}"
             );
             assert!(
                 untouched.contains("a=p"),
-                "the placement was dropped from an otherwise unchanged frame: {:?}",
-                &untouched[..untouched.len().min(120)]
+                "the placement was dropped from an otherwise unchanged frame: {shown:?}"
             );
 
             // The box closes: what was placed is deleted rather than left on top
@@ -4811,10 +5208,10 @@ mod driver_tests {
             crate::terminal::capture::start();
             super::super::paint_images(&mut terminal, &mut workbench, &[]);
             let cleared = crate::terminal::capture::take();
+            let shown = head(&cleared);
             assert!(
                 cleared.contains("a=d"),
-                "the picture was not deleted when its box closed: {:?}",
-                &cleared[..cleared.len().min(120)]
+                "the picture was not deleted when its box closed: {shown:?}"
             );
             assert!(
                 workbench.painted_images.ids.is_empty(),
@@ -4848,10 +5245,10 @@ mod driver_tests {
             crate::terminal::capture::start();
             super::super::paint_images(&mut terminal, &mut workbench, &[usize::from(request.y)]);
             let placed = crate::terminal::capture::take();
+            let shown = head(&placed);
             assert!(
                 placed.contains("1337;File="),
-                "an iTerm2 terminal was not asked to place the picture: {:?}",
-                &placed[..placed.len().min(120)]
+                "an iTerm2 terminal was not asked to place the picture: {shown:?}"
             );
             assert_eq!(
                 workbench.painted_images.inline_shown,
@@ -4864,10 +5261,10 @@ mod driver_tests {
             crate::terminal::capture::start();
             super::super::paint_images(&mut terminal, &mut workbench, &[]);
             let untouched = crate::terminal::capture::take();
+            let shown = head(&untouched);
             assert!(
                 !untouched.contains("1337;File="),
-                "an untouched in-line picture was transmitted again: {:?}",
-                &untouched[..untouched.len().min(120)]
+                "an untouched in-line picture was transmitted again: {shown:?}"
             );
             assert_eq!(
                 workbench.painted_images.inline_shown,
@@ -4879,10 +5276,10 @@ mod driver_tests {
             crate::terminal::capture::start();
             super::super::paint_images(&mut terminal, &mut workbench, &[usize::from(request.y)]);
             let again = crate::terminal::capture::take();
+            let shown = head(&again);
             assert!(
                 again.contains("1337;File="),
-                "a rewritten picture was not placed again: {:?}",
-                &again[..again.len().min(120)]
+                "a rewritten picture was not placed again: {shown:?}"
             );
         }
 
@@ -4905,15 +5302,14 @@ mod driver_tests {
             crate::terminal::capture::start();
             super::super::paint_images(&mut terminal, &mut workbench, &[0]);
             let painted = crate::terminal::capture::take();
+            let shown = head(&painted);
             assert!(
                 painted.contains("\x1bP0;1;0q"),
-                "the picture was not encoded as sixel: {:?}",
-                &painted[..painted.len().min(120)]
+                "the picture was not encoded as sixel: {shown:?}"
             );
             assert!(
                 painted.contains("\x1b\\"),
-                "the sixel sequence was not terminated: {:?}",
-                &painted[..painted.len().min(120)]
+                "the sixel sequence was not terminated: {shown:?}"
             );
         }
 
@@ -4934,9 +5330,10 @@ mod driver_tests {
             crate::terminal::capture::start();
             super::super::paint_images(&mut terminal, &mut workbench, &[]);
             let painted = crate::terminal::capture::take();
+            let shown = head(&painted);
             assert!(
                 painted.is_empty(),
-                "a picture-less terminal was written an image sequence: {painted:?}"
+                "a picture-less terminal was written an image sequence: {shown:?}"
             );
             assert!(
                 workbench.painted_images.ids.is_empty(),
@@ -4975,6 +5372,7 @@ mod driver_tests {
             crate::terminal::capture::start();
             super::super::paint_images(&mut terminal, &mut workbench, &[]);
             let painted = crate::terminal::capture::take();
+            let shown = head(&painted);
             assert_eq!(
                 workbench.painted_images.ids.len(),
                 crate::workbench::MAX_PAINTED_IMAGES,
@@ -4982,8 +5380,7 @@ mod driver_tests {
             );
             assert!(
                 painted.contains("a=d,d=I,i="),
-                "the evicted picture was not deleted, so it stays on screen: {:?}",
-                &painted[..painted.len().min(160)]
+                "the evicted picture was not deleted, so it stays on screen: {shown:?}"
             );
         }
     }
