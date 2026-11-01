@@ -771,6 +771,22 @@ removed from the lane's variance.**
 clusters and none of them was touched. `run.rs` is unchanged at 94 — its 94 are the same rows the
 wave-10 list names, and `1288` is now OPEN rather than waived.
 
+### Where this branch stands (read before re-using any line number here)
+
+All four passes are on this branch's tree, `ebc1bbce7`, whose base is `d1e0c8559` — the
+`origin/dev-huichen` of the moment the round started (`b7cf2931d`), later collapsed onto `main` by
+the post-merge reset. **`origin/dev-huichen` has since moved to `e1da778b3` (#1451), which lands the
+sibling tui lane's coverage work: `tui/src/workbench/mod.rs` +326, `run.rs` +1551, `live.rs` +2359,
+`tui/tests/driver_run.rs` +501, and its own `tui.md`.** This ledger's `tui-run.md` is new on this
+branch and is not on `dev` yet.
+
+Consequence: the merge into `dev-<user>` needs a rebase onto `e1da778b3` first, and **that rebase
+will move the numbers** — two lanes added large test blocks to the same two files, so `mod.rs` and
+`run.rs` line numbers shift and the sibling's cases may already close rows listed here as open.
+Every figure in this file names the pass it came from for exactly this reason: re-derive the
+counts and the *sets* (`clusters.py`, `missed_exact.py`, `waived_still_dark.py`) after the rebase
+before quoting 42 / 94 / 84 anywhere.
+
 ## How to re-measure this file
 
 ```bash
