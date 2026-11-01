@@ -12414,4 +12414,212 @@ mod tests {
             }
         }
     }
+    /// The pointer inside an overlay: the wheel is the box's own key, a drag is
+    /// the seam's own grab, and a release ends the gesture — none of them leaves
+    /// the box or reaches the transcript behind it.
+    ///
+    /// Each row asserts the surface's own state (the zoom, the pan, the seam, the
+    /// cursor), not "an action came back": a wheel that reported `Redraw` and
+    /// moved nothing is the failure this is here for.
+    #[test]
+    fn the_pointer_inside_an_overlay_is_the_boxes_own() {
+        // Over a picture the wheel is the zoom.
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::FilePreview);
+        let mut previews = demo::chat();
+        previews.preview = Some(demo::preview_image());
+        wb.render(&previews, 120, 38);
+        let before = wb.preview_zoom;
+        let actions = wb.handle(
+            WbEvent::Mouse(mouse::MouseEvent {
+                kind: mouse::MouseKind::WheelUp,
+                x: 60,
+                y: 12,
+                shift: false,
+                alt: false,
+                ctrl: false,
+            }),
+            &previews,
+        );
+        assert_ne!(
+            wb.preview_zoom, before,
+            "the wheel did not zoom the picture"
+        );
+        assert!(
+            !actions.is_empty(),
+            "a zoom that changed the frame owed a redraw"
+        );
+        // …and the other way.
+        let zoomed_in = wb.preview_zoom;
+        let _ = wb.handle(
+            WbEvent::Mouse(mouse::MouseEvent {
+                kind: mouse::MouseKind::WheelDown,
+                x: 60,
+                y: 12,
+                shift: false,
+                alt: false,
+                ctrl: false,
+            }),
+            &previews,
+        );
+        assert_ne!(wb.preview_zoom, zoomed_in, "the wheel did not zoom out");
+        assert_eq!(
+            wb.overlay,
+            Some(Overlay::FilePreview),
+            "the box closed on a wheel"
+        );
+
+        // A press, a drag and a release pan the picture by the pointer's own
+        // distance from where the hand went down.
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::FilePreview);
+        wb.render(&previews, 120, 38);
+        let press = mouse::MouseEvent {
+            kind: mouse::MouseKind::Press,
+            x: 40,
+            y: 10,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        let _ = wb.handle(WbEvent::Mouse(press), &previews);
+        let pan = wb.preview_pan;
+        let drag = mouse::MouseEvent {
+            kind: mouse::MouseKind::Drag,
+            x: 34,
+            y: 10,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        let _ = wb.handle(WbEvent::Mouse(drag), &previews);
+        assert_ne!(wb.preview_pan, pan, "a drag did not pan the picture");
+        let release = mouse::MouseEvent {
+            kind: mouse::MouseKind::Release,
+            x: 34,
+            y: 10,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        let acted = wb.handle(WbEvent::Mouse(release), &previews);
+        assert!(
+            !acted.is_empty(),
+            "a release that ended a pan owed a redraw"
+        );
+        assert!(
+            wb.preview_drag.is_none(),
+            "the drag was not ended by its release"
+        );
+        assert_eq!(wb.overlay, Some(Overlay::FilePreview));
+
+        // In the repository browser the pointer grabs the divider and the drag
+        // re-balances the panes from wherever it was taken.
+        let mut with_git = demo::chat();
+        with_git.git = Some(demo::git());
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Git);
+        wb.render(&with_git, 160, 38);
+        let (seam, seam_y) = wb
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| *id == "git.divider")
+            .map(|(rect, _)| (rect.x, rect.y))
+            .expect("the divider is a hit region of the panel");
+        let press = mouse::MouseEvent {
+            kind: mouse::MouseKind::Press,
+            x: seam,
+            y: seam_y,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        let _ = wb.handle(WbEvent::Mouse(press), &with_git);
+        assert!(wb.git_drag.is_some(), "the divider was not grabbed");
+        let percent = wb.git_split_percent;
+        let drag = mouse::MouseEvent {
+            kind: mouse::MouseKind::Drag,
+            x: seam.saturating_sub(8),
+            y: seam_y,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        let _ = wb.handle(WbEvent::Mouse(drag), &with_git);
+        assert_ne!(
+            wb.git_split_percent, percent,
+            "dragging the divider did not move it"
+        );
+        let release = mouse::MouseEvent {
+            kind: mouse::MouseKind::Release,
+            x: seam.saturating_sub(8),
+            y: seam_y,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        let acted = wb.handle(WbEvent::Mouse(release), &with_git);
+        assert!(!acted.is_empty(), "releasing the divider owed a redraw");
+        assert!(wb.git_drag.is_none(), "the drag outlived its release");
+    }
+
+    /// A click lands on the region the frame painted, not on a guess about the
+    /// layout: the header's two shortcuts open their panels, the rail's tabs move
+    /// the panel, and a close chip leaves the box it belongs to.
+    #[test]
+    fn the_header_rail_and_close_chips_are_clicked_by_the_frame_they_painted() {
+        let data = demo::chat();
+
+        // The header's `files` shortcut is a hit region of its own.
+        let mut wb = workbench();
+        let actions = click_region(&mut wb, &data, 120, 38, "header.files");
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, WbAction::OpenFiles)),
+            "the header's files shortcut did not open the panel: {actions:?}"
+        );
+
+        // The same row's `git` shortcut.
+        let mut wb = workbench();
+        let actions = click_region(&mut wb, &data, 120, 38, "header.git");
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, WbAction::OpenGit)),
+            "the header's git shortcut did not open the panel: {actions:?}"
+        );
+
+        // The rail's two tabs switch the panel.
+        for (id, want) in [
+            ("sidebar.tab.workspaces", state::PanelId::Workspaces),
+            ("sidebar.tab.recent", state::PanelId::Recent),
+        ] {
+            let mut wb = workbench();
+            wb.sidebar_visible = true;
+            let actions = click_region(&mut wb, &data, 120, 38, id);
+            assert_eq!(wb.panel, want, "the tab click did not move the panel");
+            assert!(
+                actions
+                    .iter()
+                    .any(|action| matches!(action, WbAction::SwitchPanel(panel) if *panel == want)),
+                "{id} did not ask the driver for the panel: {actions:?}"
+            );
+        }
+
+        // A box's close chip leaves it, and the box is the one that was open.
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Help);
+        wb.render(&data, 120, 38);
+        let closed = wb
+            .hits()
+            .regions()
+            .iter()
+            .map(|(_, id)| id.clone())
+            .find(|id| id.starts_with(OVERLAY_CLOSE))
+            .expect("the help box paints a close chip");
+        let _ = click_region(&mut wb, &data, 120, 38, &closed);
+        assert_eq!(wb.overlay, None, "the close chip did not leave the box");
+    }
 }
