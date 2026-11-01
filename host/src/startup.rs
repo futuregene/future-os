@@ -374,4 +374,21 @@ mod tests {
             "a failed launch stops the watchdog before it reports"
         );
     }
+
+    /// The global tracker is a `Default`: an entry point that only needs one
+    /// (the headless mode) must get the same state `new()` produces, starting
+    /// from the step every launch begins in rather than an empty one.
+    #[test]
+    fn the_default_tracker_is_a_launch_at_its_first_step() {
+        let tracker = Tracker::default();
+        let at = tracker
+            .current()
+            .expect("a default tracker is a running launch");
+        assert_eq!(at.step, "process start");
+        tracker.ready();
+        assert!(
+            tracker.current().is_none(),
+            "the default tracker is the one ready() ends"
+        );
+    }
 }
