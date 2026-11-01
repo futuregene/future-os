@@ -7,7 +7,11 @@ summary percentages (istanbul `lines.pct`, llvm-cov "Lines") are not the accepta
 `npx vitest run --coverage --coverage.reporter=lcov` on Node from `rust-toolchain.toml`'s
 neighbour (the desk's Node 24; the suite also passes on 22).
 
-**Result**: `DA:0` = **101** lines in **53** files for the lane as a whole (merge tree of
+**Result**: `DA:0` = **99** lines in **52** files for the lane as a whole (merge tree of
+wave 10, `origin/dev-huichen@c35bda6ec`). **41** of them are waived here (37 `W2` + 4 `W8`);
+the remote/settings group waived another **26** in `web-remote.md`; **32** remain — of which
+the layout group's own residue is 8 lines, **5 declared OPEN** with the fixture each needs
+(§OPEN) and 3 reachable-but-unwritten elsewhere in the lane.
 wave 9, `origin/dev-huichen@5b15afe54`). **40** of them are waived here (36 `W2` + 4 `W8`);
 the remote/settings group waived another **26** in `web-remote.md`; **35** are reachable and
 not yet written — work items, not waivers.
@@ -80,6 +84,7 @@ exists), and the falsifier. The ledger convention (`docs/testing/waiver-ledger.m
 | 38 | `desktop/src/features/agent/Composer.tsx:516` | **W2** | `dropSubmittedDraft`'s `if (!isCurrent() \|\| !editorRef.current \|\| draftKeyRef.current !== submittedDraftKey) return` | `src/features/agent/Composer.delivery.test.tsx` :: *keeps a draft typed after the send instead of restoring the refused message* |
 | 39 | `desktop/src/features/agent/Composer.tsx:573` | **W2** | `installRecommendedSkill`'s `if (!reco?.card \|\| installingSkill) return` | `src/features/agent/Composer.skillRecommend.test.tsx` :: *installs, appends the slash command and sends on 安装并使用* |
 | 40 | `desktop/src/features/agent/Composer.tsx:606` | **W2** | `dismissRecommendedSkill`'s `if (!skillRecommendation?.card) return` | `src/features/agent/Composer.skillRecommend.test.tsx` :: *sends the original draft unchanged on dismiss* |
+| 41 | `desktop/src/features/agent/Composer.tsx:249` | **W2** | `handleContextToolSelect`'s `if (toolId !== "compact" \|\| !onCompactContext \|\| compactionPending) return` | `src/features/agent/Composer.tools.test.tsx` :: *withdraws the /compact tool while a run is streaming* |
 
 ## 1. `theme.ts:229` — W2
 
@@ -313,6 +318,13 @@ condition as the guard.
 - **`RunsPanel.tsx:155`** — the only caller is `disabled={archiving || finishedCount === 0}` (`:182-184`).
 - **`TerminalPanel.tsx:239`** — `ErrorBar` is rendered only under
   `{tabs.createError ? <ErrorBar tabs={tabs} /> : null}` (`:139`).
+
+## Wave 11 (layout group's closeout) — row 41 added, five OPEN
+
+The lane's residual went **100 → 99**: `MentionEditor:449` is covered (a conversation pick
+whose `#` was edited away inserts nothing), and the context-tool guard joined the ledger as
+row 41. Five work items are declared **OPEN** with the fixture each one needs — see the table
+below the numbered rows.
 
 ## Wave 10 (layout group) — rows 38-40 added
 
@@ -647,6 +659,42 @@ guard's condition cannot be true.
 - **Positive control (stated)**: call `dismissRecommendedSkill()` from a path that does not
   check the card (e.g. an unmount cleanup) → line 606 executes.
 - **Falsifier**: a dismiss trigger while no card is on screen.
+
+## 41. `Composer.tsx:249` — W2
+
+```ts
+237:   const contextTools = useMemo<ContextToolOption[]>(() => {
+238:     if (!onCompactContext || sending || compactionPending)
+239:       return [];
+240:     return [{
+241:       id: "compact",
+```
+
+The handler's only caller is a row of that list, and the list is built under the *negation*
+of all three disjuncts: it is empty without `onCompactContext`, empty while `sending`, empty
+while `compactionPending`, and its one entry is always `id: "compact"`. So a row can only be
+selected in a state where the guard is false — and the suite already asserts the withdrawal
+(`type("/compact")` finds no row while pending).
+
+- **Pinned by** `Composer.tools.test.tsx` :: *withdraws the /compact tool while a run is
+  streaming* and *offers the /compact tool only when the session can compact, and runs it once*.
+- **Positive control (stated)**: call `handleContextToolSelect("compact")` from a pending
+  compaction (e.g. through a second entry point) → line 249 executes.
+- **Falsifier**: a context tool whose id is not `compact`, or a menu that lists rows while the
+  guard's conditions hold.
+
+## OPEN — work items this campaign could not close
+
+These are **not** waivers: each needs a fixture that does not exist yet, and the reason is
+recorded so the next session starts where this one stopped.
+
+| file:line | what is missing |
+|---|---|
+| `desktop/src/components/layout/AppShell.tsx:573-575` | The `pinCreated` callback handed to `useNewConversation`. `AppShell.test.tsx` mocks that hook wholesale (`:375-381`), so the callback never exists in any test; reaching it needs an AppShell suite that keeps the real hook — and the mock preamble it would have to reproduce is ~40 `vi.mock` blocks / ~300 lines for three lines of coverage. **Cost ruled it out for 3 lines**; the cheaper route is a product-side seam (exporting the callback, or a hook option that takes a `RefObject`), which is a design change this campaign may not make. |
+| `desktop/src/components/layout/AppShell.tsx:1790` | The remote draft flow: an open remote draft plus `activeRemotePeer`, then the chooser's "open workspace" action. Needs a `RemoteDraftTargetChooser` fixture on top of the remote-conversation setup. |
+| `desktop/src/features/vibe/VibeStage.tsx:676` | The cell's `onOpenInShell` arrow. `VibeRemoteCell`'s own mapping is covered (`VibeRemoteCell.test.tsx` :: *opens the conversation in the shell for both fork and usage*), but the arrow at this call site needs the **real** cell to invoke it: `onOpenUsage` only renders under `chrome === "full"` (the panel passes `"read"`), and `onFork` needs a persisted, forkable turn in a remote timeline fixture. |
+| `desktop/src/components/layout/hooks/useRemotePeers.ts:467` | `readNumber`'s non-object branch. The suite's "version is not an object" case does not reach it — the catalog-version gate refuses the payload earlier — so a fixture has to get a non-object past that gate first. |
+| `desktop/src/components/layout/hooks/useAppSettings.ts:55` | `adoptSettings(loadedAppSettings)`. Two attempts failed (a late-resolving load; the mount-time language sync removed) and both left the line at `DA:0`; the seam that produces "loaded, not default, not dirty" has not been found. |
 
 ## How to retire a row
 
