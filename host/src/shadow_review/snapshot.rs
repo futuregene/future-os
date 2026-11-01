@@ -737,8 +737,11 @@ mod tests {
     /// registered subscriber is interested in the callsite, so a lib test with
     /// no subscriber never runs that line at all. The test below drives a span
     /// through every hook so the fixture itself has no unexercised method.
+    /// `(message, paths)` pairs, in the order the subscriber saw them.
+    type Captured = Vec<(String, Option<u64>)>;
+
     #[derive(Clone, Default)]
-    struct CapturedEvents(std::sync::Arc<std::sync::Mutex<Vec<(String, Option<u64>)>>>);
+    struct CapturedEvents(std::sync::Arc<std::sync::Mutex<Captured>>);
 
     impl CapturedEvents {
         fn push(&self, message: String, paths: Option<u64>) {
