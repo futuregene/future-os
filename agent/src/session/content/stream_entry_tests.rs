@@ -144,3 +144,135 @@ fn header_publication_requires_the_committed_message_boundary() {
         .iter()
         .any(|entry| entry["id"] == "m"));
 }
+
+/// A tool call whose arguments arrived as an interrupted *string* keeps that
+/// shape: the published reference uses the entry-only encoding, and the entry
+/// reads back the same string instead of a reparsed object.
+#[test]
+fn streamed_string_arguments_are_published_with_the_entry_only_encoding() {
+    let (_root, store) = store();
+    let raw = r#"{"command":"printf hi"}"#;
+    let mut writer = Writer::default();
+    writer
+        .persist(
+            &store,
+            "s",
+            &[
+                event(0, "message_start", json!({"entry_id": "m"})),
+                event(1, "tool_start", json!({"entry_id":"m","phase":"input","tool_id":"t","tool_name":"shell","tc_index":0,"content_key":"m:1:tool:0","content_offset":0,"content_bytes":0,"tool_args":""})),
+                event(2, "tool_delta", json!({"entry_id":"m","tool_id":"t","tc_index":0,"content_key":"m:1:tool:0","content_offset":0,"content_bytes":raw.len(),"text":raw,"snapshot":false})),
+                event(3, "tool_input_end", json!({"entry_id":"m","tool_id":"t","tool_name":"shell","tc_index":0,"content_key":"m:1:tool:0","content_offset":raw.len(),"content_bytes":0,"content_seal":true,"tool_args":raw,"provider_metadata":{}})),
+                event(4, "message_end", json!({"entry_id":"m","complete":true})),
+            ],
+        )
+        .unwrap();
+    let message = message(
+        vec![ContentBlock::tool_call(
+            "t",
+            "shell",
+            json!(raw),
+            Default::default(),
+        )],
+        json!([null]),
+    );
+    let published = StreamEntry::from_assistant(&message, "r", 1).unwrap();
+    store.append_stream_entry("s", published).unwrap();
+
+    store
+        .db
+        .read(|db| {
+            let mut statement = db.prepare(
+                "SELECT field,encoding FROM content_references WHERE session_id='s' AND owner_kind='entry' AND owner_id='m' ORDER BY field",
+            )?;
+            let rows = statement
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(
+                rows,
+                vec![("/content/0/args".to_string(), "tool_args_string_v1".to_string())],
+                "string arguments keep their entry-only encoding"
+            );
+            Ok(())
+        })
+        .unwrap();
+
+    let entries = store.entries("s").unwrap();
+    let call = entries
+        .iter()
+        .find(|entry| entry["type"] == "assistant")
+        .unwrap_or_else(|| panic!("no assistant entry: {entries:?}"));
+    assert_eq!(
+        call["content"][0]["args"],
+        json!(raw),
+        "the interrupted string is not reparsed into an object"
+    );
+}
+
+/// A tool call whose input never sealed (the run died mid-argument) publishes
+/// from the last committed *start* body instead of a boundary, and keeps the
+/// entry-only encoding for string arguments.
+#[test]
+fn an_unsealed_tool_input_publishes_from_its_last_committed_body() {
+    let (_root, store) = store();
+    let raw = r#"{"command":"printf par"#;
+    let mut writer = Writer::default();
+    writer
+        .persist(
+            &store,
+            "s",
+            &[
+                event(0, "message_start", json!({"entry_id": "m"})),
+                event(1, "tool_start", json!({"entry_id":"m","phase":"input","tool_id":"t","tool_name":"shell","tc_index":0,"content_key":"m:1:tool:0","content_offset":0,"content_bytes":0,"tool_args":""})),
+                event(2, "tool_delta", json!({"entry_id":"m","tool_id":"t","tc_index":0,"content_key":"m:1:tool:0","content_offset":0,"content_bytes":raw.len(),"text":raw,"snapshot":false})),
+                event(3, "message_end", json!({"entry_id":"m","complete":true})),
+            ],
+        )
+        .unwrap();
+    let message = message(
+        vec![ContentBlock::tool_call(
+            "t",
+            "shell",
+            json!(raw),
+            Default::default(),
+        )],
+        json!([null]),
+    );
+    let published = StreamEntry::from_assistant(&message, "r", 1).unwrap();
+    store.append_stream_entry("s", published).unwrap();
+
+    store
+        .db
+        .read(|db| {
+            let mut statement = db.prepare(
+                "SELECT field,encoding FROM content_references WHERE session_id='s' AND owner_kind='entry' AND owner_id='m' ORDER BY field",
+            )?;
+            let rows = statement
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(
+                rows,
+                vec![("/content/0/args".to_string(), "tool_args_string_v1".to_string())],
+                "the interrupted string keeps its entry-only encoding"
+            );
+            Ok(())
+        })
+        .unwrap();
+    let entries = store.entries("s").unwrap();
+    let call = entries
+        .iter()
+        .find(|entry| entry["type"] == "assistant")
+        .unwrap_or_else(|| panic!("no assistant entry: {entries:?}"));
+    // The truncated arguments stay a *string* (they are never reparsed into an
+    // object), repaired just enough to parse.
+    let args = call["content"][0]["args"].as_str().unwrap_or_else(|| {
+        panic!(
+            "arguments must stay a string: {}",
+            call["content"][0]["args"]
+        )
+    });
+    assert!(args.starts_with(r#"{"command":"printf par"#), "{args}");
+    assert!(
+        serde_json::from_str::<Value>(args).is_ok(),
+        "the interrupted input is repaired to parseable JSON: {args}"
+    );
+}
