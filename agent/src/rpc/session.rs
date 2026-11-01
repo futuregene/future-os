@@ -7281,4 +7281,86 @@ mod tests {
             "the scheduler must continue once the store recovers"
         );
     }
+
+    /// Cancelling a queued run marks its receipt first: if the store refuses
+    /// that, the run stays queued and the client is told the store failed,
+    /// instead of the queue forgetting an input whose receipt still says queued.
+    #[test]
+    fn cancelling_a_queued_run_keeps_it_when_the_receipt_cannot_be_marked() {
+        let session = make_persistent_test_session("cancel-queued-run");
+        let ack = session
+            .scheduler
+            .accept(
+                "req-cancel",
+                Some("run-cancel"),
+                crate::runtime::BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({"message": "cancel me"}),
+            )
+            .unwrap();
+        assert_eq!(session.scheduler.queued().len(), 1);
+        // The queued input has its durable receipt — that is the row the
+        // cancellation has to mark.
+        let user: crate::session::SessionEntry = serde_json::from_value(serde_json::json!({
+            "id":"u-cancel","type":"user","role":"user",
+            "timestamp":"2026-10-26T00:00:01Z","meta":{"run_id":"run-cancel"},"content":"cancel me"
+        }))
+        .unwrap();
+        session
+            .session_manager
+            .record_queued_receipt(
+                "cancel-queued-run",
+                "req-cancel",
+                &ack,
+                "fingerprint",
+                &serde_json::json!({}),
+                &user,
+            )
+            .unwrap();
+        let store = session.session_manager.storage().unwrap().clone();
+        store
+            .db
+            .call(|db| {
+                db.execute_batch(
+                    "CREATE TRIGGER refuse_receipt_cancel BEFORE UPDATE ON queued_run_receipts \
+                     BEGIN SELECT RAISE(ABORT,'injected receipt cancel failure'); END;",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let mut session = session;
+        let error = session
+            .cancel_queued_run(
+                "run-cancel",
+                crate::runtime::QueuedCancellationReason::Cancelled,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                crate::runtime::RunQueueError::PersistenceUnavailable(_)
+            ),
+            "{error:?}"
+        );
+        assert_eq!(
+            session.scheduler.queued().len(),
+            1,
+            "the run must stay queued when its receipt could not be marked"
+        );
+        // Once the store accepts the mark, the cancellation goes through.
+        store
+            .db
+            .call(|db| {
+                db.execute_batch("DROP TRIGGER refuse_receipt_cancel")?;
+                Ok(())
+            })
+            .unwrap();
+        let cancelled = session
+            .cancel_queued_run(
+                "run-cancel",
+                crate::runtime::QueuedCancellationReason::Cancelled,
+            )
+            .unwrap();
+        assert_eq!(cancelled.run_id, "run-cancel");
+        assert!(session.scheduler.queued().is_empty());
+    }
 }
