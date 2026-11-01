@@ -289,7 +289,11 @@ fn history_search_and_recall_walk_only_the_visible_fields() {
     assert_eq!(hits[0]["entryId"], "a");
     assert_eq!(hits[0]["blockIndex"], 0);
     assert_eq!(hits[0]["kind"], "text");
-    assert_eq!(hits[0]["byteOffset"], 0);
+    let snippet = hits[0]["snippet"].as_str().unwrap();
+    assert!(
+        snippet.contains("Execution status"),
+        "the snippet comes from the summary projection: {snippet}"
+    );
     assert!(hits[0]["snippet"].as_str().unwrap().starts_with("跨页"));
 
     // A hit in the tool arguments is reported as arguments, not as text.
@@ -518,5 +522,63 @@ fn targeted_fields_read_one_block_without_loading_the_entry() {
     assert!(
         format!("{error:#}").contains("beyond the captured transcript"),
         "{error:#}"
+    );
+}
+
+/// A field bound as the *summary projection* of a shell result is paged from
+/// that projection: recall and search read the derived text (not the raw
+/// facts), while the facts stay available through their own reference.
+#[test]
+fn a_derived_summary_field_pages_from_its_projection() {
+    let (_dir, store) = store();
+    let result = future_rpc::shell_result::ShellResult {
+        command: "printf hi".into(),
+        cwd: "/w".into(),
+        duration_ms: 3,
+        status: future_rpc::shell_result::ShellStatus::Exited,
+        exit_code: Some(0),
+        is_soft_fail: false,
+        is_error: false,
+        attempts: vec![future_rpc::shell_result::ShellAttempt {
+            status: future_rpc::shell_result::ShellStatus::Exited,
+            exit_code: Some(0),
+            duration_ms: 3,
+            output: "界".repeat(30_000),
+            output_truncated: false,
+            escalated: false,
+        }],
+        approval: None,
+        note: None,
+    };
+    let summary = future_rpc::shell_result::model_summary(&result);
+    store
+        .append(
+            "s",
+            vec![json!({"id":"tool","type":"tool","role":"tool",
+                "timestamp":"2026-10-26T00:00:02Z",
+                "meta":{"run_id":"r","shell_result":serde_json::to_value(&result).unwrap()},
+                "content":[{"type":"tool_result","tool_call_id":"t","content":summary,"is_error":false}]})],
+        )
+        .unwrap();
+
+    let recalled = Snapshot::recall(&store, "s", "tool", 0, 64).unwrap();
+    assert_eq!(recalled["totalBytes"], summary.len() as i64);
+    let first = recalled["chunks"][0]["text"].as_str().unwrap();
+    assert!(
+        summary.starts_with(first),
+        "the chunk must be the summary text"
+    );
+    assert_eq!(recalled["hasMore"], true);
+    // Paging continues inside the same projection at a byte offset.
+    let offset = recalled["nextOffset"].as_i64().unwrap();
+    let rest = Snapshot::recall(&store, "s", "tool", offset, 64).unwrap();
+    assert_eq!(rest["offset"], offset);
+    // Search reads the same projection, so a phrase in the summary is found.
+    let hits = Snapshot::search(&store, "s", "Execution status", 5).unwrap();
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    let snippet = hits[0]["snippet"].as_str().unwrap();
+    assert!(
+        snippet.contains("Execution status"),
+        "the snippet comes from the summary projection: {snippet}"
     );
 }
