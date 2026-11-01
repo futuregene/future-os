@@ -290,6 +290,7 @@ impl Supervisor {
     }
 
     pub async fn handle_system_suspend(self: &Arc<Self>) {
+        self.access.note("handle_system_suspend");
         let notices = self.mobile_disconnect_notices("system_sleep");
         self.access.invalidate(|| {
             self.suspended.store(true, Ordering::Release);
@@ -311,6 +312,7 @@ impl Supervisor {
     }
 
     pub fn handle_system_resume(self: &Arc<Self>) {
+        self.access.note("handle_system_resume");
         if self.closed.load(Ordering::Acquire) {
             return;
         }
@@ -459,6 +461,7 @@ impl Supervisor {
         }
     }
     pub fn stop_with<T>(self: &Arc<Self>, cleanup: impl FnOnce() -> T) -> T {
+        self.access.note("stop_with");
         self.access.invalidate(|| {
             self.start_requested.store(false, Ordering::Release);
             self.suspended.store(false, Ordering::Release);

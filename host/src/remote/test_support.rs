@@ -43,6 +43,99 @@ pub fn init_store() {
     crate::store::initialize_app_store().expect("store init under test HOME");
 }
 
+/// Name an event in the access-epoch journal (`future_remote_server::lifecycle`).
+///
+/// The supervisor is `pub(in crate::remote)`, so a fixture outside this module
+/// records through here. A start that answers `Stopped` is always a reaction to
+/// somebody else's write, and the journal is how that somebody is named instead
+/// of guessed.
+pub fn note_access(what: &'static str) {
+    crate::remote::SUPERVISOR.access.note(what);
+}
+
+/// Which fixture holds the process globals right now.
+///
+/// The journal names the thread that moved the epoch; this names the fixture
+/// that was running at the time. Together they say whether a `Stopped` answer
+/// came from a test thread or from a task that outlived one.
+static CURRENT_FIXTURE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub fn set_current_fixture(label: &str) {
+    *CURRENT_FIXTURE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner()) = Some(label.to_string());
+}
+
+pub fn current_fixture() -> String {
+    CURRENT_FIXTURE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clone()
+        .unwrap_or_else(|| "<none>".to_string())
+}
+
+/// The supervisor state a `Stopped` answer has to be read against:
+/// `(epoch, suspended, start_requested)`.
+pub fn access_diagnostics() -> (u64, bool, bool) {
+    use std::sync::atomic::Ordering::Acquire;
+    let supervisor = &crate::remote::SUPERVISOR;
+    (
+        supervisor.access.current(),
+        supervisor.suspended.load(Acquire),
+        supervisor.start_requested.load(Acquire),
+    )
+}
+
+/// The thread that owns the active fixture scope, if any.
+///
+/// `HomeGuard` is serialized on [`crate::TEST_HOME_LOCK`], so there is at most
+/// one — and it is the whole contract a *dispatch* has to respect: the
+/// supervisor below is one process-global machine, so a test that reaches it
+/// must be the test that owns the machine. This exists because one did not
+/// (`F7`: a `Root`-based dispatch test with no guard drove `add_device` with an
+/// empty pairing book, which is `re_pair` → `unpair` → a machine-wide
+/// `stop_with`: epoch bumped and `start_requested` cleared *under another
+/// test's in-flight `start`*, whose answer was then the empty `Stopped` status).
+///
+/// The owner is a thread id, not a count: a rogue dispatch that happens to run
+/// while *some other* fixture is active is exactly the failure being prevented,
+/// so "a fixture is active" is not the property to test for.
+static FIXTURE_OWNER: std::sync::Mutex<Option<std::thread::ThreadId>> = std::sync::Mutex::new(None);
+
+pub fn enter_fixture_scope() {
+    *FIXTURE_OWNER
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner()) = Some(std::thread::current().id());
+}
+
+pub fn leave_fixture_scope() {
+    *FIXTURE_OWNER
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner()) = None;
+}
+
+/// Refuse a supervisor dispatch made outside the fixture that owns it.
+///
+/// Called from the test-only entry points a request takes into the process
+/// globals. Failing loudly here is the point: the same call against a live
+/// fixture is invisible — it stops a machine another test is starting, whose
+/// only symptom is a `Stopped` status in an unrelated test name.
+#[cfg(test)]
+pub fn assert_fixture_scope(what: &str) {
+    let owner = *FIXTURE_OWNER
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    assert_eq!(
+        owner,
+        Some(std::thread::current().id()),
+        "{what} reached the process-global remote supervisor outside the fixture that \
+         owns it. Every writer of that state is serialized on TEST_HOME_LOCK, so a \
+         dispatch without a HomeGuard can stop a machine another test is starting \
+         (measured: `pair_new_device` on an empty book is `re_pair` → `unpair` → \
+         `stop_with`). Take a `HomeGuard` for the test body."
+    );
+}
+
 /// Credentials for a pairing that exists only inside the test process.
 ///
 /// The per-pairing capability slots are keyed by `pair_id`, so this is what
@@ -2934,5 +3027,25 @@ mod tests {
             crate::remote::SUPERVISOR.state.lock().unwrap().is_empty(),
             "a panicking test leaked the bridge into every later test"
         );
+    }
+
+    /// The F7 rule, asserted where it failed: a machine-wide teardown outside a
+    /// fixture is **refused**, not performed.
+    ///
+    /// Measured mechanism (`coverage/flaky/rust/f7-host/probe3-run-4.log`): a
+    /// dispatch test with no fixture drove `add_device` on an empty pairing book,
+    /// which is `re_pair` → `unpair` → `stop_with`. That bumped the access epoch
+    /// and cleared `start_requested` *under `remote::control::tests::serving::
+    /// a_client_role_change_runs_against_the_paired_machine`'s in-flight `start`*,
+    /// whose answer became the empty `Stopped` status — 4 full-suite runs in 10,
+    /// reported against a test that had done nothing wrong.
+    ///
+    /// Falsification: delete the `assert_supervised` call from `remote::unpair`
+    /// and this test stops panicking (it asserts a refusal, and a performed
+    /// teardown is not one).
+    #[tokio::test]
+    #[should_panic(expected = "outside the fixture that owns it")]
+    async fn a_machine_wide_teardown_outside_a_fixture_is_refused() {
+        crate::remote::unpair().await.ok();
     }
 }

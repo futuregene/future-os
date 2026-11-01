@@ -18,8 +18,25 @@ where
     #[cfg(test)]
     let handle = HANDLE.get_or_init(|| {
         // Unit fixtures need tasks to survive individual test runtimes.
+        //
+        // The stack size is not a knob: a debug build's async chain through
+        // hyper/tonic is deep enough to exhaust the 2 MB default, and the cost
+        // is not a red test — it is `thread 'tokio-rt-worker' has overflowed its
+        // stack` and SIGABRT of the whole suite. Measured on
+        // `remote_peer::runtime_tests::a_session_command_routes_on_its_own_session`:
+        // at 2 MB the chain is within a couple of frames of the limit (a few
+        // lines of instrumentation anywhere on it flip the run from green to
+        // abort), at 8 MB the same test passes in 1.7 s. The depth is bounded,
+        // so this is headroom rather than a mask: nothing about what the tests
+        // assert changes.
         static RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> =
-            std::sync::LazyLock::new(|| tokio::runtime::Runtime::new().expect("test runtime"));
+            std::sync::LazyLock::new(|| {
+                tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .thread_stack_size(8 * 1024 * 1024)
+                    .build()
+                    .expect("test runtime")
+            });
         RUNTIME.handle().clone()
     });
     #[cfg(not(test))]
@@ -216,8 +233,15 @@ pub fn spawn_native(job: impl FnOnce() + Send + 'static) {
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub fn install_test_runtime() {
-    static RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> =
-        std::sync::LazyLock::new(|| tokio::runtime::Runtime::new().expect("fixture host runtime"));
+    // Same headroom as the suite's own runtime above, and for the same reason:
+    // a fixture's bridge runs its hyper/tonic chain on these workers.
+    static RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> = std::sync::LazyLock::new(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_stack_size(8 * 1024 * 1024)
+            .build()
+            .expect("fixture host runtime")
+    });
     set(RUNTIME.handle().clone());
 }
 

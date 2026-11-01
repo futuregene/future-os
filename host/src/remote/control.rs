@@ -1093,6 +1093,7 @@ pub(crate) fn read_reply(path: &Path) -> Option<Reply> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::remote::test_support::HomeGuard;
     use crate::remote::{RemoteFailureReason, RemotePhase, RemoteStatus};
     use std::time::Instant;
 
@@ -1437,8 +1438,13 @@ mod tests {
 
     /// A takeover that names no device is refused before the pointer could move
     /// anywhere — handing the machine to nobody is not an operation.
+    ///
+    /// It owns a fixture even though it only reads: `perform` answers from the
+    /// process-global supervisor, and a test that asks for the machine without
+    /// owning it reports on whatever the last fixture left behind.
     #[tokio::test]
     async fn a_takeover_without_a_device_is_refused() {
+        let _home = HomeGuard::new("control-takeover-nameless");
         let request = Request {
             op: OP_TAKEOVER.into(),
             reply: "/tmp/unused".into(),
@@ -1620,6 +1626,7 @@ mod tests {
     /// machine-wide stop.
     #[tokio::test]
     async fn a_removal_without_a_device_is_refused() {
+        let _home = HomeGuard::new("control-removal-nameless");
         let request = Request {
             op: OP_REMOVE_DEVICE.into(),
             reply: "/tmp/unused".into(),
@@ -1684,6 +1691,11 @@ mod tests {
 
     #[tokio::test]
     async fn serving_one_request_answers_it_and_removes_every_trace() {
+        // The machine, not just a directory. Without it this test answered
+        // `add_device` against whatever pairing book the last fixture left — and
+        // on an empty one that is `re_pair` → `unpair`, a machine-wide stop that
+        // landed under another test's in-flight start (F7).
+        let _home = HomeGuard::new("control-serve-one-trace");
         let root = Root::new();
         let reply_path = root.dir.path().join("answer.json");
         let path = root.write_request(

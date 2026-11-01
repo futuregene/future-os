@@ -206,10 +206,17 @@ pub mod test_support {
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());
             timing.mark("lock_wait");
+            // Names the fixture in the access-epoch journal: a start that answers
+            // `Stopped` is always a reaction to some *other* writer, and the
+            // journal has to say whose.
+            crate::remote::test_support::set_current_fixture(label);
+            crate::remote::test_support::note_access("fixture acquired");
+            crate::remote::test_support::enter_fixture_scope();
             // `HOME` and the SQLite pool are process-global. A task started by
             // an earlier test may outlive its caller runtime, so it must be
             // cancelled and observed before this fixture publishes a new path.
             cleanup();
+            crate::remote::test_support::note_access("fixture drained");
             timing.mark("pre_cleanup");
             let previous = std::env::var("HOME").ok();
             let previous_userprofile = std::env::var_os("USERPROFILE");
@@ -289,6 +296,10 @@ pub mod test_support {
             // Windows cannot unlink a database held by a connection pool.
             let _ = std::fs::remove_dir_all(&self.dir);
             self.timing.finish();
+            // The scope ends with the fixture, not with the lock: a task this
+            // fixture leaked must not be able to dispatch into the supervisor
+            // under the *next* test's name (see `assert_fixture_scope`).
+            crate::remote::test_support::leave_fixture_scope();
         }
     }
 

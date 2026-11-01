@@ -128,6 +128,11 @@ impl Supervisor {
         if self.closed.load(Ordering::Acquire) {
             return Err(crate::Error::Message("remote_server_stopped".into()));
         }
+        self.access.note(if invite_when_empty {
+            "start: entered (minting)"
+        } else {
+            "start: entered (no invitation)"
+        });
         self.spawn_revoke_cleanup();
         let epoch = self.access.current();
         let admitted = self.access.commit(epoch, || {
@@ -149,6 +154,7 @@ impl Supervisor {
             true
         });
         if admitted != Some(true) {
+            self.access.note("start_with: admission refused");
             return Ok(self.empty());
         }
         let result = self.start_once(true).await;
@@ -165,7 +171,10 @@ impl Supervisor {
         let epoch = self.access.current();
         tokio::select! {
             biased;
-            _ = self.access.cancelled(epoch) => Ok(self.empty()),
+            _ = self.access.cancelled(epoch) => {
+                self.access.note("start_once: cancelled arm answered empty");
+                Ok(self.empty())
+            }
             result = self.start_generation(replace_existing, epoch) => result,
         }
     }
@@ -178,6 +187,11 @@ impl Supervisor {
         self.executor.attach_events();
         let _start_guard = self.start_lock.lock().await;
         if !self.start_requested.load(Ordering::Acquire) || self.suspended.load(Ordering::Acquire) {
+            self.access.note(if self.suspended.load(Ordering::Acquire) {
+                "start_generation: refused under the lock (suspended)"
+            } else {
+                "start_generation: refused under the lock (stop)"
+            });
             return Ok(self.empty());
         }
         if !replace_existing {
@@ -205,6 +219,8 @@ impl Supervisor {
             Err(error) => return self.start_failure(error),
         };
         if !self.start_requested.load(Ordering::Acquire) {
+            self.access
+                .note("start_generation: stopped after establish_slots");
             return Ok(self.empty());
         }
 
@@ -250,12 +266,16 @@ impl Supervisor {
                 Err(error) => failure = Some(error),
             }
             if !self.start_requested.load(Ordering::Acquire) {
+                self.access.note("start_generation: stopped between slots");
                 return Ok(self.empty());
             }
         }
         match (started, failure) {
             (0, Some(error)) => self.start_failure(error),
-            (0, None) => Ok(self.empty()),
+            (0, None) => {
+                self.access.note("start_generation: nothing started");
+                Ok(self.empty())
+            }
             _ => {
                 // The bind result is a fact of this start, not something a later
                 // poll can reconstruct: the first status must carry it so the page
@@ -454,6 +474,7 @@ impl Supervisor {
             }
         }
         if plans.is_empty() {
+            self.access.note("establish_slots: no plans to serve");
             if self.invite_when_empty.load(Ordering::Acquire) {
                 // Nothing left to serve: mint one invitation, exactly as a
                 // single-device install always did. Replacing is right here because
