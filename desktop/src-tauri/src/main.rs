@@ -60,7 +60,7 @@ fn start_desktop() -> std::process::ExitCode {
         match futureos_lib::run() {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(error) => {
-                console::eprintln!("FutureOS: {error}");
+                tracing::error!(event = "start_desktop", error = %error,"FutureOS: {error}");
                 std::process::ExitCode::FAILURE
             }
         }

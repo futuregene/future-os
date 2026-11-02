@@ -3,7 +3,6 @@
 //! the persistence projection. Returns the assembled assistant text once the
 //! agent signals `agent_end`.
 
-use crate::console;
 use tokio::time::{sleep, timeout, Duration};
 use tonic::Code;
 
@@ -228,7 +227,11 @@ pub(super) async fn collect_agent_response(
             Err(AttachFailure::Fatal(reason)) => return Err(reason.into()),
             Err(AttachFailure::Transient(stream_error)) => {
                 reconnect_attempt = reconnect_attempt.saturating_add(1);
-                console::eprintln!(
+                if reconnect_attempt == 1 {
+                    tracing::warn!(event = "agent_stream_interrupted", run_id = canonical_run_id,
+                        last_idx, error = %stream_error, "Agent stream interrupted; reattaching");
+                }
+                tracing::debug!(event = "collect_agent_response", canonical_run_id = %canonical_run_id, last_idx = last_idx, reconnect_attempt = reconnect_attempt, error = %stream_error,
                     "FutureOS reattaching Agent run {canonical_run_id} after idx {last_idx} \
                      (attempt {reconnect_attempt}): {stream_error}"
                 );
@@ -416,7 +419,11 @@ pub(super) async fn collect_agent_response(
         };
 
         reconnect_attempt = reconnect_attempt.saturating_add(1);
-        console::eprintln!(
+        if reconnect_attempt == 1 {
+            tracing::warn!(event = "agent_stream_interrupted", run_id = canonical_run_id,
+                        last_idx, error = %stream_error, "Agent stream interrupted; reattaching");
+        }
+        tracing::debug!(event = "collect_agent_response", canonical_run_id = %canonical_run_id, last_idx = last_idx, reconnect_attempt = reconnect_attempt, error = %stream_error,
             "FutureOS reattaching Agent run {canonical_run_id} after idx {last_idx} \
              (attempt {reconnect_attempt}): {stream_error}"
         );

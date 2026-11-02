@@ -5,6 +5,14 @@ import { createRoot } from "react-dom/client";
 import { beforeEach, expect, it, vi } from "vitest";
 import { RemoteFilesPanel } from "./RemoteFilesPanel";
 
+const fusionPanel = vi.hoisted(() => ({ props: null as Record<string, unknown> | null }));
+vi.mock("../fusion/FusionDiscussionPanel", () => ({
+  FusionDiscussionPanel: (props: Record<string, unknown>) => {
+    fusionPanel.props = props;
+    return <button type="button" data-remote-fusion onClick={props.onBack as () => void}>Back to files</button>;
+  },
+}));
+
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 /**
@@ -66,11 +74,23 @@ function listing(entries: RemoteFileListing["entries"], path = "/home/studio", r
 }
 
 beforeEach(() => {
+  fusionPanel.props = null;
   previews.length = 0;
   list.mockReset().mockResolvedValue(listing([]));
   download.mockReset().mockResolvedValue("report.txt");
   preview.mockReset().mockResolvedValue({ name: "forest.png", path: "/home/me/.future/app/remote-previews/abc__forest.png" });
   save.mockReset().mockResolvedValue("/Users/me/report.txt");
+});
+
+it("opens a selected discussion with its original remote reader and returns to files", async () => {
+  const view = await mount();
+  const resolveTarget = vi.fn(async () => null);
+  await act(async () => window.dispatchEvent(new CustomEvent("futureos:inspect-fusion", { detail: { runId: "remote-r1", toolCallId: "remote-t1", resolveTarget } })));
+  expect(fusionPanel.props).toMatchObject({ runId: "remote-r1", toolCallId: "remote-t1", resolveTarget });
+  expect(view.container.querySelector("[data-remote-fusion]")).not.toBeNull();
+  await act(async () => (view.container.querySelector("[data-remote-fusion]") as HTMLButtonElement).click());
+  expect(view.container.querySelector("[data-remote-fusion]")).toBeNull();
+  await view.unmount();
 });
 
 async function mount(props: { expanded?: boolean; floating?: boolean } = {}) {

@@ -1,6 +1,5 @@
 //! Admission, independent upgrade snapshots and the versioned schema contract.
 //! The historical migration chain keeps its released identities and transactions.
-use crate::console;
 use std::{collections::HashSet, path::PathBuf};
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -118,21 +117,44 @@ pub(super) fn admit(conn: &Connection) -> Result<i64, Error> {
 }
 
 pub(super) fn initialize(conn: &Connection) -> Result<(), Error> {
-    let version = admit(conn)?;
+    let started = std::time::Instant::now();
+    let version = admit(conn).inspect_err(|error| {
+        tracing::error!(event = "database_admission_failed", database = "app", %error);
+    })?;
+    tracing::debug!(
+        event = "database_header_read",
+        database = "app",
+        schema_version = version,
+        target_version = future_app_settings::APP_DB_SCHEMA_VERSION
+    );
     if version == future_app_settings::APP_DB_SCHEMA_VERSION {
         validate_core(conn)?;
         // Optional metadata can retry independently without replaying old cleanup.
         super::db::apply_versioned_migrations(conn).unwrap_or_else(|error| {
-            console::eprintln!("FutureOS migration: optional metadata unavailable: {error}");
+            tracing::warn!(event = "database_optional_metadata_failed", database = "app", %error);
         });
         return Ok(());
     }
-    let backup = snapshot_before_upgrade(conn)?;
+    tracing::info!(
+        event = "database_upgrade_started",
+        database = "app",
+        from_version = version,
+        to_version = future_app_settings::APP_DB_SCHEMA_VERSION
+    );
+    let backup = snapshot_before_upgrade(conn).inspect_err(|error| {
+        tracing::error!(event = "database_upgrade_backup_failed", database = "app", from_version = version, %error);
+    })?;
     let result = (|| {
         if version == 0 {
             super::db::apply_schema(conn)?;
         }
         for (step, sql) in STEPS.iter().filter(|step| step.0 > version) {
+            let step_started = std::time::Instant::now();
+            tracing::debug!(
+                event = "database_migration_step_started",
+                database = "app",
+                schema_version = step
+            );
             let tx = rusqlite::Transaction::new_unchecked(
                 conn,
                 rusqlite::TransactionBehavior::Immediate,
@@ -155,10 +177,26 @@ pub(super) fn initialize(conn: &Connection) -> Result<(), Error> {
             )?;
             tx.pragma_update(None, "user_version", step)?;
             tx.commit()?;
+            tracing::info!(
+                event = "database_migration_step_committed",
+                database = "app",
+                schema_version = step,
+                elapsed_ms = step_started.elapsed().as_millis() as u64
+            );
         }
+        tracing::info!(
+            event = "database_upgrade_completed",
+            database = "app",
+            from_version = version,
+            to_version = future_app_settings::APP_DB_SCHEMA_VERSION,
+            elapsed_ms = started.elapsed().as_millis() as u64
+        );
         Ok(())
     })();
     result.map_err(|error: Error| {
+        tracing::error!(event = "database_upgrade_failed", database = "app", from_version = version,
+            to_version = future_app_settings::APP_DB_SCHEMA_VERSION,
+            snapshot = ?backup, elapsed_ms = started.elapsed().as_millis() as u64, %error);
         match backup {
             Some(path) => format!("Desktop database upgrade failed: {error}. Pre-upgrade snapshot: {}. Keep both databases; restart to retry the remaining migration steps.",path.display()).into(),
             None => error,
@@ -241,10 +279,7 @@ fn snapshot_before_upgrade(conn: &Connection) -> Result<Option<PathBuf>, Error> 
         .join("backups");
     let path = future_agent::session::create_database_snapshot(conn, &directory, "app-before-schema-upgrade")
         .map_err(|error| Error::from(format!("Cannot create a verified Desktop pre-upgrade snapshot: {error}; migration was not started.")))?;
-    console::eprintln!(
-        "FutureOS: preserved Desktop pre-upgrade snapshot at {}",
-        path.display()
-    );
+    tracing::info!(event = "database_upgrade_snapshot_preserved", database = "app", path = %path.display());
     Ok(Some(path))
 }
 

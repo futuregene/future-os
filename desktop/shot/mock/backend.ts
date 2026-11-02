@@ -355,11 +355,23 @@ const handlers: Record<string, (args: any) => unknown> = {
   get_fusion_settings: () => fusionSettings,
   update_fusion_settings: args => saveFusionSettings(args.input as FusionSettingsPatch),
   get_fusion: (args) => {
+    const discussion = fusionProgressFixture(new URLSearchParams(window.location.search).get("fusion"));
     if (!args?.stepId)
-      return fusionProgressFixture(new URLSearchParams(window.location.search).get("fusion"));
-    const step = fusionFixture.discussion.steps.find(s => s.id === args.stepId);
-    const transcript = JSON.stringify([{ role: "user", content: [{ type: "text", text: step?.input }] }, { role: "assistant", content: [{ type: "text", text: step?.output }] }]);
-    return { ...step, transcript, next_offset: transcript.length, total_bytes: transcript.length };
+      return discussion;
+    const step = discussion.steps?.find(s => s.id === args.stepId);
+    if (!step)
+      throw new Error("Unknown discussion step");
+    const publicOutput = step.status === "completed" && step.phase === "issue_mapping"
+      ? JSON.stringify(discussion.events?.find(event => event.kind === "issues")?.data)
+      : step.status === "completed" && step.phase === "synthesizing" ? JSON.stringify(discussion.run?.result) : step.output;
+    const output = new URLSearchParams(window.location.search).has("fusionLong") ? `${publicOutput}\n${"分页公开发言。".repeat(2400)}\n全文读取完成。` : publicOutput;
+    const transcript = JSON.stringify([{ role: "user", content: [{ type: "text", text: step?.input }] }, { role: "assistant", content: [{ type: "text", text: output }] }]);
+    const bytes = new TextEncoder().encode(transcript);
+    const offset = Number(args.offset ?? 0);
+    let end = Math.min(offset + 32768, bytes.length);
+    while (end < bytes.length && (bytes[end]! & 0xC0) === 0x80)
+      end--;
+    return { ...step, transcript: new TextDecoder().decode(bytes.slice(offset, end)), next_offset: end, total_bytes: bytes.length };
   },
   // ── App bootstrap ──────────────────────────────────────────────────────
   initialize_app_store: () => null,
@@ -564,7 +576,9 @@ const handlers: Record<string, (args: any) => unknown> = {
   list_run_events_bulk: (args: any) => (args?.runIds ?? []).map((id: string) => [id, []]),
   list_tool_calls: args => toolCalls.filter(call => call.runId === args?.runId),
   list_tool_calls_bulk: (args: any) =>
-    (args?.runIds ?? []).map((id: string) => [id, toolCalls.filter(call => call.runId === id)]),
+    (args?.runIds ?? []).map((id: string) => [id, new URLSearchParams(window.location.search).has("fusion")
+      ? id === "run_1" ? [{ id: "fusion-tool", runId: id, name: "fusion", kind: "fusion", input: JSON.stringify(fusionFixture.discussion.run.input), status: "completed", createdAt: 1793260000000 }] : []
+      : toolCalls.filter(call => call.runId === id)]),
   list_tool_outputs: (args) => {
     const content = toolOutputs[args?.toolCallId];
     return content
@@ -890,6 +904,8 @@ const handlers: Record<string, (args: any) => unknown> = {
       return { sessionId: String(command.sessionId ?? ""), threadId: "th_forest" };
     }
     switch (command.type) {
+      case "get_fusion":
+        return handlers.get_fusion!({ stepId: command.entryId, offset: command.offset });
       case "get_fusion_settings":
         return fusionSettings;
       case "update_fusion_settings":

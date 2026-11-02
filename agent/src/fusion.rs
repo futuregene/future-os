@@ -113,9 +113,14 @@ fn tool(
 }
 
 pub(crate) fn main_tool() -> AgentTool {
+    let description = format!(
+        "{}\n\n{}",
+        future_fusion::TOOL_DESCRIPTION,
+        future_fusion::DISCUSSION_POLICY
+    );
     tool(
         "fusion",
-        future_fusion::TOOL_DESCRIPTION,
+        &description,
         json!({"type":"object","additionalProperties":false,"required":["question","goal","background","constraints"],"properties":{
             "question":{"type":"string","description":"One focused decision, not the whole task"},"goal":{"type":"string"},"background":{"type":"string","description":"Confirmed facts, relevant investigation, assumptions and unknowns"},"constraints":{"type":"array","items":{"type":"string"}},"options":{"type":"array","items":{"type":"string"}},"evidence":{"type":"array","items":{"type":"string"}},"read_scope":{"type":"array","items":{"type":"string"},"description":"Only necessary workspace-relative files/directories. Omit for conceptual decisions."}
         }}),

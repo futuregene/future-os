@@ -2,7 +2,6 @@
 //! permission level, and resolve a thread's workspace path and prior-message
 //! count. These back the per-prompt setup in the parent module.
 
-use crate::console;
 use std::collections::HashMap;
 
 use super::client::{
@@ -190,7 +189,7 @@ pub(super) async fn set_agent_sandbox_policy(
             // A settings read failure must never widen access. Keep the run
             // usable behind explicit approval; the next successful settings
             // read will apply the user's persisted selection again.
-            console::eprintln!(
+            tracing::warn!(event = "set_agent_sandbox_policy", error = %error,
                 "FutureOS: approval settings unavailable; falling back to manual approval: {error}"
             );
             "manual".to_string()
@@ -239,7 +238,10 @@ pub async fn set_agent_sandbox_policy_tier(
         }
     }
     if tier == "sandbox" && sandbox_available == Some(false) {
-        console::eprintln!("FutureOS: sandbox unavailable [SB001]; using manual approval");
+        tracing::warn!(
+            event = "set_agent_sandbox_policy_tier",
+            "FutureOS: sandbox unavailable [SB001]; using manual approval"
+        );
         store::update_app_settings(store::UpdateAppSettingsInput {
             approval_tier: Some("manual".to_string()),
             ..Default::default()
@@ -360,7 +362,7 @@ pub async fn fork_agent_session(
             .unwrap_or_default()
             .to_string(),
         Err(error) => {
-            console::eprintln!("FutureOS: fork get_state failed: {error}");
+            tracing::warn!(event = "fork_agent_session", error = %error,"FutureOS: fork get_state failed: {error}");
             String::new()
         }
     };
@@ -396,7 +398,7 @@ pub async fn fork_agent_session(
         .execute_command(set_cwd_command(cwd, new_session_id.clone()))
         .await
     {
-        console::eprintln!("FutureOS: fork set_cwd failed: {e}");
+        tracing::warn!(event = "fork_agent_session", error = %e,"FutureOS: fork set_cwd failed: {e}");
     }
 
     let (provider, model_id) = split_model(&session_model);

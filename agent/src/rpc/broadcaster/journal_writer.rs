@@ -252,7 +252,15 @@ impl EventBatchWriter {
                 // this arm means the worker retired without answering — and the
                 // failure it recorded on its way out is what made it retire.
                 // Naming it keeps a real loss diagnosable instead of anonymous.
-                match self.health.error() {
+                let error = self.health.error();
+                tracing::error!(
+                    event = "event_journal_shutdown_ack_lost",
+                    ?error,
+                    body_queue = self.sender.len(),
+                    control_queue = self.control.sender.len(),
+                    "Event journal worker exited without its shutdown acknowledgement"
+                );
+                match error {
                     Some(reason) => {
                         anyhow::anyhow!("event shutdown acknowledgement lost: {reason}")
                     }

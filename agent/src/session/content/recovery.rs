@@ -207,7 +207,7 @@ impl SqliteStore {
             for (session, run, epoch, sequence) in runs {
                 cancellation.check()?;
                 let started = std::time::Instant::now();
-                tracing::info!(session = %session, run = %run, epoch, sequence, "session storage: recovering interrupted run");
+                tracing::info!(event = "storage_run_recovery_started", session = %session, run = %run, epoch, sequence, "session storage: recovering interrupted run");
                 let result = self
                     .recover_segmented_run(&session, &run, epoch, sequence, cancellation)
                     .with_context(|| {
@@ -218,12 +218,12 @@ impl SqliteStore {
                         return Err(error);
                     }
                     self.isolate_failed_recovery(&session, &run, epoch, &error)?;
-                    tracing::error!(session = %session, run = %run, epoch, error = %format!("{error:#}"), "session recovery isolated; original history and streams retained");
+                    tracing::error!(event = "storage_run_recovery_isolated", session = %session, run = %run, epoch, error = %format!("{error:#}"), "session recovery isolated; original history and streams retained");
                     cancellation.record_progress();
                     continue;
                 }
                 cancellation.record_progress();
-                tracing::info!(session = %session, run = %run, epoch, elapsed_ms = started.elapsed().as_millis() as u64, "session storage: interrupted run recovered");
+                tracing::info!(event = "storage_run_recovery_completed", session = %session, run = %run, epoch, elapsed_ms = started.elapsed().as_millis() as u64, "session storage: interrupted run recovered");
             }
         }
     }

@@ -278,9 +278,7 @@ pub(super) fn confirm_startup(version: &str) -> Result<(), AppError> {
             record.diagnostic = None;
             save_record(&record)?;
             if let Err(error) = super::adapters::cleanup_confirmed(&record.operation_id) {
-                crate::host_environment::report(&format!(
-                    "Update confirmed; old backup retained because cleanup failed: {error}"
-                ));
+                tracing::warn!(event = "confirm_startup", error = %error,"Update confirmed; old backup retained because cleanup failed: {error}");
             }
         }
     }
@@ -343,9 +341,7 @@ impl Drop for Inner {
             self.record.outcome = Some("interrupted".into());
             self.record.diagnostic = Some("Update operation was interrupted. No successful installation was confirmed; check program files before restarting.".into());
             if let Err(error) = self.save() {
-                crate::host_environment::report(&format!(
-                    "Cannot persist interrupted update: {error}"
-                ));
+                tracing::error!(event = "drop", error = %error,"Cannot persist interrupted update: {error}");
             }
         }
     }

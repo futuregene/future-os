@@ -37,7 +37,6 @@
 //! puts itself to sleep; discovery (streaming poll, thread open, prompt) wakes
 //! it again via [`ensure_observer_for_thread`].
 
-use crate::console;
 use std::{
     collections::HashMap,
     sync::{
@@ -367,13 +366,15 @@ pub fn spawn_session_discovery() {
             match crate::store::reconcile_undeliverable_delete_intents().await {
                 Ok(0) => {}
                 Ok(released) => {
-                    console::eprintln!(
+                    tracing::info!(
+                        event = "spawn_session_discovery",
+                        released = released,
                         "FutureOS: released {released} undeliverable deletion intent(s)"
                     );
                     crate::emit_threads_updated();
                 }
                 Err(error) => {
-                    console::eprintln!("FutureOS: undeliverable delete reconcile failed: {error}")
+                    tracing::warn!(event = "spawn_session_discovery", error = %error,"FutureOS: undeliverable delete reconcile failed: {error}")
                 }
             }
             super::import::import_missing_sessions().await;
@@ -383,11 +384,15 @@ pub fn spawn_session_discovery() {
             match crate::store::reconcile_empty_conversations().await {
                 Ok(0) => {}
                 Ok(removed) => {
-                    console::eprintln!("FutureOS: removed {removed} empty conversation(s)");
+                    tracing::info!(
+                        event = "spawn_session_discovery",
+                        removed = removed,
+                        "FutureOS: removed {removed} empty conversation(s)"
+                    );
                     crate::emit_threads_updated();
                 }
                 Err(error) => {
-                    console::eprintln!("FutureOS: empty-conversation reconcile failed: {error}")
+                    tracing::warn!(event = "spawn_session_discovery", error = %error,"FutureOS: empty-conversation reconcile failed: {error}")
                 }
             }
             // Sessions deleted elsewhere leave a thread row whose Agent side is
@@ -396,13 +401,15 @@ pub fn spawn_session_discovery() {
             match crate::store::reconcile_orphan_sessions().await {
                 Ok(0) => {}
                 Ok(removed) => {
-                    console::eprintln!(
+                    tracing::info!(
+                        event = "spawn_session_discovery",
+                        removed = removed,
                         "FutureOS: removed {removed} conversation(s) deleted outside the GUI"
                     );
                     crate::emit_threads_updated();
                 }
                 Err(error) => {
-                    console::eprintln!("FutureOS: orphan-session reconcile failed: {error}")
+                    tracing::warn!(event = "spawn_session_discovery", error = %error,"FutureOS: orphan-session reconcile failed: {error}")
                 }
             }
         }
@@ -521,13 +528,13 @@ fn evict_idle_if_over_cap(guard: &mut HashMap<String, ObserverHandle>) {
             Some(session_id) => {
                 if let Some(handle) = guard.remove(&session_id) {
                     let _ = handle.cancel.send(());
-                    console::eprintln!(
+                    tracing::debug!(event = "evict_idle_if_over_cap", session_id = %session_id, OBSERVER_MAX = %OBSERVER_MAX,
                         "FutureOS observer for {session_id} evicted (LRU cap {OBSERVER_MAX})"
                     );
                 }
             }
             None => {
-                console::eprintln!(
+                tracing::warn!(event = "evict_idle_if_over_cap", OBSERVER_MAX = %OBSERVER_MAX,
                     "FutureOS observer cap {OBSERVER_MAX} exceeded: all observers track active runs"
                 );
                 return;
@@ -572,7 +579,7 @@ pub(super) fn ensure_run_binding(
     }
     if let Ok(Some(run)) = crate::store::get_run(canonical_run_id) {
         if run.thread_id != thread_id {
-            console::eprintln!(
+            tracing::error!(event = "ensure_run_binding", session_id = %session_id, thread_id = %thread_id, canonical_run_id = %canonical_run_id,
                 "FutureOS observer refused cross-thread run binding: session={session_id} thread={thread_id} run={canonical_run_id} belongs_to={}",
                 run.thread_id
             );
@@ -733,7 +740,9 @@ async fn record_message_activity(
                 crate::emit_thread_activity(&shared.thread_id, timestamp);
             }
         }
-        result => console::eprintln!("FutureOS could not record message activity: {result:?}"),
+        result => {
+            tracing::warn!(event = "record_message_activity", result = ?result,"FutureOS could not record message activity: {result:?}")
+        }
     }
 }
 
@@ -788,7 +797,7 @@ async fn run_observer(
         {
             Ok(presence) => presence,
             Err(error) => {
-                console::eprintln!("FutureOS: observer source verification deferred: {error}");
+                tracing::warn!(event = "run_observer", error = %error,"FutureOS: observer source verification deferred: {error}");
                 if sleep_or_cancel(&mut cancel, backoff).await {
                     return;
                 }
@@ -1027,7 +1036,7 @@ pub(super) fn settle_agent_end(local_run_id: &str, data: &str) {
                 &state,
                 error.as_deref(),
             ) {
-                console::eprintln!(
+                tracing::warn!(event = "settle_agent_end", run_id = %local_run_id, error = %settlement,
                     "FutureOS run settlement failed for {local_run_id}: {settlement}"
                 );
             }

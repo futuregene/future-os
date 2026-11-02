@@ -334,6 +334,14 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
         .await;
     }
 
+    if group == Some("logs") {
+        return catch(
+            out,
+            std::future::ready(commands::logs::run(&args[1..], out)),
+        )
+        .await;
+    }
+
     // if (group === "models")
     if group == Some("models") {
         if command == Some("--help")

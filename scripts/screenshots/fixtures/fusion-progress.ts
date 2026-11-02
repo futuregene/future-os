@@ -20,5 +20,40 @@ export function fusionProgressFixture(mode: string | null): FusionDiscussion {
       if (step.phase === "reviewing") step.status = "running";
     }
   }
+  if (mode === "mapping") {
+    data.run!.status = "running";
+    data.run!.phase = "issue_mapping";
+    data.run!.result = null;
+    data.steps = data.steps?.filter(step => step.phase === "analyzing" || step.phase === "issue_mapping");
+    for (const step of data.steps ?? []) {
+      if (step.phase === "issue_mapping") {
+        step.status = "running";
+        step.output = "";
+      }
+    }
+  }
+  if (mode === "summarizing") {
+    data.run!.status = "running";
+    data.run!.phase = "synthesizing";
+    data.run!.result = null;
+    for (const step of data.steps ?? []) {
+      if (step.phase === "synthesizing") {
+        step.status = "running";
+        step.output = "";
+      }
+    }
+  }
+  if (mode === "failed") {
+    data.run!.status = "failed";
+    data.run!.result = null;
+    data.run!.error = "主持模型无法生成最终结论；已有公开发言已保留。";
+    for (const step of data.steps ?? []) {
+      if (step.phase === "synthesizing") {
+        step.status = "failed";
+        step.error = "HTTP 503";
+        step.output = "";
+      }
+    }
+  }
   return data;
 }

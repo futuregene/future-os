@@ -32,6 +32,8 @@ fn isolate(command: &mut Command, home: &std::path::Path) {
         .env("HOME", home)
         .env("USERPROFILE", home)
         .env("FUTURE_HOME", home.join(".future"))
+        // Startup-order assertions need INFO even under an operator's WARN filter.
+        .env("RUST_LOG", "info")
         .env_remove("FUTURE_AGENT_SOCKET")
         .env_remove("FUTURE_AGENT_GRPC_ADDR");
 }
@@ -475,7 +477,18 @@ fn agent_log_file_and_heap_flag_paths() {
     );
     assert!(log_file.exists(), "explicit log file was created");
     let log = std::fs::read_to_string(&log_file).unwrap();
-    assert!(log.contains("file logging enabled"), "{log}");
+    let records: Vec<serde_json::Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("structured diagnostic record"))
+        .collect();
+    assert!(
+        records.iter().any(|record| {
+            record["component"] == "agent"
+                && record["fields"]["event"] == "logging_started"
+                && record["fields"]["path"].as_str() == log_file.to_str()
+        }),
+        "the Agent writer must announce the selected path: {log}"
+    );
 
     // --log-file without a value uses the default under ~/.future.
     let home = isolated_home();

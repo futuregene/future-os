@@ -99,7 +99,10 @@ fn a_host_whose_log_cannot_be_opened_reports_it_and_still_starts() {
 
     // The invalid `FUTURE_AGENT_GRPC_ADDR` this harness sets is what makes the
     // run end: the test is about the startup order in front of it.
-    let out = headless(home.path()).output().unwrap();
+    let out = headless(home.path())
+        .env("RUST_LOG", "warn")
+        .output()
+        .unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("host log unavailable:"),

@@ -304,7 +304,7 @@ make setup
 make run-desktop
 ```
 
-`make setup` 安装 JavaScript workspace、初始化内置技能。`make run-desktop` 通过平台开发脚本构建/暂存真正的 CLI 并启动 Desktop（没有 CLI 产物时脚本写入仅供编译的占位文件，运行时会拒绝空占位文件），由应用内置完整 Agent，无需单独运行 `future agent`。若本地 IPC 或显式 `FUTURE_AGENT_GRPC_ADDR` 地址存在兼容 Agent，则连接它而不接管其退出。设置 `FUTURE_DESKTOP_AGENT_MODE=external` 可仅连接外部服务，请在另一个终端用相同 FutureOS home 启动匹配的 Agent。脚本不改写旧运行记录，也不会根据旧 PID 文件结束进程。`BUILD_CLI=0` 跳过 CLI 构建，`DESKTOP_DEV_PORT` 选择 Vite 端口，`RUN_CHECKS=1` 只执行静态检查，`DRY_RUN=1` 只打印配置。独立 Agent 日志保持在 `agent/logs/agent.log`，内置 Agent/宿主日志使用 `app/logs/desktop.log`。socket 规则见[目录布局](directory-layout.zh-CN.md)。
+`make setup` 安装 JavaScript workspace、初始化内置技能。`make run-desktop` 通过平台开发脚本构建/暂存真正的 CLI 并启动 Desktop（没有 CLI 产物时脚本写入仅供编译的占位文件，运行时会拒绝空占位文件），由应用内置完整 Agent，无需单独运行 `future agent`。若本地 IPC 或显式 `FUTURE_AGENT_GRPC_ADDR` 地址存在兼容 Agent，则连接它而不接管其退出。设置 `FUTURE_DESKTOP_AGENT_MODE=external` 可仅连接外部服务，请在另一个终端用相同 FutureOS home 启动匹配的 Agent。脚本不改写旧运行记录，也不会根据旧 PID 文件结束进程。`BUILD_CLI=0` 跳过 CLI 构建，`DESKTOP_DEV_PORT` 选择 Vite 端口，`RUN_CHECKS=1` 只执行静态检查，`DRY_RUN=1` 只打印配置。内嵌与独立 Agent 日志使用 `agent/logs/agent.log`，Desktop 使用 `app/logs/desktop.log`，前台 Host 使用 `app/logs/host.log`（[日志说明](logging.zh-CN.md)）。socket 规则见[目录布局](directory-layout.zh-CN.md)。
 Android 与 iOS 还需要各自的 SDK 和模拟器或真机，详见[移动端指南](../internals/mobile/README.md)。
 
 ### Proto

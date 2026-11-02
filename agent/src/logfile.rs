@@ -1,28 +1,6 @@
-//! Log-file mirroring: keep the log file byte-for-byte consistent with what
-//! the operator sees on the terminal.
-//!
-//! Two output paths exist in the agent:
-//!
-//! 1. **tracing events** (`tracing::info!` etc.) — each event is formatted
-//!    once per `fmt` layer, so the console layer renders ANSI colors while the
-//!    file layer (via [`LogMirror`] as its `MakeWriter`) renders plain text.
-//!    Same event, same content, both sinks.
-//!
-//! 2. **raw streaming prints** (`eprint!` for `[thinking]` / `[output]`
-//!    deltas in the agent run loop) — these bypass tracing entirely. The
-//!    [`eprint_log!`] / [`eprintln_log!`] macros print to stderr verbatim AND
-//!    append the same bytes (ANSI-stripped) to the mirrored file.
-//!
-//! Both paths serialize on a single `Arc<Mutex<...>>`, so a tracing event
-//! and a raw print can never tear each other mid-line, and the file ends up
-//! being exactly "console output minus ANSI colors".
-//!
-//! Retention: to keep the file from growing without bound, only the newest
-//! `max_lines` lines are kept. Newlines are counted incrementally as bytes
-//! are written (no extra I/O); when the count exceeds `max_lines` plus a
-//! slack margin, the file is atomically rewritten (temp file + rename) with
-//! just its tail. A check also runs at open so a file that grew huge in a
-//! previous run is trimmed on startup. `max_lines = 0` disables trimming.
+//! Legacy console mirroring helpers retained for explicit callers. Production
+//! entry points use `future_logging` for structured, component-separated logs;
+//! their streamed thinking/reply output stays on the console and in the journal.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
@@ -256,44 +234,15 @@ macro_rules! eprintln_log {
     };
 }
 
-/// What a host logs when `RUST_LOG` says nothing.
-///
-/// `info` for the host's own rows, with the libraries that narrate their own
-/// plumbing pinned to WARN: HTTP/2 frames (`h2`), TLS records (`rustls`), gRPC
-/// and middleware chatter, and `async_nats`, which logs every library-level
-/// connect, reconnect and close at INFO — `connected successfully …`,
-/// `event: connected`, `event: closed`. A remote peer that is switched off makes
-/// the client retry on its own backoff, so those three arrived once per attempt
-/// and buried the host's rows. What fails still shows; the churn does not.
-const EMBEDDED_LOG_FILTER: &str = "info,h2=warn,rustls=warn,tonic=warn,tower=warn,async_nats=warn";
-
-/// Hosts install tracing before runtime/GUI threads. A file mirror is installed
-/// separately, only after winning the Desktop instance lock. The host log is
-/// distinct from standalone Agent logs; external attachment never opens them.
+/// Compatibility entry for embedders; all process diagnostics use the shared
+/// subscriber. Owned JSONL files are registered through `future_logging::open`.
 pub fn init_embedded_tracing() {
-    use tracing_subscriber::{fmt::MakeWriter, prelude::*};
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(EMBEDDED_LOG_FILTER));
-    let file_writer = || -> Box<dyn std::io::Write> {
-        match get() {
-            Some(mirror) => Box::new(mirror.make_writer()),
-            None => Box::new(std::io::sink()),
-        }
-    };
-    let _ = tracing_subscriber::registry()
-        .with(filter)
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_target(false)
-                .with_writer(std::io::stderr),
-        )
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_target(false)
-                .with_ansi(false)
-                .with_writer(file_writer),
-        )
-        .try_init();
+    future_logging::prepare(
+        future_logging::Component::Desktop,
+        crate::utils::VERSION,
+        true,
+        false,
+    );
 }
 
 #[cfg(test)]
@@ -309,7 +258,9 @@ mod tests {
     #[test]
     fn the_embedded_filter_silences_broker_churn_but_not_its_failures() {
         let subscriber = tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::new(EMBEDDED_LOG_FILTER))
+            .with_env_filter(tracing_subscriber::EnvFilter::new(
+                future_logging::Profile::Normal.filter(),
+            ))
             .with_writer(std::io::sink)
             .finish();
         tracing::subscriber::with_default(subscriber, || {

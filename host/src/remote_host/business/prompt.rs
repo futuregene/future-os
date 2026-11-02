@@ -1,4 +1,3 @@
-use crate::console;
 use future_remote_protocol::IncomingCmd;
 use future_remote_server::services::ReplySink;
 use serde_json::{json, Value};
@@ -137,7 +136,7 @@ async fn acknowledge_prepared(
         if let Err(error) =
             crate::agent_bridge::run_prepared_prompt_with_acceptance(prepared, accepted_tx).await
         {
-            console::eprintln!("remote: {failure_context} failed: {error}");
+            tracing::error!(event = "acknowledge_prepared", failure_context = %failure_context, error = %error,"remote: {failure_context} failed: {error}");
         }
         crate::emit_remote_activity(&thread_id);
     });

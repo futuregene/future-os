@@ -391,10 +391,13 @@ impl AgentHost {
                                 state.yield_reason = yield_reason;
                             }
                             state.finished = true;
-                            crate::environment::report(&format!(
-                                "Agent host finished owned={} phase={:?}",
-                                state.owned, state.phase
-                            ));
+                            if matches!(state.phase, Phase::Failed(_)) {
+                                tracing::error!(event = "agent_host_finished", owned = state.owned, phase = ?state.phase,
+                                    "Agent host finished owned={} phase={:?}", state.owned, state.phase);
+                            } else {
+                                tracing::info!(event = "agent_host_finished", owned = state.owned, phase = ?state.phase,
+                                    "Agent host finished owned={} phase={:?}", state.owned, state.phase);
+                            }
                             host.0.changed.notify_all();
                         })
                     {
@@ -569,7 +572,20 @@ impl AgentHost {
         // struct-update form is not available outside the Agent crate.
         let mut config = AgentConfig::default();
         config.grpc_addr = served_addr;
-        AgentService::with_local_start(config, permit, |service| {
+        let mut agent_log = None;
+        let result = AgentService::with_local_start(config, permit, |service| {
+            // This scope owns the Agent singleton; attachment never opens its log.
+            agent_log = match future_logging::open(
+                future_logging::Component::Agent,
+                &future_logging::Component::Agent.path(&future_rpc::home::future_home()),
+                0,
+            ) {
+                Ok(guard) => Some(guard),
+                Err(error) => {
+                    tracing::warn!(%error, "Agent log unavailable");
+                    None
+                }
+            };
             {
                 let mut state = self.0.state();
                 if state.phase != Phase::Starting {
@@ -597,7 +613,9 @@ impl AgentHost {
                 }
             })
         })
-        .map_err(|error| format!("{error:#}").into())
+        .map_err(|error| format!("{error:#}").into());
+        drop(agent_log);
+        result
     }
 
     /// Run the prepared service on the runtime owned by the entry. Shutdown
@@ -649,9 +667,10 @@ impl AgentHost {
                             became_ready
                         };
                         self.0.changed.notify_all();
-                        crate::environment::report(&format!("Agent identity version={} instance={}", identity.version, identity.agent_instance_id));
+                        tracing::info!(event = "agent_identity", version = %identity.version, agent_instance_id = %identity.agent_instance_id,
+                            "Agent identity version={} instance={}", identity.version, identity.agent_instance_id);
                         if became_ready {
-                            crate::environment::report("embedded Agent ready");
+                            tracing::info!(event = "embedded_agent_ready", "embedded Agent ready");
                         }
                     }
                 }

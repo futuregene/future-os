@@ -9,9 +9,9 @@
 //! at — twice on 2026-10-28, each time confidently and wrongly.
 //!
 //! This wrapper measures every business command the desktop executes and
-//! reports the slow or failed ones into `desktop.log` (through
-//! [`crate::environment::report`], which writes the file even when there is no
-//! terminal). A phone timeout with no slow command logged here is a transport
+//! reports the slow or failed ones through structured tracing into the Host's
+//! component log, including `desktop.log` when embedded in Desktop. A phone
+//! timeout with no slow command logged here is a transport
 //! problem; a slow command here names exactly which read was expensive.
 use std::sync::Mutex;
 use std::time::Duration;
@@ -150,7 +150,13 @@ pub(super) fn report(
     outcome: &Mutex<CommandOutcome>,
 ) {
     if let Some(line) = report_line(cmd_type, session_id, elapsed, outcome) {
-        crate::environment::report(&line);
+        tracing::warn!(
+            event = "remote_command_diagnostic",
+            command = cmd_type,
+            session_id,
+            elapsed_ms = elapsed.as_millis() as u64,
+            "{line}"
+        );
     }
 }
 

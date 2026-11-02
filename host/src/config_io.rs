@@ -9,8 +9,6 @@
 //! lenient read for best-effort caches, and the snapshot/rollback pair used by
 //! transactional config updates.
 
-#[cfg(any(test, feature = "test-support"))]
-use crate::console;
 use std::path::Path;
 
 use serde_json::Value;
@@ -84,7 +82,7 @@ pub fn restore_file(path: &Path, snapshot: Option<&[u8]>, owner_only: bool) {
     };
     if let Err(error) = result {
         // A NotFound remove just means the file was never created — fine.
-        console::eprintln!(
+        tracing::error!(
             "FutureOS: config rollback could not restore {}: {error}",
             path.display()
         );
