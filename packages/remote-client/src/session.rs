@@ -273,13 +273,18 @@ pub const SELECTIVE_EVENTS_FEATURE: &str = "selective_events_v1";
 ///   `sessions_activity`). The packet is then the only writer of a remote row's
 ///   ordering timestamp on this side: a live event moves no row, because a
 ///   client clock in that value is a row the next packet moves back.
-pub const DECLARED_FEATURES: [&str; 8] = [
+pub const DECLARED_FEATURES: [&str; 9] = [
     "event_coalescing_v1",
     future_remote_protocol::SEGMENTED_CONTENT_FEATURE,
     "reply_gzip_v1",
     SELECTIVE_EVENTS_FEATURE,
     future_remote_protocol::LEAN_EVENTS_FEATURE,
     CATALOG_ACTIVITY_FEATURE,
+    // Row-level catalogue deltas. This client applies them (`sessions_delta`,
+    // see `catalog_domain` and the desktop's `handleCatalog`), which is what the
+    // declaration promises: a packet may then carry only the rows that changed,
+    // and the reader is the half that keeps the rest.
+    future_remote_protocol::CATALOG_DELTA_FEATURE,
     // The promise that goes with this declaration: beats while this client is
     // here, a goodbye when it leaves. A host that knows it presumes this client
     // gone when the beats lapse, which is what keeps the Remote page from saying
@@ -1664,6 +1669,7 @@ mod tests {
             SELECTIVE_EVENTS_FEATURE,
             future_remote_protocol::LEAN_EVENTS_FEATURE,
             CATALOG_ACTIVITY_FEATURE,
+            future_remote_protocol::CATALOG_DELTA_FEATURE,
             future_remote_protocol::CLIENT_PRESENCE_FEATURE,
             future_remote_protocol::READ_BINARY_FEATURE,
             future_remote_protocol::SEGMENTED_CONTENT_FEATURE,
@@ -1680,6 +1686,7 @@ mod tests {
             "selective_events_v1",
             "lean_events_v1",
             "catalog_activity_v1",
+            "catalog_delta_v1",
             "client_presence_v1",
         ];
         let binary = future_remote_protocol::READ_BINARY_FEATURE;
@@ -1707,6 +1714,7 @@ mod tests {
                 "selective_events_v1",
                 "lean_events_v1",
                 "catalog_activity_v1",
+                "catalog_delta_v1",
                 "client_presence_v1",
                 "read_binary_v1"
             ])

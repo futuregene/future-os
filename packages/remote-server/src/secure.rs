@@ -542,7 +542,7 @@ pub async fn publish_json(
         client,
         transport,
         subject,
-        crate::reply::compress_json(bytes),
+        crate::reply::compress_json_from(bytes, crate::reply::PUSH_FLOOR_BYTES),
     )
     .await
 }

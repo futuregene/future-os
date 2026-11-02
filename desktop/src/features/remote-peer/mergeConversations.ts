@@ -290,6 +290,100 @@ export function localTimestamp(thread: LocalThreadLike): number {
  * behind, and the alternative is a list that empties itself and refills whenever
  * that host is busy (the row a reader just opened disappearing and coming back).
  */
+/**
+ * One `state.sessions` packet from a host that speaks `catalog_delta_v1`.
+ *
+ * The rule this exists for is the reason the lane is safe at all: **a row's
+ * absence is not a deletion.** Removals arrive in `removed`; a row this list
+ * already holds and the packet does not mention is kept. Reading one of these as
+ * a snapshot would delete every conversation it did not happen to mention, which
+ * is why the Rust client tags it `sessions_delta` rather than letting a reader
+ * infer the shape from a missing key.
+ *
+ * The rows carry only their `workspaceId`, so the packet also carries the
+ * workspace dictionary they name — sent on a full packet and whenever it moved,
+ * which is what makes renaming a workspace one small packet instead of one row
+ * per conversation in it. And because a delta names no *order*, the merged list
+ * is ranked here the way the host ranks it.
+ *
+ * `@future-os/remote-client/catalogDelta` is the same rule for the phone. The
+ * desktop does not depend on that package, so the two copies have to move
+ * together: they are asserted against the same cases in their own suites.
+ */
+export interface RemoteSessionDelta {
+  rows: RemoteSessionRow[];
+  removed: string[];
+  /** Raw `{ id, name, pinned, orderedAt }` entries, as the host sent them. */
+  dictionary?: unknown;
+  full: boolean;
+}
+
+/** Above every real timestamp, so a pinned row outranks all unpinned ones. */
+const PINNED_FLOOR = 1_000_000_000_000_000;
+
+function remoteRank(row: RemoteSessionRow): number {
+  const activity
+    = typeof row.lastMessageAt === "number"
+      ? row.lastMessageAt
+      : typeof row.createdAt === "number"
+        ? row.createdAt
+        : 0;
+  return activity + (row.pinned ? PINNED_FLOOR : 0);
+}
+
+function workspaceEntries(raw: unknown): Map<string, { name?: string; pinned?: boolean; orderedAt?: number }> {
+  const entries = new Map<string, { name?: string; pinned?: boolean; orderedAt?: number }>();
+  if (!Array.isArray(raw))
+    return entries;
+  for (const value of raw) {
+    if (typeof value !== "object" || value === null)
+      continue;
+    const entry = value as Record<string, unknown>;
+    if (typeof entry.id !== "string" || !entry.id)
+      continue;
+    entries.set(entry.id, {
+      ...(typeof entry.name === "string" ? { name: entry.name } : {}),
+      ...(typeof entry.pinned === "boolean" ? { pinned: entry.pinned } : {}),
+      ...(typeof entry.orderedAt === "number" ? { orderedAt: entry.orderedAt } : {}),
+    });
+  }
+  return entries;
+}
+
+export function mergeRemoteSessionDelta(
+  current: readonly RemoteSessionRow[],
+  delta: RemoteSessionDelta,
+): RemoteSessionRow[] {
+  const merged = new Map<string, RemoteSessionRow>();
+  if (!delta.full) {
+    for (const row of current) merged.set(row.sessionId, row);
+  }
+  for (const row of delta.rows) merged.set(row.sessionId, row);
+  const dictionary = workspaceEntries(delta.dictionary);
+  if (dictionary.size > 0) {
+    // A workspace moved: this lane's rows name it by id alone, so every held row
+    // that sits in it reads the dictionary's copy rather than keeping a stale one.
+    for (const [id, row] of merged) {
+      const entry = row.workspaceId ? dictionary.get(row.workspaceId) : undefined;
+      if (!entry)
+        continue;
+      merged.set(id, {
+        ...row,
+        ...(entry.name !== undefined ? { workspaceName: entry.name } : {}),
+        ...(entry.pinned !== undefined ? { workspacePinned: entry.pinned } : {}),
+        ...(entry.orderedAt !== undefined ? { workspaceOrderedAt: entry.orderedAt } : {}),
+      });
+    }
+  }
+  for (const id of delta.removed) merged.delete(id);
+  return [...merged.values()].sort((a, b) => {
+    const rank = remoteRank(b) - remoteRank(a);
+    if (rank !== 0)
+      return rank;
+    return a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0;
+  });
+}
+
 export function mergeConversations(
   threads: LocalThreadLike[],
   catalogs: RemoteCatalog[],
