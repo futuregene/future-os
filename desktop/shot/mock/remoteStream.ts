@@ -21,8 +21,18 @@ const SESSION_ID = "rs_forest";
 const DESKTOP_ID = "desktop_studio";
 const RUN_ID = "run_stream_1";
 
-/** How long one frame takes. Slow enough that a capture lands mid-reply. */
-const STREAM_STEP_MS = 220;
+/**
+ * How long one frame takes. Slow enough that a capture lands mid-reply.
+ *
+ * `?slowStream=1` stretches it: a capture that has to *act* several times inside
+ * one run — queue two messages and interrupt with a third, say — needs the run
+ * to outlast the sequence of clicks, and a scenario that raced the default
+ * budget would fail on a slow machine rather than on the app.
+ */
+const STREAM_STEP_MS = typeof window !== "undefined"
+  && new URLSearchParams(window.location.search).get("slowStream") === "1"
+  ? 520
+  : 220;
 
 /** Whether this page asked for the streaming fixture. */
 export function streamingEnabled(): boolean {
