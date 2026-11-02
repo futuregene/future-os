@@ -328,5 +328,84 @@
     "dismiss": "Dismiss tutorial entry",
     "dismissed": "Tutorial entry hidden · Reopen anytime from the Skills page on the left",
     "loadFailed": "Failed to load tutorial configuration: {{message}}"
+  },
+  "fusion": {
+    "enabled": "Fusion tool enabled · Read-only consultation when needed",
+    "enableDescription": "Add multi-model thinking to this run; discussion does not act",
+    "remove": "Remove",
+    "discussion": "Discussion",
+    "discussing": "Consulting models",
+    "issues": "Issues and conclusions",
+    "diagnostics": "Diagnostics",
+    "original": "Original messages and tool evidence",
+    "more": "Read more",
+    "input": "Actual input",
+    "loading": "Loading discussion",
+    "noIssues": "No issues recorded yet",
+    "unavailable": "Fusion is unavailable on this host",
+    "missingParent": "Parent task identity missing",
+    "phases": {
+      "preparing": "Preparing evidence",
+      "analyzing": "Independent thinking",
+      "issue_mapping": "Mapping issues",
+      "reviewing": "Cross discussion",
+      "synthesizing": "Summary",
+      "preflight": "Checking main model"
+    },
+    "states": {
+      "preparing": "Preparing discussion",
+      "queued": "Waiting to discuss",
+      "running": "Discussing",
+      "delivering": "Returning conclusion",
+      "completed": "Discussion complete",
+      "failed": "Discussion failed",
+      "cancelled": "Discussion stopped",
+      "interrupted": "Discussion interrupted",
+      "starting": "Preparing discussion"
+    },
+    "retry": "Retry {{count}}",
+    "completeness": {
+      "full": "Full panel",
+      "partial": "Partial panel",
+      "single": "Single participant"
+    },
+    "result": {
+      "rationale": "Reasons",
+      "conditions": "Conditions",
+      "unresolved": "Unresolved",
+      "next_steps": "Proposed next steps"
+    },
+    "title": "Fusion · Discussion",
+    "runningTitle": "Fusion · Discussing",
+    "modelStates": {
+      "waiting": "Waiting",
+      "thinking": "Thinking",
+      "completed": "Thinking complete",
+      "failed": "Thinking failed",
+      "timed_out": "Timed out",
+      "output_limited": "Output limit reached",
+      "cancelled": "Stopped",
+      "interrupted": "Interrupted",
+      "partial": "Partially complete",
+      "skipped": "Skipped"
+    },
+    "stageCount": "{{current}} / {{total}}",
+    "progress": "Discussion stage progress",
+    "partialNotice": "Some models did not complete the discussion",
+    "statusUnavailable": "Discussion status is temporarily unavailable",
+    "disabled": "Fusion is turned off in settings",
+    "moderatorRole": "Main model",
+    "participantRole": "Participant {{number}}",
+    "notices": {
+      "noConclusion": "No synthesized conclusion was produced.",
+      "moderatorFailed": "The main model is unavailable; no substitute was selected.",
+      "noParticipants": "No valid participant results; discussion stopped.",
+      "providerUnavailable": "The provider is temporarily unavailable; affected requests were stopped.",
+      "singleParticipant": "Only a single-model opinion remains; cross discussion was skipped.",
+      "reducedParticipation": "Some models did not finish; continuing with valid results.",
+      "budgetReserved": "Further discussion was skipped to reserve time for synthesis.",
+      "directReview": "Issue mapping did not finish; original analyses were compared directly.",
+      "materialsRetained": "Existing analyses and degradation reasons were preserved for review."
+    }
   }
 }

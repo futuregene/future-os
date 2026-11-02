@@ -657,6 +657,18 @@ fn normalize_http_error(status: u16, text: &str, model: &str, body_bytes: usize)
             message
         );
     }
+    if status == 402
+        || matches!(
+            code,
+            "insufficient_quota" | "quota_exceeded" | "billing_hard_limit_reached"
+        )
+        || matches!(
+            error.get("type").and_then(Value::as_str),
+            Some("insufficient_quota")
+        )
+    {
+        return anyhow!("[PROVIDER_QUOTA] Provider quota unavailable (HTTP {status}): {message}");
+    }
     match status {
         401 | 403 => anyhow!("Authentication failed (HTTP {status}): {message}"),
         429 => anyhow!("Rate limited (HTTP 429): {message}"),
@@ -921,6 +933,21 @@ mod tests {
         assert!(normalize_http_error(429, "slow down", "m", 0)
             .to_string()
             .contains("Rate limited"));
+        for (status, body) in [
+            (
+                429,
+                r#"{"error":{"code":"insufficient_quota","message":"budget exhausted"}}"#,
+            ),
+            (
+                429,
+                r#"{"error":{"type":"insufficient_quota","message":"budget exhausted"}}"#,
+            ),
+            (402, "payment required"),
+        ] {
+            assert!(normalize_http_error(status, body, "m", 0)
+                .to_string()
+                .starts_with("[PROVIDER_QUOTA]"));
+        }
     }
 
     // ─── transport error classification and the image projection ─────────────
@@ -1759,6 +1786,67 @@ mod tests {
                 serde_json::json!("hello"),
             )],
             tools: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn fusion_profiles_reach_chat_protocols_without_mutating_live_settings() {
+        let config = future_fusion::Configuration::default();
+        for (profile, reasoning) in config.panel.iter().chain([&config.moderator]).zip([
+            schema::ChatReasoningFormat::DeepSeek,
+            schema::ChatReasoningFormat::Zai,
+            schema::ChatReasoningFormat::Qwen {
+                chat_template: false,
+            },
+            schema::ChatReasoningFormat::DeepSeek,
+        ]) {
+            let server = mock_server(|_| {
+                (200, "text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".into())
+            });
+            let mut target = protocol_target(
+                &server.base_url,
+                schema::ProtocolConfig::OpenAiChat(schema::OpenAiChatConfig {
+                    reasoning,
+                    ..Default::default()
+                }),
+            );
+            target.generation.thinking_level = profile.thinking_level.clone();
+            target.capabilities.max_output_tokens = 65_536;
+            target.capabilities.reasoning.supported = true;
+            let client = Client::from_target(target);
+            let frozen = client.snapshot().unwrap();
+            client.update_thinking("high", 16_000);
+            for cap in [profile.max_output_tokens, profile.retry_max_output_tokens] {
+                let limited = crate::fusion::LimitedProvider {
+                    provider: frozen.clone(),
+                    max_output_tokens: cap,
+                };
+                let _: Vec<_> = limited
+                    .stream_model(canonical_request())
+                    .await
+                    .unwrap()
+                    .collect()
+                    .await;
+            }
+            let _: Vec<_> = client
+                .stream_model(canonical_request())
+                .await
+                .unwrap()
+                .collect()
+                .await;
+            let requests = server.requests.lock().unwrap();
+            for (index, cap) in [profile.max_output_tokens, profile.retry_max_output_tokens]
+                .into_iter()
+                .enumerate()
+            {
+                let body: Value = serde_json::from_str(&requests[index]).unwrap();
+                assert_eq!(body["max_tokens"], cap);
+                assert_eq!(body["reasoning_effort"], profile.thinking_level);
+                assert!(body["enable_thinking"] == true || body["thinking"]["type"] == "enabled");
+            }
+            let ordinary: Value = serde_json::from_str(&requests[2]).unwrap();
+            assert_eq!(ordinary["max_tokens"], 256);
+            assert_eq!(ordinary["reasoning_effort"], "high");
         }
     }
 

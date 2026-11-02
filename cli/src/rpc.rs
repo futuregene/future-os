@@ -227,7 +227,50 @@ impl RunClient {
             .map(|_| ())
     }
 
+    pub async fn fusion_discussion(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        tool_call_id: &str,
+        step: &str,
+        offset: i64,
+    ) -> Result<Value, String> {
+        self.execute_command(
+            "get_fusion",
+            RpcCommand {
+                run_id: run_id.into(),
+                tool_call_id: (!tool_call_id.is_empty()).then(|| tool_call_id.into()),
+                entry_id: step.into(),
+                offset: Some(offset),
+                ..Default::default()
+            },
+            Some(session_id),
+            10,
+        )
+        .await
+    }
+
     /// `listModels()` — `list_models` → `{models, defaultModel}`.
+    pub async fn fusion_settings(
+        &self,
+        patch: Option<future_fusion::SettingsPatch>,
+    ) -> Result<future_fusion::Settings, String> {
+        let (command, fields) = if let Some(patch) = patch {
+            (
+                "update_fusion_settings",
+                RpcCommand {
+                    fusion_settings_json: serde_json::to_string(&patch)
+                        .map_err(|error| error.to_string())?,
+                    ..Default::default()
+                },
+            )
+        } else {
+            ("get_fusion_settings", RpcCommand::default())
+        };
+        let data = self.execute_command(command, fields, None, 10).await?;
+        serde_json::from_value(data).map_err(|error| error.to_string())
+    }
+
     pub async fn list_models(&self) -> Result<Value, String> {
         self.execute_command("list_models", RpcCommand::default(), None, 5)
             .await
@@ -862,6 +905,20 @@ impl RunClient {
         session_id: &str,
         busy_policy: &str,
     ) -> Result<Value, String> {
+        if let Some(task) = future_fusion::fusion_prompt(message) {
+            if task.is_empty() {
+                return Err("Use /fusion followed by a task".into());
+            }
+            let status = self
+                .execute_command("get_fusion_status", RpcCommand::default(), None, 10)
+                .await?;
+            if status["enabled"] == false {
+                return Err("Fusion is disabled in settings".into());
+            }
+            if status["available"] != true {
+                return Err("Fusion is unavailable: start or upgrade the FutureOS host".into());
+            }
+        }
         let cmd = RpcCommand {
             message: message.to_string(),
             busy_policy: busy_policy.to_string(),

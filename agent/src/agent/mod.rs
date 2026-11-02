@@ -108,6 +108,7 @@ impl StreamContext {
 }
 
 pub struct Loop {
+    pub(crate) fusion_context: Option<crate::fusion::ContextScope>,
     pub provider: Arc<dyn LLMProvider>,
     /// Canonical `provider/model` reference. Provider/model configuration is
     /// resolved from the Agent Registry at each LLM request; this field is an
@@ -163,6 +164,7 @@ impl Loop {
     pub fn new(provider: Arc<dyn LLMProvider>, model: &str) -> Self {
         Self {
             provider,
+            fusion_context: None,
             model_ref: model.to_string(),
             model: model.to_string(),
             system_prompt: String::new(),
@@ -421,6 +423,10 @@ impl Loop {
             messages.push(tool_msg);
             if let Some(ref cb) = ctx.on_tool_result {
                 cb(messages.last_mut().unwrap());
+            }
+            if tool_name == "fusion" && err_str.is_none() {
+                ctx.await_durability().await?;
+                crate::fusion::record_delivery(&result)?;
             }
             executed += 1;
         }

@@ -211,9 +211,11 @@ impl Loop {
         on_event: impl Fn(RunEvent) + Send + Sync + 'static,
         interrupt_rx: Option<tokio::sync::mpsc::Receiver<()>>,
     ) -> Result<(String, Vec<AgentMessage>)> {
-        match self
-            .run_streaming_inner(&mut messages, ctx, on_text, on_event, interrupt_rx)
-            .await
+        match crate::fusion::with_context(
+            self.fusion_context.clone(),
+            self.run_streaming_inner(&mut messages, ctx, on_text, on_event, interrupt_rx),
+        )
+        .await
         {
             Ok(text) => Ok((text, messages)),
             Err(error) => {

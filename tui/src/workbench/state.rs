@@ -523,6 +523,7 @@ impl PanelId {
 /// Everything the workbench paints.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WorkbenchData {
+    pub fusion_enabled: Option<bool>,
     pub version: String,
     pub connected: bool,
     pub session: SessionMeta,

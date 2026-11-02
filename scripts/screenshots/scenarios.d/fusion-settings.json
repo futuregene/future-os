@@ -1,0 +1,549 @@
+{
+  "desktop": {
+    "fusion-settings": {
+      "query": "?fusionSettings=1",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "tapText": "lixin"
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "tapText": "设置"
+        },
+        {
+          "wait": 2000
+        },
+        {
+          "tapText": "Fusion"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "tap": "主模型 · 思考等级"
+        },
+        {
+          "wait": 100
+        },
+        {
+          "eval": "[...document.querySelectorAll('.shadow-panel button')].find(b=>b.textContent==='高').click()"
+        },
+        {
+          "wait": 100
+        },
+        {
+          "tap": "参与模型 1 · 思考等级"
+        },
+        {
+          "wait": 100
+        },
+        {
+          "eval": "[...document.querySelectorAll('.shadow-panel button')].find(b=>b.textContent==='低').click()"
+        },
+        {
+          "wait": 250
+        },
+        {
+          "eval": "document.querySelector('button[aria-label=\"移除参与模型 3\"]').click()"
+        },
+        {
+          "wait": 250
+        },
+        {
+          "eval": "(() => {if(document.querySelectorAll('fieldset').length!==3)throw new Error('minimum roster mismatch');if(document.querySelector('button[aria-label^=\"移除参与模型\"]'))throw new Error('can remove below two');[...document.querySelectorAll('button')].find(b=>b.textContent==='保存模型配置').click();})()"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => {if(!document.body.innerText.includes('已保存'))throw new Error('save did not finish');if(document.querySelector('button[aria-label=\"主模型 · 思考等级\"]').textContent!=='高'||document.querySelector('button[aria-label=\"参与模型 1 · 思考等级\"]').textContent!=='低')throw new Error('same-model thinking collapsed');})()"
+        },
+        {
+          "shot": "d-fusion-settings.png"
+        },
+        {
+          "eval": "[...document.querySelectorAll('button')].find(b=>b.textContent==='添加参与模型').click()"
+        },
+        {
+          "wait": 100
+        },
+        {
+          "eval": "[...document.querySelectorAll('button')].find(b=>b.textContent==='添加参与模型').click()"
+        },
+        {
+          "wait": 100
+        },
+        {
+          "eval": "[...document.querySelectorAll('button')].find(b=>b.textContent==='添加参与模型').click()"
+        },
+        {
+          "wait": 100
+        },
+        {
+          "eval": "(() => {if(document.querySelectorAll('fieldset').length!==6)throw new Error('maximum roster mismatch');if(![...document.querySelectorAll('button')].find(b=>b.textContent==='添加参与模型').disabled)throw new Error('can add beyond five');if(![...document.querySelectorAll('button')].find(b=>b.textContent==='保存模型配置').disabled)throw new Error('empty models can save');document.querySelector('[role=switch][aria-label=\"启用 Fusion\"]').click();})()"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => {if(document.querySelector('[role=switch][aria-label=\"启用 Fusion\"]').getAttribute('aria-checked')!=='false')throw new Error('disable failed');})()"
+        },
+        {
+          "key": "Escape"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "document.querySelector('[contenteditable=true]').focus()"
+        },
+        {
+          "type": "/"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => {if([...document.querySelectorAll('[role=option]')].some(b=>b.textContent.includes('/fusion')))throw new Error('disabled slash still visible');return 'independent thinking; 2–5 bounds; required models; disabled slash hidden';})()"
+        }
+      ]
+    },
+    "remote-fusion-settings": {
+      "query": "?fusionSettings=1",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 1500
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tap": "远程"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tap": "设置"
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "tapText": "Fusion"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => {if(!document.querySelector('button[aria-label=\"主模型 · 模型\"]'))throw new Error('remote settings unavailable');return 'remote settings use the same form';})()"
+        },
+        {
+          "shot": "d-remote-fusion-settings.png"
+        }
+      ]
+    },
+    "fusion-model-picker": {
+      "query": "?fusionSettings=1",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "tapText": "lixin"
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "tapText": "设置"
+        },
+        {
+          "wait": 2000
+        },
+        {
+          "tapText": "Fusion"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => {const trigger=document.querySelector('button[aria-label=\"主模型 · 模型\"]');if(!trigger.textContent.includes('FutureOS/DeepSeek Flash'))throw new Error('wrong model display');const label=document.querySelector('label[for=\"'+trigger.id+'\"]');const gap=trigger.getBoundingClientRect().top-label.getBoundingClientRect().bottom;if(Math.abs(gap-6)>1)throw new Error('unexpected label gap: '+gap);})()"
+        },
+        {
+          "shot": "d-fusion-model-field.png"
+        },
+        {
+          "tap": "主模型 · 模型"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "(() => {const panel=[...document.querySelectorAll('.shadow-panel')].find(el=>getComputedStyle(el).position==='fixed');if(!panel)throw new Error('missing shared menu');const rect=panel.getBoundingClientRect();if(rect.top<0||rect.bottom>innerHeight)throw new Error('menu outside viewport');const row=panel.querySelector('button > span');if(row.children.length!==2||row.children[0].getBoundingClientRect().bottom>row.children[1].getBoundingClientRect().top)throw new Error('model and provider are not separate lines');if(row.children[1].textContent!=='FutureOS')throw new Error('missing provider name');if(!panel.querySelector('svg'))throw new Error('missing selected mark');})()"
+        },
+        {
+          "shot": "d-fusion-model-popup.png"
+        },
+        {
+          "eval": "[...document.querySelectorAll('.shadow-panel button')].find(b=>b.querySelector('span > span')?.textContent==='GLM 5.3 Flash').click()"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "(() => {const trigger=document.querySelector('button[aria-label=\"主模型 · 模型\"]');if(!trigger.textContent.includes('FutureOS/GLM 5.3 Flash')||trigger.getAttribute('aria-expanded')!=='false')throw new Error('selection failed');trigger.click();})()"
+        },
+        {
+          "key": "Escape"
+        },
+        {
+          "wait": 150
+        },
+        {
+          "eval": "(() => {if(!document.querySelector('[role=dialog]'))throw new Error('Escape closed settings');if(document.querySelector('button[aria-label=\"主模型 · 模型\"]').getAttribute('aria-expanded')!=='false')throw new Error('Escape did not close picker');return 'field spacing, provider/model labels, selection and Escape passed';})()"
+        },
+        {
+          "tap": "主模型 · 思考等级"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "(() => {if(document.querySelector('select[aria-label=\"主模型 · 思考等级\"]'))throw new Error('native thinking select remains');const panel=[...document.querySelectorAll('.shadow-panel')].find(el=>getComputedStyle(el).position==='fixed');if(!panel||!panel.querySelector('svg'))throw new Error('missing custom thinking menu or selected check');})()"
+        },
+        {
+          "shot": "d-fusion-thinking-popup.png"
+        },
+        {
+          "eval": "[...document.querySelectorAll('.shadow-panel button')].find(b=>b.textContent==='高').click()"
+        },
+        {
+          "wait": 100
+        },
+        {
+          "eval": "(() => {const trigger=document.querySelector('button[aria-label=\"主模型 · 思考等级\"]');if(trigger.textContent!=='高'||trigger.getAttribute('aria-expanded')!=='false')throw new Error('thinking selection failed');trigger.click();})()"
+        },
+        {
+          "tap": "主模型 · 模型"
+        },
+        {
+          "wait": 100
+        },
+        {
+          "eval": "(() => {if(document.querySelector('button[aria-label=\"主模型 · 思考等级\"]').getAttribute('aria-expanded')!=='false')throw new Error('both menus open');return 'two-line model rows, custom thinking, selection and coordinated menus passed';})()"
+        },
+        {
+          "key": "Escape"
+        }
+      ]
+    }
+  },
+  "mobile": {
+    "fusion-settings": {
+      "query": "?fusionSettings=1&single=1",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "tap": "稍后再说"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tap": "桌面选择"
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "tap": "管理已配对的桌面…"
+        },
+        {
+          "wait": 2000
+        },
+        {
+          "tap": "桌面端设置"
+        },
+        {
+          "wait": 1800
+        },
+        {
+          "tap": "Fusion"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "eval": "document.querySelector('[role=button][aria-label=\"主模型 · 思考等级\"]').click()"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "[...document.querySelectorAll('[role=radio]')].find(b=>b.textContent==='高').click()"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "document.querySelector('[role=button][aria-label=\"参与模型 1 · 思考等级\"]').click()"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "[...document.querySelectorAll('[role=radio]')].find(b=>b.textContent==='低').click()"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "document.querySelector('[role=button][aria-label=\"移除参与模型 3\"]').click()"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "document.querySelector('[role=button][aria-label=\"保存模型配置\"]').click()"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => {if(!document.body.innerText.includes('已保存'))throw new Error('save failed');if(!document.querySelector('[aria-label=\"主模型 · 思考等级\"]').textContent.includes('高')||!document.querySelector('[aria-label=\"参与模型 1 · 思考等级\"]').textContent.includes('低'))throw new Error('thinking overwritten');if(document.querySelector('[aria-label^=\"移除参与模型\"]'))throw new Error('can remove below two');})()"
+        },
+        {
+          "shot": "m-fusion-settings.png"
+        },
+        {
+          "eval": "document.querySelector('[role=button][aria-label=\"添加参与模型\"]').click()"
+        },
+        {
+          "wait": 100
+        },
+        {
+          "eval": "document.querySelector('[role=button][aria-label=\"添加参与模型\"]').click()"
+        },
+        {
+          "wait": 100
+        },
+        {
+          "eval": "document.querySelector('[role=button][aria-label=\"添加参与模型\"]').click()"
+        },
+        {
+          "wait": 100
+        },
+        {
+          "eval": "(() => {if(document.querySelectorAll('[aria-label$=\" · 模型\"]').length!==6)throw new Error('five roles not shown');if(document.querySelector('[aria-label=\"添加参与模型\"]').getAttribute('aria-disabled')!=='true')throw new Error('can add sixth');if(document.querySelector('[aria-label=\"保存模型配置\"]').getAttribute('aria-disabled')!=='true')throw new Error('can save empty role');document.querySelector('[role=switch][aria-label=\"启用 Fusion\"]').click();})()"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => {if(document.querySelector('[role=switch][aria-label=\"启用 Fusion\"]').checked!==false)throw new Error('disable failed');return 'mobile independent levels, save, counts and switch passed';})()"
+        }
+      ]
+    },
+    "fusion-selectors": {
+      "query": "?fusionSettings=1&single=1",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 2000
+        },
+        {
+          "tap": "稍后再说"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tap": "桌面选择"
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "tap": "管理已配对的桌面…"
+        },
+        {
+          "wait": 2000
+        },
+        {
+          "tap": "桌面端设置"
+        },
+        {
+          "wait": 1800
+        },
+        {
+          "tap": "Fusion"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "eval": "(() => {const trigger=document.querySelector('[aria-label=\"主模型 · 模型\"]');if(!trigger.textContent.includes('Future/DeepSeek Flash'))throw new Error('collapsed name is not ProviderName/ModelName');trigger.click();})()"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "eval": "(() => {const row=[...document.querySelectorAll('[role=radio]')].find(r=>r.textContent==='DeepSeek FlashFuture');if(!row)throw new Error('two-line model option missing');const text=row.firstElementChild.children;if(text.length!==2||text[0].getBoundingClientRect().bottom>text[1].getBoundingClientRect().top)throw new Error('model/provider are not stacked');if(!row.querySelector('svg'))throw new Error('selected check missing');const surface=row.parentElement.parentElement;const rect=surface.getBoundingClientRect();if(rect.bottom>innerHeight)throw new Error('sheet outside viewport');return 'two-line option and selected check';})()"
+        },
+        {
+          "shot": "m-fusion-model-sheet.png"
+        },
+        {
+          "eval": "[...document.querySelectorAll('[role=radio]')].find(r=>r.textContent==='GLM 5.3 FlashFuture').click()"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "(() => {const trigger=document.querySelector('[aria-label=\"主模型 · 模型\"]');if(!trigger.textContent.includes('Future/GLM 5.3 Flash'))throw new Error('selected model not applied');document.querySelector('[aria-label=\"主模型 · 思考等级\"]').click();})()"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "eval": "(() => {const rows=[...document.querySelectorAll('[role=radio]')];for(const label of ['默认','低','中','高'])if(!rows.some(r=>r.textContent===label))throw new Error('missing thinking '+label);if(!rows.some(r=>r.querySelector('svg')))throw new Error('selected thinking check missing');})()"
+        },
+        {
+          "shot": "m-fusion-thinking-sheet.png"
+        },
+        {
+          "eval": "[...document.querySelectorAll('[role=radio]')].find(r=>r.textContent==='高').click()"
+        },
+        {
+          "wait": 150
+        },
+        {
+          "eval": "document.querySelector('[aria-label=\"参与模型 1 · 思考等级\"]').click()"
+        },
+        {
+          "wait": 150
+        },
+        {
+          "eval": "[...document.querySelectorAll('[role=radio]')].find(r=>r.textContent==='低').click()"
+        },
+        {
+          "wait": 150
+        },
+        {
+          "eval": "document.querySelector('[aria-label=\"保存模型配置\"]').click()"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "eval": "(() => {if(!document.body.innerText.includes('已保存'))throw new Error('save failed');if(!document.querySelector('[aria-label=\"主模型 · 思考等级\"]').textContent.includes('高')||!document.querySelector('[aria-label=\"参与模型 1 · 思考等级\"]').textContent.includes('低'))throw new Error('role thinking overwritten');document.querySelector('[aria-label=\"主模型 · 模型\"]').click();})()"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "document.querySelector('input[aria-label^=\"搜索模型\"]').focus()"
+        },
+        {
+          "type": "qwen"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "(() => {const rows=[...document.querySelectorAll('[role=radio]')];if(rows.length!==1||!rows[0].textContent.includes('Qwen'))throw new Error('search did not filter');document.querySelector('[aria-label=\"关闭\"]').click();})()"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "document.querySelector('[aria-label=\"主模型 · 模型\"]').click()"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "(() => {if(document.querySelectorAll('[role=radio]').length<3)throw new Error('query retained after closing');return 'Fusion shared sheets, selection, role isolation, save and search passed';})()"
+        }
+      ]
+    },
+    "chat-selectors": {
+      "query": "?single=1",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 2000
+        },
+        {
+          "tap": "稍后再说"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tap": "工作区"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tapText": "整理两篇文献的结论对比表"
+        },
+        {
+          "wait": 2500
+        },
+        {
+          "eval": "document.querySelector('[role=button][aria-label^=\"模型:\"]').click()"
+        },
+        {
+          "wait": 350
+        },
+        {
+          "eval": "(() => {const rows=[...document.querySelectorAll('[role=radio]')];if(rows.length!==3||!rows.some(r=>r.querySelector('svg')))throw new Error('chat model choices missing');const copy=rows[0].firstElementChild;if(copy.children.length!==2)throw new Error('chat model metadata missing');})()"
+        },
+        {
+          "shot": "m-chat-model-sheet.png"
+        },
+        {
+          "eval": "document.querySelectorAll('[role=radio]')[1].click()"
+        },
+        {
+          "wait": 150
+        },
+        {
+          "eval": "(() => {if(document.querySelector('[role=radio]'))throw new Error('chat model sheet did not close');document.querySelector('[role=button][aria-label^=\"思考强度:\"]').click();})()"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "eval": "(() => {const rows=[...document.querySelectorAll('[role=radio]')];if(rows.length!==6||!rows.some(r=>r.querySelector('svg')))throw new Error('chat thinking choices changed');})()"
+        },
+        {
+          "shot": "m-chat-thinking-sheet.png"
+        },
+        {
+          "eval": "[...document.querySelectorAll('[role=radio]')].find(r=>r.textContent==='高').click()"
+        },
+        {
+          "wait": 150
+        },
+        {
+          "eval": "(() => {if(document.querySelector('[role=radio]'))throw new Error('chat thinking sheet did not close');return 'chat shared model and thinking sheets passed';})()"
+        }
+      ]
+    }
+  }
+}

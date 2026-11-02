@@ -524,3 +524,25 @@ mod tests {
         assert!(!error.to_string().is_empty());
     }
 }
+
+#[tauri::command]
+pub async fn get_fusion(
+    run_id: String,
+    tool_call_id: String,
+    step_id: Option<String>,
+    offset: Option<i64>,
+) -> Result<serde_json::Value, crate::AppError> {
+    future_host::fusion::query_for_run(run_id, tool_call_id, step_id, offset).await
+}
+
+#[tauri::command]
+pub async fn get_fusion_settings() -> Result<serde_json::Value, crate::AppError> {
+    future_host::fusion::settings().await
+}
+
+#[tauri::command]
+pub async fn update_fusion_settings(
+    input: serde_json::Value,
+) -> Result<serde_json::Value, crate::AppError> {
+    future_host::fusion::update_settings(input).await
+}

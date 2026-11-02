@@ -58,6 +58,7 @@ pub fn data(scenario: Scenario) -> WorkbenchData {
 
 fn base() -> WorkbenchData {
     WorkbenchData {
+        fusion_enabled: Some(true),
         version: "0.11.0".into(),
         connected: true,
         session: SessionMeta::default(),
