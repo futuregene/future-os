@@ -1,15 +1,19 @@
+import type { RefObject } from "react";
 import { useEffect, useRef } from "react";
 
 interface DismissableLayerOptions {
   enabled: boolean;
   onDismiss: () => void;
   onEscapeDismiss?: () => void;
+  /** A portalled panel that belongs to the same interactive layer. */
+  additionalRef?: RefObject<HTMLElement | null>;
 }
 
 export function useDismissableLayer<T extends HTMLElement>({
   enabled,
   onDismiss,
   onEscapeDismiss,
+  additionalRef,
 }: DismissableLayerOptions) {
   const ref = useRef<T | null>(null);
   const onDismissRef = useRef(onDismiss);
@@ -25,7 +29,7 @@ export function useDismissableLayer<T extends HTMLElement>({
       const target = event.target;
       if (!(target instanceof Node))
         return;
-      if (ref.current?.contains(target))
+      if (ref.current?.contains(target) || additionalRef?.current?.contains(target))
         return;
 
       onDismissRef.current();
@@ -48,7 +52,7 @@ export function useDismissableLayer<T extends HTMLElement>({
       document.removeEventListener("pointerdown", handlePointerDown, true);
       document.removeEventListener("keydown", handleKeyDown, true);
     };
-  }, [enabled]);
+  }, [enabled, additionalRef]);
 
   return ref;
 }

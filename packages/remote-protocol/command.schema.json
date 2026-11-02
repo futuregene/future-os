@@ -514,6 +514,13 @@
         "null"
       ],
       "description": "get_event_content_range: session/run scoped immutable event field and UTF-8 page coordinates."
+    },
+    "fusionSettings": {
+      "x-rust-name": "fusion_settings",
+      "x-rust-type": "serde_json::Value",
+      "default": null,
+      "x-ts-type": "Record<string, unknown>",
+      "description": "Host-owned Fusion settings patch with expected_revision."
     }
   },
   "$defs": {

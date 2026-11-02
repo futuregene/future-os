@@ -1,3 +1,4 @@
+import { FusionToolRow } from "./FusionToolRow";
 import { ChevronDown, ChevronUp } from "lucide-react-native";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -29,7 +30,7 @@ import type { ToolKind } from "./messageUtils";
  * Below, the target gets the full width, wraps instead of being clipped, and
  * carries the header's own indent so it reads as that row's detail.
  */
-export function ToolRow({
+function StandardToolRow({
   tool,
   opened,
   replyStreaming,
@@ -207,3 +208,7 @@ function ToolChildRow({
 const TOOL_LABEL_KEYS: Record<ToolKind, string> = {
   shell: "chat.stepRun", read: "chat.stepRead", write: "chat.stepWrite", edit: "chat.stepEdit",
 };
+
+export function ToolRow(props: Parameters<typeof StandardToolRow>[0]) {
+  return props.tool.name === "fusion" ? <FusionToolRow tool={props.tool} resolveTarget={props.resolveTarget} /> : <StandardToolRow {...props} />;
+}

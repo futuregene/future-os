@@ -200,7 +200,7 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
    * when the call has no target; rejects on transport/route failure, which the
    * row treats as "leave the row as it was".
    */
-  resolveToolCallTarget(toolCallId: string, runId: string): Promise<string | null>;
+  resolveToolCallTarget(toolCallId: string, runId: string, fusion?: { stepId?: string; offset?: number }): Promise<string | null>;
   prepareAttachment(
     attachment: HistoryAttachment,
     variant?: "preview" | "original",
@@ -439,6 +439,8 @@ const noop = async () => undefined;
  * reading.
  */
 const NO_MANAGEMENT = {
+  getFusionSettings: noop as never,
+  updateFusionSettings: noop as never,
   getDesktopSettings: noop as never,
   updateDesktopSettings: noop as never,
   listSettingsModels: noop as never,

@@ -75,6 +75,7 @@ vi.mock("./ModelsPage", () => ({
     </div>
   ),
 }));
+vi.mock("./FusionSettingsPage", () => ({ FusionSettingsPage: () => <div data-page="fusion" /> }));
 vi.mock("./EnvironmentPage", () => ({ EnvironmentPage: () => <div data-page="environment" /> }));
 vi.mock("./CommunityEditionSection", () => ({
   CommunityEditionSection: (props: { communityEdition: boolean; onChangeCommunityEdition: (v: boolean) => void }) => (
@@ -238,6 +239,7 @@ describe("settingsDialog tab routing", () => {
     ["About", "about", "About"],
     ["Providers", "providers", "Providers"],
     ["Models", "models", "Models"],
+    ["Fusion", "fusion", "Fusion"],
     ["Environment", "environment", "Environment"],
     ["Reset", "reset", "Reset"],
   ] as const)("switches to %s", (nav, expectedPage, expectedHeader) => {
@@ -291,7 +293,7 @@ describe("settingsDialog dev-only environment tab", () => {
     const { container } = mount();
 
     expect(navLabels(container)).not.toContain("Environment");
-    expect(navLabels(container)).toEqual(["General", "Keyboard shortcuts", "Account", "Check for updates", "About", "Providers", "Models", "Reset"]);
+    expect(navLabels(container)).toEqual(["General", "Keyboard shortcuts", "Account", "Check for updates", "About", "Providers", "Models", "Fusion", "Reset"]);
   });
 
   it("shows the environment tab (and its community-edition section) on a dev build", () => {

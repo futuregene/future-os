@@ -96,6 +96,8 @@ export interface RemoteCommand {
   reason?: string;
   /** get_event_content_range: session/run scoped immutable event field and UTF-8 page coordinates. */
   contentRequest?: { databaseId: string; restoreGeneration: string; epoch: number; cursor: number; field: string; offset?: number; maxBytes?: number };
+  /** Host-owned Fusion settings patch with expected_revision. */
+  fusionSettings?: Record<string, unknown>;
 }
 
 export interface UploadReference {

@@ -190,6 +190,20 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
         // still carries every argument, so it has no use for this command and
         // must not find a path to it (the reply is the same "unsupported" a
         // client of an older bridge would get).
+        "get_fusion" => {
+            match crate::fusion::query(
+                cmd.session_id.clone(),
+                cmd.run_id.clone(),
+                cmd.tool_call_id.clone(),
+                (!cmd.entry_id.is_empty()).then(|| cmd.entry_id.clone()),
+                Some(cmd.offset),
+            )
+            .await
+            {
+                Ok(data) => reply(sink, true, data, None).await,
+                Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+            }
+        }
         "get_tool_call_args" => {
             if !crate::remote_host::lean::enabled() {
                 reply(
