@@ -34,7 +34,7 @@ pub async fn session_queue_snapshot(session_id: &str) -> Result<Value, crate::Er
 
 /// An idle conversation with nothing waiting.
 pub fn empty_queue() -> Value {
-    json!({ "activeRunId": Value::Null, "queued": [] })
+    json!({ "activeRunId": Value::Null, "queued": [], "recentTerminalAcks": [] })
 }
 
 /// The queue half of a `get_state` payload, normalised for clients.
@@ -56,13 +56,32 @@ pub fn queue_state_json(state: &Value) -> Value {
                 "position": field(row, "queuePosition", "queue_position").and_then(|v| v.as_i64()).unwrap_or(0),
                 "acceptedAt": field(row, "acceptedAt", "accepted_at").and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
                 "text": field(row, "displayText", "display_text").and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
+                // "queued" runs at the turn boundary; "stale" waited too long and
+                // waits for a person instead. Same row, one different sentence.
+                "state": field(row, "state", "state").and_then(|v| v.as_str().map(str::to_string)).unwrap_or_else(|| "queued".to_string()),
             })
         })
         .collect::<Vec<_>>();
     let active_run_id = field(state, "activeRun", "active_run")
         .and_then(|run| field(&run, "runId", "run_id"))
         .and_then(|id| id.as_str().map(str::to_string));
-    json!({ "activeRunId": active_run_id, "queued": queued })
+    // Why a queued prompt stopped being queued without running: folded into the
+    // run ahead (`merged`), dropped by the reader, or refused before it started.
+    // Without these a row would simply vanish, and the reader would believe it
+    // had been sent.
+    let recent = field(state, "recentTerminalAcks", "recent_terminal_acks")
+        .and_then(|rows| rows.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .map(|row| {
+            json!({
+                "runId": field(row, "runId", "run_id").and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
+                "state": field(row, "state", "state").and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
+                "reason": field(row, "reason", "reason").and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({ "activeRunId": active_run_id, "queued": queued, "recentTerminalAcks": recent })
 }
 
 #[cfg(test)]

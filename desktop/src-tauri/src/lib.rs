@@ -1119,6 +1119,7 @@ mod gui {
                 abort_run,
                 session_queue,
                 cancel_queued_run,
+                release_queued_run,
                 list_run_events,
                 list_run_events_bulk,
                 list_run_events_since,

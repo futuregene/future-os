@@ -23,12 +23,24 @@ pub async fn session_queue(thread_id: &str) -> Result<Value, crate::Error> {
     agent_bridge::session_queue_snapshot(&session_id).await
 }
 
+/// Start a held message now, because the reader asked for it.
+pub async fn release_queued_run(run_id: &str) -> Result<(), crate::Error> {
+    let (session_id, run_id) = queued_run_session(run_id)?;
+    agent_bridge::release_queued_run(&session_id, &run_id).await
+}
+
 /// Take one held message back out of the queue before it leaves.
 ///
 /// The row's conversation is resolved from the returned run rather than trusted
 /// from the caller: a queue is per session, and cancelling by a run id against
 /// the wrong session would either fail or, worse, cancel somebody else's prompt.
 pub async fn cancel_queued_run(run_id: &str) -> Result<(), crate::Error> {
+    let (session_id, run_id) = queued_run_session(run_id)?;
+    agent_bridge::cancel_queued_run(&session_id, &run_id).await
+}
+
+/// The conversation a queued run belongs to, and the run id to address.
+fn queued_run_session(run_id: &str) -> Result<(String, String), crate::Error> {
     let run = store::get_run(run_id)?
         .ok_or_else(|| "That queued message could not be found.".to_string())?;
     let thread = store::get_thread(&run.thread_id)?
@@ -37,5 +49,5 @@ pub async fn cancel_queued_run(run_id: &str) -> Result<(), crate::Error> {
         .agent_session_id
         .clone()
         .unwrap_or_else(|| thread.id.clone());
-    agent_bridge::cancel_queued_run(&session_id, run_id).await
+    Ok((session_id, run.id))
 }

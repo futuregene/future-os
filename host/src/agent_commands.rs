@@ -304,6 +304,15 @@ pub fn cancel_queued_run_command(run_id: String, session_id: String) -> RpcComma
     }
 }
 
+/// Start a queued prompt the reader asked for (one parked as stale, or one they
+/// want now instead of at the turn boundary).
+pub fn release_queued_run_command(run_id: String, session_id: String) -> RpcCommand {
+    RpcCommand {
+        run_id,
+        ..base_command("release_queued_run", session_id)
+    }
+}
+
 pub fn base_command(command_type: &str, session_id: String) -> RpcCommand {
     RpcCommand {
         id: command_id(),
