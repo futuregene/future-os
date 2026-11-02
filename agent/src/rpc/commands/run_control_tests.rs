@@ -170,20 +170,37 @@ fn a_stop_records_the_marker_for_the_run_it_cancelled() {
     let reply = parse_response(&handle_command_internal(&state, cmd));
 
     assert_eq!(reply["success"], true, "{reply}");
-    let persisted = state.session_manager.load("default").unwrap();
-    let markers: Vec<_> = persisted
-        .entries
-        .iter()
-        .filter(|entry| entry.entry_type == "run_stop_requested")
-        .filter_map(|entry| {
-            entry
-                .content
-                .as_ref()?
-                .get("run_id")?
-                .as_str()
-                .map(str::to_owned)
-        })
-        .collect();
+    // The marker is durable work that the stop *starts* rather than waits for:
+    // `abort_run` hands the append to its own thread and waits only
+    // `STOP_MARKER_GRACE`, so a contended store cannot hold the interruption.
+    // What this test can assert is that the marker lands, not that it landed
+    // before the reply returned — on 2026-11-02 a loaded CI lane exceeded that
+    // grace and the reply came back with the write still queued. Observe the
+    // marker instead of assuming one read is enough.
+    let stop_markers = |state: &crate::rpc::AppState| -> Vec<String> {
+        state
+            .session_manager
+            .load("default")
+            .unwrap()
+            .entries
+            .iter()
+            .filter(|entry| entry.entry_type == "run_stop_requested")
+            .filter_map(|entry| {
+                entry
+                    .content
+                    .as_ref()?
+                    .get("run_id")?
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .collect()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut markers = stop_markers(&state);
+    while markers.is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        markers = stop_markers(&state);
+    }
     assert_eq!(markers, vec!["live".to_string()]);
     assert!(session.read().runtime.begin_finalizing(&lease));
     assert!(session.read().runtime.finish(&lease));
