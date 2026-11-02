@@ -247,7 +247,17 @@ impl EventBatchWriter {
         let receiver = self.control.queue_shutdown()?;
         let result = receiver
             .recv()
-            .map_err(|_| anyhow::anyhow!("event shutdown acknowledgement lost"))?
+            .map_err(|_| {
+                let error = self.health.error();
+                tracing::error!(
+                    event = "event_journal_shutdown_ack_lost",
+                    ?error,
+                    body_queue = self.sender.len(),
+                    control_queue = self.control.sender.len(),
+                    "Event journal worker exited without its shutdown acknowledgement"
+                );
+                anyhow::anyhow!("event shutdown acknowledgement lost (journal health: {error:?})")
+            })?
             .map_err(anyhow::Error::msg);
         if let Some(thread) = self.thread.take() {
             thread

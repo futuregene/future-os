@@ -1,7 +1,4 @@
-use crate::{
-    now_ms, Conclusion, Consultation, ConsultationInput, Discussion, Event, Parent, Step,
-    MAX_CALLS_PER_PARENT_RUN,
-};
+use crate::{now_ms, Conclusion, Consultation, ConsultationInput, Discussion, Event, Parent, Step};
 use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
@@ -192,12 +189,6 @@ impl Store {
         }
         let settings = Self::read_settings(&tx)?;
         ensure!(settings.enabled, "Fusion is disabled in settings");
-        let count: i64 = tx.query_row(
-            "SELECT count(*) FROM fusion_runs WHERE parent_session=?1 AND parent_run=?2",
-            params![parent.session_id, parent.run_id],
-            |r| r.get(0),
-        )?;
-        ensure!(count < MAX_CALLS_PER_PARENT_RUN as i64, "Fusion consultation limit reached; continue independently or reuse the existing conclusion");
         let root = self.root.join("snapshots").join(&id);
         let run = Consultation {
             id: id.clone(),
@@ -526,6 +517,50 @@ fn append(db: &Connection, id: &str, kind: &str, data: Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_parent_run_admits_further_discussions_without_losing_replay_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let mut admissions: Vec<(Parent, ConsultationInput, String)> = Vec::new();
+        for index in 0..8 {
+            let parent = Parent {
+                database_id: "db".into(),
+                session_id: "s".into(),
+                run_id: "r".into(),
+                tool_call_id: format!("t{index}"),
+            };
+            let input = ConsultationInput {
+                question: format!("Decision {index}?"),
+                goal: "choose".into(),
+                background: "new facts".into(),
+                constraints: vec![],
+                options: vec![],
+                evidence: vec![],
+                read_scope: vec![],
+            };
+            let (run, created) = store
+                .prepare(parent.clone(), input.clone(), dir.path())
+                .unwrap();
+            assert!(created);
+            assert!(admissions.iter().all(|(_, _, id)| id != &run.id));
+            admissions.push((parent, input, run.id));
+        }
+
+        let reopened = Store::open(dir.path()).unwrap();
+        for (parent, input, id) in &admissions {
+            let (replayed, created) = reopened
+                .prepare(parent.clone(), input.clone(), dir.path())
+                .unwrap();
+            assert!(!created);
+            assert_eq!(&replayed.id, id);
+            assert_eq!(&reopened.get(id).unwrap().parent, parent);
+        }
+        let (parent, mut conflict, _) = admissions.pop().unwrap();
+        conflict.question = "different decision for the same call".into();
+        assert!(reopened.prepare(parent, conflict, dir.path()).is_err());
+    }
+
     #[test]
     fn settings_are_durable_revisioned_and_frozen_at_admission() {
         let dir = tempfile::tempdir().unwrap();

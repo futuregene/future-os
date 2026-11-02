@@ -939,7 +939,8 @@ Current focus:
   ones. Each program card's main content shows only the `command` field from
   the tool input JSON, displayed as the real command text — never the full
   JSON, escaped text, model names, or internal numbers like `Program <id>`;
-  runs without `command` do not enter the Runs list.
+  Fusion rows instead show their focused question and open their detail inspector within Runs.
+- Fusion is a tool within Runs. Its row and inline activity open a dedicated detail inspector inside Runs; Back returns to the tool list. There is no standalone Discussions type. Internal moderator readiness checks are hidden from the user-facing inspector. Remote conversations reuse the detail component with their host-bound reader.
 - Workspace conversations: show Files, Runs, and Review. Git workspaces'
   Review offers "Git changes" + "Last-round changes"; non-Git workspaces offer
   only "Last-round changes".

@@ -1,6 +1,5 @@
 //! One process-wide stop operation, shared by every exit/reset/update caller.
 //! A native watchdog publishes terminal failure independently of stuck cleanup.
-use crate::console;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -45,7 +44,7 @@ impl Operation {
             state.snapshot.stage = stage.into();
         }
         drop(state);
-        console::eprintln!("FutureOS: cleanup stage={stage}");
+        tracing::debug!(event = "stage", stage = %stage,"FutureOS: cleanup stage={stage}");
         self.emit_progress();
     }
     fn emit_progress(&self) {

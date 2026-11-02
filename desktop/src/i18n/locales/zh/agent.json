@@ -332,7 +332,7 @@
   },
   "fusion": {
     "enabled": "Fusion 工具已启用 · 按需只读讨论",
-    "enableDescription": "为本次主流程加入多模型思考工具；讨论不执行动作",
+    "enableDescription": "为本次主流程加入多模型思考工具",
     "remove": "移除",
     "discussion": "讨论记录",
     "discussing": "正在讨论",
@@ -390,7 +390,7 @@
       "partial": "部分完成",
       "skipped": "已跳过"
     },
-    "stageCount": "{{current}} / {{total}}",
+    "stageCount": "{{current}}/{{total}}",
     "progress": "讨论阶段进度",
     "partialNotice": "部分模型未完成讨论",
     "statusUnavailable": "暂时无法读取讨论状态",
@@ -407,6 +407,27 @@
       "budgetReserved": "已跳过后续讨论，为总结保留时间。",
       "directReview": "议题整理未完成，已直接比较原始分析。",
       "materialsRetained": "已有分析与降级原因已保留，可用于复盘。"
+    },
+    "detail": {
+      "open": "查看讨论明细",
+      "title": "讨论明细",
+      "back": "返回",
+      "refresh": "刷新讨论记录",
+      "emptyTitle": "暂无讨论记录",
+      "emptyDetail": "使用 /fusion 提交任务后，在这里查看讨论过程与结论。",
+      "pending": "等待讨论记录生成",
+      "context": "讨论背景与约束",
+      "goal": "目标",
+      "background": "背景",
+      "constraints": "约束",
+      "conclusion": "最终结论",
+      "noConclusion": "本次讨论未形成最终结论。已有模型发言保留在下方，不代表综合结论或共识。",
+      "noMessages": "此阶段暂无发言记录",
+      "noOutput": "暂无公开发言",
+      "readFailed": "读取完整发言失败，已保留现有预览。",
+      "resultDetails": "判断依据与后续建议",
+      "consensus": "共同意见",
+      "blindSpots": "共同遗漏"
     }
   }
 }

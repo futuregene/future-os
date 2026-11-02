@@ -30,6 +30,8 @@ fn run_case(case: &str) -> String {
         .env("HOME", home.path())
         .env("USERPROFILE", home.path())
         .env("FUTURE_HOME", home.path().join(".future"))
+        // This fixture verifies the host-visible INFO startup progress.
+        .env("RUST_LOG", "info")
         .env("FUTURE_AGENT_SOCKET", socket.path().join("agent.sock"))
         .env_remove("FUTURE_AGENT_GRPC_ADDR")
         .stdout(Stdio::piped())

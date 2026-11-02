@@ -413,7 +413,7 @@ export const resources = {
         "fusionModeratorRole": "Main model",
         "fusionParticipantRole": "Participant {{number}}",
         "fusionDisabled": "Fusion is turned off in settings",
-        "fusionStageCount": "{{current}} / {{total}}",
+        "fusionStageCount": "{{current}}/{{total}}",
         "fusionProgress": "Discussion stage progress",
         "fusionPartialNotice": "Some models did not complete the discussion",
         "fusionNotices": {
@@ -441,7 +441,7 @@ export const resources = {
           "partial": "Partially complete"
         },
         "fusionEnabled": "Fusion tool enabled · Read-only discussion when needed",
-        "fusionDescription": "Add multi-model thinking to this run; discussion does not act",
+        "fusionDescription": "Add multi-model thinking to this run",
         "fusionUnavailable": "Fusion is unavailable on this host",
         "fusionDiscussing": "Discussing",
         "fusionDiscussion": "Discussion",
@@ -1517,7 +1517,7 @@ export const resources = {
         "fusionModeratorRole": "主模型",
         "fusionParticipantRole": "参与模型 {{number}}",
         "fusionDisabled": "Fusion 已在设置中关闭",
-        "fusionStageCount": "{{current}} / {{total}}",
+        "fusionStageCount": "{{current}}/{{total}}",
         "fusionProgress": "讨论阶段进度",
         "fusionPartialNotice": "部分模型未完成讨论",
         "fusionNotices": {
@@ -1545,7 +1545,7 @@ export const resources = {
           "partial": "部分完成"
         },
         "fusionEnabled": "Fusion 工具已启用 · 按需只读讨论",
-        "fusionDescription": "为本次主流程加入多模型思考工具；讨论不执行动作",
+        "fusionDescription": "为本次主流程加入多模型思考工具",
         "fusionUnavailable": "当前宿主不支持 Fusion",
         "fusionDiscussing": "正在讨论",
         "fusionDiscussion": "讨论记录",

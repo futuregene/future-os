@@ -30,7 +30,7 @@ pub fn stop() -> RemoteStatus {
 pub async fn stop_gracefully(reason: &str) -> RemoteStatus {
     assert_supervised("a graceful remote stop");
     let status = SUPERVISOR.stop_gracefully(reason).await;
-    future_remote_protocol::remote_log!(
+    tracing::info!(event = "stop_gracefully", reason = %reason,
         "remote: stopped (reason={reason}, phase={:?}, failure={:?})",
         status.phase,
         status.reason

@@ -331,7 +331,7 @@
   },
   "fusion": {
     "enabled": "Fusion tool enabled · Read-only consultation when needed",
-    "enableDescription": "Add multi-model thinking to this run; discussion does not act",
+    "enableDescription": "Add multi-model thinking to this run",
     "remove": "Remove",
     "discussion": "Discussion",
     "discussing": "Consulting models",
@@ -389,7 +389,7 @@
       "partial": "Partially complete",
       "skipped": "Skipped"
     },
-    "stageCount": "{{current}} / {{total}}",
+    "stageCount": "{{current}}/{{total}}",
     "progress": "Discussion stage progress",
     "partialNotice": "Some models did not complete the discussion",
     "statusUnavailable": "Discussion status is temporarily unavailable",
@@ -406,6 +406,27 @@
       "budgetReserved": "Further discussion was skipped to reserve time for synthesis.",
       "directReview": "Issue mapping did not finish; original analyses were compared directly.",
       "materialsRetained": "Existing analyses and degradation reasons were preserved for review."
+    },
+    "detail": {
+      "open": "View discussion details",
+      "title": "Discussion details",
+      "back": "Back",
+      "refresh": "Refresh discussion",
+      "emptyTitle": "No discussions yet",
+      "emptyDetail": "Submit a task with /fusion to review its discussion and conclusion here.",
+      "pending": "Waiting for the discussion record",
+      "context": "Background and constraints",
+      "goal": "Goal",
+      "background": "Background",
+      "constraints": "Constraints",
+      "conclusion": "Final conclusion",
+      "noConclusion": "This discussion did not produce a final conclusion. Retained messages below are not a synthesized recommendation or consensus.",
+      "noMessages": "No messages in this stage yet",
+      "noOutput": "No public response yet",
+      "readFailed": "Could not load the full response. The existing preview is preserved.",
+      "resultDetails": "Rationale and follow-up",
+      "consensus": "Agreement",
+      "blindSpots": "Blind spots"
     }
   }
 }

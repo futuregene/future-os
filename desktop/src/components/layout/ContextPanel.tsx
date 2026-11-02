@@ -1,4 +1,5 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
+import type { FusionSelection } from "../../features/fusion/types";
 import type {
   StoredRun,
   StoredThread,
@@ -12,6 +13,7 @@ import { useTranslation } from "react-i18next";
 import { ArtifactDetailPanel } from "../../features/artifacts/ArtifactDetailPanel";
 import { ArtifactsPanel } from "../../features/artifacts/ArtifactsPanel";
 import { FileTreePanel } from "../../features/filetree/FileTreePanel";
+import { FusionDiscussionPanel } from "../../features/fusion/FusionDiscussionPanel";
 import { ReviewPanel } from "../../features/review/ReviewPanel";
 import { RunInspectPanel } from "../../features/runs/RunInspectPanel";
 import { RunsPanel } from "../../features/runs/RunsPanel";
@@ -104,6 +106,7 @@ export function ContextPanel({
   );
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
+  const [selectedFusion, setSelectedFusion] = useState<(FusionSelection & { threadId: string }) | null>(null);
   // Guards the once-per-open default-tab seed: armed (false) while the panel is
   // closed, tripped (true) after seeding so a thread switch mid-open never
   // re-seeds. See the seeding effect below.
@@ -194,6 +197,7 @@ export function ContextPanel({
 
   const handleSelectRun = useCallback(
     (runId: string) => {
+      setSelectedFusion(null);
       setSelectedRunId(runId);
       setSelectedToolId(null);
       setSelectedArtifactId(null);
@@ -206,6 +210,16 @@ export function ContextPanel({
 
   const handleSelectTool = useCallback(
     (toolId: string) => {
+      const tool = Object.values(toolsByRun).flat().find(tool => tool.id === toolId);
+      if (tool?.name?.trim().toLowerCase() === "fusion" && activeThreadId) {
+        setSelectedFusion({ threadId: activeThreadId, runId: tool.runId, toolCallId: tool.id, status: tool.status });
+        setSelectedToolId(null);
+        setSelectedRunId(null);
+        setSelectedArtifactId(null);
+        onTabChange("runs");
+        return;
+      }
+      setSelectedFusion(null);
       setSelectedToolId(toolId);
       setSelectedRunId(null);
       setSelectedArtifactId(null);
@@ -213,11 +227,12 @@ export function ContextPanel({
         onTabChange("runs");
       }
     },
-    [activeTab, onTabChange],
+    [activeTab, onTabChange, toolsByRun, activeThreadId],
   );
 
   const handleSelectArtifact = useCallback(
     (artifactId: string) => {
+      setSelectedFusion(null);
       setSelectedArtifactId(artifactId);
       setSelectedRunId(null);
       if (activeTab !== "artifacts") {
@@ -232,6 +247,7 @@ export function ContextPanel({
     setSelectedArtifactId(null);
     setSelectedRunId(null);
     setSelectedToolId(null);
+    setSelectedFusion(null);
   }, [activeThreadId]);
 
   // Seed the content tab (Review for workspace threads, Files for chat) each
@@ -253,7 +269,7 @@ export function ContextPanel({
     seededForOpenRef.current = true;
     // If a tool / run inspection just opened the panel it already picked the
     // runs tab — leave that choice alone.
-    if (selectedToolId || selectedRunId)
+    if (selectedToolId || selectedRunId || selectedFusion?.threadId === activeThreadId)
       return;
     const preferred: ContextTab = "files";
     if (activeTab !== preferred)
@@ -266,10 +282,22 @@ export function ContextPanel({
     onTabChange,
     selectedToolId,
     selectedRunId,
+    selectedFusion,
   ]);
 
   useEffect(() => {
     const unsubscribers = [
+      onFutureEvent("inspect-fusion", (detail) => {
+        if (!activeThreadId || detail.resolveTarget)
+          return;
+        setSelectedFusion({ threadId: activeThreadId, runId: detail.runId, toolCallId: detail.toolCallId, status: detail.status });
+        setSelectedToolId(null);
+        setSelectedRunId(null);
+        setSelectedArtifactId(null);
+        onTabChange("runs");
+        if (!expanded)
+          onToggleExpanded();
+      }),
       onFutureEvent("inspect-run", (detail) => {
         handleSelectRun(detail.runId);
         if (!expanded) {
@@ -290,6 +318,7 @@ export function ContextPanel({
         }
       }),
       onFutureEvent("open-review", () => {
+        setSelectedFusion(null);
         setSelectedArtifactId(null);
         setSelectedRunId(null);
         setSelectedToolId(null);
@@ -307,6 +336,7 @@ export function ContextPanel({
     handleSelectTool,
     onTabChange,
     onToggleExpanded,
+    activeThreadId,
   ]);
 
   if (!expanded) {
@@ -416,33 +446,35 @@ export function ContextPanel({
           : null}
         {!showInitialLoading && activeThread && activeTab === "runs"
           ? (
-              selectedTool
-                ? (
-                    <div className="h-full overflow-auto px-4 pb-4">
-                      <RunInspectPanel
-                        compact
-                        run={selectedTool.run}
-                        tools={[selectedTool.tool]}
-                        onBack={() => setSelectedToolId(null)}
-                      />
-                    </div>
-                  )
-                : selectedToolId
+              selectedFusion?.threadId === activeThread.id
+                ? <FusionDiscussionPanel key={`${selectedFusion.runId}:${selectedFusion.toolCallId}`} {...selectedFusion} onBack={() => setSelectedFusion(null)} />
+                : selectedTool
                   ? (
-                      <div className="px-4 py-4 text-sm text-ink-muted">
-                        {t("contextPanel.loading")}
+                      <div className="h-full overflow-auto px-4 pb-4">
+                        <RunInspectPanel
+                          compact
+                          run={selectedTool.run}
+                          tools={[selectedTool.tool]}
+                          onBack={() => setSelectedToolId(null)}
+                        />
                       </div>
                     )
-                  : (
-                      <RunsPanel
-                        runs={runs}
-                        toolsByRun={toolsByRun}
-                        scope={runsScope}
-                        onArchiveFinished={handleArchiveFinishedRuns}
-                        onInspectTool={handleSelectTool}
-                        onTerminateRun={handleTerminateRun}
-                      />
-                    )
+                  : selectedToolId
+                    ? (
+                        <div className="px-4 py-4 text-sm text-ink-muted">
+                          {t("contextPanel.loading")}
+                        </div>
+                      )
+                    : (
+                        <RunsPanel
+                          runs={runs}
+                          toolsByRun={toolsByRun}
+                          scope={runsScope}
+                          onArchiveFinished={handleArchiveFinishedRuns}
+                          onInspectTool={handleSelectTool}
+                          onTerminateRun={handleTerminateRun}
+                        />
+                      )
             )
           : null}
         {!showInitialLoading && activeThread && activeTab === "review"

@@ -1,5 +1,4 @@
 //! Agent-authoritative cleanup coordination. SQL and CAS writes live in host.
-use crate::console;
 use std::collections::HashSet;
 
 /// Inspect missing Agent bindings without deleting conversation history.
@@ -20,13 +19,16 @@ pub async fn reconcile_orphan_sessions() -> Result<usize, crate::Error> {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
             Err(error) => {
-                console::eprintln!("FutureOS: orphan-session reconcile skipped: {error}");
+                tracing::warn!(event = "reconcile_orphan_sessions", error = %error,"FutureOS: orphan-session reconcile skipped: {error}");
                 return Ok(0);
             }
         }
     }
     let Some(live_sessions) = live_sessions else {
-        console::eprintln!("FutureOS: orphan-session reconcile skipped: agent unreachable");
+        tracing::debug!(
+            event = "reconcile_orphan_sessions",
+            "FutureOS: orphan-session reconcile skipped: agent unreachable"
+        );
         return Ok(0);
     };
 
@@ -39,7 +41,7 @@ pub async fn reconcile_orphan_sessions() -> Result<usize, crate::Error> {
         let presence = match crate::agent_bridge::session_presence(ids).await {
             Ok(presence) => presence,
             Err(error) => {
-                console::eprintln!("FutureOS: durable session reconcile deferred: {error}");
+                tracing::warn!(event = "reconcile_orphan_sessions", error = %error,"FutureOS: durable session reconcile deferred: {error}");
                 break;
             }
         };
@@ -57,7 +59,7 @@ pub async fn reconcile_orphan_sessions() -> Result<usize, crate::Error> {
                         &presence.database_id,
                         &presence.restore_generation,
                     ) {
-                        console::eprintln!(
+                        tracing::warn!(event = "reconcile_orphan_sessions", error = %error,
                             "FutureOS: conversation source binding retained: {error}"
                         );
                     }
@@ -74,7 +76,7 @@ pub async fn reconcile_orphan_sessions() -> Result<usize, crate::Error> {
         }
     }
     if orphans != 0 && removed == 0 {
-        console::eprintln!("FutureOS: {} conversation source(s) are missing; preserving local history for recovery", orphans);
+        tracing::warn!(event = "reconcile_orphan_sessions","FutureOS: {} conversation source(s) are missing; preserving local history for recovery", orphans);
     }
     Ok(removed)
 }
@@ -103,7 +105,7 @@ pub async fn reconcile_undeliverable_delete_intents() -> Result<usize, crate::Er
             Err(error) => {
                 // Nothing in this pass can be judged without the Agent's own
                 // catalogue; the next one re-runs it.
-                console::eprintln!("FutureOS: undeliverable delete reconcile deferred: {error}");
+                tracing::warn!(event = "reconcile_undeliverable_delete_intents", error = %error,"FutureOS: undeliverable delete reconcile deferred: {error}");
                 break;
             }
         };
@@ -119,7 +121,7 @@ pub async fn reconcile_undeliverable_delete_intents() -> Result<usize, crate::Er
         released += super::release_undeliverable_agent_session_deletes(&present)?;
     }
     if released > 0 {
-        console::eprintln!(
+        tracing::info!(event = "reconcile_undeliverable_delete_intents", released = released,
             "FutureOS: released {released} undeliverable deletion intent(s); the next import may mirror those conversations again"
         );
     }
@@ -160,11 +162,11 @@ pub async fn reconcile_empty_conversations() -> Result<usize, crate::Error> {
             Err(crate::Error::AgentUnavailable(error)) => {
                 // Nothing left in this pass can be judged while the Agent is
                 // away; the next one re-runs it.
-                console::eprintln!("FutureOS: empty-conversation reconcile stopped: {error}");
+                tracing::warn!(event = "reconcile_empty_conversations", error = %error,"FutureOS: empty-conversation reconcile stopped: {error}");
                 break;
             }
             Err(error) => {
-                console::eprintln!(
+                tracing::warn!(event = "reconcile_empty_conversations", session_id = %session_id, error = %error,
                     "FutureOS: empty-conversation probe failed for {session_id}: {error}"
                 )
             }

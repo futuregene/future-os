@@ -25,6 +25,7 @@ Groups:
   models    List or refresh available AI models from the agent
   session   List, inspect, update, rename, and delete agent sessions
   data      Offline history backup, verification and recovery
+  logs      Locate Rust component diagnostic files
   doctor    Environment diagnostic
   version   Print the build identity (version, commit, target)
 
@@ -46,6 +47,7 @@ Quick start:
   future run "Explain this project"          One-shot agent prompt
   future run @README.md "Summarize this"     Include files in prompt
   future skills install-builtin              Install all built-in skills
+  future logs status                         Locate component logs
   future doctor                              Check everything is working
 
 Run 'future <group> --help' for per-group details.

@@ -316,7 +316,7 @@ fn disabled_channels_sigint_exits_cleanly() {
 #[cfg(unix)]
 #[test]
 fn slack_events_webhook_starts_in_the_binary() {
-    let (status, stdout) = sigint_after_stdout_marker(
+    let (status, diagnostics) = sigint_after_diagnostic_marker(
         "slack-events-webhook",
         r#"{"agent": {"grpc_addr": "http://127.0.0.1:1"},
             "providers": {"slack": {"enabled": true, "bot_token": "xoxb-x",
@@ -327,19 +327,19 @@ fn slack_events_webhook_starts_in_the_binary() {
     // Ephemeral port: the configured 0 must have been used as given, and the
     // signature check is armed (the path is registered on the hook).
     assert!(
-        stdout.contains("events API webhook listening"),
-        "stdout: {stdout}"
+        diagnostics.contains("events API webhook listening"),
+        "diagnostics: {diagnostics}"
     );
 }
 
-/// Spawn the bridge, wait until it logs `marker` on stdout (bounded), then stop
-/// it with SIGINT and return `(exit status, captured stdout)`.
+/// Spawn the bridge, wait until it logs `marker` on stderr (bounded), then stop
+/// it with SIGINT and return `(exit status, captured diagnostics)`.
 ///
 /// A fixed sleep races the asynchronous thing under test — here the inbound
 /// webhook server, which starts after Slack's `auth.test` round trip — so this
 /// waits for the component's own log line instead.
 #[cfg(unix)]
-fn sigint_after_stdout_marker(
+fn sigint_after_diagnostic_marker(
     label: &str,
     config: &str,
     marker: &str,
@@ -347,18 +347,18 @@ fn sigint_after_stdout_marker(
     let home = isolated_home(label);
     write_config(&home, config);
     let mut child = bin_in(&home)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn binary");
-    let stdout = child.stdout.take().expect("piped stdout");
+    let diagnostics = child.stderr.take().expect("piped stderr");
     // Drain the pipe on its own thread (the child must never block on a full
     // buffer) and forward each line so this thread can look for the marker.
     let (lines_tx, lines_rx) = std::sync::mpsc::channel::<String>();
     let reader = std::thread::spawn(move || {
         use std::io::BufRead as _;
         let mut captured = String::new();
-        for line in std::io::BufReader::new(stdout).lines() {
+        for line in std::io::BufReader::new(diagnostics).lines() {
             let Ok(line) = line else { break };
             let _ = lines_tx.send(line.clone());
             captured.push_str(&line);
@@ -382,8 +382,23 @@ fn sigint_after_stdout_marker(
     }
 
     let status = sigint_until_exit(&mut child);
-    let captured = reader.join().expect("stdout reader");
+    let captured = reader.join().expect("diagnostic reader");
     assert!(seen, "the child never logged {marker:?}: {captured}");
+    let log = std::fs::read_to_string(home.join(".future/channels/logs/channel.log"))
+        .expect("channel diagnostics are saved on clean shutdown");
+    let records: Vec<serde_json::Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("channel log is JSONL"))
+        .collect();
+    assert!(
+        records.iter().any(|record| {
+            record["component"] == "channel"
+                && record["fields"]["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains(marker))
+        }),
+        "the readiness diagnostic must reach channel.log: {log}"
+    );
     (status, captured)
 }
 

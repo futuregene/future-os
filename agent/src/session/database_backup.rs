@@ -17,55 +17,87 @@ pub(crate) fn create_database_snapshot_cancellable(
     prefix: &str,
     cancellation: &crate::service::StartupCancellation,
 ) -> Result<PathBuf> {
-    cancellation.check()?;
-    let check: String = connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
-    ensure!(
-        check == "ok",
-        "database integrity check failed; preserve the original database and WAL"
-    );
-    std::fs::create_dir_all(directory).context("create database snapshot directory")?;
-    let destination = directory.join(format!("{prefix}-{}.db", uuid::Uuid::new_v4()));
-    // Close the temporary file handle before SQLite opens that file.
-    // tempfile creates it owner-only, and TempPath removes incomplete snapshots.
-    let temporary = tempfile::Builder::new()
-        .prefix(".sqlite-upgrade-")
-        .tempfile_in(directory)?
-        .into_temp_path();
-    connection.execute(
-        "VACUUM main INTO ?1",
-        [temporary
-            .to_str()
-            .context("database snapshot path is not valid UTF-8")?],
-    )?;
-    cancellation.check()?;
-    let snapshot = Connection::open_with_flags(&temporary, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    cancellation.monitor_sqlite(&snapshot)?;
-    let checked = snapshot.query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0));
-    cancellation.check()?;
-    let check = checked?;
-    ensure!(check == "ok", "database snapshot integrity check failed");
-    drop(snapshot);
-    std::fs::OpenOptions::new()
-        .write(true)
-        .open(&temporary)?
-        .sync_all()?;
-    cancellation.check()?;
-    temporary
-        .persist_noclobber(&destination)
-        .context("publish verified database snapshot")?;
-    #[cfg(unix)]
-    {
-        std::fs::File::open(directory)?.sync_all()?;
-        if let Some(parent) = directory.parent() {
-            std::fs::File::open(if parent.as_os_str().is_empty() {
-                Path::new(".")
-            } else {
-                parent
-            })?
+    let started = std::time::Instant::now();
+    if prefix.starts_with("app-") {
+        tracing::info!(target: "future_host::store::backup", event = "database_backup_started", kind = prefix, directory = %directory.display());
+    } else {
+        tracing::info!(event = "database_backup_started", kind = prefix, directory = %directory.display());
+    }
+    let result: Result<PathBuf> = (|| {
+        cancellation.check()?;
+        let check: String = connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+        ensure!(
+            check == "ok",
+            "database integrity check failed; preserve the original database and WAL"
+        );
+        std::fs::create_dir_all(directory).context("create database snapshot directory")?;
+        let destination = directory.join(format!("{prefix}-{}.db", uuid::Uuid::new_v4()));
+        // Close the temporary file handle before SQLite opens that file.
+        // tempfile creates it owner-only, and TempPath removes incomplete snapshots.
+        let temporary = tempfile::Builder::new()
+            .prefix(".sqlite-upgrade-")
+            .tempfile_in(directory)?
+            .into_temp_path();
+        connection.execute(
+            "VACUUM main INTO ?1",
+            [temporary
+                .to_str()
+                .context("database snapshot path is not valid UTF-8")?],
+        )?;
+        cancellation.check()?;
+        let snapshot = Connection::open_with_flags(&temporary, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        cancellation.monitor_sqlite(&snapshot)?;
+        let checked = snapshot.query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0));
+        cancellation.check()?;
+        let check = checked?;
+        ensure!(check == "ok", "database snapshot integrity check failed");
+        drop(snapshot);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&temporary)?
             .sync_all()?;
+        cancellation.check()?;
+        temporary
+            .persist_noclobber(&destination)
+            .context("publish verified database snapshot")?;
+        #[cfg(unix)]
+        {
+            std::fs::File::open(directory)?.sync_all()?;
+            if let Some(parent) = directory.parent() {
+                std::fs::File::open(if parent.as_os_str().is_empty() {
+                    Path::new(".")
+                } else {
+                    parent
+                })?
+                .sync_all()?;
+            }
+        }
+        Ok(destination)
+    })();
+    match &result {
+        Ok(path) => {
+            if prefix.starts_with("app-") {
+                tracing::info!(target: "future_host::store::backup", event = "database_backup_completed", kind = prefix, path = %path.display(), elapsed_ms = started.elapsed().as_millis() as u64);
+            } else {
+                tracing::info!(event = "database_backup_completed", kind = prefix, path = %path.display(), elapsed_ms = started.elapsed().as_millis() as u64);
+            }
+        }
+        Err(error) if error.is::<crate::service::StartupCancelled>() => {
+            tracing::info!(
+                event = "database_backup_cancelled",
+                kind = prefix,
+                elapsed_ms = started.elapsed().as_millis() as u64
+            );
+        }
+        Err(error) => {
+            if prefix.starts_with("app-") {
+                tracing::error!(target: "future_host::store::backup", event = "database_backup_failed", kind = prefix, elapsed_ms = started.elapsed().as_millis() as u64, error = %format!("{error:#}"));
+            } else {
+                tracing::error!(event = "database_backup_failed", kind = prefix, elapsed_ms = started.elapsed().as_millis() as u64, error = %format!("{error:#}"));
+            }
         }
     }
-    Ok(destination)
+    result
 }
 
 #[cfg(test)]

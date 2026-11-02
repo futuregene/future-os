@@ -150,7 +150,7 @@ fn host_fixture() {
     let host = AgentHost::default();
     if case == "storage-error-chain" {
         crate::environment::prepare_process();
-        crate::environment::start_logging().unwrap();
+        let logging = crate::environment::start_logging().unwrap();
         let database = root.join("agent/agent.db");
         std::fs::create_dir_all(database.parent().unwrap()).unwrap();
         std::fs::write(&database, b"not sqlite").unwrap();
@@ -162,7 +162,8 @@ fn host_fixture() {
         ] {
             assert!(error.contains(expected), "missing {expected:?} in {error}");
         }
-        let log = std::fs::read_to_string(crate::environment::log_file_path()).unwrap();
+        drop(logging);
+        let log = std::fs::read_to_string(future_logging::Component::Agent.path(&root)).unwrap();
         for expected in [
             "session storage step: failed",
             "open_database",

@@ -1,19 +1,22 @@
+import type { FutureEventMap } from "../../lib/futureEvents";
 import type { RemotePeer } from "./remotePeerClient";
 import { ArrowUp, Download, File, Folder, Loader2, PanelRightClose, PanelRightOpen, RefreshCw } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { IconButton } from "../../components/ui/IconButton";
 import { cn } from "../../lib/cn";
+import { onFutureEvent } from "../../lib/futureEvents";
 import { FilePreviewOverlay } from "../filepreview/FilePreviewOverlay";
 import { previewKindForPath } from "../filepreview/previewKind";
+import { FusionDiscussionPanel } from "../fusion/FusionDiscussionPanel";
 import { peerBadgeText } from "./peerIcons";
 import { formatSize } from "./remotePeerFiles";
 import { useRemoteFiles } from "./useRemoteFiles";
 
 /**
- * The right panel for a remote conversation: that machine's files, and nothing
- * else.
+ * Remote files, or a selected Fusion discussion read from that same host.
  *
- * Only files, with no tab strip: the panel's other tabs describe *this* machine
+ * The local panel's other tabs describe *this* machine
  * — its review of a diff, its runs, its artifacts — and none of them have a
  * remote counterpart to show. Offering them would mean either an empty panel or
  * one machine's facts under another's title.
@@ -43,7 +46,17 @@ export function RemoteFilesPanel({
   sessionId: string;
 }) {
   const { t } = useTranslation("remotePeer");
-  const files = useRemoteFiles(desktopId, sessionId, expanded);
+  const scope = `${desktopId}:${sessionId}`;
+  const [selection, setSelection] = useState<{ scope: string; detail: FutureEventMap["inspect-fusion"] } | null>(null);
+  const fusion = selection?.scope === scope ? selection.detail : null;
+  const files = useRemoteFiles(desktopId, sessionId, expanded && !fusion);
+  useEffect(() => onFutureEvent("inspect-fusion", (detail) => {
+    if (!detail.resolveTarget)
+      return;
+    setSelection({ scope, detail });
+    if (!expanded)
+      onToggleExpanded();
+  }), [scope, expanded, onToggleExpanded]);
   const preview = files.previewTarget;
   const previewKind = preview ? previewKindForPath(preview.name) : null;
 
@@ -61,6 +74,20 @@ export function RemoteFilesPanel({
       >
         <PanelRightOpen className="size-3.5" />
       </button>
+    );
+  }
+
+  if (fusion) {
+    return (
+      <aside className={cn("flex w-80 flex-col border-l border-line-soft bg-surface-panel", floating ? "absolute inset-y-0 right-0 z-40 shadow-panel" : "relative shrink-0")}>
+        <header className="flex h-12 shrink-0 items-center gap-1 px-4">
+          <span className="min-w-0 flex-1 truncate text-sm text-ink-muted">{peer ? peerBadgeText(peer, peer.desktopId) : desktopId}</span>
+          <IconButton icon={<PanelRightClose className="size-3.5" />} label={t("filesClose")} onClick={onToggleExpanded} />
+        </header>
+        <div className="min-h-0 flex-1">
+          <FusionDiscussionPanel key={`${scope}:${fusion.runId}:${fusion.toolCallId}`} {...fusion} onBack={() => setSelection(null)} />
+        </div>
+      </aside>
     );
   }
 

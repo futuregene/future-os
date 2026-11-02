@@ -2,6 +2,59 @@ use super::*;
 use anyhow::bail;
 
 #[test]
+fn schema_open_logs_versions_and_failures_without_database_contents() {
+    use std::io::Write;
+    #[derive(Clone)]
+    struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let output = bytes.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .with_max_level(tracing::Level::TRACE)
+        .with_writer(move || Capture(output.clone()))
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        let path = directory.path().join("agent.db");
+        let connection = connection::open_connection(&path).unwrap();
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            CURRENT_SCHEMA_VERSION
+        );
+        drop(connection);
+        let invalid = directory.path().join("invalid.db");
+        std::fs::write(&invalid, b"private-database-content").unwrap();
+        assert!(connection::open_connection(&invalid).is_err());
+        assert_eq!(std::fs::read(invalid).unwrap(), b"private-database-content");
+    });
+    let text = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+    assert!(!text.contains("private-database-content"));
+    let records: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(records.iter().any(
+        |record| record["fields"]["event"] == "database_upgrade_completed"
+            && record["fields"]["from_version"] == 0
+            && record["fields"]["to_version"] == CURRENT_SCHEMA_VERSION
+    ));
+    assert!(records
+        .iter()
+        .any(|record| record["fields"]["event"] == "database_open_failed"));
+}
+
+#[test]
 fn bounded_queue_rejects_overload_and_recovers_after_drain() {
     let dir = tempfile::tempdir().unwrap();
     let db = Database::open(&dir.path().join("agent.db")).unwrap();

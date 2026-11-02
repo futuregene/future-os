@@ -483,54 +483,76 @@ impl Manager {
         limit: Option<i64>,
         fragment_offset: Option<i64>,
     ) -> Result<serde_json::Value> {
-        let store = self.storage()?;
-        // The page a conversation's revision names is the page this read would
-        // rebuild: every write to it moves the revision, so the cache can be
-        // asked before any body is read. A conversation whose derived index is
-        // being repaired is not cacheable — that repair is what the caller is
-        // owed, and it runs below.
-        let owned = id.to_owned();
-        let (revision, ready) = store.db.read(move |db| {
-            // The stored key is not always the wire id (native sessions are a
-            // binary identity), so it is resolved the way every other reader
-            // resolves it.
-            let stored = crate::session::identity::session_key(db, &owned)?;
-            let revision = db
-                .query_row(
-                    "SELECT revision FROM sessions WHERE id=?1 AND revision>=0",
-                    [&stored],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()?;
-            let ready = super::recovery::history_index_ready(db, &owned)?;
-            Ok((revision, ready))
-        })?;
-        let revision =
-            revision.ok_or_else(|| anyhow::anyhow!("session is missing or not published"))?;
-        let key = PageKey::new(id, revision, before, offset, limit, fragment_offset);
-        if ready {
-            if let Some(page) = self.history_pages.lock().get(&key) {
-                return Ok(page.as_ref().clone());
-            }
-        }
-        // Lease a warm query-only connection for this response. Its WAL read
-        // transaction spans the page locators and bounded body reads, so a
-        // startup configuration update cannot replace a locator underneath us.
-        let snapshot = store.db.read_snapshot()?;
-        let ready = snapshot.read(|db| super::recovery::history_index_ready(db, id))?;
-        let snapshot = if ready {
-            snapshot
-        } else {
-            // Rebuild disposable projections before capturing the page. No
-            // page or body has been read yet, and this is not a failed-read retry.
-            drop(snapshot);
+        let started = std::time::Instant::now();
+        let mut cache_hit = false;
+        let mut index_rebuilt = false;
+        tracing::debug!(
+            event = "history_page_read_started",
+            session_id = id,
+            ?before,
+            ?offset,
+            ?limit,
+            ?fragment_offset
+        );
+        let result: Result<serde_json::Value> = (|| {
+            let store = self.storage()?;
+            // The page a conversation's revision names is the page this read would
+            // rebuild: every write to it moves the revision, so the cache can be
+            // asked before any body is read. A conversation whose derived index is
+            // being repaired is not cacheable — that repair is what the caller is
+            // owed, and it runs below.
             let owned = id.to_owned();
-            store
-                .db
-                .call(move |db| super::with_history_index(db, &owned, |_| Ok(())))?;
-            store.db.read_snapshot()?
-        };
-        let mut page = snapshot.read(|db| {
+            let (revision, ready) = store.db.read(move |db| {
+                // The stored key is not always the wire id (native sessions are a
+                // binary identity), so it is resolved the way every other reader
+                // resolves it.
+                let stored = crate::session::identity::session_key(db, &owned)?;
+                let revision = db
+                    .query_row(
+                        "SELECT revision FROM sessions WHERE id=?1 AND revision>=0",
+                        [&stored],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .optional()?;
+                let ready = super::recovery::history_index_ready(db, &owned)?;
+                Ok((revision, ready))
+            })?;
+            let revision =
+                revision.ok_or_else(|| anyhow::anyhow!("session is missing or not published"))?;
+            let key = PageKey::new(id, revision, before, offset, limit, fragment_offset);
+            if ready {
+                if let Some(page) = self.history_pages.lock().get(&key) {
+                    cache_hit = true;
+                    return Ok(page.as_ref().clone());
+                }
+            }
+            // Lease a warm query-only connection for this response. Its WAL read
+            // transaction spans the page locators and bounded body reads, so a
+            // startup configuration update cannot replace a locator underneath us.
+            let snapshot = store.db.read_snapshot()?;
+            let ready = snapshot.read(|db| super::recovery::history_index_ready(db, id))?;
+            let snapshot = if ready {
+                snapshot
+            } else {
+                index_rebuilt = true;
+                tracing::debug!(
+                    event = "history_projection_rebuild_started",
+                    session_id = id
+                );
+                // Rebuild disposable projections before capturing the page. No
+                // page or body has been read yet, and this is not a failed-read retry.
+                drop(snapshot);
+                let owned = id.to_owned();
+                store
+                    .db
+                    .call(move |db| super::with_history_index(db, &owned, |_| Ok(())))?;
+                tracing::debug!(
+                    event = "history_projection_rebuild_completed",
+                    session_id = id
+                );
+                store.db.read_snapshot()?
+            };
+            let mut page = snapshot.read(|db| {
             let tx = db.savepoint()?;
             let skipped: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')",
@@ -541,25 +563,57 @@ impl Manager {
             tx.commit()?;
             Ok(page)
         })?;
-        if let Some(scope) = &mut page.snapshot {
-            scope.use_read_snapshot(snapshot);
+            if let Some(scope) = &mut page.snapshot {
+                scope.use_read_snapshot(snapshot);
+            }
+            let (value, bytes) = materialize_display_page(
+                page,
+                before,
+                fragment_offset,
+                Some(store),
+                Some(&self.history_fragments),
+            )?;
+            // Only a page still at the revision read above is worth keeping: a write
+            // that landed while this one was being materialized already has its own
+            // revision, and caching this page under the newer one would be a lie.
+            if store.revision(id)? == Some(revision) {
+                self.history_pages
+                    .lock()
+                    .insert(key, Arc::new(value.clone()), bytes);
+            }
+            Ok(value)
+        })();
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        match &result {
+            Ok(value) => {
+                let entries = value
+                    .get("entries")
+                    .and_then(serde_json::Value::as_array)
+                    .map_or(0, Vec::len);
+                tracing::debug!(
+                    event = "history_page_read_completed",
+                    session_id = id,
+                    elapsed_ms,
+                    entries,
+                    cache_hit,
+                    index_rebuilt
+                );
+                if elapsed_ms >= 1000 {
+                    tracing::warn!(
+                        event = "history_page_read_slow",
+                        session_id = id,
+                        elapsed_ms,
+                        entries,
+                        cache_hit,
+                        index_rebuilt
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::warn!(event = "history_page_read_failed", session_id = id, elapsed_ms, ?before, ?offset, ?fragment_offset, %error)
+            }
         }
-        let (value, bytes) = materialize_display_page(
-            page,
-            before,
-            fragment_offset,
-            Some(store),
-            Some(&self.history_fragments),
-        )?;
-        // Only a page still at the revision read above is worth keeping: a write
-        // that landed while this one was being materialized already has its own
-        // revision, and caching this page under the newer one would be a lie.
-        if store.revision(id)? == Some(revision) {
-            self.history_pages
-                .lock()
-                .insert(key, Arc::new(value.clone()), bytes);
-        }
-        Ok(value)
+        result
     }
 }
 

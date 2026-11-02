@@ -921,10 +921,9 @@ impl ServerSession {
             None => (None, None),
         };
 
-        // Log the user message so the run log shows the question alongside
-        // the answer (thinking/output blocks already land via eprint_log!).
+        // Diagnostics describe the request; conversation bodies stay in the journal.
         if verbose && !user_text.is_empty() {
-            tracing::info!("[user] {user_text}");
+            tracing::debug!(input_bytes = user_text.len(), "user input received");
         }
 
         // Persist immediately so the GUI can see the user message (and any
@@ -1103,8 +1102,11 @@ impl ServerSession {
                 sandbox: sandbox.clone(),
                 cancelled: run_loop.interrupt_flag(),
             });
-            let guidance = "\nFusion is enabled for this run only. Use it for a focused decision after gathering necessary facts; directly handle routine work. Provide question, goal, background, constraints and evidence. It only thinks; implement recommendations yourself under the original user authorization. Honor explicit instructions requiring or prohibiting consultation.\n";
-            run_loop.system_prompt.push_str(guidance);
+            run_loop.system_prompt.push('\n');
+            run_loop
+                .system_prompt
+                .push_str(future_fusion::DISCUSSION_POLICY);
+            run_loop.system_prompt.push('\n');
             run_loop.config.system_prompt = run_loop.system_prompt.clone();
         }
 

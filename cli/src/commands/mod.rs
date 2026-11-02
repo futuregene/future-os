@@ -37,3 +37,5 @@ pub mod skills;
 pub mod task;
 pub mod tools;
 pub mod workspace;
+
+pub mod logs;
