@@ -3530,8 +3530,9 @@ mod runtime_tests {
         let rows = body["rows"].as_array().expect("a delta packet names rows");
         assert_eq!(rows.len(), 3, "the baseline carries every row");
         assert!(
-            rows.iter().all(|row| row["sortKey"].is_number()),
-            "a delta names no order, so every row carries the host's key"
+            rows.iter().all(|row| row.get("sortKey").is_none()),
+            "the rank is derived from the row, not sent: a key per row cost more \
+             than the dictionary saved"
         );
         assert!(
             rows.iter().all(|row| row.get("workspaceName").is_none()),

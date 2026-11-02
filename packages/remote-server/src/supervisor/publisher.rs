@@ -43,9 +43,10 @@ impl PublisherTiming {
 /// rows and is re-sent only when it moves, which is also what makes renaming a
 /// workspace one small packet instead of one row per conversation in it.
 ///
-/// Every row also carries the host's ordering key (`sortKey`), because a delta
-/// names no order: `pinned ? 1e15 + activity : activity`, over the same coalesce
-/// the host's own list is ordered by.
+/// A delta names no order, so the reader ranks the merged list itself — from
+/// `pinned`, `lastMessageAt` and `createdAt`, which every row already carries.
+/// The rank is not sent: it is derivable, and as a number per row it cost more
+/// than the dictionary saved.
 fn compact_catalogue(
     snapshot: &serde_json::Value,
 ) -> (Vec<serde_json::Value>, serde_json::Value, String) {
@@ -77,17 +78,10 @@ fn compact_catalogue(
                 object.remove("workspacePinned");
                 object.remove("workspaceOrderedAt");
             }
-            let activity = object
-                .get("lastMessageAt")
-                .and_then(serde_json::Value::as_i64)
-                .or_else(|| object.get("createdAt").and_then(serde_json::Value::as_i64))
-                .unwrap_or(0);
-            let pinned = object
-                .get("pinned")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            let key = activity + if pinned { 1_000_000_000_000_000 } else { 0 };
-            object.insert("sortKey".to_string(), serde_json::json!(key));
+            // No ordering key on the wire: the rank is
+            // `pinned ? floor + activity : activity`, and both of those are
+            // already on the row. Sending it cost ~16 bytes per row — more than
+            // the workspace dictionary saved once the body is compressed.
         }
         rows.push(row);
     }

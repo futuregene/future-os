@@ -16,10 +16,26 @@ import type { CatalogDeltaPacket, CatalogWorkspace, PresenceSession, RemoteSessi
  * reader reproduces the host's ranking instead of trusting arrival order.
  */
 
-/** The host's ranking, reproduced: pinned first, then most recent activity. */
+/** Above every real timestamp, so a pinned row outranks all unpinned ones. */
+const PINNED_FLOOR = 1_000_000_000_000_000;
+
+/**
+ * The host's ranking, reproduced from fields the row already carries.
+ *
+ * The host orders by `pinned DESC, COALESCE(last_message_at, updated_at,
+ * created_at) DESC`, and a row's `lastMessageAt` is already that coalesce down to
+ * `updated_at` — so `pinned ? floor + activity : activity` is the same ranking,
+ * without a number per row on the wire (which cost more than the workspace
+ * dictionary saved once bodies are compressed).
+ */
 function hostRank(row: RemoteSession): number {
-  const key = row.sortKey ?? row.lastMessageAt ?? row.createdAt ?? 0;
-  return typeof key === "number" && Number.isFinite(key) ? key : 0;
+  const activity =
+    typeof row.lastMessageAt === "number"
+      ? row.lastMessageAt
+      : typeof row.createdAt === "number"
+        ? row.createdAt
+        : 0;
+  return activity + (row.pinned ? PINNED_FLOOR : 0);
 }
 
 function byHostOrder(a: RemoteSession, b: RemoteSession): number {
