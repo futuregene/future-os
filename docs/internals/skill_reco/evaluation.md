@@ -176,6 +176,15 @@ none), which is exactly `CHUNK_SIZE`'s default, meaning "do not split until the 
 letting every request hit a 400 — this off-by-one is a real trap, because the API documentation only
 says "at most 255 choices" without saying whether none counts.
 
+**What ships is not this script's chunking.** The serving path (`agent/src/skill_reco`) does not clamp
+the catalogue and does not buy the re-rank call: above 254 it splits into equal blocks, sends them **in
+parallel**, and takes the first block that names a skill — finishing the request on that block instead
+of waiting for the rest. A block that loses the race keeps running and is billed, which is the price of
+the shortest possible latency. The path's own (non-network) cost is pinned by
+`the_blocks_of_a_split_call_run_in_parallel` in that module: two 300 ms blocks must land near 300 ms,
+not 600 ms. **Its latency under the real gateway is not measured** — that needs a live paid run, so the
+honest state is "unknown", not "the same as the table above".
+
 **The threshold.** The gate reads the final Choice's none probability, thresholded at 0.15. It is a
 wide plateau: 0.1–0.9 give nearly the same result, because questions that should be refused sit above
 0.9 and ones that should be answered sit near 0, with almost no samples in between
