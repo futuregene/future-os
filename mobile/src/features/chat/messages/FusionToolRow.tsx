@@ -26,9 +26,14 @@ export function FusionToolRow({ tool, resolveTarget }: { tool: TimelineToolRow; 
   const stageLabel = t(progress.terminal ? `chat.fusionStates.${progress.status}` : `chat.fusionPhases.${progress.phase === "preflight" ? "preparing" : progress.phase}`);
   const stageCount = t("chat.fusionStageCount", { current: currentStage, total: 4 });
   const moderatorOnly = progress.phase === "issue_mapping" || progress.phase === "synthesizing";
-  const models = moderatorOnly
-    ? progress.models.filter(model => model.role === "moderator" || (!model.role && data?.steps?.some(step => step.participant === "moderator" && step.model === model.model)))
-    : progress.models;
+  const participantsOnly = progress.phase === "analyzing" || progress.phase === "reviewing";
+  const models = progress.status === "completed" ? [] : progress.models.filter((model) => {
+    if (moderatorOnly)
+      return model.role === "moderator" || (!model.role && !!data?.steps?.some(step => step.participant === "moderator" && step.model === model.model));
+    if (participantsOnly)
+      return model.role === "participant" || (!model.role && !!data?.steps?.some(step => step.participant !== "moderator" && step.model === model.model));
+    return true;
+  });
   useEffect(() => {
     if (!resolveTarget || !tool.toolCallId || !tool.runId) return;
     let active = true;
@@ -66,7 +71,7 @@ export function FusionToolRow({ tool, resolveTarget }: { tool: TimelineToolRow; 
       {data?.run?.input.question ? <Text style={styles.fusionTopic} testID="fusion-topic">{data.run.input.question}</Text> : null}
       {progress.terminal && progress.partial && progress.notices.length === 0 ? <Text style={styles.fusionStatus}>{t("chat.fusionPartialNotice")}</Text> : null}
       {progress.notices.length ? <Text accessibilityRole="text" style={styles.fusionStatus}>{progress.notices.map(notice => t(`chat.fusionNotices.${notice}`)).join(" ")}</Text> : null}
-      <View style={styles.fusionModelList} testID="fusion-models">{models.map(model => {
+      {models.length > 0 ? <View style={styles.fusionModelList} testID="fusion-models">{models.map(model => {
         const role = moderatorOnly ? "moderator" : model.role;
         const name = `${role ? `${t(role === "moderator" ? "chat.fusionModeratorRole" : "chat.fusionParticipantRole", { number: model.number })} · ` : ""}${model.label}`;
         const failed = ["failed", "timed_out", "output_limited"].includes(model.status);
@@ -75,7 +80,7 @@ export function FusionToolRow({ tool, resolveTarget }: { tool: TimelineToolRow; 
           {model.status === "thinking" ? <ActivityIndicator size="small" color={colors.accent} style={styles.fusionThinkingIcon} /> : <Icon size={14} color={model.status === "completed" ? colors.success : failed ? colors.danger : model.status === "partial" || model.status === "interrupted" ? colors.warning : colors.inkMuted} />}
           <Text style={styles.fusionModelName}>{name}</Text>
         </View>;
-      })}</View>
+      })}</View> : null}
       {error || !resolveTarget || !tool.toolCallId || !tool.runId ? <Text accessibilityRole="alert" style={[styles.fusionStatus, { color: colors.danger }]}>{t("chat.fusionStatusUnavailable")}</Text> : null}
     </View> : null}
   </View>;
