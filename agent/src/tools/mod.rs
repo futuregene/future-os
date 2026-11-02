@@ -276,7 +276,7 @@ fn shell_schema() -> serde_json::Value {
         "additionalProperties": false,
         "required": ["command"]
     });
-    schema["properties"]["timeout"]["description"] = serde_json::json!("Execution budget in seconds; default 120, maximum 600. This invocation is never automatically replayed after failure.");
+    schema["properties"]["timeout"]["description"] = serde_json::json!("Execution budget in seconds; default 120, maximum 600 (a larger value is clamped, not rejected). This invocation is never automatically replayed after failure.");
     if !cfg!(windows) {
         let read = schema["properties"]["additional_permissions"]["properties"]["write"].clone();
         schema["properties"]["additional_permissions"]["properties"]["read"] = read;
@@ -837,7 +837,21 @@ fn tool_args_object(tool_args: &serde_json::Value) -> Option<serde_json::Value> 
 
 async fn run_read(path: &str, offset: Option<usize>, limit: Option<usize>) -> Result<String> {
     let path = workspace_path(path)?;
-    let content = tokio::fs::read_to_string(path).await?;
+    // A file that is not text is a fact about the file, not a failed call.
+    // Failing here with a decoder error left the model guessing whether the
+    // path was wrong or the tool was broken; 38 calls in one Agent database
+    // ended that way. Name the file and the tools that can show it instead.
+    let content = match String::from_utf8(tokio::fs::read(&path).await?) {
+        Ok(content) => content,
+        Err(error) => {
+            let total = error.as_bytes().len();
+            let first_invalid = error.utf8_error().valid_up_to();
+            return Ok(format!(
+                "[binary file: {total} bytes, first invalid UTF-8 byte at offset {first_invalid}. \
+                 Not shown as text; inspect it with `file`, `xxd`, or `head -c <bytes> | xxd`.]"
+            ));
+        }
+    };
 
     let offset = offset.unwrap_or(1).saturating_sub(1); // 1-indexed → 0-indexed
     let limit = limit.unwrap_or(usize::MAX);
@@ -2357,6 +2371,30 @@ mod tests {
         .await;
 
         assert!(result.is_err());
+    }
+
+    /// A binary file is reported as one, with its size and where the text ends.
+    /// Failing the call instead (the old behaviour) told the model nothing it
+    /// could act on: it could not tell a wrong path from an unreadable one.
+    #[tokio::test]
+    async fn run_read_names_a_binary_file_instead_of_failing() {
+        let workspace = test_path("read-binary");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let file = workspace.join("image.bin");
+        // "ok" then a lone 0x8b byte: valid UTF-8 ends after two bytes.
+        std::fs::write(&file, [b'o', b'k', 0x8b, 0x00, 0xff]).unwrap();
+
+        let result = with_workspace_scope(
+            workspace.to_string_lossy().to_string(),
+            "all".to_string(),
+            async { run_read("image.bin", None, None).await },
+        )
+        .await;
+
+        let content = result.expect("a binary file is a result, not a failure");
+        assert!(content.contains("binary file"), "{content}");
+        assert!(content.contains("5 bytes"), "{content}");
+        assert!(content.contains("offset 2"), "{content}");
     }
 
     #[tokio::test]

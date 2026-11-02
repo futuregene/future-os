@@ -115,6 +115,8 @@ use self::client::{base_command, prompt_command};
 #[cfg(test)]
 use self::delete_outbox::{delete_outbox_interval, TEST_OUTBOX_STOP};
 #[cfg(test)]
+use self::observer::settle_agent_end;
+#[cfg(test)]
 use self::prompt::auto_name_thread;
 use self::queries::fetch_all_session_entries_with_client;
 #[cfg(test)]
@@ -124,7 +126,8 @@ use self::reconciliation::{
     active_run_watchdog_pass, check_and_reanimate_run, plan_active_run_reconciliation,
     plan_settled_run_reconciliation, reconcile_active_run_once, reconcile_run_gone,
     settle_from_agent_terminal, watchdog_interval, ActiveRunAction, SettledRunLedger,
-    TEST_WATCHDOG_STOP, WATCHDOG_GRACE_SECS, WATCHDOG_INTERVAL_SECS, WATCHDOG_ORPHAN_SECS,
+    WatchdogMemory, TEST_WATCHDOG_STOP, WATCHDOG_GRACE_SECS, WATCHDOG_INTERVAL_SECS,
+    WATCHDOG_ORPHAN_SECS, WATCHDOG_RECONCILE_GIVE_UP_PASSES,
 };
 use self::replica::AGENT_REPLICAS;
 use self::run_control::{mark_run_completed_if_active, mark_run_failed_if_active};
