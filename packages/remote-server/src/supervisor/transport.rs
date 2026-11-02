@@ -16,6 +16,7 @@ impl Supervisor {
         pair_id: &str,
         handshake: &commands::HandshakeState,
         reply_slots: commands::ReplySlots,
+        nats_health: std::sync::Arc<crate::health::NatsHealth>,
     ) -> Result<TransportTasks, crate::Error> {
         #[cfg(any(test, feature = "test-support"))]
         if self.hooks.inject_build_failure.swap(0, Ordering::SeqCst) > 0 {
@@ -67,6 +68,7 @@ impl Supervisor {
                 pair_id.into(),
                 reply_slots,
                 handshake.clone(),
+                nats_health.clone(),
                 Some(command_ready_tx),
             ),
         );
@@ -288,6 +290,9 @@ impl Supervisor {
                             continue;
                         }
                     };
+                    // A mint came back: the new generation starts with a clean
+                    // count, so `refreshing=stuck(n)` cannot outlive the problem it
+                    // named — the status reads the live generation's health.
                     if pairing::seconds_until_expiry(&refreshed) <= 0 {
                         // Never present a grant that has already lapsed. The
                         // platform can hand one back — a mint that crossed its own
@@ -330,11 +335,28 @@ impl Supervisor {
                             return;
                         }
                         Err(error) => {
+                            // Counted on the *live* generation: it is the one whose
+                            // renewal is failing, and it is the one the status reads.
+                            let failures = server
+                                .state
+                                .lock()
+                                .unwrap()
+                                .get(&pair_id)
+                                .map(|state| state.nats_health.note_mint_failure())
+                                .unwrap_or(0);
                             if let Some(line) = server
                                 .credential_failures
                                 .record("credential_connect", error)
                             {
                                 future_remote_protocol::remote_log!("{line}");
+                            }
+                            if failures >= crate::health::MINT_FAILURES_BEFORE_STUCK {
+                                // Slow is one thing; this is the state a reader has to
+                                // hear about, or a renewal that keeps failing reads as
+                                // a generic "offline" while nothing renews.
+                                future_remote_protocol::remote_log!(
+                                    "remote: credential renewal stuck ({failures} consecutive mint failures); status reports refreshing=stuck({failures})"
+                                );
                             }
                             server.credential_refreshing.store(false, Ordering::Release);
                             tokio::time::sleep(
@@ -351,7 +373,13 @@ impl Supervisor {
                     // refresh scheduler belongs to its current runtime and is aborted
                     // when that runtime is replaced.
                     let transport = match server
-                        .build_transport(&client, &pair_id, &handshake_state, reply_slots.clone())
+                        .build_transport(
+                            &client,
+                            &pair_id,
+                            &handshake_state,
+                            reply_slots.clone(),
+                            nats_health.clone(),
+                        )
                         .await
                     {
                         Ok(transport) => transport,

@@ -372,7 +372,33 @@ pub async fn command_loop(
     reply_slots: ReplySlots,
     handshake: HandshakeState,
 ) {
-    command_loop_with_ready(client, pair_id, reply_slots, handshake, None).await;
+    command_loop_with_ready(
+        client,
+        pair_id,
+        reply_slots,
+        handshake,
+        std::sync::Arc::new(crate::health::NatsHealth::default()),
+        None,
+    )
+    .await;
+}
+
+/// How many resubscribes one lane death is worth before the generation gives up.
+///
+/// Five covers a relay blip and a socket that is still being replaced, and it
+/// still ends: a lane that cannot come back is a generation that must be rebuilt
+/// with a fresh credential, not a loop that presents a dead grant forever.
+pub const RESUBSCRIBE_ATTEMPTS: u8 = 5;
+const RESUBSCRIBE_BASE: Duration = Duration::from_millis(500);
+const RESUBSCRIBE_MAX: Duration = Duration::from_millis(8_000);
+
+/// Wait before resubscribe number `attempt` (1-based): 0.5 s doubling, capped at
+/// 8 s, ±20% so two devices that lost the same relay do not come back in step.
+pub(crate) fn resubscribe_delay(attempt: u8) -> Duration {
+    let factor = 1u64 << attempt.saturating_sub(1).min(5);
+    let capped = (RESUBSCRIBE_BASE * u32::try_from(factor).unwrap_or(1)).min(RESUBSCRIBE_MAX);
+    let jitter = 0.8 + rand::random::<f64>() * 0.4;
+    Duration::from_millis((capped.as_millis() as f64 * jitter) as u64)
 }
 
 pub async fn command_loop_with_ready(
@@ -380,210 +406,270 @@ pub async fn command_loop_with_ready(
     pair_id: String,
     reply_slots: ReplySlots,
     handshake: HandshakeState,
+    health: std::sync::Arc<crate::health::NatsHealth>,
     mut ready: Option<tokio::sync::oneshot::Sender<()>>,
 ) {
     let subject = format!("p.{pair_id}.cmd.>");
     let queue = format!("bridge.{pair_id}");
-    let mut sub = match client.queue_subscribe(subject, queue).await {
-        Ok(sub) => sub,
-        Err(error) => {
-            if let Some(line) = COMMAND_EPISODE.record("command_subscription", error) {
-                future_remote_protocol::remote_log!("{line}");
+    // A lane that dies must heal itself: the generation stays installed while
+    // this loop is the only thing that can put a subscriber back on the subject,
+    // and a bridge that still reports "serving" with nobody listening is a phone
+    // whose every request times out behind a full deadline.
+    let mut attempt = 0u8;
+    loop {
+        let mut sub = match client.queue_subscribe(subject.clone(), queue.clone()).await {
+            Ok(sub) => {
+                attempt = 0;
+                health.command_lane_up();
+                if let Some(line) = COMMAND_EPISODE.recovered() {
+                    future_remote_protocol::remote_log!("{line}");
+                }
+                sub
             }
-            return;
-        }
-    };
-    if let Some(line) = COMMAND_EPISODE.recovered() {
-        future_remote_protocol::remote_log!("{line}");
-    }
-    if let Some(sender) = ready.take() {
-        let _ = sender.send(());
-    }
-    while let Some(msg) = sub.next().await {
-        let client = client.clone();
-        let reply_slots = reply_slots.clone();
-        let handshake = handshake.clone();
-        let pair_id = pair_id.clone();
-        // Spawn per command: prevent a slow command from blocking others.
-        let runtime = handshake.runtime.clone();
-        let context = runtime.clone();
-        runtime.spawn(Box::pin(COMMAND_RUNTIME.scope(context, async move {
-            if handshake.secure.enabled() {
-                if !handshake.access_current() {
+            Err(error) => {
+                attempt = attempt.saturating_add(1);
+                health.command_lane_down();
+                let reason = error.to_string();
+                if let Some(line) = COMMAND_EPISODE.record("command_subscription", reason.clone()) {
+                    future_remote_protocol::remote_log!("{line}");
+                }
+                if attempt >= RESUBSCRIBE_ATTEMPTS {
+                    future_remote_protocol::remote_log!(
+                        "remote: command lane down (reason=subscribe failed: {reason}, attempt {attempt}/{RESUBSCRIBE_ATTEMPTS}); giving this generation up"
+                    );
                     return;
                 }
-                if msg.payload.starts_with(b"FRE2") {
-                    let Ok((plain, security)) = handshake.secure.open(&msg.subject, &msg.payload)
-                    else {
-                        return;
-                    };
-                    let mut msg = msg;
-                    msg.payload = plain.into();
-                    // Handshake messages are never business commands, even
-                    // when a paired peer sends them inside a secure record.
-                    let parsed = serde_json::from_slice::<IncomingCmd>(&msg.payload);
-                    if parsed.as_ref().is_ok_and(|c| {
-                        matches!(
-                            c.cmd_type.as_str(),
-                            "pair_handshake" | "pair_handshake_confirm"
-                        )
-                    }) {
+                let delay = resubscribe_delay(attempt);
+                future_remote_protocol::remote_log!(
+                    "remote: command lane down (reason={reason}, attempt {attempt}/{RESUBSCRIBE_ATTEMPTS}); resubscribing in {}ms",
+                    delay.as_millis()
+                );
+                tokio::time::sleep(delay).await;
+                continue;
+            }
+        };
+        if let Some(sender) = ready.take() {
+            let _ = sender.send(());
+        }
+        let mut served = false;
+        while let Some(msg) = sub.next().await {
+            served = true;
+            let client = client.clone();
+            let reply_slots = reply_slots.clone();
+            let handshake = handshake.clone();
+            let pair_id = pair_id.clone();
+            // Spawn per command: prevent a slow command from blocking others.
+            let runtime = handshake.runtime.clone();
+            let context = runtime.clone();
+            runtime.spawn(Box::pin(COMMAND_RUNTIME.scope(context, async move {
+                if handshake.secure.enabled() {
+                    if !handshake.access_current() {
                         return;
                     }
-                    if parsed.as_ref().is_ok_and(|c| c.cmd_type == "secure_ready") {
-                        // Declared capabilities are per connection: a client that
-                        // asks for the coalesced lane gets it, and every other
-                        // client keeps the legacy one-event-per-token lane.
-                        if let Ok(command) = parsed.as_ref() {
-                            apply_declared_features(&handshake, &pair_id, &command.features);
-                            record_client_identity(handshake.runtime.as_ref(), &pair_id, command);
-                            // Which physical device this is. The platform cannot
-                            // tell that a new pairing belongs to a device this
-                            // machine already serves, and the second pairing could
-                            // never take control because the first still held it.
-                            handshake
-                                .runtime
-                                .note_client_device(&pair_id, &command.device_id);
-                        }
-                        // The sealed `secure_ready` is the client saying it is
-                        // here on the channel it will keep beating on.
-                        if let Some(link) = handshake.runtime.client_link(&pair_id) {
-                            link.observe();
-                        }
-                        let activate = || {
-                            handshake.secure.activate(&security)?;
-                            handshake.active.store(true, Ordering::Release);
-                            Ok::<_, crate::Error>(())
+                    if msg.payload.starts_with(b"FRE2") {
+                        let Ok((plain, security)) =
+                            handshake.secure.open(&msg.subject, &msg.payload)
+                        else {
+                            return;
                         };
-                        let activated = match handshake.access_epoch {
-                            Some(epoch) => handshake.runtime.access().commit(epoch, activate),
-                            None => Some(activate()),
-                        };
-                        if matches!(activated, Some(Ok(()))) {
-                            crate::secure::REPLY
-                                .scope(security, reply(&client, &msg, true, json!({}), None))
-                                .await;
-                        }
-                        return;
-                    }
-                    if !handshake.secure.is_active(&security) {
-                        return;
-                    }
-                    crate::secure::REPLY
-                        .scope(
-                            security,
-                            handle_command_singleflight(&client, msg, reply_slots, handshake),
-                        )
-                        .await;
-                } else {
-                    // Whether this is the pairing's first handshake — the one
-                    // that puts the device in front of the machine. Read before
-                    // the commit, acted on after it: the access epoch's critical
-                    // section is for deciding *whether* a result installs, and
-                    // it must stay short. Persisting a control change is file
-                    // work, and a handshake that held that lock while writing
-                    // would stall every other connection's handshake behind it.
-                    let first_handshake = !handshake.confirmed.load(Ordering::Acquire);
-                    let process = || {
-                        let result = handshake
-                            .secure
-                            .handshake(&msg.payload, &handshake.bridge_instance_id);
-                        if let Ok(data) = &result {
-                            if data.get("confirmation").is_some() {
-                                handshake.confirmed.store(true, Ordering::Release);
-                            }
-                        }
-                        result
-                    };
-                    let result = match handshake.access_epoch {
-                        Some(epoch) => match handshake.runtime.access().commit(epoch, process) {
-                            Some(result) => result,
-                            None => return,
-                        },
-                        None => process(),
-                    };
-
-                    // A refused handshake is the one pairing failure that used to
-                    // leave no trace anywhere: the phone only reports that the
-                    // desktop would not authenticate, and the reason never left
-                    // this function. Log it, and send it to the phone (which has
-                    // the console a user can actually be asked to read).
-                    if let Err(error) = &result {
-                        if let Some(line) = HANDSHAKE_EPISODE.record("handshake_refused", error) {
-                            future_remote_protocol::remote_log!("{line}");
-                        }
-                    }
-                    let accepted = result.is_ok();
-                    if accepted {
-                        // A successful handshake is the client proving it is
-                        // there: the pairing's keys are the only way to reach
-                        // this branch.
-                        if let Some(link) = handshake.runtime.client_link(&handshake.creds.pair_id)
-                        {
-                            link.observe();
-                        }
-                    }
-                    if let Some(reply) = msg.reply {
-                        let body = match result {
-                            Ok(data) => json!({ "success": true, "data": data }),
-                            Err(error) => json!({ "success": false, "error": error.to_string() }),
-                        };
-                        let _ = client
-                            .publish(reply, serde_json::to_vec(&body).expect("JSON value").into())
-                            .await;
-                    }
-                    // Control moves *after* the answer, never before it: the
-                    // claim persists to disk, and a handshake reply must not
-                    // wait on a file write. The device is already authenticated
-                    // by this point, so the few milliseconds in between belong
-                    // to nobody's authority.
-                    //
-                    // …and only when the machine is free. Connecting is not
-                    // taking over: if another device holds the machine, this
-                    // one comes up in standby, reads `control`/`holder` from its
-                    // presence, and asks its user whether to displace the
-                    // controller. The client decides that, not this machine.
-                    //
-                    // A *first* handshake is one claim path (a device was just
-                    // paired). The other is a reconnect onto a machine nobody
-                    // holds while this is the only client here — a device that
-                    // disconnected gave the machine up, and it is not asking its
-                    // user to take back a computer it alone is sitting at.
-                    let alone_and_unowned = handshake
-                        .runtime
-                        .alone_and_unowned(&handshake.creds.pair_id);
-                    if (first_handshake || alone_and_unowned)
-                        && handshake.access_current()
-                        && accepted
-                        && !handshake.runtime.held_by_another(&handshake.creds.pair_id)
-                    {
-                        let moved = handshake
-                            .runtime
-                            .claim_control_soon(&handshake.creds.pair_id, handshake.access_epoch);
-                        if !handshake.access_current() {
+                        let mut msg = msg;
+                        msg.payload = plain.into();
+                        // Handshake messages are never business commands, even
+                        // when a paired peer sends them inside a secure record.
+                        let parsed = serde_json::from_slice::<IncomingCmd>(&msg.payload);
+                        if parsed.as_ref().is_ok_and(|c| {
+                            matches!(
+                                c.cmd_type.as_str(),
+                                "pair_handshake" | "pair_handshake_confirm"
+                            )
+                        }) {
                             return;
                         }
-                        if let Some(previous) = moved {
-                            handshake.runtime.publish_control(&previous, "standby");
+                        if parsed.as_ref().is_ok_and(|c| c.cmd_type == "secure_ready") {
+                            // Declared capabilities are per connection: a client that
+                            // asks for the coalesced lane gets it, and every other
+                            // client keeps the legacy one-event-per-token lane.
+                            if let Ok(command) = parsed.as_ref() {
+                                apply_declared_features(&handshake, &pair_id, &command.features);
+                                record_client_identity(
+                                    handshake.runtime.as_ref(),
+                                    &pair_id,
+                                    command,
+                                );
+                                // Which physical device this is. The platform cannot
+                                // tell that a new pairing belongs to a device this
+                                // machine already serves, and the second pairing could
+                                // never take control because the first still held it.
+                                handshake
+                                    .runtime
+                                    .note_client_device(&pair_id, &command.device_id);
+                            }
+                            // The sealed `secure_ready` is the client saying it is
+                            // here on the channel it will keep beating on.
+                            if let Some(link) = handshake.runtime.client_link(&pair_id) {
+                                link.observe();
+                            }
+                            let activate = || {
+                                handshake.secure.activate(&security)?;
+                                handshake.active.store(true, Ordering::Release);
+                                Ok::<_, crate::Error>(())
+                            };
+                            let activated = match handshake.access_epoch {
+                                Some(epoch) => handshake.runtime.access().commit(epoch, activate),
+                                None => Some(activate()),
+                            };
+                            if matches!(activated, Some(Ok(()))) {
+                                crate::secure::REPLY
+                                    .scope(security, reply(&client, &msg, true, json!({}), None))
+                                    .await;
+                            }
+                            return;
                         }
-                        handshake
+                        if !handshake.secure.is_active(&security) {
+                            return;
+                        }
+                        crate::secure::REPLY
+                            .scope(
+                                security,
+                                handle_command_singleflight(&client, msg, reply_slots, handshake),
+                            )
+                            .await;
+                    } else {
+                        // Whether this is the pairing's first handshake — the one
+                        // that puts the device in front of the machine. Read before
+                        // the commit, acted on after it: the access epoch's critical
+                        // section is for deciding *whether* a result installs, and
+                        // it must stay short. Persisting a control change is file
+                        // work, and a handshake that held that lock while writing
+                        // would stall every other connection's handshake behind it.
+                        let first_handshake = !handshake.confirmed.load(Ordering::Acquire);
+                        let process = || {
+                            let result = handshake
+                                .secure
+                                .handshake(&msg.payload, &handshake.bridge_instance_id);
+                            if let Ok(data) = &result {
+                                if data.get("confirmation").is_some() {
+                                    handshake.confirmed.store(true, Ordering::Release);
+                                }
+                            }
+                            result
+                        };
+                        let result = match handshake.access_epoch {
+                            Some(epoch) => {
+                                match handshake.runtime.access().commit(epoch, process) {
+                                    Some(result) => result,
+                                    None => return,
+                                }
+                            }
+                            None => process(),
+                        };
+
+                        // A refused handshake is the one pairing failure that used to
+                        // leave no trace anywhere: the phone only reports that the
+                        // desktop would not authenticate, and the reason never left
+                        // this function. Log it, and send it to the phone (which has
+                        // the console a user can actually be asked to read).
+                        if let Err(error) = &result {
+                            if let Some(line) = HANDSHAKE_EPISODE.record("handshake_refused", error)
+                            {
+                                future_remote_protocol::remote_log!("{line}");
+                            }
+                        }
+                        let accepted = result.is_ok();
+                        if accepted {
+                            // A successful handshake is the client proving it is
+                            // there: the pairing's keys are the only way to reach
+                            // this branch.
+                            if let Some(link) =
+                                handshake.runtime.client_link(&handshake.creds.pair_id)
+                            {
+                                link.observe();
+                            }
+                        }
+                        if let Some(reply) = msg.reply {
+                            let body = match result {
+                                Ok(data) => json!({ "success": true, "data": data }),
+                                Err(error) => {
+                                    json!({ "success": false, "error": error.to_string() })
+                                }
+                            };
+                            let _ = client
+                                .publish(
+                                    reply,
+                                    serde_json::to_vec(&body).expect("JSON value").into(),
+                                )
+                                .await;
+                        }
+                        // Control moves *after* the answer, never before it: the
+                        // claim persists to disk, and a handshake reply must not
+                        // wait on a file write. The device is already authenticated
+                        // by this point, so the few milliseconds in between belong
+                        // to nobody's authority.
+                        //
+                        // …and only when the machine is free. Connecting is not
+                        // taking over: if another device holds the machine, this
+                        // one comes up in standby, reads `control`/`holder` from its
+                        // presence, and asks its user whether to displace the
+                        // controller. The client decides that, not this machine.
+                        //
+                        // A *first* handshake is one claim path (a device was just
+                        // paired). The other is a reconnect onto a machine nobody
+                        // holds while this is the only client here — a device that
+                        // disconnected gave the machine up, and it is not asking its
+                        // user to take back a computer it alone is sitting at.
+                        let alone_and_unowned = handshake
                             .runtime
-                            .publish_control(&handshake.creds.pair_id, "active");
+                            .alone_and_unowned(&handshake.creds.pair_id);
+                        if (first_handshake || alone_and_unowned)
+                            && handshake.access_current()
+                            && accepted
+                            && !handshake.runtime.held_by_another(&handshake.creds.pair_id)
+                        {
+                            let moved = handshake.runtime.claim_control_soon(
+                                &handshake.creds.pair_id,
+                                handshake.access_epoch,
+                            );
+                            if !handshake.access_current() {
+                                return;
+                            }
+                            if let Some(previous) = moved {
+                                handshake.runtime.publish_control(&previous, "standby");
+                            }
+                            handshake
+                                .runtime
+                                .publish_control(&handshake.creds.pair_id, "active");
+                        }
                     }
+                    #[cfg(any(test, feature = "test-support"))]
+                    return;
                 }
+                // Legacy protocol fixtures are retained solely for business-route
+                // unit tests. Production must never accept a v1 connection.
                 #[cfg(any(test, feature = "test-support"))]
-                return;
-            }
-            // Legacy protocol fixtures are retained solely for business-route
-            // unit tests. Production must never accept a v1 connection.
-            #[cfg(any(test, feature = "test-support"))]
-            handle_command_singleflight(&client, msg, reply_slots, handshake).await;
-        })));
-    }
-    if let Some(line) =
-        COMMAND_EPISODE.record("command_subscription", "subscription ended unexpectedly")
-    {
-        future_remote_protocol::remote_log!("{line}");
+                handle_command_singleflight(&client, msg, reply_slots, handshake).await;
+            })));
+        }
+        // The stream ended with the socket still up. Re-subscribe instead of
+        // leaving the generation deaf: this is the case that logged one RT003
+        // episode and then nothing for fifty minutes.
+        attempt = if served { 1 } else { attempt.saturating_add(1) };
+        health.command_lane_down();
+        let reason = "subscription ended unexpectedly";
+        if let Some(line) = COMMAND_EPISODE.record("command_subscription", reason) {
+            future_remote_protocol::remote_log!("{line}");
+        }
+        if attempt >= RESUBSCRIBE_ATTEMPTS {
+            future_remote_protocol::remote_log!(
+                "remote: command lane down (reason={reason}, attempt {attempt}/{RESUBSCRIBE_ATTEMPTS}); giving this generation up"
+            );
+            return;
+        }
+        let delay = resubscribe_delay(attempt);
+        future_remote_protocol::remote_log!(
+            "remote: command lane down (reason={reason}, attempt {attempt}/{RESUBSCRIBE_ATTEMPTS}); resubscribing in {}ms",
+            delay.as_millis()
+        );
+        tokio::time::sleep(delay).await;
     }
 }
 

@@ -142,7 +142,8 @@ pub struct RemoteDevice {
     pub pair_id: String,
     pub phase: RemotePhase,
     pub control: DeviceControl,
-    /// Transport ready: the bridge is connected and serving this pairing.
+    /// Transport ready: the bridge is connected, serving this pairing, and has a
+    /// live command lane.
     pub connected: bool,
     /// Whether the device's client is at the other end.
     ///
@@ -168,6 +169,12 @@ pub struct RemoteDevice {
     /// bridge came up. Bytes are the sealed payload, which is what the relay
     /// carries; the compression in front of it is already applied.
     pub catalogue_packets: u64,
+    /// The relay link in the terms a reader can act on.
+    ///
+    /// This is the half of a remote failure that used to exist only in a log:
+    /// a bridge can be "running" while its command lane is deaf, and a device
+    /// can be unreachable for minutes without anything on screen saying so.
+    pub relay: RelayHealth,
     pub catalogue_bytes: u64,
 }
 
@@ -179,6 +186,44 @@ pub enum CatalogueLane {
     Snapshot,
     /// Row-level packets: changed rows, explicit removals, the dictionary.
     Delta,
+}
+
+/// What one pairing's relay link is doing, in the terms a reader can act on.
+///
+/// These are the fields that used to require reading `desktop.log`: whether the
+/// inbound command lane is subscribed at all, when this machine's link last
+/// failed and with which code, how many rebuilds the current failure window has
+/// spent, when the next one fires, and whether a credential renewal is stuck.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayHealth {
+    /// `"up"`, or `"down(<seconds>s)"` while the command lane is deaf.
+    pub command_lane: String,
+    /// When this machine's link last failed (an authentication rejection or an
+    /// exhausted reconnect budget), unix milliseconds. Read process-wide, like
+    /// the timestamp itself: the generation that failed may already be gone.
+    pub last_issue_at: Option<u64>,
+    /// The supporting code of that failure, e.g. `AU002`.
+    pub code: Option<String>,
+    /// Rebuild attempts spent in the current failure window.
+    pub attempts: u8,
+    /// Seconds until the next automatic rebuild attempt, when one is scheduled.
+    pub next_attempt_in_sec: Option<u64>,
+    /// `"stuck(n)"` after n consecutive failed credential mints.
+    pub refreshing: Option<String>,
+}
+
+impl Default for RelayHealth {
+    fn default() -> Self {
+        Self {
+            command_lane: "up".to_string(),
+            last_issue_at: None,
+            code: None,
+            attempts: 0,
+            next_attempt_in_sec: None,
+            refreshing: None,
+        }
+    }
 }
 
 impl std::fmt::Debug for RemoteDevice {
@@ -291,6 +336,7 @@ mod tests {
             catalogue_lane: CatalogueLane::Snapshot,
             catalogue_packets: 0,
             catalogue_bytes: 0,
+            relay: RelayHealth::default(),
         });
         let debug = format!("{status:?}");
         for marker in [

@@ -608,7 +608,13 @@ impl Supervisor {
             .clone();
 
         let transport = match self
-            .build_transport(&client, &pair_id, &handshake_state, reply_slots.clone())
+            .build_transport(
+                &client,
+                &pair_id,
+                &handshake_state,
+                reply_slots.clone(),
+                nats_health.clone(),
+            )
             .await
         {
             Ok(transport) => transport,
@@ -943,6 +949,20 @@ impl Supervisor {
                 Some(attempts.saturating_add(1))
             })
             .unwrap_or(u8::MAX);
+        // The hour bucket bounds the *rate*, machine-wide: several devices flapping
+        // at once must not multiply the traffic this machine puts on the relay, and
+        // the allowance is a property of this machine's use of it rather than of one
+        // device.
+        let hour = now / RUNTIME_HOUR_MS;
+        if self.retry_hour.load(Ordering::Acquire) != hour {
+            self.retry_hour.store(hour, Ordering::Release);
+            self.retry_hour_attempts.store(0, Ordering::Release);
+        }
+        let _ = self
+            .retry_hour_attempts
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                Some(count.saturating_add(1))
+            });
         previous.saturating_add(1)
     }
 
@@ -1103,8 +1123,36 @@ impl Supervisor {
             // attempts is a cooldown (30 s, doubling, capped at 10 min) instead of
             // whatever is left of the ten-minute failure window.
             if !cooldown_spent {
-                if let ReconnectStep::Wait(wait) = reconnect_step(attempts, since, unix_millis()) {
+                let present = self.client_link(&pair_id).present();
+                if hourly_attempts_reached(
+                    self.retry_hour_attempts.load(Ordering::Acquire),
+                    present,
+                ) {
+                    // The cadence may still allow an attempt; the rate does not.
+                    // Waiting for the next hour is the one honest answer, and it
+                    // says so rather than going silent.
                     cooldown_spent = true;
+                    let wait = wait_until_next_hour(unix_millis());
+                    future_remote_protocol::remote_log!(
+                        "remote: relay rebuild held by the hourly attempt cap (present={present}); resuming in {}s",
+                        wait.as_secs()
+                    );
+                    tokio::time::sleep(wait).await;
+                    continue;
+                }
+                if let ReconnectStep::Wait(wait) =
+                    reconnect_step_for(attempts, since, unix_millis(), present)
+                {
+                    cooldown_spent = true;
+                    let wait = with_jitter(wait, rand::random::<f64>());
+                    // One line per wait, with the cause and how long this device
+                    // has been failing: that is what turns "it was down for
+                    // fifty minutes" into an answer instead of a re-derivation.
+                    future_remote_protocol::remote_log!(
+                        "remote: relay rebuild in {}ms (attempt #{attempts}, present={present}, episode_age={}ms)",
+                        wait.as_millis(),
+                        unix_millis().saturating_sub(since)
+                    );
                     tokio::time::sleep(wait).await;
                     // Re-validate intent, the installed generation and its health
                     // on the next lap: the wait is long enough for the client to

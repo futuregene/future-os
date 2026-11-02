@@ -1281,6 +1281,7 @@ mod tests {
             catalogue_lane: future_remote_server::types::CatalogueLane::Delta,
             catalogue_packets: 7,
             catalogue_bytes: 4096,
+            relay: Default::default(),
         }];
         let reply = answer(&request, async { Ok(running) }).await;
         assert_eq!(reply.error, None);
@@ -1416,6 +1417,7 @@ mod tests {
             catalogue_lane: future_remote_server::types::CatalogueLane::Snapshot,
             catalogue_packets: 0,
             catalogue_bytes: 0,
+            relay: Default::default(),
         };
         let moved = RemoteStatus {
             devices: vec![

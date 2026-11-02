@@ -3486,8 +3486,12 @@ mod bridge_tests {
         bridge.stop().await;
     }
 
+    /// A killed broker ends the stream. The lane now re-subscribes up to
+    /// `RESUBSCRIBE_ATTEMPTS` times before it returns, so a relay blip heals in
+    /// seconds instead of waiting for a whole generation rebuild — and returning
+    /// after that ladder still hands the device to the supervisor's budget.
     #[tokio::test]
-    async fn command_loop_exits_for_generation_supervisor_when_stream_ends() {
+    async fn command_loop_resubscribes_then_exits_when_the_stream_ends() {
         let _home = HomeGuard::new("cmd-self-heal");
         let nats = FakeNats::start().await;
         let client = nats_connect_once(&nats).await;
@@ -3506,12 +3510,12 @@ mod bridge_tests {
         ));
         nats.wait_for_sub(&format!("p.{pair_id}.cmd.>"), Duration::from_secs(5))
             .await;
-        // A critical subscription is generation-local. The loop exits so the
-        // single runtime supervisor can apply its 10-minute recovery budget.
+        // A critical subscription is generation-local, but it retries itself
+        // first: 0.5 s doubling, so five attempts fit inside eight seconds.
         nats.kill();
         wait_until(
-            "supervisor must observe the dead task",
-            Duration::from_secs(5),
+            "supervisor must observe the dead task after the lane's own ladder",
+            Duration::from_secs(30),
             || handle.is_finished(),
         )
         .await;
@@ -3521,9 +3525,12 @@ mod bridge_tests {
     /// subscription impossible. The loop must report that and return — not sit
     /// on a stream that can never receive anything — because returning is what
     /// lets the runtime supervisor spend its recovery budget on a new
-    /// generation. The old version of this test only killed the server:
-    /// async-nats accepts a subscribe optimistically, so `queue_subscribe` still
-    /// succeeded and the branch under test never ran.
+    /// generation. It retries the subscription first (`RESUBSCRIBE_ATTEMPTS`),
+    /// which is what makes a relay blip heal without a rebuild; this asserts the
+    /// ladder still ends rather than retrying a subject that can never work. The
+    /// old version of this test only killed the server: async-nats accepts a
+    /// subscribe optimistically, so `queue_subscribe` still succeeded and the
+    /// branch under test never ran.
     #[tokio::test]
     async fn a_pairing_id_that_cannot_form_a_queue_group_returns_instead_of_waiting() {
         let nats = FakeNats::start().await;
