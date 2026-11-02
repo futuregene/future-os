@@ -21,16 +21,22 @@ impl ShellParams {
         if serde_json::to_vec(&args)?.len() > 131_072 {
             return Err(anyhow!("Shell input exceeds 131072 serialized bytes"));
         }
-        let params: Self = serde_json::from_value(args)?;
+        let mut params: Self = serde_json::from_value(args)?;
         if params.command.trim().is_empty() || params.command.contains('\0') {
             return Err(anyhow!("command must be nonempty and contain no NUL"));
         }
         if params.command.len() > 65_536 {
             return Err(anyhow!("Command input exceeds 65536 bytes"));
         }
-        if params.timeout.is_some_and(|n| !(1..=600).contains(&n)) {
-            return Err(anyhow!("timeout must be 1..600 seconds"));
+        if params.timeout.is_some_and(|n| n < 1) {
+            return Err(anyhow!("timeout must be at least 1 second"));
         }
+        // An over-long request is clamped, not rejected: 600 s is the ceiling
+        // this tool enforces anyway, and the old rejection threw away a whole
+        // round trip (a full context re-read) just to be told the number again.
+        // Measured over the sessions in one Agent database: 137 calls failed
+        // this way and had to be re-sent.
+        params.timeout = params.timeout.map(|n| n.min(MAX_TIMEOUT_SECS));
         if params
             .justification
             .as_ref()

@@ -1403,18 +1403,18 @@ mod bridge_tests {
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-1"));
         let run = seed_run(&thread.id);
-        let mut settled = std::collections::HashSet::new();
+        let mut memory = WatchdogMemory::default();
 
         // A young run (now) is inside the grace window → skipped silently.
         let now = run.created_at;
-        active_run_watchdog_pass(now, &mut settled).await;
+        active_run_watchdog_pass(now, &mut memory).await;
         assert!(mock.requests().is_empty());
 
         // Aged past the grace window: the agent has no marker and the run is
         // below the orphan age → Skip (row untouched), but the probe went out.
         mock.push_run_state(&run.id, serde_json::json!({"isStreaming": false}));
         let aged_now = run.created_at + (WATCHDOG_GRACE_SECS as i64 + 1) * 1000;
-        active_run_watchdog_pass(aged_now, &mut settled).await;
+        active_run_watchdog_pass(aged_now, &mut memory).await;
         assert_eq!(mock.requests_of("get_state").len(), 1);
         assert_eq!(mock.requests_of("get_state")[0].run_id, run.id);
         assert_eq!(
@@ -1428,7 +1428,7 @@ mod bridge_tests {
         // Past the orphan age with no marker → settled failed.
         mock.push_run_state(&run.id, serde_json::json!({"isStreaming": false}));
         let orphan_now = run.created_at + (WATCHDOG_ORPHAN_SECS as i64) * 1000;
-        active_run_watchdog_pass(orphan_now, &mut settled).await;
+        active_run_watchdog_pass(orphan_now, &mut memory).await;
         let record = crate::store::get_run(&run.id).expect("run").expect("some");
         assert_eq!(record.status, "failed");
         assert_eq!(record.error_type.as_deref(), Some("stream_interrupted"));
@@ -1440,7 +1440,7 @@ mod bridge_tests {
             &format!("get_state#{}", run2.id),
             Reply::Status(tonic::Code::Unavailable, "down"),
         );
-        active_run_watchdog_pass(orphan_now, &mut settled).await;
+        active_run_watchdog_pass(orphan_now, &mut memory).await;
         assert_eq!(
             crate::store::get_run(&run2.id)
                 .expect("run")
@@ -1452,8 +1452,82 @@ mod bridge_tests {
 
         // Store unreadable → the pass returns immediately.
         let prev = break_home();
-        active_run_watchdog_pass(orphan_now, &mut settled).await;
+        active_run_watchdog_pass(orphan_now, &mut memory).await;
         restore_home(prev);
+    }
+
+    /// A run whose reconcile fails the *same* way every pass will never heal by
+    /// being asked again. Measured 2026-11-01: two runs retried every 30 s from
+    /// 06:21 to 14:54 (91 log lines), settled only by restarting the Agent, and
+    /// the row kept the conversation reading as "generating" the whole time.
+    #[tokio::test]
+    async fn watchdog_gives_up_on_a_run_it_can_never_reconcile() {
+        let home = TestHome::new("bridge-watchdog-give-up");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-give-up"));
+        let run = seed_run(&thread.id);
+        let mut memory = WatchdogMemory::default();
+        let now = run.created_at + (WATCHDOG_GRACE_SECS as i64 + 1) * 1000;
+
+        let status = || {
+            crate::store::get_run(&run.id)
+                .expect("run")
+                .expect("some")
+                .status
+        };
+
+        // One short of the threshold: still retrying, row untouched.
+        for _ in 0..WATCHDOG_RECONCILE_GIVE_UP_PASSES - 1 {
+            mock.push(
+                &format!("get_state#{}", run.id),
+                Reply::Status(tonic::Code::Unavailable, "down"),
+            );
+            active_run_watchdog_pass(now, &mut memory).await;
+            assert_eq!(status(), "running");
+        }
+
+        // A *different* error is a different diagnosis: it restarts the count
+        // rather than inheriting the streak.
+        mock.push(
+            &format!("get_state#{}", run.id),
+            Reply::Status(tonic::Code::Unavailable, "still down"),
+        );
+        active_run_watchdog_pass(now, &mut memory).await;
+        assert_eq!(status(), "running", "a changed error restarts the count");
+
+        // The same error again, to the threshold: settled once, with a reason.
+        for _ in 0..WATCHDOG_RECONCILE_GIVE_UP_PASSES {
+            mock.push(
+                &format!("get_state#{}", run.id),
+                Reply::Status(tonic::Code::Unavailable, "still down"),
+            );
+            active_run_watchdog_pass(now, &mut memory).await;
+            if status() != "running" {
+                break;
+            }
+        }
+        let record = crate::store::get_run(&run.id).expect("run").expect("some");
+        assert_eq!(record.status, "failed");
+        assert_eq!(record.error_type.as_deref(), Some("stream_interrupted"));
+        let message = record.error_message.unwrap_or_default();
+        assert!(
+            message.contains("could not reconcile"),
+            "the row must say why it was settled: {message}"
+        );
+        assert!(
+            message.contains("watchdog passes"),
+            "and how long it tried: {message}"
+        );
+
+        // Nothing is retried after the give-up: one more pass sends no probe.
+        let probes = mock.requests_of("get_state").len();
+        active_run_watchdog_pass(now, &mut memory).await;
+        assert_eq!(
+            mock.requests_of("get_state").len(),
+            probes,
+            "a settled run leaves the active set"
+        );
     }
 
     // ── settled-run repair ───────────────────────────────────────────
@@ -1493,7 +1567,7 @@ mod bridge_tests {
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-1"));
         let run = failed_run(&thread.id);
-        let mut settled = std::collections::HashSet::new();
+        let mut memory = WatchdogMemory::default();
         assert!(mock.requests().is_empty());
 
         // Our run is queued behind the one the Agent is executing.
@@ -1505,7 +1579,7 @@ mod bridge_tests {
                 "queuedRuns": [{"runId": run.id, "queuePosition": 1}],
             }),
         );
-        active_run_watchdog_pass(run.updated_at + 30_000, &mut settled).await;
+        active_run_watchdog_pass(run.updated_at + 30_000, &mut memory).await;
 
         assert_eq!(ledger_reads(&mock, &run.id), 1);
         let record = crate::store::get_run(&run.id).expect("run").expect("some");
@@ -1525,14 +1599,14 @@ mod bridge_tests {
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-1"));
         let run = failed_run(&thread.id);
-        let mut settled = std::collections::HashSet::new();
+        let mut memory = WatchdogMemory::default();
         let started_at = run.started_at.expect("seeded start");
 
         mock.push_run_state(
             &run.id,
             serde_json::json!({"requestedRun": {"runId": run.id, "status": "completed", "durationMs": 90_000}}),
         );
-        active_run_watchdog_pass(run.updated_at + 30_000, &mut settled).await;
+        active_run_watchdog_pass(run.updated_at + 30_000, &mut memory).await;
 
         let record = crate::store::get_run(&run.id).expect("run").expect("some");
         assert_eq!(record.status, "completed");
@@ -1551,14 +1625,14 @@ mod bridge_tests {
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-1"));
         let run = failed_run(&thread.id);
-        let mut settled = std::collections::HashSet::new();
+        let mut memory = WatchdogMemory::default();
         let now = run.updated_at + 30_000;
 
         mock.push_run_state(
             &run.id,
             serde_json::json!({"requestedRun": {"runId": run.id, "status": "error", "error": "model exploded"}}),
         );
-        active_run_watchdog_pass(now, &mut settled).await;
+        active_run_watchdog_pass(now, &mut memory).await;
         let record = crate::store::get_run(&run.id).expect("run").expect("some");
         assert_eq!(record.status, "failed");
         assert_eq!(
@@ -1568,7 +1642,7 @@ mod bridge_tests {
 
         // A later pass has nothing left to ask about this row.
         let reads = ledger_reads(&mock, &run.id);
-        active_run_watchdog_pass(now + 60_000, &mut settled).await;
+        active_run_watchdog_pass(now + 60_000, &mut memory).await;
         assert_eq!(ledger_reads(&mock, &run.id), reads);
     }
 
@@ -1581,14 +1655,14 @@ mod bridge_tests {
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-1"));
         let run = failed_run(&thread.id);
-        let mut settled = std::collections::HashSet::new();
+        let mut memory = WatchdogMemory::default();
         let now = run.updated_at + 30_000;
 
         mock.push(
             &format!("get_state#{}", run.id),
             Reply::Status(tonic::Code::Unavailable, "down"),
         );
-        active_run_watchdog_pass(now, &mut settled).await;
+        active_run_watchdog_pass(now, &mut memory).await;
         assert_eq!(
             crate::store::get_run(&run.id)
                 .expect("run")
@@ -1601,7 +1675,7 @@ mod bridge_tests {
             &run.id,
             serde_json::json!({"requestedRun": {"runId": run.id, "status": "completed"}}),
         );
-        active_run_watchdog_pass(now + 30_000, &mut settled).await;
+        active_run_watchdog_pass(now + 30_000, &mut memory).await;
         assert_eq!(
             crate::store::get_run(&run.id)
                 .expect("run")
@@ -1623,7 +1697,7 @@ mod bridge_tests {
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-unknown"));
         let run = failed_run(&thread.id);
-        let mut settled = std::collections::HashSet::new();
+        let mut memory = WatchdogMemory::default();
         let now = run.updated_at + 30_000;
 
         // A refused read: `success = false`, so the pass gets an answer rather
@@ -1632,7 +1706,7 @@ mod bridge_tests {
             &format!("get_state#{}", run.id),
             Reply::Reject("unknown session".into()),
         );
-        active_run_watchdog_pass(now, &mut settled).await;
+        active_run_watchdog_pass(now, &mut memory).await;
         assert_eq!(ledger_reads(&mock, &run.id), 1, "the ledger was read once");
         let record = crate::store::get_run(&run.id).expect("run").expect("some");
         assert_eq!(
@@ -1650,9 +1724,12 @@ mod bridge_tests {
             &format!("get_state#{}", run.id),
             Reply::Reject("unknown session".into()),
         );
-        active_run_watchdog_pass(now + 30_000, &mut settled).await;
+        active_run_watchdog_pass(now + 30_000, &mut memory).await;
         assert_eq!(ledger_reads(&mock, &run.id), 2);
-        assert!(settled.is_empty(), "Unknown is not Verified");
+        assert!(
+            memory.settled_verified_count() == 0,
+            "Unknown is not Verified"
+        );
     }
 
     #[tokio::test]
@@ -1681,9 +1758,9 @@ mod bridge_tests {
             error_type: None,
         })
         .expect("complete");
-        let mut settled = std::collections::HashSet::new();
+        let mut memory = WatchdogMemory::default();
 
-        active_run_watchdog_pass(done.updated_at + 30_000, &mut settled).await;
+        active_run_watchdog_pass(done.updated_at + 30_000, &mut memory).await;
 
         assert_eq!(ledger_reads(&mock, &aborted.id), 0);
         assert_eq!(ledger_reads(&mock, &done.id), 0);
@@ -3068,6 +3145,66 @@ mod pipeline_tests {
         assert!(error.contains("reconcile connect"), "{error}");
         assert_eq!(crate::request_scope::owned_count(), 1);
         crate::request_scope::release_run("sess-rgp", &run4.id);
+    }
+
+    /// The observer settles a run from the run's own terminal event. Before this
+    /// split every non-finish became the same `unknown` failure, so a run the
+    /// user had stopped read as a crash — 29 rows in one Agent database, 12 of
+    /// them on the morning of 2026-11-02, while the Agent's ledger said
+    /// `cancelled` all along.
+    #[test]
+    fn the_observer_mirrors_the_runs_own_terminal_state() {
+        let home = TestHome::new("bridge-settle-agent-end");
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-end"));
+
+        // A clean finish is exercised end-to-end by `agent_prompt_new_session_full_pipeline`
+        // (its `completed` settle needs no runtime here).
+        let cases = [
+            (r#"{"state":"cancelled"}"#, "cancelled", Some("cancelled")),
+            (
+                r#"{"state":"interrupted_by_restart"}"#,
+                "failed",
+                Some("stream_interrupted"),
+            ),
+            (r#"{"state":"failed"}"#, "failed", Some("agent_error")),
+            // A state this build does not know keeps the conservative answer.
+            (
+                r#"{"state":"teleported"}"#,
+                "failed",
+                Some("stream_interrupted"),
+            ),
+            // A finish contradicted by an error is not a finish.
+            (
+                r#"{"state":"completed","error":"provider exploded"}"#,
+                "failed",
+                Some("stream_interrupted"),
+            ),
+            ("not json", "failed", Some("stream_interrupted")),
+        ];
+        for (data, status, error_type) in cases {
+            let run = seed_run(&thread.id);
+            settle_agent_end(&run.id, data);
+            let record = crate::store::get_run(&run.id).expect("run").expect("some");
+            assert_eq!(record.status, status, "{data}");
+            assert_eq!(record.error_type.as_deref(), error_type, "{data}");
+        }
+
+        // The Agent's own error text is preserved rather than replaced.
+        let run = seed_run(&thread.id);
+        settle_agent_end(&run.id, r#"{"state":"failed","error":"provider exploded"}"#);
+        let record = crate::store::get_run(&run.id).expect("run").expect("some");
+        assert_eq!(record.error_message.as_deref(), Some("provider exploded"));
+
+        // And an already-terminal row is never rewritten by a late event.
+        let run = seed_run(&thread.id);
+        settle_agent_end(&run.id, r#"{"state":"cancelled"}"#);
+        settle_agent_end(&run.id, r#"{"state":"completed"}"#);
+        let record = crate::store::get_run(&run.id).expect("run").expect("some");
+        assert_eq!(
+            record.status, "cancelled",
+            "compare-and-set: the first terminal write wins"
+        );
     }
 
     #[test]

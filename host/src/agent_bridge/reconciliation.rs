@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::client::run_control_command;
 use super::*;
@@ -554,11 +554,9 @@ fn settle_orphaned_run(run_id: &str, message: &str) -> Result<(), String> {
 /// convergence on the next launch.
 pub fn spawn_active_run_watchdog() {
     crate::runtime::spawn(async move {
-        // Run ids already compared against the Agent ledger with nothing to
-        // correct, for the lifetime of this process (see
-        // `reconcile_settled_runs`). Owned by the loop rather than a global,
-        // so each watchdog instance — and each test — starts clean.
-        let mut settled_verified: HashSet<String> = HashSet::new();
+        // Watchdog memory lives with the loop rather than in a global, so each
+        // watchdog instance — and each test — starts clean.
+        let mut memory = WatchdogMemory::default();
         loop {
             tokio::time::sleep(watchdog_interval()).await;
             #[cfg(test)]
@@ -572,21 +570,57 @@ pub fn spawn_active_run_watchdog() {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
-            active_run_watchdog_pass(now_ms, &mut settled_verified).await;
+            active_run_watchdog_pass(now_ms, &mut memory).await;
         }
     });
+}
+
+/// How many consecutive passes may report the *same* reconcile error for one
+/// run before the watchdog stops believing the run is recoverable. At the 30 s
+/// pass interval this is a quarter of an hour of a persistently identical
+/// failure — long past anything transient, and far short of the incident that
+/// motivated it: two runs retried every pass from 06:21 to 14:54 on 2026-11-01
+/// (91 log lines), settled only by restarting the Agent.
+pub(super) const WATCHDOG_RECONCILE_GIVE_UP_PASSES: u32 = 30;
+
+/// Per-run record of a reconcile that keeps failing, so the pass can tell
+/// "this always fails" from "this failed once". A *different* error restarts
+/// the count: a run whose failures keep changing shape is not one diagnosis.
+struct ReconcileFailure {
+    error: String,
+    passes: u32,
+}
+
+/// Memory the watchdog carries between passes.
+#[derive(Default)]
+pub(super) struct WatchdogMemory {
+    /// Run ids already compared against the Agent ledger with nothing to
+    /// correct, for the lifetime of this process (see
+    /// `reconcile_settled_runs`).
+    settled_verified: HashSet<String>,
+    /// Consecutive identical reconcile failures, per run id.
+    reconcile_failures: HashMap<String, ReconcileFailure>,
+}
+
+impl WatchdogMemory {
+    /// How many runs this process has confirmed consistent with the Agent
+    /// ledger. Exposed so the repair tests can assert what stays unverified.
+    #[cfg(test)]
+    pub(super) fn settled_verified_count(&self) -> usize {
+        self.settled_verified.len()
+    }
 }
 
 /// One watchdog pass: reconcile every non-terminal run row against the
 /// Agent's authoritative state, then the rows the GUI settled on its own, then
 /// the pending approvals. Extracted from the spawn loop so tests can drive it
 /// with a synthetic clock (run rows cannot be backdated through the store API).
-pub(super) async fn active_run_watchdog_pass(now_ms: i64, settled_verified: &mut HashSet<String>) {
+pub(super) async fn active_run_watchdog_pass(now_ms: i64, memory: &mut WatchdogMemory) {
     crate::request_scope::reconcile_owned_runs().await;
     let Ok(active_runs) = crate::store::list_active_runs() else {
         return;
     };
-    for run in active_runs {
+    for run in &active_runs {
         let age_secs = now_ms.saturating_sub(run.created_at).max(0) as u64 / 1000;
         if age_secs < WATCHDOG_GRACE_SECS {
             continue;
@@ -594,14 +628,62 @@ pub(super) async fn active_run_watchdog_pass(now_ms: i64, settled_verified: &mut
         let canonical = AGENT_REPLICAS
             .canonical_for_local(&run.run_id)
             .unwrap_or_else(|| run.run_id.clone());
-        if let Err(error) = reconcile_active_run_once(&run, &canonical, age_secs).await {
-            tracing::warn!(event = "active_run_watchdog_pass", error = %error,
-                "FutureOS run watchdog could not reconcile {}: {error}",
-                run.run_id
-            );
+        match reconcile_active_run_once(run, &canonical, age_secs).await {
+            Ok(()) => {
+                memory.reconcile_failures.remove(&run.run_id);
+            }
+            Err(error) => {
+                let failure = memory
+                    .reconcile_failures
+                    .entry(run.run_id.clone())
+                    .or_insert_with(|| ReconcileFailure {
+                        error: error.clone(),
+                        passes: 0,
+                    });
+                if failure.error != error {
+                    failure.error = error.clone();
+                    failure.passes = 0;
+                }
+                failure.passes += 1;
+                let passes = failure.passes;
+                if passes >= WATCHDOG_RECONCILE_GIVE_UP_PASSES {
+                    // A run the journal will never confirm cannot heal by being
+                    // asked again: settle it once, with the reason, instead of
+                    // retrying forever and leaving the row `running` (which
+                    // gates the composer and the sidebar spinner).
+                    memory.reconcile_failures.remove(&run.run_id);
+                    match settle_orphaned_run(
+                        &run.run_id,
+                        &format!(
+                            "FutureOS could not reconcile this run after {passes} watchdog passes: {error}"
+                        ),
+                    ) {
+                        Ok(()) => tracing::warn!(event = "active_run_watchdog_pass", run_id = %run.run_id, passes = passes, error = %error,
+                            "FutureOS run watchdog gave up on {} after {passes} passes: {error}",
+                            run.run_id
+                        ),
+                        Err(settle_error) => tracing::error!(event = "active_run_watchdog_pass", run_id = %run.run_id, passes = passes, error = %error, settle_error = %settle_error,
+                            "FutureOS run watchdog could not settle {} after {passes} passes: {settle_error}",
+                            run.run_id
+                        ),
+                    }
+                } else if passes == 1 {
+                    // One line when it starts, one when it stops trying. The
+                    // 30-second heartbeat in between says nothing new.
+                    tracing::warn!(event = "active_run_watchdog_pass", run_id = %run.run_id, error = %error,
+                        "FutureOS run watchdog could not reconcile {}: {error}",
+                        run.run_id
+                    );
+                }
+            }
         }
     }
-    reconcile_settled_runs(now_ms, settled_verified).await;
+    // Forget runs that left the active set, so the map is bounded by what the
+    // store currently holds rather than by everything this process ever saw.
+    memory
+        .reconcile_failures
+        .retain(|run_id, _| active_runs.iter().any(|run| &run.run_id == run_id));
+    reconcile_settled_runs(now_ms, &mut memory.settled_verified).await;
     // Approvals outlive their collectors (the Agent stays parked while
     // the GUI restarts), so reconcile them against the Agent's pending
     // set on every tick — not just at startup.

@@ -1027,6 +1027,105 @@ fn new_session_honors_explicit_id_cwd_model_level_and_provenance() {
     assert_eq!(sess.cwd, "/tmp/some-workspace");
 }
 
+/// A sub-session must not outrank the session that created it.
+///
+/// The settings default for a fresh session is `all`, so before this a parent
+/// running approval-gated (`workspace`) or with its tools denied (`none`) that
+/// delegated minted a child with full tool access — the user's gate bypassed by
+/// the act of splitting the work. Measured on this machine: a supervisor at
+/// `workspace` had workers at `all`.
+#[test]
+fn a_sub_session_inherits_its_parents_tool_permission() {
+    let state = make_app_state();
+
+    for level in ["workspace", "none"] {
+        let root_id = format!("perm-root-{level}");
+        let child_id = format!("perm-child-{level}");
+        let resp = parse_response(&handle_command_internal(
+            &state,
+            make_cmd_for("new_session", &root_id),
+        ));
+        assert_eq!(resp["success"], true, "{resp}");
+        state
+            .get_session(&root_id)
+            .unwrap()
+            .write()
+            .set_permission_level(level);
+
+        let mut child = make_cmd_for("new_session", &child_id);
+        child.parent_session = root_id.clone();
+        let resp = parse_response(&handle_command_internal(&state, child));
+        assert_eq!(resp["success"], true, "{resp}");
+        assert_eq!(
+            state
+                .get_session(&child_id)
+                .unwrap()
+                .read()
+                .get_permission_level(),
+            level,
+            "a child of a {level}-level session must not start with more access"
+        );
+
+        // A root keeps the settings default: inheritance is lineage only.
+        let sibling_id = format!("perm-sibling-{level}");
+        let resp = parse_response(&handle_command_internal(
+            &state,
+            make_cmd_for("new_session", &sibling_id),
+        ));
+        assert_eq!(resp["success"], true, "{resp}");
+        assert_eq!(
+            state
+                .get_session(&sibling_id)
+                .unwrap()
+                .read()
+                .get_permission_level(),
+            "all"
+        );
+    }
+}
+
+/// Permission is runtime state, not part of `session_info`: a parent that is
+/// only on disk has no level to hand down, so the child keeps the settings
+/// default instead of the inheritance inventing one.
+#[test]
+fn a_sub_session_of_a_disk_only_parent_keeps_the_default_permission() {
+    let state = make_app_state();
+    let info = crate::session::SessionEntry::session_info(
+        serde_json::json!({
+            "cwd": state.welcome_cwd,
+            "model": "mock",
+        }),
+        "mock".to_string(),
+        "low".to_string(),
+    );
+    let snapshot = crate::session::Session::snapshot(
+        "disk-parent".to_string(),
+        state.welcome_cwd.clone(),
+        "mock".to_string(),
+        String::new(),
+        String::new(),
+        vec![info],
+    );
+    state.session_manager.save(&snapshot).unwrap();
+    assert!(
+        !state.sessions.read().contains_key("disk-parent"),
+        "the test is only meaningful while the parent is not live"
+    );
+
+    let mut cmd = make_cmd_for("new_session", "disk-parent-child");
+    cmd.parent_session = "disk-parent".to_string();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true, "{resp}");
+    assert_eq!(
+        state
+            .get_session("disk-parent-child")
+            .unwrap()
+            .read()
+            .get_permission_level(),
+        "all"
+    );
+}
+
 /// Delegation is one jump deep: a session that already has a parent cannot
 /// become a parent. Without this an agent can spawn an agent that spawns an
 /// agent, and each level re-summarises the level below until the top session can

@@ -365,6 +365,9 @@ future run --no-wait --session <child> \
   --model <id> --thinking <level> "<self-contained prompt>"
 ```
 
+`--json` names the new id `sessionId` (the same field `session list` reports as
+`id`); reading it as `id` is the one mistake this step invites.
+
 Recording the parent on the create command is what makes the child a child: the
 lineage exists even if its first run never happens, it is drawn under this
 conversation in the app, and the prompt that runs there is told it cannot
@@ -385,14 +388,23 @@ them off is a legitimate choice when the default model is what the work wants:
 the child then starts on the agent's default model and `default` thinking
 level.
 
+Tool permission is the exception, and it is not the caller's to pass: the agent
+copies the parent's level onto the child at creation, so a parent running
+approval-gated (`workspace`) or with tools denied (`none`) cannot mint a child
+with more access than it has. A parent that is only on disk has no live level to
+copy — permission is runtime state, not part of the session record — so a child
+minted from one keeps the settings default.
+
 Collecting the answer is a pull: the child answers, and `future session
-wait`/`transcript` reads that answer back. When the caller cannot wait that
-long — the agent's shell tool caps a single wait at 600 seconds — it puts its
-own session id in the child's prompt and asks for a report back through
-`future run --session <parent>`, which is a real run in that conversation and
-spends credits. That is also the only case in which ending a turn with a child
-still running is the right call, because the child still knows where to
-report.
+wait`/`transcript` reads that answer back. A `wait` that ends without an answer
+— an empty answer, an interrupted run, an error — exits non-zero on purpose:
+that is the child failing, not a blank success to report upward. When the
+caller cannot wait that long — the agent's shell tool caps a single wait at 600
+seconds — it puts its own session id in the child's prompt and asks for a report
+back through `future run --session <parent>`, which is a real run in that
+conversation and spends credits. That is also the only case in which ending a
+turn with a child still running is the right call, because the child still knows
+where to report.
 
 One jump is the limit, and it is enforced rather than asked for: a session that
 already has a parent cannot become one (`new_session` and `set_parent_session`
