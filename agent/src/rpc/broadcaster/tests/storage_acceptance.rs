@@ -77,7 +77,6 @@ fn paced_native_admission_and_control_latency() {
                 let control=Instant::now();writer.control.queue_flush().unwrap().recv().unwrap().unwrap();let control_micros=control.elapsed().as_micros();
                 enqueue("thinking_end",json!({"entry_id":entry,"content_key":key,"content_offset":offset,"content_bytes":0,"content_seal":true,"provider_metadata":{}}),true);
                 enqueue("message_end",json!({"entry_id":entry,"complete":true}),true);
-                drop(enqueue);
                 writer.shutdown().unwrap();done.store(true,Ordering::Release);
                 let (lags,reads)=monitor.join().unwrap();
                 assert!(health.error().is_none());assert_eq!(health.metrics.snapshot()["batchFailures"],0);assert_eq!(writer.admission.snapshot()["pendingEvents"],0);
