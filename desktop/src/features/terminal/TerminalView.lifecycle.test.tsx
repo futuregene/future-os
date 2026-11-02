@@ -13,6 +13,13 @@ import { TerminalView } from "./TerminalView";
 const written: string[] = [];
 /** The sockets the view opened, so a test can play the server. */
 const sockets: FakeSocket[] = [];
+/** The `cursor` argument each attachment asked the server to resume from. */
+const seeks: Array<number | undefined> = [];
+/**
+ * What the mock serializer reports. Tests that care about the buffer/cursor
+ * agreement point it at the screen the view actually applied.
+ */
+let serialized = "serialized screen";
 /** Drives the mocked xterm's write callback (the persistence drain). */
 let writeCallback: (() => void) | undefined;
 let deferWrites = false;
@@ -131,7 +138,7 @@ vi.mock("@xterm/addon-fit", () => ({
 vi.mock("@xterm/addon-serialize", () => ({
   SerializeAddon: class {
     serialize() {
-      return "serialized screen";
+      return serialized;
     }
   },
 }));
@@ -157,8 +164,10 @@ const clientMocks = vi.hoisted(() => {
 vi.mock("./client", () => ({
   TerminalApiError: clientMocks.TerminalApiError,
   connectTicket: (id: string) => clientMocks.connectTicket(id),
-  connectUrl: (_server: unknown, id: string, cursor: number | undefined, ticket: string) =>
-    `ws://127.0.0.1:1/terminal/${id}/connect?cursor=${cursor ?? "-1"}&ticket=${ticket}`,
+  connectUrl: (_server: unknown, id: string, cursor: number | undefined, ticket: string) => {
+    seeks.push(cursor);
+    return `ws://127.0.0.1:1/terminal/${id}/connect?cursor=${cursor ?? "-1"}&ticket=${ticket}`;
+  },
   terminalServer: () => clientMocks.terminalServer(),
   updateTerminal: (id: string, input: unknown) => clientMocks.updateTerminal(id, input),
 }));
@@ -178,6 +187,8 @@ let missing = 0;
 beforeEach(() => {
   written.length = 0;
   sockets.length = 0;
+  seeks.length = 0;
+  serialized = "serialized screen";
   exits = [];
   persisted = [];
   connected = 0;
@@ -855,5 +866,100 @@ describe("terminalView teardown", () => {
       vi.doUnmock("@xterm/addon-serialize");
       vi.resetModules();
     }
+  });
+});
+
+/**
+ * The persisted cursor is the *applied end offset* of the session output, which
+ * is what the next attachment resumes from (`tabs.ts`: "Absolute output cursor
+ * already applied to `buffer`"). The host reports that offset once per
+ * attachment — in the control frame that follows the replay — and streams live
+ * output afterwards as raw bytes, with no further control message until the
+ * shell exits. So the view has to advance the offset itself as it applies live
+ * frames; a cursor that stays at the attach-time offset makes every remount
+ * replay output the restored screen already shows.
+ */
+describe("terminalView persisted cursor", () => {
+  const metaFrame = (meta: Record<string, number>) =>
+    new Uint8Array([0, ...new TextEncoder().encode(JSON.stringify(meta))]);
+  const frameOutput = (socket: FakeSocket, text: string) =>
+    socket.frame(new TextEncoder().encode(text));
+
+  it("advances with live output, so a remount neither replays nor truncates", async () => {
+    const first = await connect();
+    // The host's only control frame: nothing to replay, offset 0.
+    await act(async () => {
+      first.frame(metaFrame({ cursor: 0, start: 0 }));
+    });
+    // Live output, exactly as `pump` sends it: raw bytes, no control frame.
+    await act(async () => {
+      frameOutput(first, "hello world");
+    });
+    expect(written.join("")).toBe("hello world");
+
+    // The tab-switch path: serialize the applied screen, persist the cursor
+    // that is supposed to describe it.
+    serialized = written.join("");
+    await act(async () => {
+      root?.unmount();
+    });
+    root = createRoot(host!);
+
+    const saved = persisted[persisted.length - 1]!;
+    expect(saved.buffer).toBe("hello world");
+    // 11 bytes reached the screen, so 11 bytes were applied.
+    expect(saved.cursor).toBe(11);
+
+    // Back on the tab: restore the screen and resume from the stored offset.
+    written.length = 0;
+    const second = await connect({ ...TAB, buffer: saved.buffer, cursor: saved.cursor });
+    expect(written.join("")).toBe("hello world");
+    expect(seeks[seeks.length - 1]).toBe(11);
+
+    // The host honours `cursor=11`: no replay, and nothing new to show. The
+    // screen is not duplicated and no truncation notice is painted.
+    await act(async () => {
+      second.frame(metaFrame({ cursor: 11, start: 11 }));
+    });
+    expect(written.join("")).toBe("hello world");
+    expect(written.join("")).not.toContain("truncated");
+  });
+
+  it("counts the stream in bytes, so a multi-byte character advances by three", async () => {
+    const socket = await connect();
+    await act(async () => {
+      socket.frame(metaFrame({ cursor: 0, start: 0 }));
+    });
+    await act(async () => {
+      frameOutput(socket, "中");
+    });
+
+    await act(async () => {
+      root?.unmount();
+    });
+    root = createRoot(host!);
+    expect(persisted[persisted.length - 1]!.cursor).toBe(3);
+  });
+
+  it("resumes a dropped lagging viewer from the offset it applied", async () => {
+    vi.useFakeTimers();
+    const socket = await connect();
+    await act(async () => {
+      socket.frame(metaFrame({ cursor: 0, start: 0 }));
+    });
+    await act(async () => {
+      frameOutput(socket, "abcdefg");
+    });
+
+    // The host dropped this viewer to bound memory and asks it to come back
+    // with the cursor it actually holds, so the replay is only the difference.
+    await act(async () => {
+      socket.emit("close", { code: 4408 });
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(sockets).toHaveLength(2);
+    expect(seeks[seeks.length - 1]).toBe(7);
   });
 });
