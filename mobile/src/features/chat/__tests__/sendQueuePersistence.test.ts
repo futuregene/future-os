@@ -89,3 +89,24 @@ test("an empty conversation is not written at all", async () => {
   const raw = await AsyncStorage.getItem(KEY);
   expect(JSON.parse(raw!).conversations).toEqual({});
 });
+
+test("the command id a message was sent under survives the app being killed", async () => {
+  // A phone that comes back with the message still queued and a *fresh* command id
+  // would send the words their desktop may already have: the id is the only thing
+  // that makes the two the same message, so it is part of what is stored.
+  await saveSendQueue(new Map([
+    ["desktop:s1", [
+      { attachments: [], commandId: "prompt_abc", content: "already sent", createdAt: 1, id: "q1" },
+    ]],
+  ]));
+  const loaded = await loadSendQueue();
+  expect(loaded.get("desktop:s1")?.[0]?.commandId).toBe("prompt_abc");
+});
+
+test("a row with no command id reads back as one", async () => {
+  await saveSendQueue(new Map([
+    ["desktop:s1", [{ attachments: [], content: "never sent", createdAt: 1, id: "q1" }]],
+  ]));
+  const loaded = await loadSendQueue();
+  expect(loaded.get("desktop:s1")?.[0]).not.toHaveProperty("commandId");
+});

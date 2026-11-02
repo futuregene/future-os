@@ -354,15 +354,53 @@ fn days_in_month(year: i32, month: u32) -> u32 {
     (first - chrono::Duration::days(1)).day()
 }
 
+/// How many days past a nonexistent wall-clock time to look for the next one
+/// that exists. A daylight-saving gap swallows an hour, not a season; the bound
+/// is there so a zone that skips a whole day (`Pacific/Apia` skipped
+/// 2011-12-30) or a hand-edited schedule cannot make this scan spin.
+const MAX_GAP_DAYS: i64 = 8;
+
+/// Resolve `date`+`time` in `tz`, stepping forward a day at a time when that
+/// wall-clock time does not exist there.
+///
+/// Zones skip wall-clock times when daylight saving starts — 02:30 in
+/// `America/New_York` on 2026-03-08 is one — and `from_local_datetime` answers
+/// `None` for them. Passing that straight on would make `next_due` report "no
+/// next slot", which the store reads as *no longer scheduled*
+/// (`Task::next_due_at` and `SQL_DUE_TASKS`): a daily 02:30 task would die at
+/// its first spring change and never come due again. Advancing to the next day
+/// that has the time keeps the schedule alive and keeps its meaning: firing at
+/// 03:00 instead would quietly run that day's job an hour off the time the
+/// user set.
+///
+/// Only a *gap* is handled here. A wall-clock time that occurs twice (the
+/// autumn fold) already resolves, and `earliest()` fires it at the first
+/// occurrence, which is the same rule as before.
+fn local_slot(
+    date: chrono::NaiveDate,
+    time: chrono::NaiveTime,
+    tz: Tz,
+) -> Option<chrono::DateTime<Tz>> {
+    use chrono::{Duration, TimeZone};
+    let mut date = date;
+    for _ in 0..=MAX_GAP_DAYS {
+        if let Some(dt) = tz.from_local_datetime(&date.and_time(time)).earliest() {
+            return Some(dt);
+        }
+        date += Duration::days(1);
+    }
+    None
+}
+
 fn next_calendar_time(
     after: &chrono::DateTime<Tz>,
     time: chrono::NaiveTime,
     tz: Tz,
 ) -> Option<chrono::DateTime<Tz>> {
-    use chrono::{Duration, TimeZone};
+    use chrono::Duration;
     let days = if after.time() >= time { 1 } else { 0 };
     let date = after.date_naive() + Duration::days(days);
-    tz.from_local_datetime(&date.and_time(time)).earliest()
+    local_slot(date, time, tz)
 }
 
 // ─── session retention ────────────────────────────────────────────────────
@@ -1010,18 +1048,74 @@ mod tests {
     }
 
     /// An explicit zone whose spring-forward gap swallows the scheduled time
-    /// yields no candidate that day (the same rule the host's zone always had),
-    /// rather than a shifted run.
+    /// advances to the next day that has that wall-clock time, rather than
+    /// shifting the run to 03:00 or reporting no slot at all.
+    ///
+    /// This test used to assert `None` ("the gap yields no candidate that day").
+    /// That expectation was the bug (h2-C1): `None` is not "no candidate today",
+    /// it is the store's encoding of *no longer scheduled*, so the daily task was
+    /// written back with `next_due_at = NULL` and never came due again — see
+    /// `a_daily_task_survives_the_spring_forward_gap` for the full timeline.
     #[test]
-    fn a_time_that_does_not_exist_in_the_zone_is_skipped() {
+    fn a_time_that_does_not_exist_in_the_zone_moves_to_the_next_real_one() {
         let mut t = task(
             serde_json::json!({"mode":"daily","time":"02:30"}),
             TriggerKind::Schedule,
         );
         t.timezone = Some("America/New_York".into());
-        // 2026-03-08 02:00–02:59 does not exist in New York.
+        // 2026-03-08 02:00–02:59 does not exist in New York (clocks jump to
+        // 03:00 EDT), so the next real 02:30 is on the 9th, and it is EDT.
         let before = ms_in(Tz::America__New_York, 2026, 3, 8, 1, 0);
-        assert_eq!(next_due(&t, before), None);
+        assert_eq!(
+            next_due(&t, before),
+            Some(ms_in(Tz::UTC, 2026, 3, 9, 6, 30)),
+            "02:30 EDT is 06:30 UTC; not 03:00 EDT, and never `None`"
+        );
+    }
+
+    /// The timeline the host actually produces for a daily 02:30 New York task
+    /// across the spring-forward weekend: the run on the 7th advances the
+    /// schedule to the 9th instead of nulling it out.
+    ///
+    /// `host/src/tasks.rs` writes `next_due_at = next_due(task, now)` back after
+    /// every scheduled run, and `list_due_tasks` only selects rows whose
+    /// `next_due_at` is set — so a `None` here took the task off the schedule
+    /// permanently, with no error and nothing left to recover from.
+    #[test]
+    fn a_daily_task_survives_the_spring_forward_gap() {
+        let mut t = task(
+            serde_json::json!({"mode":"daily","time":"02:30"}),
+            TriggerKind::Schedule,
+        );
+        t.timezone = Some("America/New_York".into());
+        // 2026-03-07 02:30 EST is the last run before the change.
+        let ran_at = ms_in(Tz::America__New_York, 2026, 3, 7, 2, 30);
+        assert_eq!(
+            next_due(&t, ran_at),
+            Some(ms_in(Tz::America__New_York, 2026, 3, 9, 2, 30)),
+            "the 8th has no 02:30, so the next slot is the 9th (EDT)"
+        );
+        assert_eq!(next_due(&t, ran_at), Some(1_773_037_800_000));
+    }
+
+    /// Weekly mode must not lose the task either. A week whose selected day has
+    /// no such wall-clock time is skipped by the existing seven-day scan, which
+    /// reaches the following week — `None` here would be just as fatal as it was
+    /// for daily mode.
+    #[test]
+    fn a_weekly_task_skips_only_the_gap_week() {
+        let mut t = task(
+            serde_json::json!({"mode":"weekly","days":["sun"],"time":"02:30"}),
+            TriggerKind::Schedule,
+        );
+        t.timezone = Some("America/New_York".into());
+        // The 8th is the spring-forward Sunday: no 02:30 that day.
+        let before = ms_in(Tz::America__New_York, 2026, 3, 8, 1, 0);
+        assert_eq!(
+            next_due(&t, before),
+            Some(ms_in(Tz::America__New_York, 2026, 3, 15, 2, 30)),
+            "the 15th is the next Sunday that has a 02:30"
+        );
     }
 
     /// The envelope's `due=` is read on the task's clock, with its offset — a

@@ -591,6 +591,7 @@ fn store_projection_gap_and_guard_arms() {
                 note: None,
                 priority: Some("p2".into()),
                 resume_when: None,
+                resume_at_ms: None,
                 blocks: None,
                 acceptance: None,
                 owner: None,

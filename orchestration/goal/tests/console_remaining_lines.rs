@@ -139,6 +139,7 @@ fn task_graph_renders_a_cycle_and_a_topological_order() {
             note: None,
             priority: None,
             resume_when: None,
+            resume_at_ms: None,
             blocks: Some(vec![bot.clone()]),
             acceptance: None,
             owner: None,

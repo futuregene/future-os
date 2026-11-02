@@ -40,7 +40,8 @@ import { NativeFileActionSheet } from "./components/NativeFileActionSheet";
 import { newestFirst } from "./timelineListModel";
 import { expandSessionReferences } from "./sessionCompletion";
 import { sendQueue, useSendQueue } from "./sendQueue";
-import { isTransientQueueRefusal, QUEUE_RETRY_DELAY_MS, QUEUE_RETRY_LIMIT } from "./queueDelivery";
+import { batchCommandId, isTransientQueueRefusal, QUEUE_RETRY_DELAY_MS, QUEUE_RETRY_LIMIT } from "./queueDelivery";
+import { deliveryCommandId, isRecoverableDeliveryError } from "../../remote/usePromptOutbox";
 import { showToast } from "./utils";
 import { collectQueuedAttachments, joinQueuedContent } from "../../lib/sendQueue";
 
@@ -168,7 +169,7 @@ export function ChatScreen() {
     && remote.desktopOnline
     && remote.presence?.control !== "standby";
 
-  const deliverQueue = useCallback(() => {
+  const deliverQueue = useCallback((quiet = false) => {
     if (!conversationKey || queueSendingRef.current)
       return;
     if (sendQueue.snapshot(conversationKey).items.length === 0)
@@ -195,14 +196,31 @@ export function ChatScreen() {
         queueSendingRef.current = false;
         return;
       }
+      // One message, one command id: rows that already failed in a way the link
+      // recovers from carry the id they were sent under, and sending them again
+      // has to reuse it. The desktop dedupes by that id alone, so a second one is
+      // a second prompt in a second run — the same words, charged twice.
+      const commandId = batchCommandId(pending);
+      const content = joinQueuedContent(pending);
+      const files = collectQueuedAttachments(pending);
       try {
-        await remote.sendMessage(joinQueuedContent(pending), collectQueuedAttachments(pending));
+        if (commandId)
+          await remote.sendMessage(content, files, undefined, { commandId });
+        else
+          await remote.sendMessage(content, files);
         queueAttemptRef.current = 0;
         queueSendingRef.current = false;
       }
       catch (error) {
-        // Back into the panel either way; what differs is whether it is flagged.
-        sendQueue.restore(conversationKey, pending);
+        // A failure the link recovers from is not a refusal: the outbox kept the
+        // record, and it — not this panel — delivers the message when the link is
+        // back. The rows go back tagged with the command id that record holds, so
+        // the reader's retry (or this screen's next look at an idle conversation)
+        // asks about that id instead of writing the same words a second time.
+        const owned = isRecoverableDeliveryError(error) ? deliveryCommandId(error) : null;
+        sendQueue.restore(conversationKey, owned
+          ? pending.map(item => ({ ...item, commandId: owned }))
+          : pending);
         if (isTransientQueueRefusal(error) && attempt < QUEUE_RETRY_LIMIT) {
           queueAttemptRef.current = attempt + 1;
           // Not a failure: the rows go back without the brake, and the chain keeps
@@ -216,6 +234,11 @@ export function ChatScreen() {
         }
         queueAttemptRef.current = 0;
         queueSendingRef.current = false;
+        // A quiet attempt is one the screen made on its own to find out whether the
+        // outbox delivered; the failure it hits is the one the reader was already
+        // told about, so it is not reported twice.
+        if (quiet)
+          return;
         const failure = sendFailureText(error, remote.presence?.holder?.name?.trim());
         showToast(t(failure.key, failure.params));
       }
@@ -230,6 +253,30 @@ export function ChatScreen() {
       return;
     void deliverQueue();
   }, [conversationKey, deliverQueue, queue.failed, queue.items.length, queueIdle]);
+
+  /**
+   * Settle what the outbox owns, once per message, when the conversation is free.
+   *
+   * A recoverable failure leaves the rows in the panel flagged, and the outbox
+   * delivers them under their command id when the link is back. Asking about that
+   * id is how the panel learns the message is gone: a delivered one answers with
+   * its receipt and no second prompt is written, and one the outbox dropped is
+   * sent again under the same id. Either way the row settles without the reader
+   * having to press anything for a message they already sent.
+   *
+   * Once per id, not once per render: a row that keeps failing is the reader's
+   * call, the same as any other refusal.
+   */
+  const queueSettledRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!conversationKey || !queueIdle || queueSendingRef.current)
+      return;
+    const commandId = batchCommandId(sendQueue.snapshot(conversationKey).items);
+    if (!commandId || queueSettledRef.current === commandId)
+      return;
+    queueSettledRef.current = commandId;
+    deliverQueue(true);
+  }, [conversationKey, deliverQueue, queueIdle, queue.failed, queue.items.length]);
 
   // The reader asked the run to stop: whatever they were holding goes next, even
   // if this screen still reads the conversation as streaming.

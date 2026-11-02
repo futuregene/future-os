@@ -29,8 +29,45 @@ import type {
   ThinkingLevel,
 } from "./types";
 
-function isRecoverableDeliveryError(error: unknown): boolean {
+/**
+ * Whether a failed delivery is one the link recovers from.
+ *
+ * These are the failures that keep the durable record on purpose: the message is
+ * not refused, it has not arrived yet, and the outbox delivers it when the link is
+ * back. Anything else is a refusal — the desktop will not take this message — and
+ * the record goes.
+ */
+export function isRecoverableDeliveryError(error: unknown): boolean {
   return isDeferredRequestError(error) || isTransientNatsRequestError(error);
+}
+
+/**
+ * The command id a failed send left its durable record under, when the failure is
+ * one the link recovers from.
+ *
+ * Such a failure keeps the record (`sendMessage` deliberately does not clear it),
+ * so the message is delivered — by the outbox, on the next readiness edge — under
+ * that id. A caller that is going to try the same message again has to reuse it:
+ * the desktop looks a prompt up by command id alone, and a second id is a second
+ * prompt in a second run, charged twice. Null means there is no record to reuse —
+ * the send was refused, or it never got as far as storing one.
+ */
+export function deliveryCommandId(error: unknown): string | null {
+  const value = (error as { commandId?: unknown } | null | undefined)?.commandId;
+  return typeof value === "string" && value ? value : null;
+}
+
+function withDeliveryCommandId(error: unknown, commandId: string): unknown {
+  if (error && typeof error === "object") {
+    try {
+      (error as { commandId?: string }).commandId = commandId;
+    }
+    catch {
+      // A frozen error still reaches the caller; it just cannot carry the id, and
+      // the next attempt mints a fresh one — the behaviour from before this fix.
+    }
+  }
+  return error;
 }
 
 async function clearAcknowledgedPrompt(commandId: string, pairId: string): Promise<void> {
@@ -231,7 +268,17 @@ export function usePromptOutbox({
       text: string,
       attachments: MobileAttachment[] = [],
       onUploadProgress?: (completedBytes: number, totalBytes: number) => void,
+      /**
+       * The command id this message already has, when it has one.
+       *
+       * A message the reader has sent once keeps the id that send minted, so every
+       * later attempt at it — this screen's retry, the outbox's recovery after the
+       * link returns, or the same pair of them on a phone that was restarted — is
+       * one prompt on the desktop, which dedupes by this id alone.
+       */
+      options?: { commandId?: string },
     ) => {
+      const requestedCommandId = options?.commandId || null;
       const client = clientRef.current;
       const credentials = credentialsRef.current;
       if (!text.trim() && attachments.length === 0) return;
@@ -284,6 +331,52 @@ export function usePromptOutbox({
       // user tap can otherwise both read the same slot and deliver concurrently.
       sendingRef.current = true;
       setSending(true);
+      /**
+       * The desktop has this message: the record goes, the words the reader wrote
+       * are committed into the conversation, and a send that opened a new session
+       * moves the screen onto it.
+       *
+       * Shared by a fresh delivery and by one the desktop had already accepted,
+       * which is why it takes the record it settles instead of closing over one.
+       */
+      const settle = async (response: PromptAck, delivered: PendingPrompt) => {
+        await clearAcknowledgedPrompt(delivered.commandId, credentials.pairId);
+        await clearSessionDraftIfMatches(delivered.draftKey, delivered);
+        assertCurrentPairing();
+        const nextSessionId = response.sessionId || targetSessionId;
+        engine?.mutate(nextSessionId, (timeline) =>
+          commitAcknowledgedUserMessage(timeline ?? emptyTimeline(), {
+            id: `local:${delivered.commandId}`,
+            runId: response.runId,
+            text: delivered.text.trim(),
+            ...(attachments.length
+              ? {
+                  attachments: attachments.map((attachment) => ({
+                    path: attachment.localUri,
+                    name: attachment.name,
+                    kind: attachment.kind,
+                    mobilePreviewUnsupported: attachment.mobilePreviewUnsupported,
+                  })),
+                }
+              : {}),
+          }),
+        );
+        if (nextSessionId && nextSessionId !== targetSessionId) {
+          const stillViewingSentDraft = conversationEpochRef.current === conversationEpoch;
+          if (stillViewingSentDraft) {
+            selectedRef.current = nextSessionId;
+            setSelectedSessionId(nextSessionId);
+            setDraft(false);
+            setDraftMode("chat");
+            setDraftWorkspaceId("");
+          }
+          engine?.mutate(targetSessionId, (timeline) => ({
+            ...(timeline ?? emptyTimeline()),
+            items: [],
+          }));
+          if (stillViewingSentDraft) void refreshSessions();
+        }
+      };
       try {
         let pending = await loadPendingPrompt(credentials.pairId);
         assertCurrentPairing();
@@ -295,6 +388,29 @@ export function usePromptOutbox({
         if (pending && samePendingPrompt(pending, candidate)) {
           checkReceipt = true;
         } else {
+          // A caller that is re-attempting a delivery it already started hands the
+          // command id back. Ask the desktop about that id before anything else: an
+          // id it accepted is a delivered message — even though this phone no longer
+          // holds the record, because the outbox cleared it when it delivered — and
+          // sending the same words under a second id would start a second run.
+          if (requestedCommandId) {
+            const accepted = promptReceiptSupported
+              ? await pendingPromptReceipt(client, requestedCommandId)
+              : null;
+            assertCurrentPairing();
+            if (accepted) {
+              const delivered: PendingPrompt = {
+                version: 2,
+                bridgeInstanceId: client.accessIdentity,
+                commandId: requestedCommandId,
+                ...candidate,
+                createdAt: Date.now(),
+              };
+              if (pending) await clearPendingPrompt(pending.commandId, credentials.pairId);
+              await settle(accepted, delivered);
+              return;
+            }
+          }
           if (pending) {
             const previousReceipt = promptReceiptSupported
               ? await pendingPromptReceipt(client, pending.commandId)
@@ -307,7 +423,7 @@ export function usePromptOutbox({
           pending = {
             version: 2,
             bridgeInstanceId: client.accessIdentity,
-            commandId: randomId("prompt"),
+            commandId: requestedCommandId ?? randomId("prompt"),
             ...candidate,
             createdAt: Date.now(),
           };
@@ -326,47 +442,18 @@ export function usePromptOutbox({
             assertCurrentPairing,
             onUploadProgress,
           );
-          await clearAcknowledgedPrompt(pending.commandId, credentials.pairId);
-          await clearSessionDraftIfMatches(pending.draftKey, pending);
-          assertCurrentPairing();
-          const nextSessionId = response.sessionId || targetSessionId;
-          engine?.mutate(nextSessionId, (timeline) =>
-            commitAcknowledgedUserMessage(timeline ?? emptyTimeline(), {
-              id: `local:${pending.commandId}`,
-              runId: response.runId,
-              text: text.trim(),
-              ...(attachments.length
-                ? {
-                    attachments: attachments.map((attachment) => ({
-                      path: attachment.localUri,
-                      name: attachment.name,
-                      kind: attachment.kind,
-                      mobilePreviewUnsupported: attachment.mobilePreviewUnsupported,
-                    })),
-                  }
-                : {}),
-            }),
-          );
-          if (nextSessionId && nextSessionId !== targetSessionId) {
-            const stillViewingSentDraft = conversationEpochRef.current === conversationEpoch;
-            if (stillViewingSentDraft) {
-              selectedRef.current = nextSessionId;
-              setSelectedSessionId(nextSessionId);
-              setDraft(false);
-              setDraftMode("chat");
-              setDraftWorkspaceId("");
-            }
-            engine?.mutate(targetSessionId, (timeline) => ({
-              ...(timeline ?? emptyTimeline()),
-              items: [],
-            }));
-            if (stillViewingSentDraft) void refreshSessions();
-          }
+          await settle(response, pending);
         } catch (sendError) {
-          if (clientRef.current === client && !isRecoverableDeliveryError(sendError)) {
-            await clearPendingPrompt(pending.commandId, credentials.pairId);
+          if (!isRecoverableDeliveryError(sendError)) {
+            if (clientRef.current === client) {
+              await clearPendingPrompt(pending.commandId, credentials.pairId);
+            }
+            throw sendError;
           }
-          throw sendError;
+          // The record stays, on purpose: the outbox delivers it on the next
+          // readiness edge, under this command id. Reporting the id is what lets
+          // the caller try the same message rather than mint a second one.
+          throw withDeliveryCommandId(sendError, pending.commandId);
         }
       } finally {
         sendingRef.current = false;

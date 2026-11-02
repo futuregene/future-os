@@ -182,6 +182,12 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
     text: string,
     attachments?: MobileAttachment[],
     onUploadProgress?: (completedBytes: number, totalBytes: number) => void,
+    /**
+     * The command id the message already has, for a caller re-attempting a
+     * delivery (the send queue). Omitted by the composer, which is a new message
+     * every time it sends.
+     */
+    options?: { commandId?: string },
   ): Promise<void>;
   /** Request manual context compaction; resolves with the operation to correlate. */
   compactContext(): Promise<{ sessionId: string; operationId: string }>;

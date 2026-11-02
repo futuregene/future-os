@@ -180,10 +180,13 @@ struct SinkState {
     thinking: String,
     tool_notes: Vec<(String, String)>,
     tool_calls: usize,
-    /// The message that progressive edits target.
+    /// The message that progressive edits target: always the one showing the
+    /// newest tail of the reply.
     editable_message: Option<String>,
-    /// Number of standalone messages already sent for completed chunks.
-    standalone: usize,
+    /// Which chunk of the split text [`SinkState::editable_message`] shows.
+    editable_chunk: Option<usize>,
+    /// Index of the first chunk that has no message of its own yet.
+    next_chunk: usize,
     last_push: Instant,
     sent_anything: bool,
 }
@@ -217,7 +220,8 @@ impl ChannelSink {
                 tool_notes: Vec::new(),
                 tool_calls: 0,
                 editable_message: None,
-                standalone: 0,
+                editable_chunk: None,
+                next_chunk: 0,
                 last_push: Instant::now() - Duration::from_secs(1),
                 sent_anything: false,
             }),
@@ -283,44 +287,86 @@ impl ChannelSink {
 
         // `compose` trims, so a non-blank body always yields at least one chunk.
         let chunks = chunk(&composed, limit, unit);
-        let mut standalone = self.lock().standalone;
+        let tail = chunks.len().saturating_sub(1);
+        let (next_chunk, editable, editable_chunk) = {
+            let state = self.lock();
+            (
+                state.next_chunk,
+                state.editable_message.clone(),
+                state.editable_chunk,
+            )
+        };
 
-        // Everything except the tail is final: post it once as its own message.
-        while standalone + 1 < chunks.len() {
-            self.sender
-                .send_text(&self.conversation, &chunks[standalone])
-                .await?;
-            standalone += 1;
-        }
-
-        let tail = chunks.last().cloned().unwrap_or_default();
-        let existing = self.lock().editable_message.clone();
-        match existing {
-            Some(message_id) => {
-                if let Err(error) = self
-                    .sender
-                    .edit_text(&self.conversation, &message_id, &tail)
-                    .await
-                {
-                    // A failed edit must not kill the turn: the user still has
-                    // the previous version of the message.
-                    let message =
-                        format!("progressive edit failed; keeping the earlier text: {error}");
-                    tracing::warn!(channel = self.definition().id, "{message}");
+        // The editable message is the one a push wrote the *tail* into, so it is
+        // the newest message while the reply still fits in one chunk. Once a
+        // push adds a chunk after it, the text it shows is final: write that
+        // chunk out in place and let the newer chunks get messages of their own,
+        // newest last. Editing the newest tail into the oldest message instead
+        // delivers the answer rotated — conclusion first, opening at the bottom.
+        if let (Some(message_id), Some(index)) = (editable.as_deref(), editable_chunk) {
+            if index < tail {
+                if let Some(text) = chunks.get(index) {
+                    if let Err(error) = self
+                        .sender
+                        .edit_text(&self.conversation, message_id, text)
+                        .await
+                    {
+                        let message = format!(
+                            "progressive finalize failed; keeping the earlier text: {error}"
+                        );
+                        tracing::warn!(channel = self.definition().id, "{message}");
+                    }
                 }
             }
-            None => {
-                let message_id = self
-                    .sender
-                    .send_text(&self.conversation, &tail)
-                    .await
-                    .unwrap_or(None);
-                self.lock().editable_message = message_id;
+        }
+
+        // Everything between the chunks that already have a message and the tail
+        // is final too: post it once, as its own message, in order.
+        let first_new = match editable_chunk {
+            Some(index) if editable.is_some() => index + 1,
+            _ => next_chunk,
+        };
+        if let Some(final_chunks) = chunks.get(first_new..tail) {
+            for text in final_chunks {
+                self.sender.send_text(&self.conversation, text).await?;
             }
+        }
+
+        // The tail stays editable: edit it where it already is, or open a new
+        // message for it (which then becomes the newest, and the editable one).
+        let tail_text = chunks[tail].clone();
+        let tail_is_editable = editable
+            .as_deref()
+            .zip(editable_chunk)
+            .is_some_and(|(_, index)| index >= tail);
+        if tail_is_editable {
+            let message_id = editable.clone().unwrap_or_default();
+            if let Err(error) = self
+                .sender
+                .edit_text(&self.conversation, &message_id, &tail_text)
+                .await
+            {
+                // A failed edit must not kill the turn: the user still has the
+                // previous version of the message.
+                let message = format!("progressive edit failed; keeping the earlier text: {error}");
+                tracing::warn!(channel = self.definition().id, "{message}");
+            }
+        } else {
+            let message_id = self
+                .sender
+                .send_text(&self.conversation, &tail_text)
+                .await
+                .unwrap_or(None);
+            let mut state = self.lock();
+            state.editable_chunk = message_id.as_ref().map(|_| tail);
+            state.editable_message = message_id;
         }
 
         let mut state = self.lock();
-        state.standalone = standalone;
+        if tail_is_editable {
+            state.editable_chunk = Some(tail);
+        }
+        state.next_chunk = tail + 1;
         state.last_push = Instant::now();
         state.sent_anything = true;
         Ok(())
@@ -700,6 +746,61 @@ mod tests {
             Op::Edit(_, text) => assert_eq!(text, &"a".repeat(10)),
             other => panic!("expected an edit of the tail, got {other:?}"),
         }
+    }
+
+    /// The chat as the user finally sees it: one entry per message, in creation
+    /// order (the order the platform stacks new messages), each with its final
+    /// text. `RecordingSender` names a message `m<index+1>` of its own `Send`
+    /// op in the ops list.
+    fn transcript(ops: &[Op]) -> Vec<(String, String)> {
+        let mut messages: Vec<(String, String)> = Vec::new();
+        for (index, op) in ops.iter().enumerate() {
+            match op {
+                Op::Send(text) => messages.push((format!("m{}", index + 1), text.clone())),
+                Op::Edit(id, text) => {
+                    if let Some(entry) = messages.iter_mut().find(|(mid, _)| mid == id) {
+                        entry.1 = text.clone();
+                    }
+                }
+                Op::Typing => {}
+            }
+        }
+        messages
+    }
+
+    #[tokio::test]
+    async fn a_streamed_reply_longer_than_the_limit_reads_in_order() {
+        // h4-C2: the editable message is the one an *early* push created, so it
+        // is the oldest in the chat. Once the reply grew past the limit the sink
+        // kept editing the newest chunk into it and posting the earlier chunks
+        // as new messages below, so the answer arrived rotated: the reader saw
+        // the conclusion first and the beginning at the bottom. This is the
+        // normal case on telegram/discord for any answer over the limit.
+        let sender = RecordingSender::new(&PROGRESSIVE);
+        let sink = sink(sender.clone());
+        let answer = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!?";
+        // Exactly what bridge/turn.rs does: every delta re-sends the whole
+        // accumulated text, crossing the 20-unit limit after the first push.
+        for chars in [20usize, 25, 45, 60, 64] {
+            let accumulated = &answer[..chars];
+            sink.text(TextUpdate {
+                accumulated,
+                delta: accumulated,
+            })
+            .await
+            .unwrap();
+        }
+        sink.finish(&TurnOutcome::completed(answer.to_string()))
+            .await
+            .unwrap();
+
+        let messages = transcript(&sender.ops());
+        let reading_order: String = messages.iter().map(|(_, text)| text.clone()).collect();
+        assert_eq!(reading_order, answer, "chat: {messages:?}");
+        assert!(
+            messages.iter().all(|(_, text)| text.chars().count() <= 20),
+            "every message stays within the limit: {messages:?}"
+        );
     }
 
     #[tokio::test]

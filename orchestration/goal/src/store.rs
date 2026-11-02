@@ -213,6 +213,17 @@ pub enum Event {
         /// absent leaves it untouched. See `Todo::owner`.
         #[serde(default)]
         owner: Option<String>,
+        /// Absolute deadline (Unix **millis**) that the writer resolved for a
+        /// numeric deferral (`resume_when = "defer:N"`).
+        ///
+        /// The deadline belongs to the write, not to the read: resolving
+        /// `defer:N` against read time inside the replay fold re-arms it on
+        /// every read, so the todo never becomes due (bug h3-C1). Lines
+        /// written before this field existed (`None`) resolve `defer:N`
+        /// against their own `ts` instead — also a fixed instant, so replay
+        /// stays deterministic either way.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resume_at_ms: Option<u64>,
         ts: u64,
     },
     /// Stop automation while retaining state (the reference: goal cancel).
@@ -1858,6 +1869,7 @@ fn apply(goal: &mut Goal, event: Event) {
             note,
             priority,
             resume_when,
+            resume_at_ms,
             blocks,
             acceptance,
             owner,
@@ -1899,18 +1911,27 @@ fn apply(goal: &mut Goal, event: Event) {
                 if let Some(rw) = resume_when {
                     t.resume_when_text = Some(rw.clone());
                     t.status = crate::state::TodoStatus::Deferred;
-                    // `defer:N` (written by `todo update --resume-when N` with a
-                    // numeric N) sets a REAL deadline: resume_when = now + N
-                    // seconds, so the deferred/monitor todo becomes due again.
-                    // Any other value is a text-only hint (no deadline) and
-                    // keeps the legacy behavior.
-                    if let Some(secs) = rw
+                    // A numeric deferral is a REAL deadline, anchored to the
+                    // moment the event was WRITTEN — never to read time.
+                    // Resolving `defer:N` as `now() + N` here made every read
+                    // re-arm it, so the todo never became due and the goal
+                    // could never reach terminal closure (bug h3-C1).
+                    if let Some(at_ms) = resume_at_ms {
+                        // Written by a current binary: the writer already
+                        // resolved the instant.
+                        t.resume_when = Some(crate::state::epoch_millis_as_time(at_ms));
+                    } else if let Some(secs) = rw
                         .strip_prefix("defer:")
                         .and_then(|s| s.parse::<u64>().ok())
                     {
-                        t.resume_when = Some(
-                            std::time::SystemTime::now() + std::time::Duration::from_secs(secs),
-                        );
+                        // Legacy line (no absolute deadline stored): resolve
+                        // the relative value against the event's own `ts`,
+                        // which is its write time — a fixed instant, so replay
+                        // is deterministic and an old deferral is already due.
+                        t.resume_when = Some(crate::state::epoch_millis_as_time(
+                            ts.saturating_mul(1000)
+                                .saturating_add(secs.saturating_mul(1000)),
+                        ));
                     }
                 }
                 if let Some(st) = status.as_deref() {
