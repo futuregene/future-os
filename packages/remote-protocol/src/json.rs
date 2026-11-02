@@ -10,16 +10,27 @@
 //!
 //! The shape and the limits mirror the phone's `remoteJson.ts`: only the two
 //! magic bytes are sniffed, the gzip footer's ISIZE is a cheap pre-allocation
-//! bomb guard, and the decoded JSON is bounded by `MAX_REMOTE_JSON_BYTES`. The
-//! ceiling is deliberately higher than the host's `MAX_PLAINTEXT` (by the crypto
-//! header/tag overhead) so a reply the host is allowed to send is never refused
-//! by a stricter reader.
+//! bomb guard, and the decoded JSON is bounded by `MAX_REMOTE_JSON_BYTES`.
+//!
+//! That bound is a *bomb* guard, not the size of a normal reply: the wire is
+//! already bounded by what the secure channel will seal, so this exists to stop a
+//! small body from claiming an unbounded allocation. It used to be 1 MiB, which
+//! also worked out to "a catalogue of about 2 200 conversations", and that was
+//! how a machine with more of them became unreadable: the host could not even
+//! send the list. It is now eight times that — a compressed directory of a few
+//! hundred kilobytes may inflate into a few megabytes, and this is the ceiling
+//! that says how many.
 
 use std::borrow::Cow;
 use std::io::Read;
 
 /// Ceiling for the decoded command reply, matching the phone.
-pub const MAX_REMOTE_JSON_BYTES: usize = 1024 * 1024;
+///
+/// Eight where it used to be one. The host's own bound is on what it seals (~1
+/// MiB, mirroring the broker's payload cap), so with a directory that compresses
+/// about five-fold this is what decides how large a catalogue a client can read:
+/// ~17 000 rows at 470 bytes each, against ~11 000 the host can still seal.
+pub const MAX_REMOTE_JSON_BYTES: usize = 8 * 1024 * 1024;
 
 /// The two bytes every gzip stream starts with. Only these are sniffed, exactly
 /// as on the phone: a `1f 8b` body that is not really gzip must fail while
@@ -248,9 +259,9 @@ mod tests {
     fn an_isize_footer_past_the_cap_is_refused_before_inflating() {
         let mut bomb = vec![0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00];
         // A garbage deflate body, then an ISIZE footer (last four bytes, LE)
-        // claiming 2 MiB: over the cap.
+        // claiming one byte past the cap: refused from the footer alone.
         bomb.extend_from_slice(&[0x00, 0x00]);
-        bomb.extend_from_slice(&(2u32 * 1024 * 1024).to_le_bytes());
+        bomb.extend_from_slice(&((MAX_REMOTE_JSON_BYTES as u32) + 1).to_le_bytes());
         assert_eq!(
             plain_json_bytes(&bomb).err(),
             Some(PeerDecodeError::GzipTooLarge)

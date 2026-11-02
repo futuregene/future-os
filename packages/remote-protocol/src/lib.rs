@@ -16,6 +16,14 @@ pub const LEAN_EVENTS_FEATURE: &str = "lean_events_v1";
 
 pub const EVENT_COALESCING_FEATURE: &str = "event_coalescing_v1";
 pub const CATALOG_ACTIVITY_FEATURE: &str = "catalog_activity_v1";
+/// A client that applies *row-level* catalogue deltas.
+///
+/// Declaring it promises something the wire depends on: a `state.sessions`
+/// packet may then carry `full: false` with only the rows that changed and the
+/// ids that left, and the client is the half that keeps the rest. A client that
+/// does not declare it keeps receiving whole snapshots, byte for byte as before
+/// — reading a delta as a snapshot would make every absent row look deleted.
+pub const CATALOG_DELTA_FEATURE: &str = "catalog_delta_v1";
 pub const REPLY_GZIP_FEATURE: &str = "reply_gzip_v1";
 
 /// Clients that declare this capability keep proving they are still there:
