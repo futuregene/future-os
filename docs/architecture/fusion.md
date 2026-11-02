@@ -2,9 +2,9 @@
 
 [中文](fusion.zh-CN.md)
 
-Status: tool orchestration, shared settings and first-batch resilience implemented. Updated: 2026-10-30.
+Status: tool orchestration, shared settings, first-batch resilience and proactive discussion policy implemented. Updated: 2026-11-02.
 
-Fusion is a multi-model thinking tool available to the main Agent. Its orchestration kernel lives in `orchestration/fusion`, alongside Goal and Tasks. Users add the `fusion` tool to the current main run with `/fusion`. The main Agent investigates and may submit a focused decision question. Internal read-only discussion returns a final conclusion, then the original main flow continues the user's task. Users can inspect the complete discussion separately.
+Fusion is a multi-model thinking tool available to the main Agent. Its orchestration kernel lives in `orchestration/fusion`, alongside Goal and Tasks. Users add the `fusion` tool to the current main run with `/fusion`. The main Agent investigates, then must submit a focused question before making a substantive judgment, choosing an approach or recommending an outcome that requires analysis. Internal read-only discussion returns a final conclusion, then the original main flow continues the user's task. Users can inspect the complete discussion separately.
 
 Delivery requires desktop, mobile and terminal support, with hosts on Windows, macOS and Linux. Desktop alone is insufficient. The outer main flow retains `read / write / edit / shell`, adding `fusion` when requested. The inner moderator and panelists receive only `read / ls / glob / grep`.
 
@@ -12,15 +12,15 @@ Delivery requires desktop, mobile and terminal support, with hosts on Windows, m
 
 The default moderator is `future/deepseek-flash`. Default panelists are `future/deepseek-flash`, `future/glm-5.3-flash` and `future/qwen3.7-plus`, the third selected from the live Future catalog with the user's confirmation. Missing moderators fail explicitly; missing panelists are excluded with a recorded reason. No default-model substitution occurs.
 
-Start Desktop or `future host`, then submit `/fusion <task>` from Desktop, Mobile or TUI. The main Agent receives a real run-scoped tool and decides when to consult on a focused question. The healthy inner N→1→N→1 (N = 2–5) protocol returns one final result; explicit failure branches may skip stages or return a no-conclusion outcome and the original flow continues. Later ordinary runs do not inherit the tool. Expand the reply process and Fusion activity to see a four-stage progress bar and one thinking-status row per model. Full messages and evidence remain in storage and terminal queries. TUI offers `/fusion-log [step-id]`; CLI offers `future fusion show <parent-session-id> [--run <id> --tool <id>] [--step <id>] [--offset <bytes>] --json`. Reads never invoke models.
+Start Desktop or `future host`, then submit `/fusion <task>` from Desktop, Mobile or TUI. The main Agent receives a real run-scoped tool and consults on questions requiring judgment under the proactive policy below. The healthy inner N→1→N→1 (N = 2–5) protocol returns one final result; explicit failure branches may skip stages or return a no-conclusion outcome and the original flow continues. Later ordinary runs do not inherit the tool. Expand the reply process and Fusion activity to see a four-stage progress bar and one thinking-status row per model. Full messages and evidence remain in storage and terminal queries. TUI offers `/fusion-log [step-id]`; CLI offers `future fusion show <parent-session-id> [--run <id> --tool <id>] [--step <id>] [--offset <bytes>] --json`. Reads never invoke models.
 
 The Host executor claims a bounded durable queue in `~/.future/fusion/fusion.db`, avoiding an Agent-to-Host crate dependency. The existing Host instance lock gives one executor, with at most two concurrent consultations. The Agent validates the leading token from the original submission and persists `ScheduledSettingsSnapshot.fusion_enabled` with the raw input/request key. Remote outboxes retain that original directive and key. No persistent session-tool setting is changed. Inner sessions carry `created_by=fusion`; each run forcibly receives only the four snapshot tools regardless of ordinary session configuration.
 
-Only explicit, parent-authorized UTF-8 `read_scope` files are captured, once per consultation, with hashes shared across every round. Empty scope supports conceptual decisions. Escapes, links/reparse points, special files and oversized inputs fail. Limits are 1 MiB/file, 16 MiB total and 1024 files/directories. Capture timestamps and observed-change detection are recorded; this is not an atomic filesystem snapshot. Input/result limits are 48/32 KiB. All panelists and the moderator have 16384 output tokens per completion, raised to 32768 only for an output-limit retry. Default thinking levels are medium for DeepSeek Flash and Qwen 3.7 Plus, low for GLM 5.3 Flash, and medium for the DeepSeek moderator. Steps allow five tool-loop turns and 300 seconds including all generations. A discussion has a 2700-second total deadline measured from creation; an attempt cannot reset that budget. Each parent run admits at most two discussions, with at most two attempts per step. Whole-step timeout, cancellation, authentication and unclassified failures do not trigger an identical retry. Empty read scopes expose no file tools. Intermediate model answers have a separate 128 KiB bound; the final tool result stays at 32 KiB. Completeness reflects actual full/partial/single participation.
+Only explicit, parent-authorized UTF-8 `read_scope` files are captured, once per consultation, with hashes shared across every round. Empty scope supports conceptual decisions. Escapes, links/reparse points, special files and oversized inputs fail. Limits are 1 MiB/file, 16 MiB total and 1024 files/directories. Capture timestamps and observed-change detection are recorded; this is not an atomic filesystem snapshot. Input/result limits are 48/32 KiB. All panelists and the moderator have 16384 output tokens per completion, raised to 32768 only for an output-limit retry. Default thinking levels are medium for DeepSeek Flash and Qwen 3.7 Plus, low for GLM 5.3 Flash, and medium for the DeepSeek moderator. Steps allow five tool-loop turns and 300 seconds including all generations. A discussion has a 2700-second total deadline measured from creation; an attempt cannot reset that budget. Each parent run admits an unlimited number of discussions, with at most two attempts per step. Whole-step timeout, cancellation, authentication and unclassified failures do not trigger an identical retry. Empty read scopes expose no file tools. Intermediate model answers have a separate 128 KiB bound; the final tool result stays at 32 KiB. Completeness reflects actual full/partial/single participation.
 
 The `fusion_runs/inputs/participants/steps/messages/issues/positions/events` tables store structure, inputs, state, references and diagnostics. Complete messages/tool evidence remain in Agent child transcripts. Previews are bounded; original transcripts use UTF-8 byte paging. Queries verify the parent, database source and step ownership. Restart interrupts unfinished consultations without automatic paid replay. Parent cancellation stops child work and fences late results. Deleting a parent stops/deletes linked children and removes its consultation/snapshot records. Offline `future data` backups include the Fusion database and snapshots. Archived reads remain valid after restoring the same Agent database; execution still requires the current restore identity.
 
-Later sections retain the planned product contract. Dedicated redacted export, richer position-change records and monetary budgets remain future work; this version retains token/count/time limits. Cross-system builds and unit regressions run in CI. See the [implementation verification record](../testing/fusion-implementation.md). See the [device-run database audit and compact UI checks](../testing/fusion-database-audit.md).
+Later sections retain the planned product contract. Dedicated redacted export, richer position-change records and monetary budgets remain future work; this version retains per-discussion token, step-attempt and time limits, without a parent-run discussion-count cap. Cross-system builds and unit regressions run in CI. See the [implementation verification record](../testing/fusion-implementation.md). See the [device-run database audit and compact UI checks](../testing/fusion-database-audit.md).
 
 The fixed defaults live in `orchestration/fusion/src/config.rs`. Each new discussion persists a configuration snapshot; each attempt persists its thinking level, output cap, effective timeout and retry reason. Host and Agent negotiate the generation-policy version and reject mismatching child/model/thinking bindings. Existing records without these optional fields remain readable. The same Host/Agent policy serves Desktop, Mobile and terminal; no client independently chooses generation settings. See the [budget policy verification record](../testing/fusion-budget-policy.md).
 
@@ -32,19 +32,37 @@ The outer main Agent owns interpretation, tool use, implementation, verification
 
 Distinguish the outer main Agent from the inner Fusion moderator: one completes the user task, the other chairs a consultation. They may use the same model configuration but have separate contexts, runtime identities and permissions. Settings select one moderator and 2–5 panel roles, with independent thinking levels, reusing existing model IDs and credential resolution without copying API keys.
 
-Goal, Tasks and Fusion retain separate responsibilities. V1 enables the tool only through an explicit user `/fusion` request. Model-generated text, skills, files and schedulers cannot enlarge the tool catalog. Once enabled, the outer main Agent decides whether consultation is useful according to the task and tool description.
+Goal, Tasks and Fusion retain separate responsibilities. V1 enables the tool only through an explicit user `/fusion` request. Model-generated text, skills, files and schedulers cannot enlarge the tool catalog. Once enabled, the outer main Agent follows the discussion triggers below; confidence or apparent simplicity cannot justify skipping consultation.
 
 ## Slash command and invocation choice
 
-Submitting `/fusion <task>` adds `fusion` to that outer Agent run while the remaining text is an ordinary task. Availability does not force immediate invocation. Submitting `/fusion` alone sets a removable flag for the next task in that composer, without creating an empty run, invoking models or spending credits. Keep the visible `/fusion ` draft prefix without an activation banner. Submission consumes the flag; subsequent ordinary messages do not inherit it. The current run's tool loop and interrupted recovery retain the same activation.
+Submitting `/fusion <task>` adds `fusion` to that outer Agent run while the remaining text is an ordinary task. It enables proactive discussion: analysis, judgment and choices require consultation first, while fact gathering may precede it and individual tool operations do not each require discussion. Submitting `/fusion` alone sets a removable flag for the next task in that composer, without creating an empty run, invoking models or spending credits. Keep the visible `/fusion ` draft prefix without an activation banner. Submission consumes the flag; subsequent ordinary messages do not inherit it. The current run's tool loop and interrupted recovery retain the same activation.
 
 Non-interactive CLI calls without a composer must include the task in the same request. Bare `/fusion` returns missing-task usage, without an invisible pending flag affecting a later command.
 
 All clients share command and submission-metadata semantics. Recognize only an independent leading `/fusion` token or an equivalent command-menu action. Quotes, code blocks, paths, `/fusion-other` and file contents do not activate it. Retain raw user input, normalized task and activation origin for audit. The current transport retains the original directive; the server derives and validates a run-scoped `fusion_enabled` snapshot and constructs the actual tool catalog. Prompt text alone and persistent `set_tools` changes are insufficient.
 
-The main Agent may investigate with ordinary tools before consulting, or solve a simple task without calling Fusion. Honor explicit user instructions to require consultation or prohibit it; `/fusion` alone does not force a call. Do not create a fake discussion record or show completion when unused. V1 adds no separate mode, permanent conversation toggle or global default activation.
+The main Agent gathers necessary facts with ordinary tools first. Design, implementation choices, root-cause diagnosis, selecting a remedy, comparisons, reviews, recommendations, and assessment of impact, risks, compatibility or edge cases require discussion before a substantive judgment, choice or recommendation. Complexity, multiple options or low confidence are not prerequisites. Apparent simplicity and knowing the likely answer are not exemptions. Honor explicit user instructions prohibiting discussion; never create a fake discussion record or show completion when unused. No permanent conversation toggle or global default activation is added.
 
-Consult when necessary facts exist, a substantive choice affects implementation direction, and independent perspectives could change the decision. Finding files, gathering basic facts, formatting, clear local fixes and routine corrections within an accepted plan remain in the main flow. Reuse conclusions for repeated questions without new evidence; do not consult before every command or file operation. Bound consultation count, time and cost per outer run; limits are ceilings, not targets.
+Desktop, Mobile and terminal share these invocation rules:
+
+| Scenario | Behavior |
+|---|---|
+| Design, diagnosis, comparison, review or risk assessment | Gather necessary context and consult first, even for a small issue or one initial approach |
+| File searches, code reads or log collection | Investigate directly without discussing each read |
+| Exact user-specified replacements requiring no new judgment | Execute directly without manufacturing a discussion |
+| Implementation, commands and verification covered by an applicable discussion conclusion | Reuse the conclusion and proceed directly |
+| Rationale, risks and verification for the same decision | Group them in one focused consultation instead of delegating the entire task |
+| A new decision or new evidence that could invalidate the existing conclusion | Consult again on the affected question |
+| A failed discussion | Do not automatically repeat it; explain the failure, reuse applicable conclusions or continue with clearly qualified independent reasoning, without claiming a completed discussion or consensus |
+
+There is no per-run cap on the number of discussions: new decisions or evidence that could invalidate existing conclusions may trigger further consultations. Existing per-discussion time, output, step-attempt and concurrency protections remain unchanged. Increasing use does not justify duplicate discussions or treating failed materials as conclusions.
+
+For `/fusion fix the model selector safe-area issue`, read the component and layout first, then discuss the cause, remedy and verification priorities before implementing and checking. Import, type or mechanical corrections covered by that conclusion proceed directly. If new evidence shows that the shared component affects other sheets and changes the remedy, discuss that new decision. An exact text replacement may finish with zero consultations.
+
+`future_fusion::DISCUSSION_POLICY` is the single invocation-policy source, reused by the shared Agent in the run system prompt and the `fusion` tool description. `TOOL_DESCRIPTION` adds context requirements and the read-only tool contract. Desktop (local/remote), Mobile and TUI/CLI use the same normal submission path without client-side invocation policies. Recovery retains run activation; later ordinary messages do not inherit it.
+
+This is an explicit model instruction, not programmatic proof that every semantic judgment was discussed. This batch adds no judging model, write/Shell interception or mandatory call for every message. Acceptance must inspect actual invocation traces; the prompt text alone does not establish an improved call rate.
 
 ## Fusion tool contract
 
@@ -52,7 +70,7 @@ Consult when necessary facts exist, a substantive choice affects implementation 
 
 The following is the semantic baseline for matching English and Chinese tool descriptions:
 
-> Think through one explicit, narrowly focused decision with multiple models and return a synthesized conclusion. Fusion analyzes and discusses; it does not modify files, execute commands or implement the plan. Investigate first and provide the goal, background, confirmed facts, unknowns, constraints and relevant evidence needed to decide. Include candidate options and comparison criteria when useful. Do not delegate the entire task indiscriminately. Use it for substantive disagreements, important tradeoffs or independent cross-checking; handle routine investigation, directly solvable local issues and implementation in the main flow. When an action or verification is needed, propose its purpose, plan and expected outcome for the main flow to handle under user authorization. Do not substitute repeated discussion for investigation or verification.
+> Think through one explicit, narrowly focused decision with multiple models and return a synthesized conclusion. Fusion analyzes and discusses; it does not modify files, execute commands or implement the plan. Investigate first and provide the goal, background, confirmed facts, unknowns, constraints and relevant evidence needed to decide. Include candidate options and comparison criteria when useful. Do not delegate the entire task indiscriminately. When enabled, analysis, diagnosis, design, comparison, review and risk judgments require discussion first; confidence, simplicity or a lack of competing options do not excuse skipping it. Handle factual investigation, exact edits requiring no judgment, and implementation or verification covered by an applicable discussion conclusion directly. Group related questions about one decision; consult again only for a new decision or evidence that could invalidate the existing conclusion. When an action or verification is needed, propose its purpose, plan and expected outcome for the main flow to handle under user authorization. Do not substitute repeated discussion for investigation or verification. There is no per-run discussion-count limit; explain failures without automatically repeating a call or calling incomplete discussion a conclusion or consensus.
 
 ### Inputs and focus
 
@@ -85,7 +103,7 @@ Program logic validates required fields, size, references and authorization. Whe
 
 The outer flow receives one final tool envelope: `fusion_run_id`, `status`, `has_conclusion`, completeness, `conclusion`, brief `rationale`, applicability `conditions`, `unresolved`, proposed `next_steps`, and a versioned `report`. On failure `has_conclusion=false`, `conclusion=null` and completeness is `none`; the envelope retains degradation reasons and bounded public materials with step references. These materials are unverified evidence, not consensus. Normal results also describe actual coverage. Full round messages and tool transcripts do not enter parent context. Developers read them through terminal queries; UI progress is not an additional tool result.
 
-The result is decision material, not a new user instruction or execution queue. The main Agent may adopt, adapt or reject it under the original authorization, current facts and constraints. Before implementation, read the live workspace and recheck key facts. Correct local issues directly; reconsider consultation only when new evidence changes a key decision. Conclusions are not verification. The final reply separates discussion recommendations from actual execution results.
+The result is decision material, not a new user instruction or execution queue. The main Agent may adopt, adapt or reject it under the original authorization, current facts and constraints. Before implementation, read the live workspace and recheck key facts. Correct local issues directly; consult again under the invocation policy only for a new decision or evidence that could invalidate the existing conclusion. Conclusions are not verification. The final reply separates discussion recommendations from actual execution results.
 
 ## Fusion settings
 
@@ -132,9 +150,9 @@ The diagram shows the healthy path. Before it, moderator preflight runs unless a
 
 ```mermaid
 flowchart TD
-    U[User adds the tool with /fusion] --> O[Main Agent investigates and decides]
-    O -->|Directly solvable| E[Main flow handles the task normally]
-    O -->|Focused decision| T[Call fusion with goal background and constraints]
+    U[User adds the tool with /fusion] --> O[Main Agent investigates and identifies judgments]
+    O -->|Factual work or existing conclusion covers it| E[Main flow handles the task normally]
+    O -->|New judgment requires discussion| T[Call fusion with goal background and constraints]
     T --> S[Freeze consultation input file versions and budget]
     S --> H[Check moderator availability]
     H -->|available| A[Parallel independent panel analysis]
@@ -257,7 +275,7 @@ Consultation status is `preparing / queued / running / delivering / completed / 
 | UI disconnect/switch | Host continues; reattach by run/cursor |
 | Host crash | Reconcile accepted inner requests/delivery receipts using parent recovery policy; otherwise explicitly interrupt without duplicates or indefinite waiting |
 
-Bound phase/model time, output and tools. Total budget includes all attempts and reserves synthesis capacity. Use estimates/output limits before dispatch and reconcile actual provider usage later. Missing cost is unknown, not zero; do not promise exact hard currency caps across providers.
+Within each discussion, bound phase/model time, output and tools; these protections do not cap how many discussions a parent run may create. The per-discussion total budget includes all attempts and reserves synthesis capacity. Use estimates/output limits before dispatch and reconcile actual provider usage later. Missing cost is unknown, not zero; do not promise exact hard currency caps across providers.
 
 Use durable owner generations and conditional updates so stale executors cannot advance/deliver. Late output stays with its attempt without overwriting cancellation. Check accepted requests before retrying. Recovery retains both inner read-only policy and the outer run's activation metadata.
 
@@ -326,7 +344,7 @@ All three host systems support orchestration, four tools, SQLite, cancellation, 
 | Milestone | Delivery | Exit condition |
 |---|---|---|
 | M0 | Tool contract, run activation, `future-fusion` kernel/store, Host route, four tools and fixed models | A real parent task consults, receives one tool result and continues normally without a second parent turn |
-| M1 | Desktop/Mobile/TUI/CLI `/fusion`, tool cards and RPC/Remote capability | All clients enable incrementally, consult as needed, inspect, stop, reconnect and review history |
+| M1 | Desktop/Mobile/TUI/CLI `/fusion`, tool cards and RPC/Remote capability | All clients enable incrementally, consult under the shared policy, inspect, stop, reconnect and review history |
 | M2 | Run snapshots, recovery, budget, export/cleanup and diagnostics | Failure/version/permission acceptance passes across all host systems |
 | M3 | Moderator/panel/thinking settings | Consistent client configuration; changes affect future consultations without altering existing snapshots |
 
@@ -335,7 +353,7 @@ M0/M1 may use first-read freezing for development; complete delivery requires M2
 Acceptance covers:
 
 1. All clients add only `fusion` for `/fusion <task>`, retaining ordinary tools. Bare `/fusion` marks the next task only. Quotes, paths, code, similar prefixes and model text do not activate. Later messages do not inherit; recovery preserves metadata; old hosts fail explicitly.
-2. Calls supply focused question, goal, background, constraints and necessary evidence. Main Agent may investigate or skip simple cases, honoring explicit require/prohibit instructions. Inner isolation, common input, versions, concurrent reads and cache audit are correct.
+2. Calls supply focused question, goal, background, constraints and necessary evidence. The main Agent may investigate first; design, diagnosis, comparison, review and risk judgments require discussion regardless of confidence or simplicity. Exact edits and work covered by existing conclusions proceed directly. New decisions or evidence invalidating conclusions trigger another consultation. More than two distinct discussions can be admitted in the same parent run while replays retain their original identities. Failures are reported honestly, honoring explicit prohibitions. Inner isolation, common input, versions, concurrent reads and cache audit are correct.
 3. Snapshots retain authorized saved edits, detect capture changes and isolate later edits. Trimming, limits and first-read limitations are visible.
 4. Moderator/panelists have only `read / ls / glob / grep`. Reject writes, shell, recursive Fusion, extensions, escaping links and special files; full access/recovery never expands inner scope. Outer permissions are not changed globally.
 5. Reload, outbox resend, repeated calls and lost delivery ACKs do not duplicate runs/messages/results; conflicting fingerprints fail. Parent continues the same tool loop without extra parent turns/moderator answers, and event handoff has no gap.
