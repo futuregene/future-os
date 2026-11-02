@@ -173,7 +173,12 @@ async fn connect_channel_with_policy(
     .await
 }
 
-async fn connect_channel_with_connector<F, Fut>(
+/// The endpoint loop with its connector injected.
+///
+/// Crate-visible because tests drive it directly: a pending connector is how a
+/// connect attempt that never completed is produced on a platform whose empty
+/// loopback ports are refused immediately (see `connection::tests`).
+pub(crate) async fn connect_channel_with_connector<F, Fut>(
     configured: Option<&str>,
     connect_timeout: Duration,
     mut connect: F,
@@ -316,6 +321,69 @@ fn normalize_tcp_uri(addr: &str) -> String {
     } else {
         format!("http://{addr}")
     }
+}
+
+/// A bind address that cannot be used, with the option name left to the surface
+/// that owns it.
+///
+/// The grammar is shared; the flag is not. `future agent --grpc-addr` and
+/// `future host --agent-grpc-addr` refuse exactly the same addresses, and a
+/// diagnostic phrased here cannot know which of them the operator typed. It
+/// therefore says what is wrong with the address, and
+/// [`BindAddrError::for_flag`] says it again in the caller's own words — the
+/// agent's option names itself instead of sending the operator to look for
+/// whatever "TCP address" is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindAddrError {
+    addr: String,
+    reason: &'static str,
+}
+
+impl BindAddrError {
+    pub fn addr(&self) -> &str {
+        &self.addr
+    }
+
+    /// The same complaint phrased for a surface whose option is `flag`.
+    pub fn for_flag(&self, flag: &str) -> String {
+        format!("invalid {flag} {:?}: {}", self.addr, self.reason)
+    }
+}
+
+impl fmt::Display for BindAddrError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.for_flag("TCP address"))
+    }
+}
+
+impl std::error::Error for BindAddrError {}
+
+/// Parse a TCP bind/connect address the way the Agent's `--grpc-addr` does.
+///
+/// `47200` and `:47200` both mean loopback, `[::1]:47200` is bracketed IPv6, and
+/// nothing else is inferred: `localhost:47200` is refused rather than resolved,
+/// because a bind address must be numeric for the listener and the client to
+/// agree without a resolver in between. Shared with the Agent so the address a
+/// host is allowed to serve on is parsed exactly like the one the Agent binds.
+pub fn parse_bind_addr(addr: &str) -> Result<std::net::SocketAddr, BindAddrError> {
+    let refused = |reason: &'static str| BindAddrError {
+        addr: addr.to_string(),
+        reason,
+    };
+    let trimmed = addr.trim();
+    let address = if let Some(port) = trimmed.strip_prefix(':') {
+        if port.contains(':') {
+            return Err(refused("bracket IPv6 addresses as [::1]:port"));
+        }
+        format!("127.0.0.1:{port}")
+    } else if trimmed.contains(':') {
+        trimmed.to_owned()
+    } else {
+        format!("127.0.0.1:{trimmed}")
+    };
+    address
+        .parse()
+        .map_err(|_| refused("expected IP:port (bracket IPv6 addresses)"))
 }
 
 #[cfg(unix)]

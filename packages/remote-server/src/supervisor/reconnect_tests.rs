@@ -146,7 +146,9 @@ async fn forgetting_a_slot_removes_it_from_the_book() {
     host.save(&legacy).expect("save the legacy device");
     let supervisor = Supervisor::new(host.clone(), Arc::new(TokioExecutor));
 
-    supervisor.forget_slot("pair_legacy").expect("forget it");
+    supervisor
+        .forget_slot("pair_legacy", "test")
+        .expect("forget it");
 
     let slots = host.load_slots();
     assert_eq!(slots.len(), 1, "{slots:?}");

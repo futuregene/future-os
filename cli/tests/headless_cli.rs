@@ -1396,7 +1396,7 @@ fn a_non_auto_agent_mode_never_starts_an_embedded_agent() {
         ),
         (
             "bogus",
-            "FUTURE_DESKTOP_AGENT_MODE must be auto or external",
+            "FUTURE_DESKTOP_AGENT_MODE must be auto, external or bind",
         ),
     ] {
         let home = tempfile::tempdir().unwrap();

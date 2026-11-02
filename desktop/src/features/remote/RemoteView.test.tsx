@@ -14,6 +14,14 @@ const addRemoteDevice = vi.fn<() => Promise<unknown>>();
 const unpairRemoteDevice = vi.fn<(pairId: string) => Promise<unknown>>();
 const takeoverRemote = vi.fn<(pairId: string) => Promise<unknown>>();
 const getRemoteStatus = vi.fn<() => Promise<RemoteStatus>>();
+/**
+ * The stored switch preference. The switch renders this, not the bridge's
+ * phase, so every mount has to answer it the way the backend would.
+ */
+const getAppSettings = vi.fn<() => Promise<{ autoConnectRemote: boolean }>>();
+vi.mock("../../integrations/storage/appSettings", () => ({
+  getAppSettings: () => getAppSettings(),
+}));
 
 vi.mock("./remoteClient", async importOriginal => ({
   ...await importOriginal<typeof import("./remoteClient")>(),
@@ -97,12 +105,27 @@ interface Props {
   remoteStatus?: RemoteStatus | null;
 }
 
-async function mount(overrides: Props = {}) {
+interface MountOptions extends Props {
+  /**
+   * The stored switch preference. Defaults to what the mounted phase implies —
+   * a stopped machine is one the user turned off — so a test that wants the two
+   * to disagree has to say so.
+   */
+  preference?: boolean;
+}
+
+async function mount(options: MountOptions = {}) {
+  const { preference, ...overrides } = options;
   const props = {
     onRefreshRemote: refresh,
     remoteStatus: status(),
     ...overrides,
   };
+  const phase = props.remoteStatus?.phase ?? "stopped";
+  getAppSettings.mockResolvedValue({
+    autoConnectRemote: preference
+      ?? (phase !== "stopped" && phase !== "failed" && phase !== "revoked"),
+  });
   getRemoteStatus.mockResolvedValue(props.remoteStatus ?? status());
   await act(async () => {
     root.render(createElement(RemoteHostSection, props));
@@ -134,6 +157,11 @@ function buttonByText(text: string): HTMLButtonElement | undefined {
 /** The on/off switch: the only `role=switch` this section owns. */
 function hostSwitch(): HTMLButtonElement {
   return container.querySelectorAll<HTMLButtonElement>("button[role='switch']")[0]!;
+}
+
+/** What the section says the switch is in: on, off, or no status to read. */
+function switchState(): string | null {
+  return container.querySelector("[data-switch-state]")?.getAttribute("data-switch-state") ?? null;
 }
 
 /** The floating add-client window, if it is open. */
@@ -204,6 +232,67 @@ describe("the switch", () => {
 
     await toggleHost();
     expect(stopRemote).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The switch is the stored preference, not the bridge's health.
+   *
+   * A bridge that failed — repeated credential rejections, 2026-11-02 — is still
+   * a machine the user left on, and the next launch serves it. Rendering the
+   * switch from the phase said "you turned it off" instead, so the user pressed
+   * it to turn their remote desktop back on and only re-stored the `on` it
+   * already had. The failure keeps its own line; the switch keeps the user's
+   * answer.
+   */
+  it("stays on while the bridge has failed, because the preference is still on", async () => {
+    await mount({
+      remoteStatus: status({
+        pairId: "pair_abcd",
+        phase: "failed",
+        reason: "service_authorization",
+        devices: [control],
+      }),
+      preference: true,
+    });
+    expect(hostSwitch().getAttribute("aria-checked")).toBe("true");
+    // Still on means clicking it turns the machine *off*; the pre-fix reading
+    // ("off") would have started it instead.
+    await toggleHost();
+    expect(stopRemote).toHaveBeenCalledTimes(1);
+    expect(startRemote).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Without a status there is no evidence, and "off" is not the truthful answer:
+   * the command may have failed, or the first poll may not have landed, while
+   * the machine is serving. The section says so, and the switch cannot be clicked
+   * into a state nobody knows.
+   */
+  it("says the status is unknown when there is none, instead of showing off", async () => {
+    await mount({ remoteStatus: null });
+
+    expect(switchState()).toBe("unknown");
+    expect(container.textContent).toContain("Reading this computer's remote status…");
+    expect(hostSwitch().hasAttribute("disabled"), "an unknown switch is not clickable").toBe(true);
+    expect(hostSwitch().getAttribute("aria-checked"), "unknown is never claimed as on").toBe("false");
+  });
+
+  it("reads on once a status says the machine is on", async () => {
+    await mount({ remoteStatus: status({ pairId: "pair_abcd", phase: "ready" }) });
+
+    expect(switchState()).toBe("on");
+    expect(hostSwitch().getAttribute("aria-checked")).toBe("true");
+    expect(container.textContent).not.toContain("Reading this computer's remote status…");
+  });
+
+  it("reads off once a status says the machine is off, and only then", async () => {
+    await mount({ remoteStatus: status({ pairId: "pair_abcd", phase: "stopped" }) });
+
+    expect(switchState()).toBe("off");
+    expect(hostSwitch().getAttribute("aria-checked")).toBe("false");
+    // Off is not unknown: no "reading" line, and the switch is clickable again.
+    expect(container.textContent).not.toContain("Reading this computer's remote status…");
+    expect(hostSwitch().hasAttribute("disabled")).toBe(false);
   });
 
   it("says the bridge is starting, and does not claim to be on before it is", async () => {

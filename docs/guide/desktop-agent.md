@@ -23,6 +23,17 @@ takeover. For development, run `future agent` in another terminal before startin
 Desktop in external mode. Default `auto` supports both compatible external and
 embedded services; there is no force-embedded bypass of an external owner.
 
+A host that cannot create a UNIX socket — a sandbox, a container, an Android
+device under SELinux — serves the Agent on a loopback TCP port instead, with one
+command: `future host --agent-grpc-addr 127.0.0.1:47200`. A compatible Agent
+already answering there is attached to; otherwise the embedded Agent binds that
+address and no socket is created. It is the same as setting
+`FUTURE_AGENT_GRPC_ADDR` to that address and `FUTURE_DESKTOP_AGENT_MODE=bind`,
+which is a third mode beside `auto` and `external`: it accepts loopback addresses
+only and refuses anything else instead of guessing at a local service. Clients on
+the same machine reach that Agent by putting the same value in
+`FUTURE_AGENT_GRPC_ADDR`, since nothing answers on the per-user endpoint.
+
 A release Desktop rejects attachment when its configured Future platform is
 non-production. It does not rewrite authentication or remove keys while an
 external Agent owns the data root. Exit that Agent independently, then restart

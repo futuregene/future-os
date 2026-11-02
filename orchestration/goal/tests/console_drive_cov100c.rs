@@ -245,21 +245,32 @@ fn run_falls_back_to_fresh_for_dead_session() {
 }
 
 #[test]
-fn run_transport_error_reports_and_returns() {
+fn run_transport_error_is_recorded_and_the_turn_retried() {
     let cr = cli_root();
     let gid = init_goal(&cr, "transport error");
-    // A non-DataLoss mid-stream error hits the transport-failure arm of the
-    // turn await (transport stop + resumable mark, then re-propagates).
+    // A non-DataLoss mid-stream error is an infra turn, not a run-ending one:
+    // the first attach dies like a vanished agent host, the turn is recorded as
+    // an error, and the retried turn completes the todo. Before this the arm
+    // re-propagated the transport error, the worker died mid-task, and the turn
+    // left no record at all (31 launches in one goal disappeared that way).
     let st = MockState {
-        stream_attach_plan: vec![AttachPlan::HardErrorAfter(0)],
+        stream_attach_plan: vec![AttachPlan::TransportAfter(0)],
+        // The retried turn's own run id: `prompt` numbers them, so the second
+        // attach is `mock-run-2` (events for another run are ignored).
+        events: completed_events("mock-run-2"),
         ..Default::default()
     };
     let rt = rt();
-    let (addr, _shared) = rt.block_on(spawn_mock(st));
+    let (addr, shared) = rt.block_on(spawn_mock(st));
     std::env::set_var("FUTURE_GOAL_AGENT_ADDR", &addr);
-    let err = cli_err(&["run", "--goal", &gid, "--anonymous", "--max-turns", "1"]);
-    assert!(err.contains("stream error"), "{err}");
+    cli_ok(&["run", "--goal", &gid, "--anonymous", "--max-turns", "3"]);
     std::env::remove_var("FUTURE_GOAL_AGENT_ADDR");
+    // Two worker turns: the one that died, then the one that closed the todo.
+    assert_eq!(
+        shared.lock().unwrap().attach_after_idx.len(),
+        2,
+        "the transport turn is retried exactly once here"
+    );
 }
 
 #[test]
