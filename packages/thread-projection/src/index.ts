@@ -82,3 +82,8 @@ export type { ShellResult, ShellAttempt, ShellStatus } from "./shellResult";
 export { readContentPages, readContentField, needsContentHydration, hydrateRequiredContent } from "./contentBody";
 export type { ContentRequest, ContentPage, ContentReader } from "./contentBody";
 export { createContentEventLane } from "./contentBody";
+
+export { fusionTask, fusionTranscript, fusionIssues, fusionProgress, fusionModelLabel, fusionNotices, FUSION_PHASES } from "./fusion";
+export type { FusionExecutionReport, FusionDegradation, FusionConclusion, FusionDiscussion, FusionStep, FusionReadRequest } from "./fusion";
+export { fusionSettingsIssue, newFusionParticipant } from "./fusionSettings";
+export type { FusionSettings, FusionSettingsPatch, FusionModelConfig, FusionConfiguration } from "./fusionSettings";

@@ -23,6 +23,7 @@ impl<'a> ServiceStop<'a> {
         let deadline = Instant::now() + operation.remaining(Duration::from_secs(3));
         close_admission();
         crate::tasks::stop_admission();
+        crate::fusion::stop_admission();
         crate::remote_peer::runtime::stop_admission();
         crate::runtime::freeze_tasks();
         freeze_presentation();

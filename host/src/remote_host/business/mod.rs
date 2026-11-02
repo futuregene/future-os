@@ -43,7 +43,7 @@ pub(crate) enum Route {
 pub(crate) fn route(cmd_type: &str) -> Option<Route> {
     Some(match cmd_type {
         "list_sessions" | "list_workspaces" => Route::Catalog,
-        "get_messages" | "get_session_entries" | "get_events_since" | "get_tool_call_args" | "get_event_content_range" => {
+        "get_fusion" | "get_messages" | "get_session_entries" | "get_events_since" | "get_tool_call_args" | "get_event_content_range" => {
             Route::History
         }
         "upload_init" | "upload_complete" | "upload_cancel" | "list_session_files"
@@ -52,7 +52,9 @@ pub(crate) fn route(cmd_type: &str) -> Option<Route> {
             Route::Prompt
         }
         "compact_context" => Route::Compaction,
-        "get_desktop_settings"
+        "get_fusion_settings"
+        | "update_fusion_settings"
+        | "get_desktop_settings"
         | "update_desktop_settings"
         | "list_settings_models"
         | "list_available_skills"
@@ -108,7 +110,8 @@ pub(crate) fn route(cmd_type: &str) -> Option<Route> {
 fn needs_content_capability(cmd: &str) -> bool {
     matches!(
         cmd,
-        "get_messages"
+        "get_fusion"
+            | "get_messages"
             | "get_session_entries"
             | "get_events_since"
             | "get_tool_call_args"
@@ -265,6 +268,8 @@ mod tests {
         "download_prepare",
         "fork_session",
         "generate_session_title",
+        "get_fusion_settings",
+        "update_fusion_settings",
         "get_desktop_settings",
         "get_events_since",
         "get_prompt_receipt",

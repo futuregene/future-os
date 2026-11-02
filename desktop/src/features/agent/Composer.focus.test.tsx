@@ -13,6 +13,9 @@ import { installShortcuts } from "../../test/installShortcuts";
 import { resetAllCommandBindings } from "../keyboard/shortcuts";
 import { Composer } from "./Composer";
 
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async () => () => {}),
+}));
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }),
 }));

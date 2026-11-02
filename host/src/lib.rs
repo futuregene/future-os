@@ -90,3 +90,5 @@ pub mod startup;
 pub mod cli_tool;
 
 pub mod application;
+
+pub mod fusion;

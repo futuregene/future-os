@@ -4,10 +4,12 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { ContextToolOption, MentionEditorHandle, SkillMentionOption } from "./MentionEditor";
 import type { SessionMentionOption } from "./sessionMention";
+import { fusionTask } from "@future-os/thread-projection";
 import { Paperclip, TriangleAlert, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { modelKey, modelOption } from "../../integrations/agent/agentClient";
+import { useFusionAvailability } from "../../integrations/fusion/settings";
 import { useSkillCatalog } from "../../integrations/skills/useSkillCatalog";
 import { cn } from "../../lib/cn";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
@@ -234,29 +236,18 @@ function ComposerImpl({
     setContextActionPending(false);
   }, [draftKey]);
 
+  const fusionAvailable = useFusionAvailability();
   const contextTools = useMemo<ContextToolOption[]>(() => {
+    const fusion = { id: "fusion", name: "/fusion", description: t("fusion.enableDescription"), searchText: "fusion 讨论 多模型 思考" };
     if (!onCompactContext || sending || compactionPending)
-      return [];
-    return [{
+      return fusionAvailable ? [fusion] : [];
+    return [...(fusionAvailable ? [fusion] : []), {
       id: "compact",
       name: t("composer.compactContext"),
       description: t("composer.compactContextDescription"),
       searchText: "compact compaction compress context 压缩 上下文",
     }];
-  }, [compactionPending, onCompactContext, sending, t]);
-  const handleContextToolSelect = useCallback((toolId: string) => {
-    if (toolId !== "compact" || !onCompactContext || compactionPending)
-      return;
-    const isCurrent = captureOperation();
-    const result = onCompactContext();
-    if (result) {
-      setContextActionPending(true);
-      result.catch(() => {}).finally(() => {
-        if (isCurrent())
-          setContextActionPending(false);
-      });
-    }
-  }, [captureOperation, compactionPending, onCompactContext]);
+  }, [compactionPending, onCompactContext, sending, t, fusionAvailable]);
 
   const catalog = useSkillCatalog();
   const skills = useMemo<SkillMentionOption[]>(() => {
@@ -297,6 +288,26 @@ function ComposerImpl({
     lastTextRef.current = text;
     saveComposerDraft(key, { attachments: attachmentsRef.current, text });
   }, [attachmentsRef, draftKeyRef]);
+
+  const handleContextToolSelect = useCallback((toolId: string) => {
+    if (toolId === "fusion") {
+      const current = editorRef.current?.getContent() ?? "";
+      editorRef.current?.restore(`/fusion ${fusionTask(current) ?? current}`);
+      saveDraft();
+      return;
+    }
+    if (toolId !== "compact" || !onCompactContext || compactionPending)
+      return;
+    const isCurrent = captureOperation();
+    const result = onCompactContext();
+    if (result) {
+      setContextActionPending(true);
+      result.catch(() => {}).finally(() => {
+        if (isCurrent())
+          setContextActionPending(false);
+      });
+    }
+  }, [captureOperation, saveDraft, compactionPending, onCompactContext]);
 
   // Load this conversation's draft when it becomes active. Continuous saves
   // (editor onChange + the attachments effect) keep the outgoing conversation's
@@ -390,6 +401,14 @@ function ComposerImpl({
 
   function submitValue() {
     const trimmed = (editorRef.current?.getContent() ?? "").trim();
+    if (fusionTask(trimmed) !== null && !fusionAvailable) {
+      emitFutureEvent("toast", { message: t("fusion.disabled"), tone: "error" });
+      return;
+    }
+    if (fusionTask(trimmed) === "") {
+      editorRef.current?.restore("/fusion ");
+      return;
+    }
     // Block submission while a reply streams (the send button is already an
     // abort button then), while context compaction is running, and while an
     // async send is in flight. The editor intentionally remains enabled so the
@@ -440,7 +459,7 @@ function ComposerImpl({
     // (install, dismiss, or send again); anything else (timeout, no match,
     // error) sends normally.
     const reco = skillRecommendation;
-    if (reco) {
+    if (reco && fusionTask(trimmed) === null) {
       // A card is on screen and not yet acted on: a plain send means "send
       // without it" — the same thing the card's secondary button does. The
       // send button stays live here (only the recommender wait disables it),
