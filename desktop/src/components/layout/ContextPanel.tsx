@@ -213,7 +213,7 @@ export function ContextPanel({
   const handleSelectTool = useCallback(
     (toolId: string) => {
       const tool = Object.values(toolsByRun).flat().find(tool => tool.id === toolId);
-      if (tool?.name.trim().toLowerCase() === "fusion" && activeThreadId) {
+      if (tool?.name?.trim().toLowerCase() === "fusion" && activeThreadId) {
         setSelectedFusion({ threadId: activeThreadId, runId: tool.runId, toolCallId: tool.id, status: tool.status });
         setSelectedToolId(null);
         setSelectedRunId(null);
