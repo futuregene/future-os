@@ -346,6 +346,114 @@ mod tests {
         .expect("create thread under the test HOME")
     }
 
+    /// The number behind the cache: how a pull behaves with it and without it.
+    ///
+    /// Same store, same call count, same machine — only the read path differs.
+    /// The live figure this is standing in for was taken from `desktop.log`
+    /// during a build window: 153 `list_sessions` in 24 minutes, median 2.6 s,
+    /// p90 20.8 s, max 35.9 s, each queued behind the lock the 1 s tick holds.
+    ///
+    /// `#[ignore]`d: it seeds six hundred conversations and takes seconds, so it
+    /// belongs to a deliberate measurement, not to every test run.
+    #[test]
+    #[ignore = "latency harness: run with --ignored --nocapture"]
+    fn a_pull_costs_nothing_when_the_tick_already_read_the_store() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-pull-latency");
+        crate::remote::test_support::init_store();
+        for index in 0..600 {
+            new_thread(
+                &format!("sess_latency_{index}"),
+                &format!("Conversation number {index} with a realistic title"),
+            );
+        }
+        crate::store::take_catalog_dirty();
+
+        let report = |label: &str, samples: &mut Vec<u128>, expected_checksum: &str| {
+            samples.sort_unstable();
+            let at = |p: f64| samples[((samples.len() as f64 * p) as usize).min(samples.len() - 1)];
+            println!(
+                "{label:<10} n={} median={}us p90={}us max={}us  checksum={expected_checksum}",
+                samples.len(),
+                at(0.5),
+                at(0.9),
+                samples[samples.len() - 1],
+            );
+        };
+
+        // The old path: every pull reads the store (and takes the same lock the
+        // tick takes).
+        let mut uncached = Vec::new();
+        let mut signature = String::new();
+        for _ in 0..200 {
+            let started = std::time::Instant::now();
+            let catalog = sessions("").expect("store readable");
+            uncached.push(started.elapsed().as_micros());
+            signature = catalog.1;
+        }
+        let checksum = format!("{:016x}", fxhash(&signature));
+        report("uncached", &mut uncached, &checksum);
+
+        // The pull path now: the first call recomputes (as a tick would), the
+        // rest reuse that snapshot.
+        let mut cached = Vec::new();
+        for _ in 0..200 {
+            let started = std::time::Instant::now();
+            let catalog = sessions_catalog_cached("").expect("store readable");
+            cached.push(started.elapsed().as_micros());
+            assert_eq!(catalog.signature, signature, "the answer must not change");
+        }
+        report("cached", &mut cached, &checksum);
+
+        // The same two paths under the concurrency the live case had: the phone's
+        // pulls and the tick all wanting the same lock at once.
+        let concurrent = |label: &str, pull: fn()| {
+            let samples = std::sync::Arc::new(Mutex::new(Vec::<u128>::new()));
+            let mut workers = Vec::new();
+            for _ in 0..8 {
+                let samples = samples.clone();
+                workers.push(std::thread::spawn(move || {
+                    let mut local = Vec::new();
+                    for _ in 0..50 {
+                        let started = std::time::Instant::now();
+                        pull();
+                        local.push(started.elapsed().as_micros());
+                    }
+                    samples.lock().unwrap().extend(local);
+                }));
+            }
+            for worker in workers {
+                worker.join().expect("worker joins");
+            }
+            let mut samples = samples.lock().unwrap().clone();
+            samples.sort_unstable();
+            let at = |p: f64| samples[((samples.len() as f64 * p) as usize).min(samples.len() - 1)];
+            println!(
+                "{label:<18} n={} median={}us p90={}us max={}us",
+                samples.len(),
+                at(0.5),
+                at(0.9),
+                samples[samples.len() - 1],
+            );
+        };
+        concurrent("uncached x8", || {
+            sessions("");
+        });
+        concurrent("cached x8", || {
+            sessions_catalog_cached("");
+        });
+    }
+
+    /// A cheap stable hash, only so the two legs can prove they answered with
+    /// the same snapshot without printing six hundred titles.
+    fn fxhash(value: &str) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for byte in value.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash
+    }
+
     /// A pull is answered from the snapshot a tick just computed — unless a write
     /// landed in between, which is the one case where that answer would be a lie.
     ///
@@ -369,22 +477,27 @@ mod tests {
         let again = sessions_catalog_cached("pair_cache").expect("store readable");
         assert_eq!(again.signature, first.signature);
 
-        // A pairing this machine does not serve asks its own question: the cache
-        // is keyed by pairing, and an answer addressed to another device must
-        // never be handed to this one.
-        let other = sessions_catalog_cached("pair_other").expect("store readable");
-        assert_eq!(other.payload["pairId"], "pair_other");
-
         // A write in the window must be visible immediately, not one tick later.
+        // This is the assertion that goes red if `sessions_catalog_cached` stops
+        // asking whether a write is pending: the snapshot above would be handed
+        // out again and a rename would be invisible for up to a second.
         new_thread("sess_pull_cache_b", "second");
-        crate::store::catalog_dirty_peek()
-            .then_some(())
-            .expect("a write marks the catalogue dirty");
+        assert!(
+            crate::store::catalog_dirty_peek(),
+            "a write marks the catalogue dirty; the cache must consult this"
+        );
         let after = sessions_catalog_cached("pair_cache").expect("store readable");
         assert_ne!(
             after.signature, first.signature,
             "a pull after a write must read the store, not the snapshot taken before it"
         );
+
+        // A pairing this machine does not serve asks its own question: the cache
+        // is keyed by pairing, and an answer addressed to another device must
+        // never be handed to this one. Last, because it replaces the entry the
+        // write check above needs to still be this pairing's.
+        let other = sessions_catalog_cached("pair_other").expect("store readable");
+        assert_eq!(other.payload["pairId"], "pair_other");
     }
 
     /// The activity stamp a client shows as a row's age.
