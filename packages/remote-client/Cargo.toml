@@ -25,3 +25,4 @@ sha2 = "0.10"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
+flate2 = "1"
