@@ -158,6 +158,7 @@ function makeOptions(): Options {
     reconcileSession: jest.fn(),
     setCatalogEpoch: jest.fn(),
     applySessionSnapshot: jest.fn(),
+    applySessionDelta: jest.fn(),
     applySessionActivity: jest.fn(),
     applySessionStreaming: jest.fn(),
     setWorkspaces: jest.fn(),

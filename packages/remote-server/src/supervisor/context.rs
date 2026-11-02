@@ -98,6 +98,12 @@ impl CommandRuntime for Context {
             .map(|server| server.lean_events(pair))
             .unwrap_or_default()
     }
+    fn catalog_delta(&self, pair: &str) -> Arc<AtomicBool> {
+        self.server
+            .upgrade()
+            .map(|server| server.catalog_delta(pair))
+            .unwrap_or_default()
+    }
     fn segmented_content(&self, pair: &str) -> Arc<AtomicBool> {
         self.server
             .upgrade()

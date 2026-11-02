@@ -43,6 +43,14 @@ export interface RemoteSession {
    */
   lastMessageAt?: number | null;
   /**
+   * The host's ordering key, on a catalogue delta packet.
+   *
+   * The same value `PresenceSession.sortKey` carries: a delta names no order, so
+   * a client that keeps the list reproduces the host's ranking from this. Absent
+   * on a host older than the field, where the snapshot's own order is the order.
+   */
+  sortKey?: number | null;
+  /**
    * When the conversation was started (unix millis), from `threads.created_at`.
    *
    * A run rewrites `lastMessageAt` about once a second while it streams, so a
@@ -79,6 +87,42 @@ export interface PresenceSession {
   workspaceOrderedAt?: number | null;
   /** Same wire field as `RemoteSession.createdAt`: when the conversation began. */
   createdAt?: number | null;
+  /**
+   * The host's own ordering key, for clients that receive deltas.
+   *
+   * A delta packet carries rows in no meaningful order, so a reader that keeps
+   * a list has to reproduce the host's ranking itself: this is
+   * `pinned ? (1e15 + activity) : activity`, over the same `COALESCE` the host
+   * orders by. Absent on a host older than the field, in which case the arrival
+   * order of the snapshot is the order.
+   */
+  sortKey?: number | null;
+}
+
+/** One workspace, as a delta packet's dictionary carries it. */
+export interface CatalogWorkspace {
+  id: string;
+  name?: string | null;
+  pinned?: boolean | null;
+  /** When the workspace itself was last touched, in the host's own clock. */
+  orderedAt?: number | null;
+}
+
+/**
+ * One `state.sessions` packet, for a client that declared `catalog_delta_v1`.
+ *
+ * `full` says whether `rows` is the whole catalogue or only the part that
+ * changed. A reader must not infer a deletion from a row's absence — removals
+ * are always named in `removed`, which is what makes a delta safe to apply. The
+ * workspace dictionary rides here as well (on a full packet, or whenever it
+ * moved) because a row in this lane carries only its `workspaceId`.
+ */
+export interface CatalogDeltaPacket {
+  full: boolean;
+  rows: PresenceSession[];
+  removed: string[];
+  workspaces?: CatalogWorkspace[];
+  version?: SnapshotVersion;
 }
 
 export interface SnapshotVersion {
