@@ -134,7 +134,7 @@ fn embedded_agent_help() {
 #[test]
 fn embedded_agent_run_failure_is_exit_1() {
     // A port that is already taken fails to bind on every platform, going
-    // through run_agent's error arm (agent logs go to stdout via tracing).
+    // through the Agent's serve-failure arm; diagnostics go to stderr.
     // Port 1 would not do: binding it is only privileged on POSIX, so Windows
     // happily served there — and the agent that never exited stayed on
     // 127.0.0.1:1 for the rest of the suite. Isolated HOME: this test and the
@@ -144,31 +144,66 @@ fn embedded_agent_run_failure_is_exit_1() {
     let taken = std::net::TcpListener::bind("127.0.0.1:0").expect("bind port");
     let addr = format!("127.0.0.1:{}", taken.local_addr().unwrap().port());
     let home = tempfile::tempdir().expect("tempdir");
-    let (code, stdout, _) = future_with_home(&["agent", "--grpc-addr", &addr], home.path());
+    let (code, stdout, stderr) = future_with_home(&["agent", "--grpc-addr", &addr], home.path());
     drop(taken);
     assert_eq!(code, Some(1));
-    assert!(stdout.contains("exited with error"), "stdout: {stdout}");
+    assert!(
+        stdout.is_empty(),
+        "diagnostics must not enter stdout: {stdout}"
+    );
+    assert!(stderr.contains("exited with error"), "stderr: {stderr}");
 }
 
 #[test]
-fn embedded_agent_logfile_failure_returns_err() {
-    // A --log-file whose parent path is a regular FILE makes logfile::init
-    // fail → agent run_from_args returns Err → main's run_agent error arm
-    // (a serve failure instead exits the process from inside the agent, so
-    // it can never reach that arm). Isolated HOME keeps this test off the
-    // agent singleton lock that embedded_agent_run_failure_is_exit_1 races
-    // on (see that test).
+fn embedded_agent_logfile_failure_warns_and_still_serves() {
+    // A broken diagnostic path must not stop the service. The profile timer
+    // ends this real Agent only after its ephemeral listener has been admitted.
     let dir = tempfile::tempdir().expect("tempdir");
     let blocker = dir.path().join("blocker");
     std::fs::write(&blocker, "x").expect("write blocker");
     let bad = blocker.join("agent.log");
     let home = tempfile::tempdir().expect("tempdir");
-    let (code, _, stderr) = future_with_home(
-        &["agent", "--log-file", bad.to_str().expect("utf8 path")],
+    let (code, stdout, stderr) = future_with_home(
+        &[
+            "agent",
+            "--grpc-addr",
+            "127.0.0.1:0",
+            "--profile-seconds",
+            "0",
+            "--log-file",
+            bad.to_str().expect("utf8 path"),
+        ],
         home.path(),
     );
-    assert_eq!(code, Some(1));
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(
+        stdout.is_empty(),
+        "diagnostics must not enter stdout: {stdout}"
+    );
+    assert!(stderr.contains("Agent log unavailable"), "stderr: {stderr}");
+}
+
+#[test]
+fn embedded_agent_storage_failure_returns_err_without_altering_the_database() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let database = home.path().join(".future/agent/agent.db");
+    std::fs::create_dir_all(database.parent().unwrap()).unwrap();
+    let original = b"this is not a SQLite database";
+    std::fs::write(&database, original).unwrap();
+    let (code, _, stderr) = future_with_home(
+        &[
+            "agent",
+            "--grpc-addr",
+            "127.0.0.1:0",
+            "--profile-seconds",
+            "0",
+        ],
+        home.path(),
+    );
+    assert_eq!(code, Some(1), "stderr: {stderr}");
     assert!(stderr.contains("Error:"), "stderr: {stderr}");
+    assert!(stderr.contains("not a database"), "stderr: {stderr}");
+    assert_eq!(std::fs::read(database).unwrap(), original);
 }
 
 #[test]
