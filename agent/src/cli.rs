@@ -19,8 +19,10 @@ use std::path::Path;
 /// own logs under every HTTP/2 frame h2 sends and every TLS record rustls
 /// processes; pin them to WARN so only their failures show up. `RUST_LOG` still
 /// overrides this filter entirely.
+#[cfg(test)]
 const NOISY_TRANSPORT_TARGETS: &[&str] = &["h2", "rustls", "tonic", "tower"];
 
+#[cfg(test)]
 fn default_log_filter(verbose: bool) -> tracing_subscriber::EnvFilter {
     if !verbose {
         return tracing_subscriber::EnvFilter::new("info");
@@ -132,10 +134,11 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     verbose: bool,
 
-    /// Append logs (without ANSI colors) to a file. Accepts an optional path;
+    /// Write structured JSONL diagnostics. Accepts an optional path;
     /// when omitted, defaults to ~/.future/agent/logs/agent.log. Parent
     /// directories are created if missing. Can also be enabled via
     /// FUTURE_AGENT_LOG_FILE (a path, or empty for the default location).
+    /// File diagnostics are enabled by default.
     #[arg(
         long,
         env = "FUTURE_AGENT_LOG_FILE",
@@ -145,13 +148,13 @@ pub struct Cli {
     )]
     log_file: Option<String>,
 
-    /// When file logging is enabled, keep only the newest N lines (trimmed at
-    /// startup and as the file grows). 0 disables trimming.
+    /// Rotate after N diagnostic lines. 0 uses only the bounded byte retention.
+    /// Logs always rotate by size; streamed reply/thinking text is not logged.
     #[arg(
         long,
         env = "FUTURE_AGENT_LOG_MAX_LINES",
         value_name = "N",
-        default_value_t = crate::logfile::DEFAULT_MAX_LINES
+        default_value_t = 0
     )]
     log_max_lines: usize,
 
@@ -247,7 +250,8 @@ pub fn run_from_args(args: &[String]) -> Result<()> {
         grpc_addr: cli.grpc_addr.clone(),
         ..crate::service::AgentConfig::default()
     };
-    crate::service::AgentService::with_instance(config, |service| {
+    let mut logging = None;
+    let result = crate::service::AgentService::with_instance(config, |service| {
         if cli.migrate_sessions
             || cli.retry_session_import.is_some()
             || cli.retry_session_recovery.is_some()
@@ -284,10 +288,43 @@ pub fn run_from_args(args: &[String]) -> Result<()> {
         // Environment hydration must precede the signal thread as well as Tokio's
         // worker threads: mutating the process environment is only sound here.
         crate::sandbox::hydrate_from_login_shell();
+        future_logging::prepare(
+            future_logging::Component::Agent,
+            crate::utils::VERSION,
+            true,
+            cli.verbose,
+        );
+        let log_file = cli
+            .log_file
+            .as_deref()
+            .map(|path| {
+                if path.is_empty() {
+                    future_logging::Component::Agent.path(&future_rpc::home::future_home())
+                } else {
+                    std::path::PathBuf::from(path)
+                }
+            })
+            .unwrap_or_else(|| {
+                future_logging::Component::Agent.path(&future_rpc::home::future_home())
+            });
+        logging = match future_logging::open(
+            future_logging::Component::Agent,
+            &log_file,
+            cli.log_max_lines,
+        ) {
+            Ok(guard) => Some(guard),
+            Err(error) => {
+                tracing::warn!(%error, "Agent log unavailable");
+                None
+            }
+        };
+
         // Outlive runtime destruction, profiler output, and Windows ACE cleanup.
         let (_shutdown_guard, shutdown_request) = shutdown::ShutdownGuard::start()?;
         service.run_with_cleanup(|| run(cli, shutdown_request, service))
-    })
+    });
+    drop(logging);
+    result
 }
 
 /// Apply the FutureOS home of this process from the inherited `FUTURE_HOME`.
@@ -407,57 +444,6 @@ fn run(
     if cli.profile_heap.is_some() {
         tracing::warn!(
             "--profile-heap requires a build with --features dhat-heap — ignoring the flag"
-        );
-    }
-
-    // Initialise tracing with timestamps. The console layer keeps ANSI colors;
-    // the optional file layer writes through LogMirror, which shares one
-    // mutexed File with the raw streaming prints (eprint_log!) — so the log
-    // file ends up identical to the console output, minus ANSI colors.
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| default_log_filter(cli.verbose));
-
-    let console_layer = tracing_subscriber::fmt::layer()
-        .with_target(false)
-        .with_timer(tracing_subscriber::fmt::time::SystemTime);
-
-    // Resolve the log file target: an explicit path if given, otherwise the
-    // default ~/.future/agent/logs/agent.log when the flag/env is present
-    // without a value.
-    let log_file = cli.log_file.as_deref().map(|p| {
-        if p.is_empty() {
-            crate::utils::default_config_dir().join("logs/agent.log")
-        } else {
-            std::path::PathBuf::from(p)
-        }
-    });
-
-    let file_layer = match &log_file {
-        Some(path) => {
-            let mirror = crate::logfile::init(path, cli.log_max_lines)?;
-            Some(
-                tracing_subscriber::fmt::layer()
-                    .with_target(false)
-                    .with_timer(tracing_subscriber::fmt::time::SystemTime)
-                    .with_ansi(false)
-                    .with_writer(mirror),
-            )
-        }
-        None => None,
-    };
-
-    use tracing_subscriber::prelude::*;
-    tracing_subscriber::registry()
-        .with(env_filter)
-        .with(console_layer)
-        .with(file_layer)
-        .init();
-
-    if let Some(path) = &log_file {
-        tracing::info!(
-            "file logging enabled: {} (keeping last {} lines)",
-            path.display(),
-            cli.log_max_lines
         );
     }
 

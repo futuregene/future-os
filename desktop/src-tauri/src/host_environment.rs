@@ -17,12 +17,12 @@ pub(crate) fn initialize() -> Result<(), crate::AppError> {
 
 /// Separate host log prevents attachment/restart from opening an external
 /// Agent's log. Call after acquiring the Desktop lock; it lives until exit.
-pub(crate) fn start_logging() -> Result<(), crate::AppError> {
-    future_host::environment::start_logging()?;
+pub(crate) fn start_logging() -> Result<future_logging::FileGuard, crate::AppError> {
+    let logging = future_host::environment::start_logging()?;
     if let Err(error) = crate::cli_tool::resolve() {
         report(&error.to_string());
     }
-    Ok(())
+    Ok(logging)
 }
 
 #[cfg(all(test, feature = "gui"))]

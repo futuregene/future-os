@@ -1206,6 +1206,7 @@ mod gui {
         if let Err(error) = initialize_process_state(&app) {
             crate::host_environment::report(&format!("startup failed: {error}"));
             startup.failed();
+            retire_logging(&app);
             return Err(error);
         }
         // Keep the Windows console attached until startup errors can be reported.
@@ -1221,6 +1222,19 @@ mod gui {
         // neither still died silently.
         crate::host_environment::report("event loop returned; the process is exiting");
         Ok(())
+    }
+
+    struct HostLogging(std::sync::Mutex<Option<future_logging::FileGuard>>);
+
+    fn retire_logging<R: tauri::Runtime, M: tauri::Manager<R>>(app: &M) {
+        if let Some(logging) = app.try_state::<HostLogging>() {
+            let guard = logging
+                .0
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+            drop(guard);
+        }
     }
 
     /// The startup steps that need no window: the shared GUI/headless lock, the
@@ -1248,8 +1262,13 @@ mod gui {
         // startup failure is diagnosable from, and a read-only install or a full
         // disk must not turn "no log" into "no window".
         startup.enter("host log");
-        if let Err(error) = crate::host_environment::start_logging() {
-            crate::host_environment::report(&format!("host log unavailable: {error}"));
+        match crate::host_environment::start_logging() {
+            Ok(logging) => {
+                tauri::Manager::manage(app, HostLogging(std::sync::Mutex::new(Some(logging))));
+            }
+            Err(error) => {
+                crate::host_environment::report(&format!("host log unavailable: {error}"))
+            }
         }
         crate::runtime::set(tauri::async_runtime::handle().inner().clone());
         agent_bridge::install_channel_runtime();
@@ -1328,6 +1347,9 @@ mod gui {
                 // The ordinary exit path already waited outside the UI thread.
                 // Unexpected OS exits can only request best-effort background stop.
                 let _ = crate::desktop_shutdown::begin("exit");
+                // Global app handles may retain managed state after the event
+                // loop exits. Explicitly retire and flush the host file worker.
+                retire_logging(app_handle);
             }
             _ => {}
         }

@@ -15,6 +15,19 @@ static ACTIVE: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::n
 static ADMISSION: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(34)));
 static CACHE: LazyLock<Mutex<HashMap<String, Snapshot>>> = LazyLock::new(Default::default);
 
+fn prune_expired(cache: &mut HashMap<String, Snapshot>) {
+    cache.retain(|id, snapshot| {
+        let expired = snapshot.created.elapsed() >= TTL;
+        if expired {
+            tracing::debug!(event = "history_transfer_retired", transfer_id = id,
+                window = %snapshot.owner, reason = "expired",
+                age_ms = snapshot.created.elapsed().as_millis() as u64,
+                total_bytes = snapshot.bytes.len());
+        }
+        !expired
+    });
+}
+
 pub(super) struct Lease {
     _admission: OwnedSemaphorePermit,
     _active: OwnedSemaphorePermit,
@@ -48,18 +61,30 @@ impl Write for BoundedJson {
 
 pub(super) async fn admit() -> Result<Lease, crate::AppError> {
     // Pruning drops the permits with expired snapshots before new admission.
-    CACHE
-        .lock()
-        .unwrap()
-        .retain(|_, snapshot| snapshot.created.elapsed() < TTL);
-    let admission = ADMISSION
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| "history_transfer_queue_full")?;
+    prune_expired(&mut CACHE.lock().unwrap());
+    let started = Instant::now();
+    let admission = ADMISSION.clone().try_acquire_owned().map_err(|_| {
+        tracing::warn!(
+            event = "history_transfer_admission_failed",
+            reason = "queue_full"
+        );
+        "history_transfer_queue_full"
+    })?;
     let active = tokio::time::timeout(Duration::from_secs(5), ACTIVE.clone().acquire_owned())
         .await
-        .map_err(|_| "history_transfer_admission_timeout")?
+        .map_err(|_| {
+            tracing::warn!(
+                event = "history_transfer_admission_failed",
+                reason = "timeout",
+                elapsed_ms = started.elapsed().as_millis() as u64
+            );
+            "history_transfer_admission_timeout"
+        })?
         .map_err(|_| "history_transfer_unavailable")?;
+    tracing::debug!(
+        event = "history_transfer_admitted",
+        queued_ms = started.elapsed().as_millis() as u64
+    );
     Ok(Lease {
         _admission: admission,
         _active: active,
@@ -74,14 +99,24 @@ pub async fn begin_session_history_transfer<R: tauri::Runtime>(
     limit: i64,
     history_source: Option<String>,
 ) -> Result<HistoryTransfer, crate::AppError> {
+    let started = Instant::now();
+    let span = tracing::debug_span!("history_transfer_prepare", %thread_id,
+        window = window.label(), ?before, limit);
+    tracing::debug!(parent: &span, event = "history_transfer_requested");
     let lease = admit().await?;
     let value = future_host::application::threads::get_session_entries_page(
-        thread_id,
+        thread_id.clone(),
         before,
         limit,
         history_source,
     )
-    .await?;
+    .await.inspect_err(|_error| {
+        // Error strings may contain provider/body data. The diagnostic records
+        // the failed stage; the original error still returns to its caller.
+        tracing::warn!(parent: &span, event = "history_transfer_prepare_failed", %thread_id, stage = "read",
+            elapsed_ms = started.elapsed().as_millis() as u64);
+    })?;
+    let read_ms = started.elapsed().as_millis() as u64;
     // A started job retains its lease even if the command future is canceled.
     let (bytes, lease) = tokio::task::spawn_blocking(move || {
         let mut bytes = BoundedJson(Vec::new());
@@ -89,8 +124,18 @@ pub async fn begin_session_history_transfer<R: tauri::Runtime>(
         Ok::<_, crate::AppError>((bytes.0, lease))
     })
     .await
-    .map_err(|error| format!("history transfer preparation failed: {error}"))??;
-    Ok(publish(window.label().to_owned(), bytes, lease))
+    .map_err(|error| {
+        tracing::warn!(parent: &span, event = "history_transfer_prepare_failed", stage = "encode_join");
+        format!("history transfer preparation failed: {error}")
+    })?
+    .inspect_err(|_error| {
+        tracing::warn!(parent: &span, event = "history_transfer_prepare_failed", stage = "encode");
+    })?;
+    let transfer = publish(window.label().to_owned(), bytes, lease);
+    tracing::debug!(parent: &span, event = "history_transfer_prepared", transfer_id = %transfer.id,
+        read_ms, elapsed_ms = started.elapsed().as_millis() as u64,
+        total_bytes = transfer.total_bytes);
+    Ok(transfer)
 }
 
 fn publish(owner: String, bytes: Vec<u8>, lease: Lease) -> HistoryTransfer {
@@ -98,6 +143,8 @@ fn publish(owner: String, bytes: Vec<u8>, lease: Lease) -> HistoryTransfer {
     // its bytes and permits rather than leaving an unreachable snapshot.
     let id = format!("history_{}", nkeys::KeyPair::new_user().public_key());
     let total_bytes = bytes.len();
+    tracing::debug!(event = "history_transfer_created", transfer_id = %id, window = %owner,
+        total_bytes, chunks = total_bytes.div_ceil(CHUNK_BYTES), ttl_ms = TTL.as_millis() as u64);
     CACHE.lock().unwrap().insert(
         id.clone(),
         Snapshot {
@@ -156,17 +203,58 @@ fn read_chunk(
     id: &str,
     offset: usize,
 ) -> Result<Vec<u8>, crate::AppError> {
-    cache.retain(|_, snapshot| snapshot.created.elapsed() < TTL);
-    let snapshot = cache.get(id).ok_or("history_transfer_expired")?;
+    prune_expired(cache);
+    let snapshot = cache.get(id).ok_or_else(|| {
+        tracing::warn!(
+            event = "history_transfer_read_failed",
+            transfer_id = id,
+            window = owner,
+            offset,
+            reason = "missing"
+        );
+        "history_transfer_expired"
+    })?;
     if snapshot.owner != owner {
+        tracing::warn!(
+            event = "history_transfer_read_failed",
+            transfer_id = id,
+            window = owner,
+            offset,
+            reason = "owner_mismatch"
+        );
         return Err("history_transfer_owner_mismatch".into());
     }
     if offset >= snapshot.bytes.len() || !offset.is_multiple_of(CHUNK_BYTES) {
+        tracing::warn!(
+            event = "history_transfer_read_failed",
+            transfer_id = id,
+            window = owner,
+            offset,
+            reason = "invalid_offset",
+            total_bytes = snapshot.bytes.len()
+        );
         return Err("history_transfer_invalid_offset".into());
     }
     let end = (offset + CHUNK_BYTES).min(snapshot.bytes.len());
     let bytes = snapshot.bytes[offset..end].to_vec();
+    tracing::trace!(
+        event = "history_transfer_chunk_read",
+        transfer_id = id,
+        window = owner,
+        offset,
+        chunk_bytes = bytes.len(),
+        age_ms = snapshot.created.elapsed().as_millis() as u64
+    );
     if end == snapshot.bytes.len() {
+        tracing::debug!(
+            event = "history_transfer_retired",
+            transfer_id = id,
+            window = owner,
+            reason = "completed",
+            total_bytes = snapshot.bytes.len(),
+            chunks = snapshot.bytes.len().div_ceil(CHUNK_BYTES),
+            elapsed_ms = snapshot.created.elapsed().as_millis() as u64
+        );
         cache.remove(id);
     }
     Ok(bytes)
@@ -195,9 +283,18 @@ pub fn release_session_history_transfer<R: tauri::Runtime>(
         .get(&transfer_id)
         .is_some_and(|snapshot| snapshot.owner != window.label())
     {
+        tracing::warn!(event = "history_transfer_release_failed", %transfer_id,
+            window = window.label(), reason = "owner_mismatch");
         return Err("history_transfer_owner_mismatch".into());
     }
-    cache.remove(&transfer_id);
+    if let Some(snapshot) = cache.remove(&transfer_id) {
+        tracing::debug!(event = "history_transfer_retired", %transfer_id,
+            window = window.label(), reason = "released",
+            age_ms = snapshot.created.elapsed().as_millis() as u64,
+            total_bytes = snapshot.bytes.len());
+    } else {
+        tracing::trace!(event = "history_transfer_release_missing", %transfer_id, window = window.label());
+    }
     Ok(())
 }
 
@@ -211,6 +308,57 @@ mod tests {
     #![allow(clippy::await_holding_lock)]
 
     use super::*;
+
+    #[test]
+    fn retirement_logs_distinguish_completion_and_expiry_without_recording_bodies() {
+        #[derive(Clone)]
+        struct Capture(Arc<Mutex<Vec<u8>>>);
+        impl Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+            type Writer = Self;
+            fn make_writer(&'a self) -> Self {
+                self.clone()
+            }
+        }
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(Capture(bytes.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let mut cache =
+                HashMap::from([("complete".into(), snapshot(b"private-body".to_vec()))]);
+            read_chunk(&mut cache, "window", "complete", 0).unwrap();
+            let mut expired = snapshot(b"private-body".to_vec());
+            expired.created = Instant::now() - TTL;
+            cache.insert("expired".into(), expired);
+            assert!(read_chunk(&mut cache, "window", "expired", 0).is_err());
+        });
+        let text = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(!text.contains("private-body"));
+        let records: Vec<serde_json::Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        for reason in ["completed", "expired"] {
+            assert!(records.iter().any(|record| record["fields"]["event"]
+                == "history_transfer_retired"
+                && record["fields"]["reason"] == reason));
+        }
+        assert!(records.iter().any(|record| record["fields"]["event"]
+            == "history_transfer_read_failed"
+            && record["fields"]["transfer_id"] == "expired"
+            && record["fields"]["offset"] == 0));
+    }
 
     /// The admission limits are process-global statics, so a case that saturates one of them
     /// is only meaningful while no other case of this module holds a permit. Every case here

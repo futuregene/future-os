@@ -19,7 +19,7 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 │   ├── skills/                # 已安装的用户技能（APP_SKILLS_DIR）
 │   ├── browser/               # CLI 浏览器工具状态（config.json、profile/、artifacts/）
 │   ├── images/                # CLI 图片工具输出目录
-│   └── logs/agent.log         # agent 日志（启用日志时）
+│   └── logs/agent.log         # Agent JSONL 诊断（内嵌与独立）
 ├── fusion/                    # 共享只读讨论控制面
 │   ├── fusion.db              # 设置及版本、运行、阶段、参与者、议题与正文引用
 │   └── snapshots/             # 有界且带哈希的讨论文件快照
@@ -56,6 +56,8 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 └── bin/                       # CLI / agent 链接：`future`、`future-agent`（见下）
 ```
 
+各组件日志路径与保留规则见 [Rust 诊断日志](logging.zh-CN.md)。
+
 ## `~/.future/agent/` — agent 后端
 
 归 `future-agent`（默认每用户本地 IPC 的 gRPC 后端）所有。其配置
@@ -90,7 +92,7 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 - `browser/` — CLI 浏览器工具状态（`config.json`、Chromium 的 `profile/`、
   截图的 `artifacts/`）。遵循 `FUTURE_HOME`。
 - `images/` — CLI 图片生成/编辑工具（`future tools call image …`）的输出目录。
-- `logs/agent.log` — 启用日志时写入。
+- `logs/agent.log` — 默认写入结构化诊断日志（内嵌与独立 Agent）。
 
 ## IPC、审批规则与 Windows 清理
 

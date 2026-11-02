@@ -26,21 +26,37 @@ pub(super) fn open_connection_cancellable(
     path: &Path,
     cancellation: &crate::service::StartupCancellation,
 ) -> Result<Connection> {
-    cancellation.check()?;
-    if let Some(home) = path.parent().and_then(Path::parent) {
-        future_rpc::home::ensure_restore_complete(home)?;
+    let started = std::time::Instant::now();
+    tracing::debug!(event = "database_open_started", database = "agent", path = %path.display());
+    let result: Result<Connection> = (|| {
+        cancellation.check()?;
+        if let Some(home) = path.parent().and_then(Path::parent) {
+            future_rpc::home::ensure_restore_complete(home)?;
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).context("create SQLite directory")?;
+        }
+        let mut connection = Connection::open(path).context("open Agent SQLite database")?;
+        cancellation.monitor_sqlite(&connection)?;
+        let result = initialize_connection(&mut connection, path, cancellation);
+        // The startup token must not interrupt ordinary writes after readiness.
+        connection.progress_handler(0, None::<fn() -> bool>)?;
+        cancellation.check()?;
+        result?;
+        Ok(connection)
+    })();
+    match &result {
+        Ok(_) => {
+            tracing::debug!(event = "database_open_completed", database = "agent", path = %path.display(), elapsed_ms = started.elapsed().as_millis() as u64)
+        }
+        Err(error) if error.is::<crate::service::StartupCancelled>() => {
+            tracing::info!(event = "database_open_cancelled", database = "agent", path = %path.display(), elapsed_ms = started.elapsed().as_millis() as u64);
+        }
+        Err(error) => {
+            tracing::error!(event = "database_open_failed", database = "agent", path = %path.display(), elapsed_ms = started.elapsed().as_millis() as u64, error = %format!("{error:#}"))
+        }
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).context("create SQLite directory")?;
-    }
-    let mut connection = Connection::open(path).context("open Agent SQLite database")?;
-    cancellation.monitor_sqlite(&connection)?;
-    let result = initialize_connection(&mut connection, path, cancellation);
-    // The startup token must not interrupt ordinary writes after readiness.
-    connection.progress_handler(0, None::<fn() -> bool>)?;
-    cancellation.check()?;
-    result?;
-    Ok(connection)
+    result
 }
 
 fn initialize_connection(
@@ -62,6 +78,13 @@ fn initialize_connection(
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     let application: i64 =
         connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
+    tracing::debug!(
+        event = "database_header_read",
+        database = "agent",
+        schema_version = version,
+        target_version = super::CURRENT_SCHEMA_VERSION,
+        application_id = application
+    );
     if !super::supports_schema_version(version) {
         bail!("unsupported Agent database schema version {version}");
     }
@@ -126,7 +149,28 @@ fn initialize_connection(
     if version != super::CURRENT_SCHEMA_VERSION && application != 0 {
         cancellation.report(crate::service::StartupStage::UpgradingStorage);
     }
-    super::schema::initialize_schema(connection, cancellation)?;
+    let upgrading = version != super::CURRENT_SCHEMA_VERSION;
+    let migration_started = std::time::Instant::now();
+    if upgrading {
+        tracing::info!(
+            event = "database_upgrade_started",
+            database = "agent",
+            from_version = version,
+            to_version = super::CURRENT_SCHEMA_VERSION
+        );
+    }
+    super::schema::initialize_schema(connection, cancellation).inspect_err(|error| {
+        tracing::error!(event = "database_schema_install_failed", database = "agent", from_version = version, to_version = super::CURRENT_SCHEMA_VERSION, error = %format!("{error:#}"));
+    })?;
+    if upgrading {
+        tracing::info!(
+            event = "database_upgrade_completed",
+            database = "agent",
+            from_version = version,
+            to_version = super::CURRENT_SCHEMA_VERSION,
+            elapsed_ms = migration_started.elapsed().as_millis() as u64
+        );
+    }
     cancellation.check()?;
     Ok(())
 }

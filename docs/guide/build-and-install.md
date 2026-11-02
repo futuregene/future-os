@@ -355,8 +355,8 @@ start the matching Agent separately with the same FutureOS home. Launchers do
 not cancel old database rows or kill agents recorded by stale PID files.
 `BUILD_CLI=0` skips the CLI build, `DESKTOP_DEV_PORT` selects the Vite port,
 `RUN_CHECKS=1` runs static checks, and `DRY_RUN=1` only prints configuration.
-Standalone Agent logs remain under `agent/logs/agent.log`; embedded Agent/host
-logs use `app/logs/desktop.log`. See [directory layout](directory-layout.md) for socket selection.
+Embedded and standalone Agent logs use `agent/logs/agent.log`; Desktop uses
+`app/logs/desktop.log` and foreground Host uses `app/logs/host.log` ([logging](logging.md)). See [directory layout](directory-layout.md) for socket selection.
 Android and iOS need their respective SDKs and an emulator or device; see the
 [mobile guide](../internals/mobile/README.md).
 

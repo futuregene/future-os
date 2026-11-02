@@ -12,6 +12,7 @@ name = "future_channel"
 path = "src/lib.rs"
 
 [dependencies]
+future-logging = { path = "../packages/logging" }
 future-rpc = { path = "../packages/rpc" }
 tonic.workspace = true
 prost.workspace = true

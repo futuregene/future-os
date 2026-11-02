@@ -47,6 +47,7 @@ custom-protocol = ["tauri/custom-protocol"]
 test-support = []
 
 [dev-dependencies]
+tracing-subscriber.workspace = true
 future-host = { path = "../../host", features = ["test-support"] }
 future-remote-server = { path = "../../packages/remote-server", features = ["test-support"] }
 future-remote-client = { path = "../../packages/remote-client", features = ["test-support"] }
@@ -68,6 +69,8 @@ tauri-build = { version = "2.7.4", features = [], optional = true }
 # compile without pulling in GTK/WebKit through the dev dependency graph.
 
 [dependencies]
+tracing.workspace = true
+future-logging = { path = "../../packages/logging" }
 future-host = { path = "../../host" }
 # Shared agent wire contract (proto codegen + typed/JSON decode; typed-RPC
 # milestone). Path dep: this crate lives in the root cargo workspace, and

@@ -49,6 +49,27 @@ fn run_from_args(args: &[String]) -> ExitCode {
         }
     }
 
+    let _logging = if args.is_empty()
+        || args
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "--help" | "-h" | "--version" | "-v"))
+        || args.first().is_some_and(|arg| arg == "version")
+    {
+        None
+    } else {
+        future_logging::prepare(
+            future_logging::Component::Cli,
+            future_cli::version::VERSION,
+            false,
+            false,
+        );
+        future_logging::open(
+            future_logging::Component::Cli,
+            &future_logging::Component::Cli.path(&future_rpc::home::future_home()),
+            0,
+        )
+        .ok()
+    };
     let out = future_cli::Output::stdio();
     // Invariant: a multi-thread runtime always builds (failure would mean
     // resource exhaustion fatal to the process anyway).
