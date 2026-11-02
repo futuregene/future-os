@@ -15,6 +15,7 @@ pub mod persist;
 mod presence;
 mod prompt;
 mod queries;
+pub mod queue;
 mod reconciliation;
 mod replica;
 pub mod review;
@@ -37,6 +38,7 @@ pub use self::client::{
     set_default_model_command, set_model_command, set_session_name_command,
     set_thinking_level_command, RpcResponseExt,
 };
+pub use self::queue::{empty_queue, queue_state_json, session_queue_snapshot};
 
 pub use self::config_observer::spawn_provider_config_observer;
 pub use self::delete_outbox::{reconcile_delete_outbox, spawn_delete_outbox_worker};

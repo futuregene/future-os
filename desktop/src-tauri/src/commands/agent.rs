@@ -219,6 +219,7 @@ mod tests {
                 run_id: None,
                 model_id: None,
                 thinking_level: None,
+                busy_policy: String::new(),
             },
             Some(channel),
         )
@@ -387,6 +388,7 @@ mod tests {
                 run_id: None,
                 model_id: None,
                 thinking_level: None,
+                busy_policy: String::new(),
             },
             None,
         )
@@ -471,6 +473,7 @@ mod tests {
                     run_id: Some(run.id.clone()),
                     model_id: None,
                     thinking_level: None,
+                    busy_policy: String::new(),
                 },
                 Some(channel),
             ),
@@ -516,6 +519,7 @@ mod tests {
                 run_id: None,
                 model_id: None,
                 thinking_level: None,
+                busy_policy: String::new(),
             },
             None,
         )
