@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { emitFutureEvent } from "../../lib/futureEvents";
+import { QUEUE_RETRY_DELAY_MS, QUEUE_RETRY_LIMIT } from "./queueDelivery";
 import { RemoteComposer } from "./RemoteComposer";
 import { clearRemoteComposerDraft } from "./remoteComposerDraft";
 import { getRemoteOutbox, resetRemoteOutbox } from "./remotePromptOutbox";
@@ -1683,7 +1684,9 @@ describe("the send queue", () => {
   });
 
   it("keeps a refused queue visible and retries it only when asked", async () => {
-    prompt.mockRejectedValueOnce(new Error("session_busy"));
+    // A refusal that will not pass by itself (the prompt is too large): the reader
+    // is handed the decision instead of the screen retrying behind their back.
+    prompt.mockRejectedValueOnce(new Error("prompt_too_large"));
     remoteSendQueue.enqueue(queueKey, { content: "try me", attachments: [] });
     const view = await mount({ streaming: false });
     await settle();
@@ -1700,5 +1703,64 @@ describe("the send queue", () => {
     expect(prompt).toHaveBeenCalledTimes(2);
     expect(view.container.querySelector("[data-send-queue]")).toBeNull();
     await view.unmount();
+  });
+
+  it("rides out a host that has not finished the run yet, instead of showing a retry", async () => {
+    vi.useFakeTimers();
+    try {
+      // The host's answer while the run it is settling has not cleared: the same
+      // message the phone sees. `Error` and a bare string are both shapes a Tauri
+      // rejection arrives in.
+      const busy = "session_busy: this session is still running; wait for it to finish or abort it first.";
+      prompt
+        .mockRejectedValueOnce(new Error(busy))
+        .mockRejectedValueOnce(busy)
+        .mockResolvedValue({ sessionId: "sess_1", threadId: "thread_1" });
+      remoteSendQueue.enqueue(queueKey, { content: "held while it ran", attachments: [] });
+      const view = await mount({ streaming: false });
+      await settle();
+      expect(prompt).toHaveBeenCalledTimes(1);
+      // Still waiting, not failed: the row stays and offers no retry.
+      expect(view.container.querySelector("[data-send-queue]")).not.toBeNull();
+      expect(view.container.querySelector("[data-queue-retry]")).toBeNull();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(QUEUE_RETRY_DELAY_MS + 20);
+      });
+      expect(prompt).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(QUEUE_RETRY_DELAY_MS + 20);
+      });
+      expect(prompt).toHaveBeenCalledTimes(3);
+      // Accepted on the third ask: one message, queue empty.
+      expect(prompt.mock.calls[2]![2]).toBe("held while it ran");
+      expect(view.container.querySelector("[data-send-queue]")).toBeNull();
+      expect(view.onSent).toHaveBeenCalled();
+      await view.unmount();
+    }
+    finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives a queue the host keeps refusing back to the reader after the budget", async () => {
+    vi.useFakeTimers();
+    try {
+      prompt.mockRejectedValue(new Error("session_busy: this session is still running."));
+      remoteSendQueue.enqueue(queueKey, { content: "never accepted", attachments: [] });
+      const view = await mount({ streaming: false });
+      await settle();
+      for (let attempt = 0; attempt < QUEUE_RETRY_LIMIT + 2; attempt += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(QUEUE_RETRY_DELAY_MS + 20);
+        });
+      }
+      expect(view.container.querySelector("[data-queue-retry]")).not.toBeNull();
+      expect(prompt.mock.calls.length).toBeLessThanOrEqual(QUEUE_RETRY_LIMIT + 1);
+      await view.unmount();
+    }
+    finally {
+      vi.useRealTimers();
+    }
   });
 });
