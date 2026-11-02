@@ -40,6 +40,7 @@ import { NativeFileActionSheet } from "./components/NativeFileActionSheet";
 import { newestFirst } from "./timelineListModel";
 import { expandSessionReferences } from "./sessionCompletion";
 import { sendQueue, useSendQueue } from "./sendQueue";
+import { isTransientQueueRefusal, QUEUE_RETRY_DELAY_MS, QUEUE_RETRY_LIMIT } from "./queueDelivery";
 import { showToast } from "./utils";
 import { collectQueuedAttachments, joinQueuedContent } from "../../lib/sendQueue";
 
@@ -151,43 +152,102 @@ export function ChatScreen() {
 
   // ── Send queue ──────────────────────────────────────────────────────────
   // A message held while the desktop was answering leaves the moment that run is
-  // over, joined with whatever else was queued into one message. "Over" is the
-  // desktop's own report — not streaming, not busy, still reachable and still
-  // this device's — because the desktop refuses a prompt that arrives early.
+  // over, joined with whatever else was queued into one message. Two things start
+  // it: the screen reading the run as over (`queueIdle`), and the reader asking the
+  // run to stop — the second does not wait for the first, because the reads of "is
+  // it still running" can trail the interrupt by a moment, and a queue the reader
+  // already asked to send must not look stuck behind a flag. Whichever starts it,
+  // the desktop decides: a `session_busy` answer means "not yet" and is retried.
   const queue = useSendQueue(conversationKey);
   const queueSendingRef = useRef(false);
+  const queueRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const queueAttemptRef = useRef(0);
   const queueIdle = !remote.draft
     && !controls.streaming
     && !remote.busy
     && remote.desktopOnline
     && remote.presence?.control !== "standby";
+
+  const deliverQueue = useCallback(() => {
+    if (!conversationKey || queueSendingRef.current)
+      return;
+    if (sendQueue.snapshot(conversationKey).items.length === 0)
+      return;
+    queueSendingRef.current = true;
+
+    /**
+     * One delivery, and the retries that belong to it.
+     *
+     * Acknowledged by the desktop is the only success; `session_busy` means the run
+     * it was waiting for has not settled yet, so the rows go back on the wire a
+     * moment later instead of becoming a "retry" the reader must press for a wait
+     * that ends by itself.
+     *
+     * The rows are taken per attempt, not carried in a closure: a failed attempt
+     * puts them back into the panel (so the reader keeps seeing what is waiting),
+     * and the next attempt takes them again. Restoring the same array twice would
+     * duplicate them — and anything the reader queued meanwhile belongs in the same
+     * message anyway.
+     */
+    const deliver = async (attempt: number): Promise<void> => {
+      const pending = sendQueue.take(conversationKey);
+      if (pending.length === 0) {
+        queueSendingRef.current = false;
+        return;
+      }
+      try {
+        await remote.sendMessage(joinQueuedContent(pending), collectQueuedAttachments(pending));
+        queueAttemptRef.current = 0;
+        queueSendingRef.current = false;
+      }
+      catch (error) {
+        // Back into the panel either way; what differs is whether it is flagged.
+        sendQueue.restore(conversationKey, pending);
+        if (isTransientQueueRefusal(error) && attempt < QUEUE_RETRY_LIMIT) {
+          queueAttemptRef.current = attempt + 1;
+          // Not a failure: the rows go back without the brake, and the chain keeps
+          // ownership of the queue until it succeeds or gives up.
+          sendQueue.clearFailure(conversationKey);
+          queueRetryTimerRef.current = setTimeout(() => {
+            queueRetryTimerRef.current = null;
+            void deliver(attempt + 1);
+          }, QUEUE_RETRY_DELAY_MS);
+          return;
+        }
+        queueAttemptRef.current = 0;
+        queueSendingRef.current = false;
+        const failure = sendFailureText(error, remote.presence?.holder?.name?.trim());
+        showToast(t(failure.key, failure.params));
+      }
+    };
+    void deliver(0);
+  }, [conversationKey, remote, t]);
+
   useEffect(() => {
     if (!queueIdle || queue.failed || queueSendingRef.current || !conversationKey)
       return;
     if (queue.items.length === 0)
       return;
-    // Taken, not read: the effect runs on every conversation update and the queue
-    // must leave exactly once per wait.
-    const taken = sendQueue.take(conversationKey);
-    if (taken.length === 0)
-      return;
-    queueSendingRef.current = true;
-    void (async () => {
-      try {
-        await remote.sendMessage(joinQueuedContent(taken), collectQueuedAttachments(taken));
-      }
-      catch (error) {
-        // Not delivered: back into the panel, flagged, where the reader can see
-        // it. `failed` is what stops the automatic attempt until they retry.
-        sendQueue.restore(conversationKey, taken);
-        const failure = sendFailureText(error, remote.presence?.holder?.name?.trim());
-        showToast(t(failure.key, failure.params));
-      }
-      finally {
-        queueSendingRef.current = false;
-      }
-    })();
-  }, [conversationKey, queue.failed, queue.items.length, queueIdle, remote, t]);
+    void deliverQueue();
+  }, [conversationKey, deliverQueue, queue.failed, queue.items.length, queueIdle]);
+
+  // The reader asked the run to stop: whatever they were holding goes next, even
+  // if this screen still reads the conversation as streaming.
+  const handleRunStopped = useCallback(() => {
+    queueAttemptRef.current = 0;
+    if (queueRetryTimerRef.current) {
+      clearTimeout(queueRetryTimerRef.current);
+      queueRetryTimerRef.current = null;
+    }
+    deliverQueue();
+  }, [deliverQueue]);
+
+  useEffect(() => () => {
+    if (queueRetryTimerRef.current) {
+      clearTimeout(queueRetryTimerRef.current);
+      queueRetryTimerRef.current = null;
+    }
+  }, []);
 
   /**
    * Hand the field's draft to the queue (the toolbar's "hold it" row). The
@@ -677,6 +737,7 @@ export function ChatScreen() {
                     onQueueRemove={removeQueuedMessage}
                     onQueueRetry={retrySendQueue}
                     enqueueDraft={enqueueComposerDraft}
+                    onStopped={handleRunStopped}
                   />
                 </PausedTimeline>
               </View>
