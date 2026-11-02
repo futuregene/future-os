@@ -23,7 +23,7 @@ export function FusionToolRow({ tool, resolveTarget }: { tool: TimelineToolRow; 
   const [error, setError] = useState(false);
   const progress = fusionProgress(data, tool.status);
   const currentStage = progress.status === "completed" ? 4 : Math.max(0, progress.stageIndex + 1);
-  const stageLabel = t(progress.terminal ? `chat.fusionStates.${progress.status}` : `chat.fusionPhases.${progress.phase}`);
+  const stageLabel = t(progress.terminal ? `chat.fusionStates.${progress.status}` : `chat.fusionPhases.${progress.phase === "preflight" ? "preparing" : progress.phase}`);
   const stageCount = t("chat.fusionStageCount", { current: currentStage, total: 4 });
   const moderatorOnly = progress.phase === "issue_mapping" || progress.phase === "synthesizing";
   const models = moderatorOnly

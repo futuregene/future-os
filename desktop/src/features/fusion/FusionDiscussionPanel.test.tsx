@@ -103,3 +103,16 @@ it("keeps failed remote reads on the original host without a local fallback", as
   expect(resolver).toHaveBeenCalledWith({ runId: "remote-run", toolCallId: "remote-call", stepId: "s1", offset: 32768, fusion: true });
   expect(mocks.invoke).not.toHaveBeenCalled();
 });
+
+it("does not expose internal preflight or the input-context section", async () => {
+  const data = discussion();
+  data.run!.status = "running";
+  data.run!.phase = "preflight";
+  data.run!.result = null;
+  data.steps = [{ ...data.steps![0]!, id: "preflight", phase: "preflight", participant: "moderator", status: "running" }];
+  mocks.invoke.mockResolvedValue(data);
+  await render();
+  expect(container.textContent).not.toContain("Checking main model");
+  expect(container.textContent).not.toContain("Background and constraints");
+  expect(container.textContent).toContain(data.run!.input.question);
+});

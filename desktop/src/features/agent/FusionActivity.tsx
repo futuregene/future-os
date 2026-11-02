@@ -35,7 +35,7 @@ export function FusionActivity({ item, runId, resolveTarget }: {
   const data = resource?.scope === scope ? resource.discussion : null;
   const progress = fusionProgress(data, item.status);
   const currentStage = progress.status === "completed" ? 4 : Math.max(0, progress.stageIndex + 1);
-  const stageLabel = t(progress.terminal ? `fusion.states.${progress.status}` : `fusion.phases.${progress.phase}`);
+  const stageLabel = t(progress.terminal ? `fusion.states.${progress.status}` : `fusion.phases.${progress.phase === "preflight" ? "preparing" : progress.phase}`);
   const moderatorOnly = progress.phase === "issue_mapping" || progress.phase === "synthesizing";
   const models = moderatorOnly
     ? progress.models.filter(model => model.role === "moderator" || (!model.role && data?.steps?.some(step => step.participant === "moderator" && step.model === model.model)))

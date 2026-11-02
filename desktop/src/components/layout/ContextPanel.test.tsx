@@ -84,10 +84,10 @@ vi.mock("../../features/runs/RunInspectPanel", async () => {
     },
   };
 });
-vi.mock("../../features/fusion/FusionPanel", async () => {
+vi.mock("../../features/fusion/FusionDiscussionPanel", async () => {
   const { createElement } = await import("react");
   return {
-    FusionPanel: (props: unknown) => {
+    FusionDiscussionPanel: (props: unknown) => {
       panels.fusion = props;
       return createElement("div", { "data-panel": "fusion" });
     },
@@ -267,7 +267,7 @@ describe("context panel shell", () => {
     const p = baseProps();
     const view = mount(<ContextPanel {...p} />);
     const select = view.container.querySelector<HTMLSelectElement>("select#context-panel-view")!;
-    expect([...select.options].map(option => option.value)).toEqual(["files", "runs", "fusion"]);
+    expect([...select.options].map(option => option.value)).toEqual(["files", "runs"]);
     act(() => {
       select.value = "runs";
       select.dispatchEvent(new Event("change", { bubbles: true }));
@@ -281,7 +281,7 @@ describe("context panel shell", () => {
     const p = baseProps({ activeThread: thread("t1", { mode: "workspace", workspaceId: "w-t1" }) });
     const view = mount(<ContextPanel {...p} />);
     expect([...view.container.querySelectorAll<HTMLOptionElement>("option")].map(option => option.value))
-      .toEqual(["files", "runs", "fusion", "review"]);
+      .toEqual(["files", "runs", "review"]);
     view.unmount();
   });
 
@@ -291,7 +291,7 @@ describe("context panel shell", () => {
     // The Review tab is not offered yet, so the panel falls back to the first tab
     // instead of rendering a panel no tab can reach.
     expect([...view.container.querySelectorAll<HTMLOptionElement>("option")].map(option => option.value))
-      .toEqual(["files", "runs", "fusion"]);
+      .toEqual(["files", "runs"]);
     expect(p.onTabChange).toHaveBeenCalledWith("files");
     view.unmount();
   });
@@ -708,12 +708,12 @@ describe("context panel inspect events", () => {
     const p = baseProps({ expanded: false });
     const view = mount(<ContextPanel {...p} />);
     act(() => window.dispatchEvent(new CustomEvent("futureos:inspect-fusion", { detail: { runId: "r1", toolCallId: "f1" } })));
-    expect(p.onTabChange).toHaveBeenCalledWith("fusion");
+    expect(p.onTabChange).toHaveBeenCalledWith("runs");
     expect(p.onToggleExpanded).toHaveBeenCalledTimes(1);
-    view.rerender(<ContextPanel {...p} activeTab="fusion" expanded />);
-    expect(recorded("fusion").selected).toMatchObject({ runId: "r1", toolCallId: "f1" });
-    view.rerender(<ContextPanel {...p} activeTab="fusion" expanded activeThread={thread("other")} />);
-    expect(recorded("fusion").selected).toBeNull();
+    view.rerender(<ContextPanel {...p} activeTab="runs" expanded />);
+    expect(recorded("fusion")).toMatchObject({ runId: "r1", toolCallId: "f1" });
+    view.rerender(<ContextPanel {...p} activeTab="runs" expanded activeThread={thread("other")} />);
+    expect(view.container.querySelector("[data-panel=fusion]")).toBeNull();
     view.unmount();
   });
 
@@ -722,9 +722,9 @@ describe("context panel inspect events", () => {
     const p = baseProps({ activeTab: "runs" });
     const view = mount(<ContextPanel {...p} />);
     act(() => recorded("runs").onInspectTool!("tool-1"));
-    expect(p.onTabChange).toHaveBeenCalledWith("fusion");
-    view.rerender(<ContextPanel {...p} activeTab="fusion" />);
-    expect(recorded("fusion").selected).toMatchObject({ runId: "r1", toolCallId: "tool-1" });
+    expect(p.onTabChange).toHaveBeenCalledWith("runs");
+    view.rerender(<ContextPanel {...p} activeTab="runs" />);
+    expect(recorded("fusion")).toMatchObject({ runId: "r1", toolCallId: "tool-1" });
     expect(view.container.querySelector("[data-panel=inspect]")).toBeNull();
     view.unmount();
   });

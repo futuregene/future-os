@@ -1,7 +1,7 @@
 import type { FusionDiscussion, FusionStep } from "@future-os/thread-projection";
 import type { ReactNode } from "react";
 import type { FusionResolver } from "../../integrations/fusion/queries";
-import type { FusionSelection } from "./FusionPanel";
+import type { FusionSelection } from "./types";
 import { FUSION_PHASES, fusionProgress } from "@future-os/thread-projection";
 import { ArrowLeft, ChevronDown, RefreshCw, UserRoundGroup } from "lucide-react";
 import { useCallback, useState } from "react";
@@ -32,7 +32,7 @@ export function FusionDiscussionPanel({ runId, toolCallId, status = "running", r
   const steps = [...(data?.steps ?? [])].sort((a, b) => a.started_at - b.started_at || a.attempt - b.attempt);
   const result = ["completed", "delivering"].includes(run?.status ?? "") ? run?.result : null;
   return (
-    <div className="flex h-full min-h-0 flex-col" data-fusion-panel="detail">
+    <div className="@container flex h-full min-h-0 flex-col" data-fusion-panel="detail">
       <div className="flex shrink-0 items-center gap-2 border-b border-line-soft px-3 py-2">
         <IconButton icon={<ArrowLeft className="size-3.5" />} label={t("fusion.detail.back")} onClick={onBack} />
         <UserRoundGroup className="size-4 shrink-0 text-ink-muted" />
@@ -52,14 +52,6 @@ export function FusionDiscussionPanel({ runId, toolCallId, status = "running", r
               </div>
               {progress.notices.map(notice => <p key={notice} role="status" className="text-xs leading-5 text-ink-muted">{t(`fusion.notices.${notice}`)}</p>)}
               {run.error && <p className="whitespace-pre-wrap wrap-break-word text-xs leading-5 text-danger">{run.error}</p>}
-              <details className="rounded-lg border border-line-soft px-3 py-2 text-xs text-ink-soft">
-                <summary className="cursor-pointer py-1">{t("fusion.detail.context")}</summary>
-                <div className="space-y-3 py-2">
-                  <TextSection title={t("fusion.detail.goal")}>{run.input.goal}</TextSection>
-                  <TextSection title={t("fusion.detail.background")}>{run.input.background}</TextSection>
-                  <ListSection title={t("fusion.detail.constraints")} items={run.input.constraints} />
-                </div>
-              </details>
             </div>
             {result
               ? (
@@ -73,15 +65,9 @@ export function FusionDiscussionPanel({ runId, toolCallId, status = "running", r
                   </section>
                 )
               : progress.terminal && <p className="rounded-lg border border-line-soft p-3 text-xs leading-5 text-ink-muted">{t("fusion.detail.noConclusion")}</p>}
-            {steps.some(step => step.phase === "preflight") && (
-              <details className="text-xs text-ink-muted">
-                <summary className="cursor-pointer">{t("fusion.phases.preflight")}</summary>
-                {steps.filter(step => step.phase === "preflight").map(step => <StepCard key={step.id} step={step} runId={runId} toolCallId={toolCallId} resolveTarget={resolveTarget} terminal={progress.terminal} />)}
-              </details>
-            )}
             <section className="space-y-3">
               <h3 className="text-sm font-medium text-ink">{t("fusion.discussion")}</h3>
-              <div className="grid grid-cols-2 gap-2" role="group" aria-label={t("fusion.progress")}>
+              <div className="grid grid-cols-2 gap-2 @min-[35rem]:grid-cols-4" role="group" aria-label={t("fusion.progress")}>
                 {FUSION_PHASES.map((value, index) => (
                   <button key={value} type="button" aria-pressed={phase === value} onClick={() => setSelectedPhase(value)} className={cn("space-y-2 rounded-md border px-2 py-2 text-left text-xs", phase === value ? "border-info-line bg-accent-soft text-accent" : "border-line-soft text-ink-muted hover:bg-surface-subtle")}>
                     <span className={cn("block h-1 rounded-full", progress.stages[index] === "completed" ? "bg-accent" : progress.stages[index] === "thinking" ? "animate-pulse bg-accent" : progress.stages[index] === "failed" ? "bg-danger" : "bg-line")} />

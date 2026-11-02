@@ -1,6 +1,6 @@
 import type { FusionStep } from "@future-os/thread-projection";
 import type { FusionResolver } from "../../integrations/fusion/queries";
-import type { FusionSelection } from "./FusionPanel";
+import type { FusionSelection } from "./types";
 import { fusionTranscript } from "@future-os/thread-projection";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
