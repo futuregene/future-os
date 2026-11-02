@@ -56,7 +56,20 @@ fn encode_plain_reply(plain: Vec<u8>, gzip_enabled: bool) -> Vec<u8> {
     if !gzip_enabled || plain.len() < REMOTE_JSON_GZIP_THRESHOLD_BYTES {
         return plain;
     }
+    compress_json(plain)
+}
 
+/// gzip a JSON body when that actually makes it smaller.
+///
+/// The one compression policy both carriers share — replies, which only compress
+/// for a client that declared `reply_gzip_v1`, and pushes, where every client
+/// that reads them decodes through a decoder that sniffs the gzip magic. Below
+/// the threshold the header would cost more than the body saves; an
+/// incompressible body is returned untouched so a caller never pays for trying.
+pub(crate) fn compress_json(plain: Vec<u8>) -> Vec<u8> {
+    if plain.len() < REMOTE_JSON_GZIP_THRESHOLD_BYTES {
+        return plain;
+    }
     let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
     if encoder.write_all(&plain).is_err() {
         return plain;
@@ -149,5 +162,54 @@ mod tests {
         let carried = with_base64_page(header, &[0xfb, 0xff, 0x00]);
         assert_eq!(carried["readChunk"]["data"], json!("-_8A"));
         assert_eq!(carried["readChunk"]["totalBytes"], json!(3));
+    }
+
+    /// A push is compressed only when that actually helps, and what comes out is
+    /// still a body every client can read: they sniff the gzip magic and inflate
+    /// (`plain_json_bytes`, `decodeRemoteJson`), so the packet needs no
+    /// negotiation.
+    #[test]
+    fn a_catalogue_sized_body_is_compressed_and_still_readable() {
+        let row = json!({
+            "sessionId": "0b6a1c2e-7777-8888-9999-000011112222",
+            "title": "解释一下这个握手为什么带整份会话目录",
+            "status": "completed",
+        });
+        let body = json!({ "sessions": vec![row; 400] });
+        let plain = serde_json::to_vec(&body).unwrap();
+        assert!(plain.len() > REMOTE_JSON_GZIP_THRESHOLD_BYTES);
+
+        let compressed = compress_json(plain.clone());
+        assert_eq!(&compressed[..2], &[0x1f, 0x8b], "must be real gzip");
+        assert!(
+            compressed.len() * 4 < plain.len(),
+            "a catalogue should shrink to a fraction: {} -> {}",
+            plain.len(),
+            compressed.len()
+        );
+        let decoded: Value = serde_json::from_slice(
+            &future_remote_protocol::json::plain_json_bytes(&compressed).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decoded, body);
+    }
+
+    /// Below the threshold the header costs more than the body saves, and an
+    /// incompressible body is left alone so no caller pays for trying.
+    #[test]
+    fn small_and_incompressible_bodies_are_left_alone() {
+        let small = serde_json::to_vec(&json!({ "sessionId": "s1" })).unwrap();
+        assert_eq!(compress_json(small.clone()), small);
+
+        let mut noise = Vec::new();
+        let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+        for _ in 0..REMOTE_JSON_GZIP_THRESHOLD_BYTES * 2 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            noise.push((state & 0xff) as u8);
+        }
+        let untouched = compress_json(noise.clone());
+        assert_eq!(untouched.len(), noise.len(), "no gain, no compression");
     }
 }

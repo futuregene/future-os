@@ -177,6 +177,14 @@ import { createUser, fromPublic, fromSeed } from "https://cdn.jsdelivr.net/npm/n
 const $ = (id) => document.getElementById(id);
 const enc = (o) => new TextEncoder().encode(JSON.stringify(o));
 const dec = (m) => JSON.parse(new TextDecoder().decode(m.data));
+// 目录推送可能被 gzip 压缩（服务端在 seal 前压），客户端一律按魔数判断，
+// 与 Rust/手机端同一个规则；这里用浏览器的解压流。
+async function payloadJson(message) {
+  const bytes = message.data;
+  if (bytes[0] !== 0x1f || bytes[1] !== 0x8b) return dec(message);
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+  return JSON.parse(await new Response(stream).text());
+}
 
 let nc = null, pair = "", session = "", bubble = null, thinkEl = null;
 let curRun = null; const seenEvents = new Set();
@@ -527,7 +535,7 @@ async function watchState() {
   try {
     for await (const message of sub) {
       const suffix = message.subject.slice(prefix.length);
-      const data = dec(message);
+      const data = await payloadJson(message);
       if (suffix === "sessions") {
         onSessionsUpdate(data?.sessions ?? []);
       } else if (suffix === "workspaces") {

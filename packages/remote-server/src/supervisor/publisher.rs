@@ -367,7 +367,7 @@ impl Supervisor {
                     if catalog.signature != last_sessions_sig {
                         let bytes = serde_json::to_vec(&catalog.payload)
                             .expect("a sessions Value always serializes");
-                        match secure::publish(
+                        match secure::publish_json(
                             &client,
                             &security,
                             format!("p.{pair_id}.state.sessions"),
@@ -418,7 +418,7 @@ impl Supervisor {
                         });
                         let bytes =
                             serde_json::to_vec(&body).expect("an activity Value always serializes");
-                        match secure::publish(
+                        match secure::publish_json(
                             &client,
                             &security,
                             catalog_activity_subject(&pair_id),
@@ -454,7 +454,7 @@ impl Supervisor {
             if dirty || workspaces_sig != last_workspaces_sig {
                 let bytes = serde_json::to_vec(&workspaces_payload)
                     .expect("a workspaces Value always serializes");
-                match secure::publish(
+                match secure::publish_json(
                     &client,
                     &security,
                     format!("p.{pair_id}.state.workspaces"),

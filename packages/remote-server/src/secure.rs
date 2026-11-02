@@ -520,6 +520,33 @@ impl Reply {
 }
 tokio::task_local! { pub static REPLY: Reply; }
 
+/// Publish a JSON push, compressed when compression actually shrinks it.
+///
+/// Every reader of a push already decodes through a decoder that sniffs the
+/// gzip magic (the Rust client's `codec::decode_reply`, the phone's
+/// `decodeRemoteJson`), so a compressed packet needs no negotiation and no
+/// declared capability. That matters most for the catalogue lanes: a machine
+/// with a few hundred conversations publishes a few hundred kilobytes of JSON
+/// whenever its directory changes structure, and gzip takes that to about a
+/// tenth of it.
+///
+/// Binary transfer chunks deliberately stay on [`publish`]: already-compressed
+/// file bytes would only cost CPU.
+pub async fn publish_json(
+    client: &async_nats::Client,
+    transport: &Transport,
+    subject: String,
+    bytes: Vec<u8>,
+) -> Result<bool, crate::Error> {
+    publish(
+        client,
+        transport,
+        subject,
+        crate::reply::compress_json(bytes),
+    )
+    .await
+}
+
 pub async fn publish(
     client: &async_nats::Client,
     transport: &Transport,

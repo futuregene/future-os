@@ -71,9 +71,9 @@ mod contract_tests {
 #[cfg(test)]
 mod runtime_tests {
     use super::test_support::{
-        await_publish, await_publish_matching, declare_features, fake_state, init_store, jwt,
-        nats_connect, nats_connect_once, now_secs, pairing_creds, sign_in, unique, FakeNats,
-        HomeGuard, MockPlatform,
+        await_publish, await_publish_matching, declare_features, fake_state, incompressible,
+        init_store, jwt, nats_connect, nats_connect_once, now_secs, pairing_creds, sign_in, unique,
+        FakeNats, HomeGuard, MockPlatform,
     };
     use super::*;
     use serde_json::json;
@@ -3456,10 +3456,13 @@ mod runtime_tests {
         // The publisher serves the device in control; this fixture is it.
         SUPERVISOR.restore_active(Some(pair.clone()));
         // A thread title that alone exceeds the broker payload cap: presence
-        // publishes (small pair id), then the sessions snapshot fails.
+        // publishes (small pair id), then the sessions snapshot fails. The title
+        // is incompressible so the catalogue lane's compression cannot shrink it
+        // under the cap — the fixture is about a *failing* publish, not about
+        // size.
         crate::store::create_thread(crate::store::CreateThreadInput {
             mode: "chat".to_string(),
-            title: Some("n".repeat(9 * 1024 * 1024)),
+            title: Some(incompressible(9 * 1024 * 1024)),
             workspace_id: None,
             workspace_path: None,
             workspace_name: None,
@@ -3468,7 +3471,11 @@ mod runtime_tests {
         .unwrap();
 
         let handle = spawn_presence_heartbeat(client.clone(), pair, "bridge_hbs".into());
-        tokio::time::timeout(Duration::from_secs(3), handle)
+        // Ten seconds, not three: the payload now travels through the catalogue
+        // lane's compressor before the broker rejects it, so *producing* this
+        // failure costs more than it did. The assertion is unchanged — a failed
+        // publish must stop the heartbeat.
+        tokio::time::timeout(Duration::from_secs(10), handle)
             .await
             .expect("catalog publish failure must stop heartbeat")
             .expect("heartbeat did not panic");
@@ -3484,11 +3491,13 @@ mod runtime_tests {
         // The publisher serves the device in control; this fixture is it.
         SUPERVISOR.restore_active(Some(pair.clone()));
         // A workspace name that alone exceeds the broker payload cap: presence
-        // and the (empty) sessions snapshot publish, then workspaces fails.
+        // and the (empty) sessions snapshot publish, then workspaces fails. The
+        // name is incompressible, so the compression of the workspace lane cannot
+        // shrink it under the cap.
         let workspace_dir = std::env::temp_dir().join(unique("futureos-ws-hbw"));
         std::fs::create_dir_all(&workspace_dir).unwrap();
         crate::store::create_workspace(crate::store::CreateWorkspaceInput {
-            name: Some("n".repeat(9 * 1024 * 1024)),
+            name: Some(incompressible(9 * 1024 * 1024)),
             path: workspace_dir.to_string_lossy().to_string(),
             description: None,
             create_directory: None,
@@ -3496,7 +3505,9 @@ mod runtime_tests {
         .unwrap();
 
         let handle = spawn_presence_heartbeat(client.clone(), pair, "bridge_hbw".into());
-        tokio::time::timeout(Duration::from_secs(3), handle)
+        // See `heartbeat_sessions_publish_failure_exits` for the budget: the
+        // payload is compressed before the broker rejects it.
+        tokio::time::timeout(Duration::from_secs(10), handle)
             .await
             .expect("catalog publish failure must stop heartbeat")
             .expect("heartbeat did not panic");
