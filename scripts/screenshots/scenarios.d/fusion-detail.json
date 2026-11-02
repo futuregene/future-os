@@ -447,6 +447,88 @@
           "shot": "d-fusion-detail-final-report.png"
         }
       ]
+    },
+    "fusion-detail-loading-fast": {
+      "url": "http://localhost:5299/shot/?fusion=1&lang=zh",
+      "steps": [
+        {
+          "wait": 1000
+        },
+        {
+          "tap": "查看过程"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "tapText": "Fusion · 讨论"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "eval": "(() => {const state=window.__fusionLoading={periods:[],start:null,mixed:false};const observe=()=>{const p=document.querySelector('[data-fusion-panel=detail]');const visible=!!p&&[...p.querySelectorAll('[role=status]')].some(e=>e.textContent.includes('正在读取讨论记录'));if(visible&&state.start===null)state.start=performance.now();if(!visible&&state.start!==null){state.periods.push(performance.now()-state.start);state.start=null;}if(visible&&p.querySelector('[data-fusion-public-output]'))state.mixed=true;};new MutationObserver(observe).observe(document.body,{childList:true,subtree:true,characterData:true});observe();return 'loading visibility observer installed';})()"
+        },
+        {
+          "tap": "查看讨论明细"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "eval": "document.querySelector('[data-fusion-panel=detail] button[aria-expanded]')?.click()"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "eval": "(() => {const s=window.__fusionLoading;if(s.periods.length!==0||s.start!==null)throw new Error('fast read flashed loading');if(s.mixed)throw new Error('loading and report overlapped');if(!document.querySelector('[data-fusion-public-output]'))throw new Error('report missing');return {periods:s.periods,mixed:s.mixed};})()"
+        },
+        {
+          "shot": "d-fusion-loading-fast.png"
+        }
+      ]
+    },
+    "fusion-detail-loading-slow": {
+      "url": "http://localhost:5299/shot/?fusion=1&lang=zh&fusionMetadataDelay=400&fusionReadDelay=400",
+      "steps": [
+        {
+          "wait": 1000
+        },
+        {
+          "tap": "查看过程"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "tapText": "Fusion · 讨论"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "eval": "(() => {const state=window.__fusionLoading={periods:[],start:null,mixed:false};const observe=()=>{const p=document.querySelector('[data-fusion-panel=detail]');const visible=!!p&&[...p.querySelectorAll('[role=status]')].some(e=>e.textContent.includes('正在读取讨论记录'));if(visible&&state.start===null)state.start=performance.now();if(!visible&&state.start!==null){state.periods.push(performance.now()-state.start);state.start=null;}if(visible&&p.querySelector('[data-fusion-public-output]'))state.mixed=true;};new MutationObserver(observe).observe(document.body,{childList:true,subtree:true,characterData:true});observe();return 'loading visibility observer installed';})()"
+        },
+        {
+          "tap": "查看讨论明细"
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "eval": "document.querySelector('[data-fusion-panel=detail] button[aria-expanded]')?.click()"
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "eval": "(() => {const s=window.__fusionLoading;if(s.periods.length!==2||s.periods.some(t=>t<980))throw new Error('loading was not held for one second: '+JSON.stringify(s));if(s.mixed)throw new Error('loading and report overlapped');if(!document.querySelector('[data-fusion-public-output]'))throw new Error('report missing');return {periods:s.periods,mixed:s.mixed};})()"
+        },
+        {
+          "shot": "d-fusion-loading-slow.png"
+        }
+      ]
     }
   }
 }
