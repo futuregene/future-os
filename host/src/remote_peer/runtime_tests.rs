@@ -89,6 +89,38 @@ async fn wait_for_the_events_lane(fx: &Fixture) {
         .await;
 }
 
+/// Every catalogue packet this peer emitted under `domain`, oldest first.
+///
+/// The domain is the reader's own tag for a packet's *shape*, so filtering on
+/// it is what lets a test say which shape it saw instead of inferring one from
+/// whichever keys happen to be present.
+fn catalogue_packets(
+    seen: &Arc<std::sync::Mutex<Vec<PeerEvent>>>,
+    desktop_id: &str,
+    domain: &str,
+) -> Vec<serde_json::Value> {
+    seen.lock()
+        .unwrap()
+        .iter()
+        .filter(|event| {
+            event.kind == "catalog"
+                && event.desktop_id == desktop_id
+                && event.payload["domain"] == json!(domain)
+        })
+        .map(|event| event.payload.clone())
+        .collect()
+}
+
+/// The `lastMessageAt` a row-level packet names for `session`, if it names it.
+fn named_row_at(packet: &serde_json::Value, session: &str) -> Option<i64> {
+    packet["rows"]
+        .as_array()?
+        .iter()
+        .find(|row| row["sessionId"] == json!(session))?
+        .get("lastMessageAt")?
+        .as_i64()
+}
+
 pub(crate) fn find(peers: &[PeerSummary], desktop_id: &str) -> PeerSummary {
     peers
         .iter()
@@ -775,13 +807,20 @@ async fn a_connected_host_streams_its_events_to_the_emitter() {
 
 /// An activity-only move arrives on the catalogue lane, tagged with its domain.
 ///
-/// The peer declares `catalog_activity_v1`, so the host stops re-sending the
-/// whole session list when only a row's recency moved and sends the moved rows
-/// on `state.activity` instead. The client has to classify that subject as an
-/// *activity* snapshot and tag the payload `sessions_activity`: the UI applies
-/// the replacement packet only for that domain, so a peer that dropped the
-/// packet (or tagged it as a session list) would leave every remote row's
-/// ordering frozen while the conversation streams.
+/// The peer declares `catalog_delta_v1`, and on the host side that declaration
+/// outranks `catalog_activity_v1`: `state.sessions` carries row-level deltas
+/// instead of whole snapshots, and the recency-only `state.activity` packet is
+/// never sent to this client at all. The lane choice is silent — both forms look
+/// identical from outside — so the tag on the packet is the only thing that
+/// says which shape arrived, and a reader handed a delta it mistook for a
+/// snapshot would delete every row the packet does not mention.
+///
+/// This is what that tag has to mean, in both directions: the connection's first
+/// packet is the whole list (`full: true`) so a delta has something to merge
+/// into, and a recency move arrives as one row, `full: false`, carrying the new
+/// value. A revert to whole snapshots would reach the emitter under the
+/// `sessions` domain and fail the first wait; a host that opened with a
+/// row-level packet would fail the `full` assertion.
 #[tokio::test]
 async fn an_activity_packet_arrives_tagged_with_its_catalogue_domain() {
     let (_home, fx) = start("peer-rt-activity-lane").await;
@@ -792,11 +831,9 @@ async fn an_activity_packet_arrives_tagged_with_its_catalogue_domain() {
         .await
         .expect("connect with a stream");
 
-    // The conversation is created *after* the subscription exists, so the
-    // structural packet it forces is one the peer is guaranteed to see. Waiting
-    // for that packet is what makes the move below recency-only: the publisher
-    // folds a recency change into a whole-list packet when the row set changed in
-    // the same tick, and that would leave no activity packet to assert on.
+    // The conversation is created *after* the subscription exists, so the packet
+    // that carries it is one that exists because of it, rather than a baseline a
+    // tick earlier may have taken without it.
     let thread = crate::store::create_thread(crate::store::CreateThreadInput {
         mode: "chat".into(),
         title: Some("Moving row".into()),
@@ -807,16 +844,30 @@ async fn an_activity_packet_arrives_tagged_with_its_catalogue_domain() {
     })
     .expect("seed a conversation");
 
-    let saw = |seen: &Arc<std::sync::Mutex<Vec<PeerEvent>>>, domain: &str| {
-        seen.lock()
-            .unwrap()
+    wait_for("no catalogue packet named the new conversation", || {
+        catalogue_packets(&seen, &desktop_id, "sessions_delta")
             .iter()
-            .any(|event| event.kind == "catalog" && event.payload["domain"] == json!(domain))
-    };
-    wait_for("the structural catalogue snapshot never arrived", || {
-        saw(&seen, "sessions")
+            .any(|packet| named_row_at(packet, "sess_rt_activity").is_some())
     })
     .await;
+
+    // Whatever tick that landed on, the first packet of the connection is the
+    // whole list: a reader that joined mid-life has no base to merge a delta
+    // into, and one that opened with a partial packet would leave every row it
+    // did not name invisible until something else moved.
+    let baseline = catalogue_packets(&seen, &desktop_id, "sessions_delta")
+        .into_iter()
+        .next()
+        .expect("a packet arrived, or the wait above would have failed");
+    assert_eq!(
+        baseline["full"],
+        json!(true),
+        "the first catalogue packet of a connection is the whole list: {baseline}"
+    );
+    assert!(
+        baseline.get("sessions").is_none(),
+        "a delta names `rows`, not the whole `sessions` array: {baseline}"
+    );
 
     // Above every row's current activity: a write that moves the value is what a
     // streamed turn does, and a backwards one is refused by the store.
@@ -830,12 +881,13 @@ async fn an_activity_packet_arrives_tagged_with_its_catalogue_domain() {
         + 1_000;
     crate::store::record_thread_message_activity(&thread.id, at).expect("move the row's recency");
 
-    wait_for("no sessions_activity packet reached the emitter", || {
-        seen.lock().unwrap().iter().any(|event| {
-            event.kind == "catalog"
-                && event.payload["domain"] == json!("sessions_activity")
-                && event.desktop_id == desktop_id
-        })
+    wait_for("no row-level packet named the moved conversation", || {
+        catalogue_packets(&seen, &desktop_id, "sessions_delta")
+            .iter()
+            .any(|packet| {
+                packet["full"] == json!(false)
+                    && named_row_at(packet, "sess_rt_activity") == Some(at)
+            })
     })
     .await;
 
