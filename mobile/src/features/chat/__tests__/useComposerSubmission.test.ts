@@ -3,6 +3,11 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { useComposerSubmission } from "../composer/useComposerSubmission";
 import { showToast } from "../utils";
 
+const mockRemoteControls = {
+  capabilities: new Set<string>(), desktopReadable: false, desktopSettingsRevision: 0,
+  getFusionSettings: jest.fn(),
+};
+jest.mock("../../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemoteControls }));
 jest.mock("../utils", () => ({ showToast: jest.fn() }));
 
 type Options = Parameters<typeof useComposerSubmission>[0];

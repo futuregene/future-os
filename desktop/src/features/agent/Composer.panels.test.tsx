@@ -34,6 +34,9 @@ const h = vi.hoisted(() => ({
   },
 }));
 
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async () => () => {}),
+}));
 vi.mock("../../integrations/agent/useSandboxAvailability", async importOriginal => ({
   ...await importOriginal<typeof import("../../integrations/agent/useSandboxAvailability")>(),
   useSandboxAvailability: () => ({ available: true, definitive: true, resolved: true }),

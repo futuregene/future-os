@@ -6,7 +6,7 @@ import type { HistoryAttachment, TimelineItem } from "../../../remote/types";
  * payload), so a row with no target asks for it when it is opened. Implemented
  * by the screen — the row itself stays free of transport.
  */
-export type ToolTargetResolver = (toolCallId: string, runId: string) => Promise<string | null>;
+export type ToolTargetResolver = (toolCallId: string, runId: string, fusion?: { stepId?: string; offset?: number }) => Promise<string | null>;
 
 export interface TimelineCardProps {
   item: TimelineItem;

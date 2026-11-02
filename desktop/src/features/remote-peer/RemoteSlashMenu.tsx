@@ -1,5 +1,5 @@
 import type { RemoteSlashItem, RemoteSlashMenuGroups } from "./remoteCommands";
-import { Archive, Blocks } from "lucide-react";
+import { Archive, Blocks, UserRoundGroup } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { remoteSlashItems } from "./remoteCommands";
 
@@ -58,7 +58,9 @@ export function RemoteSlashMenu({
             {/* The icon is looked up here rather than carried on the item, so the
                 list a draft matches against stays free of elements. */}
             {item.kind === "command"
-              ? (item.command.id === "compact" ? <Archive aria-hidden className="mt-0.5 size-4 shrink-0 text-ink-soft" /> : null)
+              ? (item.command.id === "fusion"
+                  ? <UserRoundGroup aria-hidden className="mt-0.5 size-4 shrink-0 text-ink-soft" />
+                  : item.command.id === "compact" ? <Archive aria-hidden className="mt-0.5 size-4 shrink-0 text-ink-soft" /> : null)
               : <Blocks aria-hidden className="mt-0.5 size-4 shrink-0 text-ink-soft" />}
             <span className="min-w-0 flex-1">
               <span className="block truncate font-medium">

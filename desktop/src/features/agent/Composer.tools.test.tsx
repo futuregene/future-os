@@ -18,6 +18,9 @@ const h = vi.hoisted(() => ({
   savePastedImage: vi.fn(async () => ({ path: "/tmp/pasted.png" })),
 }));
 
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async () => () => {}),
+}));
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({
     onDragDropEvent: async (handler: (event: { payload: { paths?: string[]; type: string } }) => void) => {

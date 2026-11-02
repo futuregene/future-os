@@ -18,6 +18,7 @@ Groups:
   account   Platform account info
   run       Send a prompt to the agent (one-shot, non-interactive)
   skills    Install & manage agent skills
+  fusion    Inspect multi-model discussions attached to Agent runs
   task      Manage scheduled tasks (reusable prompt + trigger + runs)
   tools     List, describe, and call platform & browser tools
   mcp       Configure MCP servers and call their tools
@@ -54,10 +55,12 @@ Run 'future <group> --help' for per-group details.
   future desktop --help      Desktop app settings
   future workspace --help    Desktop app workspaces (list/add)
   future remote --help       Paired remote devices (list/remove/use)
+  future fusion --help       Inspect multi-model discussions
   future run --help          All run options (model, fork, thinking, tools, etc.)
   future auth --help         Auth subcommands
   future account --help      Account subcommands
   future skills --help       Skills subcommands
+  future fusion --help                      Inspect Fusion discussions
   future task --help         Scheduled-task management (list/show/add/run/runs)
   future tools --help        Tool subcommands
   future mcp --help          MCP server and tool subcommands

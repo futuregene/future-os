@@ -305,6 +305,7 @@ pub fn base_command(command_type: &str, session_id: String) -> RpcCommand {
         level: String::new(),
         mode: String::new(),
         custom_instructions: String::new(),
+        fusion_settings_json: String::new(),
         created_by: String::new(),
         creator_id: String::new(),
         source_meta: String::new(),

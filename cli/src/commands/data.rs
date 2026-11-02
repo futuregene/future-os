@@ -12,7 +12,7 @@ use std::{
 
 use crate::Output;
 
-pub const HELP: &str = "future data — offline history backup and recovery\n\nUsage:\n  future data backup <new-directory>\n  future data verify <backup-directory>\n  future data restore <backup-directory> --yes\n  future data resume\n  future data rollback\n\nStop Desktop, Agent and other writers first. Backups include both databases,\nmanaged attachments/workspaces/review data, legacy sources and Agent configuration\n(including credentials). Keep the backup private. Restore targets the original\nFutureOS home; paths and user workspaces retain their original meaning.\nIncomplete restores fence startup until resume or rollback. The previous files\nremain in the restore work directory even after success.";
+pub const HELP: &str = "future data — offline history backup and recovery\n\nUsage:\n  future data backup <new-directory>\n  future data verify <backup-directory>\n  future data restore <backup-directory> --yes\n  future data resume\n  future data rollback\n\nStop Desktop, Agent and other writers first. Backups include Agent/Desktop and optional Fusion databases,\nmanaged attachments/workspaces/review data, legacy sources and Agent configuration\n(including credentials). Keep the backup private. Restore targets the original\nFutureOS home; paths and user workspaces retain their original meaning.\nIncomplete restores fence startup until resume or rollback. The previous files\nremain in the restore work directory even after success.";
 
 const ROOTS: &[&str] = &[
     "agent/agent.db-wal",
@@ -30,7 +30,12 @@ const ROOTS: &[&str] = &[
     "agent/settings.json",
     "agent/models.json",
     "agent/auth.json",
+    "fusion/fusion.db-wal",
+    "fusion/fusion.db-shm",
+    "fusion/fusion.db",
+    "fusion/snapshots",
 ];
+const LEGACY_ROOTS_LEN: usize = 15;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -189,6 +194,7 @@ fn relative(root: &Path, logical: &str) -> Result<PathBuf> {
         "agent/sessions",
         "agent/run-events",
         "agent/session-backups",
+        "fusion/snapshots",
     ];
     let allowed = ROOTS.contains(&logical)
         || directory_roots.iter().any(|base| {
@@ -202,7 +208,9 @@ fn relative(root: &Path, logical: &str) -> Result<PathBuf> {
                 "agent/agent.db-wal",
                 "agent/agent.db-shm",
                 "app/app.db-wal",
-                "app/app.db-shm"
+                "app/app.db-shm",
+                "fusion/fusion.db-wal",
+                "fusion/fusion.db-shm"
             ]
             .contains(&logical),
         "unexpected backup path"
@@ -438,9 +446,9 @@ fn backup(home: &Path, destination: &Path) -> Result<()> {
         files: Vec::new(),
     };
     let mut writers = Vec::new();
-    // Reserve both databases before taking either snapshot. Other CLI SQLite
-    // writers cannot commit between the two snapshots or managed-file inventory.
-    for logical in ["agent/agent.db", "app/app.db"] {
+    // Reserve all databases before taking any snapshot. Other CLI SQLite
+    // writers cannot commit between snapshots or managed-file inventory.
+    for logical in ["agent/agent.db", "app/app.db", "fusion/fusion.db"] {
         let source = without_links(&home, Path::new(logical))?;
         if source.exists() {
             let conn = Connection::open_with_flags(&source, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
@@ -520,7 +528,10 @@ fn verify_files_at(
             "backup file verification failed: {}",
             file.path
         );
-        if file.path == "agent/agent.db" || file.path == "app/app.db" {
+        if file.path == "agent/agent.db"
+            || file.path == "app/app.db"
+            || file.path == "fusion/fusion.db"
+        {
             // A backup is a standalone SQLite snapshot. Unmanifested sidecars
             // must not override its hashed contents during verification.
             for suffix in ["-wal", "-shm", "-journal"] {
@@ -542,6 +553,16 @@ fn verify_files_at(
             let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
             if file.path == "app/app.db" {
                 future_app_settings::validate_database_header(&conn)?;
+            } else if file.path == "fusion/fusion.db" {
+                let layout: String = conn.query_row(
+                    "SELECT value FROM fusion_meta WHERE key='layout'",
+                    [],
+                    |r| r.get(0),
+                )?;
+                ensure!(
+                    version == 1 && layout == "fusion_v1",
+                    "unsupported Fusion backup database"
+                );
             } else {
                 let application: i64 =
                     conn.pragma_query_value(None, "application_id", |row| row.get(0))?;
@@ -741,7 +762,8 @@ fn finish_restore_with(
 ) -> Result<()> {
     let mut journal: RestoreJournal = serde_json::from_slice(&fs::read(pending(home))?)?;
     ensure!(
-        matches!(journal.version, 1 | 2) && journal.items.len() == ROOTS.len(),
+        matches!(journal.version, 1 | 2)
+            && (journal.items.len() == ROOTS.len() || journal.items.len() == LEGACY_ROOTS_LEN),
         "invalid restore journal"
     );
     for (item, path) in journal.items.iter().zip(ROOTS) {
@@ -932,6 +954,23 @@ mod tests {
         app.execute_batch("INSERT INTO workspaces(id,name,kind,path,created_at,updated_at) VALUES('w','W','user','.',1,1);
             INSERT INTO threads(id,workspace_id,mode,title,created_at,updated_at) VALUES('t','w','chat','old title',1,1);").unwrap();
         home
+    }
+
+    #[test]
+    fn backup_preserves_fusion_database_and_evidence() {
+        let root = tempfile::tempdir().unwrap();
+        let home = fixture(root.path());
+        let fusion = future_fusion::Store::open(&home).unwrap();
+        fs::create_dir_all(fusion.root().join("snapshots/demo")).unwrap();
+        fs::write(fusion.root().join("snapshots/demo/evidence.txt"), b"frozen").unwrap();
+        let archive = root.path().join("archive");
+        backup(&home, &archive).unwrap();
+        let manifest = verify(&archive).unwrap();
+        assert!(manifest.files.iter().any(|f| f.path == "fusion/fusion.db"));
+        assert_eq!(
+            fs::read(archive.join("fusion/snapshots/demo/evidence.txt")).unwrap(),
+            b"frozen"
+        );
     }
 
     fn change_current(home: &Path) {

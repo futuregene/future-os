@@ -329,5 +329,84 @@
     "dismiss": "收起教学入口",
     "dismissed": "已收起教学入口 · 随时可在左侧「技能」页重新打开教程",
     "loadFailed": "教学配置加载失败：{{message}}"
+  },
+  "fusion": {
+    "enabled": "Fusion 工具已启用 · 按需只读讨论",
+    "enableDescription": "为本次主流程加入多模型思考工具；讨论不执行动作",
+    "remove": "移除",
+    "discussion": "讨论记录",
+    "discussing": "正在讨论",
+    "issues": "分歧与结论",
+    "diagnostics": "诊断",
+    "original": "原始发言与工具证据",
+    "more": "继续读取",
+    "input": "实际输入",
+    "loading": "正在读取讨论记录",
+    "noIssues": "暂未形成议题",
+    "unavailable": "当前宿主不支持 Fusion",
+    "missingParent": "缺少父任务信息",
+    "phases": {
+      "preparing": "准备资料",
+      "analyzing": "独立思考",
+      "issue_mapping": "整理议题",
+      "reviewing": "交叉讨论",
+      "synthesizing": "总结",
+      "preflight": "检查主模型"
+    },
+    "states": {
+      "preparing": "准备讨论",
+      "queued": "等待讨论",
+      "running": "正在讨论",
+      "delivering": "返回结论",
+      "completed": "讨论完成",
+      "failed": "讨论失败",
+      "cancelled": "讨论已停止",
+      "interrupted": "讨论已中断",
+      "starting": "准备讨论"
+    },
+    "retry": "重试 {{count}}",
+    "completeness": {
+      "full": "完整讨论",
+      "partial": "部分模型参与",
+      "single": "单模型意见"
+    },
+    "result": {
+      "rationale": "判断依据",
+      "conditions": "适用条件",
+      "unresolved": "待确认事项",
+      "next_steps": "建议后续动作"
+    },
+    "title": "Fusion · 讨论",
+    "runningTitle": "Fusion · 正在讨论",
+    "modelStates": {
+      "waiting": "等待思考",
+      "thinking": "思考中",
+      "completed": "思考完成",
+      "failed": "思考失败",
+      "timed_out": "思考超时",
+      "output_limited": "达到输出上限",
+      "cancelled": "已停止",
+      "interrupted": "已中断",
+      "partial": "部分完成",
+      "skipped": "已跳过"
+    },
+    "stageCount": "{{current}} / {{total}}",
+    "progress": "讨论阶段进度",
+    "partialNotice": "部分模型未完成讨论",
+    "statusUnavailable": "暂时无法读取讨论状态",
+    "disabled": "Fusion 已在设置中关闭",
+    "moderatorRole": "主模型",
+    "participantRole": "参与模型 {{number}}",
+    "notices": {
+      "noConclusion": "本次未产出综合结论。",
+      "moderatorFailed": "主模型不可用，未自动更换模型。",
+      "noParticipants": "没有有效的参与模型结果，已停止讨论。",
+      "providerUnavailable": "提供商暂不可用，已停止受影响的请求。",
+      "singleParticipant": "仅保留单模型意见，已跳过交叉讨论。",
+      "reducedParticipation": "部分模型未完成，已基于有效结果继续。",
+      "budgetReserved": "已跳过后续讨论，为总结保留时间。",
+      "directReview": "议题整理未完成，已直接比较原始分析。",
+      "materialsRetained": "已有分析与降级原因已保留，可用于复盘。"
+    }
   }
 }

@@ -201,6 +201,25 @@ pub(super) async fn agent_prompt_inner(
     request: AgentPromptRequest,
     mut accepted: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> Result<AgentPromptResponse, crate::Error> {
+    if let Some(task) = future_fusion::fusion_prompt(&request.message) {
+        if task.is_empty() {
+            return Err(crate::Error::Message(
+                "Use /fusion followed by a task".into(),
+            ));
+        }
+        // A new client must never silently send /fusion as plain text to an
+        // older Agent, even when the Host itself advertises Fusion.
+        super::client::connect_agent()
+            .await?
+            .execute_command(future_rpc::proto::RpcCommand {
+                r#type: "get_fusion_status".into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| crate::Error::Message(format!("Fusion requires an upgraded Agent: {e}")))?
+            .into_inner()
+            .ok_or_rpc_error("Fusion requires an upgraded Agent")?;
+    }
     let AgentPromptRequest {
         message,
         model_context,

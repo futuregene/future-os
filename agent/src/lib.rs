@@ -435,3 +435,5 @@ pub(crate) mod test_support {
         }
     }
 }
+
+pub(crate) mod fusion;

@@ -6,6 +6,9 @@ import { expect, it, vi } from "vitest";
 import { Composer } from "./Composer";
 import { clearComposerDraft } from "./composerDraft";
 
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async () => () => {}),
+}));
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }),
 }));
