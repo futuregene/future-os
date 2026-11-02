@@ -12,7 +12,6 @@ function row(sessionId: string, extra: Partial<RemoteSession> = {}): RemoteSessi
     threadId: `thread_${sessionId}`,
     title: `title ${sessionId}`,
     streaming: false,
-    sortKey: 100,
     lastMessageAt: 100,
     ...extra,
   } as RemoteSession;
@@ -20,20 +19,20 @@ function row(sessionId: string, extra: Partial<RemoteSession> = {}): RemoteSessi
 
 describe("applyCatalogDelta", () => {
   it("treats a full packet as the whole catalogue", () => {
-    const current = [row("a", { sortKey: 300 }), row("b", { sortKey: 200 })];
+    const current = [row("a", { lastMessageAt: 300 }), row("b", { lastMessageAt: 200 })];
     const next = applyCatalogDelta(current, {
       full: true,
-      rows: [row("b", { sortKey: 400 }), row("c", { sortKey: 100 })],
+      rows: [row("b", { lastMessageAt: 400 }), row("c", { lastMessageAt: 100 })],
       removed: [],
     });
     expect(next.map((item) => item.sessionId)).toEqual(["b", "c"]);
   });
 
   it("keeps rows a packet does not mention — absence is not deletion", () => {
-    const current = [row("a", { sortKey: 300 }), row("b", { sortKey: 200 })];
+    const current = [row("a", { lastMessageAt: 300 }), row("b", { lastMessageAt: 200 })];
     const next = applyCatalogDelta(current, {
       full: false,
-      rows: [row("a", { title: "renamed", sortKey: 300 })],
+      rows: [row("a", { title: "renamed", lastMessageAt: 300 })],
       removed: [],
     });
     expect(next.map((item) => item.sessionId)).toEqual(["a", "b"]);
@@ -41,7 +40,7 @@ describe("applyCatalogDelta", () => {
   });
 
   it("deletes exactly the ids the packet names, and re-ranks what is left", () => {
-    const current = [row("a", { sortKey: 300 }), row("b", { sortKey: 200 })];
+    const current = [row("a", { lastMessageAt: 300 }), row("b", { lastMessageAt: 200 })];
     const next = applyCatalogDelta(current, {
       full: false,
       rows: [],
@@ -51,24 +50,37 @@ describe("applyCatalogDelta", () => {
 
     const reordered = applyCatalogDelta(next, {
       full: false,
-      rows: [row("c", { sortKey: 500 })],
+      rows: [row("c", { lastMessageAt: 500 })],
       removed: [],
     });
     expect(reordered.map((item) => item.sessionId)).toEqual(["c", "b"]);
   });
 
   it("ranks pinned rows first, the way the host orders them", () => {
-    // sortKey already folds the pin in: pinned rows sit above every unpinned one.
+    // The rank is derived, not sent: pinned outranks every timestamp, and within
+    // a class the newest activity leads.
     const next = applyCatalogDelta([], {
       full: true,
       rows: [
-        row("old", { sortKey: 1e15 + 10 }),
-        row("new", { sortKey: 9_000 }),
-        row("newer", { sortKey: 9_500 }),
+        row("old", { pinned: true, lastMessageAt: 10 }),
+        row("new", { lastMessageAt: 9_000 }),
+        row("newer", { lastMessageAt: 9_500 }),
       ],
       removed: [],
     });
     expect(next.map((item) => item.sessionId)).toEqual(["old", "newer", "new"]);
+  });
+
+  it("falls back to the creation time when a row has never spoken", () => {
+    const next = applyCatalogDelta([], {
+      full: true,
+      rows: [
+        row("silent", { lastMessageAt: null, createdAt: 5_000 }),
+        row("chatty", { lastMessageAt: 1_000 }),
+      ],
+      removed: [],
+    });
+    expect(next.map((item) => item.sessionId)).toEqual(["silent", "chatty"]);
   });
 
   it("joins the workspace dictionary onto rows that carry only an id", () => {
