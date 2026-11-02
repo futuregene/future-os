@@ -1411,4 +1411,30 @@ mod tests {
         let (private, _) = future_remote_crypto::generate_identity().unwrap();
         connect(&transport, &creds, &private, true).expect("604 sessions is under the ceiling");
     }
+
+    /// A standby device still completes a handshake.
+    ///
+    /// The confirmation answers a device that is not driving the machine with
+    /// liveness only, no directory at all (see the supervisor's
+    /// `Context::presence`). That body still has to be something this machine
+    /// can seal and a client can accept, or the gate would lock a paired device
+    /// out of the machine it is allowed to take over.
+    #[test]
+    fn a_liveness_only_presence_still_completes_the_handshake() {
+        let creds = creds();
+        let transport = Transport::new(
+            &creds,
+            Arc::new(PresenceHost(json!({
+                "online": true,
+                "agentAvailable": true,
+                "pairId": "pair_secure",
+                "bridgeInstanceId": "bridge_secure",
+                "control": "standby",
+                "holder": { "pairId": "pair_other", "name": "书房电视", "kind": "desktop" },
+                "lastHeartbeatTs": 1_762_000_000u64,
+            }))),
+        );
+        let (private, _) = future_remote_crypto::generate_identity().unwrap();
+        connect(&transport, &creds, &private, true).expect("a standby device is not locked out");
+    }
 }

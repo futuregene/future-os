@@ -24,7 +24,27 @@ impl HandshakeHost for Context {
     fn presence(&self, pair: &str, bridge: &str) -> Value {
         self.server
             .upgrade()
-            .map(|server| server.build_presence_payload(pair, bridge))
+            .map(|server| {
+                // The directory belongs to the device driving this machine, the
+                // same rule `get_presence` keeps: a standby device is paired and
+                // connected, but it is not the one reading this machine's
+                // conversations, and handing it the list here would make "only
+                // one controls" a statement about commands alone. The handshake
+                // was the exception — it answered with the whole catalogue for
+                // every paired device, including a standby one, which is both a
+                // wider disclosure than `get_presence` allows and the reason the
+                // confirmation grows with the machine's usage at all.
+                //
+                // A standby device is not cut off: it gets the liveness packet
+                // (who holds the machine, whether the agent is up), it completes
+                // the handshake, and it reads the catalogue from
+                // `list_sessions` if it takes control.
+                if server.in_control(pair) {
+                    server.build_presence_payload(pair, bridge)
+                } else {
+                    server.light_presence_payload(pair, bridge)
+                }
+            })
             .unwrap_or(Value::Null)
     }
 }
@@ -235,5 +255,60 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(host.slots.lock().unwrap()[0].pair_id, credentials.pair_id);
+    }
+
+    /// The handshake answers with the catalogue for the device that drives the
+    /// machine, and with liveness alone for the one standing by.
+    ///
+    /// `get_presence` already drew that line; the confirmation did not, so a
+    /// standby device was handed the whole directory at the end of every
+    /// handshake — wider than the command path allows, and the reason the
+    /// confirmation is the one body in a connect that grows with this machine's
+    /// usage.
+    #[test]
+    fn the_handshake_hands_the_directory_to_the_controller_only() {
+        let host = Arc::new(MemoryHost::default());
+        *host.directory.lock().unwrap() = Some((
+            json!({ "pairId": "", "sessions": [{ "sessionId": "s1", "title": "目录" }] }),
+            json!({ "pairId": "", "workspaces": [{ "id": "w1", "name": "工作区" }] }),
+        ));
+        let server = Supervisor::new(host.clone(), Arc::new(TokioExecutor));
+        // Two paired devices, the first driving the machine. `in_control` reads
+        // a pointer only while the device it names is one this machine knows,
+        // so the controller has to be in the book for the second to be standby.
+        server
+            .known
+            .lock()
+            .unwrap()
+            .insert("pair_controller".into());
+        server.known.lock().unwrap().insert("pair_standby".into());
+        server.restore_active(Some("pair_controller".into()));
+        let context = Context {
+            server: Arc::downgrade(&server),
+            access: server.access.clone(),
+            epoch: server.access.current(),
+        };
+
+        let controller = context.presence("pair_controller", "bridge_context");
+        assert_eq!(controller["sessions"][0]["sessionId"], "s1");
+        assert_eq!(controller["workspaces"][0]["id"], "w1");
+        assert_eq!(controller["control"], "active");
+
+        let standby = context.presence("pair_standby", "bridge_context");
+        assert!(
+            standby.get("sessions").is_none(),
+            "a standby device is not handed the directory: {standby}"
+        );
+        assert!(
+            standby.get("workspaces").is_none(),
+            "nor the workspace list: {standby}"
+        );
+        assert_eq!(standby["control"], "standby");
+        // What it does get: enough to complete a handshake and to know who holds
+        // the machine, which is what lets it ask for a takeover by name.
+        assert_eq!(standby["online"], true);
+        assert_eq!(standby["pairId"], "pair_standby");
+        assert_eq!(standby["bridgeInstanceId"], "bridge_context");
+        assert_eq!(standby["holder"]["pairId"], "pair_controller");
     }
 }
