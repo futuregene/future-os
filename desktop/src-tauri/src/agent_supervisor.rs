@@ -2,7 +2,7 @@
 //! their ownership; successful full cleanup is required before relaunch.
 use future_host::console;
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -11,14 +11,11 @@ static QUIT_DIALOG_OPEN: AtomicBool = AtomicBool::new(false);
 /// Whether automatic Agent recovery has stopped for good.
 static RECOVERY_GAVE_UP: AtomicBool = AtomicBool::new(false);
 /// The one dialog for a give-up episode, shown at most once.
-///
-/// Gated exactly as its only writer is: `give_up` exists to end the watchdog
-/// loop, and the watchdog body is `not(test)`, so in a test build both would be
-/// unreachable — which `-D warnings` reports rather than tolerates.
-#[cfg(not(test))]
 static GAVE_UP_DIALOG_SHOWN: AtomicBool = AtomicBool::new(false);
 /// Why recovery gave up, kept for the status page.
 static GAVE_UP_REASON: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// How many recovery attempts the give-up episode spent, for `attempt N/limit`.
+static GAVE_UP_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
 
 /// How many recovery attempts this process will make before it gives up.
 ///
@@ -160,7 +157,7 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
                 // terminal state, so an Agent that died on every start was
                 // restarted 84 times over thirteen hours and nobody was told.
                 if budget.exhausted() {
-                    give_up(&_app, budget.failures(), budget.limit());
+                    give_up(&_app, &recovery_cause(), budget.failures(), budget.limit());
                     return;
                 }
                 continue;
@@ -201,30 +198,32 @@ pub fn ensure_agent_running<R: tauri::Runtime>(
 /// One dialog per episode, never one per attempt, and one log line: a give-up is
 /// news, not a state to poll.
 ///
-/// `not(test)` because its only caller is the watchdog loop, which a test build
-/// does not compile: the state it sets is still reachable through
-/// [`recovery_gave_up`], and the dialog it shows is the one thing a test must
-/// never put on screen.
-#[cfg(not(test))]
-fn give_up<R: tauri::Runtime>(app: &tauri::AppHandle<R>, failures: u32, limit: u32) {
+/// `reason` is the caller's reading of why the Agent is gone, because only the
+/// watchdog can ask the host. Everything else — the terminal state, the attempt
+/// count the status page prints, the one log line, the one dialog — happens here,
+/// so a test drives the whole effect instead of writing the statics this is
+/// supposed to set. `GAVE_UP_ATTEMPTS` therefore records the budget that was
+/// spent rather than the limit, which is what makes `attempt 3/3` honest.
+fn give_up<R: tauri::Runtime>(app: &tauri::AppHandle<R>, reason: &str, failures: u32, limit: u32) {
+    #[cfg(test)]
+    let _ = app;
     if RECOVERY_GAVE_UP.swap(true, Ordering::AcqRel) {
         return;
     }
-    let reason = crate::agent_host::host()
-        .yield_reason()
-        .or_else(|| match crate::agent_host::host().phase() {
-            crate::agent_host::Phase::Failed(error) => Some(error),
-            _ => None,
-        })
-        .unwrap_or_else(|| "the Agent did not stay reachable".to_string());
+    GAVE_UP_ATTEMPTS.store(failures, Ordering::Release);
     *GAVE_UP_REASON
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(reason.clone());
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(reason.to_string());
     crate::host_environment::report(&format!(
         "Agent recovery gave up after {failures}/{limit} attempts: {reason}; \
          automatic retries stopped, restart FutureOS"
     ));
-    if !GAVE_UP_DIALOG_SHOWN.swap(true, Ordering::AcqRel) {
+    // The dialog flag is spent in every build, not only where a dialog can be
+    // drawn: that makes the once-per-episode rule code a test can drive, and
+    // keeps the dialog itself to the build that has a window to put it in.
+    let owe_dialog = !GAVE_UP_DIALOG_SHOWN.swap(true, Ordering::AcqRel);
+    #[cfg(not(test))]
+    if owe_dialog {
         let handle = app.clone();
         app.dialog()
             .message(format!(
@@ -247,6 +246,32 @@ fn give_up<R: tauri::Runtime>(app: &tauri::AppHandle<R>, failures: u32, limit: u
                 }
             });
     }
+    #[cfg(test)]
+    let _ = owe_dialog;
+}
+
+/// How many recovery attempts the give-up episode spent.
+///
+/// The status page prints it against the limit (`attempt 3/3`): a budget that
+/// ran out says how far it got, not just that it is over.
+fn recovery_gave_up_attempts() -> u32 {
+    GAVE_UP_ATTEMPTS.load(Ordering::Acquire)
+}
+
+/// Why the Agent is gone, as the give-up reports it.
+///
+/// A host that never came up names its own failure; one that came up and left
+/// names the reason it yielded. Neither is a guess, and an unrecognised state
+/// falls back to a line that says what is known instead of an empty cause.
+#[cfg(not(test))]
+fn recovery_cause() -> String {
+    crate::agent_host::host()
+        .yield_reason()
+        .or_else(|| match crate::agent_host::host().phase() {
+            crate::agent_host::Phase::Failed(error) => Some(error),
+            _ => None,
+        })
+        .unwrap_or_else(|| "the Agent did not stay reachable".to_string())
 }
 pub async fn ensure_agent_ready_for_login<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> bool {
     if !matches!(
@@ -283,7 +308,8 @@ pub async fn agent_status() -> AgentStatus {
         // step is the same one.
         status.phase = "restart_required".into();
         status.error = Some(format!(
-            "Agent recovery stopped after {} attempts: {reason}. Restart FutureOS.",
+            "Agent recovery stopped at attempt {}/{}: {reason}. Restart FutureOS.",
+            recovery_gave_up_attempts(),
             crate::agent_supervisor::recovery_attempt_limit()
         ));
         return status;
@@ -872,16 +898,26 @@ mod block_fixtures {
         }
         if case == "gave-up" {
             // A budget that ran out is a state the page must name, not a phase
-            // that still reads "starting" while nothing is being started.
-            RECOVERY_GAVE_UP.store(true, Ordering::Release);
-            *GAVE_UP_REASON
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                Some("Embedded Agent worker panicked".into());
+            // that still reads "starting" while nothing is being started. Driven
+            // through `give_up` itself: writing these fields here would pass even
+            // if the watchdog never called it, which is the defect this case is
+            // meant to catch.
+            let app = mock_app();
+            give_up(app.handle(), "Embedded Agent worker panicked", 3, 3);
+            assert_eq!(
+                recovery_gave_up().as_deref(),
+                Some("Embedded Agent worker panicked")
+            );
+            assert_eq!(recovery_gave_up_attempts(), 3);
+            assert!(
+                GAVE_UP_DIALOG_SHOWN.load(Ordering::Acquire),
+                "the episode owes its one dialog"
+            );
             let status = block_on(agent_status());
             assert_eq!(status.phase, "restart_required");
             let error = status.error.unwrap_or_default();
             assert!(error.contains("Embedded Agent worker panicked"), "{error}");
+            assert!(error.contains("attempt 3/3"), "{error}");
             assert!(error.contains("Restart FutureOS"), "{error}");
             return;
         }
