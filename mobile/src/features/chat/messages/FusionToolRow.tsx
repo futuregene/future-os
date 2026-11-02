@@ -57,7 +57,7 @@ export function FusionToolRow({ tool, resolveTarget }: { tool: TimelineToolRow; 
       <Text style={styles.toolText}>{t("chat.fusionTitle")}</Text>
       <View style={styles.fusionRing} accessibilityRole="progressbar" accessibilityLabel={t("chat.fusionProgress")} aria-valuemin={0} aria-valuemax={4} aria-valuenow={currentStage} aria-valuetext={stageLabel}>
         <Svg width={14} height={14} viewBox="0 0 48 48" style={styles.fusionRingSvg}>
-          {FUSION_PHASES.map((phase, index) => <SvgCircle key={phase} cx={24} cy={24} r={20} fill="none" stroke={progress.stages[index] === "completed" || progress.stages[index] === "thinking" ? colors.accent : progress.stages[index] === "failed" ? colors.danger : colors.line} strokeWidth={3.5} strokeLinecap="round" strokeDasharray={[RING_CIRCUMFERENCE / 4 - 7, RING_CIRCUMFERENCE * 3 / 4 + 7]} strokeDashoffset={-(index * RING_CIRCUMFERENCE / 4 + 3.5)} transform="rotate(-90 24 24)" opacity={progress.stages[index] === "thinking" ? 0.65 : 1} />)}
+          {FUSION_PHASES.map((phase, index) => <SvgCircle key={phase} cx={24} cy={24} r={20} fill="none" stroke={progress.stages[index] === "failed" ? colors.danger : progress.stages[index] === "skipped" ? colors.line : colors.accent} strokeWidth={6} strokeLinecap="round" strokeDasharray={[RING_CIRCUMFERENCE / 4 - 9, RING_CIRCUMFERENCE * 3 / 4 + 9]} strokeDashoffset={-(index * RING_CIRCUMFERENCE / 4 + 4.5)} transform="rotate(-90 24 24)" opacity={progress.stages[index] === "waiting" ? 0.18 : 1} />)}
         </Svg>
       </View>
       {open ? <ChevronUp size={14} color={colors.inkMuted} /> : <ChevronDown size={14} color={colors.inkMuted} />}
