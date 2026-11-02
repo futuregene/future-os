@@ -7,6 +7,7 @@ import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { Switch } from "../../components/ui/Switch";
+import { getAppSettings } from "../../integrations/storage/appSettings";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { usePolling } from "../../lib/usePolling";
 import {
@@ -98,7 +99,37 @@ export function RemoteHostSection({
 
   // --- derived from the shared app-level status (same source as the sidebar indicator) ---
   const phase = remoteStatus?.phase ?? "stopped";
+  /**
+   * The switch is the stored preference, not the bridge's phase.
+   *
+   * Turning it on stores "serve again at launch", so a bridge that failed, a
+   * machine whose last device was removed, and a machine still trying to
+   * connect are all machines the user left *on*. Reading the phase instead made
+   * them render as "you turned it off": measured 2026-11-02, that is exactly
+   * what a user saw after repeated credential rejections, pressed the switch to
+   * turn their remote desktop back on, and only re-stored the `on` it already
+   * had — while the next launch served anyway. Health has its own line below
+   * (`failure`/`terminal`), so the switch does not have to carry it.
+   *
+   * `null` until the preference has been read, so the first frame falls back to
+   * the phase rather than flashing "off".
+   */
+  const [switchPreference, setSwitchPreference] = useState<boolean | null>(null);
+  const readSwitchPreference = useCallback(async () => {
+    try {
+      setSwitchPreference((await getAppSettings()).autoConnectRemote);
+    }
+    catch (err) {
+      // A settings read failing is not a reason to claim the remote desktop is
+      // off; the phase fallback keeps the control usable.
+      console.error("remote switch preference:", err);
+    }
+  }, []);
+  useEffect(() => {
+    void readSwitchPreference();
+  }, [readSwitchPreference]);
   const running = phase !== "stopped" && phase !== "failed" && phase !== "revoked";
+  const switchOn = switchPreference ?? running;
   const presentation = remoteConnectionPresentation(remoteStatus);
   const terminal = phase === "failed" || phase === "revoked";
   const failure = terminal && presentation?.messageKey && presentation.messageKey !== "connection" && presentation.messageKey !== "devicePreparing"
@@ -182,6 +213,9 @@ export function RemoteHostSection({
     }
     finally {
       await onRefreshRemote();
+      // The start stored the preference; read it back so the switch shows what
+      // the machine will actually do at the next launch.
+      await readSwitchPreference();
       // Keep the preparation message visible until the refreshed status has
       // supplied the pairing code, avoiding a one-frame return of the button.
       setBusy(false);
@@ -203,6 +237,7 @@ export function RemoteHostSection({
       setAddOpen(false);
       setPendingPairId(null);
       await onRefreshRemote();
+      await readSwitchPreference();
     }
   }
 
@@ -391,7 +426,7 @@ export function RemoteHostSection({
             <div className="mt-0.5 text-xs text-ink-muted">{t("hostToggleDescription")}</div>
           </div>
           <Switch
-            checked={running}
+            checked={switchOn}
             disabled={busy}
             label={t("hostToggleTitle")}
             onChange={handleToggle}
@@ -403,7 +438,7 @@ export function RemoteHostSection({
             connection, so without this there is nothing to match the two
             screens by. One line, no explanation — the id is a lookup key, not
             a setting. */}
-        {running && remoteStatus?.desktopId
+        {switchOn && remoteStatus?.desktopId
           ? (
               <div className="flex items-center gap-2 text-xs text-ink-muted">
                 <span className="shrink-0">{t("localDeviceId")}</span>
@@ -456,12 +491,12 @@ export function RemoteHostSection({
         {/* Turning the switch on is asynchronous: the bridge has to start and
             report back. Say so while that happens — otherwise the switch looks
             inert for the whole start. */}
-        {!running && busy
+        {!switchOn && busy
           ? <p aria-live="polite" className="text-sm text-ink-muted">{t("preparingPairingHint")}</p>
           : null}
 
         {/* Everything below is what the switch serves. */}
-        {running
+        {switchOn
           ? (
               <>
                 <span className="text-sm font-medium text-ink">{t("clientsTitle")}</span>
