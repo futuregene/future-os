@@ -19,7 +19,7 @@
           "wait": 800
         },
         {
-          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4)throw new Error('missing four ring segments');if(bar.getAttribute('aria-valuenow')!=='4'||bar.textContent.replace(/\\s/g,'')!=='4/4')throw new Error('wrong current stage');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!root.innerText.includes(model))throw new Error('missing '+model);const labels=[...root.querySelectorAll('[aria-label]')].map(e=>e.getAttribute('aria-label'));if(!labels.some(label=>/思考完成|Thinking complete/.test(label)))throw new Error('missing accessible model status');if(/思考完成|Thinking complete|思考中|Thinking|达到输出上限|Output limit reached/.test(root.innerText))throw new Error('model status text is still visible');return 'four-part title ring and icon-only model rows';})()"
+          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4||bar.textContent.trim()!==''||bar.getAttribute('aria-valuenow')!=='4')throw new Error('incorrect compact progress ring');const r=bar.getBoundingClientRect();if(r.width>16||r.height>16)throw new Error('ring enlarges title');const header=bar.closest('[aria-expanded]');if(header&&header.getBoundingClientRect().height>24)throw new Error('title line is too tall');const topic=root.querySelector('[data-testid=\"fusion-topic\"]');const models=root.querySelector('[data-testid=\"fusion-models\"]');if(!topic?.textContent.includes('本地任务列表第一版')||!models||!(topic.compareDocumentPosition(models)&Node.DOCUMENT_POSITION_FOLLOWING))throw new Error('topic must precede model progress');if(/思考完成|Thinking complete|思考中|Thinking|达到输出上限|Output limit reached/.test(models.innerText))throw new Error('model status text is visible');if(!models.innerText.includes('DeepSeek Flash')||models.innerText.includes('GLM')||models.innerText.includes('Qwen'))throw new Error('moderator stage shows participants');if(!models.innerText.includes('主模型')&&!models.innerText.includes('Main model'))throw new Error('missing moderator role'); return 'compact ring, topic and phase-specific models';})()"
         },
         {
           "shot": "d-fusion-progress.png"
@@ -45,7 +45,7 @@
           "wait": 800
         },
         {
-          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4)throw new Error('missing four ring segments');if(bar.getAttribute('aria-valuenow')!=='4'||bar.textContent.replace(/\\s/g,'')!=='4/4')throw new Error('wrong current stage');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!root.innerText.includes(model))throw new Error('missing '+model);const labels=[...root.querySelectorAll('[aria-label]')].map(e=>e.getAttribute('aria-label'));if(!labels.some(label=>/达到输出上限|Output limit reached/.test(label)))throw new Error('missing accessible model status');if(/思考完成|Thinking complete|思考中|Thinking|达到输出上限|Output limit reached/.test(root.innerText))throw new Error('model status text is still visible');return 'four-part title ring and icon-only model rows';})()"
+          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4||bar.textContent.trim()!==''||bar.getAttribute('aria-valuenow')!=='4')throw new Error('incorrect compact progress ring');const r=bar.getBoundingClientRect();if(r.width>16||r.height>16)throw new Error('ring enlarges title');const header=bar.closest('[aria-expanded]');if(header&&header.getBoundingClientRect().height>24)throw new Error('title line is too tall');const topic=root.querySelector('[data-testid=\"fusion-topic\"]');const models=root.querySelector('[data-testid=\"fusion-models\"]');if(!topic?.textContent.includes('本地任务列表第一版')||!models||!(topic.compareDocumentPosition(models)&Node.DOCUMENT_POSITION_FOLLOWING))throw new Error('topic must precede model progress');if(/思考完成|Thinking complete|思考中|Thinking|达到输出上限|Output limit reached/.test(models.innerText))throw new Error('model status text is visible');if(!models.innerText.includes('DeepSeek Flash')||models.innerText.includes('GLM')||models.innerText.includes('Qwen'))throw new Error('moderator stage shows participants');if(!models.innerText.includes('主模型')&&!models.innerText.includes('Main model'))throw new Error('missing moderator role');if(!root.innerText.includes('部分')&&!root.innerText.includes('Some models'))throw new Error('partial discussion notice missing'); return 'compact ring, topic and phase-specific models';})()"
         },
         {
           "shot": "d-fusion-progress-partial.png"
@@ -71,7 +71,7 @@
           "wait": 800
         },
         {
-          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4)throw new Error('missing four ring segments');if(bar.getAttribute('aria-valuenow')!=='3'||bar.textContent.replace(/\\s/g,'')!=='3/4')throw new Error('wrong current stage');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!root.innerText.includes(model))throw new Error('missing '+model);const labels=[...root.querySelectorAll('[aria-label]')].map(e=>e.getAttribute('aria-label'));if(!labels.some(label=>/思考中|Thinking/.test(label)))throw new Error('missing accessible model status');if(/思考完成|Thinking complete|思考中|Thinking|达到输出上限|Output limit reached/.test(root.innerText))throw new Error('model status text is still visible');return 'four-part title ring and icon-only model rows';})()"
+          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4||bar.textContent.trim()!==''||bar.getAttribute('aria-valuenow')!=='3')throw new Error('incorrect compact progress ring');const r=bar.getBoundingClientRect();if(r.width>16||r.height>16)throw new Error('ring enlarges title');const header=bar.closest('[aria-expanded]');if(header&&header.getBoundingClientRect().height>24)throw new Error('title line is too tall');const topic=root.querySelector('[data-testid=\"fusion-topic\"]');const models=root.querySelector('[data-testid=\"fusion-models\"]');if(!topic?.textContent.includes('本地任务列表第一版')||!models||!(topic.compareDocumentPosition(models)&Node.DOCUMENT_POSITION_FOLLOWING))throw new Error('topic must precede model progress');if(/思考完成|Thinking complete|思考中|Thinking|达到输出上限|Output limit reached/.test(models.innerText))throw new Error('model status text is visible');for(const name of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!models.innerText.includes(name))throw new Error('missing participant '+name); return 'compact ring, topic and phase-specific models';})()"
         },
         {
           "shot": "d-fusion-progress-running.png"
@@ -94,7 +94,7 @@
           "wait": 800
         },
         {
-          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4||bar.textContent.trim()!=='4/4')throw new Error('collapsed title progress missing');if(root.innerText.includes('GLM'))throw new Error('model rows visible while collapsed');return 'total progress visible before expansion';})()"
+          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4||bar.textContent.trim()!==''||bar.getAttribute('aria-valuenow')!=='4')throw new Error('incorrect compact progress ring');const r=bar.getBoundingClientRect();if(r.width>16||r.height>16)throw new Error('ring enlarges title');const header=bar.closest('[aria-expanded]');if(header&&header.getBoundingClientRect().height>24)throw new Error('title line is too tall');if(root.querySelector('[data-testid=\"fusion-topic\"]')||root.querySelector('[data-testid=\"fusion-models\"]'))throw new Error('expanded content visible while collapsed'); return 'compact ring, topic and phase-specific models';})()"
         },
         {
           "shot": "d-fusion-ring-collapsed.png"
@@ -120,10 +120,36 @@
           "wait": 800
         },
         {
-          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(bar?.textContent.trim()!=='2/4')throw new Error('not mapping stage');if(!root.innerText.includes('DeepSeek Flash')||root.innerText.includes('GLM')||root.innerText.includes('Qwen'))throw new Error('participant rows were not hidden');if(!root.innerText.includes('主模型')&&!root.innerText.includes('Main model'))throw new Error('moderator role missing');return 'stage two shows only the moderator';})()"
+          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4||bar.textContent.trim()!==''||bar.getAttribute('aria-valuenow')!=='2')throw new Error('incorrect compact progress ring');const r=bar.getBoundingClientRect();if(r.width>16||r.height>16)throw new Error('ring enlarges title');const header=bar.closest('[aria-expanded]');if(header&&header.getBoundingClientRect().height>24)throw new Error('title line is too tall');const topic=root.querySelector('[data-testid=\"fusion-topic\"]');const models=root.querySelector('[data-testid=\"fusion-models\"]');if(!topic?.textContent.includes('本地任务列表第一版')||!models||!(topic.compareDocumentPosition(models)&Node.DOCUMENT_POSITION_FOLLOWING))throw new Error('topic must precede model progress');if(/思考完成|Thinking complete|思考中|Thinking|达到输出上限|Output limit reached/.test(models.innerText))throw new Error('model status text is visible');if(!models.innerText.includes('DeepSeek Flash')||models.innerText.includes('GLM')||models.innerText.includes('Qwen'))throw new Error('moderator stage shows participants');if(!models.innerText.includes('主模型')&&!models.innerText.includes('Main model'))throw new Error('missing moderator role'); return 'compact ring, topic and phase-specific models';})()"
         },
         {
           "shot": "d-fusion-ring-moderator.png"
+        }
+      ]
+    },
+    "fusion-ring-summary": {
+      "url": "http://localhost:5299/shot/?fusion=summarizing",
+      "steps": [
+        {
+          "wait": 1000
+        },
+        {
+          "tap": "查看过程"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "tapText": "Fusion · 讨论"
+        },
+        {
+          "wait": 800
+        },
+        {
+          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4||bar.textContent.trim()!==''||bar.getAttribute('aria-valuenow')!=='4')throw new Error('incorrect compact progress ring');const r=bar.getBoundingClientRect();if(r.width>16||r.height>16)throw new Error('ring enlarges title');const header=bar.closest('[aria-expanded]');if(header&&header.getBoundingClientRect().height>24)throw new Error('title line is too tall');const topic=root.querySelector('[data-testid=\"fusion-topic\"]');const models=root.querySelector('[data-testid=\"fusion-models\"]');if(!topic?.textContent.includes('本地任务列表第一版')||!models||!(topic.compareDocumentPosition(models)&Node.DOCUMENT_POSITION_FOLLOWING))throw new Error('topic must precede model progress');if(/思考完成|Thinking complete|思考中|Thinking|达到输出上限|Output limit reached/.test(models.innerText))throw new Error('model status text is visible');if(!models.innerText.includes('DeepSeek Flash')||models.innerText.includes('GLM')||models.innerText.includes('Qwen'))throw new Error('moderator stage shows participants');if(!models.innerText.includes('主模型')&&!models.innerText.includes('Main model'))throw new Error('missing moderator role'); return 'compact ring, topic and phase-specific models';})()"
+        },
+        {
+          "shot": "d-fusion-ring-summary.png"
         }
       ]
     }
@@ -166,7 +192,7 @@
           "wait": 800
         },
         {
-          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4)throw new Error('missing four ring segments');if(bar.getAttribute('aria-valuenow')!=='4'||bar.textContent.replace(/\\s/g,'')!=='4/4')throw new Error('wrong current stage');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!root.innerText.includes(model))throw new Error('missing '+model);const labels=[...root.querySelectorAll('[aria-label]')].map(e=>e.getAttribute('aria-label'));if(!labels.some(label=>/思考完成|Thinking complete/.test(label)))throw new Error('missing accessible model status');if(/思考完成|Thinking complete|思考中|Thinking|达到输出上限|Output limit reached/.test(root.innerText))throw new Error('model status text is still visible');return 'four-part title ring and icon-only model rows';})()"
+          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4||bar.textContent.trim()!==''||bar.getAttribute('aria-valuenow')!=='4')throw new Error('incorrect compact progress ring');const r=bar.getBoundingClientRect();if(r.width>16||r.height>16)throw new Error('ring enlarges title');const header=bar.closest('[aria-expanded]');if(header&&header.getBoundingClientRect().height>24)throw new Error('title line is too tall');const topic=root.querySelector('[data-testid=\"fusion-topic\"]');const models=root.querySelector('[data-testid=\"fusion-models\"]');if(!topic?.textContent.includes('本地任务列表第一版')||!models||!(topic.compareDocumentPosition(models)&Node.DOCUMENT_POSITION_FOLLOWING))throw new Error('topic must precede model progress');if(/思考完成|Thinking complete|思考中|Thinking|达到输出上限|Output limit reached/.test(models.innerText))throw new Error('model status text is visible');if(!models.innerText.includes('DeepSeek Flash')||models.innerText.includes('GLM')||models.innerText.includes('Qwen'))throw new Error('moderator stage shows participants');if(!models.innerText.includes('主模型')&&!models.innerText.includes('Main model'))throw new Error('missing moderator role'); return 'compact ring, topic and phase-specific models';})()"
         },
         {
           "shot": "m-fusion-progress.png"
@@ -211,7 +237,7 @@
           "wait": 800
         },
         {
-          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4)throw new Error('missing four ring segments');if(bar.getAttribute('aria-valuenow')!=='4'||bar.textContent.replace(/\\s/g,'')!=='4/4')throw new Error('wrong current stage');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!root.innerText.includes(model))throw new Error('missing '+model);const labels=[...root.querySelectorAll('[aria-label]')].map(e=>e.getAttribute('aria-label'));if(!labels.some(label=>/达到输出上限|Output limit reached/.test(label)))throw new Error('missing accessible model status');if(/思考完成|Thinking complete|思考中|Thinking|达到输出上限|Output limit reached/.test(root.innerText))throw new Error('model status text is still visible');return 'four-part title ring and icon-only model rows';})()"
+          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4||bar.textContent.trim()!==''||bar.getAttribute('aria-valuenow')!=='4')throw new Error('incorrect compact progress ring');const r=bar.getBoundingClientRect();if(r.width>16||r.height>16)throw new Error('ring enlarges title');const header=bar.closest('[aria-expanded]');if(header&&header.getBoundingClientRect().height>24)throw new Error('title line is too tall');const topic=root.querySelector('[data-testid=\"fusion-topic\"]');const models=root.querySelector('[data-testid=\"fusion-models\"]');if(!topic?.textContent.includes('本地任务列表第一版')||!models||!(topic.compareDocumentPosition(models)&Node.DOCUMENT_POSITION_FOLLOWING))throw new Error('topic must precede model progress');if(/思考完成|Thinking complete|思考中|Thinking|达到输出上限|Output limit reached/.test(models.innerText))throw new Error('model status text is visible');if(!models.innerText.includes('DeepSeek Flash')||models.innerText.includes('GLM')||models.innerText.includes('Qwen'))throw new Error('moderator stage shows participants');if(!models.innerText.includes('主模型')&&!models.innerText.includes('Main model'))throw new Error('missing moderator role');if(!root.innerText.includes('部分')&&!root.innerText.includes('Some models'))throw new Error('partial discussion notice missing'); return 'compact ring, topic and phase-specific models';})()"
         },
         {
           "shot": "m-fusion-progress-partial.png"
@@ -256,7 +282,7 @@
           "wait": 800
         },
         {
-          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4)throw new Error('missing four ring segments');if(bar.getAttribute('aria-valuenow')!=='3'||bar.textContent.replace(/\\s/g,'')!=='3/4')throw new Error('wrong current stage');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!root.innerText.includes(model))throw new Error('missing '+model);const labels=[...root.querySelectorAll('[aria-label]')].map(e=>e.getAttribute('aria-label'));if(!labels.some(label=>/思考中|Thinking/.test(label)))throw new Error('missing accessible model status');if(/思考完成|Thinking complete|思考中|Thinking|达到输出上限|Output limit reached/.test(root.innerText))throw new Error('model status text is still visible');return 'four-part title ring and icon-only model rows';})()"
+          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4||bar.textContent.trim()!==''||bar.getAttribute('aria-valuenow')!=='3')throw new Error('incorrect compact progress ring');const r=bar.getBoundingClientRect();if(r.width>16||r.height>16)throw new Error('ring enlarges title');const header=bar.closest('[aria-expanded]');if(header&&header.getBoundingClientRect().height>24)throw new Error('title line is too tall');const topic=root.querySelector('[data-testid=\"fusion-topic\"]');const models=root.querySelector('[data-testid=\"fusion-models\"]');if(!topic?.textContent.includes('本地任务列表第一版')||!models||!(topic.compareDocumentPosition(models)&Node.DOCUMENT_POSITION_FOLLOWING))throw new Error('topic must precede model progress');if(/思考完成|Thinking complete|思考中|Thinking|达到输出上限|Output limit reached/.test(models.innerText))throw new Error('model status text is visible');for(const name of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!models.innerText.includes(name))throw new Error('missing participant '+name); return 'compact ring, topic and phase-specific models';})()"
         },
         {
           "shot": "m-fusion-progress-running.png"
@@ -298,7 +324,7 @@
           "wait": 800
         },
         {
-          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4||bar.textContent.trim()!=='4/4')throw new Error('collapsed title progress missing');if(root.innerText.includes('GLM'))throw new Error('model rows visible while collapsed');return 'total progress visible before expansion';})()"
+          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4||bar.textContent.trim()!==''||bar.getAttribute('aria-valuenow')!=='4')throw new Error('incorrect compact progress ring');const r=bar.getBoundingClientRect();if(r.width>16||r.height>16)throw new Error('ring enlarges title');const header=bar.closest('[aria-expanded]');if(header&&header.getBoundingClientRect().height>24)throw new Error('title line is too tall');if(root.querySelector('[data-testid=\"fusion-topic\"]')||root.querySelector('[data-testid=\"fusion-models\"]'))throw new Error('expanded content visible while collapsed'); return 'compact ring, topic and phase-specific models';})()"
         },
         {
           "shot": "m-fusion-ring-collapsed.png"
@@ -343,10 +369,55 @@
           "wait": 800
         },
         {
-          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(bar?.textContent.trim()!=='2/4')throw new Error('not mapping stage');if(!root.innerText.includes('DeepSeek Flash')||root.innerText.includes('GLM')||root.innerText.includes('Qwen'))throw new Error('participant rows were not hidden');if(!root.innerText.includes('主模型')&&!root.innerText.includes('Main model'))throw new Error('moderator role missing');return 'stage two shows only the moderator';})()"
+          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4||bar.textContent.trim()!==''||bar.getAttribute('aria-valuenow')!=='2')throw new Error('incorrect compact progress ring');const r=bar.getBoundingClientRect();if(r.width>16||r.height>16)throw new Error('ring enlarges title');const header=bar.closest('[aria-expanded]');if(header&&header.getBoundingClientRect().height>24)throw new Error('title line is too tall');const topic=root.querySelector('[data-testid=\"fusion-topic\"]');const models=root.querySelector('[data-testid=\"fusion-models\"]');if(!topic?.textContent.includes('本地任务列表第一版')||!models||!(topic.compareDocumentPosition(models)&Node.DOCUMENT_POSITION_FOLLOWING))throw new Error('topic must precede model progress');if(/思考完成|Thinking complete|思考中|Thinking|达到输出上限|Output limit reached/.test(models.innerText))throw new Error('model status text is visible');if(!models.innerText.includes('DeepSeek Flash')||models.innerText.includes('GLM')||models.innerText.includes('Qwen'))throw new Error('moderator stage shows participants');if(!models.innerText.includes('主模型')&&!models.innerText.includes('Main model'))throw new Error('missing moderator role'); return 'compact ring, topic and phase-specific models';})()"
         },
         {
           "shot": "m-fusion-ring-moderator.png"
+        }
+      ],
+      "ready": "document.body.innerText.includes(\"Not now\")"
+    },
+    "fusion-ring-summary": {
+      "url": "http://localhost:8099/?fusion=summarizing&single=1",
+      "steps": [
+        {
+          "wait": 300
+        },
+        {
+          "tap": "Not now"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "tap": "Workspace"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "tapText": "整理两篇文献的结论对比表"
+        },
+        {
+          "wait": 1000
+        },
+        {
+          "tap": "Show process"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "tapText": "Fusion · Discussion"
+        },
+        {
+          "wait": 800
+        },
+        {
+          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4||bar.textContent.trim()!==''||bar.getAttribute('aria-valuenow')!=='4')throw new Error('incorrect compact progress ring');const r=bar.getBoundingClientRect();if(r.width>16||r.height>16)throw new Error('ring enlarges title');const header=bar.closest('[aria-expanded]');if(header&&header.getBoundingClientRect().height>24)throw new Error('title line is too tall');const topic=root.querySelector('[data-testid=\"fusion-topic\"]');const models=root.querySelector('[data-testid=\"fusion-models\"]');if(!topic?.textContent.includes('本地任务列表第一版')||!models||!(topic.compareDocumentPosition(models)&Node.DOCUMENT_POSITION_FOLLOWING))throw new Error('topic must precede model progress');if(/思考完成|Thinking complete|思考中|Thinking|达到输出上限|Output limit reached/.test(models.innerText))throw new Error('model status text is visible');if(!models.innerText.includes('DeepSeek Flash')||models.innerText.includes('GLM')||models.innerText.includes('Qwen'))throw new Error('moderator stage shows participants');if(!models.innerText.includes('主模型')&&!models.innerText.includes('Main model'))throw new Error('missing moderator role'); return 'compact ring, topic and phase-specific models';})()"
+        },
+        {
+          "shot": "m-fusion-ring-summary.png"
         }
       ],
       "ready": "document.body.innerText.includes(\"Not now\")"

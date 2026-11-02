@@ -32,6 +32,17 @@ export function fusionProgressFixture(mode: string | null): FusionDiscussion {
       }
     }
   }
+  if (mode === "summarizing") {
+    data.run!.status = "running";
+    data.run!.phase = "synthesizing";
+    data.run!.result = null;
+    for (const step of data.steps ?? []) {
+      if (step.phase === "synthesizing") {
+        step.status = "running";
+        step.output = "";
+      }
+    }
+  }
   if (mode === "failed") {
     data.run!.status = "failed";
     data.run!.result = null;

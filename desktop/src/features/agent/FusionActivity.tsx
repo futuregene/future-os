@@ -36,7 +36,8 @@ export function FusionActivity({ item, runId, resolveTarget }: {
   const progress = fusionProgress(data, item.status);
   const currentStage = progress.status === "completed" ? 4 : Math.max(0, progress.stageIndex + 1);
   const stageLabel = t(progress.terminal ? `fusion.states.${progress.status}` : `fusion.phases.${progress.phase}`);
-  const models = progress.phase === "issue_mapping"
+  const moderatorOnly = progress.phase === "issue_mapping" || progress.phase === "synthesizing";
+  const models = moderatorOnly
     ? progress.models.filter(model => model.role === "moderator" || (!model.role && data?.steps?.some(step => step.participant === "moderator" && step.model === model.model)))
     : progress.models;
   useEffect(() => {
@@ -59,21 +60,21 @@ export function FusionActivity({ item, runId, resolveTarget }: {
       >
         <UserRoundGroup className={`size-3.5 ${["failed", "interrupted"].includes(progress.status) ? "text-danger" : ""}`} />
         <span>{t("fusion.title")}</span>
-        <span className="relative inline-flex size-9 shrink-0 items-center justify-center" role="progressbar" aria-label={t("fusion.progress")} aria-valuemin={0} aria-valuemax={4} aria-valuenow={currentStage} aria-valuetext={stageLabel} title={stageLabel}>
+        <span className="relative inline-flex size-3.5 shrink-0 items-center justify-center" role="progressbar" aria-label={t("fusion.progress")} aria-valuemin={0} aria-valuemax={4} aria-valuenow={currentStage} aria-valuetext={stageLabel} title={stageLabel}>
           <svg className="absolute inset-0 size-full" viewBox="0 0 48 48" fill="none" aria-hidden="true">
             {FUSION_PHASES.map((phase, index) => <circle key={phase} cx="24" cy="24" r="20" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeDasharray={`${RING_CIRCUMFERENCE / 4 - 7} ${RING_CIRCUMFERENCE * 3 / 4 + 7}`} strokeDashoffset={-(index * RING_CIRCUMFERENCE / 4 + 3.5)} transform="rotate(-90 24 24)" className={progress.stages[index] === "completed" ? "text-accent" : progress.stages[index] === "thinking" ? "animate-pulse text-accent" : progress.stages[index] === "failed" ? "text-danger" : "text-line"} />)}
           </svg>
-          <span className="text-2xs tabular-nums text-ink-soft">{t("fusion.stageCount", { current: currentStage, total: 4 })}</span>
         </span>
         {open ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
       </button>
       {open && (
         <div className="space-y-3 pl-5">
+          {data?.run?.input.question && <p className="whitespace-pre-wrap wrap-break-word leading-5 text-ink-soft" data-testid="fusion-topic">{data.run.input.question}</p>}
           {progress.terminal && progress.partial && progress.notices.length === 0 && <p className="text-xs text-ink-muted">{t("fusion.partialNotice")}</p>}
           {progress.notices.length > 0 && <p className="text-xs text-ink-muted" role="status">{progress.notices.map(notice => t(`fusion.notices.${notice}`)).join(" ")}</p>}
-          <div className="space-y-2" aria-live="polite">
+          <div className="space-y-2" aria-live="polite" data-testid="fusion-models">
             {models.map((model) => {
-              const role = progress.phase === "issue_mapping" ? "moderator" : model.role;
+              const role = moderatorOnly ? "moderator" : model.role;
               const name = `${role ? `${t(role === "moderator" ? "fusion.moderatorRole" : "fusion.participantRole", { number: model.number })} · ` : ""}${model.label}`;
               const failed = ["failed", "timed_out", "output_limited"].includes(model.status);
               const Icon = model.status === "thinking" ? LoaderCircle : model.status === "completed" ? Check : model.status === "timed_out" ? Clock : model.status === "failed" ? CircleX : model.status === "interrupted" ? CirclePause : model.status === "cancelled" ? CircleStop : model.status === "skipped" ? CircleMinus : failed || model.status === "partial" ? TriangleAlert : Circle;
