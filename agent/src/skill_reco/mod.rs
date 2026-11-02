@@ -1464,10 +1464,18 @@ mod tests {
     /// one connection at a time would turn "the fast block answered" into "the
     /// fast block happened to connect first". Deriving each answer from the
     /// request keeps a test independent of connection order.
+    ///
+    /// Each request is reported with the instant its last byte was read, i.e.
+    /// when it actually reached the gateway. That is what a test measures when
+    /// the question is *when* the blocks were sent rather than how long the call
+    /// took: the gateway's own reply delay is not on that clock.
     fn scripted_gateway(
         requests: usize,
         answer: impl Fn(&str) -> (std::time::Duration, String) + Send + Sync + 'static,
-    ) -> (String, std::sync::mpsc::Receiver<String>) {
+    ) -> (
+        String,
+        std::sync::mpsc::Receiver<(std::time::Instant, String)>,
+    ) {
         crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
@@ -1483,8 +1491,9 @@ mod tests {
                 let sender = sender.clone();
                 handlers.push(std::thread::spawn(move || {
                     let request = read_request(&mut stream);
+                    let arrived = std::time::Instant::now();
                     let (delay, body) = answer(&request);
-                    let _ = sender.send(request);
+                    let _ = sender.send((arrived, request));
                     if !delay.is_zero() {
                         std::thread::sleep(delay);
                     }
@@ -1768,7 +1777,7 @@ mod tests {
 
         let mut seen: Vec<String> = Vec::new();
         let mut blocks = 0;
-        while let Ok(request) = requests.recv_timeout(std::time::Duration::from_secs(10)) {
+        while let Ok((_, request)) = requests.recv_timeout(std::time::Duration::from_secs(10)) {
             let options = sent_options(&request);
             assert!(
                 options.len() <= MAX_CANDIDATES + 1,
@@ -1831,40 +1840,64 @@ mod tests {
         assert!(elapsed < slow, "the slow block was waited for: {elapsed:?}");
     }
 
-    /// The non-network half of a split request's cost: the blocks go out at the
-    /// same time, and the decision adds nothing worth waiting for.
+    /// The blocks of a split request leave together: the second block reaches the
+    /// gateway long before the first one's reply can come back.
     ///
-    /// Two blocks that each take 300 ms must land near 300 ms, not 600 ms — that
-    /// is the whole latency claim of taking the first answer (see
-    /// `chunked_call`), and a regression that serialized the blocks, or that went
-    /// back to waiting for all of them, shows up here. The other half of the
-    /// story — latency against the real gateway — is deliberately not asserted:
-    /// no test may spend the user's credits, so it stays unmeasured rather than
-    /// being faked with a local socket's numbers.
+    /// The measured quantity is the gap between the two requests *arriving at the
+    /// gateway*, not the call's total time. A serialized implementation cannot
+    /// produce a small gap — a block that is awaited before the next one is sent
+    /// cannot arrive until the previous one has been answered, and the scripted
+    /// gateway holds its answer for `delay` — while an implementation that sends
+    /// them from two threads produces a gap of roughly the cost of one `write` on
+    /// a socket. Total time would not distinguish those two: it contains the
+    /// per-request cost of the runner on top of `delay`, so on a busy CI runner it
+    /// reaches `delay` plus that entire cost and fails while the blocks were in
+    /// fact parallel (measured 2026-11-03: 451 ms against a 450 ms bound, on a
+    /// suite that took 333 s instead of 318 s). The arrival gap does not include
+    /// any of that fixed cost, so its bound is a statement about ordering and not
+    /// about how fast the machine is.
+    ///
+    /// The other half of the story — latency against the real gateway — is
+    /// deliberately not asserted: no test may spend the user's credits, so it
+    /// stays unmeasured rather than being faked with a local socket's numbers.
     #[test]
     fn the_blocks_of_a_split_call_run_in_parallel() {
         let delay = std::time::Duration::from_millis(300);
+        // `MAX_CANDIDATES + 1` is what makes this a split at all: one candidate
+        // more than a single Choice holds, so the call runs as two blocks.
         let candidates: Vec<SkillCandidate> = (0..MAX_CANDIDATES + 1)
             .map(|index| SkillCandidate {
                 name: format!("skill-{index:03}"),
                 description: "does a thing".to_string(),
             })
             .collect();
-        let (url, _requests) = scripted_gateway(2, move |_| (delay, refusal()));
+        let (url, requests) = scripted_gateway(2, move |_| (delay, refusal()));
 
-        let started = std::time::Instant::now();
         let (outcome, _) = attempt_call(
             &HTTP_CLIENT,
             &gateway(&format!("{url}/v1/systemone")),
             "hello",
             &candidates,
         );
-        let elapsed = started.elapsed();
-
         assert!(matches!(outcome, Outcome::Refused { .. }), "{outcome:?}");
+
+        // Both blocks are waited for here (neither recommends anything), so both
+        // requests exist; a missing one is a failure, not a reason to skip the
+        // gap check.
+        let mut arrived = [std::time::Instant::now(); 2];
+        for slot in arrived.iter_mut() {
+            *slot = requests
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("a block never reached the gateway")
+                .0;
+        }
+        arrived.sort();
+        let gap = arrived[1].duration_since(arrived[0]);
+
         assert!(
-            elapsed < delay + std::time::Duration::from_millis(150),
-            "two {delay:?} blocks took {elapsed:?}: they were not sent in parallel"
+            gap < delay / 2,
+            "the second block arrived {gap:?} after the first, out of a {delay:?} \
+             answer delay: the blocks were sent one after the other, not together"
         );
     }
 
