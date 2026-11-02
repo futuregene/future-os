@@ -18,13 +18,23 @@ use future_host::{future_login, remote, Error as AppError};
 /// probe running while several blocking operations are in flight.
 const RUNTIME_WORKER_THREADS: usize = 5;
 
-pub const HELP: &str = "Usage: future host [--relay URL [--relay-ca PEM]] [--help]
+pub const HELP: &str =
+    "Usage: future host [--agent-grpc-addr ADDR] [--relay URL [--relay-ca PEM]] [--help]
 
 Run this machine as a FutureOS host in this terminal; Ctrl+C stops it.
 It serves this machine's Agent, local runs and tasks; signing in to FutureOS
 additionally serves the paired remote desktops (a phone, or another computer)
 and reuses an existing pairing. With --relay, no Future account is needed at all.
 
+  --agent-grpc-addr ADDR
+              Serve this machine's Agent on a loopback TCP address instead of
+              per-user IPC, e.g. 127.0.0.1:47200. One command starts the Agent
+              bound there and the host that serves it; nothing is started if an
+              Agent already answers at ADDR (that one is attached to instead).
+              Use it where a UNIX socket cannot be created (a sandbox, a
+              container, an Android device under SELinux). Other FutureOS
+              clients on this machine reach that Agent with the same value in
+              FUTURE_AGENT_GRPC_ADDR.
   --relay URL Print an invitation that points at a self-hosted relay
               (future-relay) instead of the Future platform. The address is
               remembered for later launches; pass an empty value to go back.
@@ -67,6 +77,8 @@ pub enum Launch {
 pub struct Options {
     pub relay: Option<String>,
     pub relay_ca: Option<String>,
+    /// Serve the Agent on this loopback TCP address instead of per-user IPC.
+    pub agent_grpc_addr: Option<String>,
 }
 
 impl Options {
@@ -78,15 +90,15 @@ impl Options {
             let arg = args[index].as_str();
             match arg {
                 "--help" | "-h" => help = true,
-                "--relay" | "--relay-ca" => {
+                "--relay" | "--relay-ca" | "--agent-grpc-addr" => {
                     index += 1;
                     let value = args
                         .get(index)
                         .ok_or_else(|| format!("{arg} needs a value"))?;
-                    if arg == "--relay" {
-                        options.relay = Some(value.clone());
-                    } else {
-                        options.relay_ca = Some(value.clone());
+                    match arg {
+                        "--relay" => options.relay = Some(value.clone()),
+                        "--relay-ca" => options.relay_ca = Some(value.clone()),
+                        _ => options.agent_grpc_addr = Some(value.clone()),
                     }
                 }
                 value if value.starts_with("--relay=") => {
@@ -94,6 +106,9 @@ impl Options {
                 }
                 value if value.starts_with("--relay-ca=") => {
                     options.relay_ca = Some(value["--relay-ca=".len()..].to_string());
+                }
+                value if value.starts_with("--agent-grpc-addr=") => {
+                    options.agent_grpc_addr = Some(value["--agent-grpc-addr=".len()..].to_string());
                 }
                 _ => return Err(format!("Unknown option: {arg}")),
             }
@@ -107,9 +122,31 @@ impl Options {
     }
 }
 
+/// Apply a serving launch's policy to this process's environment: the address
+/// the Agent is served on, and the mode that serves it.
+///
+/// Both are read later by the host library (`raw_agent_addr`, `start_mode`), so
+/// this is the one place the flag becomes policy — kept separate from [`run`] so
+/// the wiring can be asserted without starting a host.
+fn apply_agent_address(addr: Option<&str>) {
+    let Some(addr) = addr else {
+        return;
+    };
+    // `bind` is the operator's word here, so it wins over a mode already
+    // exported: refusing to serve while silently attaching instead would be the
+    // worse surprise. The startup log records the mode it settled on.
+    std::env::set_var("FUTURE_AGENT_GRPC_ADDR", addr);
+    std::env::set_var("FUTURE_DESKTOP_AGENT_MODE", "bind");
+}
+
 /// A single process-lifetime runtime; no Tauri Builder, window, plugin or
 /// event loop is constructed on this path.
 pub fn run(options: Options) -> Result<(), String> {
+    // A serving launch is one command: the flag names the endpoint and the
+    // launch policy that serves it. Applied before anything reads them —
+    // `prepare_process` freezes the data root but leaves these alone, and the
+    // Agent's address is only read when the host probes it.
+    apply_agent_address(options.agent_grpc_addr.as_deref());
     // Hydration may supply FUTURE_HOME; freeze it before selecting the lock.
     future_host::environment::prepare_process();
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -899,13 +936,13 @@ mod tests {
     }
 
     #[test]
-    fn standalone_launch_takes_only_the_relay_flags() {
+    fn standalone_launch_takes_only_the_relay_and_agent_address_flags() {
         assert_eq!(parse(&[]).unwrap(), Launch::Headless(Options::default()));
         assert_eq!(
             parse(&["--relay", "https://relay.example"]).unwrap(),
             Launch::Headless(Options {
                 relay: Some("https://relay.example".into()),
-                relay_ca: None,
+                ..Options::default()
             })
         );
         assert_eq!(
@@ -913,6 +950,7 @@ mod tests {
             Launch::Headless(Options {
                 relay: Some("https://relay.example".into()),
                 relay_ca: Some("/tmp/ca.pem".into()),
+                ..Options::default()
             })
         );
         for flag in [
@@ -931,6 +969,52 @@ mod tests {
         }
         assert_eq!(parse(&["--help"]).unwrap(), Launch::Help);
         assert_eq!(parse(&["-h"]).unwrap(), Launch::Help);
+    }
+
+    /// Serving the Agent on a loopback address is one command: the flag carries
+    /// the address, and both spellings reach the same field. A flag whose
+    /// address went missing must fail the launch instead of quietly starting the
+    /// IPC host it was meant to replace.
+    #[test]
+    fn the_agent_address_flag_takes_one_address_in_either_spelling() {
+        for args in [
+            vec!["--agent-grpc-addr", "127.0.0.1:47200"],
+            vec!["--agent-grpc-addr=127.0.0.1:47200"],
+        ] {
+            let Launch::Headless(options) = parse(&args).expect("the flag parses") else {
+                panic!("a launch carrying an address is not the help text");
+            };
+            assert_eq!(options.agent_grpc_addr.as_deref(), Some("127.0.0.1:47200"));
+        }
+        assert!(
+            parse(&["--agent-grpc-addr"]).is_err(),
+            "an address flag without its value is a launch error"
+        );
+    }
+
+    /// The flag is the whole interface, so what it hands the host library is the
+    /// thing to assert: the address the host probes, and the mode that serves it
+    /// instead of the IPC endpoint. A typo in either name would leave the flag
+    /// silently inert.
+    #[tokio::test]
+    async fn the_address_flag_hands_the_host_the_endpoint_it_serves() {
+        let _guard = crate::test_env::lock_env().await;
+        let _env = crate::test_env::EnvGuard::set(&[
+            ("FUTURE_AGENT_GRPC_ADDR", std::ffi::OsString::from("auto")),
+            (
+                "FUTURE_DESKTOP_AGENT_MODE",
+                std::ffi::OsString::from("external"),
+            ),
+        ]);
+        apply_agent_address(Some("127.0.0.1:47200"));
+        assert_eq!(
+            future_host::agent_client::raw_agent_addr(),
+            "127.0.0.1:47200"
+        );
+        assert!(
+            future_host::agent_host::serves_explicit_endpoint().unwrap(),
+            "the launch must serve the address it was given, not attach only"
+        );
     }
 
     /// How a supervisor takes the host away without the operator asking:

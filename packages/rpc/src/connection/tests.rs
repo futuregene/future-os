@@ -728,7 +728,7 @@ async fn a_local_start_permit_is_valid_only_for_the_discovery_configuration_it_s
 
     let permit = LocalStartPermit {
         home: home.path().to_owned(),
-        endpoint: transport::local_endpoint_label(),
+        endpoint: PermitEndpoint::Local(transport::local_endpoint_label()),
     };
     assert_eq!(permit.future_home(), home.path());
     permit
@@ -764,7 +764,7 @@ async fn an_unreadable_instance_lock_blocks_a_local_start() {
 
     let permit = LocalStartPermit {
         home: home.path().to_owned(),
-        endpoint: transport::local_endpoint_label(),
+        endpoint: PermitEndpoint::Local(transport::local_endpoint_label()),
     };
     std::fs::create_dir_all(home.path().join("agent/agent-instance.lock")).unwrap();
     let error = permit
@@ -990,4 +990,222 @@ async fn a_readiness_response_that_cannot_be_decoded_is_incompatible() {
     assert_eq!(mock.mutations.load(std::sync::atomic::Ordering::Acquire), 0);
     let _ = stop.send(());
     task.await.unwrap();
+}
+
+/// A host that was told to serve the Agent on an address may fill it: an
+/// explicit TCP endpoint nothing answers on is a start permit, not the
+/// "no local fallback" refusal an attach-only caller gets.
+#[tokio::test]
+// The environment lock is held across the awaits on purpose: the endpoint has to
+// stay redirected for the whole resolution, and this test runs on a current-thread
+// runtime so nothing else shares the thread.
+#[allow(clippy::await_holding_lock)]
+async fn a_serving_host_may_fill_its_own_loopback_endpoint() {
+    let _guard = crate::home::env_guard();
+    let home = tempfile::tempdir().unwrap();
+    let previous_home = std::env::var_os(crate::home::FUTURE_HOME_ENV);
+    std::env::set_var(crate::home::FUTURE_HOME_ENV, home.path());
+
+    // A port nothing listens on: bind and immediately release it.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let address = format!("127.0.0.1:{port}");
+
+    let selection = select_agent_serving(
+        &address,
+        "1.2.3",
+        Duration::from_millis(500),
+        Duration::from_millis(500),
+    )
+    .await
+    .expect("an absent loopback endpoint this host serves is a local start");
+    let AgentSelection::LocalStart(permit) = selection else {
+        panic!("an endpoint nothing answers on cannot be an external client");
+    };
+    assert!(
+        permit.serves_tcp("127.0.0.1", port),
+        "the permit covers the address it was issued for"
+    );
+    assert!(
+        !permit.serves_tcp("127.0.0.1", port + 1),
+        "a permit for one port cannot authorize another"
+    );
+    assert!(
+        !permit.serves_tcp("::1", port),
+        "a permit for IPv4 loopback cannot authorize IPv6 loopback"
+    );
+    permit
+        .recheck()
+        .expect("the home and lock did not move while the permit was held");
+
+    match previous_home {
+        Some(value) => std::env::set_var(crate::home::FUTURE_HOME_ENV, value),
+        None => std::env::remove_var(crate::home::FUTURE_HOME_ENV),
+    }
+}
+
+/// Bracket IPv6 loopback is the same permission, parsed the way the Agent's
+/// `--grpc-addr` parses it.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn a_serving_host_accepts_bracketed_ipv6_loopback() {
+    let _guard = crate::home::env_guard();
+    let home = tempfile::tempdir().unwrap();
+    let previous_home = std::env::var_os(crate::home::FUTURE_HOME_ENV);
+    std::env::set_var(crate::home::FUTURE_HOME_ENV, home.path());
+
+    let port = std::net::TcpListener::bind("[::1]:0")
+        .map(|listener| listener.local_addr().unwrap().port())
+        .unwrap_or(47999);
+    let selection = select_agent_serving(
+        &format!("[::1]:{port}"),
+        "1.2.3",
+        Duration::from_millis(500),
+        Duration::from_millis(500),
+    )
+    .await
+    .expect("an absent IPv6 loopback endpoint this host serves is a local start");
+    let AgentSelection::LocalStart(permit) = selection else {
+        panic!("an endpoint nothing answers on cannot be an external client");
+    };
+    assert!(permit.serves_tcp("::1", port));
+
+    match previous_home {
+        Some(value) => std::env::set_var(crate::home::FUTURE_HOME_ENV, value),
+        None => std::env::remove_var(crate::home::FUTURE_HOME_ENV),
+    }
+}
+
+/// The same address with attach-only semantics keeps refusing: this is the
+/// invariant the serving mode is an explicit exception to, not a rewrite of.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn attaching_only_still_never_fills_an_explicit_endpoint() {
+    let _guard = crate::home::env_guard();
+    let home = tempfile::tempdir().unwrap();
+    let previous_home = std::env::var_os(crate::home::FUTURE_HOME_ENV);
+    std::env::set_var(crate::home::FUTURE_HOME_ENV, home.path());
+
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let error = select_agent(
+        &format!("127.0.0.1:{port}"),
+        "1.2.3",
+        Duration::from_millis(500),
+        Duration::from_millis(500),
+    )
+    .await
+    .err()
+    .expect("an attach-only caller may not start an Agent on an explicit endpoint");
+    assert!(
+        matches!(error, ConnectionError::StartupBlocked(ref reason) if reason.contains("no local fallback")),
+        "{error}"
+    );
+
+    match previous_home {
+        Some(value) => std::env::set_var(crate::home::FUTURE_HOME_ENV, value),
+        None => std::env::remove_var(crate::home::FUTURE_HOME_ENV),
+    }
+}
+
+/// Serving a remote address is refused by name: this process cannot bind it, and
+/// starting a local Agent for it would be the redirection the attach-only path
+/// exists to prevent.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn serving_a_non_loopback_address_is_refused() {
+    let _guard = crate::home::env_guard();
+    let home = tempfile::tempdir().unwrap();
+    let previous_home = std::env::var_os(crate::home::FUTURE_HOME_ENV);
+    std::env::set_var(crate::home::FUTURE_HOME_ENV, home.path());
+
+    let error = select_agent_serving(
+        "10.255.255.1:47200",
+        "1.2.3",
+        Duration::from_millis(500),
+        Duration::from_millis(500),
+    )
+    .await
+    .err()
+    .expect("a remote address is not this host's to serve");
+    assert!(
+        matches!(error, ConnectionError::StartupBlocked(ref reason) if reason.contains("only a loopback address")),
+        "{error}"
+    );
+
+    match previous_home {
+        Some(value) => std::env::set_var(crate::home::FUTURE_HOME_ENV, value),
+        None => std::env::remove_var(crate::home::FUTURE_HOME_ENV),
+    }
+}
+
+/// Serving means naming an address. Automatic discovery is the local IPC
+/// endpoint, which the serving mode is precisely the alternative to.
+///
+/// The endpoint is redirected at an absent socket on purpose: against the real
+/// per-user endpoint this test would attach to whatever Agent is serving on the
+/// machine running it, and then assert about the wrong branch.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn serving_without_an_explicit_address_is_refused() {
+    let _guard = crate::home::env_guard();
+    let home = tempfile::tempdir().unwrap();
+    let previous_home = std::env::var_os(crate::home::FUTURE_HOME_ENV);
+    let previous_socket = std::env::var_os("FUTURE_AGENT_SOCKET");
+    std::env::set_var(crate::home::FUTURE_HOME_ENV, home.path());
+    std::env::set_var("FUTURE_AGENT_SOCKET", home.path().join("absent.sock"));
+
+    let error = select_agent_serving(
+        "auto",
+        "1.2.3",
+        Duration::from_millis(500),
+        Duration::from_millis(500),
+    )
+    .await
+    .err()
+    .expect("serving needs an address, not automatic discovery");
+    assert!(
+        matches!(error, ConnectionError::StartupBlocked(ref reason) if reason.contains("explicit TCP address")),
+        "{error}"
+    );
+
+    match previous_socket {
+        Some(value) => std::env::set_var("FUTURE_AGENT_SOCKET", value),
+        None => std::env::remove_var("FUTURE_AGENT_SOCKET"),
+    }
+    match previous_home {
+        Some(value) => std::env::set_var(crate::home::FUTURE_HOME_ENV, value),
+        None => std::env::remove_var(crate::home::FUTURE_HOME_ENV),
+    }
+}
+
+/// The bind address shares one parser with the Agent, so every form the Agent
+/// accepts is understood here and nothing is resolved behind the operator's back.
+#[test]
+fn bind_addresses_parse_the_way_the_agent_parses_them() {
+    use std::net::SocketAddr;
+    assert_eq!(
+        transport::parse_bind_addr("47200").unwrap(),
+        "127.0.0.1:47200".parse::<SocketAddr>().unwrap()
+    );
+    assert_eq!(
+        transport::parse_bind_addr(":47200").unwrap(),
+        "127.0.0.1:47200".parse::<SocketAddr>().unwrap()
+    );
+    assert_eq!(
+        transport::parse_bind_addr("[::1]:47200").unwrap(),
+        "[::1]:47200".parse::<SocketAddr>().unwrap()
+    );
+    for refused in ["localhost:47200", "::1:47200", "127.0.0.1:70000", "", "abc"] {
+        assert!(
+            transport::parse_bind_addr(refused).is_err(),
+            "{refused:?} must not be guessed at"
+        );
+    }
 }

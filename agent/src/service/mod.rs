@@ -115,6 +115,34 @@ impl ServiceRetirement {
     }
 }
 
+/// A local-start permit authorizes one endpoint, and only that one.
+///
+/// The default Agent bind is the per-user IPC endpoint, which a permit obtained
+/// for it covers. A host that serves the Agent on an explicit TCP address gets a
+/// permit issued for that address; anything else — a permit for the IPC
+/// endpoint, a permit for another address — must not bind here, because the
+/// permission is what makes "nothing answers, so start one" safe.
+pub(crate) fn check_start_endpoint(
+    config: &AgentConfig,
+    permit: &future_rpc::connection::LocalStartPermit,
+) -> Result<()> {
+    let explicit = config.grpc_addr.as_deref().filter(|addr| {
+        !addr.trim().is_empty()
+            && !addr
+                .trim()
+                .eq_ignore_ascii_case(future_rpc::transport::AUTO_ENDPOINT)
+    });
+    let Some(addr) = explicit else {
+        return Ok(());
+    };
+    let (ip, port) = config::parse_tcp_bind(addr)?;
+    anyhow::ensure!(
+        permit.serves_tcp(&ip, port),
+        "a local-start permission cannot start the Agent on {addr}: it was issued for another endpoint"
+    );
+    Ok(())
+}
+
 impl AgentService<'_> {
     pub fn retirement(&self) -> ServiceRetirement {
         ServiceRetirement(self.work.clone())
@@ -127,16 +155,7 @@ impl AgentService<'_> {
         permit: future_rpc::connection::LocalStartPermit,
         host: impl FnOnce(&AgentService<'_>) -> Result<T>,
     ) -> Result<T> {
-        anyhow::ensure!(
-            config
-                .grpc_addr
-                .as_deref()
-                .is_none_or(|addr| addr.trim().is_empty()
-                    || addr
-                        .trim()
-                        .eq_ignore_ascii_case(future_rpc::transport::AUTO_ENDPOINT)),
-            "a local-start permission cannot start an explicit TCP endpoint"
-        );
+        check_start_endpoint(&config, &permit)?;
         anyhow::ensure!(
             config.future_home() == permit.future_home(),
             "Agent start permission belongs to another data root"

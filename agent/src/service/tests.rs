@@ -1116,3 +1116,52 @@ fn a_failed_start_waits_for_background_work_before_releasing_the_instance() {
         "a failed start closes admission before waiting"
     );
 }
+
+/// A start permit covers the endpoint it was issued for. Serving on an explicit
+/// TCP address is that address, not "any address" and not the IPC default.
+#[tokio::test]
+async fn a_start_permit_authorizes_only_the_endpoint_it_was_issued_for() {
+    let _home = crate::test_support::TestHome::new();
+
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let permit = match future_rpc::connection::select_agent_serving(
+        &format!("127.0.0.1:{port}"),
+        future_rpc::connection::EXPECTED_AGENT_VERSION,
+        Duration::from_millis(300),
+        Duration::from_millis(300),
+    )
+    .await
+    .expect("an absent loopback endpoint the host serves is a local start")
+    {
+        future_rpc::connection::AgentSelection::LocalStart(permit) => permit,
+        other => panic!(
+            "nothing answers there, so this must be a permit: {}",
+            matches!(other, future_rpc::connection::AgentSelection::External(_))
+        ),
+    };
+
+    let config = |addr: Option<&str>| AgentConfig {
+        grpc_addr: addr.map(str::to_string),
+        ..AgentConfig::default()
+    };
+
+    check_start_endpoint(&config(Some(&format!("127.0.0.1:{port}"))), &permit)
+        .expect("the permit's own address is authorized");
+    check_start_endpoint(&config(None), &permit)
+        .expect("the IPC default is what a permit always covers");
+    check_start_endpoint(&config(Some("auto")), &permit)
+        .expect("auto is the IPC endpoint, not an explicit TCP bind");
+
+    for refused in [format!("127.0.0.1:{}", port + 1), "[::1]:47200".to_string()] {
+        let error = check_start_endpoint(&config(Some(&refused)), &permit)
+            .expect_err("another endpoint is not covered by this permit");
+        assert!(
+            error.to_string().contains("another endpoint"),
+            "{refused}: {error}"
+        );
+    }
+}

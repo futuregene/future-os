@@ -96,6 +96,10 @@ pub fn configure_driver(driver: AgentDriver) -> Result<(), crate::Error> {
 pub struct StartSelection {
     mode: String,
     cancel: StartupCancellation,
+    /// The TCP address this launch serves the Agent on, when the mode says so.
+    /// Kept beside the raw mode string so the start itself cannot disagree with
+    /// the endpoint the probe was made against.
+    served_addr: Option<String>,
     result: Result<
         Option<future_rpc::connection::AgentSelection>,
         future_rpc::connection::ConnectionError,
@@ -110,17 +114,36 @@ pub fn host() -> &'static AgentHost {
 }
 
 /// What this launch may do with the Agent: `FUTURE_DESKTOP_AGENT_MODE`, whose
-/// only accepted values are `auto` and `external`.
+/// only accepted values are `auto`, `external` and `bind`.
+///
+/// * `auto` — attach to an Agent that answers, otherwise start an embedded one
+///   on the per-user IPC endpoint.
+/// * `external` — attach only; never start, never bind.
+/// * `bind` — serve the Agent at `FUTURE_AGENT_GRPC_ADDR`: attach there if it
+///   answers, otherwise start an embedded Agent bound to that address. The
+///   address must be loopback; this is the one mode that skips the IPC endpoint,
+///   for hosts where a UNIX socket cannot be created (a sandbox, a container, an
+///   Android device under SELinux).
 ///
 /// A value outside that set is refused here, before any probe, so a typo neither
 /// starts an embedded service nor silently attaches to whatever happened to
 /// answer.
 fn start_mode() -> Result<String, crate::Error> {
     let mode = launch_mode();
-    if !matches!(mode.as_str(), "auto" | "external") {
-        return Err("FUTURE_DESKTOP_AGENT_MODE must be auto or external".into());
+    if !matches!(mode.as_str(), "auto" | "external" | "bind") {
+        return Err("FUTURE_DESKTOP_AGENT_MODE must be auto, external or bind".into());
     }
     Ok(mode)
+}
+
+/// Whether this launch serves the Agent at an explicit TCP address
+/// (`FUTURE_DESKTOP_AGENT_MODE=bind`).
+///
+/// What "nothing answers" means turns on this: for an attach-only launch the
+/// endpoint is somebody else's and an absent Agent is a refusal, while for the
+/// host that serves it the same answer means the service has to come back.
+pub fn serves_explicit_endpoint() -> Result<bool, crate::Error> {
+    Ok(start_mode()? == "bind")
 }
 
 /// The raw value: the operator's environment, defaulting to `auto`.
@@ -425,6 +448,26 @@ impl AgentHost {
     pub async fn select(&self, configured: &str) -> Result<StartSelection, crate::Error> {
         crate::install_rustls_provider();
         let mode = start_mode()?;
+        // `bind` names the endpoint it serves. Anything else would fall back to
+        // the IPC endpoint this mode exists to avoid, so an absent address is
+        // refused here rather than in the probe, where it could look like a
+        // client-only misconfiguration.
+        let served_addr = match mode.as_str() {
+            "bind" => {
+                let configured = configured.trim();
+                if configured.is_empty()
+                    || configured.eq_ignore_ascii_case(future_rpc::transport::AUTO_ENDPOINT)
+                {
+                    return Err(
+                        "FUTURE_DESKTOP_AGENT_MODE=bind needs an explicit loopback address in FUTURE_AGENT_GRPC_ADDR"
+                            .into(),
+                    );
+                }
+                Some(configured.to_string())
+            }
+            _ => None,
+        };
+        let serving = served_addr.is_some();
         let (cancel, probe_cancel, starting) = {
             let state = self.0.state();
             (
@@ -434,20 +477,34 @@ impl AgentHost {
             )
         };
         let result = if starting {
+            // Retried, not a single attempt: this decision is what turns a
+            // momentarily stalled Agent into a permanent "local startup is
+            // forbidden" refusal, and the same transient answer that made one
+            // probe miss (a descheduled process, a socket stalled behind a
+            // storage write) is gone on the next fresh deadline.
+            let probe = async {
+                if serving {
+                    future_rpc::supervision::select_agent_serving_with_retries(
+                        configured,
+                        crate::build_info::VERSION,
+                        Duration::from_secs(2),
+                        Duration::from_secs(2),
+                    )
+                    .await
+                } else {
+                    future_rpc::supervision::select_agent_with_retries(
+                        configured,
+                        crate::build_info::VERSION,
+                        Duration::from_secs(2),
+                        Duration::from_secs(2),
+                    )
+                    .await
+                }
+            };
             tokio::select! {
                 biased;
                 _ = probe_cancel.notified() => Ok(None),
-                // Retried, not a single attempt: this decision is what turns a
-                // momentarily stalled Agent into a permanent "local startup is
-                // forbidden" refusal, and the same transient answer that made one
-                // probe miss (a descheduled process, a socket stalled behind a
-                // storage write) is gone on the next fresh deadline.
-                result = future_rpc::supervision::select_agent_with_retries(
-                    configured,
-                    crate::build_info::VERSION,
-                    Duration::from_secs(2),
-                    Duration::from_secs(2),
-                ) => result.map(Some),
+                result = probe => result.map(Some),
             }
         } else {
             Ok(None)
@@ -455,6 +512,7 @@ impl AgentHost {
         Ok(StartSelection {
             mode,
             cancel,
+            served_addr,
             result,
         })
     }
@@ -470,6 +528,7 @@ impl AgentHost {
         let StartSelection {
             mode,
             cancel,
+            served_addr,
             result,
         } = selected;
         let selection = match result {
@@ -506,7 +565,10 @@ impl AgentHost {
                 return Ok(());
             }
         }
-        let config = AgentConfig::default();
+        // Built field by field: `AgentConfig` keeps its data root private, so the
+        // struct-update form is not available outside the Agent crate.
+        let mut config = AgentConfig::default();
+        config.grpc_addr = served_addr;
         AgentService::with_local_start(config, permit, |service| {
             {
                 let mut state = self.0.state();

@@ -393,21 +393,46 @@ pub enum AgentSelection {
     LocalStart(LocalStartPermit),
 }
 
+/// Which endpoint a start permit covers.
+///
+/// The local IPC endpoint is derived from the environment, so it is captured as
+/// the label in force at discovery time and re-read by
+/// [`LocalStartPermit::recheck`]. A TCP endpoint is the value the caller passed
+/// in: nothing in the environment can move it, so there is nothing to re-read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PermitEndpoint {
+    Local(String),
+    Tcp(std::net::SocketAddr),
+}
+
 /// A short-lived preflight permission, never a replacement for the Agent's
 /// authoritative instance lock. The service re-acquires that lock before any
 /// storage initialization; concurrent startup may safely lose that race.
 pub struct LocalStartPermit {
     home: PathBuf,
-    endpoint: String,
+    endpoint: PermitEndpoint,
 }
 impl LocalStartPermit {
     pub fn future_home(&self) -> &Path {
         &self.home
     }
+    /// Whether this permit covers serving the Agent on `ip:port`.
+    ///
+    /// The Agent asks this before it binds an explicit TCP endpoint: a permit
+    /// obtained for the local IPC endpoint does not authorize one, and a permit
+    /// for one address does not authorize another.
+    pub fn serves_tcp(&self, ip: &str, port: u16) -> bool {
+        let Ok(ip) = ip.parse::<std::net::IpAddr>() else {
+            return false;
+        };
+        matches!(&self.endpoint, PermitEndpoint::Tcp(bound) if bound.port() == port && bound.ip() == ip)
+    }
     pub fn recheck(&self) -> Result<(), ConnectionError> {
-        if self.home != crate::home::future_home()
-            || self.endpoint != transport::local_endpoint_label()
-        {
+        let configuration_changed = match &self.endpoint {
+            PermitEndpoint::Local(label) => *label != transport::local_endpoint_label(),
+            PermitEndpoint::Tcp(_) => false,
+        };
+        if configuration_changed || self.home != crate::home::future_home() {
             return Err(ConnectionError::StartupBlocked(
                 "Agent discovery configuration changed".into(),
             ));
@@ -452,23 +477,95 @@ pub fn check_instance_lock(home: &Path) -> Result<(), ConnectionError> {
     Ok(())
 }
 
+/// Select an Agent for a caller that may only attach to one that answers.
 pub async fn select_agent(
     configured: &str,
     version: &str,
     connect_timeout: Duration,
     handshake_timeout: Duration,
 ) -> Result<AgentSelection, ConnectionError> {
+    select_with(
+        configured,
+        version,
+        connect_timeout,
+        handshake_timeout,
+        BindPermission::AttachOnly,
+    )
+    .await
+}
+
+/// Select an Agent for a host that **serves** it at `configured`.
+///
+/// Every case behaves like [`select_agent`] except one: an explicit TCP address
+/// that nothing answers on is this host's own to fill, so it yields a start
+/// permit for exactly that address instead of the "no local fallback" refusal.
+/// Only a loopback address qualifies — binding a remote name is not something
+/// this process can do, and quietly starting a local Agent for an address that
+/// was meant to be remote is the redirection [`select_agent`] refuses.
+pub async fn select_agent_serving(
+    configured: &str,
+    version: &str,
+    connect_timeout: Duration,
+    handshake_timeout: Duration,
+) -> Result<AgentSelection, ConnectionError> {
+    select_with(
+        configured,
+        version,
+        connect_timeout,
+        handshake_timeout,
+        BindPermission::Serve,
+    )
+    .await
+}
+
+/// What the caller may do when nothing answers at the configured endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BindPermission {
+    /// Attach only: an explicit TCP endpoint that is unreachable is a refusal.
+    AttachOnly,
+    /// This host serves the Agent at that endpoint, so it may start one there.
+    Serve,
+}
+
+async fn select_with(
+    configured: &str,
+    version: &str,
+    connect_timeout: Duration,
+    handshake_timeout: Duration,
+    bind: BindPermission,
+) -> Result<AgentSelection, ConnectionError> {
     match connect_verified(configured, version, connect_timeout, handshake_timeout).await {
         Ok(client) => Ok(AgentSelection::External(Box::new(client))),
         Err(ConnectionError::Transport(error)) => {
-            if !matches!(
-                transport::connection_plan(Some(configured))[0],
-                transport::AgentEndpoint::Local
+            let endpoint = match (
+                transport::connection_plan(Some(configured))[0].clone(),
+                bind,
             ) {
-                return Err(ConnectionError::StartupBlocked(format!(
-                    "configured external endpoint is unavailable: {error}; no local fallback"
-                )));
-            }
+                (transport::AgentEndpoint::Local, _) => {
+                    if bind == BindPermission::Serve {
+                        return Err(ConnectionError::StartupBlocked(
+                            "serving the Agent needs an explicit TCP address, not automatic discovery"
+                                .into(),
+                        ));
+                    }
+                    PermitEndpoint::Local(transport::local_endpoint_label())
+                }
+                (transport::AgentEndpoint::Tcp(_), BindPermission::AttachOnly) => {
+                    return Err(ConnectionError::StartupBlocked(format!(
+                        "configured external endpoint is unavailable: {error}; no local fallback"
+                    )));
+                }
+                (transport::AgentEndpoint::Tcp(addr), BindPermission::Serve) => {
+                    let bound = transport::parse_bind_addr(&addr)
+                        .map_err(ConnectionError::StartupBlocked)?;
+                    if !bound.ip().is_loopback() {
+                        return Err(ConnectionError::StartupBlocked(format!(
+                            "cannot serve an Agent on {addr}: only a loopback address is this host's to bind"
+                        )));
+                    }
+                    PermitEndpoint::Tcp(bound)
+                }
+            };
             let home = crate::home::future_home();
             check_instance_lock(&home)?;
             if !matches!(
@@ -480,17 +577,19 @@ pub async fn select_agent(
                 return Err(ConnectionError::Transport(error));
             }
             #[cfg(unix)]
-            if let Ok(metadata) = std::fs::symlink_metadata(transport::local_socket_path()) {
-                use std::os::unix::fs::FileTypeExt;
-                if !metadata.file_type().is_socket() {
-                    return Err(ConnectionError::StartupBlocked(
-                        "local endpoint is occupied by a non-socket file".into(),
-                    ));
+            if matches!(endpoint, PermitEndpoint::Local(_)) {
+                if let Ok(metadata) = std::fs::symlink_metadata(transport::local_socket_path()) {
+                    use std::os::unix::fs::FileTypeExt;
+                    if !metadata.file_type().is_socket() {
+                        return Err(ConnectionError::StartupBlocked(
+                            "local endpoint is occupied by a non-socket file".into(),
+                        ));
+                    }
                 }
             }
             Ok(AgentSelection::LocalStart(LocalStartPermit {
                 home,
-                endpoint: transport::local_endpoint_label(),
+                endpoint,
             }))
         }
         Err(error) => Err(error),
