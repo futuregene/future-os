@@ -1015,6 +1015,17 @@ fn forwards_to_webview(event_type: &str, origin: EventOrigin) -> bool {
         && !(origin == EventOrigin::Replay && is_compaction_lifecycle(event_type))
 }
 
+/// Settle the queued rows the Agent answered while this run's stream moved.
+///
+/// Off the event loop: the sweep asks the Agent for the session's queue, and a
+/// turn boundary is the wrong place to wait for another round trip.
+fn settle_queued_runs_off_thread(session_id: &str, thread_id: &str) {
+    let (session_id, thread_id) = (session_id.to_string(), thread_id.to_string());
+    crate::runtime::spawn(async move {
+        super::reconciliation::settle_queued_runs(&session_id, &thread_id).await;
+    });
+}
+
 /// Settle a local run row from the run's own `agent_end`.
 ///
 /// A clean finish stays `completed`. Anything else is mirrored through
@@ -1180,6 +1191,7 @@ async fn handle_event_from(
                 settle_agent_end(&local_run_id, &agent_end_data);
                 crate::store::clear_run_event_buffer(&local_run_id);
                 note_run_settled(shared, state, run_id);
+                settle_queued_runs_off_thread(session_id, &thread_id);
             }
         }
         record_message_activity(shared, state, &event).await;
@@ -1297,6 +1309,10 @@ async fn handle_event_from(
                 settle_agent_end(&local_run_id, &event_data);
                 crate::store::clear_run_event_buffer(&local_run_id);
                 note_run_settled(shared, state, run_id);
+                // The turn boundary just moved: whatever the queue folded into
+                // this run (or took back out of it) will never produce an
+                // `agent_end` of its own.
+                settle_queued_runs_off_thread(session_id, &thread_id);
             }
             "error" => {
                 mark_run_failed_if_active(Some(&local_run_id), "Future Agent reported an error.");

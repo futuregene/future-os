@@ -584,6 +584,7 @@ fn get_state_internal(
         .into_iter()
         .enumerate()
         .map(|(index, run)| {
+            let held = sess.scheduler.held_reason(&run.run_id);
             let display_text = run
                 .payload
                 .get("message")
@@ -594,7 +595,14 @@ fn get_state_internal(
                 run_id: run.run_id,
                 run_sequence: run.run_sequence,
                 client_request_id: run.client_request_id,
-                state: "queued".to_string(),
+                // "queued" runs at the turn boundary; "stale" waited too long;
+                // "stale:unknown_age" has no readable age, and is parked for the
+                // same reason rather than let through on a guess. Same field: a
+                // client renders the same row with one different sentence.
+                state: match held {
+                    None => "queued".to_string(),
+                    Some(reason) => format!("stale:{}", reason.as_str()),
+                },
                 queue_position: index + 1,
                 accepted_at: run.accepted_at,
                 display_text,

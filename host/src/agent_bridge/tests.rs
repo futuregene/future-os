@@ -2006,6 +2006,7 @@ mod pipeline_tests {
             run_id: Some(run_id.clone()),
             model_id: Some("future/k3".to_string()),
             thinking_level: Some("high".to_string()),
+            busy_policy: String::new(),
         })
         .await
         .expect("prompt");

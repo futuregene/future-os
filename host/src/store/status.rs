@@ -6,6 +6,14 @@
 /// again. Use for `contains`-style checks in Rust.
 pub(super) const TERMINAL_RUN_STATUSES: &[&str] = &["completed", "failed", "cancelled"];
 
+/// Whether a run status is terminal, for callers outside this module.
+///
+/// The vocabulary stays here so a new terminal state cannot be added in one
+/// place and missed in another.
+pub fn is_terminal_run_status(status: &str) -> bool {
+    TERMINAL_RUN_STATUSES.contains(&status)
+}
+
 /// The terminal run statuses pre-rendered as a SQL list for `IN (...)` /
 /// `NOT IN (...)` clauses: `'completed', 'failed', 'cancelled'`. Kept in lockstep
 /// with [`TERMINAL_RUN_STATUSES`] (see `terminal_status_sql_matches_slice`).

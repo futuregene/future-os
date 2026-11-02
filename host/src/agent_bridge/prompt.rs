@@ -84,6 +84,10 @@ pub struct AgentPromptRequest {
     pub run_id: Option<String>,
     pub model_id: Option<String>,
     pub thinking_level: Option<String>,
+    /// What this send means while the session already has a run in flight: an
+    /// Agent `BusyPolicy` value, or empty for the Agent's own default.
+    #[serde(default)]
+    pub busy_policy: String,
 }
 #[cfg(any(test, feature = "test-support"))]
 pub async fn agent_prompt(
@@ -104,6 +108,7 @@ pub async fn agent_prompt(
         run_id,
         model_id,
         thinking_level,
+        busy_policy: String::new(),
     })
     .await
 }
@@ -228,6 +233,7 @@ pub(super) async fn agent_prompt_inner(
         run_id,
         model_id,
         thinking_level,
+        busy_policy,
     } = request;
     // The persisted thread binding is the identity authority. The webview's
     // session id is only an optimistic assertion and may be stale for one
@@ -363,6 +369,7 @@ pub(super) async fn agent_prompt_inner(
             session_id.clone(),
             attachments.unwrap_or_default(),
             Some(run_id.clone()),
+            &busy_policy,
         ))
         .await
         .map_err(|error| format!("Unable to send prompt to Future Agent: {error}"))?

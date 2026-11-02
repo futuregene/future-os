@@ -15,6 +15,7 @@ pub mod persist;
 mod presence;
 mod prompt;
 mod queries;
+pub mod queue;
 mod reconciliation;
 mod replica;
 pub mod review;
@@ -37,11 +38,13 @@ pub use self::client::{
     set_default_model_command, set_model_command, set_session_name_command,
     set_thinking_level_command, RpcResponseExt,
 };
+pub use self::queue::{empty_queue, queue_state_json, session_queue_snapshot};
 
 pub use self::config_observer::spawn_provider_config_observer;
 pub use self::delete_outbox::{reconcile_delete_outbox, spawn_delete_outbox_worker};
 pub use self::headless::{
-    prepare_prompt_persisted_with_trigger, run_prepared_prompt_with_acceptance, PreparedPrompt,
+    prepare_prompt_persisted_busy, prepare_prompt_persisted_with_trigger,
+    run_prepared_prompt_with_acceptance, PreparedPrompt,
 };
 pub(crate) use self::import::{list_agent_session_ids, session_has_messages};
 pub use self::models::{list_agent_models, list_builtin_providers, AgentModelOption};
@@ -81,7 +84,9 @@ pub use self::reconciliation::{
     spawn_active_run_watchdog,
 };
 pub use self::run_control::{abort_run, compact_agent_session, compact_thread_context};
-pub use self::run_control::{abort_session, wait_for_agent_idle, AbortSessionOutcome};
+pub use self::run_control::{
+    abort_session, cancel_queued_run, release_queued_run, wait_for_agent_idle, AbortSessionOutcome,
+};
 pub use self::session::fork_agent_session;
 pub use self::session::set_agent_sandbox_policy_tier;
 pub use self::session_events::spawn_session_events_observer;

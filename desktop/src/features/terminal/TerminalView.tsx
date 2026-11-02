@@ -86,6 +86,11 @@ export function TerminalView(props: TerminalViewProps) {
     // stored cursor we only know what the screen shows, so tail the stream
     // rather than replaying (which would duplicate the restored output).
     let seek: number | undefined = initial.cursor ?? (initial.buffer ? -1 : 0);
+    // True once this attachment's control frame has arrived. Everything before
+    // it is replay, and its extent is what that frame reports; everything after
+    // it is live output, which arrives as bare bytes and has to be counted here
+    // (see the message handler).
+    let replaying = true;
     const disposables: IDisposable[] = [];
 
     const terminal = new Terminal({
@@ -214,6 +219,9 @@ export function TerminalView(props: TerminalViewProps) {
     };
 
     const applyMeta = (meta: TerminalFrameMeta | undefined) => {
+      // The attachment's replay is over even when the payload cannot be read:
+      // every later frame is live output and has to move the cursor.
+      replaying = false;
       if (!meta) {
         return;
       }
@@ -290,6 +298,8 @@ export function TerminalView(props: TerminalViewProps) {
       }
       ws.binaryType = "arraybuffer";
       socket = ws;
+      // A new attachment starts with a replay again.
+      replaying = true;
       const decoder = new TextDecoder();
 
       // These listeners belong to this attachment's socket, which the effect
@@ -324,6 +334,14 @@ export function TerminalView(props: TerminalViewProps) {
         if (bytes.length > 0 && bytes[0] === 0) {
           applyMeta(decodeMeta(bytes.subarray(1)));
           return;
+        }
+        // Live output advances the stored cursor as it is applied: the host
+        // counts the stream in bytes and reports that offset once per
+        // attachment (and again on exit), so without this the cursor persisted
+        // on unmount stays at the attach-time offset and the next mount replays
+        // output the restored screen already shows.
+        if (!replaying) {
+          cursor = (cursor ?? 0) + bytes.length;
         }
         push(decoder.decode(bytes, { stream: true }));
       });

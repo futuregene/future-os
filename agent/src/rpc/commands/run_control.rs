@@ -111,6 +111,36 @@ pub(crate) fn handle_prompt(
     }
 }
 
+pub(crate) fn handle_release_queued_run(
+    session: &Arc<parking_lot::RwLock<ServerSession>>,
+    cmd: &RpcCommand,
+    id: &str,
+) -> String {
+    if cmd.run_id.is_empty() {
+        return RpcResponse::build_fail_code(
+            id,
+            "release_queued_run",
+            "run_not_held",
+            "run_id is required",
+            serde_json::json!({}),
+        );
+    }
+    match session.write().release_queued_run(&cmd.run_id) {
+        Ok(()) => RpcResponse::ok(
+            id,
+            "release_queued_run",
+            serde_json::json!({ "run_id": cmd.run_id, "state": "released" }),
+        ),
+        Err(error) => RpcResponse::build_fail_code(
+            id,
+            "release_queued_run",
+            "run_not_held",
+            &error.to_string(),
+            serde_json::json!({"run_id": cmd.run_id}),
+        ),
+    }
+}
+
 pub(crate) fn handle_cancel_queued_run(
     session: &Arc<parking_lot::RwLock<ServerSession>>,
     cmd: &RpcCommand,

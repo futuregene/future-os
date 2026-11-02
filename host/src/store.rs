@@ -85,6 +85,8 @@ pub use runs::{
 #[cfg(any(test, feature = "test-support"))]
 pub use runs::{append_run_event, flush_run_event_log_for_test, reset_run_event_writer_for_test};
 pub use skill_reco::{record_skill_reco, skill_reco_today, SkillRecoToday};
+/// Run-status vocabulary: terminal states, so callers stop re-listing them.
+pub use status::is_terminal_run_status;
 pub use thread_sources::{record_thread_source, thread_source};
 pub use threads::{
     archive_thread, bind_thread_session_id, create_thread, delete_thread, delete_thread_tree,
