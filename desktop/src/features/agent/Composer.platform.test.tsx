@@ -21,6 +21,9 @@ import { Composer } from "./Composer";
  * that detects the platform.
  */
 const platform = vi.hoisted(() => ({ isLinux: false, isWindows: false }));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async () => () => {}),
+}));
 vi.mock("../../lib/platform", () => ({
   // Getters, not plain properties: the factory runs once at import, so a plain
   // `isWindows: platform.isWindows` would snapshot `false` and the mocked
