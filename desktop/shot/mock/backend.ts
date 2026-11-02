@@ -361,9 +361,12 @@ const handlers: Record<string, (args: any) => unknown> = {
     const step = discussion.steps?.find(s => s.id === args.stepId);
     if (!step)
       throw new Error("Unknown discussion step");
-    const publicOutput = step.status === "completed" && step.phase === "issue_mapping"
-      ? JSON.stringify(discussion.events?.find(event => event.kind === "issues")?.data)
-      : step.status === "completed" && step.phase === "synthesizing" ? JSON.stringify(discussion.run?.result) : step.output;
+    const reviewLong = new URLSearchParams(window.location.search).has("fusionReviewLong") && step.phase === "reviewing";
+    const publicOutput = reviewLong
+      ? JSON.stringify({ participant: step.participant, current_answer: `# 当前答案\n\n依据已有报告，先确认现有存储约束，再确定方案。\n\n${"复核后的依据说明。\n\n".repeat(1500)}评议报告全文已读取。`, responses: [], self_review: [{ original_quote: "建议 SQLite", decision: "revise", updated_position: "先确认现有存储约束", reason: "以已有证据为准" }], mapping_corrections: [], additions: [] })
+      : step.status === "completed" && step.phase === "issue_mapping"
+        ? JSON.stringify(discussion.events?.find(event => event.kind === "issues")?.data)
+        : step.status === "completed" && step.phase === "synthesizing" ? JSON.stringify(discussion.run?.result) : step.output;
     const output = new URLSearchParams(window.location.search).has("fusionLong") ? `${publicOutput}\n${"分页公开发言。".repeat(2400)}\n全文读取完成。` : publicOutput;
     const transcript = JSON.stringify([{ role: "user", content: [{ type: "text", text: step?.input }] }, { role: "assistant", content: [{ type: "text", text: output }] }]);
     const bytes = new TextEncoder().encode(transcript);

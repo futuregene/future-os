@@ -1,5 +1,4 @@
 import type { FusionDiscussion, FusionStep } from "@future-os/thread-projection";
-import type { ReactNode } from "react";
 import type { FusionResolver } from "../../integrations/fusion/queries";
 import type { FusionSelection } from "./types";
 import { FUSION_PHASES, fusionProgress } from "@future-os/thread-projection";
@@ -12,7 +11,6 @@ import { readFusion } from "../../integrations/fusion/queries";
 import { cn } from "../../lib/cn";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { usePolling } from "../../lib/usePolling";
-import { MarkdownContent } from "../markdown/MarkdownContent";
 import { RunInspectorToolbar } from "../runs/RunInspectorToolbar";
 import { FusionStepBody } from "./FusionStepBody";
 
@@ -37,7 +35,12 @@ export function FusionDiscussionPanel({ runId, toolCallId, status = "running", r
       <div className="shrink-0 px-4">
         <RunInspectorToolbar
           onBack={onBack}
-          status={<Badge tone={progress.status === "completed" ? "success" : ["failed", "interrupted"].includes(progress.status) ? "danger" : "neutral"}>{t(`fusion.states.${progress.status}`)}</Badge>}
+          status={(
+            <div className="flex min-w-0 items-center gap-2">
+              <Badge tone={progress.status === "completed" ? "success" : ["failed", "interrupted"].includes(progress.status) ? "danger" : "neutral"}>{t(`fusion.states.${progress.status}`)}</Badge>
+              {result && run && <Badge>{t(`fusion.completeness.${run.completeness}`)}</Badge>}
+            </div>
+          )}
           actions={<IconButton className="size-6" icon={<RefreshCw className={cn("size-3.5", resource.loading && "animate-spin")} />} label={t("fusion.detail.refresh")} disabled={resource.loading} onClick={resource.reload} />}
         />
       </div>
@@ -48,23 +51,9 @@ export function FusionDiscussionPanel({ runId, toolCallId, status = "running", r
           <>
             <div className="space-y-3">
               <h2 className="wrap-break-word text-sm font-medium leading-6 text-ink">{run.input.question}</h2>
-              {result && <Badge>{t(`fusion.completeness.${run.completeness}`)}</Badge>}
               {progress.notices.map(notice => <p key={notice} role="status" className="text-xs leading-5 text-ink-muted">{t(`fusion.notices.${notice}`)}</p>)}
             </div>
-            {result
-              ? (
-                  <section className="space-y-4 rounded-lg border border-line-soft bg-surface/50 p-3">
-                    <h3 className="text-sm font-medium text-ink">{t("fusion.detail.conclusion")}</h3>
-                    <div className="text-13 leading-6 text-ink-soft"><MarkdownContent content={result.conclusion} /></div>
-                    {(!!result.rationale?.length || !!result.unresolved?.length) && (
-                      <details className="space-y-3 text-xs text-ink-soft">
-                        <summary className="cursor-pointer">{t("fusion.detail.resultDetails")}</summary>
-                        {(["rationale", "unresolved"] as const).map(field => <ListSection key={field} title={t(`fusion.result.${field}`)} items={result[field] ?? []} />)}
-                      </details>
-                    )}
-                  </section>
-                )
-              : progress.terminal && <p className="rounded-lg border border-line-soft p-3 text-xs leading-5 text-ink-muted">{t("fusion.detail.noConclusion")}</p>}
+            {!result && progress.terminal && <p className="rounded-lg border border-line-soft p-3 text-xs leading-5 text-ink-muted">{t("fusion.detail.noConclusion")}</p>}
             <section className="space-y-3">
               <h3 className="text-sm font-medium text-ink">{t("fusion.discussion")}</h3>
               <div className="grid grid-cols-2 gap-2 @min-[35rem]:grid-cols-4" role="group" aria-label={t("fusion.progress")}>
@@ -119,19 +108,4 @@ function StepCard({ step, runId, toolCallId, resolveTarget, terminal, onOpen }: 
       {open && <FusionStepBody key={`${step.id}:${step.status}`} step={step} runId={runId} toolCallId={toolCallId} resolveTarget={resolveTarget} />}
     </div>
   );
-}
-
-function TextSection({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <div className="space-y-1">
-      <h4 className="text-xs font-medium text-ink">{title}</h4>
-      <div className="whitespace-pre-wrap wrap-break-word text-xs leading-5 text-ink-soft">{children}</div>
-    </div>
-  );
-}
-
-function ListSection({ title, items }: { title: string; items: string[] }) {
-  if (items.length === 0)
-    return null;
-  return <TextSection title={title}><ul className="list-disc space-y-1 pl-4">{[...new Set(items)].map(text => <li key={text} className="wrap-break-word">{text}</li>)}</ul></TextSection>;
 }

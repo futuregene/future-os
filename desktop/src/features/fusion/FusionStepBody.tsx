@@ -1,42 +1,39 @@
 import type { FusionStep } from "@future-os/thread-projection";
 import type { FusionResolver } from "../../integrations/fusion/queries";
 import type { FusionSelection } from "./types";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
-import { readFusion } from "../../integrations/fusion/queries";
+import { readFusionStep } from "../../integrations/fusion/queries";
 import { isRecord } from "../../lib/objects";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { MarkdownContent } from "../markdown/MarkdownContent";
 
 export function FusionStepBody({ step, runId, toolCallId, resolveTarget }: { step: FusionStep } & FusionSelection & { resolveTarget?: FusionResolver }) {
   const { t } = useTranslation("agent");
-  const [offset, setOffset] = useState(0);
-  const [pages, setPages] = useState<{ offset: number; step: FusionStep }[]>([]);
-  const load = useCallback(async () => ({ offset, step: await readFusion<FusionStep>({ runId, toolCallId, stepId: step.id, offset }, resolveTarget) }), [runId, toolCallId, step.id, offset, resolveTarget]);
+  const controllerRef = useRef<AbortController | null>(null);
+  const scope = `${runId}:${toolCallId}:${step.id}`;
+  const load = useCallback(async () => {
+    controllerRef.current?.abort();
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    const full = await readFusionStep({ runId, toolCallId, stepId: step.id }, resolveTarget, controller.signal);
+    return { scope, resolveTarget, step: full };
+  }, [runId, toolCallId, step.id, scope, resolveTarget]);
+  useEffect(() => () => controllerRef.current?.abort(), [load]);
   const resource = useAsyncResource(load, [load], null);
-  useEffect(() => {
-    const page = resource.data;
-    if (!page || page.offset !== offset)
-      return;
-    setPages(previous => page.offset === 0 ? [page] : previous.some(entry => entry.offset === page.offset) ? previous : [...previous, page]);
-  }, [resource.data, offset]);
-  const lastPage = pages[pages.length - 1];
-  const last = lastPage?.step;
-  const raw = pages.map(page => page.step.transcript ?? "").join("");
-  const more = !!last && (last.next_offset ?? 0) > lastPage.offset && (last.next_offset ?? 0) < (last.total_bytes ?? 0);
-  const text = !more ? publicAnswer(raw) || step.output : step.output;
+  const full = resource.data?.scope === scope && resource.data.resolveTarget === resolveTarget ? resource.data.step : null;
+  const text = full ? publicAnswer(full.transcript ?? "") || full.output || step.output : "";
   return (
     <div className="space-y-3 border-t border-line-soft px-3 py-3 text-13 leading-6 text-ink-soft">
-      {text ? <div data-fusion-public-output><StepResponse text={text} phase={step.phase} /></div> : <p className="text-xs text-ink-muted">{t("fusion.detail.noOutput")}</p>}
-      {resource.loading && <p role="status" className="text-xs text-ink-muted">{t("fusion.loading")}</p>}
+      {text ? <div data-fusion-public-output><StepResponse text={text} phase={step.phase} /></div> : full && <p className="text-xs text-ink-muted">{t("fusion.detail.noOutput")}</p>}
+      {!full && !resource.error && <p role="status" className="text-xs text-ink-muted">{t("fusion.loading")}</p>}
       {resource.error && (
         <div role="alert" className="space-y-2 text-xs text-danger">
           <p>{t("fusion.detail.readFailed")}</p>
           <Button size="xs" variant="ghost" onClick={resource.reload}>{t("fusion.detail.refresh")}</Button>
         </div>
       )}
-      {more && <Button size="xs" disabled={resource.loading} onClick={() => setOffset(last.next_offset!)}>{t("fusion.more")}</Button>}
     </div>
   );
 }
@@ -50,9 +47,10 @@ function StepResponse({ text, phase }: { text: string; phase: string }) {
     const source = trimmed.startsWith("```") && trimmed.endsWith("```") ? trimmed.slice(trimmed.indexOf("\n") + 1, -3).trim() : trimmed;
     const value: unknown = JSON.parse(source);
     if (isRecord(value)) {
-      const list = (field: string, label: string) => Array.isArray(value[field])
-        ? `### ${label}\n${value[field].filter((item): item is string => typeof item === "string").map(item => `- ${item}`).join("\n")}`
-        : "";
+      const list = (field: string, label: string) => {
+        const items = Array.isArray(value[field]) ? value[field].filter((item): item is string => typeof item === "string" && !!item.trim()) : [];
+        return items.length ? `### ${label}\n${items.map(item => `- ${item}`).join("\n")}` : "";
+      };
       if (phase === "synthesizing" && typeof value.conclusion === "string") {
         content = [value.conclusion, ...["rationale", "unresolved"].map(field => list(field, t(`fusion.result.${field}`)))].filter(Boolean).join("\n\n");
       }
@@ -127,7 +125,9 @@ function StepResponse({ text, phase }: { text: string; phase: string }) {
     }
   }
   catch {
-    // Failed/partial structured output remains visible as its original public text.
+    // A truncated structured preview is not a readable report.
+    if (["issue_mapping", "reviewing"].includes(phase) && (text.trimStart().startsWith("{") || text.trimStart().startsWith("```")))
+      return <p className="text-xs text-ink-muted">{t("fusion.detail.noOutput")}</p>;
   }
   return <MarkdownContent content={content} />;
 }
