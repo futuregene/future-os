@@ -45,7 +45,7 @@ pub(super) async fn collect(
 /// in structured source packets are strings; a map is inserted as a JSON object.
 pub(super) fn forwarded_bytes(phase: &str, text: &str) -> Result<usize> {
     match phase {
-        "analyzing" | "reviewing" => Ok(serde_json::to_vec(text)?.len()),
+        "analyzing" | "reviewing" | "synthesizing" => Ok(serde_json::to_vec(text)?.len()),
         "issue_mapping" => {
             Ok(serde_json::to_vec(&future_fusion::parse_json::<Value>(text)?)?.len())
         }
@@ -129,6 +129,9 @@ mod tests {
             forwarded_bytes("issue_mapping", map).unwrap(),
             r#"{"consensus":[]}"#.len()
         );
-        assert_eq!(forwarded_bytes("synthesizing", text).unwrap(), text.len());
+        assert_eq!(
+            forwarded_bytes("synthesizing", text).unwrap(),
+            serde_json::to_string(text).unwrap().len()
+        );
     }
 }

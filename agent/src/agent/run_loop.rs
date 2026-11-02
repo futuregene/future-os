@@ -2304,6 +2304,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_consumes_typed_tool_state_and_emits_typed_events() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let mut start_metadata = crate::types::ProviderMetadata::new();
         start_metadata.insert("openai".into(), serde_json::json!({"item_id": "fc_1"}));
         let mut end_metadata = crate::types::ProviderMetadata::new();
@@ -2459,6 +2462,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_rejects_provider_controlled_allocation_indices() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         for event in [
             ModelStreamEvent::ToolInputDelta {
                 index: usize::MAX,
@@ -2510,6 +2516,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_streams_simple_text_reply() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ev_text("Hello"),
             ev_text(" world"),
@@ -2539,6 +2548,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_records_thinking_and_usage() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ModelStreamEvent::ReasoningStart {
                 id: "reasoning".into(),
@@ -2609,6 +2621,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_preserves_multiple_reasoning_blocks_and_their_metadata() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let mut first_metadata = crate::types::ProviderMetadata::new();
         first_metadata.insert(
             "anthropic".into(),
@@ -2724,6 +2739,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_estimates_cost_when_credit_cost_absent() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         // A non-Future model: the usage carries no credit_cost, but the catalog
         // has a price, so the run loop accumulates a token×price estimate
         // instead of silently dropping the request's cost (mixed-model bug).
@@ -2786,6 +2804,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_split_bills_each_request_at_its_own_models_rates() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         // A conversation that switches models mid-session: the first request runs
         // on a cheap model, the second on one priced 100× higher. Each request's
         // tokens belong to the rates in force when it ran, so the split is the
@@ -2849,6 +2870,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_executes_tool_then_answers() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Events(vec![
                 ev_toolcall_start(0, "call-1", "echo", "{\"text\":\"hi\""),
@@ -2978,6 +3002,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_records_failing_tool_result_is_error() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Events(vec![
                 ev_toolcall_start(0, "call-1", "read", "{\"path\":\"missing.rs\"}"),
@@ -3026,6 +3053,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_records_soft_fail_and_nonzero_shell_exit_is_error() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Events(vec![
                 ev_toolcall_start(
@@ -3058,6 +3088,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_rejects_assistant_last_message() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![]);
         let loop_ = Loop::new(provider, "mock");
         let mut messages = user_messages("hi");
@@ -3084,6 +3117,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_respects_max_turns() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Events(vec![
                 ev_toolcall_start(0, "c1", "echo", "{}"),
@@ -3118,6 +3154,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_with_zero_max_turns_is_unlimited() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         // `max_turns = 0` (also the absent-setting default) means unlimited.
         // Run well past the 50 the startup path used to hard-code, so a
         // reintroduced floor fails here instead of only in production.
@@ -3156,6 +3195,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_returns_early_when_interrupt_flag_set() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![]);
         let loop_ = Loop::new(provider, "mock");
         loop_
@@ -3177,6 +3219,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_handles_stream_error_event() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ev_text("partial"),
             ModelStreamEvent::Error {
@@ -3598,6 +3643,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_marks_truncated_stop_as_incomplete() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ev_text("cut off"),
             ModelStreamEvent::Finish {
@@ -3745,6 +3793,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_marks_length_stop_as_incomplete() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ev_text("cut off at max tokens"),
             ModelStreamEvent::Finish {
@@ -3779,6 +3830,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_marks_content_filter_as_model_response_error() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ev_text("partial"),
             ModelStreamEvent::Finish {
@@ -4018,6 +4072,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn run_retries_then_succeeds() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Fail("transient boom".to_string()),
             Script::Events(vec![ev_text("recovered"), ev_stop()]),
@@ -4049,6 +4106,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn run_returns_error_after_retries_exhausted() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Fail("boom 1".to_string()),
             Script::Fail("boom 2".to_string()),
@@ -4073,6 +4133,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn run_fails_when_forced_compaction_finds_no_cut() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::Fail(
             "[CTX_LIMIT] Request exceeds the model's maximum context length (HTTP 400)."
                 .to_string(),
@@ -4110,6 +4173,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn run_compacts_then_retries_on_context_length_error() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Fail(
                 "[CTX_LIMIT] Request exceeds the model's maximum context length (HTTP 400)."
@@ -4252,6 +4318,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_commits_checkpoint_without_replacing_history() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
         let mut loop_ = Loop::new(provider, "mock");
         loop_.context_manager = Some(crate::compaction::ContextManager {
@@ -4552,6 +4621,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_rejects_a_window_consumed_by_request_overhead() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![]);
         let mut loop_ = Loop::new(provider, "mock");
         loop_.context_manager = Some(crate::compaction::ContextManager {
@@ -4576,6 +4648,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_stop_condition_short_circuits_the_loop() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ev_toolcall_start(0, "c1", "echo", "{}"),
             ev_toolcall_end(),
@@ -4605,6 +4680,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn run_interrupt_mid_stream_keeps_partial_reply() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::PartialThenStall(vec![ev_text(
             "before interrupt",
         )])]);
@@ -4631,6 +4709,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_handles_toolcall_streaming_edge_cases() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Events(vec![
                 // Delta before any start → placeholder that the later start replaces.
@@ -4685,6 +4766,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_skips_remaining_tools_after_interrupt() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Events(vec![
                 ev_toolcall_start(0, "c1", "echo", "{}"),
@@ -4845,6 +4929,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_verbose_covers_logging_arms() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Events(vec![
                 ModelStreamEvent::ReasoningStart {
@@ -4896,6 +4983,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_with_empty_messages_validates_ok() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("hi"), ev_stop()])]);
         let loop_ = Loop::new(provider, "mock");
         let (text, _) = loop_
@@ -4913,6 +5003,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_stop_event_finalizes_pending_tool_calls_and_usage() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         // toolcall_start followed DIRECTLY by a usage-carrying stop: the stop
         // arm both finalizes the pending call and processes usage.
         let provider = ScriptedProvider::new(vec![
@@ -4957,6 +5050,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_verbose_truncated_stream_warns() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let _tracing = tracing_sink();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ev_text("cut off"),
@@ -4982,6 +5078,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_verbose_completion_logs_usage_details() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let _tracing = tracing_sink();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ev_text("final"),
@@ -5016,6 +5115,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn run_interrupt_while_connecting_returns_early() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         struct PendProvider;
         #[async_trait::async_trait]
         impl LLMProvider for PendProvider {
@@ -5048,6 +5150,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_interrupt_during_retry_backoff_returns_early() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         struct FailOnSignalProvider {
             release: tokio::sync::Notify,
         }
@@ -5163,6 +5268,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn run_interrupt_with_finalized_tool_call_writes_placeholders() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::PartialThenStall(vec![
             ev_toolcall_start(0, "c1", "echo", "{}"),
             ev_toolcall_end(),
@@ -5206,6 +5314,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_toolcall_merge_and_delta_variants() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Events(vec![
                 // Same-id start with a longer non-prefix arg string → replace.
@@ -5276,6 +5387,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_slow_provider_exercises_await_polling() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         struct SlowProvider {
             delay: Duration,
         }
@@ -5442,6 +5556,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn run_interrupt_during_error_retry_returns_partial() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let provider = FailAndInterruptProvider { flag: flag.clone() };
         let config = crate::types::AgentConfig {
@@ -5465,6 +5582,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn run_reports_last_error_when_turn_limit_hit_after_failed_retry() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         // Turn 0 fails once, the retry succeeds with a tool call (turn becomes
         // 1); the loop top then hits the turn limit. (The stale-last_error arm
         // was removed as dead by construction — see the limit check comment.)
@@ -5499,6 +5619,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_verbose_handles_typed_text_events() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let _sink = tracing_sink();
         let provider =
             ScriptedProvider::new(vec![Script::Events(vec![ev_text("done"), ev_stop()])]);
@@ -5519,6 +5642,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn run_finalizes_pending_tool_call_when_stream_ends_early() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         // toolcall_start with no toolcall_end and no stop: the post-loop sweep
         // finalizes the pending call, then the turn ends as incomplete.
         let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_toolcall_start(
@@ -5545,6 +5671,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_merges_repeated_toolcall_start_over_null_args() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         // First chunk carries no tool_call payload (args stay Null); the
         // same-id repeat upgrades Null args to the real string via the
         // overwrite arm (the merge arm needs a String on both sides).
@@ -5599,6 +5728,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_stop_condition_ends_run_with_text() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider =
             ScriptedProvider::new(vec![Script::Events(vec![ev_text("stop here"), ev_stop()])]);
         let config = crate::types::AgentConfig {
@@ -5647,6 +5779,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_fills_empty_tool_id_from_delta() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Events(vec![
                 ModelStreamEvent::ToolInputStart {
@@ -5682,6 +5817,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_handles_tool_input_end_without_start() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         // ToolInputEnd with an index beyond the array exercises both the resize
         // and the get_or_insert_with creation arm.
         let provider = ScriptedProvider::new(vec![
@@ -5712,6 +5850,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_builds_partial_assistant_with_reasoning_on_stream_error() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         // Reasoning followed by a stream error hits the partial-assistant path
         // with non-empty reasoning content.
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
@@ -5744,6 +5885,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_merges_repeated_toolcall_start_with_provider_metadata() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let mut meta = crate::types::ProviderMetadata::new();
         meta.insert("openai".into(), serde_json::json!({"id": "call_1"}));
         let provider = ScriptedProvider::new(vec![
