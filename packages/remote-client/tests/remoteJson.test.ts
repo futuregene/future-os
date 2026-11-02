@@ -14,7 +14,10 @@ function frameBytes(header: string, body: Uint8Array): Uint8Array {
 
 describe("cooperative remote JSON", () => {
   test("the cooperative decoder enforces the same ceiling", async () => {
-    const oversized = new Uint8Array(1024 * 1024 + 1).fill(0x20);
+    // One byte past the reader's cap (`MAX_REMOTE_JSON_BYTES` in
+    // `remote-protocol/src/json.ts`, 8 MiB since the catalogue that a machine
+    // can actually seal grew past the old 1 MiB).
+    const oversized = new Uint8Array(8 * 1024 * 1024 + 1).fill(0x20);
     await expect(decodeRemoteJsonAsync(oversized)).rejects.toThrow("remote_json_too_large");
     await expect(decodeRemoteJsonAsync(new TextEncoder().encode("[1,2]"))).resolves.toEqual([1, 2]);
   });

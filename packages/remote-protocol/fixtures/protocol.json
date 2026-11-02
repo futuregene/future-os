@@ -213,7 +213,7 @@
         139,
         1,
         0,
-        16,
+        128,
         0
       ],
       "accepted": false,
@@ -238,9 +238,17 @@
       "error": null
     },
     {
-      "id": "protocol.json.budget.1048577",
+      "id": "protocol.json.budget.8388608",
       "kind": "json",
-      "repeatSpace": 1048577,
+      "repeatSpace": 8388608,
+      "accepted": true,
+      "expected": 0,
+      "error": null
+    },
+    {
+      "id": "protocol.json.budget.8388609",
+      "kind": "json",
+      "repeatSpace": 8388609,
       "accepted": false,
       "expected": 0,
       "error": "remote_json_too_large"
