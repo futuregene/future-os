@@ -9061,10 +9061,20 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
     // becomes due. A non-numeric value keeps the legacy text-only behavior
     // (resume_when_text hint, no real deadline) — and now warns about it
     // (P0-3④) instead of silently scheduling nothing.
-    let resume_when_parsed = resume_when
-        .as_deref()
-        .map(|rw| match parse_resume_when(rw) {
-            ResumeWhen::Defer(secs) => format!("defer:{secs}"),
+    //
+    // The deadline is resolved HERE, at the write site, and stored as an
+    // absolute instant (`resume_at_ms`): a relative `defer:N` left for the
+    // replay fold to resolve became "read-time + N" and re-armed itself on
+    // every read (bug h3-C1).
+    let written_at_ms = crate::state::now_epoch_millis();
+    let written_at = written_at_ms / 1000;
+    let (resume_when_parsed, resume_at_ms) = match resume_when.as_deref() {
+        None => (None, None),
+        Some(rw) => match parse_resume_when(rw) {
+            ResumeWhen::Defer(secs) => (
+                Some(format!("defer:{secs}")),
+                Some(written_at_ms.saturating_add(secs.saturating_mul(1000))),
+            ),
             ResumeWhen::TextHint(text) => {
                 eprintln!(
                     "{}",
@@ -9073,9 +9083,10 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
                         "no deadline is scheduled; the todo stays deferred until updated again"
                     )
                 );
-                text
+                (Some(text), None)
             }
-        });
+        },
+    };
     store.append_todo_change(Event::TodoUpdated {
         goal_id: goal_id.clone(),
         todo_id: todo_id.clone(),
@@ -9085,10 +9096,11 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
         note: note.clone(),
         priority: priority.clone(),
         resume_when: resume_when_parsed,
+        resume_at_ms,
         blocks: blocks.clone(),
         acceptance: acceptance.clone(),
         owner: owner.clone(),
-        ts: crate::state::now_epoch(),
+        ts: written_at,
     })?;
     refresh_next_action(store, &goal_id)?;
     sync_compat(store, &goal_id);
@@ -9294,6 +9306,7 @@ mod coverage_tests {
                 note: None,
                 priority: None,
                 resume_when: None,
+                resume_at_ms: None,
                 blocks: None,
                 acceptance: None,
                 owner: None,
@@ -10636,7 +10649,13 @@ mod cli_quirks_tests {
         let todo = goal.todo("t1").unwrap();
         assert_eq!(todo.status, crate::state::TodoStatus::Deferred);
         let deadline = todo.resume_when.expect("numeric sets a deadline");
-        assert!(deadline >= before + std::time::Duration::from_secs(120));
+        // The deadline is stamped at the write site as Unix MILLIS
+        // (`resume_at_ms`), so it can sit at most 1 ms below `before + 120 s` —
+        // that is the granularity of the stored instant, not a semantic slack.
+        assert!(
+            deadline + std::time::Duration::from_millis(1)
+                >= before + std::time::Duration::from_secs(120)
+        );
     }
 
     #[tokio::test]
