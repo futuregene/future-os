@@ -64,3 +64,15 @@ The device record exposed a remaining participant cap: a 1,000,000-window catalo
 Working requests now use model capability and actual remaining context, independently of report bytes. The fixed five-turn Fusion limit is removed. Report forwarding is measured in its actual representation without the sixfold reserve. The final report is validated after investigation; oversized/invalid reports receive a tool-free revision request in the same session, sharing the original deadline. Stored step events retain each revision's session/run binding and report_revision; usage remains cumulative. Stage 1 and stage 4 use natural reports, while stage 2/3 retain source/identity validation. Capability 2 fences older Agents that cannot enforce report-only revisions.
 
 Regression source covers 2–5-role generation/report separation, real JSON costs, growing tool histories without counting transport escapes, and oversized/invalid reports repaired through one working session without resubmitting the original task. Desktop paging checks only the final report and excludes drafts/tool-evidence disclosure. These tests are compiled by Clippy/static checks; local unit execution and a new paid provider run are not claimed.
+
+
+## Output capacity survives the typed model catalog (2026-11-02)
+
+The 17:01:59 device discussion failed in preflight after 177 ms, with no child steps or model dispatch: `Fusion requires a known positive output capacity`. Agent's internal `list_models` JSON included `maxTokens`, but the typed payload/protobuf/codec path discarded it. Strict Host admission then rejected the missing field.
+
+The model entry now carries optional protobuf field 14 (`max_tokens`), exposed as `maxTokens` in the canonical JSON view. Encoding and decoding preserve the Agent's existing `effective_max_tokens()` value. Missing historical fields remain absent; invalid or missing capacities still fail closed, now naming the affected model. No provider capacity is fabricated and no generation/report budget rule is relaxed.
+
+Regression source covers the real Agent handler through typed encoding, protobuf byte serialization/deserialization and the client JSON decoder; Host admission also consumes the typed codec round trip rather than a manually built Host-only catalog. Payload regressions cover presence and older-agent absence. Local static checks compile these regressions; unit execution remains delegated to CI and no paid provider call is claimed.
+
+
+A separate manual smoke check started the newly built Agent with an isolated temporary FutureOS home, a dummy local provider and a fresh loopback port. The normal verified connection performed readiness/contract checks and read `list_models`. The typed-only response (`data` empty) preserved `contextWindow=262144` and `maxTokens=32768` through the real gRPC client decoder. No model prompt was submitted, no user instance was stopped, and the test process/home and temporary client source were cleaned up. This validates model-catalog transport, not a paid four-stage discussion.

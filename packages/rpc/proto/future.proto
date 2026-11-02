@@ -657,6 +657,9 @@ message ModelEntry {
   // `thinking_levels` by the agent. "default" for a current agent; unset on an
   // older one.
   optional string default_thinking_level = 13;
+  // Agent effective generation capacity, using the same policy as requests.
+  // Absent on older agents; clients must not invent a capacity when missing.
+  optional int32 max_tokens = 14;
 }
 
 message BuiltinProvider {
