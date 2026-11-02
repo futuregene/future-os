@@ -652,6 +652,10 @@ describe("RemoteClient connection handoff", () => {
         "reply_gzip_v1",
         "lean_events_v1",
         "catalog_activity_v1",
+        // Row-level deltas: only truthful while this client merges a packet into
+        // the rows it holds and names deletions explicitly — see
+        // `applyCatalogDelta` and `tests/catalogDelta.test.ts`.
+        "catalog_delta_v1",
         // A promise, not a lane: the desktop reads a lapsed beat as a
         // departure, so it is only truthful while `startPresenceBeats` is
         // beating on this connection (see the presence tests below).

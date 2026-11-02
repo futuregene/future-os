@@ -71,9 +71,9 @@ mod contract_tests {
 #[cfg(test)]
 mod runtime_tests {
     use super::test_support::{
-        await_publish, await_publish_matching, declare_features, fake_state, init_store, jwt,
-        nats_connect, nats_connect_once, now_secs, pairing_creds, sign_in, unique, FakeNats,
-        HomeGuard, MockPlatform,
+        await_publish, await_publish_matching, declare_features, fake_state, incompressible,
+        init_store, jwt, nats_connect, nats_connect_once, now_secs, pairing_creds, sign_in, unique,
+        FakeNats, HomeGuard, MockPlatform,
     };
     use super::*;
     use serde_json::json;
@@ -3456,10 +3456,13 @@ mod runtime_tests {
         // The publisher serves the device in control; this fixture is it.
         SUPERVISOR.restore_active(Some(pair.clone()));
         // A thread title that alone exceeds the broker payload cap: presence
-        // publishes (small pair id), then the sessions snapshot fails.
+        // publishes (small pair id), then the sessions snapshot fails. The title
+        // is incompressible so the catalogue lane's compression cannot shrink it
+        // under the cap — the fixture is about a *failing* publish, not about
+        // size.
         crate::store::create_thread(crate::store::CreateThreadInput {
             mode: "chat".to_string(),
-            title: Some("n".repeat(9 * 1024 * 1024)),
+            title: Some(incompressible(9 * 1024 * 1024)),
             workspace_id: None,
             workspace_path: None,
             workspace_name: None,
@@ -3468,10 +3471,215 @@ mod runtime_tests {
         .unwrap();
 
         let handle = spawn_presence_heartbeat(client.clone(), pair, "bridge_hbs".into());
-        tokio::time::timeout(Duration::from_secs(3), handle)
+        // Ten seconds, not three: the payload now travels through the catalogue
+        // lane's compressor before the broker rejects it, so *producing* this
+        // failure costs more than it did. The assertion is unchanged — a failed
+        // publish must stop the heartbeat.
+        tokio::time::timeout(Duration::from_secs(10), handle)
             .await
             .expect("catalog publish failure must stop heartbeat")
             .expect("heartbeat did not panic");
+    }
+
+    /// Executable evidence for the size of a handshake confirmation.
+    ///
+    /// The confirmation used to carry the whole catalogue, so it grew with the
+    /// machine — which is how a big enough catalogue stopped fitting in a sealed
+    /// record. It must now be *independent* of the catalogue, and say so in a way
+    /// a reader can run: the same profile with ten conversations and with two
+    /// hundred produces byte-identical bodies, no session id appears anywhere in
+    /// it, and it stays inside a kilobyte.
+    #[tokio::test]
+    async fn the_handshake_confirmation_does_not_grow_with_the_catalogue() {
+        let _home = HomeGuard::new("remote-confirm-size");
+        init_store();
+        let pair = unique("pairconfirm");
+        SUPERVISOR.restore_active(Some(pair.clone()));
+
+        // Exactly what `secure::confirmation` seals: the handshake host's answer,
+        // serialized with the protocol's own envelope.
+        let confirmation = || {
+            let presence = SUPERVISOR.handshake_presence(&pair, "bridge_confirm");
+            let body =
+                future_remote_protocol::handshake::confirmation(&pair, "bridge_confirm", presence);
+            serde_json::to_vec(&body).expect("a confirmation body serializes")
+        };
+
+        for index in 0..10 {
+            crate::store::create_thread(crate::store::CreateThreadInput {
+                mode: "chat".to_string(),
+                title: Some(format!("Small catalogue {index}")),
+                workspace_id: None,
+                workspace_path: None,
+                workspace_name: None,
+                agent_session_id: Some(unique(&format!("sesssmall{index}"))),
+            })
+            .unwrap();
+        }
+        let small = confirmation();
+
+        let mut sessions = Vec::new();
+        for index in 0..200 {
+            let session = unique(&format!("sesslarge{index}"));
+            crate::store::create_thread(crate::store::CreateThreadInput {
+                mode: "chat".to_string(),
+                title: Some(format!("A conversation with a realistic title {index}")),
+                workspace_id: None,
+                workspace_path: None,
+                workspace_name: None,
+                agent_session_id: Some(session.clone()),
+            })
+            .unwrap();
+            sessions.push(session);
+        }
+        let large = confirmation();
+
+        println!(
+            "CONFIRMATION_SIZE ten_conversations={} bytes two_hundred_conversations={} bytes",
+            small.len(),
+            large.len()
+        );
+        assert_eq!(
+            small.len(),
+            large.len(),
+            "the confirmation must not grow with the catalogue"
+        );
+        assert!(
+            large.len() < 1024,
+            "a handshake confirmation is liveness and revisions, not a directory: {} bytes",
+            large.len()
+        );
+        let text = String::from_utf8_lossy(&large);
+        assert!(
+            !sessions
+                .iter()
+                .any(|session| text.contains(session.as_str())),
+            "no session row may travel in the confirmation: {text}"
+        );
+        assert!(
+            text.contains("catalogVersion"),
+            "the reader still needs the revision to sync towards: {text}"
+        );
+    }
+
+    /// The delta lane, end to end: a declared client gets one full packet and
+    /// then only what moved, and a deletion is always named.
+    ///
+    /// The two rules this test exists for — the first packet is full, and a row
+    /// is never deleted by omission — are the ones the lane cannot get wrong
+    /// without corrupting somebody's list.
+    #[tokio::test]
+    async fn catalogue_delta_lane_carries_only_what_changed() {
+        let _home = HomeGuard::new("remote-catalog-delta");
+        init_store();
+        let nats = FakeNats::start().await;
+        let client = nats_connect_once(&nats).await;
+        let pair = unique("pairdelta");
+        SUPERVISOR.restore_active(Some(pair.clone()));
+
+        let mut sessions = Vec::new();
+        for index in 0..3 {
+            let session = unique(&format!("sessdelta{index}"));
+            crate::store::create_thread(crate::store::CreateThreadInput {
+                mode: "chat".to_string(),
+                title: Some(format!("Delta thread {index}")),
+                workspace_id: None,
+                workspace_path: None,
+                workspace_name: None,
+                agent_session_id: Some(session.clone()),
+            })
+            .unwrap();
+            sessions.push(session);
+        }
+
+        let creds = pairing_creds(&pair);
+        let _shared = shared_runtime(&creds, true, false);
+        declare_features(
+            &creds,
+            &pair,
+            &[future_remote_protocol::CATALOG_DELTA_FEATURE],
+        );
+
+        let handle = spawn_presence_heartbeat(client.clone(), pair.clone(), "bridge_delta".into());
+        let mut tap = nats.tap();
+        let subject = format!("p.{pair}.state.sessions");
+
+        // 1. The first packet is the whole catalogue, and it is a delta packet.
+        let baseline = await_publish(&mut tap, &subject, Duration::from_secs(5)).await;
+        let body = baseline.json();
+        assert_eq!(body["full"], json!(true));
+        let rows = body["rows"].as_array().expect("a delta packet names rows");
+        assert_eq!(rows.len(), 3, "the baseline carries every row");
+        assert!(
+            rows.iter().all(|row| row.get("sortKey").is_none()),
+            "the rank is derived from the row, not sent: a key per row cost more \
+             than the dictionary saved"
+        );
+        assert!(
+            rows.iter().all(|row| row.get("workspaceName").is_none()),
+            "the workspace name travels in the dictionary, not on every row"
+        );
+        assert!(body["workspaces"].is_array(), "the dictionary rides along");
+        assert_eq!(body["removed"], json!([]));
+
+        // 2. One conversation appears: the packet names that row and nothing else.
+        let born = unique("sessdeltaborn");
+        crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("Born later".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some(born.clone()),
+        })
+        .unwrap();
+        let added = await_publish(&mut tap, &subject, Duration::from_secs(5)).await;
+        let body = added.json();
+        assert_eq!(body["full"], json!(false));
+        let rows = body["rows"].as_array().expect("a delta packet names rows");
+        assert_eq!(rows.len(), 1, "only the new row travels: {body}");
+        assert_eq!(rows[0]["sessionId"], json!(born));
+        assert_eq!(body["removed"], json!([]));
+        // Creating a conversation also creates its workspace here, so the
+        // dictionary legitimately moved; what matters is that the packet stayed a
+        // delta — one row and a dictionary, not four rows and a full list.
+        assert!(
+            body["workspaces"].as_array().is_some_and(|entries| entries
+                .iter()
+                .any(|entry| entry["name"]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with("Born later")))),
+            "the dictionary names the workspace this row needs: {body}"
+        );
+        // The sharp proof, and the one size cannot give at this fixture's scale:
+        // no other conversation is named anywhere in the packet.
+        let text = String::from_utf8_lossy(&added.payload).to_string();
+        for other in &sessions {
+            assert!(
+                !text.contains(other.as_str()),
+                "the packet must not mention {other} at all: {text}"
+            );
+        }
+
+        // 3. One conversation goes away: the removal is named, never implied.
+        let doomed = sessions[0].clone();
+        let thread = crate::store::list_threads()
+            .unwrap()
+            .into_iter()
+            .find(|thread| thread.agent_session_id.as_deref() == Some(doomed.as_str()))
+            .expect("the doomed thread exists");
+        crate::store::delete_thread(&thread.id).unwrap();
+        let removed = await_publish(&mut tap, &subject, Duration::from_secs(5)).await;
+        let body = removed.json();
+        assert_eq!(body["full"], json!(false));
+        assert_eq!(body["removed"], json!([doomed]));
+        assert_eq!(
+            body["rows"].as_array().map(Vec::len),
+            Some(0),
+            "a deletion moves no rows: {body}"
+        );
+
+        handle.abort();
     }
 
     #[tokio::test]
@@ -3484,11 +3692,13 @@ mod runtime_tests {
         // The publisher serves the device in control; this fixture is it.
         SUPERVISOR.restore_active(Some(pair.clone()));
         // A workspace name that alone exceeds the broker payload cap: presence
-        // and the (empty) sessions snapshot publish, then workspaces fails.
+        // and the (empty) sessions snapshot publish, then workspaces fails. The
+        // name is incompressible, so the compression of the workspace lane cannot
+        // shrink it under the cap.
         let workspace_dir = std::env::temp_dir().join(unique("futureos-ws-hbw"));
         std::fs::create_dir_all(&workspace_dir).unwrap();
         crate::store::create_workspace(crate::store::CreateWorkspaceInput {
-            name: Some("n".repeat(9 * 1024 * 1024)),
+            name: Some(incompressible(9 * 1024 * 1024)),
             path: workspace_dir.to_string_lossy().to_string(),
             description: None,
             create_directory: None,
@@ -3496,7 +3706,9 @@ mod runtime_tests {
         .unwrap();
 
         let handle = spawn_presence_heartbeat(client.clone(), pair, "bridge_hbw".into());
-        tokio::time::timeout(Duration::from_secs(3), handle)
+        // See `heartbeat_sessions_publish_failure_exits` for the budget: the
+        // payload is compressed before the broker rejects it.
+        tokio::time::timeout(Duration::from_secs(10), handle)
             .await
             .expect("catalog publish failure must stop heartbeat")
             .expect("heartbeat did not panic");

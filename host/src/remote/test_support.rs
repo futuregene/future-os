@@ -43,6 +43,26 @@ pub fn init_store() {
     crate::store::initialize_app_store().expect("store init under test HOME");
 }
 
+/// A string compression cannot shrink.
+///
+/// Base64 characters carry six bits each, so gzip buys almost nothing: a fixture
+/// that needs a payload past the broker's cap still gets one now that the
+/// catalogue lanes are compressed before they are published. (`"n".repeat(9 MB)`
+/// used to be that fixture and now compresses to a few kilobytes, which is how
+/// these two checks found the change.)
+pub fn incompressible(len: usize) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut out = String::with_capacity(len);
+    for _ in 0..len {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        out.push(ALPHABET[(state & 0x3f) as usize] as char);
+    }
+    out
+}
+
 /// Name an event in the access-epoch journal (`future_remote_server::lifecycle`).
 ///
 /// The supervisor is `pub(in crate::remote)`, so a fixture outside this module

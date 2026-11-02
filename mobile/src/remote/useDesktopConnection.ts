@@ -16,6 +16,7 @@ import { RecoveryCoordinator } from "@future-os/remote-client/recoveryCoordinato
 import type { ReconcileReason, SyncEngine } from "@future-os/remote-client/syncEngine";
 import { loadCredentials, saveCredentials } from "./storage";
 import type {
+  CatalogDeltaPacket,
   CatalogRevisions,
   ConnectionPhase,
   Presence,
@@ -69,6 +70,14 @@ export interface DesktopConnectionOptions {
   reconcileSession(sessionId: string | undefined, reason: ReconcileReason, runId?: string): void;
   setCatalogEpoch?(epoch: string | undefined): void;
   applySessionSnapshot(sessions: RemoteSession[], version?: SnapshotVersion): boolean | void;
+  /**
+   * Merge a row-level catalogue packet into the list this runtime holds.
+   *
+   * Only a connection that declared `catalog_delta_v1` receives one; the list's
+   * merge rule (absence is not deletion) lives in the client package's
+   * `applyCatalogDelta`, so the runtime cannot get it wrong on its own.
+   */
+  applySessionDelta(packet: CatalogDeltaPacket): boolean | void;
   /**
    * A catalog activity packet: the rows whose ordering timestamp moved, under
    * the same version gate as a snapshot.
@@ -185,6 +194,7 @@ export function useDesktopConnection({
   reconcileSession,
   setCatalogEpoch,
   applySessionSnapshot,
+  applySessionDelta,
   applySessionActivity,
   applySessionStreaming,
   setWorkspaces,
@@ -478,6 +488,20 @@ export function useDesktopConnection({
             applySessionStreaming(currentId, streaming);
           }
         },
+        onSessionDelta: (packet) => {
+          if (access !== accessRef.current) return;
+          if (latestPresenceRef.current?.control === "standby") return;
+          // The same three things a snapshot does: retire a confirmed optimistic
+          // title, keep the open conversation consistent with the row that just
+          // arrived, and report a run that finished while this packet was in
+          // flight. The catalogue owns the merge; this owns the screen.
+          if (applySessionDelta(packet) === false) return;
+          const currentId = selectedRef.current;
+          if (!currentId) return;
+          const row = packet.rows?.find((item) => item.sessionId === currentId);
+          if (row) applySessionStreaming(currentId, row.streaming === true);
+          else if (packet.removed?.includes(currentId)) closeConversation();
+        },
         onSessionActivity: (activity, version) => {
           if (access !== accessRef.current) return;
           if (latestPresenceRef.current?.control === "standby") return;
@@ -553,6 +577,7 @@ export function useDesktopConnection({
     },
     [
       applySessionActivity,
+      applySessionDelta,
       applySessionSnapshot,
       applySessionStreaming,
       closeConversation,
