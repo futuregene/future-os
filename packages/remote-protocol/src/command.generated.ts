@@ -13,6 +13,8 @@ export interface RemoteCommand {
   type: string;
   sessionId?: string;
   message?: string;
+  /** prompt: what a send means while this session already has a run in flight (enqueue_if_busy | enqueue_coalescing | supersede_session). Absent keeps the refusal legacy clients expect. */
+  busyPolicy?: string;
   /** approval_decision */
   entryId?: string;
   /** fork_session: the persisted user entry whose settled turn the phone forks at. The command's own `id` is the fork request identity (idempotent child). */
