@@ -123,6 +123,57 @@
           "shot": "d-send-queue-queued.png"
         }
       ]
+    },
+    "send-queue-local-choice": {
+      "note": "This machine's own conversation, answering a prompt it was just given (the harness's `agent_prompt` now writes a streamed reply, see `shot/mock/backend.ts`). A follow-up typed while that reply streams turns the send slot into the same question the host's conversation asks: hold it in the queue, or interrupt and send — so the main window and a paired computer's conversation answer one rule the same way.",
+      "url": "http://localhost:5299/shot/?lang=zh&settings=skillRecommend:false",
+      "steps": [
+        { "wait": 2500 },
+        { "eval": "(() => { const box = document.querySelector('[role=textbox]'); box.focus(); box.textContent = ''; box.dispatchEvent(new Event('input', { bubbles: true })); return 'draft cleared'; })()" },
+        { "wait": 300 },
+        { "type": "把森林图的置信区间改成 95% 并重画" },
+        { "wait": 300 },
+        { "tap": "发送" },
+        { "wait": 700 },
+        { "eval": "document.querySelector('[role=textbox]').focus()" },
+        { "wait": 200 },
+        { "type": "顺便把图例移到右下角" },
+        { "wait": 300 },
+        {
+          "eval": "(() => {\n  const form = document.querySelector('form');\n  if (!form) throw new Error('no composer');\n  if (form.querySelector(\"button[aria-label='停止']\")) throw new Error('a draft during a run still offers only Stop');\n  if (!form.querySelector(\"button[aria-label='选择如何处理这条消息']\")) throw new Error('a draft during a run does not offer the queue choice');\n  const field = form.querySelector('[role=textbox]');\n  if (!(field && (field.innerText || '').includes('图例'))) throw new Error('the draft was lost');\n  return 'choice offered, draft kept';\n})()"
+        },
+        { "tap": "选择如何处理这条消息" },
+        { "wait": 500 },
+        {
+          "eval": "(() => {\n  const rows = [...document.querySelectorAll('button')].map(button => (button.innerText || '').trim());\n  const want = ['加入发送队列', '打断后发送'];\n  const missing = want.filter(text => !rows.some(row => row.startsWith(text)));\n  if (missing.length) throw new Error('the choice is missing a row: ' + JSON.stringify(missing));\n  return 'rows: ' + want.join(' / ');\n})()"
+        },
+        { "shot": "d-send-queue-local-choice.png" }
+      ]
+    },
+    "send-queue-local-queued": {
+      "note": "The same local run, one message held instead of sent: the queue sits above this machine's composer, numbered and iconed exactly as it does over a paired computer's conversation, and the interrupt control says the queue leaves with it.",
+      "url": "http://localhost:5299/shot/?lang=zh&settings=skillRecommend:false",
+      "steps": [
+        { "wait": 2500 },
+        { "eval": "(() => { const box = document.querySelector('[role=textbox]'); box.focus(); box.textContent = ''; box.dispatchEvent(new Event('input', { bubbles: true })); return 'draft cleared'; })()" },
+        { "wait": 300 },
+        { "type": "把森林图的置信区间改成 95% 并重画" },
+        { "wait": 300 },
+        { "tap": "发送" },
+        { "wait": 700 },
+        { "eval": "document.querySelector('[role=textbox]').focus()" },
+        { "wait": 200 },
+        { "type": "顺便把图例移到右下角" },
+        { "wait": 300 },
+        { "tap": "选择如何处理这条消息" },
+        { "wait": 400 },
+        { "tap": "加入发送队列" },
+        { "wait": 350 },
+        {
+          "eval": "(() => {\n  const panel = document.querySelector('[data-send-queue]');\n  if (!panel) throw new Error('the queued message is not shown');\n  if (panel.querySelectorAll('[data-queue-item]').length !== 1) throw new Error('the panel does not hold one row');\n  if (!(panel.innerText || '').includes('顺便把图例移到右下角')) throw new Error('the row does not carry the held message');\n  if (!document.querySelector(\"button[aria-label='停止并发送队列中的消息']\")) throw new Error('the interrupt control does not say the queue goes with it');\n  return 'one row, stop-and-send named';\n})()"
+        },
+        { "shot": "d-send-queue-local-queued.png" }
+      ]
     }
   },
   "mobile": {
