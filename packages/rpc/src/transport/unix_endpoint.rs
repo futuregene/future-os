@@ -63,6 +63,27 @@ fn conflict(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::AddrInUse, message.into())
 }
 
+/// How long a connect probe may take before the endpoint is preserved as
+/// unclassified. A listener that is merely slow to accept would otherwise be
+/// replaced under it.
+const CONNECT_PROBE: Duration = Duration::from_millis(250);
+
+/// Name the outcome that preserved the endpoint, because the three cases are
+/// three different defects: a listener answered (an active endpoint, correctly
+/// preserved), a connect failed with a kind that is not a refusal, or the probe
+/// never got to run before its own budget elapsed — a loaded host, which says
+/// nothing about the endpoint. Reporting one string for all three is what made
+/// the first measurement of the lease flake ambiguous.
+fn probe_outcome(
+    outcome: &Result<io::Result<tokio::net::UnixStream>, tokio::time::error::Elapsed>,
+) -> String {
+    match outcome {
+        Ok(Ok(_)) => "a listener accepted the connection".to_string(),
+        Ok(Err(error)) => format!("connect failed with {:?}: {error}", error.kind()),
+        Err(_) => format!("the connect probe exceeded {CONNECT_PROBE:?}"),
+    }
+}
+
 impl LocalEndpointReservation {
     pub(super) async fn acquire(path: PathBuf) -> io::Result<Self> {
         let parent = path.parent().ok_or_else(|| {
@@ -145,29 +166,39 @@ impl LocalEndpointReservation {
                 "refusing to replace untrusted local endpoint",
             ));
         }
-        match tokio::time::timeout(
-            Duration::from_millis(250),
-            tokio::net::UnixStream::connect(&self.path),
-        )
-        .await
-        {
+        let outcome =
+            tokio::time::timeout(CONNECT_PROBE, tokio::net::UnixStream::connect(&self.path)).await;
+        match outcome {
             Ok(Err(error)) if error.kind() == io::ErrorKind::ConnectionRefused => {
                 Ok(Some(identity(&metadata)))
             }
-            _ => Err(conflict(format!(
-                "local endpoint is active or cannot be classified as stale: {}",
-                self.path.display()
+            outcome => Err(conflict(format!(
+                "local endpoint is active or cannot be classified as stale: {} ({})",
+                self.path.display(),
+                probe_outcome(&outcome)
             ))),
         }
     }
 
+    /// Remove the socket [`Self::stale_socket`] classified as `stale`, unless the
+    /// path no longer names that inode.
+    ///
+    /// The classification and the removal are two syscalls apart, and anything
+    /// that bound a fresh listener in between owns the path now: replacing it
+    /// would delete a live endpoint. This is the guard the campaign's
+    /// "biased race" fixture used to search for with spinning churner threads;
+    /// it is a decision about two identities, so it is driven directly.
+    fn remove_stale_socket(&self, stale: (u64, u64)) -> io::Result<()> {
+        let current = std::fs::symlink_metadata(&self.path)?;
+        if identity(&current) != stale {
+            return Err(conflict("local endpoint changed before stale cleanup"));
+        }
+        std::fs::remove_file(&self.path)
+    }
+
     pub async fn bind(self) -> io::Result<LocalIncoming> {
         if let Some(stale) = self.stale_socket().await? {
-            let current = std::fs::symlink_metadata(&self.path)?;
-            if identity(&current) != stale {
-                return Err(conflict("local endpoint changed before stale cleanup"));
-            }
-            std::fs::remove_file(&self.path)?;
+            self.remove_stale_socket(stale)?;
         }
         let listener = tokio::net::UnixListener::bind(&self.path)?;
         let socket_identity = identity(&std::fs::symlink_metadata(&self.path)?);
@@ -477,102 +508,97 @@ mod tests {
         assert!(!path.exists());
     }
     /// `bind` re-reads the socket's identity after the `stale_socket()` probe and
-    /// refuses to remove a socket that changed in between (155-157). The window is
-    /// the two syscalls around the probe — real, but far too narrow to hit by
-    /// chance in a handful of drives — so this is the campaign's *biased race*
-    /// fixture shape (the same shape that covers AG-A's `activity.rs:71`): a
-    /// churner thread **atomically replaces** the socket path with a freshly bound
-    /// (then dropped, hence refused) socket, and the assertion is "at least one
-    /// refusal in N drives", reported with its tally.
+    /// refuses to remove a socket that changed in between (155-157).
     ///
-    /// `rename` is what biases it: the path is never absent (so the drive cannot
-    /// fall into the neighbouring `NotFound` arm) and every replacement carries a
-    /// new inode, so every replacement that lands inside the window is a hit
-    /// rather than a 50/50. The drive is the module's own entry point,
-    /// `acquire`+`bind`, on this test's private path — no environment variable,
-    /// no other process.
+    /// The window is the two syscalls around the probe, and the guard itself is a
+    /// comparison of two identities — so it is driven, not hunted. This used to be
+    /// the campaign's "biased race" fixture: four spinning churner threads per
+    /// attempt for up to 100 000 attempts, waiting for one replacement to land in
+    /// the window. That search made the test's outcome a property of the host
+    /// rather than of the code — the fixture's own churners starve the
+    /// `CONNECT_PROBE` budget (the drive then reports "cannot be classified as
+    /// stale" from `acquire`, which has nothing to do with this guard) and the
+    /// siblings that measure time. Here every run reaches the guard: classify, let
+    /// another owner take the path, then ask for the removal.
+    ///
+    /// The `fork_guard` is load-bearing for the same reason it is in
+    /// [`active_legacy_listener_is_preserved_but_stale_socket_is_reclaimed`]: a
+    /// dropped listener is only refused once nothing references its file
+    /// description, and a sibling test's `fork` window references every
+    /// descriptor this process holds. Without the guard this test reds at that
+    /// window with `acquire` reporting "a listener accepted the connection" —
+    /// measured 2 of 48 runs under load 2026-11-02, which is the same arm (and
+    /// the same rate) the churn-based version of this test used to flake with.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn a_socket_replaced_between_the_probe_and_the_cleanup_is_refused() {
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-        use std::sync::Arc;
+        let _fork_window = fork_guard();
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("agent.sock");
+        let scratch = root.path().join("replacement.sock");
+        // A socket that was bound and closed is stale: connects are refused, so
+        // `acquire` classifies it and hands the reservation over.
+        drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+        let reservation = LocalEndpointReservation::acquire(path.clone())
+            .await
+            .unwrap();
+        let stale = reservation
+            .stale_socket()
+            .await
+            .unwrap()
+            .expect("a closed socket must classify as stale");
 
-        // Per-attempt fixture: a fresh endpoint holding a stale socket, a churner
-        // thread whose FIRST replacement races this attempt's drive, and one
-        // drive. Repeating the whole setup (rather than spinning one drive
-        // against one long-lived churner) is what keeps the race live: the two
-        // threads then start together, and each attempt is independent.
-        let attempts_budget = 100_000usize;
-        let mut attempts = 0usize;
-        let mut hits = 0usize;
-        let mut drives = 0usize;
-        let mut churn_total = 0usize;
-        let mut first_hit_at = 0usize;
-        while attempts < attempts_budget {
-            attempts += 1;
-            let root = tempfile::tempdir().unwrap();
-            let path = root.path().join("agent.sock");
-            // Start from a stale socket: bound and closed, so connects are refused.
-            drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+        // The window: another owner binds a fresh listener and moves it onto the
+        // path. Both inodes exist at once, so the replacement cannot alias the
+        // classified one through inode reuse, and `rename` keeps the path present
+        // (the drive cannot fall into the neighbouring `NotFound` case).
+        let replacement = std::os::unix::net::UnixListener::bind(&scratch).unwrap();
+        let owner = identity(&std::fs::symlink_metadata(&scratch).unwrap());
+        assert_ne!(owner, stale, "the fixture must present a different socket");
+        std::fs::rename(&scratch, &path).unwrap();
 
-            let stop = Arc::new(AtomicBool::new(false));
-            let rounds = Arc::new(AtomicUsize::new(0));
-            // Four churners, not one: on this host a single churner ends up
-            // *co-scheduled* with the drive (measured ~1 churn round per drive),
-            // so its replacements and the drive's two-syscall window almost never
-            // overlap; several threads keep at least one inside the window.
-            let mut churners = Vec::new();
-            for churner_id in 0..4 {
-                let scratch = root.path().join(format!("scratch{churner_id}.sock"));
-                let (path, stop, rounds) = (path.clone(), stop.clone(), rounds.clone());
-                churners.push(std::thread::spawn(move || {
-                    while !stop.load(Ordering::Relaxed) {
-                        if let Ok(listener) = std::os::unix::net::UnixListener::bind(&scratch) {
-                            drop(listener); // the socket file stays behind, refusing connects
-                            let _ = std::fs::rename(&scratch, &path);
-                        }
-                        rounds.fetch_add(1, Ordering::Relaxed);
-                    }
-                }));
-            }
-
-            // No other binder holds this fixture's lease, so a contention here is
-            // a bug in the fixture, not a case to route around — stated as an
-            // assertion rather than a `match` arm whose body would never run.
-            let reservation = LocalEndpointReservation::acquire(path.clone())
-                .await
-                .expect("no other binder holds this fixture's lease");
-            // Count only *this* guard's message: `stale_socket` refuses an active
-            // or unclassifiable endpoint with a different text.
-            let hit = match reservation.bind().await {
-                Ok(listener) => {
-                    drop(listener);
-                    false
-                }
-                Err(error) => error.to_string().contains("changed before stale cleanup"),
-            };
-
-            stop.store(true, Ordering::Relaxed);
-            for churner in churners {
-                churner.join().unwrap();
-            }
-            drives += 1;
-            churn_total += rounds.load(Ordering::Relaxed);
-            if hit {
-                hits += 1;
-                first_hit_at = attempts;
-                break;
-            }
-        }
-        println!(
-            "STALE-CLEANUP GUARD: drives={drives} attempts={attempts} churn_rounds={churn_total} \
-             guard_157={hits} first_hit_at={first_hit_at}"
-        );
+        let error = reservation
+            .remove_stale_socket(stale)
+            .expect_err("a socket replaced after the probe must be refused");
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
         assert!(
-            hits > 0,
-            "the stale-cleanup identity guard must be reachable: {drives} drives over \
-             {attempts} fresh attempts against {churn_total} churner rounds never produced \
-             \"changed before stale cleanup\""
+            error.to_string().contains("changed before stale cleanup"),
+            "{error}"
         );
+        assert_eq!(
+            identity(&std::fs::symlink_metadata(&path).unwrap()),
+            owner,
+            "the refusal must leave the replacement in place"
+        );
+        // And it is still serving, which is what the refusal is for.
+        assert!(
+            tokio::net::UnixStream::connect(&path).await.is_ok(),
+            "the replacement listener must still accept after the refusal"
+        );
+        drop(replacement);
+    }
+
+    /// The other half of the same comparison: an identity that did not change is
+    /// removed, so `bind` still reclaims the stale socket it classified. It needs
+    /// the `fork_guard` for the reason spelled out above — "bound and dropped" is
+    /// only stale while no sibling `fork` window references the descriptor.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn an_unchanged_stale_socket_is_removed_after_the_probe() {
+        let _fork_window = fork_guard();
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("agent.sock");
+        drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+        let reservation = LocalEndpointReservation::acquire(path.clone())
+            .await
+            .unwrap();
+        let stale = reservation
+            .stale_socket()
+            .await
+            .unwrap()
+            .expect("a closed socket must classify as stale");
+        reservation.remove_stale_socket(stale).unwrap();
+        assert!(!path.exists(), "the classified socket must be gone");
     }
 
     #[tokio::test]

@@ -24,6 +24,7 @@ import { RenameModal } from "../../features/chat/components/RenameModal";
 import { DisconnectedScreen } from "../DisconnectedScreen";
 import { StandbyScreen } from "../StandbyScreen";
 import { SettingsLink } from "../../features/settings/SettingsPrimitives";
+import { SettingsScreen } from "../../features/settings/SettingsScreen";
 import { checkForUpdate } from "../../update/update";
 import { promptUpgrade } from "../../update/prompt";
 
@@ -59,6 +60,9 @@ const mockRemote = {
   sandboxAvailable: true,
   approvalTier: "manual",
   newConversation: jest.fn(),
+  // Opening a run's conversation from the settings stack lands back here as a
+  // selection on the current machine.
+  selectSession: jest.fn(async (_sessionId: string) => {}),
   newConversationOn: jest.fn(async (_desktopId: string, _mode?: string, _workspaceId?: string) => {}),
   reconnect: jest.fn(),
   takeControl: jest.fn(async () => {}),
@@ -1799,3 +1803,20 @@ describe("several desktops, only some answering", () => {
   });
 });
 
+
+// A task run's "open conversation" is answered by this screen, not by the
+// settings stack: the chat is a different screen here, so the selection has to
+// wait until settings has closed (on iOS the modal's dismissal is the moment).
+test("a run's conversation opens after the settings modal has closed", async () => {
+  await act(async () => button("sessions.settings").props.onPress());
+  const modal = tree.root.findAllByType(Modal).find(node => node.props.visible)!;
+  const settings = tree.root.findAllByType(SettingsScreen)[0]!;
+
+  act(() => settings.props.onOpenConversation("sess_9"));
+  // Selecting behind a full-screen modal would change the list nobody can see.
+  expect(mockRemote.selectSession).not.toHaveBeenCalled();
+  expect(tree.root.findAllByType(Modal).some(node => node.props.visible)).toBe(false);
+
+  await act(async () => modal.props.onDismiss());
+  expect(mockRemote.selectSession).toHaveBeenCalledWith("sess_9");
+});

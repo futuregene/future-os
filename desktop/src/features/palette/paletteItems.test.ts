@@ -31,6 +31,21 @@ describe("entryRank", () => {
     expect(entryRank("New conversation", ["hotkey"], "keybind")).toBe(-1);
   });
 
+  it("ranks everything equally when nothing is typed", () => {
+    // The palette's first screen is the list itself, in the caller's order; there is
+    // no query to rank against, so every row ties.
+    expect(entryRank("New conversation", [], "")).toBe(0);
+    expect(entryRank("", ["anything"], "")).toBe(0);
+  });
+
+  it("takes the best of several aliases rather than the first that matches", () => {
+    // `xxquill` only contains the word mid-word (rank 2); `quill` starts with it
+    // (rank 0). The alias tier is a flat +3 on whichever hit is best, so the row still
+    // sorts above a row that does not match at all — and below a label match.
+    expect(entryRank("Other", ["xxquill", "quill"], "quill")).toBe(3);
+    expect(entryRank("Other", ["quill", "xxquill"], "quill")).toBe(3);
+  });
+
   it("ranks a label match above an alias match", () => {
     const byLabel = entryRank("Keyboard shortcut settings", [], "shortcut");
     const byAlias = entryRank("Open settings", ["shortcut settings"], "shortcut");

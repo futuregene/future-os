@@ -1,10 +1,31 @@
 //! Desktop entry points forward lifecycle policy to its owned Server.
 use super::*;
 pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::Error> {
-    SUPERVISOR.start().await.map_err(Into::into)
+    let status = SUPERVISOR.start().await.map_err(crate::Error::from);
+    lifecycle("serving", &status);
+    status
 }
 pub async fn enable() -> Result<RemoteStatus, crate::Error> {
-    SUPERVISOR.enable().await.map_err(Into::into)
+    let status = SUPERVISOR.enable().await.map_err(crate::Error::from);
+    lifecycle("enabled", &status);
+    status
+}
+/// One line per switch decision, in the file a later investigation reads.
+///
+/// The bridge that stops serving is the question a user asks after the fact
+/// ("the remote desktop died and the switch was off"), and until this existed
+/// the answer lived on a stderr a windowless launch cannot write to.
+fn lifecycle(action: &str, status: &Result<RemoteStatus, crate::Error>) {
+    match status {
+        Ok(status) => future_remote_protocol::remote_log!(
+            "remote: {action} (phase={:?}, reason={:?})",
+            status.phase,
+            status.reason
+        ),
+        Err(error) => {
+            future_remote_protocol::remote_log!("remote: {action} failed (local fault): {error}")
+        }
+    }
 }
 pub async fn add_device() -> Result<RemoteStatus, crate::Error> {
     match SUPERVISOR.add_device().await {

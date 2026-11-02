@@ -1153,6 +1153,100 @@ mod tests {
         assert!(!stdout.contains("no sessions in the database"), "{stdout}");
     }
 
+    /// The fourth combination: the database was asked and reports **zero**
+    /// sessions, with the legacy directory absent. That is a machine nobody has
+    /// used yet, and it must read as such — not as the "135" above and not as
+    /// the unverified case below, which are different sentences on purpose.
+    #[tokio::test]
+    async fn zero_sessions_in_the_database_is_its_own_answer() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut agent = crate::test_server::MockAgent::default();
+        agent.responses.insert(
+            "get_storage_health".into(),
+            serde_json::json!({
+                "databaseId":"mock-db","restoreGeneration":"mock-restore",
+                "schemaVersion":future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION,
+                "sessions":0,"deletedSessions":0,"failedImports":0,
+                "unrecoverableQueuedInputs":0,"pendingQueuedInputs":0,
+                "pendingHistoryIndexes":0,"catalogueConflicts":0,
+            })
+            .to_string(),
+        );
+        let addr = crate::test_server::spawn_mock(agent).await;
+        let _env = EnvGuard::set(&[
+            ("HOME", dir.path().as_os_str().to_owned()),
+            ("PATH", dir.path().join("empty-bin").into_os_string()),
+            ("FUTURE_AGENT_GRPC_ADDR", OsString::from(addr)),
+        ]);
+        assert!(!sessions_dir_path().exists());
+
+        let (_, stdout, _) = run_doctor().await;
+        assert!(
+            stdout.contains("No session directory")
+                && stdout.contains("no sessions in the database"),
+            "an empty database and an unreachable one must not share a sentence: {stdout}"
+        );
+        // The unverified sentence ("was not verified") belongs to the health
+        // failure case only.
+        assert!(
+            !stdout.contains("was not verified"),
+            "the database answered, so nothing is unverified: {stdout}"
+        );
+    }
+
+    /// Database health that reports damage is an **issue**, not a warning: the
+    /// rows are retained for recovery, so the section has to name each counter
+    /// and the rebuild that is already scheduled, or the user is told "okay"
+    /// about data the agent is still trying to save.
+    #[tokio::test]
+    async fn storage_damage_is_an_issue_that_names_every_counter() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut agent = crate::test_server::MockAgent::default();
+        agent.responses.insert(
+            "get_storage_health".into(),
+            serde_json::json!({
+                "databaseId":"mock-db","restoreGeneration":"mock-restore",
+                "schemaVersion":future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION,
+                "sessions":3,"deletedSessions":0,"failedImports":2,
+                "unrecoverableQueuedInputs":0,"pendingQueuedInputs":0,
+                "pendingHistoryIndexes":4,"catalogueConflicts":1,
+            })
+            .to_string(),
+        );
+        let addr = crate::test_server::spawn_mock(agent).await;
+        let _env = EnvGuard::set(&[
+            ("HOME", dir.path().as_os_str().to_owned()),
+            ("PATH", dir.path().join("empty-bin").into_os_string()),
+            ("FUTURE_AGENT_GRPC_ADDR", OsString::from(addr)),
+        ]);
+
+        let (_, stdout, _) = run_doctor().await;
+        // Each non-zero counter, with the count the agent reported.
+        for line in [
+            "failedImports: 2; original data retained for recovery",
+            "catalogueConflicts: 1; original data retained for recovery",
+            "4 history index(es) will rebuild when opened",
+        ] {
+            assert!(stdout.contains(line), "missing {line:?} in {stdout}");
+        }
+        // A zero counter is not a finding: naming it would make every healthy
+        // machine read as damaged.
+        assert!(
+            !stdout.contains("unrecoverableQueuedInputs"),
+            "zero counters stay silent: {stdout}"
+        );
+        // Damaged storage is the section's `[!!]` marker, and the run as a whole
+        // cannot claim everything is fine.
+        assert!(
+            stdout.contains("[!!] Sessions")
+                || stdout.contains("Sessions") && stdout.contains("!!"),
+            "an issue, not a warning: {stdout}"
+        );
+        assert!(!stdout.contains("All checks passed."), "{stdout}");
+    }
+
     /// The other half of the lookup contract (the test above): with a lookup
     /// that *runs* and reports no match, the components read as absent, and an
     /// absent optional component stays a warning — no issue is invented for it.
@@ -1278,10 +1372,16 @@ mod tests {
         tokio::fs::create_dir_all(&bin_dir).await.unwrap();
         let written = dir.path().join("written.txt");
         let desktop = bin_dir.join("future-desktop");
+        // The hang only has to outlast the probe: the armer below hands the
+        // probe a zero budget as soon as the marker appears, so what this sleep
+        // buys is "the child is still there when the deadline fires". Thirty
+        // seconds made the test wait for the grandchild's own exit and put this
+        // crate's `--lib` gate over the 120 s a supervisor run allows; eight
+        // still cannot elapse before the deadline it is there to lose against.
         tokio::fs::write(
             &desktop,
             format!(
-                "#!/bin/sh\necho \"FutureOS: agent already reachable at 127.0.0.1:50051\"\ntouch '{}'\nsleep 30\n",
+                "#!/bin/sh\necho \"FutureOS: agent already reachable at 127.0.0.1:50051\"\ntouch '{}'\nsleep 8\n",
                 written.display()
             ),
         )
@@ -1346,10 +1446,13 @@ mod tests {
     #[tokio::test]
     async fn a_probe_that_cannot_be_started_is_reported_as_such() {
         let probe = get_binary_version("/no/such/binary-for-the-version-probe").await;
-        match probe {
-            VersionProbe::NotStarted(error) => assert!(!error.is_empty()),
-            other => panic!("a missing executable is not a probe without output: {other:?}"),
-        }
+        // One `assert!` rather than a `match` whose failure arm is a line no
+        // passing run can reach: the arm's `panic!` would be an unmeasurable
+        // statement sitting in the measured crate.
+        assert!(
+            matches!(&probe, VersionProbe::NotStarted(error) if !error.is_empty()),
+            "a missing executable is not a probe without output: {probe:?}"
+        );
         let line = render_version_line(
             "/no/such/binary-for-the-version-probe",
             VersionProbe::NotStarted("No such file or directory".to_string()),

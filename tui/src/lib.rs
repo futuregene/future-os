@@ -113,6 +113,61 @@ pub mod test_env {
         }
     }
 
+    /// How many file descriptors this test binary is allowed to hold.
+    ///
+    /// `cargo test` runs every test of a binary in threads of **one process**, and
+    /// the socket-using tests each hold a listener plus one connection per call
+    /// (`execute_unary` opens a fresh one — see `grpc_client::execute_unary`). At
+    /// the default parallelism of a 32-core machine that peak is a few hundred
+    /// descriptors, and macOS's soft limit is **256** unless the shell raised it.
+    ///
+    /// Measured 2026-11-01 with the workbench-driver tests added, `--test-threads`
+    /// at the default 32, on a shell whose `ulimit -n` was 256: the suite failed
+    /// intermittently (2–3 runs in 3), always in a *live* test, and the failing
+    /// surface reported
+    /// `Could not load the transcript: unable to connect to Future Agent
+    /// (http://127.0.0.1:PORT: transport error)` — the mock's own port, because the
+    /// `connect` that needed a descriptor never got one. With `ulimit -n 8192` the
+    /// same suite passed 3 of 3; at `--test-threads=4` or `8` it also passed,
+    /// which is what made it look like a race. It is not: it is the descriptor
+    /// cliff, and every assertion in those tests is fine.
+    ///
+    /// So the suite raises its own budget instead of asking the shell for one. The
+    /// raise is bounded by the hard limit, only ever upward, and idempotent, so it
+    /// composes with the one test that lowers the limit on purpose to force
+    /// `EMFILE` (`terminal_posix::tests`): that test restores what it found, and
+    /// the next call here raises again if what it found was the old ceiling.
+    #[cfg(unix)]
+    pub fn ensure_fd_headroom() {
+        // No `Once`: the test above restores the value it found, so a one-shot
+        // guard would fire into that window and never fire again.
+        const WANT: libc::rlim_t = 4096;
+        let mut limits = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: both calls pass a valid `rlimit` for `RLIMIT_NOFILE`; failure is
+        // reported by the return value and only means "keep the current budget".
+        unsafe {
+            if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limits) != 0 {
+                return;
+            }
+            if limits.rlim_cur >= WANT {
+                return;
+            }
+            let raised = libc::rlimit {
+                rlim_cur: WANT.min(limits.rlim_max),
+                rlim_max: limits.rlim_max,
+            };
+            let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &raised);
+        }
+    }
+
+    /// Windows has no `RLIMIT_NOFILE`: a process is limited by the handle table,
+    /// not by a number a test can raise, so there is nothing to do here.
+    #[cfg(not(unix))]
+    pub fn ensure_fd_headroom() {}
+
     /// An absolute path to the external tool `name`.
     ///
     /// A test that spawns a program must not let a *peer test's* legitimate — and

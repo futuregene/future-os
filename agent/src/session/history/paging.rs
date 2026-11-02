@@ -264,7 +264,7 @@ pub(super) fn read_display_page(
     } else {
         HISTORY_PAGE_ROWS
     };
-    let mut stmt = db.prepare(&sql)?;
+    let mut stmt = db.prepare_cached(&sql)?;
     let mut cursor = stmt.query(params![&stored_session, start, end])?;
     let mut rows = Vec::new();
     let mut body_bytes = 0usize;

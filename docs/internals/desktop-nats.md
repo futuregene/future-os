@@ -69,3 +69,31 @@ docker compose down
 
 Never expose this legacy local configuration to the public network. It is not a
 valid environment for testing JWT subject isolation.
+
+## Credential lifetime and renewal
+
+Every pairing's NATS user JWT is issued for 15 minutes (`exp - iat = 900` in the
+token the platform mints). A socket is authorized by the JWT it was *opened*
+with, so a generation that reaches its expiry is closed by the relay and cannot
+authenticate again with the same grant — renewal has to happen before that, on
+both halves of the pair:
+
+- the bridge (`future_remote_server::pairing::REFRESH_LEAD`): **240 s**;
+- the client that drives another machine (`ROTATION_LEAD_SECS` in
+  `future-remote-client`): **240 s**, and a rotation that fails is retried inside
+  that window with a 15/30/60 s backoff instead of being written off for the rest
+  of the grant.
+
+The client's *connect-time* predicate stays at 60 s (`PeerCreds::needs_refresh`,
+pinned by `fixtures/credentials.json` because the phone client shares it): that
+margin answers "will a connection started now still be valid", which is a
+different question from "how much room does a live link need to replace its
+grant".
+
+Measured 2026-11-01 before the change: three outgoing links each lost their grant
+at every expiry and were re-minted 2-3 s *after* the relay had cut them
+(10:50:44 → 10:50:47, 10:51:45 → 10:51:48, 10:53:35 → 10:53:38) — a blink every
+15 minutes, with `User Authentication Expired` / `authorization violation` /
+`max reconnection attempts reached` in `desktop.log` each time. After the change
+a launch's renewals can be read off `remote_peers.json`: each `iat` lands about
+240 s before the previous `exp`, and no socket is cut.

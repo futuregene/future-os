@@ -627,6 +627,29 @@ describe("mentionEditor # session menu", () => {
       .toBe("please [Fix the flaky test](futureos://session/s-a1) ");
   });
 
+  it("ignores a pick once the # that opened the menu is gone", () => {
+    // The menu is a snapshot taken when `#` was typed; the browser may edit the DOM
+    // without telling us (native undo, an IME commit, a paste handled below us), so by
+    // the time a row is pressed the `#query` it was drawn for may no longer exist. There
+    // is no range to replace, and inserting a pill at an unknown caret would move the
+    // reader's text.
+    render({ sessions: SESSIONS });
+    editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
+    type("#flaky");
+    expect(sessionTitles()).toEqual(["Fix the flaky test"]);
+
+    // A native edit: the text goes, no input event arrives, the menu keeps its rows.
+    act(() => {
+      editor.textContent = "";
+    });
+    act(() => {
+      menuRows()[0]!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    });
+
+    expect(editor.querySelector("[data-mention='session']")).toBeNull();
+    expect(editorWithHandle().getContent()).toBe("");
+  });
+
   it.each(["Enter", "Tab"])("selects the highlighted conversation with %s", (key) => {
     render({ sessions: SESSIONS });
     editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;

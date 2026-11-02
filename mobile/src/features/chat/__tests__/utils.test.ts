@@ -8,7 +8,13 @@ const alert = (jest.requireMock("../../../components/appAlerts") as {
   AppAlert: { alert: jest.Mock };
 }).AppAlert.alert;
 
+// `Platform.OS` is a process global the tests below assign directly, and
+// `deferPresentation` reads it (350 ms on iOS, 0 on Android): a test that
+// inherits the previous one's platform measures a delay it never asked for.
+// Each test sets the platform it depends on, and this puts it back.
+const originalOS = Platform.OS;
 afterEach(() => {
+  Platform.OS = originalOS;
   jest.useRealTimers();
   jest.clearAllMocks();
 });
@@ -160,6 +166,10 @@ describe("the cellular download confirmation", () => {
 
   test("dismissing without choosing answers false, not undecided", async () => {
     jest.useFakeTimers();
+    // The dismissal path does not care about the reveal delay, but the promise
+    // only settles once `deferPresentation` fires: the tap here advances 0 ms,
+    // which is Android's delay (iOS waits 350 ms for UIKit to let go).
+    Platform.OS = "android";
     const answer = confirmDownload("Download file?", "12 MB", "Cancel", "Download");
     act(() => shown().options.onDismiss?.());
     await act(async () => { jest.advanceTimersByTime(0); await Promise.resolve(); });

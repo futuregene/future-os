@@ -1,9 +1,10 @@
 import type { AgentMessage } from "@future-os/thread-projection";
 import type { SetStateAction } from "react";
 import type { StoredRun, StoredThread } from "../../integrations/storage/threadStore";
+import { listen } from "@tauri-apps/api/event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { sendPromptToFutureAgent } from "../../integrations/agent/agentClient";
-import { createRun, getRun, listRunEvents, updateRunStatus } from "../../integrations/storage/threadStore";
+import { createRun, getRun, listRunEvents, listRunEventsSince, updateRunStatus } from "../../integrations/storage/threadStore";
 import { buildReferenceContext } from "./buildReferencePrompt";
 import { runSendPipeline } from "./sendPipeline";
 import { finalizeTemporaryAttachmentSources, persistImageAttachments } from "./threadAttachments";
@@ -37,8 +38,20 @@ vi.mock("./threadAttachments", () => ({
 vi.mock("./buildReferencePrompt", () => ({
   buildReferenceContext: vi.fn(async () => ""),
 }));
+/**
+ * The delegation the projection mock must have when a test does not replace it.
+ *
+ * Captured by the factory below through `vi.hoisted` because `vi.mock` is hoisted
+ * above this file's imports: a plain module-level `let` would still be in its
+ * temporal dead zone when the factory runs.
+ */
+const projectionDelegate = vi.hoisted(() => ({
+  actual: null as typeof import("./threadRunProjection").updatePendingMessageFromRunEvents | null,
+}));
+
 vi.mock("./threadRunProjection", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./threadRunProjection")>();
+  projectionDelegate.actual = actual.updatePendingMessageFromRunEvents;
   return {
     ...actual,
     // Delegate to the real implementation by default (the streaming tests below
@@ -104,19 +117,43 @@ function makeDeps(setMessages: MockedSetMessages) {
   };
 }
 
-describe("runSendPipeline terminal-status handling", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.mocked(createRun).mockResolvedValue(storedRun());
-    vi.mocked(listRunEvents).mockResolvedValue([]);
-    vi.mocked(sendPromptToFutureAgent).mockResolvedValue({
-      content: "final answer",
-      complete: true,
-      sessionId: "session-1",
-    });
-    vi.mocked(buildReferenceContext).mockResolvedValue("");
+/**
+ * The baseline every test in this file starts from.
+ *
+ * `clearAllMocks()` drops call records but leaves *implementations* in place, so
+ * the three describes used to seed `createRun` / `listRunEvents` /
+ * `buildReferenceContext` locally and inherit whatever the last-run test had set
+ * for everything else. Under a shuffled order that inverted: the stream test's
+ * assertions read `listRunEventsSince` calls made by the journal read inside the
+ * projection, and the sibling race test had replaced that projection with a
+ * synthetic one — so the reads never happened. Seed every mock here, and let a
+ * test override only what it is about.
+ */
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(buildReferenceContext).mockReset().mockResolvedValue("");
+  vi.mocked(createRun).mockReset().mockResolvedValue(storedRun());
+  vi.mocked(getRun).mockReset().mockResolvedValue(storedRun());
+  vi.mocked(listRunEvents).mockReset().mockResolvedValue([]);
+  vi.mocked(listRunEventsSince).mockReset().mockResolvedValue([]);
+  vi.mocked(sendPromptToFutureAgent).mockReset().mockResolvedValue({
+    content: "final answer",
+    complete: true,
+    sessionId: "session-1",
   });
+  vi.mocked(listen).mockReset().mockImplementation(async () => () => {});
+  vi.mocked(finalizeTemporaryAttachmentSources).mockReset().mockImplementation(async () => {});
+  vi.mocked(persistImageAttachments).mockReset().mockResolvedValue({
+    attachments: [],
+    temporarySources: [],
+    unpersisted: [],
+  });
+  vi.mocked(updatePendingMessageFromRunEvents).mockReset();
+  if (projectionDelegate.actual)
+    vi.mocked(updatePendingMessageFromRunEvents).mockImplementation(projectionDelegate.actual);
+});
 
+describe("runSendPipeline terminal-status handling", () => {
   it("keeps model-only reference context out of the user message", async () => {
     vi.mocked(getRun).mockResolvedValue(storedRun({ status: "completed", endedAt: 2_000 }));
     vi.mocked(buildReferenceContext).mockResolvedValue("Referenced FutureOS objects:\n1. file:utils/a.py");
@@ -256,13 +293,6 @@ describe("runSendPipeline terminal-status handling", () => {
 });
 
 describe("runSendPipeline stream/failure edges", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.mocked(buildReferenceContext).mockResolvedValue("");
-    vi.mocked(createRun).mockResolvedValue(storedRun());
-    vi.mocked(listRunEvents).mockResolvedValue([]);
-  });
-
   it("marks the run failed when the stream closes incomplete and the row is still active", async () => {
     vi.mocked(getRun).mockResolvedValue(storedRun());
     vi.mocked(sendPromptToFutureAgent).mockResolvedValue({
@@ -402,7 +432,6 @@ describe("runSendPipeline stream/failure edges", () => {
     handler!({
       payload: { updates: [{ runId: "run-other", resetProjection: true }] },
     });
-    const { listRunEventsSince } = await import("../../integrations/storage/threadStore");
     await vi.waitFor(() => {
       // One leading read plus one trailing read: burst notifications never run
       // journal IPCs concurrently, but the newest tail is still consumed.
@@ -630,13 +659,6 @@ it("does not refresh the sidebar when a failed send was superseded", async () =>
 });
 
 describe("runSendPipeline queued behind a running reply", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.mocked(buildReferenceContext).mockResolvedValue("");
-    vi.mocked(createRun).mockResolvedValue(storedRun());
-    vi.mocked(listRunEvents).mockResolvedValue([]);
-  });
-
   /** The Agent's ack when the session was already executing a run. */
   function queuedReply() {
     return {

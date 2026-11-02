@@ -976,20 +976,61 @@ fn pass_through_events_stay_untyped() {
 #[test]
 fn text_chunk_encode_stays_within_budget() {
     let data = r#"{"text":"a streaming token"}"#.to_string();
+    let iterations = 20_000u32;
+    let encode_all = || {
+        for _ in 0..iterations {
+            std::hint::black_box(encode::event_payload("text_chunk", &data));
+        }
+    };
     // Warm-up (allocator/JIT-free Rust, but keep the first-touch cost out).
-    for _ in 0..1000 {
-        std::hint::black_box(encode::event_payload("text_chunk", &data));
-    }
-    let iterations = 20_000;
-    let start = std::time::Instant::now();
-    for _ in 0..iterations {
-        std::hint::black_box(encode::event_payload("text_chunk", &data));
-    }
-    let per_event = start.elapsed() / iterations;
+    encode_all();
+    let per_event = cheapest_per_iteration(iterations, &encode_all);
     assert!(
         per_event < std::time::Duration::from_micros(5),
         "text_chunk encode too slow: {per_event:?}/event"
     );
+}
+
+/// [`text_chunk_encode_stays_within_budget`]'s clock: the one cost the loop under
+/// test is responsible for.
+///
+/// A wall clock charges whatever the *host* did to this thread to the loop — this
+/// suite runs 31 tests in parallel, and under 6× CPU oversubscription (several
+/// `cargo test` runs at once, the recorded condition) the loop was descheduled
+/// often enough to red at 21 of 60 runs with the encoder unchanged. On unix the
+/// thread's own CPU time is read instead, so being taken off the CPU costs
+/// nothing; platforms without that reading fall back to the cheapest of several
+/// passes, which is what a wall clock can offer without the host's noise.
+#[cfg(unix)]
+fn cheapest_per_iteration(iterations: u32, run: &dyn Fn()) -> std::time::Duration {
+    let start = thread_cpu_time();
+    run();
+    (thread_cpu_time() - start) / iterations
+}
+
+#[cfg(not(unix))]
+fn cheapest_per_iteration(iterations: u32, run: &dyn Fn()) -> std::time::Duration {
+    let mut cheapest = std::time::Duration::MAX;
+    for _ in 0..15 {
+        let start = std::time::Instant::now();
+        run();
+        cheapest = cheapest.min(start.elapsed() / iterations);
+    }
+    cheapest
+}
+
+/// CPU time consumed by the calling thread.
+#[cfg(unix)]
+fn thread_cpu_time() -> std::time::Duration {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `clock_gettime` only writes through the pointer it is given, and
+    // `CLOCK_THREAD_CPUTIME_ID` is always readable for the calling thread.
+    let rc = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut now) };
+    assert_eq!(rc, 0, "clock_gettime(CLOCK_THREAD_CPUTIME_ID) failed");
+    std::time::Duration::new(now.tv_sec as u64, now.tv_nsec as u32)
 }
 
 #[test]

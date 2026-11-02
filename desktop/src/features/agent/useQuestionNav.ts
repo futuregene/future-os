@@ -126,6 +126,17 @@ export function useQuestionNav<T extends TranscriptMessage>({
   const pagePendingRef = useRef(false);
   /** The frame loop looking for that page's rows, or null when none is armed. */
   const pageFrameRef = useRef<number | null>(null);
+  /**
+   * Whether the view that started a page landing is still on screen.
+   *
+   * The press returns before its read does, so a landing can be started by a
+   * view that is then closed (the reader switches conversation while the page is
+   * in flight). Cancelling the armed frame is not enough there — the read's own
+   * continuation runs *after* the cleanup and would arm a fresh one, and a frame
+   * loop has no caller left to stop it: it would go on resolving a landing
+   * against a transcript nobody is looking at.
+   */
+  const landingAliveRef = useRef(true);
   const [offer, setOffer] = useState<{ previous: MessageIndex | null; next: MessageIndex | null }>({
     next: null,
     previous: null,
@@ -303,6 +314,12 @@ export function useQuestionNav<T extends TranscriptMessage>({
     onTakeOverRef.current();
     const rowsBefore = rows().length;
     const settle = (frame: number) => {
+      // The view closed while the read was in flight: nothing to land on, and
+      // nothing that may keep asking the browser for frames.
+      if (!landingAliveRef.current) {
+        pageFrameRef.current = null;
+        return;
+      }
       if (rows().length > rowsBefore) {
         pageFrameRef.current = null;
         navigate("previous");
@@ -378,6 +395,7 @@ export function useQuestionNav<T extends TranscriptMessage>({
   // would move a viewport nobody asked it to touch.
   useEffect(
     () => () => {
+      landingAliveRef.current = false;
       if (pageFrameRef.current !== null)
         window.cancelAnimationFrame(pageFrameRef.current);
       pageFrameRef.current = null;

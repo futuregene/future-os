@@ -556,3 +556,66 @@ it("offers the pending restart even without cached update discovery", async () =
   expect(container.textContent).not.toContain("pending-private-id");
   expect(container.textContent).not.toContain("worker-native-detail");
 });
+
+describe("updatePage repair acknowledgement", () => {
+  const REPAIR = {
+    operationId: "update-repair",
+    fromVersion: "2.0.0",
+    targetVersion: "2.1.0",
+    stage: "finished",
+    outcome: "repair-required",
+    diagnostic: null,
+    restartSafe: false,
+    repairAcknowledged: false,
+  };
+
+  it("treats a refused acknowledgement as a no-op, not as an error", async () => {
+    mocks.maintenance.mockResolvedValue({ cli: {}, update: REPAIR });
+    const container = await renderPage(UPDATE);
+    const confirm = button(container, "I’ve reinstalled FutureOS")!;
+    expect(confirm).toBeTruthy();
+
+    // `false` is the host saying "there is no such repair any more" — the
+    // operation already finished or was superseded. It is not a failure of the
+    // confirmation, so the page must not accuse the user's reinstall of failing;
+    // it simply stops here and leaves the control where it is.
+    const readsBefore = mocks.maintenance.mock.calls.length;
+    mocks.invokeCommand.mockResolvedValue(false);
+    await act(async () => confirm.click());
+
+    expect(mocks.invokeCommand).toHaveBeenCalledWith(
+      "acknowledge_update_repair",
+      { language: "en", operationId: "update-repair" },
+    );
+    // No second maintenance read, no failure text, and the control stays: the
+    // only message on the page is the repair note it arrived with.
+    expect(mocks.maintenance.mock.calls.length).toBe(readsBefore);
+    expect(container.textContent).not.toContain("Couldn’t confirm your reinstallation");
+    expect(container.textContent).toContain("Download the installer, reinstall FutureOS, then open it again.");
+    expect(button(container, "I’ve reinstalled FutureOS")).toBeTruthy();
+  });
+});
+
+describe("updatePage fallback download", () => {
+  it("opens the update page when nothing more specific is known", async () => {
+    // The install failed and the host could not say anything else about it, so
+    // the page is the only remaining way forward — and it uses the generic
+    // download page rather than inventing a URL.
+    mocks.invokeCommand.mockImplementation(async (command: unknown) => {
+      if (command === "install_app_update")
+        throw new Error("disk full");
+      return undefined;
+    });
+    mocks.maintenance.mockImplementation(async () => {
+      throw new Error("maintenance offline");
+    });
+    const container = await renderPage(UPDATE);
+
+    await act(async () => button(container, "Download and install")!.click());
+    const fallback = button(container, "Download installer");
+    expect(fallback).toBeTruthy();
+
+    await act(async () => fallback!.click());
+    expect(mocks.openExternalUrl).toHaveBeenCalledExactlyOnceWith("https://future-os.cn/");
+  });
+});

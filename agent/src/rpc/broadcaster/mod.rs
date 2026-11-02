@@ -253,7 +253,7 @@ impl SseBroadcaster {
                         }
                         let mut piece = header.clone();
                         piece.data = data.to_string();
-                        self.broadcast_stamped(piece, false, wait);
+                        self.broadcast_stamped(piece, false, wait, true);
                         if self.persistence_error().is_some() {
                             break;
                         }
@@ -264,7 +264,7 @@ impl SseBroadcaster {
             }
         }
         let session_scoped = is_session_scoped_event(&event.event_type);
-        self.broadcast_stamped(event, session_scoped, wait);
+        self.broadcast_stamped(event, session_scoped, wait, true);
     }
 
     /// Broadcast a signal about the **session** rather than about a run.
@@ -280,10 +280,33 @@ impl SseBroadcaster {
     /// already replay for the events that have no run (`model_changed`,
     /// `cwd_changed`, …).
     pub fn broadcast_session(&self, event: SseEvent) {
-        self.broadcast_stamped(event, true, true);
+        self.broadcast_stamped(event, true, true, true);
     }
 
-    fn broadcast_stamped(&self, mut event: SseEvent, session_scoped: bool, wait: bool) {
+    /// Publish a **run terminal** whose journal is already unusable.
+    ///
+    /// The normal path appends before it publishes, so once the journal is
+    /// failed *every* later event — including `agent_end` — is dropped before
+    /// any subscriber sees it. That is the right default (never let a client
+    /// believe an event was saved when it was not), but it turns a persistence
+    /// failure into a silent stop: the model loop ends, no terminal arrives,
+    /// and only a client-side timeout notices.
+    ///
+    /// This is the one exception, and it is honest about its scope: the event
+    /// is stamped and delivered live exactly once, and it is explicitly *not*
+    /// durable. It exists so a run that persistence has abandoned says so
+    /// instead of going quiet.
+    pub(crate) fn broadcast_unpersisted(&self, event: SseEvent) {
+        self.broadcast_stamped(event, false, false, false);
+    }
+
+    fn broadcast_stamped(
+        &self,
+        mut event: SseEvent,
+        session_scoped: bool,
+        wait: bool,
+        persist: bool,
+    ) {
         // Parse/preview large tool facts before acquiring the stamping lock.
         // The writer receives the parsed immutable data, so this critical
         // section never serializes or clones a multi-megabyte body.
@@ -380,35 +403,39 @@ impl SseBroadcaster {
                 return;
             }
         }
-        let receipt = match Self::append_journal(&mut journal, &event, source, bytes) {
-            Ok(receipt) => receipt,
-            Err(failure) => {
-                match failure {
-                    // The journal refuses this event for good, so retrying could
-                    // never store it — and reporting it as a session-wide journal
-                    // failure is what turned one misplaced event into a session no
-                    // prompt could be sent to. Name it, drop it, and keep the rest
-                    // of the session writable.
-                    AppendFailure::Rejected(reason) => {
-                        tracing::warn!(
-                            session = %event.session_id,
-                            run_id = %event.run_id,
-                            epoch = event.epoch,
-                            idx = event.idx,
-                            event_id = %event.event_id,
-                            event_type = %event.event_type,
-                            %reason,
-                            "dropping an event this journal refuses; the session's journal stays live"
-                        );
-                        return;
-                    }
-                    // A storage problem: fail closed and keep the journal blocked
-                    // until it is recovered, as before.
-                    AppendFailure::Unavailable(message) => {
-                        let message = format!("event journal append failed: {message}");
-                        self.journal_health.fail(message.clone());
-                        tracing::error!(run_id = %event.run_id, idx = event.idx, "{message}");
-                        return;
+        let receipt = if !persist {
+            None
+        } else {
+            match Self::append_journal(&mut journal, &event, source, bytes) {
+                Ok(receipt) => receipt,
+                Err(failure) => {
+                    match failure {
+                        // The journal refuses this event for good, so retrying could
+                        // never store it — and reporting it as a session-wide journal
+                        // failure is what turned one misplaced event into a session no
+                        // prompt could be sent to. Name it, drop it, and keep the rest
+                        // of the session writable.
+                        AppendFailure::Rejected(reason) => {
+                            tracing::warn!(
+                                session = %event.session_id,
+                                run_id = %event.run_id,
+                                epoch = event.epoch,
+                                idx = event.idx,
+                                event_id = %event.event_id,
+                                event_type = %event.event_type,
+                                %reason,
+                                "dropping an event this journal refuses; the session's journal stays live"
+                            );
+                            return;
+                        }
+                        // A storage problem: fail closed and keep the journal blocked
+                        // until it is recovered, as before.
+                        AppendFailure::Unavailable(message) => {
+                            let message = format!("event journal append failed: {message}");
+                            self.journal_health.fail(message.clone());
+                            tracing::error!(run_id = %event.run_id, idx = event.idx, "{message}");
+                            return;
+                        }
                     }
                 }
             }

@@ -7,12 +7,22 @@ import { MIN_PANEL_HEIGHT, useTerminalPanel } from "./useTerminalPanel";
 
 const PREFS_KEY = "future.terminal.panel.v1";
 
+// The panel derives its height from `window.innerHeight` (a share of it, clamped
+// to a ceiling of `innerHeight - HEADER_RESERVE`). The resize test below shrinks
+// the window to 300px, and `window` is process-global, so without a baseline the
+// next test to run inherits a 60px ceiling — which clamps its stored 300px height
+// up to MIN_PANEL_HEIGHT. Captured once, before any test, and restored around
+// every test.
+const BASE_VIEWPORT = window.innerHeight;
+
 beforeEach(() => {
   localStorage.clear();
+  window.innerHeight = BASE_VIEWPORT;
 });
 
 afterEach(() => {
   localStorage.clear();
+  window.innerHeight = BASE_VIEWPORT;
 });
 
 describe("useTerminalPanel", () => {

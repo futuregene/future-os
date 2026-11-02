@@ -906,3 +906,54 @@ it("reports a reconnect-all the shell could not carry out", async () => {
   expect(view.text()).toContain("no bridge");
   await view.unmount();
 });
+
+/**
+ * Enter in the name box is the dialog's own submit.
+ *
+ * The keyboard is where the reader already is — they opened this to fix a name
+ * and the box has the caret — so the last gesture must not be a trip to the
+ * mouse. It goes through the same `save` the button does, which is what keeps
+ * "Enter" and "Save" from being two different writes.
+ */
+it("saves the label from the keyboard", async () => {
+  const view = await mount();
+  await act(async () => view.labelButton()!.click());
+
+  const input = view.labelInput()!;
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(input, "Studio mini");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => {
+    input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" }));
+  });
+  await view.settle();
+
+  expect(setRemotePeerLabel).toHaveBeenCalledWith("desktop_a", { name: "Studio mini" });
+  expect(view.container.querySelector("[role='dialog']")).toBeNull();
+  await view.unmount();
+});
+
+/**
+ * Enter on an unchanged form writes nothing.
+ *
+ * The Save button is disabled in that state, and Enter has to agree with it:
+ * a key press that reached the write would bump the busy flag, re-read the
+ * whole list and record a label that says what it already said.
+ */
+it("leaves an unchanged label alone when Enter is pressed", async () => {
+  const view = await mount();
+  await act(async () => view.labelButton()!.click());
+
+  const input = view.labelInput()!;
+  await act(async () => {
+    input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" }));
+  });
+  await view.settle();
+
+  expect(setRemotePeerLabel).not.toHaveBeenCalled();
+  // Still open: nothing happened, so nothing closed.
+  expect(view.container.querySelector("[role='dialog']")).not.toBeNull();
+  await view.unmount();
+});

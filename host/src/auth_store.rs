@@ -165,6 +165,18 @@ pub mod test_support {
         crate::request_scope::reset_for_test();
         crate::tasks::reset_for_test();
         crate::remote_peer::runtime::reset_after_shutdown_for_test();
+        // A *stopped* host role, not merely a re-armed closed one:
+        // `reset_after_shutdown_for_test` only resets a server that was shut
+        // down, so a suspension with no resume — the shape
+        // `handle_system_suspend_stops_the_running_generation` leaves behind
+        // when it clears `start_requested` at the end — kept `suspended` set
+        // for the whole process. Every later `start` then took
+        // `start_generation`'s `!start_requested || suspended` arm and
+        // answered an *empty* status: no bridge, no invitation, and the next
+        // fixture's failure read as "the host shows no invitation" instead of
+        // the reason. Draining here is the same rule the lines above follow —
+        // nothing process-global outlives the fixture that set it.
+        crate::remote::stop();
         crate::remote::reset_after_shutdown_for_test();
         crate::store::reset_run_event_writer_for_test();
         crate::store::close_pool();
@@ -194,10 +206,17 @@ pub mod test_support {
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());
             timing.mark("lock_wait");
+            // Names the fixture in the access-epoch journal: a start that answers
+            // `Stopped` is always a reaction to some *other* writer, and the
+            // journal has to say whose.
+            crate::remote::test_support::set_current_fixture(label);
+            crate::remote::test_support::note_access("fixture acquired");
+            crate::remote::test_support::enter_fixture_scope();
             // `HOME` and the SQLite pool are process-global. A task started by
             // an earlier test may outlive its caller runtime, so it must be
             // cancelled and observed before this fixture publishes a new path.
             cleanup();
+            crate::remote::test_support::note_access("fixture drained");
             timing.mark("pre_cleanup");
             let previous = std::env::var("HOME").ok();
             let previous_userprofile = std::env::var_os("USERPROFILE");
@@ -256,6 +275,15 @@ pub mod test_support {
         /// directly observable without racing the global `TEST_HOME_LOCK`.
         fn restore(&mut self) {
             self.timing.mark("body");
+            // The drain below is this fixture's own machine-wide teardown, so
+            // this fixture has to be the one that owns the machine while it
+            // runs — including for the guards built by struct literal (the
+            // absent-`HOME` arms below, which never went through
+            // `with_cleanup`). Without this line their `cleanup_host` was the
+            // first *unsupervised* stop in the suite, and a refusal there
+            // happens inside `Drop`, which aborts the process instead of
+            // failing a test.
+            crate::remote::test_support::enter_fixture_scope();
             // Keep the fixture path valid until every process-lifetime task
             // started under it has stopped. Restoring HOME first would let a
             // late task resolve another test's database instead.
@@ -277,6 +305,10 @@ pub mod test_support {
             // Windows cannot unlink a database held by a connection pool.
             let _ = std::fs::remove_dir_all(&self.dir);
             self.timing.finish();
+            // The scope ends with the fixture, not with the lock: a task this
+            // fixture leaked must not be able to dispatch into the supervisor
+            // under the *next* test's name (see `assert_fixture_scope`).
+            crate::remote::test_support::leave_fixture_scope();
         }
     }
 

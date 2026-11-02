@@ -80,7 +80,39 @@ async function mount(remote: unknown, onTransferProgress = jest.fn()) {
   return { get api() { return api; }, tree, onTransferProgress };
 }
 
+/**
+ * Rebuild the implementations the `jest.mock` factories install.
+ *
+ * `jest.clearAllMocks()` clears calls but keeps implementations, and
+ * `jest.restoreAllMocks()` only undoes `spyOn`. The blocks below pin one
+ * platform's route with a `mockResolvedValue` (the native-named file, sharing
+ * availability, the SAF grants), so without this a test reads whichever route
+ * the previous test left behind — which is exactly what a shuffled run does.
+ */
+function installMockDefaults() {
+  jest.mocked(readPreviewText).mockImplementation(async (file: { bytes(): Promise<Uint8Array> }) => ({
+    text: new TextDecoder().decode(await file.bytes()), truncated: false,
+  }));
+  jest.mocked(namedExternalFile).mockImplementation(
+    (async (_file: unknown, name: string) => ({ uri: `file:///cache/named/${name}` })) as never,
+  );
+  jest.mocked(openFile).mockReset();
+  jest.mocked(saveFile).mockReset();
+  jest.mocked(shareFile).mockReset();
+  jest.mocked(findSupportedMimeType).mockReset();
+  jest.mocked(supportsNativeFileActions).mockReset();
+  jest.mocked(Sharing.shareAsync).mockReset();
+  jest.mocked(Sharing.isAvailableAsync).mockReset();
+  jest.mocked(LegacyFileSystem.readAsStringAsync).mockReset();
+  jest.mocked(LegacyFileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync).mockReset();
+  jest.mocked(LegacyFileSystem.StorageAccessFramework.createFileAsync).mockReset();
+  jest.mocked(LegacyFileSystem.StorageAccessFramework.writeAsStringAsync).mockReset();
+  jest.mocked(Network.getNetworkStateAsync).mockResolvedValue({ type: Network.NetworkStateType.WIFI } as never);
+  jest.mocked(File).mockImplementation(((uri: string) => ({ uri, size: 3 })) as never);
+}
+
 beforeEach(() => {
+  installMockDefaults();
   jest.spyOn(Alert, "alert").mockImplementation(() => {});
 });
 afterEach(() => jest.restoreAllMocks());
@@ -1800,4 +1832,69 @@ describe("preview dismissal handoff", () => {
     expect(action).toHaveBeenCalledTimes(1);
     act(() => h.tree.unmount());
   });
+});
+
+// The desktop refuses some files by naming why, and the phone answers in its own
+// words: "look at it on the desktop" is not a broken transfer, and a GIF that
+// only animates there is not one either. Both used to fall through to the
+// generic failure, which reads like the file was corrupt.
+test("a refusal that points at the desktop is reported as such", async () => {
+  for (const detail of ["animated GIF preview is not supported here — view it on desktop", "GIF preview unavailable"]) {
+    const remote = {
+      cachedAttachment: jest.fn(() => null),
+      prepareAttachment: jest.fn(async () => { throw new Error(detail); }),
+    };
+    const h = await mount(remote);
+    await act(async () => { await h.api.openAttachment({ path: "/anim.gif", name: "anim.gif" }); });
+    expect(Alert.alert).toHaveBeenCalledWith("attachment.title", "attachment.previewOnDesktop");
+    act(() => h.tree.unmount());
+    jest.mocked(Alert.alert).mockClear();
+  }
+});
+
+/**
+ * A tapped attachment reports its progress into a dialog that is already up.
+ *
+ * `openAttachment` reveals the dialog before the first byte (the size is known
+ * by then), so every progress patch lands on a visible handle. That is measured
+ * here rather than assumed: it is the reason the transfer callbacks' "the handle
+ * is not on screen yet" fallback cannot be reached during a transfer.
+ */
+test("a tapped attachment's transfer reports into the dialog it is already showing", async () => {
+  const progress: ((done: number, total: number) => void)[] = [];
+  const download = deferred<typeof file>();
+  const remote = {
+    cachedAttachment: jest.fn(() => null),
+    prepareAttachment: jest.fn(async () => ({ ...info, size: 8, chunkBytes: 4 })),
+    downloadAttachment: jest.fn((
+      _info: unknown,
+      onProgress: (done: number, total: number) => void,
+    ) => {
+      progress.push(onProgress);
+      return download.promise;
+    }),
+  };
+  const h = await mount(remote);
+  let opening!: Promise<void>;
+  await act(async () => { opening = h.api.openAttachment({ path: "/notes.txt", name: "notes.txt" }); });
+  expect(h.api.activeDownload).toMatchObject({ phase: "downloading", completedBytes: 0, totalBytes: 8 });
+
+  await act(async () => { progress[0]!(4, 8); });
+  expect(h.api.activeDownload).toMatchObject({ phase: "downloading", completedBytes: 4 });
+
+  await act(async () => { progress[0]!(8, 8); });
+  // The last chunk turns the dialog into its verifying state instead of closing it.
+  expect(h.api.activeDownload).toMatchObject({ phase: "verifying", completedBytes: 8 });
+
+  const platform = Platform.OS;
+  Platform.OS = "android";
+  try {
+    await act(async () => { download.resolve(file as File); await opening; });
+    act(() => jest.runOnlyPendingTimers());
+    // The dialog is released when the work ends, rather than left behind.
+    expect(h.api.activeDownload).toBeNull();
+  } finally {
+    Platform.OS = platform;
+    act(() => h.tree.unmount());
+  }
 });

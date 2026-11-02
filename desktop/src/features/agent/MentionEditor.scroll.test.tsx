@@ -83,6 +83,18 @@ describe("mention editor caret scrolling", () => {
     expect(editor.scrollTop).toBe(20);
   });
 
+  it("does not scroll for a caret whose range has no rectangle", () => {
+    // An element-boundary caret (the very start of a line, a caret between two blocks)
+    // can report a zero-height rect. There is no line to reveal, and guessing one would
+    // scroll a viewport the reader did not move.
+    caretRect = new DOMRect(10, 300, 0, 0);
+    const before = editor.scrollTop;
+
+    paste("more text");
+
+    expect(editor.scrollTop).toBe(before);
+  });
+
   it("does not move the viewport when the pasted caret is already visible", () => {
     caretRect = new DOMRect(10, 140, 0, 20);
     paste("inserted");

@@ -110,5 +110,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+# paused-clock tests: the idle-history release is a real 30 s sleep otherwise.
+tokio = { workspace = true, features = ["test-util"] }
 tokio-test = "0.4"
 tempfile.workspace = true

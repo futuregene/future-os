@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act } from "react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook } from "../../../test/renderHook";
 import { useRailView } from "./useRailView";
 
@@ -37,6 +37,25 @@ describe("the rail's view", () => {
     const hook = renderHook(() => useRailView());
     expect(hook.current.view).toBe("workspace");
     hook.unmount();
+  });
+});
+
+describe("a rail whose storage refuses to answer", () => {
+  it("opens on the tree instead of failing to render", () => {
+    // A locked-down webview throws on `getItem` rather than returning null: the rail
+    // must still draw, on the default view, exactly as on a first launch.
+    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("denied");
+    });
+    try {
+      const hook = renderHook(() => useRailView());
+      expect(hook.current.view).toBe("workspace");
+      expect(hook.current.order).toEqual(["workspace", "recent"]);
+      hook.unmount();
+    }
+    finally {
+      getItem.mockRestore();
+    }
   });
 });
 

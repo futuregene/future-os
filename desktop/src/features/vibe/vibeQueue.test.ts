@@ -1,7 +1,8 @@
 import type { MessageAttachment } from "@future-os/thread-projection";
 import type { QueuedMap, QueuedPrompt } from "./vibeQueue";
 import { describe, expect, it } from "vitest";
-import { cancelPrompt, dueReturns, enqueuePrompt, isRunningStatus, takePrompt } from "./vibeQueue";
+import { saveComposerDraft } from "../agent/composerDraft";
+import { cancelPrompt, draftIsEmpty, dueReturns, enqueuePrompt, isRunningStatus, takePrompt } from "./vibeQueue";
 
 /**
  * The send queue's rules, as pure functions.
@@ -107,6 +108,21 @@ describe("dueReturns", () => {
 
   it("has nothing to do for an empty queue", () => {
     expect(dueReturns(new Map(), () => false, () => "")).toEqual([]);
+  });
+});
+
+describe("draftIsEmpty", () => {
+  it("is true for a box with nothing typed in it, and for one holding only spaces", () => {
+    // What "the held sentence fits" means: whitespace is not a sentence the reader
+    // wrote, and treating it as one would keep the queue from ever handing back.
+    expect(draftIsEmpty("thread-empty")).toBe(true);
+    saveComposerDraft("thread-blank", { attachments: [], text: "   \n " });
+    expect(draftIsEmpty("thread-blank")).toBe(true);
+  });
+
+  it("is false once the reader has typed something", () => {
+    saveComposerDraft("thread-typed", { attachments: [], text: "half a thought" });
+    expect(draftIsEmpty("thread-typed")).toBe(false);
   });
 });
 

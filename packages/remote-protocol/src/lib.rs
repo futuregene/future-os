@@ -1,6 +1,7 @@
 //! Application-independent Remote wire contract.
 
 mod command_generated;
+pub mod diagnostics;
 pub mod files;
 pub mod handshake;
 pub mod invitation;

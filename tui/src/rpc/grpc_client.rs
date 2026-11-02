@@ -2955,6 +2955,10 @@ pub(crate) mod tests {
     }
 
     pub(crate) async fn spawn_api_mock(mock: ApiMock) -> String {
+        // Every socket-using test in this crate comes through here, and the
+        // process needs more descriptors than a default shell grants once they
+        // run in parallel (see `test_env::ensure_fd_headroom`).
+        crate::test_env::ensure_fd_headroom();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let incoming = TcpIncoming::from_listener(listener, true, None).unwrap();

@@ -5,18 +5,37 @@
 //! every endpoint invalidates provider/model state from the same completion.
 
 use crate::console;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use super::global_loop::GlobalLoop;
 use crate::agent_client::connect_agent;
 
-static STARTED: AtomicBool = AtomicBool::new(false);
+/// One Agent stream per process: the reconnect loop re-attaches a plain
+/// subscription forever, and the test fixture has to be able to end it.
+static LOOP: GlobalLoop = GlobalLoop::new();
 
 pub fn spawn_provider_config_observer() {
-    if STARTED.swap(true, Ordering::AcqRel) {
-        return;
-    }
-    crate::runtime::spawn(run());
+    LOOP.start(run());
+}
+
+/// Test-only: stop the process-wide observer and wait until its future is
+/// dropped. Nothing process-global may outlive the fixture that started it.
+///
+/// This loop is not one of [`super::cancel_all_observers`]' session observers:
+/// it re-attaches a plain `stream_events` subscription after every reconnect,
+/// and the mock agent hands a scripted stream to whoever attaches first. Left
+/// running past its test it therefore takes the stream the *next* test
+/// scripted, and that test waits on an unscripted (forever-parked) stream —
+/// measured 2026-11-01 as a whole-suite hang behind the mock and HOME locks.
+#[cfg(any(test, feature = "test-support"))]
+pub fn stop_provider_config_observer_for_test() {
+    LOOP.stop_for_test();
+}
+
+/// Test-only: is the process-wide observer still owned by a live task?
+#[cfg(any(test, feature = "test-support"))]
+pub fn provider_config_observer_is_running_for_test() -> bool {
+    LOOP.is_running_for_test()
 }
 
 async fn run() {
@@ -253,5 +272,55 @@ mod tests {
         let _mock = mock_agent();
         spawn_provider_config_observer();
         spawn_provider_config_observer();
+        assert!(
+            super::provider_config_observer_is_running_for_test(),
+            "the first spawn must start the observer (a second one is a no-op)"
+        );
+    }
+
+    /// A test that spawns the process-global observer must not leave it
+    /// re-attaching into the next test's script queue.
+    ///
+    /// `spawn_provider_config_observer_runs_once` above leaves exactly this
+    /// behind: the loop outlives its test, and every reconnect attaches a plain
+    /// stream. The mock gives a scripted stream to whoever attaches first, so
+    /// the leftover observer takes the stream the next test scripted and that
+    /// test then waits on an unscripted one — the mock parks those forever.
+    #[tokio::test]
+    async fn a_leaked_observer_cannot_take_the_next_tests_script() {
+        // The leak, as the previous test leaves it.
+        spawn_provider_config_observer();
+        assert!(super::provider_config_observer_is_running_for_test());
+        // The next test's fixture acquisition is what has to end it, and it
+        // must do so before this test's script exists.
+        let mock = mock_agent();
+        assert!(
+            !super::provider_config_observer_is_running_for_test(),
+            "mock_agent must stop the observer an earlier test left running"
+        );
+        mock.push_plain_stream(StreamScript::Events(
+            vec![stream_event("", 0, "ping", r#"{"revision":1}"#)],
+            None,
+        ));
+        let mut client = connect_agent().await.expect("connect to the mock");
+        let mut stream = client
+            .stream_events(future_rpc::proto::StreamRequest {
+                event_types: vec!["ping".to_string()],
+                global_events: true,
+                ..Default::default()
+            })
+            .await
+            .expect("attach")
+            .into_inner();
+        // Deterministic form of "the suite does not hang": the scripted event
+        // arrives without any budget, and the only attach the mock saw is this
+        // test's own.
+        let event = stream
+            .message()
+            .await
+            .expect("the scripted stream must reach this test")
+            .expect("one scripted event");
+        assert_eq!(event.r#type, "ping");
+        assert_eq!(mock.stream_requests().len(), 1);
     }
 }

@@ -92,6 +92,73 @@ pub(crate) mod test_support {
         println!("FUTUREOS_PARENT_CONSOLE={window}");
     }
 
+    /// How many file descriptors this test binary may hold.
+    ///
+    /// `cargo test` runs every test of a binary in threads of **one process**,
+    /// and this crate's suite is the hungriest in the workspace: every mock
+    /// upstream in `llm`, `skill_reco`, `skills::manager`, `models::future`,
+    /// `approval_review` and `rpc` holds a listener plus one connection per
+    /// request, each `#[tokio::test]` builds its own runtime (and its reactor
+    /// descriptor), and the service/session tests each open a SQLite database
+    /// and a journal file.
+    ///
+    /// Measured 2026-11-01 on this commit, soft `RLIMIT_NOFILE` left at the
+    /// platform default **256**, default test parallelism (32 threads):
+    /// `cargo test -p future-agent --lib` **failed 892 of the first 2781 tests
+    /// it completed** and then hung — `rpc::commands::settings_tests::
+    /// compact_reports_busy_loop_error_as_terminal_event` sat forever in
+    /// `broadcast::Receiver::blocking_recv` waiting for a terminal event the
+    /// starved process never published, so the run had to be killed at 22
+    /// minutes. The same binary on the same commit passed **5 of 5** runs at
+    /// `ulimit -n 8192` (`coverage/flaky/raw/agent-lib/`, 350–560 s each) with
+    /// no source change, which is what makes the limit, not the tests, the
+    /// variable.
+    ///
+    /// So the suite raises its own budget instead of depending on whoever's
+    /// shell started it. The raise is bounded by the hard limit, only ever
+    /// upward, and idempotent. Called from every test-side listener: the point
+    /// at which a test first needs a descriptor it will hold while its
+    /// neighbours do the same.
+    ///
+    /// `WANT` is sized from the **measured high-water mark of this binary**,
+    /// sampled once a second with `lsof -p <pid>` across a whole run:
+    /// **2121 descriptors** (32-core host). 1 s sampling can miss a spike, and
+    /// libtest sizes its thread count from the machine, so a 64-core CI box
+    /// runs roughly twice as many tests at once and needs roughly twice the
+    /// ceiling — 8192 is ~4× the measured peak here and still far below what
+    /// a normal shell's hard limit allows.
+    #[cfg(unix)]
+    pub(crate) fn ensure_fd_headroom() {
+        // No `Once`: two cheap syscalls, and a child process re-executed with a
+        // lower limit (`reexec_env_test`) must be able to raise it again.
+        const WANT: libc::rlim_t = 8192;
+        let mut limits = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: both calls pass a valid `rlimit` for `RLIMIT_NOFILE`; failure
+        // is reported by the return value and only means "keep the current
+        // budget".
+        unsafe {
+            if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limits) != 0 {
+                return;
+            }
+            if limits.rlim_cur >= WANT {
+                return;
+            }
+            let raised = libc::rlimit {
+                rlim_cur: WANT.min(limits.rlim_max),
+                rlim_max: limits.rlim_max,
+            };
+            let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &raised);
+        }
+    }
+
+    /// Windows has no `RLIMIT_NOFILE`: a process is limited by its handle table
+    /// rather than by a number a test can raise, so nothing to do.
+    #[cfg(not(unix))]
+    pub(crate) fn ensure_fd_headroom() {}
+
     /// Take the process-global HOME lock (poison-tolerant).
     pub(crate) fn home_env_lock() -> std::sync::MutexGuard<'static, ()> {
         crate::HOME_ENV_LOCK

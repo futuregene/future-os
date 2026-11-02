@@ -1190,3 +1190,29 @@ it("draws a host's workspace heading before anything is said in it", async () =>
   expect(view.container.textContent).not.toContain("No workspace threads");
   await view.unmount();
 });
+
+/**
+ * A workspace conversation whose folder this list no longer knows.
+ *
+ * A thread can outlive the workspace record it was filed under (the folder was
+ * forgotten on a machine that is now offline, or the row arrived without one).
+ * Such a row is still a *workspace-mode* row, so it is drawn in the workspace
+ * section — under a heading that names no folder and marks no machine. The one
+ * thing that must not happen is a machine glyph: there is no machine to name, and
+ * `GroupGlyph` is what would try.
+ */
+it("draws a workspace heading with no folder and no machine mark", async () => {
+  const view = await render({
+    peers: [peer("desktop_a", "Studio iMac")],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [conversation({ mode: "workspace", workspaceId: null })],
+    threadById: new Map([["thread_1", thread("thread_1")]]),
+  });
+
+  const headings = [...view.container.querySelectorAll("[data-testid='merged-group-heading']")];
+  expect(headings.length).toBeGreaterThan(0);
+  // Nothing was thrown while drawing the heading, and no machine's name leaked
+  // into it: this row belongs to a folder nobody can name any more.
+  expect(view.container.textContent).not.toContain("Studio iMac");
+  await view.unmount();
+});

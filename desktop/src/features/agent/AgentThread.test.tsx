@@ -1063,6 +1063,26 @@ describe("reading the transcript from the keyboard", () => {
     off();
   });
 
+  it("says so when the clipboard refuses the copy", async () => {
+    // A locked keyring or a WebView without clipboard permission: the key did its job
+    // (it found the answer) and the write failed. Silence would look like the copy
+    // worked, and the reader would paste nothing.
+    const toasts: { message: string; tone?: string }[] = [];
+    const off = onFutureEvent("toast", toast => void toasts.push(toast as { message: string }));
+    vi.mocked(copyText).mockRejectedValueOnce(new Error("clipboard denied"));
+    render();
+
+    expect(press("KeyC", "c").defaultPrevented).toBe(true);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(copyText).toHaveBeenCalledWith("answer a1");
+    expect(toasts[0]?.tone).toBe("error");
+    off();
+  });
+
   it("leaves the copy key unclaimed while the turn has no answer", () => {
     // Nothing to copy: a key that fired on an empty transcript would take the
     // press and give nothing back. Walking back skips an interrupted reply.

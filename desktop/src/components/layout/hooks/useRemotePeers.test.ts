@@ -1253,6 +1253,38 @@ describe("a host's workspaces", () => {
     hook.unmount();
   });
 
+  it("leaves every other machine's catalogue object untouched by one host's snapshot", async () => {
+    // A push names one host, and the list holds several: the untouched ones must keep
+    // the very same object, or every row of every other machine re-renders (and a memo
+    // that keys on the catalogue identity is thrown away) on each push from one host.
+    listRemotePeers.mockResolvedValue([
+      peer({ desktopId: "desktop_a" }),
+      peer({ desktopId: "desktop_b", pairId: "pair_2" }),
+    ]);
+    // Each host answers for itself; the shared fixture's fixed `desktop_a` row would
+    // label both catalogues with the same id.
+    fetchRemoteSessions.mockImplementation(async (desktopId: string) => ({ desktopId, sessions: [] }));
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+    const before = hook.current.catalogs;
+    const other = before.find(catalog => catalog.desktopId === "desktop_b");
+    expect(other, "the second host's catalogue").toBeDefined();
+
+    pushKind("catalog", "desktop_a", {
+      domain: "workspaces",
+      version: { epoch: "epoch_1", revision: 1 },
+      workspaces: [{ id: "ws_new", name: "charts", path: "/c", pinned: false }],
+    });
+    await settle();
+
+    const after = hook.current.catalogs;
+    expect(after.find(catalog => catalog.desktopId === "desktop_a")?.workspaces?.map(workspace => workspace.id))
+      .toEqual(["ws_new"]);
+    // Identity, not equality: the other machine's entry was not rebuilt.
+    expect(after.find(catalog => catalog.desktopId === "desktop_b")).toBe(other);
+    hook.unmount();
+  });
+
   it("applies a pushed workspaces snapshot, and a sessions snapshot does not drop it", async () => {
     const hook = renderHook(() => useRemotePeers(true));
     await settle();

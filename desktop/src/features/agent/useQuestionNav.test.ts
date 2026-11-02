@@ -769,6 +769,39 @@ describe("useQuestionNav paging from the window's top", () => {
     frames.restore();
     world.container.remove();
   });
+
+  it("stops looking for rows once the view that asked has closed", async () => {
+    // concurrency: the press returns before its read does, so the conversation can
+    // close while the page is still in flight. The unmount cleanup can only cancel
+    // the frame armed at that instant — the read's own continuation runs *after*
+    // it, and re-arming there leaves a loop with no view left to resolve against:
+    // it keeps asking the browser for frames, and those land in whatever runs
+    // next (the neighbouring test's `requestAnimationFrame` spy, in this suite,
+    // which then counts a frame it never asked for).
+    const world = pagedTranscript();
+    world.layOut(WINDOW_IDS);
+    const frames = queuedFrames();
+    const gate = deferred();
+    const loadOlder = vi.fn(() => gate.promise);
+    const hook = renderHook(() => useQuestionNav({
+      hasOlderHistory: true,
+      loadOlder,
+      messages: WINDOW_MESSAGES,
+      onTakeOver: vi.fn(),
+      scrollRef: world.scrollRef,
+    }));
+
+    act(() => hook.current.goToPrevious());
+    hook.unmount();
+    // The page lands after the view is gone.
+    await act(async () => {
+      gate.release();
+    });
+
+    expect(frames.waiting).toBe(0);
+    frames.restore();
+    world.container.remove();
+  });
 });
 
 /**

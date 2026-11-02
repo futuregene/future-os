@@ -26,14 +26,36 @@ const TAIL_CHUNK: u64 = 8 * 1024;
 pub fn prepare_process() {
     static PREPARED: std::sync::Once = std::sync::Once::new();
     PREPARED.call_once(|| {
+        // First, before anything can write to a terminal: a GUI launch has no
+        // writable stderr, and the panic a failed write raises ends the task
+        // that emitted it — including, on this path, the task that would have
+        // rebuilt a dropped remote link. See
+        // `future_agent::console::redirect_windowless_standard_streams`.
+        redirect_windowless_stdio();
         future_agent::logfile::init_embedded_tracing();
         crate::install_rustls_provider();
         future_agent::sandbox::hydrate_from_login_shell();
+        // The remote stack (both the bridge that serves this machine and the
+        // client that drives others) reports through this module rather than
+        // `eprintln!`: a windowless GUI's stderr is not writable, and a line
+        // that has nowhere to go used to panic the task that wrote it instead
+        // of telling anyone why the remote desktop stopped.
+        future_remote_protocol::diagnostics::install(report);
         // A windowless GUI launch has nowhere to show a panic, and exit 101 is
         // not a crash Windows records — this hook is the only way a later
         // launch can learn what killed an earlier one.
         crate::crash_log::install();
     });
+}
+
+/// Point this launch's standard streams at a file when it has no terminal.
+///
+/// Best effort by design: if the file cannot be opened there is nothing to say
+/// so on the stream that just failed, and the launch must still start. The
+/// writers that matter go through [`report`] anyway.
+fn redirect_windowless_stdio() {
+    let path = future_rpc::home::future_home().join("app/logs/desktop.stdio.log");
+    let _ = future_agent::console::redirect_windowless_standard_streams(&path);
 }
 
 pub fn start_logging() -> Result<(), crate::Error> {
@@ -365,6 +387,13 @@ mod tests {
         let log = std::fs::read_to_string(home.join("app/logs/desktop.log"))
             .expect("the child's host log");
         assert!(log.contains("the terminal is gone"), "{log}");
+        // The remote stack reports through its own sink because a windowless
+        // launch has no stderr to print to: those lines used to panic the task
+        // that wrote them and reached no file at all.
+        assert!(
+            log.contains("remote: bridge diagnostic on a dead stderr"),
+            "the remote stack's diagnostics must reach the host log: {log}"
+        );
         // The Agent run loop's streaming path writes to both sinks; the file
         // half must survive the terminal half failing.
         assert!(log.contains("[output] streamed delta"), "{log}");
@@ -435,6 +464,9 @@ mod tests {
         crate::console::eprintln!("FutureOS: worker diagnostic on a dead stderr");
         crate::console::println!("host: worker output on a dead stdout");
         future_agent::logfile::eprintln_mirror(format_args!("[output] streamed delta"));
+        // What the bridge and the client role report, in the shape their crates
+        // use: no terminal, and the line must still reach this file.
+        future_remote_protocol::remote_log!("remote: bridge diagnostic on a dead stderr");
         tracing::info!("a tracing row with no terminal");
     }
 }

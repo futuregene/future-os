@@ -362,6 +362,35 @@ it("reclaims a native image the classifier refused", async () => {
   expect(chips()).toHaveLength(0);
 });
 
+it("does not read the native pasteboard while the composer is locked", async () => {
+  // A locked composer (a run in flight, a read-only conversation) has no draft to put
+  // an attachment in: the native read is the expensive half of a paste, so it is not
+  // started at all.
+  render({ disabled: true });
+  await pasteNothing();
+
+  expect(h.readNativeClipboardImage).not.toHaveBeenCalled();
+  expect(chips()).toHaveLength(0);
+});
+
+it("reclaims a native image that arrives after the draft it was pasted into is gone", async () => {
+  // The backend writes the file before this side can tell the draft moved on; the copy
+  // belongs to a composer that is no longer on screen, so it is deleted rather than
+  // attached to whatever is showing now.
+  let release!: (saved: { name: string; path: string }) => void;
+  h.readNativeClipboardImage.mockReturnValue(new Promise((resolve) => {
+    release = resolve;
+  }));
+  render({ draftKey: "clipboard-a" });
+  await pasteNothing();
+  render({ draftKey: "clipboard-b" });
+
+  await act(async () => release({ name: "pasted.png", path: "/tmp/stale-native.png" }));
+
+  expect(h.deleteTempAttachment).toHaveBeenCalledWith("/tmp/stale-native.png");
+  expect(chips()).toEqual([]);
+});
+
 it("survives a pasteboard the backend cannot read", async () => {
   // error-path: no desktop session / locked keyring / headless CI all make the
   // native read fail; a paste must not surface that as an attachment error.

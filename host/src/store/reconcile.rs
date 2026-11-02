@@ -216,6 +216,71 @@ mod tests {
         assert!(crate::store::get_thread("t_sess").expect("get").is_some());
     }
 
+    /// Each binding is answered for on its own: a deletion the Agent confirms
+    /// against the same database it reports removes that conversation, and a
+    /// status this pass does not model leaves its row exactly as it was.
+    #[tokio::test]
+    async fn reconcile_answers_each_binding_from_the_agent_presence() {
+        let (_home, conn) = guarded_conn("reconcile_binding_status");
+        seed_full(&conn);
+        conn.execute_batch(
+            "UPDATE threads SET agent_session_id = NULL WHERE id = 't_blank';
+             INSERT INTO threads (
+                 id, workspace_id, mode, title, agent_session_id, created_at, updated_at
+             ) VALUES ('t_other', 'ws1', 'chat', 'T', 'sess_other', 1, 1);",
+        )
+        .expect("one bound thread per session, and no blank binding");
+        drop(conn);
+        record_thread_source("t_sess", "sess_live", "database-live", "generation")
+            .expect("bind the source the Agent reports");
+        let mock = mock_agent();
+        mock.default_data(
+            "list_session_ids",
+            serde_json::json!({"ids":["sess_live","sess_other"]}),
+        );
+        mock.default_data(
+            "get_session_presence",
+            serde_json::json!({"databaseId":"database-live","restoreGeneration":"generation",
+            "sessions":[
+                {"sessionId":"sess_live","status":"deleted"},
+                {"sessionId":"sess_other","status":"missing"}
+            ]}),
+        );
+
+        let removed = reconcile_orphan_sessions().await.expect("reconcile");
+
+        assert_eq!(removed, 1, "only the confirmed deletion is removed");
+        assert!(
+            get_thread("t_sess").expect("get").is_none(),
+            "the Agent's deletion takes the conversation with it"
+        );
+        assert!(
+            get_thread("t_other").expect("get").is_some(),
+            "a status this pass does not model is not a deletion"
+        );
+    }
+
+    /// A presence answer that does not arrive defers the whole batch: nothing is
+    /// removed on a question the Agent never answered.
+    #[tokio::test]
+    async fn reconcile_defers_a_batch_whose_presence_read_fails() {
+        let (_home, conn) = guarded_conn("reconcile_presence_failure");
+        seed_full(&conn);
+        conn.execute_batch("UPDATE threads SET agent_session_id = NULL WHERE id = 't_blank';")
+            .expect("one binding to ask about");
+        drop(conn);
+        record_thread_source("t_sess", "sess_live", "database-live", "generation")
+            .expect("bind the source the Agent reports");
+        let mock = mock_agent();
+        mock.default_data("list_session_ids", serde_json::json!({"ids":["sess_live"]}));
+        mock.reject_default("get_session_presence", "presence is unavailable");
+
+        let removed = reconcile_orphan_sessions().await.expect("reconcile");
+
+        assert_eq!(removed, 0, "a failed presence read removes nothing");
+        assert!(get_thread("t_sess").expect("get").is_some());
+    }
+
     #[tokio::test]
     async fn reconcile_skips_when_enumeration_fails() {
         let (_home, conn) = guarded_conn("reconcile_fail");

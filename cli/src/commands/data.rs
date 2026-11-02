@@ -1000,13 +1000,15 @@ mod tests {
             b"damaged",
         )
         .unwrap();
-        let mut moves = 0;
-        assert!(finish_restore_with(&home, false, || {
-            moves += 1;
-            Ok(())
-        })
-        .is_err());
-        assert_eq!(moves, 0);
+        // A move that happened would replace this sentinel with its own error,
+        // so the assertion below is "nothing moved **and** the verification
+        // spoke", not merely "something failed". Inline closures keep both
+        // statements on the line that runs.
+        let error = finish_restore_with(&home, false, || bail!("an original moved"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("verification failed"), "{error}");
+        assert!(!error.contains("an original moved"), "{error}");
         assert_title(&home, "new title");
         assert!(pending(&home).exists());
         // Rollback depends on the verified originals, not a damaged replacement.
@@ -1016,6 +1018,135 @@ mod tests {
             fs::read(home.join("app/images/t/original.png")).unwrap(),
             b"new image"
         );
+    }
+
+    /// A manifest that lists a path **under a file** is refused, and that
+    /// refusal is not "missing": `without_links` walks the path one component
+    /// at a time, so on unix the answer for `file/below` is "not a directory"
+    /// rather than the absent-path arm — which would let a forged entry be read
+    /// as "this managed file simply was not there". Windows has no such answer:
+    /// it collapses the same path onto path-not-found, so the walk reports the
+    /// entry as absent and the refusal comes from the verification of the file
+    /// the entry claims — still a refusal, never a silent absence.
+    #[test]
+    fn a_manifest_path_below_a_file_is_refused_by_the_filesystem() {
+        let root = tempfile::tempdir().unwrap();
+        let home = fixture(root.path());
+        let archive = root.path().join("archive");
+        backup(&home, &archive).unwrap();
+
+        // Forge one manifest entry one level below a file the backup really
+        // contains; everything else stays exactly as the backup wrote it. It
+        // has to sit under a *directory* root: a managed file root such as
+        // `agent/agent.db` is refused by name before the filesystem is asked.
+        let mut manifest = verify(&archive).unwrap();
+        let real = manifest
+            .files
+            .iter()
+            .find(|file| file.path == "app/images/t/original.png")
+            .expect("the fixture image is in the backup");
+        manifest.files.push(FileRecord {
+            path: format!("{}/below-a-file", real.path),
+            bytes: real.bytes,
+            sha256: real.sha256.clone(),
+        });
+        write_json(&archive.join("manifest.json"), &manifest).unwrap();
+
+        let error = verify(&archive).unwrap_err();
+        // `below-a-file` sits under an image the backup really contains, so no
+        // reading of the filesystem can produce it — the only question is which
+        // refusal a host answers with.
+        #[cfg(unix)]
+        {
+            let io = error
+                .downcast_ref::<std::io::Error>()
+                .expect("the filesystem answers, not the manifest");
+            assert_ne!(
+                io.kind(),
+                std::io::ErrorKind::NotFound,
+                "the parent exists as a file, so this is not a missing-path answer: {io}"
+            );
+        }
+        #[cfg(not(unix))]
+        assert!(
+            format!("{error:#}").contains("backup file verification failed"),
+            "Windows answers a path under a file with path-not-found, so the walk \
+             passes it and the entry is refused by its own verification: {error:#}"
+        );
+        assert!(begin_restore(&home, &archive).is_err());
+        assert!(!pending(&home).exists());
+        assert_title(&home, "old title");
+    }
+
+    /// A symlink inside a managed root is hashed **as a link**, never followed.
+    /// The preimage digest is what a rollback proves itself against, so reading
+    /// a link through its target would let a file the backup never owned stand
+    /// in for the original — and retargeting the link would not even change the
+    /// digest.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_preimage_is_hashed_as_a_link_and_not_followed() {
+        let root = tempfile::tempdir().unwrap();
+        let home = fixture(root.path());
+        let archive = root.path().join("archive");
+        backup(&home, &archive).unwrap();
+
+        let outside = root.path().join("outside.txt");
+        fs::write(&outside, b"not managed by the backup").unwrap();
+        std::os::unix::fs::symlink(&outside, home.join("app/images/link")).unwrap();
+
+        prepare_restore(&home, &archive).unwrap();
+        let journal: RestoreJournal =
+            serde_json::from_slice(&fs::read(pending(&home)).unwrap()).unwrap();
+        let item = journal
+            .items
+            .iter()
+            .find(|item| item.path == "app/images")
+            .expect("the managed image root is journalled");
+        let recorded = item.original_digest.clone().expect("the root exists");
+        assert_eq!(
+            root_digest(&home.join("app/images")).unwrap().as_deref(),
+            Some(recorded.as_str()),
+            "the digest is stable for an unchanged tree"
+        );
+
+        // Same file contents, same link text, a different target: the digest
+        // must move, which is only true if the link was hashed as a link.
+        fs::remove_file(home.join("app/images/link")).unwrap();
+        std::os::unix::fs::symlink(home.join("app/app.db"), home.join("app/images/link")).unwrap();
+        assert_ne!(
+            root_digest(&home.join("app/images")).unwrap().as_deref(),
+            Some(recorded.as_str()),
+            "a retargeted link is a different preimage"
+        );
+    }
+
+    /// A link target that is not UTF-8 cannot be hashed into the preimage
+    /// digest, so the restore is **refused** instead of hashing a lossy form of
+    /// it: the digest would then claim to describe a tree it cannot read, and a
+    /// later rollback would verify itself against the wrong preimage.
+    #[cfg(unix)]
+    #[test]
+    fn a_preimage_link_with_a_non_utf8_target_refuses_the_restore() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let home = fixture(root.path());
+        let archive = root.path().join("archive");
+        backup(&home, &archive).unwrap();
+        std::os::unix::fs::symlink(
+            std::ffi::OsStr::from_bytes(b"bad-\xff-target"),
+            home.join("app/images/link"),
+        )
+        .unwrap();
+
+        let error = prepare_restore(&home, &archive).unwrap_err().to_string();
+        assert!(error.contains("not UTF-8"), "{error}");
+        assert!(
+            !pending(&home).exists(),
+            "nothing is journalled for a preimage that cannot be hashed"
+        );
+        assert_title(&home, "old title");
     }
 
     #[test]
@@ -1272,6 +1403,107 @@ mod tests {
         assert!(with_stopped_home(&home, || Ok(())).is_err());
     }
 
+    /// Nest directories under `root` until the path itself is `target` bytes
+    /// long. A component is at most 255 bytes on every filesystem this lane
+    /// runs on, so the padding is split into one component per remaining byte
+    /// budget instead of overshooting into a path that cannot be created.
+    fn nested_home(root: &Path, target: usize) -> PathBuf {
+        let mut current = root.to_path_buf();
+        while current.as_os_str().len() < target {
+            let remaining = target - current.as_os_str().len();
+            let width = remaining.saturating_sub(1).clamp(1, 200);
+            current.push("n".repeat(width));
+        }
+        fs::create_dir_all(&current).unwrap();
+        current
+    }
+
+    /// `work` reads an absent restore directory as "no restore has started",
+    /// which is the ordinary case; the only way to reach its error arm is a
+    /// directory name the filesystem refuses. A home nested deep enough that
+    /// `<home>/.restore-work-<id>` crosses `PATH_MAX` is that name, and a nested
+    /// home is an ordinary deployment shape — no fault is injected, the OS is
+    /// answering about the path it was handed.
+    ///
+    /// The depth is derived from the platform's own `PATH_MAX` — 1024 bytes on
+    /// macOS/BSD, 4096 on Linux — because it is the kernel's limit, not a
+    /// property of this test: a home that clears it on one lane does not clear
+    /// it on the other.
+    #[test]
+    #[cfg(unix)]
+    fn a_restore_work_directory_the_filesystem_cannot_name_is_an_error_not_an_absence() {
+        // A path this long is refused by the kernel; every path this test needs
+        // to keep resolving has to stay strictly under it.
+        const PATH_MAX: usize = libc::PATH_MAX as usize;
+        let root = tempfile::tempdir().unwrap();
+        // The work directory is `<home>/.restore-work-<id>`, so the width of the
+        // restore identity — not a constant of this test — is what decides how
+        // far above the home the name lands.
+        let id = future_app_workspaces::new_id("restore");
+        let work_directory = |home: &Path| home.join(format!(".restore-work-{id}"));
+        // Park the home 39 bytes below `PATH_MAX`: 1024 - 39 is the 985 bytes
+        // this test used to hard-code, and 4096 - 39 is the same home for
+        // Linux. The window is set by the two paths that must fall on opposite
+        // sides of the limit: the work directory adds 45 bytes (a separator,
+        // `.restore-work-` and the identity) and has to cross it, while the
+        // pending marker adds 24 and the deepest managed root 22, so the home
+        // must stop at least 25 bytes short. 39 sits inside 25..45, and lands on
+        // 985 + 45 = 1030 against 1024 on macOS and 4057 + 45 = 4102 against
+        // 4096 on Linux — over the limit on both, while the marker reaches only
+        // 1009 and 4081.
+        const MARGIN: usize = 39;
+        let home = nested_home(root.path(), PATH_MAX - MARGIN);
+        // The premise, asserted instead of assumed. Without it the arithmetic
+        // going wrong on some platform shows up as `unwrap_err` panicking on an
+        // `Ok(())` with nothing about the cause — which is how the 1024-byte
+        // literal above reached Linux in the first place.
+        assert!(
+            home.as_os_str().len() < PATH_MAX,
+            "the home itself must be nameable: {} bytes against {PATH_MAX}",
+            home.as_os_str().len()
+        );
+        for logical in ROOTS {
+            let path = home.join(logical);
+            assert!(
+                path.as_os_str().len() < PATH_MAX,
+                "{logical} must stay nameable, or the restore fails for a reason \
+                 other than its work directory: {} bytes against {PATH_MAX}",
+                path.as_os_str().len()
+            );
+        }
+        let marker = pending(&home);
+        assert!(
+            marker.as_os_str().len() < PATH_MAX,
+            "the pending marker must stay nameable, or `begin_restore` refuses \
+             before it reaches the work directory: {} bytes against {PATH_MAX}",
+            marker.as_os_str().len()
+        );
+        assert!(
+            work_directory(&home).as_os_str().len() > PATH_MAX,
+            "the work directory must cross PATH_MAX ({} bytes, {} over a home of \
+             {}), or there is nothing for `begin_restore` to refuse here",
+            work_directory(&home).as_os_str().len(),
+            work_directory(&home).as_os_str().len() - home.as_os_str().len(),
+            home.as_os_str().len()
+        );
+        let archive = root.path().join("archive");
+        fs::create_dir_all(home.join("agent/sessions")).unwrap();
+        fs::create_dir_all(home.join("app/images")).unwrap();
+        backup(&home, &archive).unwrap();
+        assert!(
+            fs::symlink_metadata(home.join("agent/sessions")).is_ok(),
+            "the managed roots are still nameable, which is what makes the work \
+             directory the one path over the limit"
+        );
+
+        let error = begin_restore(&home, &archive).unwrap_err().to_string();
+        assert!(error.contains("too long"), "{error}");
+        assert!(
+            !pending(&home).exists(),
+            "a refused restore must not leave a startup fence"
+        );
+    }
+
     /// The two reasons a lock cannot be taken have different fixes, and the one
     /// that is *not* a running process must not send the reader to quit one.
     #[test]
@@ -1298,5 +1530,190 @@ mod tests {
         assert!(!text.contains("Desktop is running"), "{text}");
         assert!(text.contains("will not lock"), "{text}");
         assert!(text.contains(&path.display().to_string()), "{text}");
+    }
+
+    /// Drive `future data …` the way a user runs it, through the real
+    /// dispatcher. The wrapper is the contract: which forms are accepted, what
+    /// each prints, and that a refused one leaves the data alone.
+    async fn run(args: &[&str]) -> (i32, String, String) {
+        let mut argv = vec!["data".to_string()];
+        argv.extend(args.iter().map(|argument| argument.to_string()));
+        let (out, captured) = Output::memory();
+        let code = crate::dispatch(&argv, &out).await;
+        let stdout = String::from_utf8(captured.out.lock().unwrap().clone()).unwrap();
+        let stderr = String::from_utf8(captured.err.lock().unwrap().clone()).unwrap();
+        (code, stdout, stderr)
+    }
+
+    #[tokio::test]
+    async fn every_documented_form_runs_through_the_dispatcher() {
+        let _guard = crate::test_env::lock_env().await;
+        let root = tempfile::tempdir().unwrap();
+        let home = fixture(root.path());
+        let archive = root.path().join("archive");
+        let _env = crate::test_env::EnvGuard::set(&[
+            ("HOME", root.path().as_os_str().to_owned()),
+            ("FUTURE_HOME", home.as_os_str().to_owned()),
+        ]);
+
+        // `--help` anywhere wins over the action, and the bare form is the same
+        // page rather than an error.
+        let (code, help, stderr) = run(&["--help"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            help.starts_with("future data — offline history backup"),
+            "{help}"
+        );
+        let (code, bare, stderr) = run(&[]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(bare, help);
+        // The same page answers an action that was asked for help rather than
+        // run: `--help` anywhere in the arguments is a question about the group.
+        let (code, asked, stderr) = run(&["backup", "--help"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(asked, help);
+        assert!(
+            !archive.exists(),
+            "a help request must not back anything up"
+        );
+
+        // An action this build does not have is refused, not guessed at, and
+        // the refusal carries the usage so the next attempt can be the right one.
+        let (code, stdout, stderr) = run(&["frobnicate"]).await;
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        assert!(stderr.contains("Invalid data command."), "{stderr}");
+        assert!(stderr.contains("future data backup"), "{stderr}");
+
+        // backup writes a directory it has verified, and says so.
+        let (code, stdout, stderr) = run(&["backup", archive.to_str().unwrap()]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.contains(&format!("Verified backup: {}", archive.display())),
+            "{stdout}"
+        );
+        assert!(archive.join("manifest.json").is_file());
+
+        // verify re-reads that directory and names it with its file count.
+        let (code, stdout, stderr) = run(&["verify", archive.to_str().unwrap()]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("Verified backup "), "{stdout}");
+        assert!(stdout.contains(" files"), "{stdout}");
+
+        // Without `--yes` a restore is refused, and nothing has moved: the
+        // confirmation is what stands between a typo and a rewritten history.
+        change_current(&home);
+        let (code, _, stderr) = run(&["restore", archive.to_str().unwrap()]).await;
+        assert_eq!(code, 1);
+        assert!(stderr.contains("Invalid data command."), "{stderr}");
+        assert_title(&home, "new title");
+
+        // With it, both databases and the managed files come back.
+        let (code, stdout, stderr) = run(&["restore", archive.to_str().unwrap(), "--yes"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("Restore completed."), "{stdout}");
+        assert_title(&home, "old title");
+        assert_eq!(
+            fs::read(home.join("app/images/t/original.png")).unwrap(),
+            b"old image"
+        );
+
+        // `resume` completes one that stopped after its preparation...
+        change_current(&home);
+        with_stopped_home(&home, || prepare_restore(&home, &archive)).unwrap();
+        let (code, stdout, stderr) = run(&["resume"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.contains("Recovery operation completed; startup is available again."),
+            "{stdout}"
+        );
+        assert_title(&home, "old title");
+
+        // ...and `rollback` is the other way out of the same fence: the data
+        // that was there before the restore is what remains.
+        change_current(&home);
+        with_stopped_home(&home, || prepare_restore(&home, &archive)).unwrap();
+        let (code, stdout, stderr) = run(&["rollback"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.contains("Recovery operation completed; startup is available again."),
+            "{stdout}"
+        );
+        assert_title(&home, "new title");
+        assert_eq!(
+            fs::read(home.join("app/images/t/original.png")).unwrap(),
+            b"new image"
+        );
+        assert!(!pending(&home).exists());
+    }
+
+    /// A restore rotates the restore generation in both databases. The
+    /// generation is what tells a restored copy apart from the database it
+    /// replaced; a restore that left it behind would hand out a copy claiming to
+    /// be the original.
+    #[test]
+    fn restore_rotates_the_generation_in_both_databases() {
+        let root = tempfile::tempdir().unwrap();
+        let home = fixture(root.path());
+        Connection::open(home.join("app/app.db"))
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE app_database_identity (
+                     id TEXT PRIMARY KEY NOT NULL,
+                     database_id TEXT NOT NULL,
+                     restore_generation TEXT NOT NULL);
+                 INSERT INTO app_database_identity VALUES ('main','database-1','restore-1');",
+            )
+            .unwrap();
+        Connection::open(home.join("agent/agent.db"))
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO storage_meta(key,value) VALUES ('restore_generation','restore-1')
+                     ON CONFLICT(key) DO UPDATE SET value=excluded.value;",
+            )
+            .unwrap();
+
+        let archive = root.path().join("archive");
+        backup(&home, &archive).unwrap();
+        prepare_restore(&home, &archive).unwrap();
+
+        let journal: RestoreJournal =
+            serde_json::from_slice(&fs::read(pending(&home)).unwrap()).unwrap();
+        let incoming = work(&home, &journal.id).unwrap().join("incoming");
+        let app: String = Connection::open(incoming.join("app/app.db"))
+            .unwrap()
+            .query_row(
+                "SELECT restore_generation FROM app_database_identity WHERE id='main'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            app, journal.id,
+            "the app database takes the restore identity"
+        );
+        let agent: String = Connection::open(incoming.join("agent/agent.db"))
+            .unwrap()
+            .query_row(
+                "SELECT value FROM storage_meta WHERE key='restore_generation'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            agent, journal.id,
+            "the agent database is rotated by the same restore"
+        );
+        // The backed-up copy itself is untouched: a restore never rewrites the
+        // archive it is restoring from.
+        let archived: String = Connection::open(archive.join("app/app.db"))
+            .unwrap()
+            .query_row(
+                "SELECT restore_generation FROM app_database_identity WHERE id='main'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(archived, "restore-1");
     }
 }

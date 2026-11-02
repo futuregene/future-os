@@ -58,6 +58,27 @@ struct LinkState {
     declared: bool,
     /// The client said it was leaving. Cleared by the next proof.
     departed: bool,
+    /// The last lapse of the lease has already been reported. Presence is read
+    /// on every poll, and a departure is news once: without this flag a poll
+    /// would print it every few seconds. A new proof clears it.
+    lapse_reported: bool,
+}
+
+/// Whether the state describes a client that is there at `now_ms`.
+///
+/// One definition for the accessor, the poll that reports departures and the
+/// arrival test in [`ClientLink::observe`], so "present" cannot mean three
+/// slightly different things.
+fn present_of(state: &LinkState, now_ms: u64) -> bool {
+    if state.departed || state.seen_ms == 0 {
+        return false;
+    }
+    if !state.declared {
+        // An older client keeps the old reading: it spoke, so it is here.
+        // It never promised beats, so silence says nothing about it.
+        return true;
+    }
+    now_ms.saturating_sub(state.seen_ms) <= CLIENT_PRESENCE_LEASE.as_millis() as u64
 }
 
 /// One pairing's view of its client. Shared across bridge generations: a
@@ -65,15 +86,32 @@ struct LinkState {
 #[derive(Default)]
 pub struct ClientLink {
     state: Mutex<LinkState>,
+    /// The pairing this link belongs to, so a departure line names it.
+    pair_id: String,
 }
 
 impl ClientLink {
+    /// A link that can name its pairing in what it reports.
+    pub fn with_pair(pair_id: &str) -> Self {
+        Self {
+            state: Mutex::new(LinkState::default()),
+            pair_id: pair_id.to_string(),
+        }
+    }
+
     /// The client did something authenticated: it is here.
-    pub fn observe(&self) {
+    ///
+    /// Answers whether this observation is an *arrival* — the first proof after
+    /// the client was not here — because that is the one moment worth a log
+    /// line. A `client_presence` beat every 15 seconds is not an arrival.
+    pub fn observe(&self) -> bool {
         let now = unix_timestamp_ms();
         let mut state = self.state.lock().unwrap();
+        let before = present_of(&state, now);
         state.seen_ms = now;
         state.departed = false;
+        state.lapse_reported = false;
+        !before
     }
 
     /// Record what the connection declared. A client that stops declaring the
@@ -97,16 +135,39 @@ impl ClientLink {
     /// [`ClientLink::present`] with the clock supplied, so the lease is testable
     /// without sleeping for a minute.
     pub fn present_at(&self, now_ms: u64) -> bool {
-        let state = self.state.lock().unwrap();
-        if state.departed || state.seen_ms == 0 {
-            return false;
+        present_of(&self.state.lock().unwrap(), now_ms)
+    }
+
+    /// [`ClientLink::present`], and the departure line the first time a declared
+    /// client's beats lapse.
+    ///
+    /// Presence is read on every poll, so a reader is the only thing that runs
+    /// when a force-quit client disappears — nothing is left to notice it. The
+    /// announcement therefore lives here and is bounded by [`LinkState
+    /// ::lapse_reported`]: one line per lapse, however often it is polled, and
+    /// the client's next proof re-arms it.
+    pub fn present_and_report(&self) -> bool {
+        self.present_and_report_at(unix_timestamp_ms())
+    }
+
+    /// [`ClientLink::present_and_report`] with the clock supplied, so the
+    /// once-per-lapse announcement is testable without waiting a minute.
+    pub fn present_and_report_at(&self, now_ms: u64) -> bool {
+        let mut state = self.state.lock().unwrap();
+        let present = present_of(&state, now_ms);
+        let lapsed = !present
+            && state.declared
+            && !state.departed
+            && state.seen_ms != 0
+            && !state.lapse_reported;
+        if lapsed {
+            state.lapse_reported = true;
+            future_remote_protocol::remote_log!(
+                "remote: inbound device left (pair={}, reason=presence_lease_expired, direction=inbound)",
+                self.pair_id
+            );
         }
-        if !state.declared {
-            // An older client keeps the old reading: it spoke, so it is here.
-            // It never promised beats, so silence says nothing about it.
-            return true;
-        }
-        now_ms.saturating_sub(state.seen_ms) <= CLIENT_PRESENCE_LEASE.as_millis() as u64
+        present
     }
 }
 
@@ -154,5 +215,64 @@ mod tests {
         assert!(legacy.present_at(1_000 + 100 * lease));
         legacy.depart();
         assert!(!legacy.present_at(1_000 + 100 * lease));
+    }
+
+    /// An arrival is the first proof after an absence, and nothing else.
+    ///
+    /// The log line this drives has to appear once per arrival: `client_presence`
+    /// beats while the client sits there, so treating a beat as an arrival would
+    /// put a line in `desktop.log` every 15 seconds.
+    #[test]
+    fn only_the_first_proof_after_an_absence_is_an_arrival() {
+        let link = ClientLink::default();
+        assert!(link.observe(), "a client that never spoke arrives once");
+        assert!(!link.observe(), "a following beat is not an arrival");
+        assert!(!link.observe());
+        link.depart();
+        assert!(
+            link.observe(),
+            "after a goodbye, speaking is an arrival again"
+        );
+        // A lease that runs out is also an absence: the client's next proof is
+        // an arrival, not a continuation.
+        link.declare(true);
+        link.state.lock().unwrap().seen_ms = 1_000;
+        assert!(!link.present_at(1_000 + CLIENT_PRESENCE_LEASE.as_millis() as u64 + 1));
+        assert!(link.observe());
+    }
+
+    /// A lapse is reported once however often it is polled, and re-armed by the
+    /// next proof.
+    #[test]
+    fn a_lapse_is_announced_once_and_rearmed_by_the_next_proof() {
+        let link = ClientLink::with_pair("pair_fixture");
+        link.declare(true);
+        link.observe();
+        link.state.lock().unwrap().seen_ms = 1_000;
+        let expired = 1_000 + CLIENT_PRESENCE_LEASE.as_millis() as u64 + 1;
+        assert!(
+            !link.present_and_report_at(expired),
+            "the lease has run out"
+        );
+        assert!(
+            link.state.lock().unwrap().lapse_reported,
+            "the first poll announces the departure"
+        );
+        assert!(
+            !link.present_and_report_at(expired + 5_000),
+            "polling again reports the same absence"
+        );
+        // A proof re-arms it: the next lapse is news again.
+        link.observe();
+        assert!(!link.state.lock().unwrap().lapse_reported);
+        // A client that never declared beats is never presumed gone, so it has
+        // no lapse to announce.
+        let legacy = ClientLink::with_pair("pair_legacy");
+        legacy.observe();
+        legacy.state.lock().unwrap().seen_ms = 1_000;
+        assert!(
+            legacy.present_and_report_at(1_000 + 100 * CLIENT_PRESENCE_LEASE.as_millis() as u64)
+        );
+        assert!(!legacy.state.lock().unwrap().lapse_reported);
     }
 }

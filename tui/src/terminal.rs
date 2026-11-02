@@ -155,7 +155,57 @@ fn arm_exit_deadline(
 /// Write all bytes to stdout, retrying on interruption, serialized by `lock`.
 fn write_str(lock: &Mutex<()>, data: &str) {
     let _guard = lock.lock();
+    #[cfg(test)]
+    if capture::write(data.as_bytes()) {
+        return;
+    }
     let _ = platform::write_stdout(data.as_bytes());
+}
+
+/// Test-only capture of the bytes a test thread writes to the terminal.
+///
+/// The driver (`workbench::run`) paints through [`write_str`], which forwards
+/// straight to fd 1. A unit test that drives the loop would therefore spray
+/// escape sequences over the harness's own output, and — worse — the only way
+/// to assert *what* a frame contained would be a real terminal to read it back
+/// from. With this installed the bytes land in a buffer instead, so the same
+/// test can check the frame it asked for.
+///
+/// Thread-local on purpose: another test's frame, or the harness's own progress
+/// line, is never captured, and no test has to hold a process-global lock to be
+/// sure of that. Nothing here is compiled outside `cfg(test)`.
+#[cfg(test)]
+pub(crate) mod capture {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static SINK: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+    }
+
+    /// Start capturing on this thread, discarding anything captured before.
+    pub(crate) fn start() {
+        SINK.with(|sink| *sink.borrow_mut() = Some(Vec::new()));
+    }
+
+    /// Stop capturing and return what was written since [`start`].
+    pub(crate) fn take() -> String {
+        SINK.with(|sink| {
+            let bytes = sink.borrow_mut().take().unwrap_or_default();
+            String::from_utf8_lossy(&bytes).into_owned()
+        })
+    }
+
+    /// Hand `data` to an active capture. `false` means "this thread is not
+    /// capturing" and the caller writes for real.
+    pub(crate) fn write(data: &[u8]) -> bool {
+        SINK.with(|sink| match sink.borrow_mut().as_mut() {
+            Some(buffer) => {
+                buffer.extend_from_slice(data);
+                true
+            }
+            None => false,
+        })
+    }
 }
 
 // ─── Size helpers (shared: env fallback mirrors `tui.ts`) ────────────────
@@ -264,6 +314,32 @@ pub(crate) fn backend_or_skip() -> Option<platform::Backend> {
     }
 }
 
+/// A `Terminal` for the workbench driver's tests.
+///
+/// Those tests drive the real event loop and read the bytes it writes through
+/// `capture`, so the terminal supplies the size and the write path while the
+/// events come from the test — it never needs to reach a console. POSIX builds
+/// one directly (`Backend::new` cannot fail there); Windows takes the backend
+/// with no console behind it, because a runner that redirects stdio (CI, an
+/// IDE, an agent harness) has no console handles to build the real one from.
+/// `columns`/`rows` then answer `COLUMNS`/`LINES`/80×24, which is what the POSIX
+/// backend's zero from a redirected stdout already produces there.
+///
+/// This is not `Terminal::new` relaxed: `run` still reports a console-less
+/// launch, and a test that needs real console behaviour still takes
+/// [`terminal_or_skip`].
+#[cfg(test)]
+pub(crate) fn driver_terminal() -> Terminal {
+    #[cfg(windows)]
+    {
+        Terminal::with_backend(Arc::new(platform::Backend::headless()))
+    }
+    #[cfg(not(windows))]
+    {
+        Terminal::new().expect("a POSIX terminal never fails to build")
+    }
+}
+
 impl Terminal {
     pub fn new() -> io::Result<Self> {
         // Test-only fault injection for the POSIX-infallible Backend::new
@@ -272,7 +348,12 @@ impl Terminal {
         if FORCE_NEW_FAILURE.swap(false, Ordering::SeqCst) {
             return Err(io::Error::other("injected test failure"));
         }
-        let backend = Arc::new(platform::Backend::new()?);
+        Ok(Self::with_backend(Arc::new(platform::Backend::new()?)))
+    }
+
+    /// Assemble a handle around an already-built platform backend. Split out of
+    /// [`Self::new`] for [`driver_terminal`], which needs one without a console.
+    fn with_backend(backend: Arc<platform::Backend>) -> Self {
         let size = Arc::new(Mutex::new(backend.size()));
         // Unit tests construct terminals in a shared `cargo test` process: a
         // redirect there would point the whole suite's stderr at a file. The
@@ -282,7 +363,7 @@ impl Terminal {
         let stderr_log = crate::stderr_log::default_path();
         #[cfg(test)]
         let stderr_log = None;
-        Ok(Self {
+        Self {
             raw_enabled: false,
             size,
             kitty_active: Arc::new(AtomicBool::new(false)),
@@ -300,7 +381,7 @@ impl Terminal {
             exit_signal_cb: Arc::new(Mutex::new(None)),
             mouse: false,
             alternate_screen: false,
-        })
+        }
     }
 
     /// Install a callback invoked from the reader thread when SIGINT/SIGTERM

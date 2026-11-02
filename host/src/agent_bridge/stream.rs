@@ -1391,6 +1391,68 @@ mod tests {
             );
         }
     }
+
+    /// An event that stores a required body out of line is materialized against
+    /// the Agent before the collector persists or forwards it: the reference is
+    /// coordinates, and a pipeline that recorded it instead of the body would
+    /// hand the UI and every mirror a message that renders as empty.
+    #[tokio::test]
+    async fn collect_hydrates_a_required_body_before_folding_the_event() {
+        let _home = TestHome::new("collect-hydration");
+        let mock = mock_agent();
+        let referenced = serde_json::json!({
+            "role": "user",
+            "message": "",
+            "content_refs": {
+                "message": {
+                    "databaseId": "db",
+                    "restoreGeneration": "gen",
+                    "epoch": 5,
+                    "cursor": 7,
+                    "field": "/data/message",
+                },
+            },
+        });
+        mock.push_stream(StreamScript::Events(
+            vec![
+                stream_event("run-1", 0, "user_message", &referenced.to_string()),
+                stream_event("run-1", 1, "agent_end", r#"{"reason":"complete"}"#),
+            ],
+            None,
+        ));
+        mock.push_data(
+            "get_event_content_range",
+            serde_json::json!({
+                "databaseId": "db",
+                "restoreGeneration": "gen",
+                "text": "materialized text",
+                "nextOffset": 17,
+                "totalBytes": 17,
+                "etag": "e1",
+                "encoding": "text",
+                "hasMore": false,
+            }),
+        );
+
+        let response = collect_agent_response(None, "run-1", "sess-1", "thread-1")
+            .await
+            .expect("collect");
+        assert!(response.complete);
+
+        // The body was read for the collecting run, at the coordinates the event
+        // carried — not for the session's current run and not from byte one of
+        // some other field.
+        let reads = mock.requests_of("get_event_content_range");
+        assert_eq!(reads.len(), 1, "one referenced field, one read");
+        assert_eq!(reads[0].run_id, "run-1");
+        let request = reads[0]
+            .content_request
+            .as_ref()
+            .expect("the reference is forwarded as a content request");
+        assert_eq!(request.field, "/data/message");
+        assert_eq!(request.cursor, 7);
+        assert_eq!(request.epoch, 5);
+    }
 }
 
 #[cfg(test)]

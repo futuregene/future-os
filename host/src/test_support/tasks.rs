@@ -1,6 +1,30 @@
 //! Task/store and real-RPC seeds shared by core and GUI entry tests.
 use future_tasks::{new_task_id, SessionPolicy, Task, TriggerKind};
 
+/// A workspace directory this task alone owns, empty and inside the process's
+/// own scratch directory.
+///
+/// It must not be `std::env::temp_dir()` itself. A run files its conversation
+/// under `cwd`, so that path becomes the conversation's workspace — and the
+/// shadow-review before-snapshot measures a non-git workspace by walking it
+/// (`shadow_review::evaluate_volume`, reached from
+/// `agent_bridge::review::capture_before`). Pointed at the shared temp directory
+/// that walk scans every scratch directory on the machine: measured at 36 s,
+/// 44 s and 54 s for one run on the same machine, and it made the whole lib suite
+/// take 860 s. A private empty directory makes the walk free without changing
+/// what any test asserts.
+fn task_cwd() -> String {
+    static ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    let root = ROOT.get_or_init(|| {
+        let root = std::env::temp_dir().join(format!("future-task-cwd-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("task cwd root");
+        root
+    });
+    let dir = root.join(new_task_id());
+    std::fs::create_dir_all(&dir).expect("task cwd");
+    dir.display().to_string()
+}
+
 pub fn task(name: &str) -> Task {
     Task {
         id: new_task_id(),
@@ -8,7 +32,7 @@ pub fn task(name: &str) -> Task {
         enabled: true,
         prompt: "do the thing".into(),
         prompt_version: 1,
-        cwd: std::env::temp_dir().display().to_string(),
+        cwd: task_cwd(),
         model_id: None,
         thinking_level: None,
         timezone: None,

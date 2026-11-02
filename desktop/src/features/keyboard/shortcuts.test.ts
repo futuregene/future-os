@@ -128,3 +128,61 @@ describe("shortcut store", () => {
     expect(listener).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("the stored document's shape", () => {
+  it("ignores a stored value that is not a document at all", async () => {
+    // `JSON.parse` accepts a bare string or number; only the shape check rejects
+    // them, and a document with no `overrides` object is equally unusable.
+    for (const stored of ["\"a string\"", "42", "[]", "null", "{\"version\":1}"]) {
+      localStorage.setItem(STORAGE_KEY, stored);
+      const store = await freshStore();
+      expect(store.shortcutOverrides(), stored).toEqual({});
+      expect(store.resolvedBindingText("chat.new"), stored).toBe("mod+n");
+    }
+  });
+
+  it("keeps a stored unbinding and canonicalises a stored binding", async () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      version: 1,
+      overrides: {
+        // Non-canonical on purpose: `Cmd+K` and `mod+k` must not be two settings
+        // for the same keys.
+        "chat.new": "mod+shift+k",
+        // An explicit unbinding is stored as `null` and must survive.
+        "panel.left": null,
+      },
+    }));
+    const store = await freshStore();
+    expect(store.shortcutOverrides()).toEqual({ "chat.new": "mod+shift+KeyK", "panel.left": null });
+    expect(store.resolvedBindingText("chat.new")).toBe("mod+shift+KeyK");
+    expect(store.resolvedBindingText("panel.left")).toBeNull();
+  });
+});
+
+describe("unknown ids", () => {
+  it("answers nothing rather than guessing for a command this build does not know", async () => {
+    // A profile written by a newer build, or a hand-edited one: the id is not in the
+    // catalog, so it resolves to no bindings and collides with nothing.
+    const store = await freshStore();
+    const unknown = "future.command" as Parameters<typeof store.resolvedBindingTexts>[0];
+    expect(store.resolvedBindingTexts(unknown)).toEqual([]);
+    expect(store.resolvedBindingText(unknown as never)).toBeNull();
+  });
+
+  it("does not treat unparseable text as a conflict", async () => {
+    const store = await freshStore();
+    expect(store.conflictingCommand("not a binding", "chat.new")).toBeNull();
+  });
+
+  it("does nothing when resetting a command that was never customised", async () => {
+    const store = await freshStore();
+    const listener = vi.fn();
+    const unsubscribe = store.subscribeShortcuts(listener);
+    store.setCommandBinding("panel.left", "ctrl+alt+l");
+    store.resetCommandBinding("chat.new");
+    // No override to drop, so no write and no notification.
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(store.resolvedBindingText("panel.left")).toBe("ctrl+alt+KeyL");
+    unsubscribe();
+  });
+});

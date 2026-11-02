@@ -160,3 +160,91 @@ describe("custom model thinking levels", () => {
     }));
   });
 });
+
+/**
+ * What the write carries is a clean list, not whatever was stored.
+ *
+ * A provider saved by an older build (or edited by hand) can hold the reserved
+ * `default`, a blank, or the same level twice. The host applies the same rules
+ * and would drop them anyway — this keeps the payload honest and, more to the
+ * point, keeps a duplicate from becoming a second chip that cannot be turned
+ * off.
+ */
+it("drops reserved, blank and repeated levels on the way out", async () => {
+  const stored = (thinkingLevels: string[]) => ({
+    ...initial,
+    models: [{
+      id: "m1",
+      name: "M1",
+      supportsImages: false,
+      contextWindow: 128000,
+      maxTokens: 16384,
+      reasoning: true,
+      thinkingLevels,
+      inputCost: 0,
+      outputCost: 0,
+      cacheReadCost: 0,
+      cacheWriteCost: 0,
+    }],
+  });
+  const onSubmit = mount(stored(["default", " low ", "low", "", "high"]));
+
+  // `default` is implicit and `low` already appeared, so the row shows two.
+  expect(pressedLabels()).toEqual(["low", "high"]);
+  await act(async () => button("Save").click());
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+    models: [expect.objectContaining({ thinkingLevels: ["low", "high"] })],
+  }));
+});
+
+/**
+ * A level toggled on one row belongs to that row.
+ *
+ * The rows are one array, so every toggle maps over all of them; a mapping that
+ * wrote on every index would toggle the same chip on every model at once.
+ */
+it("toggles a level on one model only", async () => {
+  const onSubmit = mount({
+    ...initial,
+    models: [
+      {
+        id: "m1",
+        name: "M1",
+        supportsImages: false,
+        contextWindow: 128000,
+        maxTokens: 16384,
+        reasoning: true,
+        thinkingLevels: ["low"],
+        inputCost: 0,
+        outputCost: 0,
+        cacheReadCost: 0,
+        cacheWriteCost: 0,
+      },
+      {
+        id: "m2",
+        name: "M2",
+        supportsImages: false,
+        contextWindow: 128000,
+        maxTokens: 16384,
+        reasoning: true,
+        thinkingLevels: ["medium"],
+        inputCost: 0,
+        outputCost: 0,
+        cacheReadCost: 0,
+        cacheWriteCost: 0,
+      },
+    ],
+  });
+
+  // The second row's `high` chip: two rows of seven, in row order.
+  const all = [...document.querySelectorAll<HTMLButtonElement>("button[aria-pressed]")];
+  expect(all).toHaveLength(CHIPS.length * 2);
+  act(() => all[CHIPS.length + CHIPS.indexOf("high")]!.click());
+  await act(async () => button("Save").click());
+
+  const submitted = onSubmit.mock.calls[0]![0] as { models: Array<{ id: string; thinkingLevels: string[] }> };
+  expect(submitted.models.map(model => [model.id, model.thinkingLevels])).toEqual([
+    ["m1", ["low"]],
+    ["m2", ["medium", "high"]],
+  ]);
+});

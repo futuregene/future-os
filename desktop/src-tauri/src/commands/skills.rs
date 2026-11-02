@@ -185,4 +185,54 @@ mod tests {
         crate::auth_store::set_future_base_url(&format!("{url}/api")).unwrap();
         assert!(get_skill_guide().await.unwrap().links.help.is_empty());
     }
+
+    /// The page's entry calls and the daily-budget pair. `refresh_skills` is
+    /// fire-and-forget (it reports that the agent was told, not what it
+    /// answered), the recommender echoes the candidate the *caller* supplied —
+    /// so a dropped candidate list answers `None` — and the budget counts
+    /// exactly what was recorded.
+    #[tokio::test]
+    async fn the_skills_page_calls_forward_their_arguments() {
+        let _lock = crate::commands::agent_mock::mock_agent_lock();
+        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-skills-entry");
+        crate::store::initialize_app_store().expect("init store");
+        crate::commands::agent_mock::ensure_mock_agent();
+
+        script_mock_agent(MockScript {
+            data: HashMap::from([("refresh_skills".to_string(), "{}".to_string())]),
+            ..Default::default()
+        });
+        refresh_skills().await.expect("refresh");
+
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "suggest_skill".to_string(),
+                serde_json::json!({ "skill": { "name": "acme", "description": "does x" } })
+                    .to_string(),
+            )]),
+            ..Default::default()
+        });
+        let suggested = suggest_skill(
+            "how do I x".to_string(),
+            vec![agent_bridge::SkillCandidate {
+                name: "acme".to_string(),
+                description: "does x".to_string(),
+            }],
+        )
+        .await
+        .expect("suggest")
+        .expect("a suggestion for the candidate that was sent");
+        assert_eq!(suggested.name, "acme");
+
+        let today = skill_reco_today().await.expect("today");
+        assert_eq!(today.count, 0, "a fresh day has spent nothing");
+        record_skill_reco("acme".to_string(), "hash-1".to_string())
+            .await
+            .expect("record a shown recommendation");
+        let today = skill_reco_today().await.expect("today");
+        assert_eq!(today.count, 1);
+        assert_eq!(today.skill_ids, vec!["acme".to_string()]);
+        assert_eq!(today.message_hashes, vec!["hash-1".to_string()]);
+        script_mock_agent(MockScript::default());
+    }
 }

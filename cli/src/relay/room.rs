@@ -929,6 +929,133 @@ mod tests {
         assert!(RoomStore::open(&path).is_err());
     }
 
+    /// The same contract one step earlier: a registry that cannot even be read
+    /// is an error naming the file, not the empty registry that would silently
+    /// invalidate every pairing.
+    #[test]
+    fn an_unreadable_registry_is_an_error_named_with_its_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = RoomStore::open(dir.path())
+            .map(|_| ())
+            .expect_err("a directory is not a registry")
+            .to_string();
+        assert!(error.contains("read"), "{error}");
+        assert!(
+            error.contains(&dir.path().display().to_string()),
+            "the file is named so it can be fixed: {error}"
+        );
+    }
+
+    /// A registry that cannot be written is loud but not fatal: the pairing the
+    /// caller just made still exists in memory, because failing the request
+    /// would turn a full disk into an outage for every paired device.
+    #[test]
+    fn a_registry_that_cannot_be_written_does_not_fail_the_registration() {
+        let dir = tempfile::tempdir().unwrap();
+        // The parent directory does not exist, so the atomic write cannot land.
+        let path = dir.path().join("no-such-directory").join("rooms.json");
+        let store = RoomStore::open(&path).expect("a missing file is an empty registry");
+        let room = register_with(&store, Some(JOIN));
+        assert_eq!(room.pair_id, "PAIR1");
+        assert_eq!(store.len(), 1, "the in-memory registry is unchanged");
+        assert!(!path.exists(), "nothing was written");
+    }
+
+    /// A desktop that hands out a new invitation reopens the room: the devices
+    /// paired with the previous one stay paired, and the code is live again.
+    #[test]
+    fn a_new_invitation_reopens_a_room_that_already_used_one() {
+        let store = store();
+        register(&store);
+        store
+            .join(
+                "PAIR1", JOIN, "phone_1", "UPHONE", "Pixel", REFRESH, NOW, 7_776_000,
+            )
+            .expect("the first device pairs");
+        assert!(register(&store).join_consumed_by.is_none());
+
+        let reopened = store
+            .register(
+                "PAIR1",
+                "UHOST",
+                "desktop_a",
+                "GUI",
+                Some(&hash_join("a-second-invitation")),
+                NOW + 10,
+                300,
+                7_776_000,
+            )
+            .expect("the host may open a new invitation");
+        assert!(
+            reopened.join_consumed_by.is_none(),
+            "the code is live again"
+        );
+        assert_eq!(reopened.invitation_expires_at, NOW + 10 + 300);
+        assert_eq!(reopened.devices.len(), 1, "the paired phone stays paired");
+    }
+
+    /// A room past its own ttl is dropped, and every credential that pointed at
+    /// it stops working: the phone has to pair again rather than hold a
+    /// credential for a namespace nobody serves.
+    #[test]
+    fn a_room_past_its_ttl_is_dropped_and_every_credential_with_it() {
+        let store = store();
+        let room_ttl = 60;
+        let expired = NOW + room_ttl + 1;
+        let re_register = || {
+            store
+                .register(
+                    "PAIR1",
+                    "UHOST",
+                    "desktop_a",
+                    "GUI",
+                    Some(&hash_join(JOIN)),
+                    NOW,
+                    300,
+                    room_ttl,
+                )
+                .expect("register");
+        };
+
+        re_register();
+        store
+            .join(
+                "PAIR1", JOIN, "phone_1", "UPHONE", "Pixel", REFRESH, NOW, room_ttl,
+            )
+            .expect("the phone pairs");
+        assert_eq!(
+            store
+                .join("PAIR1", JOIN, "phone_2", "UPHONE2", "Other", REFRESH, expired, room_ttl)
+                .unwrap_err(),
+            RoomError::Expired
+        );
+        assert!(store.is_empty(), "an expired room is not kept");
+
+        re_register();
+        assert_eq!(
+            store
+                .authorize(
+                    "PAIR1",
+                    "UHOST",
+                    crate::relay::jwt::Role::Bridge,
+                    expired,
+                    room_ttl
+                )
+                .unwrap_err(),
+            RoomError::Expired
+        );
+        assert!(store.is_empty());
+
+        re_register();
+        assert_eq!(
+            store
+                .authorize_refresh("PAIR1", "phone_1", "UPHONE", REFRESH, expired, room_ttl)
+                .unwrap_err(),
+            RoomError::Expired
+        );
+        assert!(store.is_empty());
+    }
+
     #[test]
     fn the_persisted_file_holds_no_token_or_key_material() {
         let dir = tempfile::tempdir().unwrap();

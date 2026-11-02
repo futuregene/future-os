@@ -45,6 +45,40 @@ fn a_foreign_or_unrecognized_database_is_refused_instead_of_adopted() {
 }
 
 #[test]
+fn a_database_that_answers_to_our_id_without_a_schema_version_is_preserved() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("half-identified.db");
+    let connection = Connection::open(&path).unwrap();
+    // It carries the Agent's application id but no schema version, and a table
+    // the Agent schema does not own. Adopting it would run `CREATE IF NOT EXISTS`
+    // over somebody's data and then report an empty history for it.
+    connection
+        .execute_batch(&format!(
+            "PRAGMA application_id = {}; CREATE TABLE entries(id INTEGER);",
+            0x46555452
+        ))
+        .unwrap();
+    drop(connection);
+
+    let error = match Database::open(&path) {
+        Ok(_) => panic!("a half-identified database must not be adopted"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("incomplete schema identity"), "{error}");
+
+    // The refusal is a preservation act: the table is still there, unmodified.
+    let preserved = Connection::open(&path).unwrap();
+    let entries: i64 = preserved
+        .query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE name='entries'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(entries, 1, "the refusal must not rewrite the file");
+}
+
+#[test]
 fn opening_bloated_incremental_database_does_not_rewrite_it() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("agent.db");
