@@ -433,7 +433,8 @@ pub(crate) fn query_discussion(
         let mut value = serde_json::to_value(&step)?;
         if !step.session_id.is_empty() {
             let session = state.session_manager.load(&step.session_id)?;
-            let messages = crate::session::entries_to_agent_messages(&session.entries, false);
+            let entries = selected_report_entries(&session.entries, step.report_quality.as_ref())?;
+            let messages = crate::session::entries_to_agent_messages(entries, false);
             let transcript = messages
                 .iter()
                 .map(|m| {
@@ -465,6 +466,32 @@ pub(crate) fn query_discussion(
         step.input.clear();
     }
     Ok(serde_json::to_value(discussion)?)
+}
+
+/// A retained original must not be replaced by an empty/unusable later repair.
+fn selected_report_entries<'a>(
+    entries: &'a [crate::session::SessionEntry],
+    quality: Option<&future_fusion::ReportQuality>,
+) -> Result<&'a [crate::session::SessionEntry]> {
+    let Some(quality) = quality else {
+        return Ok(entries);
+    };
+    let start = entries
+        .iter()
+        .position(|entry| {
+            entry.entry_type == "run_started"
+                && entry.content.as_ref().and_then(|v| v["run_id"].as_str())
+                    == Some(quality.source_run_id.as_str())
+        })
+        .context("Selected Fusion report run is missing")?;
+    let end = entries
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find(|(_, entry)| matches!(entry.entry_type.as_str(), "run_terminal" | "run_started"))
+        .map(|(i, _)| i)
+        .unwrap_or(entries.len());
+    Ok(&entries[start..end])
 }
 
 /// Avoid hydrating child message bodies during catalogue enumeration.
@@ -541,6 +568,35 @@ fn request_context_bytes(request: &crate::llm::schema::ModelRequest) -> Result<u
 
 #[cfg(test)]
 mod input_contract_tests {
+    #[test]
+    fn retained_original_selects_its_run_without_exposing_later_repair() {
+        use crate::session::SessionEntry;
+        let entries = vec![
+            SessionEntry::run_started("initial", 1),
+            SessionEntry::new_user("assistant", serde_json::json!([])),
+            SessionEntry::run_started("repair", 2),
+            SessionEntry::new_user("assistant", serde_json::json!([])),
+        ];
+        let quality = future_fusion::ReportQuality {
+            validation_errors: vec!["Invalid quote".into()],
+            source_run_id: "initial".into(),
+        };
+        let selected = super::selected_report_entries(&entries, Some(&quality)).unwrap();
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[1].id, entries[1].id);
+        let missing = future_fusion::ReportQuality {
+            source_run_id: "missing".into(),
+            ..quality
+        };
+        assert!(super::selected_report_entries(&entries, Some(&missing)).is_err());
+        assert_eq!(
+            super::selected_report_entries(&entries, None)
+                .unwrap()
+                .len(),
+            4
+        );
+    }
+
     #[tokio::test]
     async fn oversized_actual_request_never_reaches_provider() {
         use crate::types::LLMProvider;

@@ -566,6 +566,7 @@ pub enum Key {
     FusionBudgetReserved,
     FusionDirectReview,
     FusionMaterialsRetained,
+    FusionReportUnvalidated,
     FusionWaiting,
     FusionThinking,
     FusionThought,
@@ -1115,6 +1116,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         FusionReducedParticipation => ("部分模型未完成，已基于有效结果继续。", "Some models did not finish; continuing with valid results."),
         FusionBudgetReserved => ("已跳过后续讨论，为总结保留时间。", "Further discussion was skipped to reserve time for synthesis."),
         FusionDirectReview => ("议题整理不可用，已采用降级讨论流程。", "Issue mapping was unavailable; a degraded discussion path was used."),
+        FusionReportUnvalidated => ("部分报告存在校验问题或为适应上下文而精简，已作为讨论材料保留。", "Some reports have validation issues or were shortened to fit context; usable material was retained."),
         FusionMaterialsRetained => ("已有分析与降级原因已保留，可用于复盘。", "Existing analyses and degradation reasons were preserved for review."),
         FusionWaiting => ("等待思考", "Waiting"),
         FusionThinking => ("思考中", "Thinking"),
@@ -1534,7 +1536,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 381] = {
+    const ALL_KEYS: [Key; 382] = {
         use Key::*;
         [
             TabTodo,
@@ -1808,6 +1810,7 @@ mod tests {
             FusionBudgetReserved,
             FusionDirectReview,
             FusionMaterialsRetained,
+            FusionReportUnvalidated,
             FusionWaiting,
             FusionThinking,
             FusionThought,

@@ -125,6 +125,14 @@ pub struct Conclusion {
     pub completeness: String,
 }
 
+/// A usable public report with unresolved validation issues; not verified evidence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportQuality {
+    pub validation_errors: Vec<String>,
+    /// Select the accepted public report rather than an unusable later repair.
+    pub source_run_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Step {
     pub id: String,
@@ -146,6 +154,8 @@ pub struct Step {
     pub settings: Option<crate::StepSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_kind: Option<crate::FailureKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_quality: Option<ReportQuality>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
