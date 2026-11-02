@@ -1079,8 +1079,8 @@ impl ServerSession {
                 Vec::new()
             };
             run_loop.fusion_context = Some(crate::fusion::ContextScope::Inner(Arc::new(snapshot)));
-            run_loop.config.max_turns = 5;
-            // Fusion Host owns the bounded retry policy; do not multiply it here.
+            run_loop.config.max_turns = 0; // Phase deadline owns multi-turn work, not report size.
+                                           // Fusion Host owns the bounded retry policy; do not multiply it here.
             run_loop.config.max_retries = 0;
             // Enforce capacity on every request, including accumulated tool turns.
             run_loop.provider = Arc::new(crate::fusion::ContextProvider {

@@ -387,7 +387,7 @@ impl Store {
             &tx,
             &step.fusion_run_id,
             "step",
-            json!({"step_id":step.id,"phase":step.phase,"participant":step.participant,"status":step.status,"failure_kind":step.failure_kind,"settings":step.settings}),
+            json!({"step_id":step.id,"phase":step.phase,"participant":step.participant,"status":step.status,"session_id":step.session_id,"agent_run_id":step.agent_run_id,"failure_kind":step.failure_kind,"settings":step.settings}),
         )?;
         tx.commit()?;
         Ok(())

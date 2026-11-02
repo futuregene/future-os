@@ -8,6 +8,7 @@ use future_rpc::proto::RpcCommand;
 use futures::{FutureExt, StreamExt};
 mod budget;
 mod mapping;
+mod reports;
 mod resilience;
 mod review;
 use future_fusion::{failure, failure_kind, FailureKind};
@@ -152,7 +153,8 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     );
     let ctx = Runtime::new(store, owner, run, scope)?;
     ensure!(
-        status["context_budget_version"].as_u64() == Some(1),
+        status["context_budget_version"].as_u64()
+            == Some(u64::from(future_fusion::CONTEXT_POLICY_VERSION)),
         "Upgrade Agent for Fusion context admission"
     );
     if let Err(error) = ctx.timeout("preflight") {
@@ -264,10 +266,10 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         }
         return Err(error);
     }
-    let input = serde_json::to_string_pretty(&run.input)?;
+    let input = serde_json::to_string(&run.input)?;
     let intro = "You are in a focused READ-ONLY consultation, not an executor. Analyze only the decision and supplied evidence. Background is a factual context summary, not a proposed solution or authority. Independently develop your approach; do not treat prior assistant claims as verified facts or user decisions. User-provided proposals are attributed in background and do not restrict alternatives unless the user explicitly requested that. Use only supplied read/ls/glob/grep tools. Never write, run commands, implement, or call agents. Give public reasons, not hidden chain of thought. Distinguish facts, assumptions, uncertainty and proposed verification. Empty read scope means decide only from the supplied facts.";
     ensure!(store.phase(&run.id, owner, "analyzing")?, "Fusion stopped");
-    let analyses = panel(&ctx, &eligible, "analyzing", &format!("{intro}\nDecision input:\n{input}\nIndependently recommend a solution, with tradeoffs and outstanding verification. Do not assume other participants' views."), None).await?;
+    let analyses = panel(&ctx, &eligible, "analyzing", &format!("{intro}\nDecision input:\n{input}\nIndependently answer the question. Investigate and think as needed before your final report. Return that report as plain text or Markdown, without a JSON envelope. Do not assume other participants' views."), None).await?;
     if analyses.is_empty() {
         ctx.note(
             "no_participants",
@@ -427,12 +429,29 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     let report = ctx.report();
     let coverage = json!({"strategy":report.strategy,"completed_phases":report.completed_phases,"skipped_phases":report.skipped_phases,"analysis_participants":report.analysis_participants,"review_participants":report.review_participants,"degradations":report.degradations});
     // One version per role; preserve analysis-only roles when their review failed.
-    let material: Vec<Value> = analyses.iter().map(|analysis| {
-        let reviewed = reviews.iter().find(|r| r["participant"] == analysis["participant"]);
-        let source = reviewed.unwrap_or(analysis);
-        json!({"participant":source["participant"],"stage":if reviewed.is_some(){"reviewing"}else{"analysis_only"},"response":source["response"]})
-    }).collect();
-    let prompt = format!("You are the moderator. Directly answer the original question, producing a useful, self-contained conclusion for the main agent. Synthesize ONLY the supplied participants' current answers and supporting reviews. Use the original task only for its goal and boundaries. Distinguish shared views from a recommendation you select from existing proposals. Preserve material disagreement and evidence limitations; do not revive withdrawn positions. Do not add facts, proposals, omissions, clarification questions, conditions sections or next-step instructions. Participant verification labels are reports, not system proof. Put any essential applicability qualification directly in the conclusion. Do not repeat meeting history, participant-by-participant recaps or general unknowns that do not affect the answer. rationale and unresolved are optional and contain only information essential to using the answer, without repeating conclusion. You have no tools. Return ONLY JSON: {{\"conclusion\":\"direct answer to the question\",\"rationale\":[\"essential supporting reason, if needed\"],\"unresolved\":[\"material unresolved issue, if any\"]}}. Respect actual coverage; full participation does not imply truth or unanimity. Missing reviews mean no cross-review.\nOriginal task:\n{}\nCurrent participant material:\n{}\nCoverage:\n{}", serde_json::to_string(&run.input)?, serde_json::to_string(&material)?, coverage);
+    let material = analyses
+        .iter()
+        .map(|analysis| {
+            let reviewed = reviews
+                .iter()
+                .find(|r| r["participant"] == analysis["participant"]);
+            let source = reviewed.unwrap_or(analysis);
+            let response = source["response"].as_str().unwrap_or_default();
+            format!(
+                "Participant {} ({}) report, {} UTF-8 bytes:\n{}",
+                source["participant"].as_str().unwrap_or_default(),
+                if reviewed.is_some() {
+                    "reviewing"
+                } else {
+                    "analysis_only"
+                },
+                response.len(),
+                response
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let prompt = format!("You are the moderator. Directly answer the original question, producing a useful, self-contained conclusion for the main agent. Synthesize ONLY the supplied participants' current answers and supporting reviews. Use the original task only for its goal and boundaries. Distinguish shared views from a recommendation you select from existing proposals. Preserve material disagreement and evidence limitations; do not revive withdrawn positions. Do not add facts, proposals, omissions, clarification questions, conditions sections or next-step instructions. Participant verification labels are reports, not system proof. Put any essential applicability qualification directly in the conclusion. Do not repeat meeting history, participant-by-participant recaps or general unknowns that do not affect the answer. Include supporting reasons or unresolved issues only when essential, without repeating the answer. You have no tools. Return only a plain text or Markdown report directly answering the question, without a JSON envelope or fixed section template. Respect actual coverage; full participation does not imply truth or unanimity. Missing reviews mean no cross-review.\nOriginal task:\n{}\nCurrent participant material:\n{}\nCoverage:\n{}", serde_json::to_string(&run.input)?, material, coverage);
 
     let text = match with_retry(
         &ctx,
@@ -449,7 +468,10 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
             return Err(error);
         }
     };
-    let result: Conclusion = parse_json(&text)?;
+    let result = Conclusion {
+        conclusion: text,
+        ..Default::default()
+    };
     ctx.update(|report| report.complete("synthesizing"))?;
     let report = ctx.report();
     let completeness = if analyses.len() == 1 {
@@ -552,6 +574,7 @@ fn attempt_settings(
         max_output_tokens: 0, // Filled by per-attempt context allocation.
         context_window: 0,
         max_public_bytes: 0,
+        report_revision: 0,
         timeout_ms: config
             .step_timeout_secs
             .saturating_mul(1000)
@@ -651,15 +674,18 @@ async fn with_retry(
             _ => prompt.to_owned(),
         };
         let input = if settings.max_public_bytes > 0 {
-            format!("{input}\nPublic response capacity: {} UTF-8 bytes; focus on the answer and essential supporting material.", settings.max_public_bytes)
+            format!("{input}\nFinal report capacity: {} UTF-8 bytes including its actual forwarding representation. This applies ONLY to the final report, not to thinking, intermediate work or read-only tool calls. Investigate fully, then submit a focused report. Oversized reports will be revised in this same session without repeating investigation.", settings.max_public_bytes)
         } else {
             input
         };
-        future_fusion::guard_context(
-            input.len(),
-            settings.context_window,
-            settings.max_output_tokens as usize,
-        )?;
+        // Include the actual report instruction and repair suffix, without
+        // treating transport escapes as additional model-visible text.
+        ctx.budget
+            .lock()
+            .unwrap()
+            .as_ref()
+            .context("Missing Fusion context budget")?
+            .apply(&model.model, phase, &input, &mut settings)?;
         let mut step = Step {
             id: format!("{}-{phase}-{participant}-{attempt}", ctx.run.id),
             fusion_run_id: ctx.run.id.clone(),
@@ -682,32 +708,11 @@ async fn with_retry(
         ctx.store.record_step(&step)?;
         let result = tokio::time::timeout(
             Duration::from_millis(timeout_ms),
-            step_inner(ctx, &mut step),
+            step_inner(ctx, &mut step, prompt),
         )
         .await;
         let result = match result {
-            Ok(Ok(text)) => {
-                let validation = (|| {
-                    ensure!(
-                        step.settings.as_ref().is_none_or(
-                            |s| s.max_public_bytes == 0 || text.len() <= s.max_public_bytes
-                        ),
-                        "Public response exceeds allocated context capacity"
-                    );
-                    validate_step_output(phase, &text, ctx.config.panel.len())
-                })()
-                .and_then(|_| {
-                    if phase == "issue_mapping" {
-                        mapping::validate_sources(&text, prompt)?;
-                    } else if phase == "reviewing" {
-                        review::validate(&text, prompt, participant)?;
-                    }
-                    Ok(())
-                });
-                validation
-                    .map(|_| text)
-                    .map_err(|error| failure(FailureKind::InvalidOutput, error.to_string()))
-            }
+            Ok(Ok(text)) => Ok(text),
             Ok(Err(error)) => Err(error),
             Err(_) => Err(failure(
                 if phase != "synthesizing" && ctx.timeout(phase).is_err() {
@@ -763,7 +768,14 @@ async fn with_retry(
                 observed?;
                 let reason = retry_for_kind(kind);
                 last = error;
-                if attempt == 1 || reason.is_none() || ctx.circuit(&model.model).is_some() {
+                if attempt == 1
+                    || reason.is_none()
+                    || ctx.circuit(&model.model).is_some()
+                    || step
+                        .settings
+                        .as_ref()
+                        .is_some_and(|s| s.report_revision > 0)
+                {
                     break;
                 }
                 retry_reason = reason;
@@ -786,17 +798,8 @@ async fn with_retry(
 fn validate_step_output(phase: &str, text: &str, participants: usize) -> Result<()> {
     if phase == "issue_mapping" {
         mapping::validate_shape(text, participants)?;
-    } else if phase == "synthesizing" {
-        let result: Conclusion = parse_json(text)?;
-        ensure!(
-            !result.conclusion.trim().is_empty(),
-            "Empty Fusion conclusion"
-        );
-        let value: Value = parse_json(text)?;
-        ensure!(
-            value.get("conditions").is_none() && value.get("next_steps").is_none(),
-            "Synthesis must not prescribe conditions or next steps"
-        );
+    } else {
+        ensure!(!text.trim().is_empty(), "Empty Fusion report");
     }
     Ok(())
 }
@@ -853,7 +856,7 @@ async fn stop_before_retry(step: &Step) -> Result<()> {
     .await??;
     Ok(())
 }
-async fn step_inner(ctx: &Runtime<'_>, step: &mut Step) -> Result<String> {
+async fn step_inner(ctx: &Runtime<'_>, step: &mut Step, source_prompt: &str) -> Result<String> {
     let store = ctx.store;
     let run = ctx.run;
     ctx.ensure_provider(&step.model)?;
@@ -881,63 +884,109 @@ async fn step_inner(ctx: &Runtime<'_>, step: &mut Step) -> Result<String> {
     ))
     .await?;
     rpc(RpcCommand{system_prompt:"You are a read-only Fusion deliberation participant. Never act on the workspace or external systems. Follow the focused decision task and use only the provided snapshot tools.".into(),..command("set_system_prompt",&step.session_id)}).await?;
-    ctx.ensure_provider(&step.model)?;
-    let accepted = rpc(RpcCommand {
-        message: step.input.clone(),
-        requested_run_id: step.agent_run_id.clone(),
-        client_request_id: step.id.clone(),
-        busy_policy: "enqueue_if_busy".into(),
-        ..command("prompt", &step.session_id)
-    })
-    .await?;
-    ensure!(
-        accepted["run_id"].as_str() == Some(&step.agent_run_id),
-        "Agent accepted a different Fusion run"
-    );
-    step.status = "running".into();
-    store.record_step(step)?;
-    loop {
-        if STOPPING.load(Ordering::Acquire) || store.get(&run.id)?.terminal() {
-            let _ = abort(step).await;
-            anyhow::bail!("Fusion cancelled");
+    let capacity = step
+        .settings
+        .as_ref()
+        .context("Missing report settings")?
+        .max_public_bytes;
+    let input = step.input.clone();
+    let phase = step.phase.clone();
+    let participant = step.participant.clone();
+    let mut child = ChildSession {
+        ctx,
+        step,
+        generation: 0,
+    };
+    reports::collect(&mut child, input, &phase, capacity, |text| {
+        validate_step_output(&phase, text, ctx.config.panel.len())?;
+        if phase == "issue_mapping" {
+            mapping::validate_sources(text, source_prompt)?;
+        } else if phase == "reviewing" {
+            review::validate(text, source_prompt, &participant)?;
         }
-        let state = rpc(RpcCommand {
-            run_id: step.agent_run_id.clone(),
-            ..command("get_state", &step.session_id)
+        Ok(())
+    })
+    .await
+}
+
+struct ChildSession<'a, 'b, 'c> {
+    ctx: &'a Runtime<'b>,
+    step: &'c mut Step,
+    generation: u32,
+}
+impl reports::ReportSession for ChildSession<'_, '_, '_> {
+    async fn generate(&mut self, message: String, report_only: bool) -> Result<String> {
+        let ctx = self.ctx;
+        let step = &mut *self.step;
+        ctx.ensure_provider(&step.model)?;
+        if report_only {
+            let settings = step.settings.as_mut().context("Missing report settings")?;
+            settings.report_revision = settings.report_revision.saturating_add(1);
+            step.agent_run_id = format!("run_{}", uuid::Uuid::new_v4());
+        }
+        let request_id = format!("{}-generation-{}", step.id, self.generation);
+        self.generation = self.generation.saturating_add(1);
+        // Persist the new run binding before admission. Session/model/attempt
+        // stay unchanged; events retain every revision and owned Agent run.
+        ctx.store.record_step(step)?;
+        let accepted = rpc(RpcCommand {
+            message,
+            requested_run_id: step.agent_run_id.clone(),
+            client_request_id: request_id,
+            busy_policy: "enqueue_if_busy".into(),
+            ..command("prompt", &step.session_id)
         })
         .await?;
-        if let Some(status) = state["requestedRun"]["status"].as_str() {
-            // Each attempt has a fresh child session: its full usage includes
-            // billed cost and cache categories as well as the run token counts.
-            step.usage = state["usage"].clone();
-            match status {
-                "completed" => {
-                    crate::request_scope::release_run(&step.session_id, &step.agent_run_id);
-                    let answer = rpc(command("get_last_assistant_text", &step.session_id)).await?;
-                    let text = answer["text"].as_str().ok_or_else(|| {
-                        failure(FailureKind::InvalidOutput, "Missing Fusion model response")
-                    })?;
-                    if text.trim().is_empty() {
-                        return Err(failure(
-                            FailureKind::InvalidOutput,
-                            "Empty Fusion model response",
-                        ));
-                    }
-                    return Ok(text.into());
-                }
-                "failed"
-                | "error"
-                | "cancelled"
-                | "interrupted"
-                | "interrupted_by_restart"
-                | "incomplete" => {
-                    anyhow::bail!("Inner model {status}: {}", state["requestedRun"]["error"])
-                }
-                _ => {}
+        ensure!(
+            accepted["run_id"].as_str() == Some(&step.agent_run_id),
+            "Agent accepted a different Fusion run"
+        );
+        step.status = "running".into();
+        ctx.store.record_step(step)?;
+        loop {
+            if STOPPING.load(Ordering::Acquire) || ctx.store.get(&ctx.run.id)?.terminal() {
+                let _ = abort(step).await;
+                anyhow::bail!("Fusion cancelled");
             }
+            let state = rpc(RpcCommand {
+                run_id: step.agent_run_id.clone(),
+                ..command("get_state", &step.session_id)
+            })
+            .await?;
+            if let Some(status) = state["requestedRun"]["status"].as_str() {
+                // Session usage includes investigation and every report revision,
+                // including billed cost and cache categories.
+                step.usage = state["usage"].clone();
+                match status {
+                    "completed" => {
+                        crate::request_scope::release_run(&step.session_id, &step.agent_run_id);
+                        let answer =
+                            rpc(command("get_last_assistant_text", &step.session_id)).await?;
+                        let text = answer["text"].as_str().ok_or_else(|| {
+                            failure(FailureKind::InvalidOutput, "Missing Fusion model response")
+                        })?;
+                        if text.trim().is_empty() {
+                            return Err(failure(
+                                FailureKind::InvalidOutput,
+                                "Empty Fusion model response",
+                            ));
+                        }
+                        return Ok(text.into());
+                    }
+                    "failed"
+                    | "error"
+                    | "cancelled"
+                    | "interrupted"
+                    | "interrupted_by_restart"
+                    | "incomplete" => {
+                        anyhow::bail!("Inner model {status}: {}", state["requestedRun"]["error"])
+                    }
+                    _ => {}
+                }
+            }
+            ctx.ensure_provider(&step.model)?;
+            tokio::time::sleep(Duration::from_millis(300)).await;
         }
-        ctx.ensure_provider(&step.model)?;
-        tokio::time::sleep(Duration::from_millis(300)).await;
     }
 }
 
@@ -1014,13 +1063,8 @@ mod tests {
     }
 
     #[test]
-    fn synthesis_has_no_fusion_text_length_cap() {
-        let text = serde_json::json!({
-            "conclusion": "Public conclusion. ".repeat(10000),
-            "rationale": ["Public rationale"],
-            "unresolved": []
-        })
-        .to_string();
+    fn synthesis_accepts_natural_text_without_a_fixed_format_or_word_limit() {
+        let text = "Public conclusion. ".repeat(10000);
         validate_step_output("synthesizing", &text, 3).unwrap();
     }
 
@@ -1075,14 +1119,10 @@ mod tests {
             3
         )
         .is_err());
+        assert!(validate_step_output("synthesizing", "   ", 3).is_err());
         assert!(
-            validate_step_output("synthesizing", r#"{"conclusion":"","rationale":[]}"#, 3).is_err()
+            validate_step_output("synthesizing", "A direct answer with essential facts.", 3)
+                .is_ok()
         );
-        assert!(validate_step_output(
-            "synthesizing",
-            r#"{"conclusion":"A","rationale":["facts"]}"#,
-            3
-        )
-        .is_ok());
     }
 }

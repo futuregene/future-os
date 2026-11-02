@@ -24,7 +24,7 @@ pub(super) fn prompt(
     let packet = json!({"participant":participant,"task":input,"original_analysis":own["response"].as_str().context("Missing original public answer")?,"moderator_map":mapping});
     Ok(format!(
         "{INSTRUCTIONS}\nReview packet:\n{}",
-        serde_json::to_string_pretty(&packet)?
+        serde_json::to_string(&packet)?
     ))
 }
 
