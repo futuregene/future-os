@@ -845,9 +845,12 @@ message (their texts joined in order, one paragraph each, their attachments
 together) the moment the run ends. Interrupting while a queue waits ends the run
 and sends that same joined message; interrupting with a draft queues the draft
 first, so the flush carries the queue and the draft together. The queue belongs
-to its conversation and lives in memory only: switching conversations keeps it,
-an app restart does not. The phone and this app's view of another computer's
-conversation follow the same rule; the terminal has no send queue, and the Vibe
+to its conversation: switching conversations keeps it, and the phone writes it to
+local storage too, so a restart still holds it (attachments the OS has cleaned up
+are dropped on the way back). An uninstall takes it with everything else — only a
+queue held on the desktop could outlive that — and the desktop app, including its
+view of another computer's conversation, keeps its queue in memory. The terminal
+has no send queue, and the Vibe
 panel's input layer keeps its own hand-back queue (see `VIBE.md` §5.4).
 
 History display and persistence rules:
