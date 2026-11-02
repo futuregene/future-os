@@ -390,7 +390,7 @@
       "partial": "部分完成",
       "skipped": "已跳过"
     },
-    "stageCount": "{{current}} / {{total}}",
+    "stageCount": "{{current}}/{{total}}",
     "progress": "讨论阶段进度",
     "partialNotice": "部分模型未完成讨论",
     "statusUnavailable": "暂时无法读取讨论状态",

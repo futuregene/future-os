@@ -389,7 +389,7 @@
       "partial": "Partially complete",
       "skipped": "Skipped"
     },
-    "stageCount": "{{current}} / {{total}}",
+    "stageCount": "{{current}}/{{total}}",
     "progress": "Discussion stage progress",
     "partialNotice": "Some models did not complete the discussion",
     "statusUnavailable": "Discussion status is temporarily unavailable",

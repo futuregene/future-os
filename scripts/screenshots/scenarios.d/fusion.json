@@ -19,7 +19,7 @@
           "wait": 800
         },
         {
-          "eval": "(() => {const text=document.body.innerText;const bar=document.querySelector('[role=\"progressbar\"][aria-label=\"讨论阶段进度\"], [role=\"progressbar\"][aria-label=\"Discussion stage progress\"]');if(!bar)throw new Error('missing discussion progress');if(bar.getAttribute('aria-valuemax')!=='4')throw new Error('wrong stage count');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!text.includes(model))throw new Error('missing model '+model);if(text.includes('Diagnostics')||text.includes('原始发言与工具证据')||document.querySelector('[role=\"tablist\"][aria-label=\"Fusion\"]'))throw new Error('detailed debug controls leaked into compact activity');if(bar.getAttribute(\"aria-valuenow\")!==\"4\")throw new Error(\"wrong completed stages\");if(!text.includes(\"思考完成\")&&!text.includes(\"Thinking complete\"))throw new Error(\"missing completed status\");return 'four-stage progress and three model rows';})()"
+          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4)throw new Error('missing four ring segments');if(bar.getAttribute('aria-valuenow')!=='4'||bar.textContent.replace(/\\s/g,'')!=='4/4')throw new Error('wrong current stage');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!root.innerText.includes(model))throw new Error('missing '+model);const labels=[...root.querySelectorAll('[aria-label]')].map(e=>e.getAttribute('aria-label'));if(!labels.some(label=>/思考完成|Thinking complete/.test(label)))throw new Error('missing accessible model status');if(/思考完成|Thinking complete|思考中|Thinking|达到输出上限|Output limit reached/.test(root.innerText))throw new Error('model status text is still visible');return 'four-part title ring and icon-only model rows';})()"
         },
         {
           "shot": "d-fusion-progress.png"
@@ -45,7 +45,7 @@
           "wait": 800
         },
         {
-          "eval": "(() => {const text=document.body.innerText;const bar=document.querySelector('[role=\"progressbar\"][aria-label=\"讨论阶段进度\"], [role=\"progressbar\"][aria-label=\"Discussion stage progress\"]');if(!bar)throw new Error('missing discussion progress');if(bar.getAttribute('aria-valuemax')!=='4')throw new Error('wrong stage count');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!text.includes(model))throw new Error('missing model '+model);if(text.includes('Diagnostics')||text.includes('原始发言与工具证据')||document.querySelector('[role=\"tablist\"][aria-label=\"Fusion\"]'))throw new Error('detailed debug controls leaked into compact activity');if(!text.includes(\"达到输出上限\")&&!text.includes(\"Output limit reached\"))throw new Error(\"partial model failure is hidden\");if(bar.getAttribute(\"aria-valuenow\")!==\"4\")throw new Error(\"wrong completed stages\");return 'four-stage progress and three model rows';})()"
+          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4)throw new Error('missing four ring segments');if(bar.getAttribute('aria-valuenow')!=='4'||bar.textContent.replace(/\\s/g,'')!=='4/4')throw new Error('wrong current stage');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!root.innerText.includes(model))throw new Error('missing '+model);const labels=[...root.querySelectorAll('[aria-label]')].map(e=>e.getAttribute('aria-label'));if(!labels.some(label=>/达到输出上限|Output limit reached/.test(label)))throw new Error('missing accessible model status');if(/思考完成|Thinking complete|思考中|Thinking|达到输出上限|Output limit reached/.test(root.innerText))throw new Error('model status text is still visible');return 'four-part title ring and icon-only model rows';})()"
         },
         {
           "shot": "d-fusion-progress-partial.png"
@@ -71,10 +71,59 @@
           "wait": 800
         },
         {
-          "eval": "(() => {const text=document.body.innerText;const bar=document.querySelector('[role=\"progressbar\"][aria-label=\"讨论阶段进度\"], [role=\"progressbar\"][aria-label=\"Discussion stage progress\"]');if(!bar)throw new Error('missing discussion progress');if(bar.getAttribute('aria-valuemax')!=='4')throw new Error('wrong stage count');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!text.includes(model))throw new Error('missing model '+model);if(text.includes('Diagnostics')||text.includes('原始发言与工具证据')||document.querySelector('[role=\"tablist\"][aria-label=\"Fusion\"]'))throw new Error('detailed debug controls leaked into compact activity');if(bar.getAttribute(\"aria-valuenow\")!==\"2\")throw new Error(\"wrong completed stages\");if(!text.includes(\"交叉讨论\")&&!text.includes(\"Cross discussion\"))throw new Error(\"wrong current phase\");if(!text.includes(\"思考中\")&&!text.includes(\"Thinking\"))throw new Error(\"missing thinking status\");return 'four-stage progress and three model rows';})()"
+          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4)throw new Error('missing four ring segments');if(bar.getAttribute('aria-valuenow')!=='3'||bar.textContent.replace(/\\s/g,'')!=='3/4')throw new Error('wrong current stage');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!root.innerText.includes(model))throw new Error('missing '+model);const labels=[...root.querySelectorAll('[aria-label]')].map(e=>e.getAttribute('aria-label'));if(!labels.some(label=>/思考中|Thinking/.test(label)))throw new Error('missing accessible model status');if(/思考完成|Thinking complete|思考中|Thinking|达到输出上限|Output limit reached/.test(root.innerText))throw new Error('model status text is still visible');return 'four-part title ring and icon-only model rows';})()"
         },
         {
           "shot": "d-fusion-progress-running.png"
+        }
+      ]
+    },
+    "fusion-ring-collapsed": {
+      "url": "http://localhost:5299/shot/?fusion=1",
+      "steps": [
+        {
+          "wait": 1000
+        },
+        {
+          "tap": "查看过程"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "wait": 800
+        },
+        {
+          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4||bar.textContent.trim()!=='4/4')throw new Error('collapsed title progress missing');if(root.innerText.includes('GLM'))throw new Error('model rows visible while collapsed');return 'total progress visible before expansion';})()"
+        },
+        {
+          "shot": "d-fusion-ring-collapsed.png"
+        }
+      ]
+    },
+    "fusion-ring-moderator": {
+      "url": "http://localhost:5299/shot/?fusion=mapping",
+      "steps": [
+        {
+          "wait": 1000
+        },
+        {
+          "tap": "查看过程"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "tapText": "Fusion · 讨论"
+        },
+        {
+          "wait": 800
+        },
+        {
+          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(bar?.textContent.trim()!=='2/4')throw new Error('not mapping stage');if(!root.innerText.includes('DeepSeek Flash')||root.innerText.includes('GLM')||root.innerText.includes('Qwen'))throw new Error('participant rows were not hidden');if(!root.innerText.includes('主模型')&&!root.innerText.includes('Main model'))throw new Error('moderator role missing');return 'stage two shows only the moderator';})()"
+        },
+        {
+          "shot": "d-fusion-ring-moderator.png"
         }
       ]
     }
@@ -117,7 +166,7 @@
           "wait": 800
         },
         {
-          "eval": "(() => {const text=document.body.innerText;const bar=document.querySelector('[role=\"progressbar\"][aria-label=\"讨论阶段进度\"], [role=\"progressbar\"][aria-label=\"Discussion stage progress\"]');if(!bar)throw new Error('missing discussion progress');if(bar.getAttribute('aria-valuemax')!=='4')throw new Error('wrong stage count');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!text.includes(model))throw new Error('missing model '+model);if(text.includes('Diagnostics')||text.includes('原始发言与工具证据')||document.querySelector('[role=\"tablist\"][aria-label=\"Fusion\"]'))throw new Error('detailed debug controls leaked into compact activity');if(bar.getAttribute(\"aria-valuenow\")!==\"4\")throw new Error(\"wrong completed stages\");if(!text.includes(\"思考完成\")&&!text.includes(\"Thinking complete\"))throw new Error(\"missing completed status\");return 'four-stage progress and three model rows';})()"
+          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4)throw new Error('missing four ring segments');if(bar.getAttribute('aria-valuenow')!=='4'||bar.textContent.replace(/\\s/g,'')!=='4/4')throw new Error('wrong current stage');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!root.innerText.includes(model))throw new Error('missing '+model);const labels=[...root.querySelectorAll('[aria-label]')].map(e=>e.getAttribute('aria-label'));if(!labels.some(label=>/思考完成|Thinking complete/.test(label)))throw new Error('missing accessible model status');if(/思考完成|Thinking complete|思考中|Thinking|达到输出上限|Output limit reached/.test(root.innerText))throw new Error('model status text is still visible');return 'four-part title ring and icon-only model rows';})()"
         },
         {
           "shot": "m-fusion-progress.png"
@@ -162,7 +211,7 @@
           "wait": 800
         },
         {
-          "eval": "(() => {const text=document.body.innerText;const bar=document.querySelector('[role=\"progressbar\"][aria-label=\"讨论阶段进度\"], [role=\"progressbar\"][aria-label=\"Discussion stage progress\"]');if(!bar)throw new Error('missing discussion progress');if(bar.getAttribute('aria-valuemax')!=='4')throw new Error('wrong stage count');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!text.includes(model))throw new Error('missing model '+model);if(text.includes('Diagnostics')||text.includes('原始发言与工具证据')||document.querySelector('[role=\"tablist\"][aria-label=\"Fusion\"]'))throw new Error('detailed debug controls leaked into compact activity');if(!text.includes(\"达到输出上限\")&&!text.includes(\"Output limit reached\"))throw new Error(\"partial model failure is hidden\");if(bar.getAttribute(\"aria-valuenow\")!==\"4\")throw new Error(\"wrong completed stages\");return 'four-stage progress and three model rows';})()"
+          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4)throw new Error('missing four ring segments');if(bar.getAttribute('aria-valuenow')!=='4'||bar.textContent.replace(/\\s/g,'')!=='4/4')throw new Error('wrong current stage');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!root.innerText.includes(model))throw new Error('missing '+model);const labels=[...root.querySelectorAll('[aria-label]')].map(e=>e.getAttribute('aria-label'));if(!labels.some(label=>/达到输出上限|Output limit reached/.test(label)))throw new Error('missing accessible model status');if(/思考完成|Thinking complete|思考中|Thinking|达到输出上限|Output limit reached/.test(root.innerText))throw new Error('model status text is still visible');return 'four-part title ring and icon-only model rows';})()"
         },
         {
           "shot": "m-fusion-progress-partial.png"
@@ -207,10 +256,97 @@
           "wait": 800
         },
         {
-          "eval": "(() => {const text=document.body.innerText;const bar=document.querySelector('[role=\"progressbar\"][aria-label=\"讨论阶段进度\"], [role=\"progressbar\"][aria-label=\"Discussion stage progress\"]');if(!bar)throw new Error('missing discussion progress');if(bar.getAttribute('aria-valuemax')!=='4')throw new Error('wrong stage count');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!text.includes(model))throw new Error('missing model '+model);if(text.includes('Diagnostics')||text.includes('原始发言与工具证据')||document.querySelector('[role=\"tablist\"][aria-label=\"Fusion\"]'))throw new Error('detailed debug controls leaked into compact activity');if(bar.getAttribute(\"aria-valuenow\")!==\"2\")throw new Error(\"wrong completed stages\");if(!text.includes(\"交叉讨论\")&&!text.includes(\"Cross discussion\"))throw new Error(\"wrong current phase\");if(!text.includes(\"思考中\")&&!text.includes(\"Thinking\"))throw new Error(\"missing thinking status\");return 'four-stage progress and three model rows';})()"
+          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4)throw new Error('missing four ring segments');if(bar.getAttribute('aria-valuenow')!=='3'||bar.textContent.replace(/\\s/g,'')!=='3/4')throw new Error('wrong current stage');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!root.innerText.includes(model))throw new Error('missing '+model);const labels=[...root.querySelectorAll('[aria-label]')].map(e=>e.getAttribute('aria-label'));if(!labels.some(label=>/思考中|Thinking/.test(label)))throw new Error('missing accessible model status');if(/思考完成|Thinking complete|思考中|Thinking|达到输出上限|Output limit reached/.test(root.innerText))throw new Error('model status text is still visible');return 'four-part title ring and icon-only model rows';})()"
         },
         {
           "shot": "m-fusion-progress-running.png"
+        }
+      ],
+      "ready": "document.body.innerText.includes(\"Not now\")"
+    },
+    "fusion-ring-collapsed": {
+      "url": "http://localhost:8099/?fusion=1&single=1",
+      "steps": [
+        {
+          "wait": 300
+        },
+        {
+          "tap": "Not now"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "tap": "Workspace"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "tapText": "整理两篇文献的结论对比表"
+        },
+        {
+          "wait": 1000
+        },
+        {
+          "tap": "Show process"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "wait": 800
+        },
+        {
+          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(!bar||bar.querySelectorAll('circle').length!==4||bar.textContent.trim()!=='4/4')throw new Error('collapsed title progress missing');if(root.innerText.includes('GLM'))throw new Error('model rows visible while collapsed');return 'total progress visible before expansion';})()"
+        },
+        {
+          "shot": "m-fusion-ring-collapsed.png"
+        }
+      ],
+      "ready": "document.body.innerText.includes(\"Not now\")"
+    },
+    "fusion-ring-moderator": {
+      "url": "http://localhost:8099/?fusion=mapping&single=1",
+      "steps": [
+        {
+          "wait": 300
+        },
+        {
+          "tap": "Not now"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "tap": "Workspace"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "tapText": "整理两篇文献的结论对比表"
+        },
+        {
+          "wait": 1000
+        },
+        {
+          "tap": "Show process"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "tapText": "Fusion · Discussion"
+        },
+        {
+          "wait": 800
+        },
+        {
+          "eval": "(() => {const root=document.querySelector('[data-testid=\"fusion-activity\"]');const bar=root?.querySelector('[role=\"progressbar\"]');if(bar?.textContent.trim()!=='2/4')throw new Error('not mapping stage');if(!root.innerText.includes('DeepSeek Flash')||root.innerText.includes('GLM')||root.innerText.includes('Qwen'))throw new Error('participant rows were not hidden');if(!root.innerText.includes('主模型')&&!root.innerText.includes('Main model'))throw new Error('moderator role missing');return 'stage two shows only the moderator';})()"
+        },
+        {
+          "shot": "m-fusion-ring-moderator.png"
         }
       ],
       "ready": "document.body.innerText.includes(\"Not now\")"

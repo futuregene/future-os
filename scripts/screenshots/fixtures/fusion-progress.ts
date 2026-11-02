@@ -20,6 +20,18 @@ export function fusionProgressFixture(mode: string | null): FusionDiscussion {
       if (step.phase === "reviewing") step.status = "running";
     }
   }
+  if (mode === "mapping") {
+    data.run!.status = "running";
+    data.run!.phase = "issue_mapping";
+    data.run!.result = null;
+    data.steps = data.steps?.filter(step => step.phase === "analyzing" || step.phase === "issue_mapping");
+    for (const step of data.steps ?? []) {
+      if (step.phase === "issue_mapping") {
+        step.status = "running";
+        step.output = "";
+      }
+    }
+  }
   if (mode === "failed") {
     data.run!.status = "failed";
     data.run!.result = null;

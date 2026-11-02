@@ -413,7 +413,7 @@ export const resources = {
         "fusionModeratorRole": "Main model",
         "fusionParticipantRole": "Participant {{number}}",
         "fusionDisabled": "Fusion is turned off in settings",
-        "fusionStageCount": "{{current}} / {{total}}",
+        "fusionStageCount": "{{current}}/{{total}}",
         "fusionProgress": "Discussion stage progress",
         "fusionPartialNotice": "Some models did not complete the discussion",
         "fusionNotices": {
@@ -1517,7 +1517,7 @@ export const resources = {
         "fusionModeratorRole": "主模型",
         "fusionParticipantRole": "参与模型 {{number}}",
         "fusionDisabled": "Fusion 已在设置中关闭",
-        "fusionStageCount": "{{current}} / {{total}}",
+        "fusionStageCount": "{{current}}/{{total}}",
         "fusionProgress": "讨论阶段进度",
         "fusionPartialNotice": "部分模型未完成讨论",
         "fusionNotices": {
