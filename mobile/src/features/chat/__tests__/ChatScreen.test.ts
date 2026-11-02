@@ -21,6 +21,7 @@ import { FloatingTimelineButton } from "../components/FloatingTimelineButton";
 import type { TimelineSyncStatus } from "@future-os/remote-client/syncEngine";
 import type { RemoteSession, RemoteSessionUsage, RemoteWorkspace, TimelineItem } from "../../../remote/types";
 import { sendQueue } from "../sendQueue";
+import { QUEUE_RETRY_DELAY_MS, QUEUE_RETRY_LIMIT } from "../queueDelivery";
 
 const mockRemote = {
   credentials: { expectedDesktopId: "desktop" },
@@ -1238,10 +1239,57 @@ test("a whole queue plus the field's draft leaves as one message when interrupte
   expect(sendQueue.snapshot(key).items).toEqual([]);
 });
 
+test("a queue held at an interrupt leaves as soon as the stop is acknowledged", async () => {
+  const key = "desktop:history";
+  sendQueue.clear(key);
+  // The desktop is still finishing: its first answers are "not yet", which is what
+  // an interrupt looks like from the phone for a beat (the run settles a moment
+  // after the abort is acknowledged).
+  mockRemote.streaming = true;
+  mockRemote.sendMessage
+    .mockRejectedValueOnce(new Error("session_busy"))
+    .mockRejectedValueOnce(new Error("session_busy"))
+    .mockResolvedValue(undefined);
+  act(() => tree.update(createElement(ChatScreen)));
+  act(() => {
+    sendQueue.enqueue(key, { attachments: [], content: "held while it ran" });
+  });
+  act(() => tree.update(createElement(ChatScreen)));
+  expect(mockRemote.sendMessage).not.toHaveBeenCalled();
+
+  // The reader stopped the run. The screen sends now — its own streaming flag has
+  // not caught up yet, and waiting for it was the delay this test exists for.
+  act(() => tree.root.findByType(ComposerDock).props.onStopped());
+  await act(async () => { await Promise.resolve(); });
+  expect(mockRemote.sendMessage).toHaveBeenCalledTimes(1);
+  expect(mockRemote.streaming).toBe(true);
+
+  // "Not yet" is not a failure: the row goes back without the brake, and the next
+  // attempt is scheduled rather than left for the reader to press.
+  expect(sendQueue.snapshot(key).items.map(item => item.content)).toEqual(["held while it ran"]);
+  expect(sendQueue.snapshot(key).failed).toBe(false);
+
+  await act(async () => {
+    jest.advanceTimersByTime(400);
+    await Promise.resolve();
+  });
+  expect(mockRemote.sendMessage).toHaveBeenCalledTimes(2);
+  await act(async () => {
+    jest.advanceTimersByTime(400);
+    await Promise.resolve();
+  });
+  expect(mockRemote.sendMessage).toHaveBeenCalledTimes(3);
+  expect(mockRemote.sendMessage.mock.calls[2]![0]).toBe("held while it ran");
+  expect(sendQueue.snapshot(key).items).toEqual([]);
+  expect(sendQueue.snapshot(key).failed).toBe(false);
+});
+
 test("a refused queue stays on screen, flagged, and retries only when asked", async () => {
   const key = "desktop:history";
   sendQueue.clear(key);
-  mockRemote.sendMessage.mockRejectedValueOnce(new Error("session_busy"));
+  // Not a "not yet": this one will not pass by itself, so the reader is handed the
+  // decision instead of the screen retrying behind their back.
+  mockRemote.sendMessage.mockRejectedValueOnce(new Error("prompt_too_large"));
   act(() => {
     sendQueue.enqueue(key, { attachments: [], content: "keep me" });
   });
@@ -1264,6 +1312,32 @@ test("a refused queue stays on screen, flagged, and retries only when asked", as
   });
   expect(mockRemote.sendMessage).toHaveBeenCalledTimes(2);
   expect(sendQueue.snapshot(key).items).toEqual([]);
+});
+
+test("a queue the desktop keeps saying 'not yet' to is handed back after the budget", async () => {
+  const key = "desktop:history";
+  sendQueue.clear(key);
+  mockRemote.sendMessage.mockRejectedValue(new Error("session_busy"));
+  act(() => {
+    sendQueue.enqueue(key, { attachments: [], content: "keep me" });
+  });
+  await act(async () => {
+    tree.update(createElement(ChatScreen));
+  });
+  // It rides out the settle, then stops asking and flags the row so the reader can
+  // decide — a refusal loop that never ends would be worse than the wait. Each
+  // retry is scheduled from the previous attempt's rejection, so the chain needs a
+  // tick per attempt rather than one big jump.
+  for (let attempt = 0; attempt < QUEUE_RETRY_LIMIT + 2; attempt += 1) {
+    await act(async () => {
+      jest.advanceTimersByTime(QUEUE_RETRY_DELAY_MS);
+      await Promise.resolve();
+    });
+  }
+  const dock = () => tree.root.findByType(ComposerDock).props;
+  expect(dock().queueItems.map((item: { content: string }) => item.content)).toEqual(["keep me"]);
+  expect(dock().queueFailed).toBe(true);
+  expect(mockRemote.sendMessage.mock.calls.length).toBeLessThanOrEqual(QUEUE_RETRY_LIMIT + 1);
 });
 
 test("the dock's enqueue stores the draft against this conversation and clears the box", () => {
