@@ -6,6 +6,7 @@ use future_fusion::{
 };
 use future_rpc::proto::RpcCommand;
 use futures::{FutureExt, StreamExt};
+mod budget;
 mod mapping;
 mod resilience;
 mod review;
@@ -150,6 +151,10 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         run.parent.database_id, status["agent_instance_id"], status["config_revision"]
     );
     let ctx = Runtime::new(store, owner, run, scope)?;
+    ensure!(
+        status["context_budget_version"].as_u64() == Some(1),
+        "Upgrade Agent for Fusion context admission"
+    );
     if let Err(error) = ctx.timeout("preflight") {
         ctx.note(
             "summary_budget_reserved",
@@ -234,6 +239,11 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         ));
     }
     ensure!(store.phase(&run.id, owner, "preflight")?, "Fusion stopped");
+    *ctx.budget.lock().unwrap() = Some(budget::Budget::new(
+        &catalog,
+        config,
+        serde_json::to_vec(&run.input)?.len(),
+    )?);
     let probe = async {
         if !ctx.healthy() {
             with_retry(&ctx, "preflight", &config.moderator, "moderator", "This is a Fusion readiness check. Reply READY. Do not investigate, use tools, or discuss a task.").await?;
@@ -414,8 +424,16 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         store.phase(&run.id, owner, "synthesizing")?,
         "Fusion stopped"
     );
-    let coverage = ctx.report();
-    let prompt = format!("You are the moderator. Synthesize ONLY the supplied participants' public analyses and reviews. Do not introduce new facts, new proposals, independent technical analysis, omissions or clarification questions. Use Decision input only to preserve the user's goal and existing boundaries. The issue map is a navigational summary, not additional evidence; verify it against original participant statements. Unresolved items and next steps must come from participant content. Verification labels in reviews are participant reports, not system verification; preserve evidence limitations and uncertainty. You have no tools. Return ONLY JSON: {{\"conclusion\":\"focused recommendation\",\"rationale\":[\"public reasons\"],\"conditions\":[\"applicability\"],\"unresolved\":[\"remaining gaps\"],\"next_steps\":[\"proposed actions, not performed\"]}}. Respect the ACTUAL coverage below. One participant is a single-advisor analysis, not multi-model consensus. Missing review means no cross-validation. Preserve disagreements and uncertainty. Do not claim skipped phases occurred.\nDecision input:\n{input}\nAnalyses:\n{first}\nIssues:\n{issues}\nReviews:\n{}\nCoverage:\n{}", serde_json::to_string(&reviews)?, serde_json::to_string(&coverage)?);
+    let report = ctx.report();
+    let coverage = json!({"strategy":report.strategy,"completed_phases":report.completed_phases,"skipped_phases":report.skipped_phases,"analysis_participants":report.analysis_participants,"review_participants":report.review_participants,"degradations":report.degradations});
+    // One version per role; preserve analysis-only roles when their review failed.
+    let material: Vec<Value> = analyses.iter().map(|analysis| {
+        let reviewed = reviews.iter().find(|r| r["participant"] == analysis["participant"]);
+        let source = reviewed.unwrap_or(analysis);
+        json!({"participant":source["participant"],"stage":if reviewed.is_some(){"reviewing"}else{"analysis_only"},"response":source["response"]})
+    }).collect();
+    let prompt = format!("You are the moderator. Directly answer the original question, producing a useful, self-contained conclusion for the main agent. Synthesize ONLY the supplied participants' current answers and supporting reviews. Use the original task only for its goal and boundaries. Distinguish shared views from a recommendation you select from existing proposals. Preserve material disagreement and evidence limitations; do not revive withdrawn positions. Do not add facts, proposals, omissions, clarification questions, conditions sections or next-step instructions. Participant verification labels are reports, not system proof. Put any essential applicability qualification directly in the conclusion. Do not repeat meeting history, participant-by-participant recaps or general unknowns that do not affect the answer. rationale and unresolved are optional and contain only information essential to using the answer, without repeating conclusion. You have no tools. Return ONLY JSON: {{\"conclusion\":\"direct answer to the question\",\"rationale\":[\"essential supporting reason, if needed\"],\"unresolved\":[\"material unresolved issue, if any\"]}}. Respect actual coverage; full participation does not imply truth or unanimity. Missing reviews mean no cross-review.\nOriginal task:\n{}\nCurrent participant material:\n{}\nCoverage:\n{}", serde_json::to_string(&run.input)?, serde_json::to_string(&material)?, coverage);
+
     let text = match with_retry(
         &ctx,
         "synthesizing",
@@ -531,7 +549,9 @@ fn attempt_settings(
     ensure!(remaining_ms > 0, "Fusion total time budget exhausted");
     Ok(StepSettings {
         thinking_level: model.thinking_level.clone(),
-        max_output_tokens: 0, // No Fusion override, including for legacy configurations.
+        max_output_tokens: 0, // Filled by per-attempt context allocation.
+        context_window: 0,
+        max_public_bytes: 0,
         timeout_ms: config
             .step_timeout_secs
             .saturating_mul(1000)
@@ -619,11 +639,27 @@ async fn with_retry(
             now_ms().saturating_sub(ctx.run.created_at).max(0) as u64,
         )?;
         settings.timeout_ms = timeout_ms;
+        ctx.budget
+            .lock()
+            .unwrap()
+            .as_ref()
+            .context("Missing Fusion context budget")?
+            .apply(&model.model, phase, prompt, &mut settings)?;
         let input = match retry_reason {
             Some(RetryReason::OutputLimit) => format!("{prompt}\nPrevious attempt reached the provider output limit. Return a complete answer in the requested format."),
             Some(RetryReason::InvalidOutput) => format!("{prompt}\nPrevious attempt had invalid output. Return a complete public answer in exactly the requested format, using only supplied participant references."),
             _ => prompt.to_owned(),
         };
+        let input = if settings.max_public_bytes > 0 {
+            format!("{input}\nPublic response capacity: {} UTF-8 bytes; focus on the answer and essential supporting material.", settings.max_public_bytes)
+        } else {
+            input
+        };
+        future_fusion::guard_context(
+            input.len(),
+            settings.context_window,
+            settings.max_output_tokens as usize,
+        )?;
         let mut step = Step {
             id: format!("{}-{phase}-{participant}-{attempt}", ctx.run.id),
             fusion_run_id: ctx.run.id.clone(),
@@ -651,15 +687,23 @@ async fn with_retry(
         .await;
         let result = match result {
             Ok(Ok(text)) => {
-                let validation = validate_step_output(phase, &text, ctx.config.panel.len())
-                    .and_then(|_| {
-                        if phase == "issue_mapping" {
-                            mapping::validate_sources(&text, prompt)?;
-                        } else if phase == "reviewing" {
-                            review::validate(&text, prompt, participant)?;
-                        }
-                        Ok(())
-                    });
+                let validation = (|| {
+                    ensure!(
+                        step.settings.as_ref().is_none_or(
+                            |s| s.max_public_bytes == 0 || text.len() <= s.max_public_bytes
+                        ),
+                        "Public response exceeds allocated context capacity"
+                    );
+                    validate_step_output(phase, &text, ctx.config.panel.len())
+                })()
+                .and_then(|_| {
+                    if phase == "issue_mapping" {
+                        mapping::validate_sources(&text, prompt)?;
+                    } else if phase == "reviewing" {
+                        review::validate(&text, prompt, participant)?;
+                    }
+                    Ok(())
+                });
                 validation
                     .map(|_| text)
                     .map_err(|error| failure(FailureKind::InvalidOutput, error.to_string()))
@@ -745,8 +789,13 @@ fn validate_step_output(phase: &str, text: &str, participants: usize) -> Result<
     } else if phase == "synthesizing" {
         let result: Conclusion = parse_json(text)?;
         ensure!(
-            !result.conclusion.trim().is_empty() && !result.rationale.is_empty(),
-            "Empty Fusion conclusion or rationale"
+            !result.conclusion.trim().is_empty(),
+            "Empty Fusion conclusion"
+        );
+        let value: Value = parse_json(text)?;
+        ensure!(
+            value.get("conditions").is_none() && value.get("next_steps").is_none(),
+            "Synthesis must not prescribe conditions or next steps"
         );
     }
     Ok(())
@@ -945,7 +994,7 @@ pub async fn query_for_run(
 mod tests {
     use super::*;
     #[test]
-    fn retries_keep_explicit_thinking_without_output_override() {
+    fn attempt_templates_preserve_thinking_and_defer_capacity_allocation() {
         let mut config = Configuration::default();
         // Persisted pre-change budgets must not be reapplied.
         config.moderator.max_output_tokens = 16_384;
@@ -969,7 +1018,7 @@ mod tests {
         let text = serde_json::json!({
             "conclusion": "Public conclusion. ".repeat(10000),
             "rationale": ["Public rationale"],
-            "conditions": [], "unresolved": [], "next_steps": []
+            "unresolved": []
         })
         .to_string();
         validate_step_output("synthesizing", &text, 3).unwrap();

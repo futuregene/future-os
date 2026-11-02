@@ -297,6 +297,7 @@ pub(crate) fn inner_tools() -> Vec<AgentTool> {
 pub(crate) struct InnerExecution {
     pub snapshot: Snapshot,
     pub file_tools: bool,
+    pub settings: future_fusion::StepSettings,
 }
 
 pub(crate) fn inner_execution(
@@ -333,6 +334,7 @@ pub(crate) fn inner_execution(
     );
     Ok(Some(InnerExecution {
         snapshot: Snapshot::load(Path::new(&run.snapshot_root))?,
+        settings,
         file_tools: file_tools_allowed(&step.phase, !run.input.read_scope.is_empty()),
     }))
 }
@@ -375,6 +377,7 @@ pub(crate) fn query_status(state: &crate::rpc::AppState) -> Result<Value> {
         "database_id": format!("{}:{}", identity.database_id, identity.restore_generation),
         "panel_models": settings.configuration.panel.iter().map(|role| &role.model).collect::<Vec<_>>(),
         "moderator_model": settings.configuration.moderator.model,
+        "context_budget_version": 1,
         "generation_policy_version": future_fusion::GENERATION_POLICY_VERSION,
         "resilience_policy_version": future_fusion::RESILIENCE_POLICY_VERSION,
         "agent_instance_id": state.agent_instance_id,
@@ -468,8 +471,70 @@ pub(crate) fn child_sessions() -> std::collections::HashSet<String> {
         .collect()
 }
 
+/// Guard every actual model turn, including tools and generated history.
+pub(crate) struct ContextProvider {
+    pub provider: Arc<dyn crate::types::LLMProvider>,
+    pub settings: future_fusion::StepSettings,
+}
+#[async_trait::async_trait]
+impl crate::types::LLMProvider for ContextProvider {
+    async fn stream_model(
+        &self,
+        request: crate::llm::schema::ModelRequest,
+    ) -> Result<tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>> {
+        let bytes = request
+            .system_prompt
+            .len()
+            .saturating_add(serde_json::to_vec(&request.messages)?.len())
+            .saturating_add(serde_json::to_vec(&request.tools)?.len());
+        future_fusion::guard_context(
+            bytes,
+            self.settings.context_window,
+            self.settings.max_output_tokens.max(0) as usize,
+        )?;
+        self.provider
+            .stream_model_with_output_limit(request, self.settings.max_output_tokens)
+            .await
+    }
+}
+
 #[cfg(test)]
 mod input_contract_tests {
+    #[tokio::test]
+    async fn oversized_actual_request_never_reaches_provider() {
+        use crate::types::LLMProvider;
+        struct NeverCalled;
+        #[async_trait::async_trait]
+        impl LLMProvider for NeverCalled {
+            async fn stream_model(
+                &self,
+                _: crate::llm::schema::ModelRequest,
+            ) -> anyhow::Result<
+                tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>,
+            > {
+                panic!("over-capacity request reached provider");
+            }
+        }
+        let guarded = super::ContextProvider {
+            provider: std::sync::Arc::new(NeverCalled),
+            settings: future_fusion::StepSettings {
+                thinking_level: "low".into(),
+                max_output_tokens: 1000,
+                context_window: 16384,
+                max_public_bytes: 4096,
+                timeout_ms: 1000,
+                retry_reason: None,
+            },
+        };
+        let request = crate::llm::schema::ModelRequest {
+            model: "test".into(),
+            system_prompt: "x".repeat(20000),
+            messages: vec![],
+            tools: vec![],
+        };
+        assert!(guarded.stream_model(request).await.is_err());
+    }
+
     #[test]
     fn moderator_stages_never_receive_file_tools() {
         for phase in ["preflight", "issue_mapping", "synthesizing", "unknown"] {

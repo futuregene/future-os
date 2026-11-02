@@ -63,7 +63,7 @@ function StepResponse({ text, phase }: { text: string; phase: string }) {
         ? `### ${label}\n${value[field].filter((item): item is string => typeof item === "string").map(item => `- ${item}`).join("\n")}`
         : "";
       if (phase === "synthesizing" && typeof value.conclusion === "string") {
-        content = [value.conclusion, ...["rationale", "conditions", "unresolved", "next_steps"].map(field => list(field, t(`fusion.result.${field}`)))].filter(Boolean).join("\n\n");
+        content = [value.conclusion, ...["rationale", "unresolved"].map(field => list(field, t(`fusion.result.${field}`)))].filter(Boolean).join("\n\n");
       }
       if (phase === "reviewing" && Array.isArray(value.self_review)) {
         const section = (label: string, entries: unknown, render: (entry: Record<string, unknown>) => string) => Array.isArray(entries) && entries.length
@@ -73,6 +73,7 @@ function StepResponse({ text, phase }: { text: string; phase: string }) {
         const quoted = (text: string) => text ? `> ${text.replace(/\n/gu, "\n> ")}` : "";
         const decision = (entry: Record<string, unknown>) => t(`fusion.detail.review.decisions.${textField(entry, "decision")}`);
         content = [
+          typeof value.current_answer === "string" ? value.current_answer : "",
           section(t("fusion.detail.review.responses"), value.responses, entry => [
             `**${t("fusion.participantRole", { number: textField(entry, "participant").replace(/^P/u, "") })} · ${decision(entry)}**`,
             quoted(textField(entry, "quote")),

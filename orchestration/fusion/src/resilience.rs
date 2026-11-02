@@ -240,10 +240,17 @@ impl crate::Consultation {
         } else {
             &self.status
         });
-        value["report"] = serde_json::to_value(&self.report)?;
+        if let Some(report) = &self.report {
+            value["coverage"] = serde_json::json!({"analyses":report.analysis_participants.len(),"reviews":report.review_participants.len(),"skipped_phases":report.skipped_phases});
+            let reasons: std::collections::BTreeSet<_> =
+                report.degradations.iter().map(|d| &d.code).collect();
+            if !reasons.is_empty() {
+                value["degradations"] = serde_json::to_value(reasons)?;
+            }
+        }
         value["has_conclusion"] = serde_json::json!(self.result.is_some());
         if self.result.is_none() {
-            value["message"] = serde_json::json!("No valid Fusion conclusion was produced. Preserved public materials are evidence, not a synthesized or verified recommendation. Do not automatically repeat the whole consultation.");
+            value["message"] = serde_json::json!("No valid Fusion conclusion. Records are retained in discussion details. Do not automatically repeat this consultation.");
         }
         Ok(serde_json::to_string(&value)?)
     }

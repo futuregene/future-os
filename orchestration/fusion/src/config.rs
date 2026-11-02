@@ -86,9 +86,13 @@ impl Configuration {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StepSettings {
     pub thinking_level: String,
-    /// Legacy metadata only. Zero means no Fusion output override.
+    /// Actual request-local capacity allocation; zero occurs only in legacy records.
     #[serde(default)]
     pub max_output_tokens: i32,
+    #[serde(default)]
+    pub context_window: usize,
+    #[serde(default)]
+    pub max_public_bytes: usize,
     pub timeout_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_reason: Option<String>,

@@ -7,8 +7,8 @@ use serde_json::{json, Value};
 const INSTRUCTIONS: &str = r#"You are a read-only Fusion participant revisiting YOUR OWN first-stage answer. You receive only that original answer, the frozen moderator map, and the original task context. You do NOT receive other participants' full answers or anyone's third-stage review. Your participant identity in the packet is fixed; never describe another participant as yourself.
 Think through the moderator's organization, especially existing disagreements, then analyze, question, supplement and revise your own approach. The moderator map is not authoritative or verified. When responding to another participant, cite their exact original excerpt from the map and distinguish it from the moderator's paraphrase. If the excerpt is insufficient, explicitly say insufficient_information; do not invent the missing argument or infer opposition from silence. You may correct the moderator's organization using material actually visible to you.
 For each own position, quote your original answer and state whether you maintain, revise or withdraw it, the resulting position and your reason. Do not invent a previous position just to narrate a change. Distinguish new proposals, unverified claims and verified facts: only use verified_fact for something actually checked against identified supplied evidence or a tool result, with inspectable evidence references; agreement, memory and moderator summaries do not verify a fact. Otherwise use unverified_claim. You may investigate only through provided authorized read-only snapshot tools. Never write, execute commands or take external action.
-Return ONLY JSON:
-{"participant":"your ID","responses":[{"participant":"other ID","quote":"exact excerpt from their source quote in moderator_map","decision":"agree|disagree|qualify|insufficient_information","reason":"reason"}],"self_review":[{"original_quote":"exact excerpt from your original_analysis","decision":"maintain|revise|withdraw","updated_position":"your current position","reason":"why"}],"mapping_corrections":[{"summary_quote":"exact excerpt from moderator_map","source_quote":"exact visible original excerpt supporting your correction","correction":"what the map got wrong","reason":"why"}],"additions":[{"kind":"proposal|unverified_claim|verified_fact","content":"new material","evidence":["inspectable source reference for verified_fact"]}]}
+Return ONLY JSON. current_answer must directly answer the original question with your current, self-contained position, including any material uncertainty; the remaining fields explain only consequential changes, not a full meeting transcript:
+{"participant":"your ID","current_answer":"your current answer to the original question","responses":[{"participant":"other ID","quote":"exact excerpt from their source quote in moderator_map","decision":"agree|disagree|qualify|insufficient_information","reason":"reason"}],"self_review":[{"original_quote":"exact excerpt from your original_analysis","decision":"maintain|revise|withdraw","updated_position":"your current position","reason":"why"}],"mapping_corrections":[{"summary_quote":"exact excerpt from moderator_map","source_quote":"exact visible original excerpt supporting your correction","correction":"what the map got wrong","reason":"why"}],"additions":[{"kind":"proposal|unverified_claim|verified_fact","content":"new material","evidence":["inspectable source reference for verified_fact"]}]}
 All four arrays must exist and may be empty except self_review, which must address your own answer. Do not repeat the entire original plan. A verified_fact label is not a claim that the whole proposal was tested."#;
 
 pub(super) fn prompt(
@@ -32,6 +32,7 @@ pub(super) fn prompt(
 #[serde(deny_unknown_fields)]
 struct Review {
     participant: String,
+    current_answer: String,
     responses: Vec<Response>,
     self_review: Vec<Revision>,
     mapping_corrections: Vec<Correction>,
@@ -131,6 +132,10 @@ pub(super) fn validate(text: &str, prompt: &str, participant: &str) -> Result<()
         review.participant == participant && packet["participant"].as_str() == Some(participant),
         "Reviewer identity mismatch"
     );
+    ensure!(
+        !review.current_answer.trim().is_empty(),
+        "Missing current answer to the topic"
+    );
     let own = packet["original_analysis"]
         .as_str()
         .context("Missing own analysis")?;
@@ -214,7 +219,7 @@ mod tests {
             {"participant":"P2","status":"stated","position":"Files","quote":"Use files."}
         ]}], "excluded":[]});
         let prompt = prompt("P1", &input, &analyses, &mapping).unwrap();
-        let review = json!({"participant":"P1",
+        let review = json!({"participant":"P1", "current_answer":"Prefer SQLite pending workload evidence",
             "responses":[{"participant":"P2","quote":"Use files.","decision":"insufficient_information","reason":"No rationale in the visible excerpt"}],
             "self_review":[{"original_quote":"I prefer SQLite.","decision":"maintain","updated_position":"Prefer SQLite pending investigation","reason":"No new contrary evidence"}],
             "mapping_corrections":[], "additions":[]});
@@ -231,6 +236,9 @@ mod tests {
     #[test]
     fn rejects_identity_drift_invented_positions_and_unbacked_facts() {
         let (review, prompt) = fixture();
+        let mut missing_answer = review.clone();
+        missing_answer["current_answer"] = json!("");
+        assert!(validate(&missing_answer.to_string(), &prompt, "P1").is_err());
         let mut changed = review.clone();
         changed["participant"] = json!("P2");
         assert!(validate(&changed.to_string(), &prompt, "P1").is_err());

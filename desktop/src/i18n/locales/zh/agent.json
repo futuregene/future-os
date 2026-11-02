@@ -425,7 +425,7 @@
       "noMessages": "此阶段暂无发言记录",
       "noOutput": "暂无公开发言",
       "readFailed": "读取完整发言失败，已保留现有预览。",
-      "resultDetails": "判断依据与后续建议",
+      "resultDetails": "补充依据",
       "consensus": "已有共同观点",
       "excluded": "超出边界或不适合继续讨论的观点",
       "notMentioned": "未提及",

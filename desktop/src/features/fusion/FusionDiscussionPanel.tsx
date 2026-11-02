@@ -58,10 +58,12 @@ export function FusionDiscussionPanel({ runId, toolCallId, status = "running", r
                   <section className="space-y-4 rounded-lg border border-line-soft bg-surface/50 p-3">
                     <h3 className="text-sm font-medium text-ink">{t("fusion.detail.conclusion")}</h3>
                     <div className="text-13 leading-6 text-ink-soft"><MarkdownContent content={result.conclusion} /></div>
-                    <details className="space-y-3 text-xs text-ink-soft">
-                      <summary className="cursor-pointer">{t("fusion.detail.resultDetails")}</summary>
-                      {(["rationale", "conditions", "unresolved", "next_steps"] as const).map(field => <ListSection key={field} title={t(`fusion.result.${field}`)} items={result[field]} />)}
-                    </details>
+                    {(!!result.rationale?.length || !!result.unresolved?.length) && (
+                      <details className="space-y-3 text-xs text-ink-soft">
+                        <summary className="cursor-pointer">{t("fusion.detail.resultDetails")}</summary>
+                        {(["rationale", "unresolved"] as const).map(field => <ListSection key={field} title={t(`fusion.result.${field}`)} items={result[field] ?? []} />)}
+                      </details>
+                    )}
                   </section>
                 )
               : progress.terminal && <p className="rounded-lg border border-line-soft p-3 text-xs leading-5 text-ink-muted">{t("fusion.detail.noConclusion")}</p>}

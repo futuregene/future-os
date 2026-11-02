@@ -789,41 +789,9 @@ mod tests {
         assert_eq!(output["status"], "failed");
         assert_eq!(output["has_conclusion"], false);
         assert!(output["conclusion"].is_null());
-        assert_eq!(
-            output["report"]["available_results"][0]["text"],
-            "Public analysis"
-        );
-        let mut oversized = failed.clone();
-        let mut large = report.clone();
-        large.available_results = (0..10)
-            .map(|i| crate::AvailableResult {
-                step_id: format!("step{i}"),
-                phase: "analyzing".into(),
-                participant: "P1".into(),
-                model: "custom/a".into(),
-                text: "\u{0001}".repeat(1400),
-                truncated: false,
-            })
-            .collect();
-        oversized.report = Some(large);
-        let complete = oversized.tool_output().unwrap();
-        assert!(complete.len() > 32 * 1024);
-        let complete: Value = serde_json::from_str(&complete).unwrap();
-        assert_eq!(
-            complete["report"]["available_results"]
-                .as_array()
-                .unwrap()
-                .len(),
-            10
-        );
-        assert_eq!(
-            complete["report"]["available_results"][0]["step_id"],
-            "step0"
-        );
-        assert_eq!(
-            complete["report"]["available_results"][0]["truncated"],
-            false
-        );
+        assert!(output.get("report").is_none());
+        assert!(output.get("coverage").is_some());
+        assert!(!failed.tool_output().unwrap().contains("Public analysis"));
         assert_eq!(
             failed.report.unwrap().degradations[0].kind,
             Some(crate::FailureKind::Authentication)
@@ -875,6 +843,11 @@ mod tests {
         let run = store.get(&run.id).unwrap();
         assert_eq!(run.status, "delivering");
         assert_eq!(run.completeness, "full");
+        let envelope: Value = serde_json::from_str(&run.tool_output().unwrap()).unwrap();
+        assert_eq!(envelope["conclusion"], "A");
+        for field in ["conditions", "next_steps", "report", "available_results"] {
+            assert!(envelope.get(field).is_none());
+        }
         assert_eq!(run.result.unwrap().conclusion, "A");
     }
 }
