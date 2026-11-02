@@ -159,6 +159,11 @@ function hostSwitch(): HTMLButtonElement {
   return container.querySelectorAll<HTMLButtonElement>("button[role='switch']")[0]!;
 }
 
+/** What the section says the switch is in: on, off, or no status to read. */
+function switchState(): string | null {
+  return container.querySelector("[data-switch-state]")?.getAttribute("data-switch-state") ?? null;
+}
+
 /** The floating add-client window, if it is open. */
 function addDialog(): HTMLElement | null {
   return container.querySelector("[role='dialog']");
@@ -255,6 +260,39 @@ describe("the switch", () => {
     await toggleHost();
     expect(stopRemote).toHaveBeenCalledTimes(1);
     expect(startRemote).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Without a status there is no evidence, and "off" is not the truthful answer:
+   * the command may have failed, or the first poll may not have landed, while
+   * the machine is serving. The section says so, and the switch cannot be clicked
+   * into a state nobody knows.
+   */
+  it("says the status is unknown when there is none, instead of showing off", async () => {
+    await mount({ remoteStatus: null });
+
+    expect(switchState()).toBe("unknown");
+    expect(container.textContent).toContain("Reading this computer's remote status…");
+    expect(hostSwitch().hasAttribute("disabled"), "an unknown switch is not clickable").toBe(true);
+    expect(hostSwitch().getAttribute("aria-checked"), "unknown is never claimed as on").toBe("false");
+  });
+
+  it("reads on once a status says the machine is on", async () => {
+    await mount({ remoteStatus: status({ pairId: "pair_abcd", phase: "ready" }) });
+
+    expect(switchState()).toBe("on");
+    expect(hostSwitch().getAttribute("aria-checked")).toBe("true");
+    expect(container.textContent).not.toContain("Reading this computer's remote status…");
+  });
+
+  it("reads off once a status says the machine is off, and only then", async () => {
+    await mount({ remoteStatus: status({ pairId: "pair_abcd", phase: "stopped" }) });
+
+    expect(switchState()).toBe("off");
+    expect(hostSwitch().getAttribute("aria-checked")).toBe("false");
+    // Off is not unknown: no "reading" line, and the switch is clickable again.
+    expect(container.textContent).not.toContain("Reading this computer's remote status…");
+    expect(hostSwitch().hasAttribute("disabled")).toBe(false);
   });
 
   it("says the bridge is starting, and does not claim to be on before it is", async () => {
