@@ -13,6 +13,8 @@ import { jwtExpiry, encodeBase64Url, decodeBase64Url } from "./codec";
 import { backoffDelayMs, classifyError, transition, type ConnectionState } from "./connectionState";
 import { decodeRemoteJson, decodeRemoteReplyAsync } from "./remoteJson";
 import type {
+  CatalogDeltaPacket,
+  CatalogWorkspace,
   ClientRpcResponse,
   SnapshotVersion,
   Presence,
@@ -65,6 +67,16 @@ export interface RemoteClientCallbacks {
    */
   onControl?(control: "active" | "standby"): void;
   onSessions(sessions: PresenceSession[], version?: SnapshotVersion): void;
+  /**
+   * A row-level catalogue packet, for a connection that declared
+   * `catalog_delta_v1`.
+   *
+   * Deliberately not routed through `onSessions`: that callback reads its list
+   * as the whole catalogue, and a delta names only what moved. `removed` is the
+   * only way a row leaves, so a client that never sees this callback must not
+   * declare the capability.
+   */
+  onSessionDelta?(packet: CatalogDeltaPacket): void;
   /**
    * A catalog activity packet: the rows whose ordering timestamp moved, and the
    * revision the packet belongs to. Optional, and only ever sent to a client
@@ -1196,10 +1208,29 @@ export class RemoteClient {
         if (data.control === "active" || data.control === "standby")
           this.callbacks.onControl?.(data.control);
       } else if (suffix === "sessions") {
-        const data = decodeRemoteJson<{ sessions?: PresenceSession[]; version?: SnapshotVersion }>(
-          message.data,
-        );
-        this.callbacks.onSessions(data.sessions ?? [], data.version);
+        const data = decodeRemoteJson<{
+          sessions?: PresenceSession[];
+          version?: SnapshotVersion;
+          full?: boolean;
+          rows?: PresenceSession[];
+          removed?: string[];
+          workspaces?: CatalogWorkspace[];
+        }>(message.data);
+        // One subject, two shapes: a delta names `rows`, a snapshot names
+        // `sessions`. Routing on the shape (never on a flag this client might
+        // guess) is what keeps a delta out of the snapshot path, where an absent
+        // row reads as a deletion.
+        if (Array.isArray(data.rows) || typeof data.full === "boolean") {
+          this.callbacks.onSessionDelta?.({
+            full: data.full === true,
+            rows: data.rows ?? [],
+            removed: data.removed ?? [],
+            ...(data.workspaces ? { workspaces: data.workspaces } : {}),
+            ...(data.version ? { version: data.version } : {}),
+          });
+        } else {
+          this.callbacks.onSessions(data.sessions ?? [], data.version);
+        }
       } else if (suffix === "activity") {
         // Never routed through `onSessions`: that path reads its list as the
         // whole catalogue, so a packet — which names only the rows that moved —
@@ -1722,6 +1753,12 @@ export class RemoteClient {
       "reply_gzip_v1",
       "lean_events_v1",
       "catalog_activity_v1",
+      // Row-level catalogue deltas. Declaring this is a promise about the
+      // reader: a packet may then carry only the rows that changed, and this
+      // client is the half that keeps the rest (`applyCatalogDelta`). A host too
+      // old to know the capability keeps sending whole snapshots, byte for byte
+      // as before — which is why the declaration is safe to make unconditionally.
+      "catalog_delta_v1",
       // The promise this client keeps for the rest of the connection: beats
       // while it is here, a goodbye when it leaves. A desktop that knows the
       // capability presumes it gone when the beats lapse; one too old to know

@@ -228,6 +228,16 @@ pub fn apply_declared_features(handshake: &HandshakeState, pair_id: &str, featur
             .any(|feature| feature == future_remote_protocol::CATALOG_ACTIVITY_FEATURE),
         Ordering::Release,
     );
+    // Row-level deltas. The declaration is the whole safety of that lane: a
+    // client that does not make it keeps receiving whole snapshots, because a
+    // packet naming only what changed reads as a mass deletion to a reader that
+    // expects a catalogue.
+    handshake.runtime.catalog_delta(pair_id).store(
+        features
+            .iter()
+            .any(|feature| feature == future_remote_protocol::CATALOG_DELTA_FEATURE),
+        Ordering::Release,
+    );
     // The declaration belongs to the connection that made it: it is recorded on
     // the handshake (what the command path reads) and on the pairing's shared
     // runtime (what the event publisher reads, since events go to the device in
@@ -882,7 +892,7 @@ async fn handle_command_inner(
             let payload = if handshake.runtime.in_control(pair_id) {
                 handshake
                     .runtime
-                    .presence(pair_id, &handshake.bridge_instance_id)
+                    .controller_presence(pair_id, &handshake.bridge_instance_id)
             } else {
                 handshake
                     .runtime
@@ -1444,6 +1454,22 @@ pub(crate) trait CommandRuntime: crate::secure::HandshakeHost {
     fn held_by_another(&self, pair: &str) -> bool;
     fn claim_control_soon(&self, pair: &str, epoch: Option<u64>) -> Option<String>;
     fn light_presence(&self, pair: &str, bridge: &str) -> Value;
+    /// Whether this client applies row-level catalogue deltas, which the event
+    /// publisher reads before deciding what a `state.sessions` packet carries.
+    /// A runtime that does not answer keeps sending whole snapshots.
+    fn catalog_delta(&self, _pair: &str) -> Arc<AtomicBool> {
+        Arc::new(AtomicBool::new(false))
+    }
+    /// The directory a controller reads on demand, through `get_presence`.
+    ///
+    /// Deliberately not the same question as [`HandshakeHost::presence`]: the
+    /// handshake answers before a client can ask for anything and carries only
+    /// liveness plus revisions, while this answers a request from a device that
+    /// already drives the machine. A runtime with no catalogue to offer (a
+    /// fixture, a host that reports none) answers with its light presence.
+    fn controller_presence(&self, pair: &str, bridge: &str) -> Value {
+        self.light_presence(pair, bridge)
+    }
     fn publish_control(&self, pair: &str, control: &str);
     fn unpair_slot<'a>(
         &'a self,

@@ -3,6 +3,8 @@ export {
   RemoteSession,
   RemoteWorkspace,
   PresenceSession,
+  CatalogDeltaPacket,
+  CatalogWorkspace,
   SnapshotVersion,
   SessionActivity,
   CatalogRevisions,

@@ -81,6 +81,32 @@ export interface PresenceSession {
   createdAt?: number | null;
 }
 
+/** One workspace, as a delta packet's dictionary carries it. */
+export interface CatalogWorkspace {
+  id: string;
+  name?: string | null;
+  pinned?: boolean | null;
+  /** When the workspace itself was last touched, in the host's own clock. */
+  orderedAt?: number | null;
+}
+
+/**
+ * One `state.sessions` packet, for a client that declared `catalog_delta_v1`.
+ *
+ * `full` says whether `rows` is the whole catalogue or only the part that
+ * changed. A reader must not infer a deletion from a row's absence — removals
+ * are always named in `removed`, which is what makes a delta safe to apply. The
+ * workspace dictionary rides here as well (on a full packet, or whenever it
+ * moved) because a row in this lane carries only its `workspaceId`.
+ */
+export interface CatalogDeltaPacket {
+  full: boolean;
+  rows: PresenceSession[];
+  removed: string[];
+  workspaces?: CatalogWorkspace[];
+  version?: SnapshotVersion;
+}
+
 export interface SnapshotVersion {
   epoch: string;
   revision: number;
