@@ -46,51 +46,54 @@ function SelectionSheetContent({ title, closeLabel, emptyLabel, options, selecte
   return <KeyboardAvoidingView
     enabled={!!searchPlaceholder}
     behavior={Platform.OS === "ios" ? "padding" : "height"}
-    style={[styles.selectorOverlay, {
+    style={styles.keyboardAvoider}
+  >
+    <View style={[styles.selectorOverlay, {
       paddingTop: insets.top + layout.gutter,
       paddingBottom: insets.bottom + layout.gutter,
       paddingLeft: insets.left + layout.gutter,
       paddingRight: insets.right + layout.gutter,
-    }]}
-  >
-    <Pressable accessible={false} onPress={onClose} style={StyleSheet.absoluteFill} />
-    <View accessibilityViewIsModal style={styles.selectorMenu}>
-      <View style={styles.selectorHeader}>
-        <Text accessibilityRole="header" style={styles.selectorTitle}>{title}</Text>
-        <Pressable accessibilityRole="button" accessibilityLabel={closeLabel} onPress={onClose} style={({ pressed }) => [styles.closeButton, pressed && styles.selectorOptionPressed]}>
-          <X color={colors.inkSoft} size={20} />
-        </Pressable>
+    }]}>
+      <Pressable accessible={false} onPress={onClose} style={StyleSheet.absoluteFill} />
+      <View accessibilityViewIsModal style={styles.selectorMenu}>
+        <View style={styles.selectorHeader}>
+          <Text accessibilityRole="header" style={styles.selectorTitle}>{title}</Text>
+          <Pressable accessibilityRole="button" accessibilityLabel={closeLabel} onPress={onClose} style={({ pressed }) => [styles.closeButton, pressed && styles.selectorOptionPressed]}>
+            <X color={colors.inkSoft} size={20} />
+          </Pressable>
+        </View>
+        {searchPlaceholder ? <TextInput accessibilityLabel={searchPlaceholder} placeholder={searchPlaceholder} placeholderTextColor={colors.inkMuted} value={query} onChangeText={setQuery} style={styles.search} /> : null}
+        <ScrollView bounces={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.options}>
+          {matches.length === 0 ? <Text style={styles.selectorOptionLabel}>{emptyLabel}</Text> : null}
+          {matches.map(option => {
+            const selected = option.value === selectedValue;
+            return <Pressable
+              key={option.value}
+              accessibilityRole="radio"
+              accessibilityState={{ checked: selected, disabled }}
+              disabled={disabled}
+              onPress={() => {
+                if (disabled) return;
+                onClose();
+                onSelect(option.value);
+              }}
+              style={({ pressed }) => [styles.selectorOption, selected && styles.selectorOptionSelected, pressed && styles.selectorOptionPressed, disabled && styles.selectorOptionDisabled]}
+            >
+              <View style={styles.selectorOptionCopy}>
+                <Text style={styles.selectorOptionLabel}>{option.label}</Text>
+                {option.description ? <Text numberOfLines={1} style={styles.selectorOptionMeta}>{option.description}</Text> : null}
+              </View>
+              {selected ? <Check color={colors.accent} size={18} /> : null}
+            </Pressable>;
+          })}
+        </ScrollView>
       </View>
-      {searchPlaceholder ? <TextInput accessibilityLabel={searchPlaceholder} placeholder={searchPlaceholder} placeholderTextColor={colors.inkMuted} value={query} onChangeText={setQuery} style={styles.search} /> : null}
-      <ScrollView bounces={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.options}>
-        {matches.length === 0 ? <Text style={styles.selectorOptionLabel}>{emptyLabel}</Text> : null}
-        {matches.map(option => {
-          const selected = option.value === selectedValue;
-          return <Pressable
-            key={option.value}
-            accessibilityRole="radio"
-            accessibilityState={{ checked: selected, disabled }}
-            disabled={disabled}
-            onPress={() => {
-              if (disabled) return;
-              onClose();
-              onSelect(option.value);
-            }}
-            style={({ pressed }) => [styles.selectorOption, selected && styles.selectorOptionSelected, pressed && styles.selectorOptionPressed, disabled && styles.selectorOptionDisabled]}
-          >
-            <View style={styles.selectorOptionCopy}>
-              <Text style={styles.selectorOptionLabel}>{option.label}</Text>
-              {option.description ? <Text numberOfLines={1} style={styles.selectorOptionMeta}>{option.description}</Text> : null}
-            </View>
-            {selected ? <Check color={colors.accent} size={18} /> : null}
-          </Pressable>;
-        })}
-      </ScrollView>
     </View>
   </KeyboardAvoidingView>;
 }
 
 const useStyles = createThemedStyles(theme => StyleSheet.create({
+  keyboardAvoider: { flex: 1 },
   selectorOverlay: {
     flex: 1,
     justifyContent: "flex-end",
