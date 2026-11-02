@@ -62,7 +62,7 @@ export function FusionActivity({ item, runId, resolveTarget }: {
         <span>{t("fusion.title")}</span>
         <span className="relative inline-flex size-3.5 shrink-0 items-center justify-center" role="progressbar" aria-label={t("fusion.progress")} aria-valuemin={0} aria-valuemax={4} aria-valuenow={currentStage} aria-valuetext={stageLabel} title={stageLabel}>
           <svg className="absolute inset-0 size-full" viewBox="0 0 48 48" fill="none" aria-hidden="true">
-            {FUSION_PHASES.map((phase, index) => <circle key={phase} cx="24" cy="24" r="20" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeDasharray={`${RING_CIRCUMFERENCE / 4 - 7} ${RING_CIRCUMFERENCE * 3 / 4 + 7}`} strokeDashoffset={-(index * RING_CIRCUMFERENCE / 4 + 3.5)} transform="rotate(-90 24 24)" className={progress.stages[index] === "completed" ? "text-accent" : progress.stages[index] === "thinking" ? "animate-pulse text-accent" : progress.stages[index] === "failed" ? "text-danger" : "text-line"} />)}
+            {FUSION_PHASES.map((phase, index) => <circle key={phase} cx="24" cy="24" r="20" stroke="currentColor" strokeWidth="6" strokeLinecap="round" strokeDasharray={`${RING_CIRCUMFERENCE / 4 - 9} ${RING_CIRCUMFERENCE * 3 / 4 + 9}`} strokeDashoffset={-(index * RING_CIRCUMFERENCE / 4 + 4.5)} transform="rotate(-90 24 24)" opacity={progress.stages[index] === "waiting" ? 0.18 : 1} className={progress.stages[index] === "failed" ? "text-danger" : progress.stages[index] === "skipped" ? "text-line" : "text-accent"} />)}
           </svg>
         </span>
         {open ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
