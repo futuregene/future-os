@@ -584,6 +584,7 @@ fn get_state_internal(
         .into_iter()
         .enumerate()
         .map(|(index, run)| {
+            let held = sess.scheduler.is_held(&run.run_id);
             let display_text = run
                 .payload
                 .get("message")
@@ -594,7 +595,14 @@ fn get_state_internal(
                 run_id: run.run_id,
                 run_sequence: run.run_sequence,
                 client_request_id: run.client_request_id,
-                state: "queued".to_string(),
+                // "stale" is a queued prompt parked for the reader: still
+                // waiting, no longer automatic. Same field, because a client
+                // renders the same row with one different sentence.
+                state: if held {
+                    "stale".to_string()
+                } else {
+                    "queued".to_string()
+                },
                 queue_position: index + 1,
                 accepted_at: run.accepted_at,
                 display_text,

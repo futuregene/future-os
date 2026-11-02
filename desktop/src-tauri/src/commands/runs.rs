@@ -54,6 +54,12 @@ pub async fn cancel_queued_run(run_id: String) -> Result<(), crate::AppError> {
     future_host::application::queue::cancel_queued_run(&run_id).await
 }
 
+/// Send one held message now, because the reader asked for it.
+#[tauri::command]
+pub async fn release_queued_run(run_id: String) -> Result<(), crate::AppError> {
+    future_host::application::queue::release_queued_run(&run_id).await
+}
+
 #[tauri::command]
 pub async fn list_run_events(
     run_id: String,

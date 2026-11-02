@@ -1228,6 +1228,96 @@ async fn queued_follow_ups_keep_independent_runs() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn a_prompt_that_waited_too_long_is_parked_and_starts_only_when_released() {
+    let provider = ScriptedProvider::new(vec![
+        Script::Stall(vec![text_event("stalled")]),
+        text_turn("the held question"),
+    ]);
+    let fixture = run_fixture(provider, "stale-queued-prompt");
+    let mut session = fixture.session;
+
+    let first = session.prompt("first", &[], &[], None, None).unwrap();
+    for _ in 0..200 {
+        if session.runtime.snapshot().is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    let held = session
+        .enqueue_prompt(
+            "written an hour ago",
+            &[],
+            &[],
+            None,
+            "req-old",
+            crate::runtime::BusyPolicy::EnqueueCoalescing,
+        )
+        .unwrap();
+    assert_eq!(
+        held.accepted_state,
+        crate::runtime::RunAcceptedState::Queued
+    );
+    // One hour of nobody looking, without waiting an hour.
+    session
+        .scheduler
+        .test_backdate(&held.run_id, std::time::Duration::from_secs(3_600));
+
+    // The run ahead ends. The boundary is the moment a queued prompt would have
+    // started by itself — and this one must not.
+    session.abort_run(Some(&first.run_id)).unwrap();
+    for _ in 0..500 {
+        if session.runtime.snapshot().is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(session.runtime.snapshot().is_none());
+    assert!(
+        session.start_next_scheduled().is_err(),
+        "an aged prompt is not started by a turn boundary"
+    );
+    assert!(
+        session.scheduler.is_held(&held.run_id),
+        "it is parked, not dropped"
+    );
+    // Still the reader's: listed, and the user's text is not in the transcript
+    // as something that ran.
+    assert_eq!(session.scheduler.queued().len(), 1);
+    assert!(!session
+        .messages
+        .read()
+        .iter()
+        .any(|m| m.role == "user" && m.text() == "written an hour ago"));
+
+    // Releasing it is the reader answering the question the parking asked.
+    session.release_queued_run(&held.run_id).unwrap();
+    assert!(!session.scheduler.is_held(&held.run_id));
+    for _ in 0..200 {
+        if session
+            .messages
+            .read()
+            .iter()
+            .any(|m| m.role == "user" && m.text() == "written an hour ago")
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        session
+            .messages
+            .read()
+            .iter()
+            .any(|m| m.role == "user" && m.text() == "written an hour ago"),
+        "a released prompt runs"
+    );
+    if let Some((active, _)) = session.scheduler.active() {
+        session.abort_run(Some(&active.run_id)).unwrap();
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn coalescing_follow_ups_fold_into_one_run_in_queue_order() {
     let provider = ScriptedProvider::new(vec![
         Script::Stall(vec![text_event("stalled")]),

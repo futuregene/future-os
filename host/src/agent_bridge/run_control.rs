@@ -4,7 +4,8 @@
 
 use super::client::{
     cancel_queued_run_command, compact_command, connect_agent, get_state_command,
-    is_session_not_found, map_rpc_error, run_control_command, RpcResponseExt,
+    is_session_not_found, map_rpc_error, release_queued_run_command, run_control_command,
+    RpcResponseExt,
 };
 use super::replica::AGENT_REPLICAS;
 use crate::store;
@@ -284,6 +285,35 @@ pub async fn cancel_queued_run(session_id: &str, run_id: &str) -> Result<(), cra
         error_message: Some("Removed from the send queue.".to_string()),
         error_type: Some("queue_cancelled".to_string()),
     })?;
+    Ok(())
+}
+
+/// Start a queued prompt now, because the reader asked for it.
+///
+/// The staleness rule keeps prompts from starting by themselves; it does not take
+/// the decision away. The Agent runs it immediately when nothing else is in
+/// flight, and at the next boundary otherwise.
+pub async fn release_queued_run(session_id: &str, run_id: &str) -> Result<(), crate::Error> {
+    if run_id.trim().is_empty() {
+        return Err("Run id is required to send a queued message now.".into());
+    }
+    let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, session_id).await?;
+    let response = client
+        .execute_command(release_queued_run_command(
+            run_id.to_string(),
+            session_id.to_string(),
+        ))
+        .await
+        .map_err(|error| format!("Unable to send the queued message: {error}"))?
+        .into_inner();
+    if !response.success {
+        return Err(format!(
+            "Future Agent did not release the queued message: {}",
+            response.error
+        )
+        .into());
+    }
     Ok(())
 }
 

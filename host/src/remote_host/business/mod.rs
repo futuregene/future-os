@@ -48,9 +48,8 @@ pub(crate) fn route(cmd_type: &str) -> Option<Route> {
         }
         "upload_init" | "upload_complete" | "upload_cancel" | "list_session_files"
         | "download_prepare" | "download_cancel" => Route::Transfers,
-        "prompt" | "get_prompt_receipt" | "get_queue" | "cancel_queued_run" | "abort" | "continue_run" | "approval_decision" => {
-            Route::Prompt
-        }
+        "prompt" | "get_prompt_receipt" | "get_queue" | "cancel_queued_run" | "release_queued_run"
+        | "abort" | "continue_run" | "approval_decision" => Route::Prompt,
         "compact_context" => Route::Compaction,
         "get_fusion_settings"
         | "update_fusion_settings"

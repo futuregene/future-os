@@ -461,10 +461,20 @@ impl ServerSession {
         if self.service_work.is_closed() {
             return;
         }
-        while let Some(next) = self.scheduler.queued().into_iter().next() {
+        while let Some(next) = self.scheduler.next_startable() {
             match self.start_next_scheduled() {
                 Ok(_) => return,
                 Err(error) => {
+                    // Parked because it waited too long: not a failure, and not
+                    // something to cancel — it stays queued for the reader. Any
+                    // prompt behind it may still be startable.
+                    if self.scheduler.is_held(&next.run_id) {
+                        tracing::info!(
+                            run_id = %next.run_id,
+                            "queued prompt parked; waiting for the reader to release it"
+                        );
+                        continue;
+                    }
                     if self
                         .scheduler
                         .active()
@@ -485,6 +495,32 @@ impl ServerSession {
                 }
             }
         }
+    }
+
+    /// Run a parked queued prompt now, because the reader said so.
+    ///
+    /// The staleness rule stops prompts from starting *by themselves*; it does
+    /// not take the decision away from the person who wrote them. Releasing puts
+    /// the prompt back in its place in the queue and lets the ordinary boundary
+    /// start it — immediately, when nothing else is running.
+    ///
+    /// A failure to start is logged rather than reported: the prompt is back in
+    /// the queue either way, and the run's own outcome is what the reader sees.
+    pub fn release_queued_run(
+        &mut self,
+        run_id: &str,
+    ) -> Result<(), crate::runtime::RunQueueError> {
+        self.scheduler.release_held(run_id)?;
+        if self.scheduler.active().is_none() {
+            if let Err(error) = self.start_next_scheduled() {
+                tracing::warn!(
+                    run_id = %run_id,
+                    %error,
+                    "released queued prompt could not start yet; it stays queued"
+                );
+            }
+        }
+        Ok(())
     }
 
     pub fn cancel_queued_run(
