@@ -288,6 +288,19 @@ mod tests {
         );
     }
     #[test]
+    fn discussion_steps_get_ten_minutes_without_resetting_total_deadline() {
+        let c = crate::Configuration::default();
+        for phase in ["analyzing", "issue_mapping", "reviewing", "synthesizing"] {
+            assert_eq!(phase_timeout_ms(&c, phase, 0).unwrap(), 600_000);
+        }
+        assert_eq!(phase_timeout_ms(&c, "preflight", 0).unwrap(), 120_000);
+        assert_eq!(
+            phase_timeout_ms(&c, "synthesizing", c.run_timeout_secs * 1000 - 500).unwrap(),
+            500
+        );
+    }
+
+    #[test]
     fn summary_budget_is_not_available_to_earlier_phases() {
         let c = crate::Configuration::default();
         let elapsed = c.run_timeout_secs * 1000 - summary_reserve_ms(&c);

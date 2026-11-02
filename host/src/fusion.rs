@@ -674,7 +674,10 @@ async fn with_retry(
             _ => prompt.to_owned(),
         };
         let input = if settings.max_public_bytes > 0 {
-            format!("{input}\nFinal report capacity: {} UTF-8 bytes including its actual forwarding representation. This applies ONLY to the final report, not to thinking, intermediate work or read-only tool calls. Investigate fully, then submit a focused report. Oversized reports will be revised in this same session without repeating investigation.", settings.max_public_bytes)
+            format!(
+                "{input}\n{}",
+                reports::capacity_instruction(settings.max_public_bytes)
+            )
         } else {
             input
         };
@@ -883,7 +886,17 @@ async fn step_inner(ctx: &Runtime<'_>, step: &mut Step, source_prompt: &str) -> 
         step.session_id.clone(),
     ))
     .await?;
-    rpc(RpcCommand{system_prompt:"You are a read-only Fusion deliberation participant. Never act on the workspace or external systems. Follow the focused decision task and use only the provided snapshot tools.".into(),..command("set_system_prompt",&step.session_id)}).await?;
+    let system_prompt = match step.phase.as_str() {
+        "issue_mapping" => "You are a read-only Fusion moderator organizing supplied participant statements. Do not investigate, verify facts, introduce independent analysis or call tools. Follow only the organization task and submit once it is complete.",
+        "synthesizing" => "You are a read-only Fusion moderator synthesizing supplied participant reports. Answer the original topic from that material only. Do not investigate, introduce independent findings or call tools.",
+        "preflight" => "Follow only the readiness-check request. Do not investigate or call tools.",
+        _ => "You are a read-only Fusion deliberation participant. Never act on the workspace or external systems. Follow the focused decision task and use only the provided snapshot tools.",
+    };
+    rpc(RpcCommand {
+        system_prompt: system_prompt.into(),
+        ..command("set_system_prompt", &step.session_id)
+    })
+    .await?;
     let capacity = step
         .settings
         .as_ref()
