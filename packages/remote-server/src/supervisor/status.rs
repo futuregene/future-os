@@ -119,6 +119,7 @@ impl Supervisor {
         // the bridge in the way: a client whose bridge is rebuilding is still
         // sitting there, and the two facts are reported separately.
         let present = self.client_link(pair_id).present_and_report();
+        let (lane, packets, bytes) = self.catalogue_traffic(pair_id);
         RemoteDevice {
             pair_id: pair_id.to_string(),
             phase,
@@ -134,6 +135,13 @@ impl Supervisor {
             pairing_code,
             pairing_code_expires_at,
             desktop_id,
+            catalogue_lane: if lane == 1 {
+                crate::types::CatalogueLane::Delta
+            } else {
+                crate::types::CatalogueLane::Snapshot
+            },
+            catalogue_packets: packets,
+            catalogue_bytes: bytes,
         }
     }
 

@@ -2542,9 +2542,13 @@ mod runtime_tests {
         let activity_subject = format!("p.{pair}.state.activity");
 
         // The baseline is the whole list, as it has to be: it is what carries
-        // the row set, the titles and the streaming flags.
+        // the row set, the titles and the streaming flags. Measured on the
+        // *decoded* body — the wire carries it gzipped now (256 B floor), and
+        // what a client parses is the inflated document.
         let baseline = await_publish(&mut tap, &sessions_subject, Duration::from_secs(5)).await;
-        let baseline_bytes = baseline.payload.len();
+        let baseline_bytes = future_remote_protocol::json::plain_json_bytes(&baseline.payload)
+            .expect("a catalogue packet inflates")
+            .len();
         assert_eq!(
             baseline.json()["sessions"].as_array().map(Vec::len),
             Some(20)
@@ -3599,6 +3603,14 @@ mod runtime_tests {
             &pair,
             &[future_remote_protocol::CATALOG_DELTA_FEATURE],
         );
+        // The declaration is what `future remote status` reports, and the only
+        // place the lane is visible at all: both lanes share their commands and
+        // are equally silent when nothing changes.
+        assert_eq!(
+            SUPERVISOR.catalogue_traffic(&pair).0,
+            1,
+            "declaring `catalog_delta_v1` must put this connection on the delta lane"
+        );
 
         let handle = spawn_presence_heartbeat(client.clone(), pair.clone(), "bridge_delta".into());
         let mut tap = nats.tap();
@@ -3607,6 +3619,10 @@ mod runtime_tests {
         // 1. The first packet is the whole catalogue, and it is a delta packet.
         let baseline = await_publish(&mut tap, &subject, Duration::from_secs(5)).await;
         let body = baseline.json();
+        let (lane, packets, bytes) = SUPERVISOR.catalogue_traffic(&pair);
+        assert_eq!(lane, 1);
+        assert!(packets >= 1, "a published packet is counted: {packets}");
+        assert!(bytes > 0, "and its sealed size with it: {bytes}");
         assert_eq!(body["full"], json!(true));
         let rows = body["rows"].as_array().expect("a delta packet names rows");
         assert_eq!(rows.len(), 3, "the baseline carries every row");

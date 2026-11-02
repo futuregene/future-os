@@ -83,6 +83,31 @@ describe("applyCatalogDelta", () => {
     expect(next.map((item) => item.sessionId)).toEqual(["silent", "chatty"]);
   });
 
+  it("keeps the workspace a row already knew when the packet does not describe it", () => {
+    // The flip-flop this exists for: a streamed row changes every second, its
+    // packet carries no dictionary, and replacing the row wholesale dropped the
+    // name the list was drawing — so the heading fell back to "workspace" and
+    // came back on the next dictionary-bearing packet.
+    const current = [
+      row("a", {
+        workspaceId: "w1",
+        workspaceName: "家里",
+        workspacePinned: true,
+        workspaceOrderedAt: 42,
+        lastMessageAt: 100,
+      }),
+    ];
+    const next = applyCatalogDelta(current, {
+      full: false,
+      rows: [row("a", { workspaceId: "w1", lastMessageAt: 999 })],
+      removed: [],
+    });
+    expect(next[0]?.lastMessageAt).toBe(999);
+    expect(next[0]?.workspaceName).toBe("家里");
+    expect(next[0]?.workspacePinned).toBe(true);
+    expect(next[0]?.workspaceOrderedAt).toBe(42);
+  });
+
   it("joins the workspace dictionary onto rows that carry only an id", () => {
     const next = applyCatalogDelta([], {
       full: true,

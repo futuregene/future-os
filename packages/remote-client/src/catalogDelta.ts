@@ -46,18 +46,40 @@ function byHostOrder(a: RemoteSession, b: RemoteSession): number {
   return a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0;
 }
 
-/** One row, with the workspace fields this lane leaves to the dictionary. */
+/**
+ * One row, with the workspace fields this lane leaves to the dictionary.
+ *
+ * A packet carries the dictionary only when it moved — a delta that names one
+ * changed conversation says nothing about workspaces, and saying nothing is not
+ * saying "this workspace has no name". Replacing the row wholesale lost the name
+ * the row already had, which the list then drew as its generic "workspace"
+ * heading until the next packet carried the dictionary again: the heading
+ * flickered between the real name and the fallback, once per streamed row.
+ */
 function withWorkspace(
   row: RemoteSession,
   dictionary: Map<string, CatalogWorkspace>,
+  previous?: RemoteSession,
 ): RemoteSession {
   const workspace = row.workspaceId ? dictionary.get(row.workspaceId) : undefined;
-  if (!workspace) return row;
+  if (workspace) {
+    return {
+      ...row,
+      workspaceName: workspace.name ?? null,
+      workspacePinned: workspace.pinned ?? null,
+      workspaceOrderedAt: workspace.orderedAt ?? null,
+    };
+  }
+  if (!previous) return row;
   return {
     ...row,
-    workspaceName: workspace.name ?? null,
-    workspacePinned: workspace.pinned ?? null,
-    workspaceOrderedAt: workspace.orderedAt ?? null,
+    ...(previous.workspaceName !== undefined ? { workspaceName: previous.workspaceName } : {}),
+    ...(previous.workspacePinned !== undefined
+      ? { workspacePinned: previous.workspacePinned }
+      : {}),
+    ...(previous.workspaceOrderedAt !== undefined
+      ? { workspaceOrderedAt: previous.workspaceOrderedAt }
+      : {}),
   };
 }
 
@@ -83,9 +105,11 @@ export function applyCatalogDelta(
     for (const row of current) merged.set(row.sessionId, row);
   }
   for (const incoming of packet.rows ?? []) {
-    const row = withWorkspace(toRemoteSession(incoming), dictionary);
+    const previous = merged.get(incoming.sessionId);
+    const row = withWorkspace(toRemoteSession(incoming), dictionary, previous);
     // A delta packet may repeat a row this client already holds (the host only
-    // guarantees changed rows are *included*), so the packet's copy wins.
+    // guarantees changed rows are *included*), so the packet's copy wins — over
+    // the fields it carries. What it does not carry stays.
     merged.set(row.sessionId, row);
   }
   if (packet.workspaces) {
