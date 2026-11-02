@@ -441,7 +441,7 @@ export const resources = {
           "partial": "Partially complete"
         },
         "fusionEnabled": "Fusion tool enabled · Read-only discussion when needed",
-        "fusionDescription": "Add multi-model thinking to this run; discussion does not act",
+        "fusionDescription": "Add multi-model thinking to this run",
         "fusionUnavailable": "Fusion is unavailable on this host",
         "fusionDiscussing": "Discussing",
         "fusionDiscussion": "Discussion",
@@ -1545,7 +1545,7 @@ export const resources = {
           "partial": "部分完成"
         },
         "fusionEnabled": "Fusion 工具已启用 · 按需只读讨论",
-        "fusionDescription": "为本次主流程加入多模型思考工具；讨论不执行动作",
+        "fusionDescription": "为本次主流程加入多模型思考工具",
         "fusionUnavailable": "当前宿主不支持 Fusion",
         "fusionDiscussing": "正在讨论",
         "fusionDiscussion": "讨论记录",

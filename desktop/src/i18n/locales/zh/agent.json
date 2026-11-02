@@ -332,7 +332,7 @@
   },
   "fusion": {
     "enabled": "Fusion 工具已启用 · 按需只读讨论",
-    "enableDescription": "为本次主流程加入多模型思考工具；讨论不执行动作",
+    "enableDescription": "为本次主流程加入多模型思考工具",
     "remove": "移除",
     "discussion": "讨论记录",
     "discussing": "正在讨论",

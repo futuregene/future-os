@@ -35,11 +35,18 @@ export function FusionActivity({ item, runId, resolveTarget }: {
   const data = resource?.scope === scope ? resource.discussion : null;
   const progress = fusionProgress(data, item.status);
   const currentStage = progress.status === "completed" ? 4 : Math.max(0, progress.stageIndex + 1);
-  const stageLabel = t(progress.terminal ? `fusion.states.${progress.status}` : `fusion.phases.${progress.phase}`);
+  const stageLabel = t(progress.terminal ? `fusion.states.${progress.status}` : `fusion.phases.${progress.phase === "preflight" ? "preparing" : progress.phase}`);
   const moderatorOnly = progress.phase === "issue_mapping" || progress.phase === "synthesizing";
-  const models = moderatorOnly
-    ? progress.models.filter(model => model.role === "moderator" || (!model.role && data?.steps?.some(step => step.participant === "moderator" && step.model === model.model)))
-    : progress.models;
+  const participantsOnly = progress.phase === "analyzing" || progress.phase === "reviewing";
+  const models = progress.status === "completed"
+    ? []
+    : progress.models.filter((model) => {
+        if (moderatorOnly)
+          return model.role === "moderator" || (!model.role && !!data?.steps?.some(step => step.participant === "moderator" && step.model === model.model));
+        if (participantsOnly)
+          return model.role === "participant" || (!model.role && !!data?.steps?.some(step => step.participant !== "moderator" && step.model === model.model));
+        return true;
+      });
   useEffect(() => {
     if (!parentRun || progress.terminal || loading || (error && item.status !== "running"))
       return;
@@ -72,24 +79,26 @@ export function FusionActivity({ item, runId, resolveTarget }: {
           {data?.run?.input.question && <p className="whitespace-pre-wrap wrap-break-word leading-5 text-ink-soft" data-testid="fusion-topic">{data.run.input.question}</p>}
           {progress.terminal && progress.partial && progress.notices.length === 0 && <p className="text-xs text-ink-muted">{t("fusion.partialNotice")}</p>}
           {progress.notices.length > 0 && <p className="text-xs text-ink-muted" role="status">{progress.notices.map(notice => t(`fusion.notices.${notice}`)).join(" ")}</p>}
-          <div className="space-y-2" aria-live="polite" data-testid="fusion-models">
-            {models.map((model) => {
-              const role = moderatorOnly ? "moderator" : model.role;
-              const name = `${role ? `${t(role === "moderator" ? "fusion.moderatorRole" : "fusion.participantRole", { number: model.number })} · ` : ""}${model.label}`;
-              const failed = ["failed", "timed_out", "output_limited"].includes(model.status);
-              const Icon = model.status === "thinking" ? LoaderCircle : model.status === "completed" ? Check : model.status === "timed_out" ? Clock : model.status === "failed" ? CircleX : model.status === "interrupted" ? CirclePause : model.status === "cancelled" ? CircleStop : model.status === "skipped" ? CircleMinus : failed || model.status === "partial" ? TriangleAlert : Circle;
-              return (
-                <div key={model.id} className="flex min-w-0 items-center gap-2">
-                  <span className="inline-flex shrink-0" role="img" aria-label={t(`fusion.modelStates.${model.status}`)} title={t(`fusion.modelStates.${model.status}`)}>
-                    <Icon aria-hidden="true" className={`size-3.5 ${model.status === "thinking" ? "animate-spin text-accent" : model.status === "completed" ? "text-success" : failed ? "text-danger" : model.status === "partial" || model.status === "interrupted" ? "text-warning" : "text-ink-muted"}`} />
-                  </span>
-                  <span className="min-w-0 flex-1 wrap-break-word">
-                    {name}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
+          {models.length > 0 && (
+            <div className="space-y-2" aria-live="polite" data-testid="fusion-models">
+              {models.map((model) => {
+                const role = moderatorOnly ? "moderator" : model.role;
+                const name = `${role ? `${t(role === "moderator" ? "fusion.moderatorRole" : "fusion.participantRole", { number: model.number })} · ` : ""}${model.label}`;
+                const failed = ["failed", "timed_out", "output_limited"].includes(model.status);
+                const Icon = model.status === "thinking" ? LoaderCircle : model.status === "completed" ? Check : model.status === "timed_out" ? Clock : model.status === "failed" ? CircleX : model.status === "interrupted" ? CirclePause : model.status === "cancelled" ? CircleStop : model.status === "skipped" ? CircleMinus : failed || model.status === "partial" ? TriangleAlert : Circle;
+                return (
+                  <div key={model.id} className="flex min-w-0 items-center gap-2">
+                    <span className="inline-flex shrink-0" role="img" aria-label={t(`fusion.modelStates.${model.status}`)} title={t(`fusion.modelStates.${model.status}`)}>
+                      <Icon aria-hidden="true" className={`size-3.5 ${model.status === "thinking" ? "animate-spin text-accent" : model.status === "completed" ? "text-success" : failed ? "text-danger" : model.status === "partial" || model.status === "interrupted" ? "text-warning" : "text-ink-muted"}`} />
+                    </span>
+                    <span className="min-w-0 flex-1 wrap-break-word">
+                      {name}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
           {error && <p className="text-danger" role="alert">{t("fusion.statusUnavailable")}</p>}
           {parentRun && <button type="button" className="text-xs text-accent hover:underline" onClick={() => emitFutureEvent("inspect-fusion", { runId: parentRun, toolCallId: tool, status: item.status, resolveTarget })}>{t("fusion.detail.open")}</button>}
         </div>

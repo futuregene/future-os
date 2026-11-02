@@ -1,5 +1,5 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
-import type { FusionSelection } from "../../features/fusion/FusionPanel";
+import type { FusionSelection } from "../../features/fusion/types";
 import type {
   StoredRun,
   StoredThread,
@@ -13,7 +13,7 @@ import { useTranslation } from "react-i18next";
 import { ArtifactDetailPanel } from "../../features/artifacts/ArtifactDetailPanel";
 import { ArtifactsPanel } from "../../features/artifacts/ArtifactsPanel";
 import { FileTreePanel } from "../../features/filetree/FileTreePanel";
-import { FusionPanel } from "../../features/fusion/FusionPanel";
+import { FusionDiscussionPanel } from "../../features/fusion/FusionDiscussionPanel";
 import { ReviewPanel } from "../../features/review/ReviewPanel";
 import { RunInspectPanel } from "../../features/runs/RunInspectPanel";
 import { RunsPanel } from "../../features/runs/RunsPanel";
@@ -36,7 +36,6 @@ export type { ContextTab };
 const gitTabs = [
   { value: "files", labelKey: "contextPanel.files" },
   { value: "runs", labelKey: "contextPanel.runs" },
-  { value: "fusion", labelKey: "contextPanel.fusion" },
   { value: "review", labelKey: "contextPanel.review" },
 ] satisfies Array<{ value: ContextTab; labelKey: string }>;
 
@@ -61,13 +60,11 @@ const gitTabs = [
 const fileTabs = [
   { value: "files", labelKey: "contextPanel.files" },
   { value: "runs", labelKey: "contextPanel.runs" },
-  { value: "fusion", labelKey: "contextPanel.fusion" },
 ] satisfies Array<{ value: ContextTab; labelKey: string }>;
 
 const pendingTabs = [
   { value: "files", labelKey: "contextPanel.files" },
   { value: "runs", labelKey: "contextPanel.runs" },
-  { value: "fusion", labelKey: "contextPanel.fusion" },
 ] satisfies Array<{ value: ContextTab; labelKey: string }>;
 
 interface ContextPanelProps {
@@ -200,6 +197,7 @@ export function ContextPanel({
 
   const handleSelectRun = useCallback(
     (runId: string) => {
+      setSelectedFusion(null);
       setSelectedRunId(runId);
       setSelectedToolId(null);
       setSelectedArtifactId(null);
@@ -218,9 +216,10 @@ export function ContextPanel({
         setSelectedToolId(null);
         setSelectedRunId(null);
         setSelectedArtifactId(null);
-        onTabChange("fusion");
+        onTabChange("runs");
         return;
       }
+      setSelectedFusion(null);
       setSelectedToolId(toolId);
       setSelectedRunId(null);
       setSelectedArtifactId(null);
@@ -233,6 +232,7 @@ export function ContextPanel({
 
   const handleSelectArtifact = useCallback(
     (artifactId: string) => {
+      setSelectedFusion(null);
       setSelectedArtifactId(artifactId);
       setSelectedRunId(null);
       if (activeTab !== "artifacts") {
@@ -294,7 +294,7 @@ export function ContextPanel({
         setSelectedToolId(null);
         setSelectedRunId(null);
         setSelectedArtifactId(null);
-        onTabChange("fusion");
+        onTabChange("runs");
         if (!expanded)
           onToggleExpanded();
       }),
@@ -318,6 +318,7 @@ export function ContextPanel({
         }
       }),
       onFutureEvent("open-review", () => {
+        setSelectedFusion(null);
         setSelectedArtifactId(null);
         setSelectedRunId(null);
         setSelectedToolId(null);
@@ -424,7 +425,7 @@ export function ContextPanel({
         className={
           activeTab === "files"
             ? "min-h-0 flex-1 overflow-hidden"
-            : activeTab === "runs" || activeTab === "fusion"
+            : activeTab === "runs"
               ? "min-h-0 flex-1 overflow-hidden"
               : activeTab === "review"
                 ? "min-h-0 flex-1 overflow-hidden pt-2"
@@ -445,45 +446,37 @@ export function ContextPanel({
           : null}
         {!showInitialLoading && activeThread && activeTab === "runs"
           ? (
-              selectedTool
-                ? (
-                    <div className="h-full overflow-auto px-4 pb-4">
-                      <RunInspectPanel
-                        compact
-                        run={selectedTool.run}
-                        tools={[selectedTool.tool]}
-                        onBack={() => setSelectedToolId(null)}
-                      />
-                    </div>
-                  )
-                : selectedToolId
+              selectedFusion?.threadId === activeThread.id
+                ? <FusionDiscussionPanel key={`${selectedFusion.runId}:${selectedFusion.toolCallId}`} {...selectedFusion} onBack={() => setSelectedFusion(null)} />
+                : selectedTool
                   ? (
-                      <div className="px-4 py-4 text-sm text-ink-muted">
-                        {t("contextPanel.loading")}
+                      <div className="h-full overflow-auto px-4 pb-4">
+                        <RunInspectPanel
+                          compact
+                          run={selectedTool.run}
+                          tools={[selectedTool.tool]}
+                          onBack={() => setSelectedToolId(null)}
+                        />
                       </div>
                     )
-                  : (
-                      <RunsPanel
-                        runs={runs}
-                        toolsByRun={toolsByRun}
-                        scope={runsScope}
-                        onArchiveFinished={handleArchiveFinishedRuns}
-                        onInspectTool={handleSelectTool}
-                        onTerminateRun={handleTerminateRun}
-                      />
-                    )
+                  : selectedToolId
+                    ? (
+                        <div className="px-4 py-4 text-sm text-ink-muted">
+                          {t("contextPanel.loading")}
+                        </div>
+                      )
+                    : (
+                        <RunsPanel
+                          runs={runs}
+                          toolsByRun={toolsByRun}
+                          scope={runsScope}
+                          onArchiveFinished={handleArchiveFinishedRuns}
+                          onInspectTool={handleSelectTool}
+                          onTerminateRun={handleTerminateRun}
+                        />
+                      )
             )
           : null}
-        {!showInitialLoading && activeThread && activeTab === "fusion" && (
-          <FusionPanel
-            key={activeThread.id}
-            runs={runsScope?.threadId === activeThread.id ? runs : []}
-            toolsByRun={runsScope?.threadId === activeThread.id ? toolsByRun : {}}
-            selected={selectedFusion?.threadId === activeThread.id ? selectedFusion : null}
-            onSelect={selection => setSelectedFusion({ ...selection, threadId: activeThread.id })}
-            onBack={() => setSelectedFusion(null)}
-          />
-        )}
         {!showInitialLoading && activeThread && activeTab === "review"
           ? (
               <ReviewPanel

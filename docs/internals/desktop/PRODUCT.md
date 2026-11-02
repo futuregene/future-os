@@ -939,12 +939,12 @@ Current focus:
   ones. Each program card's main content shows only the `command` field from
   the tool input JSON, displayed as the real command text — never the full
   JSON, escaped text, model names, or internal numbers like `Program <id>`;
-  Fusion rows instead show their focused question and open Discussions.
-- Discussions: Fusion history for the current conversation, including archived parent runs. A dedicated detail view shows question/context, conclusion and stage-by-stage public model messages, retries and failures. The inline Fusion activity and its Runs row open the exact discussion. Full text and tool evidence load lazily using the existing byte cursor; viewing never starts inference. Active details refresh, terminal details stop polling, and thread changes isolate state. Remote conversations reuse the detail component with their original host-bound reader, returning to remote files on Back.
-- Workspace conversations: show Files, Runs, Discussions, and Review. Git workspaces'
+  Fusion rows instead show their focused question and open their detail inspector within Runs.
+- Fusion is a tool within Runs. Its row and inline activity open a dedicated detail inspector inside Runs; Back returns to the tool list. There is no standalone Discussions type. Internal moderator readiness checks are hidden from the user-facing inspector. Remote conversations reuse the detail component with their host-bound reader.
+- Workspace conversations: show Files, Runs, and Review. Git workspaces'
   Review offers "Git changes" + "Last-round changes"; non-Git workspaces offer
   only "Last-round changes".
-- Ordinary Chats: show Files, Runs and Discussions, no Review.
+- Ordinary Chats: show Files and Runs, no Review.
 - Review: change review for the current Workspace conversation, including file
   lists, statistics, and diffs — see 4.7.
 

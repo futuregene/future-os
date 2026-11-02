@@ -331,7 +331,7 @@
   },
   "fusion": {
     "enabled": "Fusion tool enabled · Read-only consultation when needed",
-    "enableDescription": "Add multi-model thinking to this run; discussion does not act",
+    "enableDescription": "Add multi-model thinking to this run",
     "remove": "Remove",
     "discussion": "Discussion",
     "discussing": "Consulting models",
