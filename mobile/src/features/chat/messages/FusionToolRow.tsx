@@ -1,5 +1,5 @@
 import { FUSION_PHASES, fusionProgress, type FusionDiscussion } from "@future-os/thread-projection";
-import { Check, ChevronDown, ChevronUp, Circle, CircleMinus, CirclePause, CircleStop, CircleX, Clock, TriangleAlert, UserRoundGroup } from "lucide-react-native";
+import { Check, ChevronDown, ChevronUp, Circle, CircleAlert, CircleMinus, CirclePause, CircleStop, CircleX, Clock, TriangleAlert, UserRoundGroup } from "lucide-react-native";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ActivityIndicator, AppState, Pressable, Text, View } from "react-native";
@@ -73,11 +73,12 @@ export function FusionToolRow({ tool, resolveTarget }: { tool: TimelineToolRow; 
       {progress.notices.length ? <Text accessibilityRole="text" style={styles.fusionStatus}>{progress.notices.map(notice => t(`chat.fusionNotices.${notice}`)).join(" ")}</Text> : null}
       {models.length > 0 ? <View style={styles.fusionModelList} testID="fusion-models">{models.map(model => {
         const role = moderatorOnly ? "moderator" : model.role;
-        const name = `${role ? `${t(role === "moderator" ? "chat.fusionModeratorRole" : "chat.fusionParticipantRole", { number: model.number })} · ` : ""}${model.label}`;
-        const failed = ["failed", "timed_out", "output_limited"].includes(model.status);
-        const Icon = model.status === "completed" ? Check : model.status === "timed_out" ? Clock : model.status === "failed" ? CircleX : model.status === "interrupted" ? CirclePause : model.status === "cancelled" ? CircleStop : model.status === "skipped" ? CircleMinus : failed || model.status === "partial" ? TriangleAlert : Circle;
-        return <View key={model.id} style={styles.fusionModelRow} accessible accessibilityLabel={`${name}, ${t(`chat.fusionModelStates.${model.status}`)}`}>
-          {model.status === "thinking" ? <ActivityIndicator size="small" color={colors.accent} style={styles.fusionThinkingIcon} /> : <Icon size={14} color={model.status === "completed" ? colors.success : failed ? colors.danger : model.status === "partial" || model.status === "interrupted" ? colors.warning : colors.inkMuted} />}
+        const status = role === "moderator" && model.status === "interrupted" ? "failed" : model.status;
+        const name = `${role ? `${t(role === "moderator" ? "chat.fusionModeratorRole" : "chat.fusionParticipantRole", { number: model.number })} · ` : ""}${model.label} · ${t(`chat.fusionPhases.${progress.phase === "preflight" ? "preparing" : progress.phase}`)}`;
+        const failed = ["failed", "timed_out", "output_limited"].includes(status);
+        const Icon = status === "completed" ? Check : status === "timed_out" ? Clock : status === "failed" ? role === "moderator" ? CircleAlert : CircleX : status === "interrupted" ? CirclePause : status === "cancelled" ? CircleStop : status === "skipped" ? CircleMinus : failed || status === "partial" ? TriangleAlert : Circle;
+        return <View key={model.id} style={styles.fusionModelRow} accessible accessibilityLabel={`${name}, ${t(`chat.fusionModelStates.${status}`)}`}>
+          {status === "thinking" ? <ActivityIndicator size="small" color={colors.accent} style={styles.fusionThinkingIcon} /> : <Icon size={14} color={status === "completed" ? colors.success : failed ? colors.danger : status === "partial" || status === "interrupted" ? colors.warning : colors.inkMuted} />}
           <Text style={styles.fusionModelName}>{name}</Text>
         </View>;
       })}</View> : null}

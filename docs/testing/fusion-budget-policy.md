@@ -53,3 +53,5 @@ The isolated full 3→1→3→1 exercise passed. A separate temporary FutureOS h
 - This is a new bounded exercise, not a replay of the user's original prompt and full context. It proves this configuration works on the exercised path, not a universal latency guarantee.
 
 Static verification passed `cargo fmt --check` for changed crates, `cargo clippy --all-targets -- -D warnings` for Fusion/Agent/Host/CLI/TUI and the Desktop Rust consumer, and `make check-docs`. Unit tests were not executed locally. Windows/Linux builds and native Android/iOS execution remain CI/device validation; all three clients consume the same backend policy.
+
+Moderator total generation and forwarded public-answer capacity are independent: mapping may use the model's effective total output budget, while its public JSON must still fit the reviewer allocation. Participant token sharing remains dynamic. No checkpoint recovery is added; users start a fresh discussion after interruption. UI roles are Moderator / Participant N; interrupted moderators display failure while stored interruption metadata remains intact.

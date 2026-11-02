@@ -70,10 +70,10 @@ it("retains failed attempts and public output without presenting a stale conclus
   mocks.invoke.mockImplementation(async (_command, input) => input.stepId ? data.steps![0] : data);
   await render();
   expect(container.textContent).toContain("did not produce a final conclusion");
-  expect(container.textContent).toContain("Moderator unavailable");
+  expect(container.textContent).not.toContain("Moderator unavailable");
   expect(container.querySelector("h3")?.textContent).toBe("Discussion");
   await click("future/deepseek-flash");
-  expect(container.textContent).toContain("Original failure");
+  expect(container.textContent).not.toContain("Original failure");
   expect(container.textContent).toContain(data.steps![0]!.output);
 });
 

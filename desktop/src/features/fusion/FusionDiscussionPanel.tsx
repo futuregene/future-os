@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import type { FusionResolver } from "../../integrations/fusion/queries";
 import type { FusionSelection } from "./types";
 import { FUSION_PHASES, fusionProgress } from "@future-os/thread-projection";
-import { ArrowLeft, ChevronDown, RefreshCw, UserRoundGroup } from "lucide-react";
+import { ChevronDown, RefreshCw } from "lucide-react";
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "../../components/ui/Badge";
@@ -13,6 +13,7 @@ import { cn } from "../../lib/cn";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { usePolling } from "../../lib/usePolling";
 import { MarkdownContent } from "../markdown/MarkdownContent";
+import { RunInspectorToolbar } from "../runs/RunInspectorToolbar";
 import { FusionStepBody } from "./FusionStepBody";
 
 export function FusionDiscussionPanel({ runId, toolCallId, status = "running", resolveTarget, onBack }: FusionSelection & {
@@ -33,11 +34,12 @@ export function FusionDiscussionPanel({ runId, toolCallId, status = "running", r
   const result = ["completed", "delivering"].includes(run?.status ?? "") ? run?.result : null;
   return (
     <div className="@container flex h-full min-h-0 flex-col" data-fusion-panel="detail">
-      <div className="flex shrink-0 items-center gap-2 border-b border-line-soft px-3 py-2">
-        <IconButton icon={<ArrowLeft className="size-3.5" />} label={t("fusion.detail.back")} onClick={onBack} />
-        <UserRoundGroup className="size-4 shrink-0 text-ink-muted" />
-        <span className="min-w-0 flex-1 text-sm font-medium text-ink">{t("fusion.detail.title")}</span>
-        <IconButton icon={<RefreshCw className={cn("size-3.5", resource.loading && "animate-spin")} />} label={t("fusion.detail.refresh")} disabled={resource.loading} onClick={resource.reload} />
+      <div className="shrink-0 px-4">
+        <RunInspectorToolbar
+          onBack={onBack}
+          status={<Badge tone={progress.status === "completed" ? "success" : ["failed", "interrupted"].includes(progress.status) ? "danger" : "neutral"}>{t(`fusion.states.${progress.status}`)}</Badge>}
+          actions={<IconButton className="size-6" icon={<RefreshCw className={cn("size-3.5", resource.loading && "animate-spin")} />} label={t("fusion.detail.refresh")} disabled={resource.loading} onClick={resource.reload} />}
+        />
       </div>
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4">
         {resource.error && <p role="alert" className="text-xs text-danger">{t("fusion.statusUnavailable")}</p>}
@@ -46,12 +48,8 @@ export function FusionDiscussionPanel({ runId, toolCallId, status = "running", r
           <>
             <div className="space-y-3">
               <h2 className="wrap-break-word text-sm font-medium leading-6 text-ink">{run.input.question}</h2>
-              <div className="flex flex-wrap gap-2">
-                <Badge tone={progress.status === "completed" ? "success" : ["failed", "interrupted"].includes(progress.status) ? "danger" : "neutral"}>{t(`fusion.states.${progress.status}`)}</Badge>
-                {result && <Badge>{t(`fusion.completeness.${run.completeness}`)}</Badge>}
-              </div>
+              {result && <Badge>{t(`fusion.completeness.${run.completeness}`)}</Badge>}
               {progress.notices.map(notice => <p key={notice} role="status" className="text-xs leading-5 text-ink-muted">{t(`fusion.notices.${notice}`)}</p>)}
-              {run.error && <p className="whitespace-pre-wrap wrap-break-word text-xs leading-5 text-danger">{run.error}</p>}
             </div>
             {result
               ? (

@@ -35,6 +35,7 @@ import {
   toolStatusLabel,
 } from "./runDisplayFormatters";
 import { RunError } from "./RunError";
+import { RunInspectorToolbar } from "./RunInspectorToolbar";
 import {
   numberOrStringField,
   parseJsonish,
@@ -116,8 +117,9 @@ export function RunInspectPanel({
     >
       {compact
         ? (
-            <div className="flex h-8 shrink-0 items-center justify-between gap-2">
-              {primaryTool
+            <RunInspectorToolbar
+              onBack={onBack}
+              status={primaryTool
                 ? (
                     <Badge
                       tone={
@@ -134,8 +136,7 @@ export function RunInspectPanel({
                 : (
                     <span />
                   )}
-              <BackButton compact onBack={onBack} />
-            </div>
+            />
           )
         : (
             <BackButton onBack={onBack} />

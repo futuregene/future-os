@@ -30,7 +30,6 @@ export function FusionStepBody({ step, runId, toolCallId, resolveTarget }: { ste
   const text = !more ? publicAnswer(raw) || step.output : step.output;
   return (
     <div className="space-y-3 border-t border-line-soft px-3 py-3 text-13 leading-6 text-ink-soft">
-      {step.error && <p className="whitespace-pre-wrap wrap-break-word text-xs text-danger">{step.error}</p>}
       {text ? <div data-fusion-public-output><StepResponse text={text} phase={step.phase} /></div> : <p className="text-xs text-ink-muted">{t("fusion.detail.noOutput")}</p>}
       {resource.loading && <p role="status" className="text-xs text-ink-muted">{t("fusion.loading")}</p>}
       {resource.error && (

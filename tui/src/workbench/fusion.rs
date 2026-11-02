@@ -159,6 +159,9 @@ pub(super) fn progress(data: &Value, lang: Language) -> String {
         {
             key = Key::FusionModelPartial;
         }
+        if participant.as_deref() == Some("moderator") && key == Key::FusionThinkInterrupted {
+            key = Key::FusionThinkFailed;
+        }
         let name = match model.as_str() {
             "future/deepseek-flash" => "DeepSeek Flash",
             "future/glm-5.3-flash" => "GLM 5.3 Flash",
@@ -242,7 +245,7 @@ mod tests {
         assert!(text.contains("[==== .... .... >>>>]"));
         assert!(text.contains("GLM 5.3 Flash · 已跳过"));
         assert!(text.contains("本次未产出综合结论。"));
-        assert!(text.contains("主模型不可用，未自动更换模型。"));
+        assert!(text.contains("主持人不可用，未自动更换模型。"));
         assert!(text.contains("已有分析与降级原因已保留"));
     }
 }

@@ -101,10 +101,10 @@ impl Budget {
         };
         let remaining = window.saturating_sub(prompt.len() + future_fusion::CONTEXT_MARGIN);
         let output = natural_output.min(remaining);
-        let output = if public_bytes == usize::MAX {
-            output
-        } else {
+        let output = if participant_budget_applies(phase) {
             output.min(public_bytes / 4)
+        } else {
+            output
         };
         ensure!(
             output >= 256,
@@ -120,6 +120,10 @@ impl Budget {
         future_fusion::guard_context(prompt.len(), window, output)?;
         Ok(())
     }
+}
+
+fn participant_budget_applies(phase: &str) -> bool {
+    matches!(phase, "analyzing" | "reviewing")
 }
 
 #[cfg(test)]
@@ -159,6 +163,16 @@ mod tests {
             .apply(&config.panel[0].model, "analyzing", "task", &mut settings)
             .unwrap();
         assert!(settings.max_output_tokens > 0);
+        assert!(settings.max_public_bytes > 0);
+        budget
+            .apply(
+                &config.moderator.model,
+                "issue_mapping",
+                "task",
+                &mut settings,
+            )
+            .unwrap();
+        assert_eq!(settings.max_output_tokens, 32768);
         assert!(settings.max_public_bytes > 0);
         assert!(budget
             .apply(
