@@ -3570,6 +3570,33 @@ describe("app shell collapsed-panel affordances", () => {
     });
 
     /**
+     * A send re-reads the conversation and nothing else.
+     *
+     * The host pushes `state.sessions` when a conversation of its own changes,
+     * so a per-peer catalogue read here was a transfer nobody was waiting for —
+     * on the same link the transcript's refresh needs, immediately after the
+     * host accepted the message. `onCreated` still refreshes the peers, which is
+     * what brings a brand-new conversation's row into the list.
+     */
+    it("re-reads the conversation, not the catalogue, when a message is sent", async () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+      mocks.hooks.refreshRemotePeers.mockClear();
+      const before = mocks.invoke.mock.calls.length;
+
+      await act(async () => {
+        (children.remoteComposer as { onSent: () => void }).onSent();
+        for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      });
+
+      const types = mocks.invoke.mock.calls.slice(before).map(([, args]) =>
+        (args as { command?: { type?: string } } | undefined)?.command?.type);
+      expect(types).toContain("get_session_entries");
+      expect(mocks.hooks.refreshRemotePeers).not.toHaveBeenCalled();
+      view.unmount();
+    });
+
+    /**
      * The transcript's own callbacks all have to reach the thing that owns the
      * behaviour: a decision to the approvals, the rest to the timeline. A prop
      * wired to the wrong collaborator would look right and do nothing.
