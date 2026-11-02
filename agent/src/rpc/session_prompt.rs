@@ -1102,8 +1102,11 @@ impl ServerSession {
                 sandbox: sandbox.clone(),
                 cancelled: run_loop.interrupt_flag(),
             });
-            let guidance = "\nFusion is enabled for this run only. Use it for a focused decision after gathering necessary facts; directly handle routine work. Provide question, goal, background, constraints and evidence. It only thinks; implement recommendations yourself under the original user authorization. Honor explicit instructions requiring or prohibiting consultation.\n";
-            run_loop.system_prompt.push_str(guidance);
+            run_loop.system_prompt.push('\n');
+            run_loop
+                .system_prompt
+                .push_str(future_fusion::DISCUSSION_POLICY);
+            run_loop.system_prompt.push('\n');
             run_loop.config.system_prompt = run_loop.system_prompt.clone();
         }
 
