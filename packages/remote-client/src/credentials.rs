@@ -56,7 +56,7 @@ pub struct PeerCreds {
 /// its expiry can never come back. Rotating this far ahead keeps the handshake
 /// out of the expiring second, which would fail it in a way that looks like a
 /// protocol fault. Mirrors the mobile client's margin.
-pub const REFRESH_LEAD_SECS: i64 = 60;
+pub const REFRESH_LEAD_SECS: i64 = 90;
 
 impl PeerCreds {
     /// Whether this grant has entered the window in which it must be rotated

@@ -8,7 +8,13 @@ pub(super) async fn build_transport(
     slots: commands::ReplySlots,
 ) -> Result<future_remote_server::supervisor::TransportTasks, crate::Error> {
     SUPERVISOR
-        .build_transport(client, pair, handshake, slots)
+        .build_transport(
+            client,
+            pair,
+            handshake,
+            slots,
+            std::sync::Arc::new(future_remote_server::health::NatsHealth::default()),
+        )
         .await
         .map_err(Into::into)
 }
