@@ -650,6 +650,10 @@ pub struct ModelEntry {
     /// older one.
     #[prost(string, optional, tag = "13")]
     pub default_thinking_level: ::core::option::Option<::prost::alloc::string::String>,
+    /// Agent effective generation capacity, using the same policy as requests.
+    /// Absent on older agents; clients must not invent a capacity when missing.
+    #[prost(int32, optional, tag = "14")]
+    pub max_tokens: ::core::option::Option<i32>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BuiltinProvider {

@@ -36,7 +36,7 @@ impl Budget {
             let output = model["maxTokens"]
                 .as_u64()
                 .filter(|n| *n > 0)
-                .context("Fusion requires a known positive output capacity")?
+                .with_context(|| format!("Fusion model {} requires positive maxTokens from list_models; upgrade Agent and Host together", profile.model))?
                 as usize;
             models.insert(profile.model.clone(), (window, output.max(1).min(window)));
         }
@@ -118,6 +118,48 @@ mod tests {
             {"provider":"future","id":"qwen3.7-plus","contextWindow":window,"maxTokens":32768}
         ]})
     }
+    #[test]
+    fn typed_rpc_model_catalog_survives_to_fusion_admission() {
+        let mut source = catalog(1_000_000);
+        // Match the required public model-list envelope and entries, not a
+        // Host-only fixture that bypasses RPC's field filtering.
+        source["defaultModel"] = json!("future/deepseek-flash");
+        source["isScoped"] = json!(false);
+        for model in source["models"].as_array_mut().unwrap() {
+            model["label"] = model["id"].clone();
+            model["supportsImages"] = json!(false);
+            model["thinkingLevel"] = json!("default");
+            model["isDefault"] = json!(false);
+            model["recommended"] = json!(false);
+        }
+        let payload = future_rpc::encode::response_payload("list_models", &source).unwrap();
+        let response = future_rpc::proto::RpcResponse {
+            command: "list_models".into(),
+            success: true,
+            payload: Some(payload),
+            ..Default::default()
+        };
+        let decoded = future_rpc::decode::response_data(&response);
+        let config = Configuration::default();
+        let budget = Budget::new(&decoded, &config, 1748).unwrap();
+        for profile in config.panel.iter().chain([&config.moderator]) {
+            let mut settings = super::super::attempt_settings(&config, profile, None, 0).unwrap();
+            budget
+                .apply(&profile.model, "analyzing", "task", &mut settings)
+                .unwrap();
+            assert_eq!(settings.max_output_tokens, 32768);
+        }
+        let mut legacy = decoded;
+        legacy["models"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("maxTokens");
+        let Err(error) = Budget::new(&legacy, &config, 1748) else {
+            panic!("invented capacity for an old Agent");
+        };
+        assert!(error.to_string().contains("future/deepseek-flash"));
+    }
+
     #[test]
     fn sharing_more_roles_reduces_output_without_overbooking_moderator() {
         let mut config = Configuration::default();
