@@ -23,7 +23,6 @@
 //! to a failed connection. The snapshot *is* the platform store, so this
 //! changes no trust decision — it is a cache, not a second policy.
 
-use crate::console;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use std::path::{Path, PathBuf};
@@ -61,14 +60,14 @@ fn bundle_with_extra(ca: &std::path::Path) -> Option<PathBuf> {
             let extra = match std::fs::read_to_string(ca) {
                 Ok(text) if text.contains("-----BEGIN CERTIFICATE-----") => text,
                 Ok(_) => {
-                    console::eprintln!(
+                    tracing::error!(event = "bundle_with_extra",
                         "remote: the relay CA file holds no certificate: {}",
                         ca.display()
                     );
                     return None;
                 }
                 Err(error) => {
-                    console::eprintln!(
+                    tracing::error!(event = "bundle_with_extra", error = %error,
                         "remote: could not read the relay CA file {}: {error}",
                         ca.display()
                     );
@@ -89,7 +88,7 @@ fn bundle_with_extra(ca: &std::path::Path) -> Option<PathBuf> {
             match std::fs::write(&path, text) {
                 Ok(()) => Some(path),
                 Err(error) => {
-                    console::eprintln!("remote: could not write the relay trust bundle: {error}");
+                    tracing::warn!(event = "bundle_with_extra", error = %error,"remote: could not write the relay trust bundle: {error}");
                     None
                 }
             }
@@ -119,16 +118,19 @@ fn bundle_at(path: &Path, load: &dyn Fn() -> Result<Vec<Vec<u8>>, String>) -> Op
         Ok(certs) if !certs.is_empty() => match write_bundle(path, &certs) {
             Ok(()) => Some(path.to_path_buf()),
             Err(error) => {
-                console::eprintln!("remote: writing the relay trust bundle failed: {error}");
+                tracing::warn!(event = "bundle_at", error = %error,"remote: writing the relay trust bundle failed: {error}");
                 existing_bundle(path)
             }
         },
         Ok(_) => {
-            console::eprintln!("remote: the platform trust store returned no certificates");
+            tracing::warn!(
+                event = "bundle_at",
+                "remote: the platform trust store returned no certificates"
+            );
             existing_bundle(path)
         }
         Err(error) => {
-            console::eprintln!("remote: reading the platform trust store failed: {error}");
+            tracing::warn!(event = "bundle_at", error = %error,"remote: reading the platform trust store failed: {error}");
             existing_bundle(path)
         }
     }
@@ -344,8 +346,7 @@ mod tests {
 /// written. Each case therefore re-executes this same test binary with
 /// `--exact` and one case marker in its environment — the same shape
 /// `agent_host`'s block fixtures use — and asserts on what that process
-/// reported, which is also the only way a `console::eprintln!` arm is
-/// observable at all.
+/// reported through the production tracing subscriber.
 #[cfg(test)]
 mod fixtures {
     use super::*;
@@ -395,6 +396,7 @@ mod fixtures {
                 .env("HOME", self.dir.path())
                 .env("USERPROFILE", self.dir.path())
                 .env("FUTURE_HOME", self.dir.path().join(".future"))
+                .env_remove("RUST_LOG")
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
             command
@@ -425,6 +427,7 @@ mod fixtures {
         let mut command = fixture.command("no-certificate");
         command.env("FUTURE_RELAY_CA", &ca);
         let (_, reported) = run("no-certificate", command);
+        assert!(reported.contains("ERROR"), "{reported}");
         let named = reported.contains("holds no certificate");
         assert!(named, "{reported}");
         let path_named = reported.contains("relay-ca.pem");
@@ -440,6 +443,7 @@ mod fixtures {
         let mut command = fixture.command("unreadable");
         command.env("FUTURE_RELAY_CA", &ca);
         let (_, reported) = run("unreadable", command);
+        assert!(reported.contains("ERROR"), "{reported}");
         let named = reported.contains("could not read the relay CA file");
         assert!(named, "{reported}");
         let path_named = reported.contains("absent.pem");
@@ -472,6 +476,7 @@ mod fixtures {
             command.env(variable, &tmp);
         }
         let (_, reported) = run("unwritable", command);
+        assert!(reported.contains("WARN"), "{reported}");
         let named = reported.contains("could not write the relay trust bundle");
         assert!(named, "{reported}");
         // The bundle is written into the temp directory the environment names,
@@ -488,6 +493,7 @@ mod fixtures {
         let Ok(case) = std::env::var(CASE) else {
             return;
         };
+        future_logging::prepare(future_logging::Component::Host, "1.0.0", true, false);
         let bundle = root_bundle();
         assert!(
             bundle.is_none(),

@@ -65,3 +65,28 @@ PR #1393 引入的 schema/content 架构在操作边界记录诊断，不为日�
 `history_transfer_retired` 在快照消失时记录 `completed`、`expired` 或 `released`，
 后续读不到同一 ID 时可从先前事件确定原因。新增事件记录元数据，不记录提示词、thinking、
 工具参数/结果正文或凭据。
+
+## 诊断迁移与输出边界
+
+Agent、Host 和 Desktop Rust 的诊断统一使用 `tracing`，根据影响选择级别：
+
+| 级别 | 使用场景 |
+|---|---|
+| ERROR | 启动/服务失败、运行状态或审批持久化失败、配置回滚失败、捕获到的 panic |
+| WARN | 可恢复故障、降级、后台维护失败、慢命令、Agent 事件流连接首次中断 |
+| INFO | 启动退出、导入/清理/修复结果、远程服务生命周期 |
+| DEBUG | 重连尝试、缓存淘汰、正常刷新、预期延后、关闭过程细节 |
+
+诊断保留原有可读消息，并在适用时附带 `event`、错误、会话/运行 ID、计数等结构化字段。
+窗口程序同样通过统一写入器保存日志。兼容的字符串回调入口继续转为 tracing，新增调用应
+直接选择正确级别。
+
+保留独立的输出边界：CLI JSON/帮助/参数错误，更新助手与沙箱助手的父子进程协议，
+技能子进程输出转发，以及模型的 thinking/回复/换行内容流。这些输出不改成诊断日志。
+前端代码不参与本次迁移。
+
+静态审计命令 `cargo run -p future-logging --example audit_diagnostics` 沿生产模块图检查
+Agent、Host 和 Desktop，覆盖各平台条件分支和 `tokio::select!` 等宏内调用，排除测试代码。
+`packages/logging/tests/support/output_boundaries.json` 用源码位置、调用内容及数量固定保留
+输出；新增裸打印或改动保留输出会使检查失败。CI 的集成测试复用此检查，并验证审计器能发现
+宏内遗漏。该命令只解析源码，不启动应用，也不运行单元测试。

@@ -1,6 +1,5 @@
 //! Shared host-side HTTP adaptation for both Remote roles and relay control.
 //! Application TLS setup and error presentation stay outside the role libraries.
-use crate::console;
 use serde_json::Value;
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -112,7 +111,7 @@ pub(crate) async fn response_error(response: reqwest::Response, action: &str) ->
         .unwrap_or_else(|| format!("Failed to {action} (HTTP {})", status.as_u16()));
     // Error bodies can reflect credentials. Keep logs to the action/status;
     // the typed UI error still retains the platform code and message.
-    console::eprintln!("remote: {action} failed: HTTP {}", status.as_u16());
+    tracing::warn!(event = "response_error", action = %action,"remote: {action} failed: HTTP {}", status.as_u16());
     crate::Error::Remote {
         status: status.as_u16(),
         code,

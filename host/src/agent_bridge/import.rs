@@ -3,7 +3,6 @@
 //! records + per-reply run records so they appear in the thread list and right
 //! panel immediately.
 
-use crate::console;
 use futures::{stream, FutureExt, StreamExt};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, Weak};
@@ -59,7 +58,7 @@ async fn list_agent_sessions() -> Vec<AgentSessionSummary> {
     let mut client = match connect_agent().await {
         Ok(client) => client,
         Err(error) => {
-            console::eprintln!("FutureOS: unable to connect agent for session import: {error}");
+            tracing::warn!(event = "list_agent_sessions", error = %error,"FutureOS: unable to connect agent for session import: {error}");
             return vec![];
         }
     };
@@ -67,7 +66,7 @@ async fn list_agent_sessions() -> Vec<AgentSessionSummary> {
     let inner = match client.execute_command(list_sessions_command()).await {
         Ok(response) => response.into_inner(),
         Err(error) => {
-            console::eprintln!("FutureOS: session import transport error: {error}");
+            tracing::warn!(event = "list_agent_sessions", error = %error,"FutureOS: session import transport error: {error}");
             return vec![];
         }
     };
@@ -78,12 +77,13 @@ async fn list_agent_sessions() -> Vec<AgentSessionSummary> {
         } else {
             inner.error
         };
-        console::eprintln!("FutureOS: session import list failed: {err}");
+        tracing::warn!(event = "list_agent_sessions", error = %err,"FutureOS: session import list failed: {err}");
         return vec![];
     }
 
     let Some(sessions) = future_rpc::decode::decode_list_sessions(&inner) else {
-        console::eprintln!(
+        tracing::warn!(
+            event = "list_agent_sessions",
             "FutureOS: session import parse failed: typed payload is missing or invalid"
         );
         return vec![];
@@ -455,7 +455,7 @@ async fn write_back_cwd(session_id: &str, cwd: &str) -> Result<(), String> {
 /// title write in this file is best-effort for the same reason.
 fn seed_auto_title_best_effort(thread_id: &str, title: &str) {
     if let Err(error) = crate::store::seed_thread_auto_title(thread_id, title) {
-        console::eprintln!("FutureOS: auto-title seed write failed for {thread_id}: {error}");
+        tracing::warn!(event = "seed_auto_title_best_effort", thread_id = %thread_id, error = %error,"FutureOS: auto-title seed write failed for {thread_id}: {error}");
     }
 }
 
@@ -608,7 +608,7 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::Error
         let sid = summary.id.clone();
         crate::runtime::spawn(async move {
             if let Err(e) = write_back_cwd(&sid, &cwd).await {
-                console::eprintln!("FutureOS: cwd write-back failed for {sid}: {e}");
+                tracing::warn!(event = "import_one", sid = %sid, error = %e,"FutureOS: cwd write-back failed for {sid}: {e}");
             }
         });
     }
@@ -768,21 +768,23 @@ pub async fn import_missing_sessions() {
                         imported += 1;
                     }
                 }
-                Ok(Err(error)) => console::eprintln!("FutureOS: session import error: {error}"),
+                Ok(Err(error)) => {
+                    tracing::warn!(event = "import_missing_sessions", error = %error,"FutureOS: session import error: {error}")
+                }
                 Err(panic) => {
                     let detail = panic
                         .downcast_ref::<&str>()
                         .copied()
                         .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
                         .unwrap_or("non-string panic");
-                    console::eprintln!("FutureOS: session import panic: {detail}");
+                    tracing::error!(event = "import_missing_sessions", detail = %detail,"FutureOS: session import panic: {detail}");
                 }
             }
         }
     }
 
     if imported > 0 {
-        console::eprintln!(
+        tracing::info!(event = "import_missing_sessions", imported = imported, total_runs = total_runs, total = total,
             "FutureOS: imported {imported} session(s) ({total_runs} runs) out of {total} agent session(s)"
         );
         // New threads landed in the store — let the sidebar know.

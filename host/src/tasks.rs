@@ -6,7 +6,6 @@
 //! desktop reuses the same executor with notifications downgraded to ledger
 //! writes (no webview).
 
-use crate::console;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -152,7 +151,7 @@ async fn run_loop(notify: Notifier) {
     // reconciliation the GUI already does for agent runs.
     if let Ok(store) = Store::open(&future_home()) {
         if let Err(error) = store.mark_interrupted_runs(now_ms()) {
-            console::eprintln!("FutureOS tasks: interrupted-run reconciliation failed: {error}");
+            tracing::warn!(event = "run_loop", error = %error,"FutureOS tasks: interrupted-run reconciliation failed: {error}");
         }
     }
     let mut interval = tokio::time::interval(TICK_INTERVAL);
@@ -169,7 +168,7 @@ async fn run_loop(notify: Notifier) {
             _ = wake_signal().notified() => {}
         }
         if let Err(error) = tick(&notify).await {
-            console::eprintln!("FutureOS tasks tick failed: {error}");
+            tracing::warn!(event = "run_loop", error = %error,"FutureOS tasks tick failed: {error}");
         }
     }
 }
@@ -228,12 +227,12 @@ async fn tick(notify: &Notifier) -> Result<(), String> {
             let store = match Store::open(&future_home()) {
                 Ok(s) => s,
                 Err(error) => {
-                    console::eprintln!("FutureOS tasks: could not open store for run: {error}");
+                    tracing::error!(event = "tick", error = %error,"FutureOS tasks: could not open store for run: {error}");
                     return;
                 }
             };
             if let Err(error) = execute(&notify, store, task, run).await {
-                console::eprintln!("FutureOS task execution failed: {error}");
+                tracing::error!(event = "tick", error = %error,"FutureOS task execution failed: {error}");
             }
         });
     }
@@ -325,7 +324,7 @@ impl Drop for InterruptedTask {
             Ok::<_, String>(())
         })();
         if let Err(error) = result {
-            console::eprintln!("FutureOS task interruption persistence failed: {error}");
+            tracing::error!(event = "drop", error = %error,"FutureOS task interruption persistence failed: {error}");
             if crate::request_scope::is_stopping() {
                 crate::runtime::record_cleanup_error(error);
             }
@@ -438,7 +437,7 @@ async fn execute(
                 // there and still openable, which is a better outcome than a
                 // ledger that claims a delete that did not happen. The next run
                 // is unaffected (each run has its own conversation).
-                Err(error) => console::eprintln!(
+                Err(error) => tracing::warn!(event = "execute", error = %error,
                     "FutureOS tasks: could not delete the conversation of run {}: {error}",
                     run.id
                 ),
@@ -475,7 +474,7 @@ async fn execute(
                             // an empty conversation is still a better record
                             // than a ledger claiming a delete that did not
                             // happen.
-                            Err(error) => eprintln!(
+                            Err(error) => tracing::warn!(event = "execute", error = %error,
                                 "FutureOS tasks: could not remove the empty conversation of \
                                  run {}: {error}",
                                 run.id
@@ -486,7 +485,7 @@ async fn execute(
                 Ok(true) => {}
                 // A read failure is not evidence of emptiness — deleting on one
                 // would throw away a run's only record. Keep the conversation.
-                Err(error) => eprintln!(
+                Err(error) => tracing::warn!(event = "execute", error = %error,
                     "FutureOS tasks: could not tell whether run {} left a conversation with \
                      records; keeping it: {error}",
                     run.id

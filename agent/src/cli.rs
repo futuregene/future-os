@@ -250,6 +250,14 @@ pub fn run_from_args(args: &[String]) -> Result<()> {
         grpc_addr: cli.grpc_addr.clone(),
         ..crate::service::AgentConfig::default()
     };
+    // Instance metadata can fail before the file writer is registered. Install
+    // the subscriber first so that warning still reaches the terminal.
+    future_logging::prepare(
+        future_logging::Component::Agent,
+        crate::utils::VERSION,
+        true,
+        cli.verbose,
+    );
     let mut logging = None;
     let result = crate::service::AgentService::with_instance(config, |service| {
         if cli.migrate_sessions
@@ -288,12 +296,6 @@ pub fn run_from_args(args: &[String]) -> Result<()> {
         // Environment hydration must precede the signal thread as well as Tokio's
         // worker threads: mutating the process environment is only sound here.
         crate::sandbox::hydrate_from_login_shell();
-        future_logging::prepare(
-            future_logging::Component::Agent,
-            crate::utils::VERSION,
-            true,
-            cli.verbose,
-        );
         let log_file = cli
             .log_file
             .as_deref()
