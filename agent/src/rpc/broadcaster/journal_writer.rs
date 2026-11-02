@@ -248,6 +248,10 @@ impl EventBatchWriter {
         let result = receiver
             .recv()
             .map_err(|_| {
+                // The receipt hands back an answer the worker queued, so reaching
+                // this arm means the worker retired without answering — and the
+                // failure it recorded on its way out is what made it retire.
+                // Naming it keeps a real loss diagnosable instead of anonymous.
                 let error = self.health.error();
                 tracing::error!(
                     event = "event_journal_shutdown_ack_lost",
@@ -256,7 +260,12 @@ impl EventBatchWriter {
                     control_queue = self.control.sender.len(),
                     "Event journal worker exited without its shutdown acknowledgement"
                 );
-                anyhow::anyhow!("event shutdown acknowledgement lost (journal health: {error:?})")
+                match error {
+                    Some(reason) => {
+                        anyhow::anyhow!("event shutdown acknowledgement lost: {reason}")
+                    }
+                    None => anyhow::anyhow!("event shutdown acknowledgement lost"),
+                }
             })?
             .map_err(anyhow::Error::msg);
         if let Some(thread) = self.thread.take() {

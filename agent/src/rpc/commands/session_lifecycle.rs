@@ -72,6 +72,20 @@ pub(crate) fn reject_deep_parent(state: &AppState, parent: &str) -> Option<Strin
     })
 }
 
+/// The tool permission a session is running with, or `None` when it is not
+/// loaded.
+///
+/// Permission is runtime state (it is not written to `session_info`), so a
+/// session that is only on disk has no level to read; callers fall back to the
+/// settings default rather than inventing one.
+fn live_permission_level(state: &AppState, session_id: &str) -> Option<String> {
+    state
+        .sessions
+        .read()
+        .get(session_id)
+        .map(|session| session.read().get_permission_level().to_string())
+}
+
 pub(crate) fn cmd_storage_health(state: &AppState, id: &str) -> String {
     match state.session_manager.storage_health() {
         Ok(data) => RpcResponse::ok(id, "get_storage_health", data),
@@ -810,6 +824,18 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
             return RpcResponse::build_fail(id, "new_session", &error);
         }
         new_sess.parent_session_id = cmd.parent_session.clone();
+        // A sub-session must not outrank the session that created it. The
+        // settings default applied above is `all` unless the user changed it,
+        // so a parent running approval-gated (`workspace`) or with its tools
+        // denied (`none`) that delegates would otherwise mint a child with more
+        // tool access than the parent has — the user's gate bypassed by the act
+        // of splitting the work. The parent is necessarily live (it is the one
+        // running the command), so its level is readable; a parent that is only
+        // on disk has no recorded level to inherit, because permission is
+        // runtime state rather than part of `session_info`.
+        if let Some(level) = live_permission_level(state, &cmd.parent_session) {
+            new_sess.set_permission_level(&level);
+        }
     }
 
     // Session provenance: typed created_by/source_meta fields first.

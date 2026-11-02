@@ -115,7 +115,9 @@ def main():
                         output = (home / 'stderr.log').read_text(encoding='utf-8', errors='replace')
                         if process.poll() is not None:
                             raise RuntimeError(f'Signed-out host exited {process.returncode}: {output}')
-                        if ('FutureOS: embedded Agent ready' in output and
+                        # Match the structured readiness event, independent of
+                        # the terminal logger's message prefix and ANSI styling.
+                        if ('embedded_agent_ready' in output and
                                 'Not signed in to FutureOS: serving local' in output):
                             break
                         if time.monotonic() >= deadline:
