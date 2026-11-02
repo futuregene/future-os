@@ -130,7 +130,16 @@ export function SessionList({
    * conversations under another machine's name.
    */
   merged?: import("../remote/mergeSessions").MergedSessionRow[];
-  /** Per-desktop icon id, so a merged row shows which machine it is on. */
+  /**
+   * Per-desktop icon id, so a merged row shows which machine it is on.
+   *
+   * A machine with no icon of its own is absent from the map (or maps to
+   * `undefined`) and draws the shared set's default — the same mark the
+   * paired-desktops page and the desktop app give it. The glyph is about
+   * *which machine*, and "nobody has named this one yet" is not a state the
+   * reader can act on: a row that drew nothing where its neighbours drew a
+   * machine read as a row that came from nowhere.
+   */
   icons?: Map<string, string | undefined>;
   /**
    * The desktop this screen is connected to. It is what tells a row of the
@@ -708,9 +717,9 @@ export function SessionList({
             <Text numberOfLines={1} style={styles.workspaceName}>
               {name}
             </Text>
-            {showSource && icons?.get(item.desktopId ?? "") ? (
+            {showSource && item.desktopId ? (
               <View accessibilityLabel={item.desktopId} style={styles.sourceIcon}>
-                <PeerIconGlyph id={icons.get(item.desktopId ?? "")} size={13} />
+                <PeerIconGlyph id={icons?.get(item.desktopId)} size={13} />
               </View>
             ) : null}
             {item.workspace.pinned && <Pin size={13} color={colors.accent} />}
@@ -865,9 +874,9 @@ export function SessionList({
                     opens the under-line at the row's own left edge, so the
                     glyph column lines up with the title above it instead of
                     trailing whatever the name happens to be. */}
-                {showSource && item.desktopId && icons?.get(item.desktopId) ? (
+                {showSource && item.desktopId ? (
                   <View accessibilityLabel={item.desktopId} style={[styles.sourceIcon, styles.leadingSourceIcon]}>
-                    <PeerIconGlyph id={icons.get(item.desktopId)} size={13} />
+                    <PeerIconGlyph id={icons?.get(item.desktopId)} size={13} />
                   </View>
                 ) : null}
                 <Text numberOfLines={1} style={styles.recentWhere}>
@@ -888,10 +897,12 @@ export function SessionList({
               heading above it already says which machine it is: with a single
               desktop the selector above already names it, and under a workspace
               group the heading carries the same glyph, so the row would repeat
-              it on every line of that group's list. */}
-          {showSource && !item.groupHasSource && item.desktopId && icons?.get(item.desktopId) ? (
+              it on every line of that group's list. A machine the user never
+              gave an icon draws the default one, for the same reason the
+              heading does. */}
+          {showSource && !item.groupHasSource && item.desktopId ? (
             <View accessibilityLabel={item.desktopId} style={styles.sourceIcon}>
-              <PeerIconGlyph id={icons.get(item.desktopId)} size={13} />
+              <PeerIconGlyph id={icons?.get(item.desktopId)} size={13} />
             </View>
           ) : null}
           {session.pinned && <Pin size={13} color={colors.accent} />}

@@ -1816,6 +1816,7 @@ function renderMerged(
   }[],
   activeDesktopId = "desk-a",
   tab: "workspace" | "chat" | "recent" = "workspace",
+  icons: Map<string, string | undefined> = new Map([["desk-a", "🖥️"], ["desk-b", "💻"]]),
 ): void {
   act(() => tree.update(createElement(SessionList, {
     tab,
@@ -1826,7 +1827,7 @@ function renderMerged(
     ref: listRef,
     merged,
     activeDesktopId,
-    icons: new Map([["desk-a", "🖥️"], ["desk-b", "💻"]]),
+    icons,
   })));
 }
 
@@ -2413,6 +2414,35 @@ test("a row's own machine is named only when several machines are in the list", 
     "desk-b",
   );
   expect(glyphs()).toEqual([]);
+});
+
+/**
+ * A machine nobody gave an icon still draws one.
+ *
+ * The mark is optional and this phone's own record of the machine: only one the
+ * user re-marked has an icon stored, and storing the default is a no-op (the
+ * editor saves nothing when the mark it shows is the one it opened on), so a
+ * machine that was never re-marked has none at all. Gating the glyph on that
+ * stored value left a list of several machines where only the re-marked one
+ * carried a mark — rows arriving from nowhere, in the list whose whole job is
+ * saying which machine a conversation came from. The paired-desktops page and
+ * the desktop app both draw the set's default instead.
+ */
+test("a machine with no icon of its own draws the default mark", () => {
+  renderMerged([
+    mergedRow("desk-a", "a1", "Local plan", { mode: "chat" }),
+    mergedRow("desk-b", "b1", "Remote review", { mode: "chat" }),
+  ], "desk-a", "chat", new Map());
+  const slots = () => tree.root.findAll(
+    node => typeof node.type === "string"
+      && typeof node.props.accessibilityLabel === "string"
+      && node.props.accessibilityLabel.startsWith("desk-"),
+  );
+  // Both rows name their machine, and both are handed no id — which is what
+  // makes the glyph draw the default rather than nothing.
+  expect(slots().map(slot => slot.props.accessibilityLabel)).toEqual(["desk-a", "desk-b"]);
+  expect(slots().map(slot => slot.findAllByType(PeerIconGlyph)[0]!.props.id))
+    .toEqual([undefined, undefined]);
 });
 
 /**
