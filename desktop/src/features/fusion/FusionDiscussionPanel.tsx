@@ -11,6 +11,7 @@ import { readFusion } from "../../integrations/fusion/queries";
 import { cn } from "../../lib/cn";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { usePolling } from "../../lib/usePolling";
+import { usePreviewLoadingGate } from "../filepreview/usePreviewLoadingGate";
 import { RunInspectorToolbar } from "../runs/RunInspectorToolbar";
 import { FusionStepBody } from "./FusionStepBody";
 
@@ -23,6 +24,7 @@ export function FusionDiscussionPanel({ runId, toolCallId, status = "running", r
   const load = useCallback(async () => ({ scope, discussion: await readFusion<FusionDiscussion>({ runId, toolCallId }, resolveTarget) }), [runId, toolCallId, scope, resolveTarget]);
   const resource = useAsyncResource(load, [load], null);
   const data = resource.data?.scope === scope ? resource.data.discussion : null;
+  const gate = usePreviewLoadingGate(!data && !resource.error, 1000);
   const progress = fusionProgress(data, status === "interrupted" ? "failed" : status);
   usePolling(resource.reload, 1500, { enabled: !resource.loading && !progress.terminal, deps: [scope] });
   const [selectedPhase, setSelectedPhase] = useState<string | null>(null);
@@ -41,13 +43,14 @@ export function FusionDiscussionPanel({ runId, toolCallId, status = "running", r
               {result && run && <Badge>{t(`fusion.completeness.${run.completeness}`)}</Badge>}
             </div>
           )}
-          actions={<IconButton className="size-6" icon={<RefreshCw className={cn("size-3.5", resource.loading && "animate-spin")} />} label={t("fusion.detail.refresh")} disabled={resource.loading} onClick={resource.reload} />}
+          actions={<IconButton className="size-6" icon={<RefreshCw className={cn("size-3.5", gate.showLoading && "animate-spin")} />} label={t("fusion.detail.refresh")} disabled={resource.loading || gate.showLoading} onClick={resource.reload} />}
         />
       </div>
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4">
-        {resource.error && <p role="alert" className="text-xs text-danger">{t("fusion.statusUnavailable")}</p>}
-        {!run && <p role="status" className="text-sm text-ink-muted">{t(resource.loading ? "fusion.loading" : "fusion.detail.pending")}</p>}
-        {run && (
+        {gate.showContent && resource.error && <p role="alert" className="text-xs text-danger">{t("fusion.statusUnavailable")}</p>}
+        {gate.showLoading && <p role="status" className="text-sm text-ink-muted">{t("fusion.loading")}</p>}
+        {gate.showContent && !run && !resource.error && <p role="status" className="text-sm text-ink-muted">{t("fusion.detail.pending")}</p>}
+        {gate.showContent && run && (
           <>
             <div className="space-y-3">
               <h2 className="wrap-break-word text-sm font-medium leading-6 text-ink">{run.input.question}</h2>
@@ -105,7 +108,7 @@ function StepCard({ step, runId, toolCallId, resolveTarget, terminal, onOpen }: 
         <span className={cn("text-xs", failed ? "text-danger" : "text-ink-muted")}>{t(`fusion.modelStates.${status}`)}</span>
         <ChevronDown className={cn("size-3.5 shrink-0 text-ink-muted", open && "rotate-180")} />
       </button>
-      {open && <FusionStepBody key={`${step.id}:${step.status}`} step={step} runId={runId} toolCallId={toolCallId} resolveTarget={resolveTarget} />}
+      {open && <FusionStepBody key={step.id} step={step} runId={runId} toolCallId={toolCallId} resolveTarget={resolveTarget} />}
     </div>
   );
 }

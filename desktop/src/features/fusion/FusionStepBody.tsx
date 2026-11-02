@@ -7,6 +7,7 @@ import { Button } from "../../components/ui/Button";
 import { readFusionStep } from "../../integrations/fusion/queries";
 import { isRecord } from "../../lib/objects";
 import { useAsyncResource } from "../../lib/useAsyncResource";
+import { usePreviewLoadingGate } from "../filepreview/usePreviewLoadingGate";
 import { MarkdownContent } from "../markdown/MarkdownContent";
 
 export function FusionStepBody({ step, runId, toolCallId, resolveTarget }: { step: FusionStep } & FusionSelection & { resolveTarget?: FusionResolver }) {
@@ -18,17 +19,18 @@ export function FusionStepBody({ step, runId, toolCallId, resolveTarget }: { ste
     const controller = new AbortController();
     controllerRef.current = controller;
     const full = await readFusionStep({ runId, toolCallId, stepId: step.id }, resolveTarget, controller.signal);
-    return { scope, resolveTarget, step: full };
-  }, [runId, toolCallId, step.id, scope, resolveTarget]);
+    return { scope, resolveTarget, requestedStatus: step.status, step: full };
+  }, [runId, toolCallId, step.id, step.status, scope, resolveTarget]);
   useEffect(() => () => controllerRef.current?.abort(), [load]);
   const resource = useAsyncResource(load, [load], null);
-  const full = resource.data?.scope === scope && resource.data.resolveTarget === resolveTarget ? resource.data.step : null;
+  const full = resource.data?.scope === scope && resource.data.resolveTarget === resolveTarget && resource.data.requestedStatus === step.status ? resource.data.step : null;
+  const gate = usePreviewLoadingGate(!full && !resource.error, 1000);
   const text = full ? publicAnswer(full.transcript ?? "") || full.output || step.output : "";
   return (
     <div className="space-y-3 border-t border-line-soft px-3 py-3 text-13 leading-6 text-ink-soft">
-      {text ? <div data-fusion-public-output><StepResponse text={text} phase={step.phase} /></div> : full && <p className="text-xs text-ink-muted">{t("fusion.detail.noOutput")}</p>}
-      {!full && !resource.error && <p role="status" className="text-xs text-ink-muted">{t("fusion.loading")}</p>}
-      {resource.error && (
+      {gate.showContent && (text ? <div data-fusion-public-output><StepResponse text={text} phase={step.phase} /></div> : full && <p className="text-xs text-ink-muted">{t("fusion.detail.noOutput")}</p>)}
+      {gate.showLoading && <p role="status" className="text-xs text-ink-muted">{t("fusion.loading")}</p>}
+      {gate.showContent && resource.error && (
         <div role="alert" className="space-y-2 text-xs text-danger">
           <p>{t("fusion.detail.readFailed")}</p>
           <Button size="xs" variant="ghost" onClick={resource.reload}>{t("fusion.detail.refresh")}</Button>

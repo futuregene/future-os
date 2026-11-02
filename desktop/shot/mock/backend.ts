@@ -356,8 +356,10 @@ const handlers: Record<string, (args: any) => unknown> = {
   update_fusion_settings: args => saveFusionSettings(args.input as FusionSettingsPatch),
   get_fusion: (args) => {
     const discussion = fusionProgressFixture(new URLSearchParams(window.location.search).get("fusion"));
-    if (!args?.stepId)
-      return discussion;
+    if (!args?.stepId) {
+      const delay = Number(new URLSearchParams(window.location.search).get("fusionMetadataDelay") ?? 0);
+      return delay > 0 ? new Promise(resolve => setTimeout(resolve, delay, discussion)) : discussion;
+    }
     const step = discussion.steps?.find(s => s.id === args.stepId);
     if (!step)
       throw new Error("Unknown discussion step");
@@ -374,7 +376,9 @@ const handlers: Record<string, (args: any) => unknown> = {
     let end = Math.min(offset + 32768, bytes.length);
     while (end < bytes.length && (bytes[end]! & 0xC0) === 0x80)
       end--;
-    return { ...step, transcript: new TextDecoder().decode(bytes.slice(offset, end)), next_offset: end, total_bytes: bytes.length };
+    const page = { ...step, transcript: new TextDecoder().decode(bytes.slice(offset, end)), next_offset: end, total_bytes: bytes.length };
+    const delay = Number(new URLSearchParams(window.location.search).get("fusionReadDelay") ?? 0);
+    return delay > 0 ? new Promise(resolve => setTimeout(resolve, delay, page)) : page;
   },
   // ── App bootstrap ──────────────────────────────────────────────────────
   initialize_app_store: () => null,

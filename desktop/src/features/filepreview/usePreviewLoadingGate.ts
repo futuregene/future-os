@@ -10,13 +10,18 @@ type PreviewLoadingPhase = "quiet" | "loading" | "ready";
  * window; if it outlasts that window the indicator is shown, and once visible
  * it is held long enough to be perceived as a stable state.
  */
-export function usePreviewLoadingGate(loading: boolean) {
+export function usePreviewLoadingGate(loading: boolean, minimumVisibleMs = PREVIEW_LOADING_MIN_VISIBLE_MS) {
   const [phase, setPhase] = useState<PreviewLoadingPhase>(loading ? "quiet" : "ready");
   const shownAtRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (loading) {
-      shownAtRef.current = null;
+      // A second request during the minimum-visible hold must not hide an
+      // already visible indicator and start another quiet window.
+      if (shownAtRef.current !== null) {
+        setPhase("loading");
+        return;
+      }
       setPhase("quiet");
       const showTimer = window.setTimeout(() => {
         shownAtRef.current = performance.now();
@@ -31,7 +36,7 @@ export function usePreviewLoadingGate(loading: boolean) {
       return;
     }
 
-    const remaining = PREVIEW_LOADING_MIN_VISIBLE_MS - (performance.now() - shownAt);
+    const remaining = minimumVisibleMs - (performance.now() - shownAt);
     if (remaining <= 0) {
       shownAtRef.current = null;
       setPhase("ready");
@@ -43,7 +48,7 @@ export function usePreviewLoadingGate(loading: boolean) {
       setPhase("ready");
     }, remaining);
     return () => window.clearTimeout(readyTimer);
-  }, [loading]);
+  }, [loading, minimumVisibleMs]);
 
   return {
     showContent: phase === "ready",
