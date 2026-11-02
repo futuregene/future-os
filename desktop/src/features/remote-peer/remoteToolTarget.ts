@@ -46,7 +46,13 @@ export function fetchRemoteToolTarget(input: {
   sessionId: string;
   runId: string;
   toolCallId: string;
+  fusion?: boolean;
+  stepId?: string;
+  offset?: number;
 }): Promise<string | null> {
+  if (input.fusion) {
+    return requestRemotePeer(input.desktopId, { type: "get_fusion", sessionId: input.sessionId, runId: input.runId, toolCallId: input.toolCallId, entryId: input.stepId, offset: input.offset }, input.sessionId).then(data => JSON.stringify(data));
+  }
   const key = cacheKey(input.desktopId, input.sessionId, input.runId, input.toolCallId);
   const cached = targets.get(key);
   if (cached)

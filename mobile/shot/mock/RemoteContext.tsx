@@ -1,3 +1,7 @@
+import { applyFusionSettings, fusionSettingsModels, initialFusionSettings } from "../../../scripts/screenshots/fixtures/fusion-settings";
+import type { FusionSettingsPatch } from "@future-os/thread-projection";
+import { fusionProgressFixture } from "../../../scripts/screenshots/fixtures/fusion-progress";
+import fusionFixture from "../../../scripts/screenshots/fixtures/fusion.json";
 /**
  * Screenshot harness stand-in for `src/remote/RemoteContext`.
  *
@@ -132,6 +136,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       : demoDesktops).map(
     (desktop, index) => (parserDemo && index === 0 ? { ...desktop, name: parserDesktopName } : desktop),
   );
+  const [modelId, setModelId] = useState(parserDemo ? "future/deepseek-flash" : "future/deepseek-v4-pro");
+  const [thinkingLevel, setThinkingLevel] = useState("medium");
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [draft, setDraft] = useState(false);
   const [desktopId, setDesktopId] = useState(pairedDesktops[0]?.desktopId ?? "");
@@ -142,6 +148,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const [sessionPins, setSessionPins] = useState<Record<string, boolean>>({});
   const [workspacePins, setWorkspacePins] = useState<Record<string, boolean>>({});
   const [usageOverride, setUsageOverride] = useState<RemoteSessionUsage | null>(null);
+  const [fusionSettings, setFusionSettings] = useState(initialFusionSettings);
   const [providers, setProviders] = useState(demoProviders);
   const [desktopSettings, setDesktopSettings] = useState<DesktopSettings>({
     autoUpgradeSkills: true,
@@ -218,7 +225,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     const search = new URLSearchParams(window.location.search);
     const renderFixture = leanRenderTimeline(renderMode);
     if (renderFixture) return renderFixture;
-    const historyEntries = parserDemo
+    const historyEntries = search.has("fusion") ? fusionFixture.entries : parserDemo
       ? parserEntries
       : search.get("compactHistory") === "1"
         ? compactResumeEntries
@@ -227,6 +234,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
             ? [...multiTurnOlderEntries, ...multiTurnEntries]
             : multiTurnEntries
           : demoEntries;
+
     const history = timelineFromEntries(historyEntries as unknown as HistoryEntry[]);
     // `?approval=1` docks a run blocked on the reader's approval (see
     // `smallestType.ts`); every other capture gets the demo timeline untouched.
@@ -287,6 +295,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
   const value = withFallback({
     // Connection
+    desktopReadable: !connectionDropped && !heldByAnother,
     phase: connectionDropped ? "stopped" : "ready",
     error: null,
     credentials,
@@ -370,7 +379,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       readWorkspaces: async (id: string) => (fleetDemo ? fleetWorkspaces(id) : activeWorkspaces),
     },
     skillsRevision: 0,
-    desktopSettingsRevision: 0,
+    desktopSettingsRevision: fusionSettings.revision,
 
     // Conversation
     selectedSessionId,
@@ -396,8 +405,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     compacting: scriptedCompaction ? baseTimeline.compacting === true : new URLSearchParams(window.location.search).get("compacting") === "1",
 
     // Composer settings
-    modelId: parserDemo ? "future/deepseek-flash" : "future/deepseek-v4-pro",
-    thinkingLevel: "medium",
+    modelId,
+    thinkingLevel,
+    setModel: async (value: string) => setModelId(value),
+    setThinkingLevel: async (value: string) => setThinkingLevel(value),
     // The amount in the top bar, refreshed by every state read in the app.
     sessionUsage: usageOverride ?? (selectedSessionId === "sess_chat_pvalue" ? demoUnpricedSessionUsage : demoSessionUsage),
     approvalTier: "off",
@@ -415,6 +426,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       "provider_management_v1",
       "workspace_pinning_v1",
       "compaction_v1",
+      "fusion_v1",
+      "fusion_settings_v1",
       "fork_v1",
       "tasks_v1",
       // What the shipping client declares (src/remote/client.ts); the lean
@@ -449,7 +462,13 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     // A lean history row with no target fetches its command on open: the app
     // goes through the bridge (`get_tool_call_args`), the harness answers from
     // the full-feed fixture with the shipping target derivation.
-    resolveToolCallTarget: async (toolCallId: string) => leanTargetForToolCall(toolCallId),
+    resolveToolCallTarget: async (toolCallId: string, _run?:string, fusion?:{stepId?:string;offset?:number}) => {
+      if (!fusion) return leanTargetForToolCall(toolCallId);
+      if (!fusion.stepId) return JSON.stringify(fusionProgressFixture(new URLSearchParams(window.location.search).get("fusion")));
+      const step=fusionFixture.discussion.steps.find(s=>s.id===fusion.stepId);
+      const transcript=JSON.stringify([{role:"user",content:[{type:"text",text:step?.input}]},{role:"assistant",content:[{type:"text",text:step?.output}]}]);
+      return JSON.stringify({...step,transcript,next_offset:transcript.length,total_bytes:transcript.length});
+    },
     switchDesktop: async (id: string) => setDesktopId(id),
     // Local-only labels, like the real store: a blank value clears the field.
     renameDesktop: async (id: string, name: string) => setDesktops(current => current.map(item =>
@@ -466,12 +485,18 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setWorkspacePins(current => ({ ...current, [workspaceId]: pinned })),
 
     // Desktop settings & skills pages
+    getFusionSettings: async () => fusionSettings,
+    updateFusionSettings: async (patch: FusionSettingsPatch) => {
+      const next = applyFusionSettings(fusionSettings, patch);
+      setFusionSettings(next);
+      return next;
+    },
     getDesktopSettings: async () => desktopSettings,
     updateDesktopSettings: async (patch: Partial<DesktopSettings>) => {
       setDesktopSettings(current => ({ ...current, ...patch }));
       return { ...desktopSettings, ...patch };
     },
-    listSettingsModels: async (): Promise<RemoteModel[]> => demoModels,
+    listSettingsModels: async (): Promise<RemoteModel[]> => new URLSearchParams(window.location.search).has("fusionSettings") ? [...demoModels, ...fusionSettingsModels] : demoModels,
     // Providers and models, as the desktop reports them. Mutations are applied
     // locally so the harness shows the same list a real write would produce.
     listProviders: async () => providers,

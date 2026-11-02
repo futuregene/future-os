@@ -124,6 +124,7 @@ pub fn wake() {
 /// not have.
 /// Start the shared executor with the entry's notification adapter.
 pub fn start_with_notifier(notify: Notifier) {
+    crate::fusion::start();
     crate::runtime::spawn(run_loop(notify));
 }
 
@@ -140,6 +141,7 @@ pub fn reset_for_test() {
 }
 
 pub fn start_headless() {
+    crate::fusion::start();
     let notify: Notifier = std::sync::Arc::new(|_| {});
     crate::runtime::spawn(run_loop(notify));
 }

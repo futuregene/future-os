@@ -2,7 +2,7 @@ import type { FutureBalanceStatus, FutureSessionStatus } from "../../components/
 import type { UpdateStatus } from "../../components/layout/hooks/useUpdateChecker";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { AppSettings } from "../../integrations/storage/appSettings";
-import { Boxes, FlaskConical, Info, Keyboard, RefreshCw, RotateCcw, Settings2, Sparkles, UserRound } from "lucide-react";
+import { Boxes, FlaskConical, Info, Keyboard, RefreshCw, RotateCcw, Settings2, Sparkles, UserRound, UserRoundGroup } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Overlay } from "../../components/ui/Overlay";
@@ -12,6 +12,7 @@ import { AboutPage } from "./AboutPage";
 import { AccountPage } from "./AccountPage";
 import { CommunityEditionSection } from "./CommunityEditionSection";
 import { EnvironmentPage } from "./EnvironmentPage";
+import { FusionSettingsPage } from "./FusionSettingsPage";
 import { GeneralPage } from "./GeneralPage";
 import { ModelsPage } from "./ModelsPage";
 import { ProvidersPage } from "./ProvidersPage";
@@ -19,7 +20,7 @@ import { ResetPage } from "./ResetPage";
 import { ShortcutsPage } from "./ShortcutsPage";
 import { UpdatePage } from "./UpdatePage";
 
-export type SettingsTab = "general" | "shortcuts" | "account" | "update" | "about" | "providers" | "models" | "environment" | "reset";
+export type SettingsTab = "general" | "shortcuts" | "account" | "update" | "about" | "providers" | "models" | "fusion" | "environment" | "reset";
 
 // `devOnly` items are only shown on non-release builds — the environment switch
 // is a dev affordance; release builds are production-locked.
@@ -38,6 +39,7 @@ const NAV_GROUPS = [
     items: [
       { icon: Boxes, labelKey: "dialog.tabs.providers", value: "providers" as const },
       { icon: Sparkles, labelKey: "dialog.tabs.models", value: "models" as const },
+      { icon: UserRoundGroup, labelKey: "dialog.tabs.fusion", value: "fusion" as const },
     ],
     labelKey: "dialog.nav.server",
   },
@@ -57,6 +59,7 @@ const TAB_TITLE_KEYS: Record<SettingsTab, string> = {
   update: "dialog.tabs.update",
   about: "dialog.tabs.about",
   models: "dialog.tabs.models",
+  fusion: "dialog.tabs.fusion",
   providers: "dialog.tabs.providers",
   environment: "dialog.tabs.environment",
   reset: "dialog.tabs.reset",
@@ -203,6 +206,7 @@ export function SettingsDialog({
                   />
                 )
               : null}
+            {tab === "fusion" ? <FusionSettingsPage /> : null}
             {tab === "shortcuts" ? <ShortcutsPage /> : null}
             {tab === "account"
               ? (

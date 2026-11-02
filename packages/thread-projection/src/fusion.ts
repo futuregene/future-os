@@ -1,0 +1,151 @@
+import type { FusionConfiguration } from "./fusionSettings";
+/** Public, credential-free Fusion read projections shared by desktop/mobile. */
+export interface FusionConclusion {
+  fusion_run_id: string;
+  conclusion: string;
+  rationale: string[];
+  conditions: string[];
+  unresolved: string[];
+  next_steps: string[];
+  completeness: string;
+}
+export interface FusionDegradation { code: string; phase: string; participant?: string; kind?: string; provider?: string }
+export interface FusionExecutionReport {
+  version: number; strategy: string; completed_phases: string[]; skipped_phases: string[];
+  analysis_participants: string[]; review_participants: string[]; degradations: FusionDegradation[];
+  available_results: { step_id: string; phase: string; participant: string; model: string; text: string; truncated: boolean }[];
+}
+export interface FusionStep {
+  id: string;
+  phase: string;
+  model: string;
+  participant: string;
+  attempt: number;
+  input: string;
+  status: string;
+  output: string;
+  error?: string | null;
+  failure_kind?: string | null;
+  session_id: string;
+  agent_run_id: string;
+  started_at: number;
+  finished_at?: number | null;
+  usage: unknown;
+  transcript?: string;
+  next_offset?: number;
+  total_bytes?: number;
+}
+export interface FusionDiscussion {
+  pending?: boolean;
+  run?: {
+    id: string;
+    status: string;
+    phase: string;
+    completeness: string;
+    configuration?: FusionConfiguration | null;
+    input: { question: string; goal: string; background: string; constraints: string[] };
+    report?: FusionExecutionReport | null;
+    result?: FusionConclusion | null;
+    error?: string | null;
+  };
+  steps?: FusionStep[];
+  events?: { seq: number; kind: string; data: unknown; timestamp: number }[];
+}
+export interface FusionReadRequest { runId: string; toolCallId: string; stepId?: string; offset?: number; fusion?: boolean }
+export function fusionTask(text: string): string | null {
+  const match = /^\s*\/fusion(?=\s|$)\s*/u.exec(text);
+  return match ? text.slice(match[0].length) : null;
+}
+export function fusionTranscript(raw: string): string {
+  try {
+    const messages = JSON.parse(raw) as { role: string; content: unknown }[];
+    return messages.map(message => `${message.role}\n${JSON.stringify(message.content, null, 2)}`).join("\n\n");
+  } catch { return raw; }
+}
+
+export interface FusionIssue { id: string; topic: string; stances: { participant: string; position: string }[] }
+export function fusionIssues(discussion: FusionDiscussion | null): FusionIssue[] {
+  const payload = discussion?.events?.find(event => event.kind === "issues")?.data;
+  if (!payload || typeof payload !== "object" || !("issues" in payload) || !Array.isArray(payload.issues)) return [];
+  return payload.issues.filter((issue): issue is FusionIssue => !!issue && typeof issue === "object" && typeof issue.id === "string" && typeof issue.topic === "string" && Array.isArray(issue.stances));
+}
+
+/** Stage progress, not a prediction of elapsed time or a completion percentage. */
+export const FUSION_PHASES = ["analyzing", "issue_mapping", "reviewing", "synthesizing"] as const;
+export type FusionModelStatus = "skipped" | "waiting" | "thinking" | "completed" | "failed" | "timed_out" | "output_limited" | "cancelled" | "interrupted" | "partial";
+const DEFAULT_FUSION_MODELS = ["future/deepseek-flash", "future/glm-5.3-flash", "future/qwen3.7-plus"];
+export function fusionModelLabel(model: string): string {
+  const labels: Record<string, string> = { "future/deepseek-flash": "DeepSeek Flash", "future/glm-5.3-flash": "GLM 5.3 Flash", "future/qwen3.7-plus": "Qwen 3.7 Plus" };
+  return labels[model] ?? model.replace(/^future\//u, "");
+}
+function modelStatus(step: FusionStep): FusionModelStatus {
+  if (step.status === "starting" || step.status === "running") return "thinking";
+  if (step.status === "skipped" || step.failure_kind === "budget_reserved") return "skipped";
+  if (step.status === "failed") {
+    if (step.failure_kind === "timeout") return "timed_out";
+    if (step.failure_kind === "output_limit") return "output_limited";
+    if (/timed?\s*out|timeout/iu.test(step.error ?? "")) return "timed_out";
+    if (/OUTPUT_LIMIT|finish_length/iu.test(step.error ?? "")) return "output_limited";
+    return "failed";
+  }
+  if (["completed", "cancelled", "interrupted"].includes(step.status)) return step.status as FusionModelStatus;
+  return "waiting";
+}
+export function fusionProgress(discussion: FusionDiscussion | null, toolStatus?: string) {
+  const run = discussion?.run;
+  const status = toolStatus === "failed" && (!run || ["preparing", "queued", "running", "delivering"].includes(run.status)) ? "interrupted" : run?.status ?? "preparing";
+  const terminal = ["completed", "failed", "cancelled", "interrupted"].includes(status);
+  const phase = run?.phase ?? "preparing";
+  const stageIndex = FUSION_PHASES.findIndex(value => value === phase);
+  const report = run?.report;
+  const stages = FUSION_PHASES.map((value, index) => report?.skipped_phases.includes(value) ? "skipped" : report?.completed_phases.includes(value) || (!report && (status === "completed" || index < stageIndex)) ? "completed" : index === stageIndex ? terminal ? "failed" : "thinking" : "waiting");
+  const completedStages = stages.filter(value => value === "completed").length;
+  const notices = fusionNotices(report, status);
+  // A retry replaces the previous attempt for presentation only. Original
+  // attempts stay in storage and continue to be available for debugging.
+  const latest = new Map<string, FusionStep>();
+  for (const step of discussion?.steps ?? []) {
+    const key = `${step.phase}:${step.participant}`;
+    const previous = latest.get(key);
+    if (!previous || step.attempt > previous.attempt || (step.attempt === previous.attempt && step.started_at >= previous.started_at)) latest.set(key, step);
+  }
+  const created = discussion?.events?.find(event => event.kind === "created")?.data;
+  const configured = created && typeof created === "object" && "models" in created && Array.isArray(created.models) ? created.models.filter((value): value is string => typeof value === "string") : DEFAULT_FUSION_MODELS;
+  const config = run?.configuration;
+  const roles = config ? [
+    { id: "moderator", role: "moderator" as const, number: null, model: config.moderator.model },
+    ...config.panel.map((profile, index) => ({ id: `P${index + 1}`, role: "participant" as const, number: index + 1, model: profile.model })),
+  ] : [...new Set([...configured, ...[...latest.values()].map(step => step.model)])].map(model => ({ id: model, role: null, number: null, model }));
+  const models = roles.map(slot => {
+    const model = slot.model;
+    const steps = [...latest.values()].filter(step => step.model === model && (!slot.role || step.participant === slot.id)).sort((a, b) => a.started_at - b.started_at);
+    const currentSteps = steps.filter(step => step.phase === phase);
+    const current = currentSteps[currentSteps.length - 1];
+    let state: FusionModelStatus = "waiting";
+    const last = steps[steps.length - 1];
+    if (last) state = modelStatus(last);
+    if (!terminal && (phase === "analyzing" || phase === "reviewing") && !current) state = "waiting";
+    if (current) state = modelStatus(current);
+    if (terminal && (state === "thinking" || state === "waiting")) state = status === "cancelled" ? "cancelled" : "interrupted";
+    if (terminal && state === "completed" && steps.some(step => ["failed", "timed_out", "output_limited", "cancelled", "interrupted"].includes(modelStatus(step)))) state = "partial";
+    return { ...slot, label: fusionModelLabel(model), status: state };
+  });
+  return { phase, status, terminal, stageIndex, completedStages, stages, notices, partial: !!run && run.completeness !== "full", models };
+}
+
+/** Compact semantic reasons; localized by each client, never display raw provider errors. */
+export function fusionNotices(report: FusionExecutionReport | null | undefined, status: string): string[] {
+  if (!report) return [];
+  const codes = new Set(report.degradations.map(reason => reason.code));
+  const notices: string[] = [];
+  if (status === "failed") notices.push("noConclusion");
+  if (codes.has("moderator_unavailable") || codes.has("moderator_failed")) notices.push("moderatorFailed");
+  else if (codes.has("no_participants")) notices.push("noParticipants");
+  else if (codes.has("provider_unavailable")) notices.push("providerUnavailable");
+  else if (codes.has("single_participant")) notices.push("singleParticipant");
+  else if (["participant_failed", "participant_unavailable", "participants_reduced", "reviews_reduced", "no_reviews"].some(code => codes.has(code))) notices.push("reducedParticipation");
+  if (codes.has("summary_budget_reserved")) notices.push("budgetReserved");
+  else if (codes.has("mapping_invalid")) notices.push("directReview");
+  if (status === "failed" && report.available_results.length) notices.push("materialsRetained");
+  return notices;
+}

@@ -8,6 +8,9 @@ import { Composer } from "./Composer";
 
 const dialog = vi.hoisted(() => ({ open: vi.fn(async () => null) }));
 
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async () => () => {}),
+}));
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }),
 }));

@@ -14,6 +14,7 @@ name = "future_cli"
 path = "src/lib.rs"
 
 [dependencies]
+future-fusion = { path = "../orchestration/fusion" }
 # Shared application backend, used directly by `future host`.
 future-host = { path = "../host" }
 tokio.workspace = true

@@ -3,6 +3,7 @@ import type { RemoteApprovalSettings, RemotePeer } from "./remotePeerClient";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Select } from "../../components/ui/Select";
+import { RemoteFusionSettingsPage } from "../settings/FusionSettingsPage";
 import { SettingsLinkRow, SettingsList, SettingsPage, SettingsRow, SettingsSection, Switch } from "../settings/SettingsPrimitives";
 import { PeerIconChip } from "./PeerIconChip";
 import { peerBadgeText } from "./peerIcons";
@@ -21,7 +22,7 @@ import { RemoteWorkspacesPanel } from "./RemoteWorkspacesPanel";
  * later setting below a scroll. They are pages of their own instead, reached
  * from a row that says what is behind it.
  */
-type SettingsSectionPage = "root" | "skills" | "models" | "providers" | "workspaces";
+type SettingsSectionPage = "root" | "skills" | "fusion" | "models" | "providers" | "workspaces";
 
 /**
  * Settings for *another* machine, mirroring the phone's settings rows.
@@ -191,6 +192,7 @@ export function RemotePeerSettings({
     content: React.ReactNode;
     title: string;
   }> = {
+    fusion: { title: "Fusion", content: <RemoteFusionSettingsPage peer={peer} /> },
     models: {
       title: t("models"),
       content: (
@@ -330,6 +332,7 @@ export function RemotePeerSettings({
             onClick={() => setPage("models")}
             title={t("models")}
           />
+          <SettingsLinkRow ariaLabel={`Fusion · ${machine}`} title="Fusion" description={t("fusionHint")} disabled={!available || !peer.features.includes("fusion_settings_v1")} onClick={() => setPage("fusion")} />
           <SettingsLinkRow
             ariaLabel={`${t("skills")} · ${machine}`}
             description={t("skillsHint")}

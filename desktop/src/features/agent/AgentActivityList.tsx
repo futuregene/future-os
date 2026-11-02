@@ -1,10 +1,11 @@
 import type { AgentActivityItem, AgentActivityKind } from "@future-os/thread-projection";
-import { Brain, ChevronDown, ChevronUp, FileText, Pencil, TerminalSquare, TriangleAlert } from "lucide-react";
+import { Brain, ChevronDown, ChevronUp, FileText, Pencil, TerminalSquare, TriangleAlert, UserRoundGroup } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import i18n from "../../i18n";
 import { cn } from "../../lib/cn";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { relativizeWorkspacePath } from "../../lib/workspacePath";
+import { FusionActivity } from "./FusionActivity";
 
 /**
  * Where a row's target comes from when the row arrived without one.
@@ -19,6 +20,9 @@ import { relativizeWorkspacePath } from "../../lib/workspacePath";
 export type ActivityTargetResolver = (input: {
   runId: string;
   toolCallId: string;
+  fusion?: boolean;
+  stepId?: string;
+  offset?: number;
 }) => Promise<string | null>;
 
 interface AgentActivityListProps {
@@ -53,6 +57,8 @@ interface AgentActivityLineProps {
 }
 
 export function AgentActivityLine({ item, resolveTarget, workspacePath, runId }: AgentActivityLineProps) {
+  if (item.kind === "fusion")
+    return <FusionActivity item={item} runId={runId} resolveTarget={resolveTarget} />;
   if ((item.children?.length ?? 0) > 0)
     return <AgentActivityGroupLine item={item} resolveTarget={resolveTarget} workspacePath={workspacePath} runId={runId} />;
   return <AgentActivitySingleLine item={item} resolveTarget={resolveTarget} workspacePath={workspacePath} runId={runId} />;
@@ -341,6 +347,8 @@ function renderActivityIcon(kind: AgentActivityKind, running: boolean, failed = 
       return <Pencil className={className} />;
     case "read":
       return <FileText className={className} />;
+    case "fusion":
+      return <UserRoundGroup className={className} />;
     case "thinking":
       return <Brain className={className} />;
   }
@@ -369,6 +377,8 @@ function labelForActivity(item: AgentActivityItem) {
 
   const running = item.status === "running";
   switch (item.kind) {
+    case "fusion":
+      return i18n.t(running ? "agent:fusion.discussing" : "agent:fusion.discussion");
     case "read":
       return i18n.t(running ? "agent:activity.reading" : "agent:activity.readCompleted");
     case "shell":
@@ -382,6 +392,8 @@ function labelForActivity(item: AgentActivityItem) {
 
 function failedLabel(kind: Exclude<AgentActivityKind, "thinking">) {
   switch (kind) {
+    case "fusion":
+      return i18n.t("agent:fusion.states.failed");
     case "shell":
       return i18n.t("agent:activity.failed.shell");
     case "edit":
