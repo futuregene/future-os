@@ -405,7 +405,7 @@
       "singleParticipant": "仅保留单模型意见，已跳过交叉讨论。",
       "reducedParticipation": "部分模型未完成，已基于有效结果继续。",
       "budgetReserved": "已跳过后续讨论，为总结保留时间。",
-      "directReview": "议题整理未完成，已直接比较原始分析。",
+      "directReview": "议题整理不可用，已采用降级讨论流程。",
       "materialsRetained": "已有分析与降级原因已保留，可用于复盘。"
     },
     "detail": {
@@ -425,9 +425,33 @@
       "noMessages": "此阶段暂无发言记录",
       "noOutput": "暂无公开发言",
       "readFailed": "读取完整发言失败，已保留现有预览。",
-      "resultDetails": "判断依据与后续建议",
-      "consensus": "共同意见",
-      "blindSpots": "共同遗漏"
+      "resultDetails": "补充依据",
+      "consensus": "已有共同观点",
+      "excluded": "超出边界或不适合继续讨论的观点",
+      "notMentioned": "未提及",
+      "boundary": "已有边界",
+      "noMappedViews": "暂无共同观点、分歧或不适合继续讨论的观点",
+      "disagreements": "已有分歧",
+      "review": {
+        "responses": "回应已有主张",
+        "self": "复核自己的观点",
+        "corrections": "纠正主持整理",
+        "additions": "补充内容",
+        "decisions": {
+          "agree": "同意",
+          "disagree": "反对",
+          "qualify": "有条件认同",
+          "insufficient_information": "材料不足，无法判断",
+          "maintain": "维持",
+          "revise": "修改",
+          "withdraw": "撤回"
+        },
+        "kinds": {
+          "proposal": "新建议",
+          "unverified_claim": "未验证判断",
+          "verified_fact": "模型报告已核查 · 附证据"
+        }
+      }
     }
   }
 }

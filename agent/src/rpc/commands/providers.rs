@@ -229,6 +229,7 @@ pub(crate) fn list_models_response(
                 "defaultThinkingLevel": default_thinking_level,
                 "reasoning": model.reasoning,
                 "contextWindow": model.context_window,
+                "maxTokens": crate::models::effective_max_tokens(&model),
                 "isDefault": qualified_id == effective_default,
                 "description": model.description,
                 "descriptionEn": model.description_en,

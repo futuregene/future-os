@@ -2,7 +2,15 @@
 
 Date: 2026-10-29 (Asia/Shanghai). Follow-up to the [device-run diagnosis](fusion-database-audit.md).
 
-## Fixed development configuration
+## Current independent-discussion policy (2026-11-02)
+
+Fusion now defaults to independent solution generation. The tool has no candidate-options field; background faithfully compresses context and user requirements with provenance, including user-provided proposals. It excludes the main agent's invented plans and preferences. Constraints are brief material boundaries and may be empty, without language, word-count or formatting rules.
+
+Dynamic capacity admission now replaces the earlier no-override policy. Host shares moderator input capacity across the configured role count after output/task/protocol/JSON reserves, imposing request-local participant token/public-byte allocations and a reviewer-safe map allocation. Agent validates every real model turn before sending, including tools/history. Unknown capacities fail closed. No hidden reasoning enters moderator input. Synthesis receives one latest report per role; compact parent output omits conditions, next steps, report and previews. Provider metadata accuracy remains an external assumption. Regression source covers 3/5 role allocation, zero/oversized capacities, actual oversized requests never reaching a provider, current answers and compact results. No paid provider run or local unit execution is claimed for this update.
+
+Regression source covers long inputs, omitted/empty constraints, exclusion of legacy options from forwarded prompts, long synthesis, compact envelopes without previews, legacy fixed budgets ignored on retry, and request-local capacity overrides without mutating live provider settings. Clippy compiles these tests; local unit execution remains delegated to CI. The historical probes below exercised the old bounded policy and do not validate the new one.
+
+## Historical development configuration (2026-10-29)
 
 `orchestration/fusion/src/config.rs` is the single default-policy source. The same versioned configuration is consumed by the Host and Agent serving Desktop, Mobile and terminal clients. There is no new per-client setting. A future settings page can supply this contract; each admitted discussion already freezes its configuration independently of subsequent defaults.
 

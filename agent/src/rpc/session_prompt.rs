@@ -1055,6 +1055,18 @@ impl ServerSession {
                 &run_thinking_level,
             )?
             .ok_or_else(|| anyhow::anyhow!("Fusion session is missing its immutable source"))?;
+            let live_window = self
+                .model_registry
+                .read()
+                .resolve(&run_model)
+                .map(|model| model.context_window)
+                .unwrap_or(0);
+            anyhow::ensure!(
+                live_window > 0
+                    && execution.settings.context_window > 0
+                    && execution.settings.context_window <= live_window as usize,
+                "Fusion context capacity changed or is unknown; request was not sent"
+            );
             let snapshot = execution.snapshot;
             anyhow::ensure!(
                 std::path::Path::new(&snapshot.root).canonicalize()?
@@ -1070,9 +1082,10 @@ impl ServerSession {
             run_loop.config.max_turns = 5;
             // Fusion Host owns the bounded retry policy; do not multiply it here.
             run_loop.config.max_retries = 0;
-            run_loop.provider = Arc::new(crate::fusion::LimitedProvider {
+            // Enforce capacity on every request, including accumulated tool turns.
+            run_loop.provider = Arc::new(crate::fusion::ContextProvider {
                 provider: run_loop.provider.clone(),
-                max_output_tokens: execution.settings.max_output_tokens,
+                settings: execution.settings,
             });
             run_loop.parallel_tools = false;
         } else if fusion_enabled {

@@ -6,13 +6,15 @@ use serde::{Deserialize, Serialize};
 pub const GENERATION_POLICY_VERSION: u32 = 2;
 pub const STEP_TIMEOUT_SECS: u64 = 300;
 pub const RUN_TIMEOUT_SECS: u64 = 2700;
-pub const MAX_STEP_OUTPUT_BYTES: usize = 128 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelConfig {
     pub model: String,
     pub thinking_level: String,
+    /// Legacy metadata only. Zero means no Fusion output override.
+    #[serde(default, skip_serializing)]
     pub max_output_tokens: i32,
+    #[serde(default, skip_serializing)]
     pub retry_max_output_tokens: i32,
 }
 
@@ -21,8 +23,8 @@ impl ModelConfig {
         Self {
             model: model.into(),
             thinking_level: level.into(),
-            max_output_tokens: 16_384,
-            retry_max_output_tokens: 32_768,
+            max_output_tokens: 0,
+            retry_max_output_tokens: 0,
         }
     }
 }
@@ -75,11 +77,6 @@ impl Configuration {
                 !model.thinking_level.trim().is_empty() && model.thinking_level.len() <= 64,
                 "Fusion requires a thinking level"
             );
-            ensure!(
-                model.max_output_tokens > 0
-                    && model.retry_max_output_tokens >= model.max_output_tokens,
-                "Invalid Fusion output budget"
-            );
         }
         Ok(())
     }
@@ -89,7 +86,13 @@ impl Configuration {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StepSettings {
     pub thinking_level: String,
+    /// Actual request-local capacity allocation; zero occurs only in legacy records.
+    #[serde(default)]
     pub max_output_tokens: i32,
+    #[serde(default)]
+    pub context_window: usize,
+    #[serde(default)]
+    pub max_public_bytes: usize,
     pub timeout_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_reason: Option<String>,
@@ -194,13 +197,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_roles_have_explicit_thinking_and_larger_budgets() {
+    fn all_roles_have_explicit_thinking_without_fusion_output_caps() {
         let config = Configuration::default();
         config.validate().unwrap();
         for model in config.panel.iter().chain([&config.moderator]) {
             assert_ne!(model.thinking_level, "default");
-            assert!(model.max_output_tokens > 4096);
-            assert!(model.retry_max_output_tokens > model.max_output_tokens);
+            assert_eq!(model.max_output_tokens, 0);
+            assert_eq!(model.retry_max_output_tokens, 0);
         }
         assert_eq!(config.panel[1].thinking_level, "low");
         // Four sequential phases, each with two attempts, still fit the outer

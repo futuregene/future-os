@@ -2,8 +2,9 @@
 export interface FusionModelConfig {
   model: string;
   thinking_level: string;
-  max_output_tokens: number;
-  retry_max_output_tokens: number;
+  /** Legacy records only; new discussions use the ordinary provider policy. */
+  max_output_tokens?: number;
+  retry_max_output_tokens?: number;
 }
 export interface FusionConfiguration {
   version: number;
@@ -23,5 +24,5 @@ export function fusionSettingsIssue(config: FusionConfiguration): FusionSettings
   return null;
 }
 export function newFusionParticipant(): FusionModelConfig {
-  return { model: "", thinking_level: "default", max_output_tokens: 16384, retry_max_output_tokens: 32768 };
+  return { model: "", thinking_level: "default" };
 }

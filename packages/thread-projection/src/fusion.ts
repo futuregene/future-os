@@ -3,10 +3,10 @@ import type { FusionConfiguration } from "./fusionSettings";
 export interface FusionConclusion {
   fusion_run_id: string;
   conclusion: string;
-  rationale: string[];
-  conditions: string[];
-  unresolved: string[];
-  next_steps: string[];
+  rationale?: string[];
+  conditions?: string[];
+  unresolved?: string[];
+  next_steps?: string[];
   completeness: string;
 }
 export interface FusionDegradation { code: string; phase: string; participant?: string; kind?: string; provider?: string }

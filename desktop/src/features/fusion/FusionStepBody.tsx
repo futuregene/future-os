@@ -63,14 +63,75 @@ function StepResponse({ text, phase }: { text: string; phase: string }) {
         ? `### ${label}\n${value[field].filter((item): item is string => typeof item === "string").map(item => `- ${item}`).join("\n")}`
         : "";
       if (phase === "synthesizing" && typeof value.conclusion === "string") {
-        content = [value.conclusion, ...["rationale", "conditions", "unresolved", "next_steps"].map(field => list(field, t(`fusion.result.${field}`)))].filter(Boolean).join("\n\n");
+        content = [value.conclusion, ...["rationale", "unresolved"].map(field => list(field, t(`fusion.result.${field}`)))].filter(Boolean).join("\n\n");
+      }
+      if (phase === "reviewing" && Array.isArray(value.self_review)) {
+        const section = (label: string, entries: unknown, render: (entry: Record<string, unknown>) => string) => Array.isArray(entries) && entries.length
+          ? `### ${label}\n${entries.filter(isRecord).map(render).filter(Boolean).join("\n\n")}`
+          : "";
+        const textField = (entry: Record<string, unknown>, field: string) => typeof entry[field] === "string" ? entry[field] as string : "";
+        const quoted = (text: string) => text ? `> ${text.replace(/\n/gu, "\n> ")}` : "";
+        const decision = (entry: Record<string, unknown>) => t(`fusion.detail.review.decisions.${textField(entry, "decision")}`);
+        content = [
+          typeof value.current_answer === "string" ? value.current_answer : "",
+          section(t("fusion.detail.review.responses"), value.responses, entry => [
+            `**${t("fusion.participantRole", { number: textField(entry, "participant").replace(/^P/u, "") })} · ${decision(entry)}**`,
+            quoted(textField(entry, "quote")),
+            textField(entry, "reason"),
+          ].filter(Boolean).join("\n\n")),
+          section(t("fusion.detail.review.self"), value.self_review, entry => [
+            `**${decision(entry)}**`,
+            quoted(textField(entry, "original_quote")),
+            textField(entry, "updated_position"),
+            textField(entry, "reason"),
+          ].filter(Boolean).join("\n\n")),
+          section(t("fusion.detail.review.corrections"), value.mapping_corrections, entry => [
+            quoted(textField(entry, "summary_quote")),
+            textField(entry, "correction"),
+            quoted(textField(entry, "source_quote")),
+            textField(entry, "reason"),
+          ].filter(Boolean).join("\n\n")),
+          section(t("fusion.detail.review.additions"), value.additions, entry => [
+            `**${t(`fusion.detail.review.kinds.${textField(entry, "kind")}`)}**`,
+            textField(entry, "content"),
+            Array.isArray(entry.evidence) ? entry.evidence.filter((v): v is string => typeof v === "string").map(v => `- ${v}`).join("\n") : "",
+          ].filter(Boolean).join("\n\n")),
+        ].filter(Boolean).join("\n\n");
       }
       if (phase === "issue_mapping" && Array.isArray(value.issues)) {
+        const role = (participant: string) => t("fusion.participantRole", { number: participant.replace(/^P/u, "") });
+        const source = (item: Record<string, unknown>) => typeof item.participant === "string" && typeof item.quote === "string" && item.quote
+          ? `> ${role(item.participant)}: ${item.quote.replace(/\n/gu, "\n> ")}`
+          : "";
+        const consensus = Array.isArray(value.consensus)
+          ? value.consensus.map((item) => {
+              if (typeof item === "string")
+                return `- ${item}`;
+              if (!isRecord(item) || typeof item.point !== "string")
+                return "";
+              return [`- ${item.point}`, Array.isArray(item.sources) ? item.sources.filter(isRecord).map(source).join("\n\n") : ""].filter(Boolean).join("\n\n");
+            }).filter(Boolean).join("\n\n")
+          : "";
         const issues = value.issues.filter(isRecord).map(issue => [
-          typeof issue.topic === "string" ? `### ${issue.topic}` : "",
-          Array.isArray(issue.stances) ? issue.stances.filter(isRecord).map(stance => typeof stance.participant === "string" && typeof stance.position === "string" ? `- ${t("fusion.participantRole", { number: stance.participant.replace(/^P/u, "") })}: ${stance.position}` : "").filter(Boolean).join("\n") : "",
+          typeof issue.topic === "string" ? `#### ${issue.topic}` : "",
+          Array.isArray(issue.stances)
+            ? issue.stances.filter(isRecord).map((stance) => {
+                if (typeof stance.participant !== "string")
+                  return "";
+                if (stance.status === "not_mentioned")
+                  return `- ${role(stance.participant)}: ${t("fusion.detail.notMentioned")}`;
+                return typeof stance.position === "string" ? [`- ${role(stance.participant)}: ${stance.position}`, source(stance)].filter(Boolean).join("\n\n") : "";
+              }).filter(Boolean).join("\n\n")
+            : "",
         ].filter(Boolean).join("\n\n")).join("\n\n");
-        content = [list("consensus", t("fusion.detail.consensus")), issues, list("blind_spots", t("fusion.detail.blindSpots"))].filter(Boolean).join("\n\n") || text;
+        const excluded = Array.isArray(value.excluded)
+          ? value.excluded.filter(isRecord).map(item => [
+              source(item),
+              typeof item.reason === "string" ? item.reason : "",
+              typeof item.basis === "string" ? `${t("fusion.detail.boundary")}: ${item.basis}` : "",
+            ].filter(Boolean).join("\n\n")).join("\n\n")
+          : "";
+        content = [consensus ? `### ${t("fusion.detail.consensus")}\n${consensus}` : "", issues ? `### ${t("fusion.detail.disagreements")}\n${issues}` : "", excluded ? `### ${t("fusion.detail.excluded")}\n${excluded}` : ""].filter(Boolean).join("\n\n") || t("fusion.detail.noMappedViews");
       }
     }
   }

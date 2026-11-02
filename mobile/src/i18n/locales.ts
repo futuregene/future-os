@@ -424,7 +424,7 @@ export const resources = {
           "singleParticipant": "Only a single-model opinion remains; cross discussion was skipped.",
           "reducedParticipation": "Some models did not finish; continuing with valid results.",
           "budgetReserved": "Further discussion was skipped to reserve time for synthesis.",
-          "directReview": "Issue mapping did not finish; original analyses were compared directly.",
+          "directReview": "Issue mapping was unavailable; a degraded discussion path was used.",
           "materialsRetained": "Existing analyses and degradation reasons were preserved for review."
         },
         "fusionStatusUnavailable": "Discussion status is temporarily unavailable",
@@ -1528,7 +1528,7 @@ export const resources = {
           "singleParticipant": "仅保留单模型意见，已跳过交叉讨论。",
           "reducedParticipation": "部分模型未完成，已基于有效结果继续。",
           "budgetReserved": "已跳过后续讨论，为总结保留时间。",
-          "directReview": "议题整理未完成，已直接比较原始分析。",
+          "directReview": "议题整理不可用，已采用降级讨论流程。",
           "materialsRetained": "已有分析与降级原因已保留，可用于复盘。"
         },
         "fusionStatusUnavailable": "暂时无法读取讨论状态",
