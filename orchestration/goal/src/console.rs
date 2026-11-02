@@ -5489,6 +5489,41 @@ async fn run_turns(
                 }
             }
         }
+        // Transport-failure retry: a turn that never reached `agent_end`
+        // because the agent host or the stream under it went away is an infra
+        // event, so the worker keeps going instead of ending its whole run
+        // (an agent restart used to kill it outright, mid-task). Bounded like
+        // the incomplete path: N consecutive transport failures on the same
+        // todo mean the agent is not coming back within this run.
+        if record.terminal_state == "error"
+            && crate::executor::is_transport_error(record.error.as_deref())
+        {
+            let streak = crate::executor::transport_failure_streak(&g.history, &todo_id);
+            if streak >= crate::executor::DEFAULT_MAX_TRANSPORT_RETRIES {
+                println!(
+                    "   ✘ transport retry budget exhausted ({streak}/{}) — the agent stopped answering this turn; stopping (relaunch when the agent is healthy)",
+                    crate::executor::DEFAULT_MAX_TRANSPORT_RETRIES
+                );
+                notify_infra_stop(
+                    store,
+                    client,
+                    goal_id,
+                    g.supervisor_session_id.as_deref(),
+                    &todo_id,
+                    "transport_budget",
+                    &format!(
+                        "the turn stream keeps dying without an agent_end ({streak}/{})",
+                        crate::executor::DEFAULT_MAX_TRANSPORT_RETRIES
+                    ),
+                )
+                .await;
+                break;
+            }
+            println!(
+                "   ↻ transport failure (attempt {streak}/{}) — recorded as an infra turn, continuing",
+                crate::executor::DEFAULT_MAX_TRANSPORT_RETRIES
+            );
+        }
         // P0-2②: outcome_followthrough — auto-derive a follow-up todo for any
         // delivery left unverified past the threshold, then refresh the read
         // model when the follow-up(s) joined the frontier.

@@ -24,6 +24,17 @@ pub enum AttachPlan {
     HardErrorAfter(usize),
     /// Serve all matching events and close cleanly.
     Complete,
+    /// Refuse the first `n` attach attempts with the agent's real refusal for
+    /// a run that does not own the broadcast stream
+    /// (`FailedPrecondition: run `…` is not the active run`) — the shape of a
+    /// run queued behind a finalizing predecessor, or one that already
+    /// finished. After `n` refusals the plan serves the events.
+    RefuseNotActive(usize),
+    /// Serve `n` events, then fail the stream the way a dead agent host does:
+    /// `h2 protocol error: error reading a body from connection`. Distinct from
+    /// `HardErrorAfter` (an artificial "hard failure" the goal plane classifies
+    /// as a science error); this one is classed infra.
+    TransportAfter(usize),
 }
 
 #[derive(Default)]
@@ -77,6 +88,13 @@ pub struct MockState {
     /// O5: per-attach stream script for gap-recovery tests. Empty = the
     /// legacy single-shot knobs above.
     pub stream_attach_plan: Vec<AttachPlan>,
+    /// The run state a `get_state` probe reports, merged into the payload one
+    /// entry per call (the last entry is reused once the list is exhausted).
+    /// Lets a test script "queued, then active" or "already terminal" — the
+    /// shapes `run_status` must read to resolve a refused attach.
+    pub run_states: Vec<serde_json::Value>,
+    /// Number of `get_state` calls answered so far (indexes `run_states`).
+    pub run_state_calls: usize,
     /// O5: `after_idx` values seen by stream_events, in attach order.
     pub attach_after_idx: Vec<i64>,
     /// Per-command raw `data` payload override (valid JSON or not).
@@ -240,12 +258,34 @@ impl FutureAgent for MockAgent {
                 // Mirror the agent's real `get_state` payload shape: usage
                 // lives in the nested camelCase `usage` object (SessionUsage),
                 // not in the retired top-level `tokensIn`/`tokensOut`/
-                // `totalCost` keys. Hand-writing the old shape here is what kept
+                // `totalCost` keys. Hand-writing the old shape is what kept
                 // the control plane's zero-token accounting passing.
-                format!(
-                    "{{\"usage\":{{\"inputTokens\":{},\"outputTokens\":{},\"cacheReadTokens\":0,\"cacheWriteTokens\":0,\"costCny\":{}}},\"queryCount\":{},\"sessionName\":\"{}\"}}",
-                    st.tokens_in, st.tokens_out, st.cost, st.query_count, st.session_name
-                )
+                let mut state = serde_json::json!({
+                    "usage": {
+                        "inputTokens": st.tokens_in,
+                        "outputTokens": st.tokens_out,
+                        "cacheReadTokens": 0,
+                        "cacheWriteTokens": 0,
+                        "costCny": st.cost,
+                    },
+                    "queryCount": st.query_count,
+                    "sessionName": st.session_name,
+                });
+                // Scripted run state (`activeRun` / `queuedRuns` /
+                // `requestedRun` / `interruptedRun`), consumed one entry per
+                // probe so a test can go queued → active → terminal.
+                if !st.run_states.is_empty() {
+                    let index = st.run_state_calls.min(st.run_states.len() - 1);
+                    st.run_state_calls += 1;
+                    if let (Some(target), Some(extra)) =
+                        (state.as_object_mut(), st.run_states[index].as_object())
+                    {
+                        for (key, value) in extra {
+                            target.insert(key.clone(), value.clone());
+                        }
+                    }
+                }
+                state.to_string()
             }
             "generate_session_title" => {
                 st.title_languages.push(cmd.mode.clone());
@@ -367,6 +407,25 @@ impl FutureAgent for MockAgent {
                     items.push(Err(tonic::Status::internal(format!(
                         "mock hard failure #{attach_no}"
                     ))));
+                }
+                AttachPlan::TransportAfter(n) => {
+                    items.extend(matching.into_iter().take(n).map(Ok));
+                    items.push(Err(tonic::Status::unknown(format!(
+                        "h2 protocol error: error reading a body from connection (mock #{attach_no})"
+                    ))));
+                }
+                AttachPlan::RefuseNotActive(remaining) => {
+                    if remaining > 0 {
+                        // Put the plan back with one fewer refusal and answer
+                        // with the agent's own attach refusal.
+                        st.stream_attach_plan
+                            .insert(0, AttachPlan::RefuseNotActive(remaining - 1));
+                        return Err(tonic::Status::failed_precondition(format!(
+                            "run `{}` is not the active run",
+                            req.run_id
+                        )));
+                    }
+                    items.extend(matching.into_iter().map(Ok));
                 }
             }
             return Ok(tonic::Response::new(Box::pin(tokio_stream::iter(items))));

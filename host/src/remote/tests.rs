@@ -5232,14 +5232,14 @@ mod switch_and_invitation_tests {
         let _home = TestHome::new("remote-switch");
         let _mock = mock_agent();
 
-        remember_switch(true);
+        remember_switch(true, "test");
         assert!(
             crate::store::get_app_settings()
                 .expect("settings")
                 .auto_connect_remote,
             "the switch is read back by the next launch"
         );
-        remember_switch(false);
+        remember_switch(false, "test");
         assert!(
             !crate::store::get_app_settings()
                 .expect("settings")
@@ -5250,7 +5250,7 @@ mod switch_and_invitation_tests {
         // A home that cannot hold a database: the write fails and the call still
         // returns, leaving the bridge in whatever state it already had.
         let previous = break_home();
-        remember_switch(true);
+        remember_switch(true, "test");
         restore_home(previous);
     }
 

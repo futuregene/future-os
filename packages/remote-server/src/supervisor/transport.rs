@@ -267,7 +267,7 @@ impl Supervisor {
                                 // Only this device's credential is dead. The others on
                                 // this machine keep serving, and the control pointer is
                                 // cleared if it named the device that just died.
-                                let _ = server.forget_slot(&pair_id);
+                                let _ = server.forget_slot(&pair_id, "credential_refused");
                             } else {
                                 // Account-level authorization is not a device fact: the
                                 // whole machine cannot authenticate, so every bridge

@@ -136,6 +136,13 @@ to match today's code.
   snapshots, moved out of `testing/` whole and English-only under the same
   non-user-document exception
 
+## Proposals (`proposals/`)
+
+- [superagent-borrowing.md](proposals/superagent-borrowing.md) ([中文](proposals/superagent-borrowing.zh-CN.md)) —
+  what to borrow from `deepseek-ai/dsh-superagent-prototype`, what not to,
+  and the cost, acceptance and rollback of each candidate. **Not started**:
+  every item waits on the owner's decision.
+
 ## Maintainers (`maintainers/`)
 
 - [wiki-prompt.md](maintainers/wiki-prompt.md) ([中文](maintainers/wiki-prompt.zh-CN.md)) —
