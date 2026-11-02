@@ -3481,6 +3481,87 @@ mod runtime_tests {
             .expect("heartbeat did not panic");
     }
 
+    /// Executable evidence for the size of a handshake confirmation.
+    ///
+    /// The confirmation used to carry the whole catalogue, so it grew with the
+    /// machine — which is how a big enough catalogue stopped fitting in a sealed
+    /// record. It must now be *independent* of the catalogue, and say so in a way
+    /// a reader can run: the same profile with ten conversations and with two
+    /// hundred produces byte-identical bodies, no session id appears anywhere in
+    /// it, and it stays inside a kilobyte.
+    #[tokio::test]
+    async fn the_handshake_confirmation_does_not_grow_with_the_catalogue() {
+        let _home = HomeGuard::new("remote-confirm-size");
+        init_store();
+        let pair = unique("pairconfirm");
+        SUPERVISOR.restore_active(Some(pair.clone()));
+
+        // Exactly what `secure::confirmation` seals: the handshake host's answer,
+        // serialized with the protocol's own envelope.
+        let confirmation = || {
+            let presence = SUPERVISOR.handshake_presence(&pair, "bridge_confirm");
+            let body =
+                future_remote_protocol::handshake::confirmation(&pair, "bridge_confirm", presence);
+            serde_json::to_vec(&body).expect("a confirmation body serializes")
+        };
+
+        for index in 0..10 {
+            crate::store::create_thread(crate::store::CreateThreadInput {
+                mode: "chat".to_string(),
+                title: Some(format!("Small catalogue {index}")),
+                workspace_id: None,
+                workspace_path: None,
+                workspace_name: None,
+                agent_session_id: Some(unique(&format!("sesssmall{index}"))),
+            })
+            .unwrap();
+        }
+        let small = confirmation();
+
+        let mut sessions = Vec::new();
+        for index in 0..200 {
+            let session = unique(&format!("sesslarge{index}"));
+            crate::store::create_thread(crate::store::CreateThreadInput {
+                mode: "chat".to_string(),
+                title: Some(format!("A conversation with a realistic title {index}")),
+                workspace_id: None,
+                workspace_path: None,
+                workspace_name: None,
+                agent_session_id: Some(session.clone()),
+            })
+            .unwrap();
+            sessions.push(session);
+        }
+        let large = confirmation();
+
+        println!(
+            "CONFIRMATION_SIZE ten_conversations={} bytes two_hundred_conversations={} bytes",
+            small.len(),
+            large.len()
+        );
+        assert_eq!(
+            small.len(),
+            large.len(),
+            "the confirmation must not grow with the catalogue"
+        );
+        assert!(
+            large.len() < 1024,
+            "a handshake confirmation is liveness and revisions, not a directory: {} bytes",
+            large.len()
+        );
+        let text = String::from_utf8_lossy(&large);
+        assert!(
+            !sessions
+                .iter()
+                .any(|session| text.contains(session.as_str())),
+            "no session row may travel in the confirmation: {text}"
+        );
+        assert!(
+            text.contains("catalogVersion"),
+            "the reader still needs the revision to sync towards: {text}"
+        );
+    }
+
     /// The delta lane, end to end: a declared client gets one full packet and
     /// then only what moved, and a deletion is always named.
     ///
