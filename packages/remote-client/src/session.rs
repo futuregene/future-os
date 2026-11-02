@@ -1376,6 +1376,22 @@ pub async fn connect(
     })
 }
 
+/// Decode the sealed confirmation body: JSON, or the same JSON gzipped.
+///
+/// The phone's decode path has always sniffed for gzip (`decodeRemoteJson`),
+/// and this client did not — it called `serde_json::from_slice` directly, so a
+/// host that compressed a directory-sized confirmation would have failed here
+/// as `remote_secure_channel_invalid`: a stage name that says nothing about the
+/// encoding. Accepting both forms is what makes compressing that body possible
+/// later, because an endpoint may only start sending gzip once every client
+/// that reads the body can take it — this is the desktop/TUI half of that
+/// condition. Nothing on the wire changes today: a host that sends plain JSON
+/// is decoded exactly as before.
+fn decode_confirmation(bytes: &[u8]) -> Result<Value, crate::Error> {
+    future_remote_protocol::json::decode_reply(bytes)
+        .map_err(|_| crate::Error::Message("remote_secure_channel_invalid".into()))
+}
+
 /// One handshake exchange. `pairing` selects `Noise_XXpsk0` (with `secret`);
 /// otherwise `Noise_IK` against the pinned peer key.
 #[allow(clippy::too_many_arguments)]
@@ -1481,8 +1497,7 @@ async fn handshake(
     let confirmation = channel
         .open("handshake-confirm", &encrypted)
         .map_err(|_| crate::Error::Message("remote_secure_channel_invalid".into()))?;
-    let confirmation: Value = serde_json::from_slice(&confirmation)
-        .map_err(|_| crate::Error::Message("remote_secure_channel_invalid".into()))?;
+    let confirmation = decode_confirmation(&confirmation)?;
     let confirmed = Confirmed::from_confirmation(&confirmation, &creds.pair_id)?;
 
     let control = std::sync::Arc::new(std::sync::Mutex::new(Control::from_presence(
@@ -2074,5 +2089,43 @@ mod retry_policy_tests {
             !session::retryable_command(&json!({})),
             "a body with no command type is not a command"
         );
+    }
+
+    /// A confirmation is JSON, and a host that compresses it is still a host
+    /// this client can talk to.
+    ///
+    /// Both halves matter: the plain body is what every host sends today, so it
+    /// must decode exactly as before; the gzipped body is what a host may send
+    /// once this decode (and the phone's, which already sniffs) is in the field.
+    /// A body that is neither still fails as the same stage error it always did.
+    #[test]
+    fn a_confirmation_decodes_plain_or_compressed() {
+        use std::io::Write;
+
+        let confirmation = json!({
+            "confirmed": true,
+            "pairId": "pair_confirm",
+            "bridgeInstanceId": "bridge_confirm",
+            "features": ["client_presence_v1"],
+            "presence": {"online": true, "pairId": "pair_confirm", "bridgeInstanceId": "bridge_confirm"},
+        });
+        let plain = serde_json::to_vec(&confirmation).unwrap();
+        assert_eq!(session::decode_confirmation(&plain).unwrap(), confirmation);
+
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(&plain).unwrap();
+        let compressed = encoder.finish().unwrap();
+        assert_eq!(
+            &compressed[..2],
+            &[0x1f, 0x8b],
+            "the fixture must be real gzip"
+        );
+        assert_eq!(
+            session::decode_confirmation(&compressed).unwrap(),
+            confirmation
+        );
+
+        let error = session::decode_confirmation(b"not json").unwrap_err();
+        assert_eq!(error.to_string(), "remote_secure_channel_invalid");
     }
 }
