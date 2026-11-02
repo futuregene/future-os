@@ -1197,6 +1197,47 @@ test("a queued message leaves as one message once the desktop reports the run ov
   expect(tree.root.findByType(ComposerDock).props.queueItems).toEqual([]);
 });
 
+test("a whole queue plus the field's draft leaves as one message when interrupted", async () => {
+  const key = "desktop:history";
+  sendQueue.clear(key);
+  mockRemote.streaming = true;
+  act(() => tree.update(createElement(ChatScreen)));
+  const dock = () => tree.root.findByType(ComposerDock).props;
+
+  // Two rounds of typing and holding, through the composer's own entry point.
+  for (const text of ["顺手把图例移到右下角", "再把图注也改成中文"]) {
+    mockDraft.message = text;
+    act(() => tree.update(createElement(ChatScreen)));
+    let queued = false;
+    act(() => {
+      queued = dock().enqueueDraft();
+    });
+    expect(queued).toBe(true);
+    expect(mockDraft.message).toBe("");
+  }
+
+  // The third one is in the field when the reader interrupts: the composer hands
+  // it over first, then ends the run — which is what `打断并全部发送` does.
+  mockDraft.message = "最后把配色换成低饱和";
+  act(() => tree.update(createElement(ChatScreen)));
+  act(() => {
+    dock().enqueueDraft();
+  });
+  expect(dock().queueItems.map((item: { content: string }) => item.content))
+    .toEqual(["顺手把图例移到右下角", "再把图注也改成中文", "最后把配色换成低饱和"]);
+  expect(mockRemote.sendMessage).not.toHaveBeenCalled();
+
+  // The run is over, so the queue leaves — once, as one message.
+  mockRemote.streaming = false;
+  await act(async () => {
+    tree.update(createElement(ChatScreen));
+  });
+  expect(mockRemote.sendMessage).toHaveBeenCalledTimes(1);
+  expect(mockRemote.sendMessage.mock.calls[0]![0])
+    .toBe("顺手把图例移到右下角\n\n再把图注也改成中文\n\n最后把配色换成低饱和");
+  expect(sendQueue.snapshot(key).items).toEqual([]);
+});
+
 test("a refused queue stays on screen, flagged, and retries only when asked", async () => {
   const key = "desktop:history";
   sendQueue.clear(key);

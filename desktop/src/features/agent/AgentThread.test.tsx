@@ -1108,10 +1108,11 @@ describe("agentThread send queue", () => {
     setMessages([user("u1"), assistant("a1", { status: "streaming" })]);
     h.threadState.value = { ...h.threadState.value, activeRunId: "R1" };
     render();
-    // Two messages held while the reply streams, as the composer's menu does.
+    // Three messages held while the reply streams, as the composer's menu does.
     act(() => {
       localSendQueue.enqueue("T1", { attachments: [], content: "queued one" });
       localSendQueue.enqueue("T1", { attachments: [], content: "queued two" });
+      localSendQueue.enqueue("T1", { attachments: [], content: "queued three" });
     });
     rerender();
     expect(container.querySelector("[data-send-queue]")).not.toBeNull();
@@ -1127,7 +1128,7 @@ describe("agentThread send queue", () => {
     expect(h.state.handleSend).toHaveBeenCalledTimes(1);
     expect(h.state.handleSend.mock.calls[0]![0]).toEqual({
       attachments: [],
-      content: "queued one\n\nqueued two",
+      content: "queued one\n\nqueued two\n\nqueued three",
     });
     expect(container.querySelector("[data-send-queue]")).toBeNull();
     act(() => localSendQueue.clear("T1"));

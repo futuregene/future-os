@@ -1648,6 +1648,40 @@ describe("the send queue", () => {
     await view.unmount();
   });
 
+  it("sends a whole queue and the draft in the field as one message", async () => {
+    // The case the queue exists for: two sentences already held, a third still
+    // being typed, then "interrupt and send all". They leave as ONE prompt — the
+    // host takes one at a time, so two prompts would be one refusal and a lost
+    // message, and the reader who interrupted meant the whole thing.
+    const view = await mount({ streaming: true });
+    const queue = async (text: string) => {
+      await view.type(text);
+      await act(async () => view.button("Choose what to do with this message")!.click());
+      await act(async () => menuRow(view, "Add to the send queue")!.click());
+      await settle();
+    };
+    await queue("first held");
+    await queue("second held");
+    expect(remoteSendQueue.snapshot(queueKey).items.map(item => item.content)).toEqual(["first held", "second held"]);
+
+    await view.type("still in the field");
+    await act(async () => view.button("Choose what to do with this message")!.click());
+    await act(async () => menuRow(view, "Interrupt and send all")!.click());
+    await settle();
+    // Queued before the interrupt, so the flush that follows the run carries it.
+    expect(abort).toHaveBeenCalledTimes(1);
+    expect(remoteSendQueue.snapshot(queueKey).items.map(item => item.content))
+      .toEqual(["first held", "second held", "still in the field"]);
+
+    await view.rerender({ streaming: false });
+    await settle();
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(prompt.mock.calls[0]![2]).toBe("first held\n\nsecond held\n\nstill in the field");
+    expect(view.container.querySelector("[data-send-queue]")).toBeNull();
+    expect(view.input.value).toBe("");
+    await view.unmount();
+  });
+
   it("keeps a refused queue visible and retries it only when asked", async () => {
     prompt.mockRejectedValueOnce(new Error("session_busy"));
     remoteSendQueue.enqueue(queueKey, { content: "try me", attachments: [] });
