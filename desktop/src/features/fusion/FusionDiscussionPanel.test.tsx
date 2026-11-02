@@ -38,7 +38,7 @@ async function click(text: string) {
   await act(async () => button!.click());
 }
 
-it("reads the selected parent and pages a public response using the server byte cursor", async () => {
+it("automatically reads all pages before showing the selected public report", async () => {
   const data = discussion();
   const step = data.steps![0]!;
   const answer = "Public answer 中文 with more detail than the stored preview.";
@@ -58,14 +58,15 @@ it("reads the selected parent and pages a public response using the server byte 
   await render();
   expect(mocks.invoke).toHaveBeenCalledWith("get_fusion", { runId: "r1", toolCallId: "t1" });
   await click("future/deepseek-flash");
-  expect(container.textContent).toContain(step.output);
   expect(mocks.invoke).toHaveBeenCalledWith("get_fusion", { runId: "r1", toolCallId: "t1", stepId: step.id, offset: 0 });
-  await click("Read more");
   expect(mocks.invoke).toHaveBeenLastCalledWith("get_fusion", { runId: "r1", toolCallId: "t1", stepId: step.id, offset: cursor });
   expect(container.querySelector("[data-fusion-public-output]")?.textContent).toContain(answer);
   expect(container.textContent).not.toContain("Investigation draft");
   expect(container.textContent).not.toContain("RAW_TOOL_EVIDENCE");
   expect(container.querySelector("summary")).toBeNull();
+  expect(container.textContent).not.toContain("Read more");
+  expect(container.querySelector("[data-fusion-panel=detail]")?.firstElementChild?.textContent).toContain("Full panel");
+  expect(container.textContent).not.toContain("Final conclusion");
 });
 
 it("retains failed attempts and public output without presenting a stale conclusion", async () => {
@@ -155,9 +156,14 @@ it("renders own revisions and separates proposals from reported facts", async ()
     mapping_corrections: [{ summary_quote: "Always SQLite", source_quote: "Prefer SQLite", correction: "Preference is conditional", reason: "The map overstated certainty" }],
     additions: [{ kind: "proposal", content: "Measure the workload", evidence: [] }, { kind: "unverified_claim", content: "Latency may differ", evidence: [] }],
   }) };
-  mocks.invoke.mockResolvedValue({ ...step, transcript: "", next_offset: 0, total_bytes: 0 });
-  await act(async () => root.render(<FusionStepBody step={step} runId="r1" toolCallId="t1" />));
+  const transcript = JSON.stringify([{ role: "assistant", content: [{ type: "text", text: step.output }] }]);
+  const split = Math.floor(transcript.length / 2);
+  const cursor = new TextEncoder().encode(transcript.slice(0, split)).length;
+  const total = new TextEncoder().encode(transcript).length;
+  mocks.invoke.mockImplementation(async (_command, input) => ({ ...step, output: step.output.slice(0, 70), transcript: input.offset === 0 ? transcript.slice(0, split) : transcript.slice(split), next_offset: input.offset === 0 ? cursor : total, total_bytes: total }));
+  await act(async () => root.render(<FusionStepBody step={{ ...step, output: step.output.slice(0, 70) }} runId="r1" toolCallId="t1" />));
   const output = container.querySelector("[data-fusion-public-output]")?.textContent;
+  expect(output).not.toContain("\"current_answer\"");
   expect(output).toContain("Current answer to the topic");
   expect(output).toContain("Insufficient information");
   expect(output).toContain("Investigate storage requirements first");
