@@ -404,7 +404,7 @@
       "singleParticipant": "Only a single-model opinion remains; cross discussion was skipped.",
       "reducedParticipation": "Some models did not finish; continuing with valid results.",
       "budgetReserved": "Further discussion was skipped to reserve time for synthesis.",
-      "directReview": "Issue mapping did not finish; original analyses were compared directly.",
+      "directReview": "Issue mapping was unavailable; a degraded discussion path was used.",
       "materialsRetained": "Existing analyses and degradation reasons were preserved for review."
     },
     "detail": {
@@ -430,7 +430,27 @@
       "notMentioned": "Not mentioned",
       "boundary": "Existing boundary",
       "noMappedViews": "No shared views, disagreements or excluded statements",
-      "disagreements": "Existing disagreements"
+      "disagreements": "Existing disagreements",
+      "review": {
+        "responses": "Responses to cited positions",
+        "self": "Review of own position",
+        "corrections": "Corrections to moderator map",
+        "additions": "Additional material",
+        "decisions": {
+          "agree": "Agree",
+          "disagree": "Disagree",
+          "qualify": "Qualified agreement",
+          "insufficient_information": "Insufficient information",
+          "maintain": "Maintain",
+          "revise": "Revise",
+          "withdraw": "Withdraw"
+        },
+        "kinds": {
+          "proposal": "New proposal",
+          "unverified_claim": "Unverified claim",
+          "verified_fact": "Reported checked fact · evidence cited"
+        }
+      }
     }
   }
 }

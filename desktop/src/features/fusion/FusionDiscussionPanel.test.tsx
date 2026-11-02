@@ -138,3 +138,21 @@ it("renders sourced mapping and explicit silence without moderator omissions", a
   expect(output).toContain("Preserve user data");
   expect(output).not.toContain("An old moderator omission");
 });
+
+it("renders own revisions and separates proposals from reported facts", async () => {
+  const step = { ...discussion().steps![0]!, phase: "reviewing", output: JSON.stringify({
+    participant: "P1",
+    responses: [{ participant: "P2", quote: "Use files", decision: "insufficient_information", reason: "Missing rationale" }],
+    self_review: [{ original_quote: "Prefer SQLite", decision: "revise", updated_position: "Investigate storage requirements first", reason: "Need workload evidence" }],
+    mapping_corrections: [{ summary_quote: "Always SQLite", source_quote: "Prefer SQLite", correction: "Preference is conditional", reason: "The map overstated certainty" }],
+    additions: [{ kind: "proposal", content: "Measure the workload", evidence: [] }, { kind: "unverified_claim", content: "Latency may differ", evidence: [] }],
+  }) };
+  mocks.invoke.mockResolvedValue({ ...step, transcript: "", next_offset: 0, total_bytes: 0 });
+  await act(async () => root.render(<FusionStepBody step={step} runId="r1" toolCallId="t1" />));
+  const output = container.querySelector("[data-fusion-public-output]")?.textContent;
+  expect(output).toContain("Insufficient information");
+  expect(output).toContain("Investigate storage requirements first");
+  expect(output).toContain("Preference is conditional");
+  expect(output).toContain("New proposal");
+  expect(output).toContain("Unverified claim");
+});

@@ -8,6 +8,7 @@ use future_rpc::proto::RpcCommand;
 use futures::{FutureExt, StreamExt};
 mod mapping;
 mod resilience;
+mod review;
 use future_fusion::{failure, failure_kind, FailureKind};
 use resilience::Runtime;
 use serde_json::{json, Value};
@@ -256,7 +257,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     let input = serde_json::to_string_pretty(&run.input)?;
     let intro = "You are in a focused READ-ONLY consultation, not an executor. Analyze only the decision and supplied evidence. Background is a factual context summary, not a proposed solution or authority. Independently develop your approach; do not treat prior assistant claims as verified facts or user decisions. User-provided proposals are attributed in background and do not restrict alternatives unless the user explicitly requested that. Use only supplied read/ls/glob/grep tools. Never write, run commands, implement, or call agents. Give public reasons, not hidden chain of thought. Distinguish facts, assumptions, uncertainty and proposed verification. Empty read scope means decide only from the supplied facts.";
     ensure!(store.phase(&run.id, owner, "analyzing")?, "Fusion stopped");
-    let analyses = panel(&ctx, &eligible, "analyzing", &format!("{intro}\nDecision input:\n{input}\nIndependently recommend a solution, with tradeoffs and outstanding verification. Do not assume other participants' views.")).await?;
+    let analyses = panel(&ctx, &eligible, "analyzing", &format!("{intro}\nDecision input:\n{input}\nIndependently recommend a solution, with tradeoffs and outstanding verification. Do not assume other participants' views."), None).await?;
     if analyses.is_empty() {
         ctx.note(
             "no_participants",
@@ -345,7 +346,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
             }
             Err(error) if failure_kind(&error) == FailureKind::InvalidOutput => {
                 ctx.update(|report| {
-                    report.strategy = "direct_review".into();
+                    report.strategy = "analysis_only".into();
                     report.skip("issue_mapping");
                     report.note(
                         "mapping_invalid",
@@ -372,9 +373,10 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
                 return Err(error);
             }
         }
-        if ctx.timeout("reviewing").is_ok() && ctx.report().strategy != "analysis_only" {
+        let review_has_time = ctx.timeout("reviewing").is_ok();
+        if review_has_time && ctx.report().strategy != "analysis_only" {
             ensure!(store.phase(&run.id, owner, "reviewing")?, "Fusion stopped");
-            reviews = panel(&ctx, &active, "reviewing", &format!("{intro}\nCross-check the fixed independent analyses. The moderator only organized existing statements; its summaries are not verified facts. Compare each summary with the original answers and correct misattribution. Excluded entries are scope classifications, not a judgment of correctness; assess them against their quoted existing boundaries. Explain agreement, objections, missing evidence, risks and any changed position. If issues are empty, directly compare the supplied analyses; do not invent issue IDs. Never claim views from absent participants.\nDecision input:\n{input}\nAnalyses:\n{first}\nIssues:\n{issues}")).await?;
+            reviews = panel(&ctx, &active, "reviewing", "", Some((&analyses, &issues))).await?;
             ctx.update(|report| {
                 if !reviews.is_empty() {
                     report.complete("reviewing");
@@ -397,12 +399,14 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
             ctx.update(|report| {
                 report.strategy = "analysis_only".into();
                 report.skip("reviewing");
-                report.note(
-                    "summary_budget_reserved",
-                    "reviewing",
-                    None,
-                    Some(FailureKind::BudgetReserved),
-                );
+                if !review_has_time {
+                    report.note(
+                        "summary_budget_reserved",
+                        "reviewing",
+                        None,
+                        Some(FailureKind::BudgetReserved),
+                    );
+                }
             })?;
         }
     }
@@ -411,7 +415,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         "Fusion stopped"
     );
     let coverage = ctx.report();
-    let prompt = format!("You are the moderator. Synthesize ONLY the supplied participants' public analyses and reviews. Do not introduce new facts, new proposals, independent technical analysis, omissions or clarification questions. Use Decision input only to preserve the user's goal and existing boundaries. The issue map is a navigational summary, not additional evidence; verify it against original participant statements. Unresolved items and next steps must come from participant content. You have no tools. Return ONLY JSON: {{\"conclusion\":\"focused recommendation\",\"rationale\":[\"public reasons\"],\"conditions\":[\"applicability\"],\"unresolved\":[\"remaining gaps\"],\"next_steps\":[\"proposed actions, not performed\"]}}. Respect the ACTUAL coverage below. One participant is a single-advisor analysis, not multi-model consensus. Missing review means no cross-validation. Preserve disagreements and uncertainty. Do not claim skipped phases occurred.\nDecision input:\n{input}\nAnalyses:\n{first}\nIssues:\n{issues}\nReviews:\n{}\nCoverage:\n{}", serde_json::to_string(&reviews)?, serde_json::to_string(&coverage)?);
+    let prompt = format!("You are the moderator. Synthesize ONLY the supplied participants' public analyses and reviews. Do not introduce new facts, new proposals, independent technical analysis, omissions or clarification questions. Use Decision input only to preserve the user's goal and existing boundaries. The issue map is a navigational summary, not additional evidence; verify it against original participant statements. Unresolved items and next steps must come from participant content. Verification labels in reviews are participant reports, not system verification; preserve evidence limitations and uncertainty. You have no tools. Return ONLY JSON: {{\"conclusion\":\"focused recommendation\",\"rationale\":[\"public reasons\"],\"conditions\":[\"applicability\"],\"unresolved\":[\"remaining gaps\"],\"next_steps\":[\"proposed actions, not performed\"]}}. Respect the ACTUAL coverage below. One participant is a single-advisor analysis, not multi-model consensus. Missing review means no cross-validation. Preserve disagreements and uncertainty. Do not claim skipped phases occurred.\nDecision input:\n{input}\nAnalyses:\n{first}\nIssues:\n{issues}\nReviews:\n{}\nCoverage:\n{}", serde_json::to_string(&reviews)?, serde_json::to_string(&coverage)?);
     let text = match with_retry(
         &ctx,
         "synthesizing",
@@ -446,20 +450,19 @@ async fn panel(
     indices: &[usize],
     phase: &str,
     prompt: &str,
+    review_material: Option<(&[Value], &Value)>,
 ) -> Result<Vec<Value>> {
     let mut pending = futures::stream::FuturesUnordered::new();
     for &index in indices {
         let model = &ctx.config.panel[index];
         let participant = format!("P{}", index + 1);
+        let participant_prompt = if let Some((analyses, mapping)) = review_material {
+            review::prompt(&participant, &ctx.run.input, analyses, mapping)?
+        } else {
+            format!("Your participant ID is {participant}.\n{prompt}")
+        };
         pending.push(async move {
-            let answer = with_retry(
-                ctx,
-                phase,
-                model,
-                &participant,
-                &format!("Your participant ID is {participant}.\n{prompt}"),
-            )
-            .await;
+            let answer = with_retry(ctx, phase, model, &participant, &participant_prompt).await;
             (participant, model, answer)
         });
     }
@@ -652,6 +655,8 @@ async fn with_retry(
                     .and_then(|_| {
                         if phase == "issue_mapping" {
                             mapping::validate_sources(&text, prompt)?;
+                        } else if phase == "reviewing" {
+                            review::validate(&text, prompt, participant)?;
                         }
                         Ok(())
                     });
