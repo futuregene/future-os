@@ -89,8 +89,11 @@ const SNAPSHOT_REUSE: std::time::Duration = std::time::Duration::from_secs(1);
 static SESSIONS_SNAPSHOT: LazyLock<Mutex<Option<(std::time::Instant, String, SessionsCatalog)>>> =
     LazyLock::new(|| Mutex::new(None));
 
+/// A cached workspace list and when it was computed.
+type WorkspaceSnapshot = (std::time::Instant, (Value, String));
+
 /// The last computed workspace snapshot, for the same reason.
-static WORKSPACES_SNAPSHOT: LazyLock<Mutex<Option<(std::time::Instant, (Value, String))>>> =
+static WORKSPACES_SNAPSHOT: LazyLock<Mutex<Option<WorkspaceSnapshot>>> =
     LazyLock::new(|| Mutex::new(None));
 
 /// A sessions snapshot a *reader* may be served from the last tick.
