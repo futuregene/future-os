@@ -3,14 +3,26 @@ import { invokeCommand } from "../tauri/invoke";
 
 const MAX_BYTES = 16 * 1024 * 1024;
 const CHUNK_BYTES = 64 * 1024;
+/**
+ * One admission attempt. Older pages, search and remote reads stay short:
+ * they are asked for while a transcript is already on screen.
+ */
+const WAIT_MS = 5_000;
+/**
+ * The newest page is the whole screen: until it lands the conversation reads
+ * as empty, so waiting out the transfers already running beats refusing.
+ */
+export const TAIL_WAIT_MS = 15_000;
+/** A refused admission opened no transfer; the retry only re-queues. */
+const RETRY_DELAY_MS = 200;
 interface Transfer { id: string; totalBytes: number; chunkBytes: number }
 let active = 0;
 let waiting = 0;
-async function admit(isCurrent: () => boolean): Promise<() => void> {
+async function admit(isCurrent: () => boolean, waitMs: number): Promise<() => void> {
   if (waiting >= 32)
     throw new Error("history_transfer_queue_full");
   waiting += 1;
-  const deadline = Date.now() + 5000;
+  const deadline = Date.now() + waitMs;
   try {
     while (true) {
       if (active < 2)
@@ -32,11 +44,32 @@ async function admit(isCurrent: () => boolean): Promise<() => void> {
 }
 
 /**
+ * A time-out is the one refusal that leaves nothing behind: no transfer was
+ * opened, so asking again costs a wait and nothing else. The slot usually frees
+ * within a few seconds of the two running reads finishing.
+ */
+async function admitWithRetry(isCurrent: () => boolean, waitMs: number): Promise<() => void> {
+  try {
+    return await admit(isCurrent, waitMs);
+  }
+  catch (error) {
+    if (!(error instanceof Error) || error.message !== "history_transfer_admission_timeout")
+      throw error;
+    await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+    return await admit(isCurrent, WAIT_MS);
+  }
+}
+
+/**
  * Native IPC, including its fallback, parses only a bounded chunk. The full
  * object is composed cooperatively after the immutable transfer is complete.
  */
-export async function readHistoryTransfer<T>(args: Record<string, unknown>, isCurrent: () => boolean = () => true): Promise<T> {
-  const release = await admit(isCurrent);
+export async function readHistoryTransfer<T>(
+  args: Record<string, unknown>,
+  isCurrent: () => boolean = () => true,
+  waitMs = WAIT_MS,
+): Promise<T> {
+  const release = await admitWithRetry(isCurrent, waitMs);
   try {
     const transfer = await invokeCommand<Transfer>("begin_session_history_transfer", args);
     return await read<T>(transfer, isCurrent);
@@ -49,7 +82,7 @@ export async function readHistoryTransfer<T>(args: Record<string, unknown>, isCu
  * transfer. Admission covers the network read through final JSON composition.
  */
 export async function requestNativeRead<T>(command: string, args: Record<string, unknown>, isCurrent: () => boolean = () => true): Promise<T> {
-  const release = await admit(isCurrent);
+  const release = await admitWithRetry(isCurrent, WAIT_MS);
   try {
     const result = await invokeCommand<unknown>(command, args);
     if (result && typeof result === "object" && "nativeReadTransfer" in result)

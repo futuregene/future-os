@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { readHistoryTransfer, requestNativeRead } from "./historyTransfer";
+import { readHistoryTransfer, requestNativeRead, TAIL_WAIT_MS } from "./historyTransfer";
 
 const invokeMock = vi.fn<(command: string, args?: Record<string, unknown>) => Promise<unknown>>();
 vi.mock("../tauri/invoke", () => ({ invokeCommand: (command: string, args?: Record<string, unknown>) => invokeMock(command, args) }));
@@ -121,17 +121,64 @@ describe("native history transfer", () => {
     expect(outcomes.filter(outcome => outcome === "history_transfer_queue_full")).toEqual(["history_transfer_queue_full"]);
   });
 
-  it("gives up waiting for a slot instead of blocking for ever", async () => {
+  it("gives up after one retry instead of blocking for ever", async () => {
     vi.useFakeTimers();
     try {
       const slots = holdSlots();
       await vi.advanceTimersByTimeAsync(1);
       const waiting = readHistoryTransfer({});
       const outcome = expect(waiting).rejects.toThrow("history_transfer_admission_timeout");
+      // The first attempt spends its whole window without a slot…
+      await vi.advanceTimersByTimeAsync(6000);
+      // …and the single retry does the same before the refusal stands.
       await vi.advanceTimersByTimeAsync(6000);
       await outcome;
       await vi.advanceTimersByTimeAsync(1);
       await slots.finish();
+    }
+    finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("asks again after a refused admission instead of failing the read", async () => {
+    vi.useFakeTimers();
+    try {
+      const slots = holdSlots();
+      await vi.advanceTimersByTimeAsync(1);
+      const page = { entries: [], hasMore: false, nextOffset: 0 };
+      const read = readHistoryTransfer({});
+      // The first window ends with both slots still busy; the retry is pending.
+      await vi.advanceTimersByTimeAsync(5100);
+      snapshot(new TextEncoder().encode(JSON.stringify(page)));
+      const finished = slots.finish();
+      await vi.advanceTimersByTimeAsync(500);
+      await finished;
+      // The refusal of the first attempt cost nothing: no transfer was opened.
+      await expect(read).resolves.toEqual(page);
+      expect(invokeMock.mock.calls.filter(([command]) => command === "begin_session_history_transfer")).toHaveLength(3);
+    }
+    finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a newest page waiting past the short admission window", async () => {
+    vi.useFakeTimers();
+    try {
+      const slots = holdSlots();
+      await vi.advanceTimersByTimeAsync(1);
+      const page = { entries: [{ id: 1 }], hasMore: false, nextOffset: 0 };
+      // The newest page is the whole screen, so it waits longer than the
+      // opportunistic reads an already-painted transcript asks for.
+      const read = readHistoryTransfer({ before: null }, () => true, TAIL_WAIT_MS);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(invokeMock.mock.calls.filter(([command]) => command === "begin_session_history_transfer")).toHaveLength(2);
+      snapshot(new TextEncoder().encode(JSON.stringify(page)));
+      const finished = slots.finish();
+      await vi.advanceTimersByTimeAsync(10);
+      await finished;
+      await expect(read).resolves.toEqual(page);
     }
     finally {
       vi.useRealTimers();
