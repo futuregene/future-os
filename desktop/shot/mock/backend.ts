@@ -218,7 +218,14 @@ function publishShotRun(threadId: string, runId: string, status: string, resetPr
   });
 }
 
-/** Answer a local prompt as a streamed run: frames on a timer, then the reply. */
+/**
+ * Answer a local prompt as a streamed run: frames on a timer, then the reply.
+ *
+ * A stop ends it where it stands — the run's row is what says so (`abort_run`
+ * marks it cancelled), so each tick checks it before writing again and hands back
+ * the text produced so far. That is what the backend does for a real abort, and
+ * it is what makes the app paint a stopped reply rather than a finished one.
+ */
 async function streamShotRun(args: any): Promise<Record<string, unknown>> {
   const request = args?.request ?? {};
   const runId = String(request.runId ?? "");
@@ -227,20 +234,27 @@ async function streamShotRun(args: any): Promise<Record<string, unknown>> {
   if (!runId || !threadId)
     return { content: "", complete: true, sessionId };
 
+  const cancelled = () =>
+    String((runs.find(candidate => candidate.id === runId) as { status?: string } | undefined)?.status ?? "") === "cancelled";
+  let written = "";
   const frames = shotRunFrames(String(request.message ?? ""));
-  const text = frames
-    .filter(([eventType]) => eventType === "text_chunk")
-    .map(([, data]) => String(data.text ?? ""))
-    .join("");
   for (const [eventType, data] of frames) {
     await new Promise(resolve => setTimeout(resolve, 380));
+    if (cancelled())
+      break;
     appendShotRunEvent(runId, eventType, data);
+    if (eventType === "text_chunk")
+      written += String(data.text ?? "");
     publishShotRun(threadId, runId, "running");
+  }
+  if (cancelled()) {
+    publishShotRun(threadId, runId, "cancelled");
+    return { content: written, complete: false, sessionId };
   }
   await new Promise(resolve => setTimeout(resolve, 380));
   publishShotRun(threadId, runId, "running");
   appendShotRunEvent(runId, "agent_end", {});
-  return { content: text, complete: true, sessionId };
+  return { content: written, complete: true, sessionId };
 }
 let historyTransferSeq = 0;
 /** The chunk size `historyTransfer.ts` insists on. */
@@ -679,11 +693,23 @@ const handlers: Record<string, (args: any) => unknown> = {
     publishShotRun(run.threadId, run.id, status);
     return run;
   },
+  /**
+   * A stop the backend honours on its own clock.
+   *
+   * The row turns `cancelled` a moment later, not inside the call: a real abort
+   * has to reach the running turn, be acked and settle the row, and the state a
+   * reader is in during that gap — reply still on screen, queue still waiting — is
+   * exactly what a capture of "interrupting" has to show.
+   */
   abort_run: (args) => {
     const run = runs.find(candidate => candidate.id === args?.runId);
-    if (run)
+    if (!run)
+      return null;
+    setTimeout(() => {
       Object.assign(run as unknown as Record<string, unknown>, { status: "cancelled", endedAt: Date.now(), updatedAt: Date.now() });
-    return run ?? null;
+      publishShotRun(run.threadId, run.id, "cancelled");
+    }, 900);
+    return run;
   },
   archive_finished_runs: () => 2,
   list_run_events: (args: any) => shotRunEvents.get(String(args?.runId ?? "")) ?? [],
