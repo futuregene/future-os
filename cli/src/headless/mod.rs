@@ -164,7 +164,7 @@ pub fn run(options: Options) -> Result<(), String> {
     let _logging = match future_host::environment::start_logging() {
         Ok(logging) => Some(logging),
         Err(error) => {
-            future_host::environment::report(&format!("host log unavailable: {error}"));
+            tracing::warn!(event = "host_log_unavailable", %error, "host log unavailable: {error}");
             None
         }
     };

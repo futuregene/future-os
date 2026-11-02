@@ -114,7 +114,10 @@ pub fn remember_switch(on: bool, source: &str) {
     // its own author. Without it the only trace of a switch-off was the phase
     // afterwards, which cannot tell a flipped switch from a bridge that stopped
     // on its own. `source` distinguishes the window from `future remote`.
-    future_remote_protocol::remote_log!(
+    tracing::info!(
+        event = "remember_switch",
+        on,
+        source,
         "remote: switch stored {} (source={source})",
         if on { "on" } else { "off" }
     );
