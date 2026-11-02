@@ -138,7 +138,12 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   );
   const [modelId, setModelId] = useState(parserDemo ? "future/deepseek-flash" : "future/deepseek-v4-pro");
   const [thinkingLevel, setThinkingLevel] = useState("medium");
-  const [selectedSessionId, setSelectedSessionId] = useState("");
+  const [selectedSessionId, setSelectedSessionId] = useState(
+    // `?session=<id>` opens that conversation directly. A capture that is about
+    // the conversation itself then does not have to walk the list first (whose
+    // rows, and the update reminder over them, are a different screen's story).
+    new URLSearchParams(window.location.search).get("session") ?? "",
+  );
   const [draft, setDraft] = useState(false);
   const [desktopId, setDesktopId] = useState(pairedDesktops[0]?.desktopId ?? "");
   // The phone's own labels for its desktops (name and icon): stored state here
@@ -401,7 +406,12 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       // oldest-first and its first id is the row the page-up jump lands on.
       return multiTurnOlderEntries.map(entry => entry.id);
     },
-    streaming: baseTimeline.streaming,
+    streaming: baseTimeline.streaming
+      // `?streaming=1` reports the open conversation as mid-run. The demo
+      // timeline is a settled conversation, and the states a reader sees
+      // *while* a reply is written — the composer's send-while-running control
+      // and the send queue it fills — only exist during one.
+      || new URLSearchParams(window.location.search).get("streaming") === "1",
     compacting: scriptedCompaction ? baseTimeline.compacting === true : new URLSearchParams(window.location.search).get("compacting") === "1",
 
     // Composer settings
