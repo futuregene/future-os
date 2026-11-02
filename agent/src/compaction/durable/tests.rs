@@ -242,7 +242,10 @@ fn a_replay_that_would_undo_a_later_checkpoint_keeps_the_prompt_and_the_receipt(
     };
     ticket
         .unwrap()
-        .finish(Some(&checkpoint), json!({"checkpointId":checkpoint.checkpoint_id}))
+        .finish(
+            Some(&checkpoint),
+            json!({"checkpointId":checkpoint.checkpoint_id}),
+        )
         .unwrap();
 
     // The same history, now carrying a *different* checkpoint: the one a later
@@ -282,7 +285,10 @@ fn a_replay_that_would_undo_a_later_checkpoint_keeps_the_prompt_and_the_receipt(
         "third",
     )
     .unwrap();
-    let ContextPreparation::Compacted { checkpoint: kept, .. } = again else {
+    let ContextPreparation::Compacted {
+        checkpoint: kept, ..
+    } = again
+    else {
         panic!("the receipt must still replay");
     };
     assert_eq!(

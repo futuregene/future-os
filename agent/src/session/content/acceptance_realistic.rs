@@ -6,6 +6,22 @@ use crate::console;
 fn id(n: usize) -> String {
     format!("00000000-0000-4000-8000-{n:012x}")
 }
+
+/// Every durable write in this workload can come back as SQLITE_FULL, and this
+/// case is the suite's largest temp-space consumer: measured 2026-11-02 at a
+/// 181–696 MB peak, failing 3/3 with `database or disk is full` (error 13) at
+/// 284 MB free and passing at 1387 MB free. A nearly full volume then reads as a
+/// transcript-consistency failure thirty lines later unless the cause is named
+/// where it happens (the 2026-11-02 gate red on this lane was exactly that).
+fn wrote<T>(result: Result<T>) -> T {
+    result.unwrap_or_else(|error| {
+        panic!(
+            "{error}: this workload writes several hundred MB of WAL into its temp \
+             directory (0.18–0.70 GiB peak, measured 2026-11-02), so a nearly full \
+             volume fails here rather than in the transcript assertions"
+        )
+    })
+}
 fn stats(mut values: Vec<u64>) -> Value {
     values.sort_unstable();
     json!({"count":values.len(),"p50":values[values.len()/2],"p95":values[(values.len()*95/100).min(values.len()-1)],"p99":values[(values.len()*99/100).min(values.len()-1)],"max":values.last()})
@@ -27,9 +43,7 @@ impl Scenario {
             json!({"session_id":self.session,"run_id":self.run,"epoch":1,"idx":cursor,"session_idx":-1,"event_id":format!("{}:{}:1:{cursor}",self.session,self.run),"run_sequence":0,"timestamp":"2026-10-27T00:00:01Z","event_type":kind,"data":data.to_string()})
         }).collect();
         let start = Instant::now();
-        self.writer
-            .persist(&self.store, &self.session, &events)
-            .unwrap();
+        wrote(self.writer.persist(&self.store, &self.session, &events));
         self.latencies.push(start.elapsed().as_micros() as u64);
     }
     fn body(&mut self, entry: &str, key: &str, text: &str, kind: &'static str, tool: Option<&str>) {
@@ -134,13 +148,10 @@ fn run_sized(tool_calls: usize, large_tool_bytes: Option<usize>) -> Value {
             ..Default::default()
         };
         let finish = Instant::now();
-        scenario
-            .store
-            .append_stream_entry(
-                &session,
-                StreamEntry::from_assistant(&message, &run, 1).unwrap(),
-            )
-            .unwrap();
+        wrote(scenario.store.append_stream_entry(
+            &session,
+            StreamEntry::from_assistant(&message, &run, 1).unwrap(),
+        ));
         finalizations.push(finish.elapsed().as_micros() as u64);
         let output = tool_output(i, large_tool_bytes);
         scenario.persist(vec![(
@@ -163,7 +174,7 @@ fn run_sized(tool_calls: usize, large_tool_bytes: Option<usize>) -> Value {
             0
         };
         let tool_finish = Instant::now();
-        scenario.store.append(&session,vec![json!({"id":id(101+i*2),"type":"tool","role":"tool","timestamp":"2026-10-27T00:00:02Z","meta":{"run_id":run},"content":[{"type":"tool_result","tool_call_id":tool,"content":output,"is_error":false}]})]).unwrap();
+        wrote(scenario.store.append(&session,vec![json!({"id":id(101+i*2),"type":"tool","role":"tool","timestamp":"2026-10-27T00:00:02Z","meta":{"run_id":run},"content":[{"type":"tool_result","tool_call_id":tool,"content":output,"is_error":false}]})]));
         tool_finalizations.push(tool_finish.elapsed().as_micros() as u64);
         if large_tool_bytes.is_some() {
             let after = scenario
@@ -186,7 +197,7 @@ fn run_sized(tool_calls: usize, large_tool_bytes: Option<usize>) -> Value {
         body_bytes += thinking.len() + raw_args.len() + output.len();
     }
     let finish = Instant::now();
-    scenario.store.commit_terminal_entries(&session,vec![json!({"id":id(10000),"type":"run_terminal","timestamp":"2026-10-27T00:00:03Z","content":{"run_id":run,"state":"completed","run_tokens":0}})]).unwrap();
+    wrote(scenario.store.commit_terminal_entries(&session,vec![json!({"id":id(10000),"type":"run_terminal","timestamp":"2026-10-27T00:00:03Z","content":{"run_id":run,"state":"completed","run_tokens":0}})]));
     let terminal_micros = finish.elapsed().as_micros();
     let elapsed = start.elapsed().as_micros();
     let writes = WalWrites::capture(&scenario.store).since(before);

@@ -35,6 +35,12 @@
 #                       that lcov read ~100 rows *better* than the tree.
 #   --filter PATH      argument passed to lcov-missed.py (default: agent/src)
 #   --test-home DIR    HOME for the run (default: <worktree>/target/test-home)
+#   --min-free-gb N    free space the worktree's volume must have before the run
+#                       starts (default 2). The suite's largest case writes
+#                       0.2–0.7 GiB of WAL into its temp directory and returns
+#                       SQLITE_FULL below ~0.3 GiB free (measured 2026-11-02), so
+#                       a nearly full volume records a machine failure as a test
+#                       failure — which is what the 05:06 red on this lane was.
 #
 # Guard: the run log is judged, never the exit status alone — `cargo test`
 # stops at the first failing test *target*, so a red run leaves later targets
@@ -47,6 +53,7 @@ shift 2
 
 THREADS=8
 BUDGET_SECONDS=480
+MIN_FREE_GB=2
 EXPECTED_TARGETS=0
 FILTER=agent/src
 TEST_HOME=""
@@ -58,6 +65,7 @@ while [ $# -gt 0 ]; do
         --expect-targets) EXPECTED_TARGETS="$2"; shift 2 ;;
         --filter) FILTER="$2"; shift 2 ;;
         --test-home) TEST_HOME="$2"; shift 2 ;;
+        --min-free-gb) MIN_FREE_GB="$2"; shift 2 ;;
         *) echo "[split] unknown argument: $1" >&2; exit 64 ;;
     esac
 done
@@ -77,6 +85,21 @@ export HOME="$TEST_HOME"
 mkdir -p "$HOME"
 
 now() { date +%s; }
+
+# ---- precondition: free space on the volume the suite writes into -----------
+# Measured 2026-11-02 in this worktree: the workload below peaks at 181–696 MB of
+# temp space, is red 3/3 with `database or disk is full` (SQLITE_FULL, error 13,
+# acceptance_realistic.rs:32) at 284 MB free, and green at 1387 MB free. On
+# 2026-11-02 05:06 this lane ran while the data volume was down to 239 MB: the
+# only failure in 2904 tests was that case, and its panic was that error — a
+# machine failure that a later reader would otherwise file as a flaky test.
+free_kb=$(df -Pk "$WORKTREE" 2>/dev/null | awk 'NR==2{print $4}')
+min_kb=$((MIN_FREE_GB * 1024 * 1024))
+if [ -z "${free_kb:-}" ] || [ "${free_kb:-0}" -lt "$min_kb" ]; then
+    echo "[split] REFUSING: ${free_kb:-unknown} kB free on the volume holding $WORKTREE, need >= ${min_kb} kB (--min-free-gb $MIN_FREE_GB)."
+    echo "[split] The largest case in this suite needs ~0.7 GiB of temp space and fails with 'database or disk is full' below ~0.3 GiB; a run taken now would record that as a test failure."
+    exit 5
+fi
 load1() { uptime | sed -E 's/.*load averages?: ([0-9.]+).*/\1/'; }
 TSV="$PREFIX.timings.tsv"
 
@@ -85,7 +108,7 @@ TSV="$PREFIX.timings.tsv"
 # past 400 s. So the 1-minute load goes next to every measurement.
 load_start=$(load1)
 cores=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo '?')
-echo "[split] package=$PACKAGE cargo=$(command -v cargo) HOME=$HOME threads=$THREADS budget=${BUDGET_SECONDS}s cores=$cores load=$load_start"
+echo "[split] package=$PACKAGE cargo=$(command -v cargo) HOME=$HOME threads=$THREADS budget=${BUDGET_SECONDS}s cores=$cores load=$load_start free=$((free_kb / 1024 / 1024))GiB"
 
 # ---- step 1: compile every test target, run nothing -------------------------
 t0=$(now)

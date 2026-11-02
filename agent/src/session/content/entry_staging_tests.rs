@@ -165,7 +165,10 @@ fn a_retry_of_an_unsealed_staging_verifies_the_prefix_and_finishes_it() {
     assert_eq!(range.length, 20);
     let page = body_of(&store, body);
     assert_eq!(page.text, "partial and the rest");
-    assert!(page.sealed, "the retry seals the body the first attempt left open");
+    assert!(
+        page.sealed,
+        "the retry seals the body the first attempt left open"
+    );
 }
 
 /// The same retry with a prefix that disagrees is refused, and refuses before

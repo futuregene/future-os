@@ -529,6 +529,16 @@ the_summary_is_composed_from_every_canonical_page --skip ordinary_appends_and_me
 --skip snippets_keep_character_boundaries --skip queue_overload_is_reported_and_recovers`
 is **145.1 s** for 2889 tests, with the seven named above as a second invocation.
 
+**Free space is a precondition of this suite, not a property of a test.** The largest case here
+(`acceptance_tests::realistic::historical_distribution_valid_transcripts`) writes ~0.36 GB of WAL
+into `$TMPDIR`, so its peak is 0.18–0.70 GB (three samples) and it returns SQLITE_FULL —
+`database or disk is full`, error 13, panicking at `acceptance_realistic.rs:32` — at 284 MB free
+(3/3) while passing at 1387 MB. On 2026-11-02 the data volume was down to 239 MB and the gate's
+only red in 2904 tests was that case: a machine failure that reads as a flake, and the reason a
+case run alone three times ten minutes earlier had been green. `measure-split.sh` now refuses to
+start below `--min-free-gb` (default 2) instead of measuring on a volume that cannot host the
+suite, and the workload names the cause at the write that fails rather than at the assertions.
+
 **A real race the measurement caught.** The wave-41 run failed
 `tools::tests::rejects_recursive_rm_of_home_and_roots` with
 `assertion failed: reject_dangerous_command(...).is_err()`, passing when run alone under both the
