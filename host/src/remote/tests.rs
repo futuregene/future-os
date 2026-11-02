@@ -3481,6 +3481,125 @@ mod runtime_tests {
             .expect("heartbeat did not panic");
     }
 
+    /// The delta lane, end to end: a declared client gets one full packet and
+    /// then only what moved, and a deletion is always named.
+    ///
+    /// The two rules this test exists for — the first packet is full, and a row
+    /// is never deleted by omission — are the ones the lane cannot get wrong
+    /// without corrupting somebody's list.
+    #[tokio::test]
+    async fn catalogue_delta_lane_carries_only_what_changed() {
+        let _home = HomeGuard::new("remote-catalog-delta");
+        init_store();
+        let nats = FakeNats::start().await;
+        let client = nats_connect_once(&nats).await;
+        let pair = unique("pairdelta");
+        SUPERVISOR.restore_active(Some(pair.clone()));
+
+        let mut sessions = Vec::new();
+        for index in 0..3 {
+            let session = unique(&format!("sessdelta{index}"));
+            crate::store::create_thread(crate::store::CreateThreadInput {
+                mode: "chat".to_string(),
+                title: Some(format!("Delta thread {index}")),
+                workspace_id: None,
+                workspace_path: None,
+                workspace_name: None,
+                agent_session_id: Some(session.clone()),
+            })
+            .unwrap();
+            sessions.push(session);
+        }
+
+        let creds = pairing_creds(&pair);
+        let _shared = shared_runtime(&creds, true, false);
+        declare_features(
+            &creds,
+            &pair,
+            &[future_remote_protocol::CATALOG_DELTA_FEATURE],
+        );
+
+        let handle = spawn_presence_heartbeat(client.clone(), pair.clone(), "bridge_delta".into());
+        let mut tap = nats.tap();
+        let subject = format!("p.{pair}.state.sessions");
+
+        // 1. The first packet is the whole catalogue, and it is a delta packet.
+        let baseline = await_publish(&mut tap, &subject, Duration::from_secs(5)).await;
+        let body = baseline.json();
+        assert_eq!(body["full"], json!(true));
+        let rows = body["rows"].as_array().expect("a delta packet names rows");
+        assert_eq!(rows.len(), 3, "the baseline carries every row");
+        assert!(
+            rows.iter().all(|row| row["sortKey"].is_number()),
+            "a delta names no order, so every row carries the host's key"
+        );
+        assert!(
+            rows.iter().all(|row| row.get("workspaceName").is_none()),
+            "the workspace name travels in the dictionary, not on every row"
+        );
+        assert!(body["workspaces"].is_array(), "the dictionary rides along");
+        assert_eq!(body["removed"], json!([]));
+
+        // 2. One conversation appears: the packet names that row and nothing else.
+        let born = unique("sessdeltaborn");
+        crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("Born later".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some(born.clone()),
+        })
+        .unwrap();
+        let added = await_publish(&mut tap, &subject, Duration::from_secs(5)).await;
+        let body = added.json();
+        assert_eq!(body["full"], json!(false));
+        let rows = body["rows"].as_array().expect("a delta packet names rows");
+        assert_eq!(rows.len(), 1, "only the new row travels: {body}");
+        assert_eq!(rows[0]["sessionId"], json!(born));
+        assert_eq!(body["removed"], json!([]));
+        // Creating a conversation also creates its workspace here, so the
+        // dictionary legitimately moved; what matters is that the packet stayed a
+        // delta — one row and a dictionary, not four rows and a full list.
+        assert!(
+            body["workspaces"].as_array().is_some_and(|entries| entries
+                .iter()
+                .any(|entry| entry["name"]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with("Born later")))),
+            "the dictionary names the workspace this row needs: {body}"
+        );
+        // The sharp proof, and the one size cannot give at this fixture's scale:
+        // no other conversation is named anywhere in the packet.
+        let text = String::from_utf8_lossy(&added.payload).to_string();
+        for other in &sessions {
+            assert!(
+                !text.contains(other.as_str()),
+                "the packet must not mention {other} at all: {text}"
+            );
+        }
+
+        // 3. One conversation goes away: the removal is named, never implied.
+        let doomed = sessions[0].clone();
+        let thread = crate::store::list_threads()
+            .unwrap()
+            .into_iter()
+            .find(|thread| thread.agent_session_id.as_deref() == Some(doomed.as_str()))
+            .expect("the doomed thread exists");
+        crate::store::delete_thread(&thread.id).unwrap();
+        let removed = await_publish(&mut tap, &subject, Duration::from_secs(5)).await;
+        let body = removed.json();
+        assert_eq!(body["full"], json!(false));
+        assert_eq!(body["removed"], json!([doomed]));
+        assert_eq!(
+            body["rows"].as_array().map(Vec::len),
+            Some(0),
+            "a deletion moves no rows: {body}"
+        );
+
+        handle.abort();
+    }
+
     #[tokio::test]
     async fn heartbeat_workspaces_publish_failure_exits() {
         let _home = HomeGuard::new("remote-hb-workspaces-fail");

@@ -312,6 +312,16 @@ impl Supervisor {
     }
 
     /// Whether the connection on `pair_id` declared the lean feed.
+    /// Whether the client on `pair_id` applies row-level catalogue deltas.
+    ///
+    /// Same per-pairing rule as the other declared capabilities. A connection
+    /// that did not declare it keeps receiving whole snapshots: a delta packet
+    /// names only what changed, so a reader that treats it as a snapshot would
+    /// delete every row it was not sent.
+    pub fn catalog_delta(&self, pair_id: &str) -> Arc<AtomicBool> {
+        self.shared_or_insert(pair_id).catalog_delta
+    }
+
     pub fn lean_events(&self, pair_id: &str) -> Arc<AtomicBool> {
         self.shared_or_insert(pair_id).lean_events
     }
@@ -338,6 +348,7 @@ impl Supervisor {
                 drop_counters: Arc::new(DropCounters::new()),
                 coalesce_events: Arc::new(AtomicBool::new(false)),
                 catalog_activity: Arc::new(AtomicBool::new(false)),
+                catalog_delta: Arc::new(AtomicBool::new(false)),
                 lean_events: Arc::new(AtomicBool::new(false)),
                 segmented_content: Arc::new(AtomicBool::new(false)),
                 content_refusals: Default::default(),
@@ -647,6 +658,10 @@ pub struct BridgeRuntimeShared {
     /// with the other capability flags and for the same reason: a client that
     /// cannot apply a packet must keep receiving whole snapshots.
     pub catalog_activity: Arc<AtomicBool>,
+    /// Whether this client keeps the rows a delta packet does not mention.
+    /// The lane's whole safety is this declaration: without it the publisher
+    /// sends whole snapshots, exactly as it did before the capability existed.
+    pub catalog_delta: Arc<AtomicBool>,
     /// Whether this connection declared the lean feed. Per pairing like the
     /// others: trimming one device's history to fields another device asked to
     /// skip would be a silent narrowing of what it receives.
@@ -750,6 +765,7 @@ impl Supervisor {
             drop_counters: Arc::new(DropCounters::new()),
             coalesce_events: Arc::new(AtomicBool::new(false)),
             catalog_activity: Arc::new(AtomicBool::new(false)),
+            catalog_delta: Arc::new(AtomicBool::new(false)),
             lean_events: Arc::new(AtomicBool::new(false)),
             segmented_content: Arc::new(AtomicBool::new(false)),
             content_refusals: Default::default(),
