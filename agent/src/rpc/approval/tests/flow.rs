@@ -845,7 +845,7 @@ async fn file_permissions_cannot_be_combined_with_escalated() {
     std::fs::write(&target, "old").unwrap();
     let sandbox = sandbox_tier(&ws);
     if !sandbox.wraps_shell() {
-        eprintln!("skipping: this host has no OS sandbox backend");
+        crate::console::eprintln!("skipping: this host has no OS sandbox backend");
         return;
     }
     let gate = ApprovalGate::default();
@@ -897,7 +897,7 @@ async fn a_cancelled_file_permission_request_never_starts_the_command() {
     .unwrap();
     let sandbox = sandbox_tier(&ws);
     if !sandbox.wraps_shell() {
-        eprintln!("skipping: this host has no OS sandbox backend");
+        crate::console::eprintln!("skipping: this host has no OS sandbox backend");
         return;
     }
     let gate = ApprovalGate::default();
@@ -953,7 +953,7 @@ async fn file_permissions_already_allowed_by_the_sandbox_never_ask_the_user() {
     let ws = temp_ws("file-perms-allowed");
     let sandbox = sandbox_tier(&ws);
     if !sandbox.wraps_shell() {
-        eprintln!("skipping: this host has no OS sandbox backend");
+        crate::console::eprintln!("skipping: this host has no OS sandbox backend");
         return;
     }
     let gate = ApprovalGate::default();

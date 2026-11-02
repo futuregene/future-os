@@ -47,16 +47,42 @@ static STDOUT_LOST: AtomicBool = AtomicBool::new(false);
 
 /// Write to stderr, dropping a failed write.
 pub fn write_err(args: Arguments<'_>) {
-    if let Err(error) = std::io::stderr().write_fmt(args) {
-        note_once(&STDERR_LOST, "stderr", &error);
-    }
+    write_via(std::io::stderr(), &STDERR_LOST, "stderr", args);
 }
 
 /// Write to stdout, dropping a failed write.
 pub fn write_out(args: Arguments<'_>) {
-    if let Err(error) = std::io::stdout().write_fmt(args) {
-        note_once(&STDOUT_LOST, "stdout", &error);
+    write_via(std::io::stdout(), &STDOUT_LOST, "stdout", args);
+}
+
+/// The write-or-degrade policy, over any writer.
+///
+/// A failed write is not the end of the program: the text goes to the host log
+/// (the copy a later investigation reads anyway), one line records that output is
+/// unusable, and a write that fails there too is dropped. That order matters and
+/// each step is why the previous one can fail — the terminal may be gone, the log
+/// may not be open yet, and after that there is nowhere left to put it. Silence is
+/// the correct last resort: a diagnostic is never worth a dead task.
+///
+/// Split out so a writer that always fails can drive it: this is the panic
+/// `eprintln!` produces (it unwraps the same `Result` this function inspects), and
+/// the caller must keep working after it — measured 2026-11-01, one unwritable
+/// stream ended an Agent worker 1.4 s into a launch and the app then retried for
+/// thirteen hours.
+fn write_via<W: Write>(mut writer: W, reported: &AtomicBool, stream: &str, args: Arguments<'_>) {
+    let text = args.to_string();
+    if let Err(error) = writer.write_fmt(format_args!("{text}")) {
+        degrade(reported, stream, &error, &text);
     }
+}
+
+/// Put a line the terminal refused into the host log, then note the loss once.
+fn degrade(reported: &AtomicBool, stream: &str, error: &std::io::Error, text: &str) {
+    if let Some(mirror) = crate::logfile::get() {
+        mirror.write_stripped(text);
+    }
+    // Not `write_err` again: this runs from inside a failed `write_err`.
+    note_once(reported, stream, error);
 }
 
 /// Write one *line* to stderr: `args`, then the newline that ends it.
@@ -357,6 +383,36 @@ mod tests {
         // text must report the failure rather than look successful.
         let mut broken = Broken { accepted: 0 };
         assert!(write_line(&mut broken, format_args!("text")).is_err());
+    }
+
+    /// A writer that refuses must degrade, not panic, and must not end the caller.
+    ///
+    /// This is the injected failure the policy exists for: the first write is
+    /// accepted, the next two fail. The rounds after the failure are the point —
+    /// one dead stream used to end the task that wrote to it.
+    #[test]
+    fn a_failing_stream_degrades_instead_of_panicking() {
+        let lost = AtomicBool::new(false);
+        let mut broken = Broken { accepted: 0 };
+        write_via(&mut broken, &lost, "stderr", format_args!("first\n"));
+        assert!(
+            !lost.load(Ordering::Relaxed),
+            "a working write says nothing"
+        );
+        write_via(&mut broken, &lost, "stderr", format_args!("second\n"));
+        assert!(
+            lost.load(Ordering::Relaxed),
+            "the degradation is recorded, not silent"
+        );
+        write_via(&mut broken, &lost, "stderr", format_args!("third\n"));
+        // The tolerant macros land on the same path.
+        write_err(format_args!("console path\n"));
+        // A writer that works is unaffected: the policy only reacts to errors.
+        let mut buffer = Vec::new();
+        let healthy = AtomicBool::new(false);
+        write_via(&mut buffer, &healthy, "stderr", format_args!("kept\n"));
+        assert_eq!(buffer, b"kept\n");
+        assert!(!healthy.load(Ordering::Relaxed));
     }
 
     /// Environment naming the child half of [`a_console_line_arrives_whole`].
