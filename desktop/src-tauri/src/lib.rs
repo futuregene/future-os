@@ -2423,6 +2423,13 @@ mod gui {
             use tauri::Manager;
 
             let _home = crate::auth_store::test_support::HomeGuard::new("process-state");
+            // Exercise process-state setup after the entry point's logging preparation.
+            future_logging::prepare(
+                future_logging::Component::Desktop,
+                build_info::VERSION,
+                true,
+                false,
+            );
             let app = tauri::test::mock_app();
             initialize_process_state(&app).expect("initialize process state");
 

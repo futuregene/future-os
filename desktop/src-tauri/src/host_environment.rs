@@ -51,6 +51,13 @@ mod tests {
             return;
         }
         let _home = crate::auth_store::test_support::HomeGuard::new("host-start-logging");
+        // This fixture bypasses initialize(), which normally prepares tracing.
+        future_logging::prepare(
+            future_logging::Component::Desktop,
+            crate::build_info::VERSION,
+            true,
+            false,
+        );
         let empty = tempfile::tempdir().expect("an empty directory to search");
         // A PATH to restore is a precondition of this fixture, not a branch: the
         // `None` arm would be a line no run executes.
