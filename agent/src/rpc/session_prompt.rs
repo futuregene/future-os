@@ -518,7 +518,10 @@ impl ServerSession {
             tracing::info!(
                 event = "queued_runs_parked",
                 session_id = %self.session_id,
-                runs = ?parked,
+                runs = ?parked
+                    .iter()
+                    .map(|parked| (parked.run_id.as_str(), parked.reason.as_str()))
+                    .collect::<Vec<_>>(),
                 "queued prompts parked for the reader to release"
             );
         }

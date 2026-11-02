@@ -37,6 +37,14 @@ pub fn empty_queue() -> Value {
     json!({ "activeRunId": Value::Null, "queued": [], "recentTerminalAcks": [] })
 }
 
+/// How many terminal acks a queue answer carries.
+///
+/// They say what became of something that left the queue without running, so a
+/// handful is enough to cover the rows a reader can still see. The Agent keeps
+/// its own (bounded) history for reconnect recovery; this is a display window,
+/// and an unbounded one would keep growing the response body for nobody.
+pub const QUEUE_ACK_WINDOW: usize = 20;
+
 /// The queue half of a `get_state` payload, normalised for clients.
 ///
 /// Typed `get_state` emits canonical camelCase; the snake_case spelling is still
@@ -71,8 +79,13 @@ pub fn queue_state_json(state: &Value) -> Value {
     // had been sent.
     let recent = field(state, "recentTerminalAcks", "recent_terminal_acks")
         .and_then(|rows| rows.as_array().cloned())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // A display window, not an audit log: keep the newest ones and drop the rest,
+    // so one long-lived conversation cannot grow every queue answer without
+    // bound.
+    let recent = recent
         .iter()
+        .skip(recent.len().saturating_sub(QUEUE_ACK_WINDOW))
         .map(|row| {
             json!({
                 "runId": field(row, "runId", "run_id").and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
@@ -87,6 +100,44 @@ pub fn queue_state_json(state: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The state and the window: a row says whether it is waiting to run or
+    /// parked, and the acks are capped so one long conversation cannot grow every
+    /// queue answer.
+    #[test]
+    fn the_queue_reports_why_a_row_is_waiting_and_caps_its_acks() {
+        let state = json!({
+            "queuedRuns": [
+                { "runId": "run_auto", "queuePosition": 1, "state": "queued", "displayText": "runs at the boundary" },
+                { "runId": "run_old", "queuePosition": 2, "state": "stale:stale", "displayText": "waited too long" },
+                { "runId": "run_odd", "queuePosition": 3, "state": "stale:unknown_age", "displayText": "age unknown" }
+            ],
+            "recentTerminalAcks": (0..40)
+                .map(|index| json!({"runId": format!("run_{index}"), "state": "terminal", "reason": "merged"}))
+                .collect::<Vec<_>>()
+        });
+        let snapshot = queue_state_json(&state);
+        let queued = snapshot["queued"].as_array().expect("a list");
+        assert_eq!(queued[0]["state"], "queued");
+        assert_eq!(queued[1]["state"], "stale:stale");
+        assert_eq!(
+            queued[2]["state"], "stale:unknown_age",
+            "no readable age is its own answer, not 'long ago'"
+        );
+
+        let acks = snapshot["recentTerminalAcks"].as_array().expect("a list");
+        assert_eq!(acks.len(), QUEUE_ACK_WINDOW);
+        assert_eq!(
+            acks.last().expect("an ack")["runId"],
+            "run_39",
+            "the newest are kept"
+        );
+        assert_eq!(
+            acks.first().expect("an ack")["runId"],
+            "run_20",
+            "the oldest fall out of the window"
+        );
+    }
 
     /// The queue a client shows is the Agent's own, in the Agent's order, with the
     /// text and acceptance time it recorded.
