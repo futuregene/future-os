@@ -318,6 +318,32 @@ fn normalize_tcp_uri(addr: &str) -> String {
     }
 }
 
+/// Parse a TCP bind/connect address the way the Agent's `--grpc-addr` does.
+///
+/// `47200` and `:47200` both mean loopback, `[::1]:47200` is bracketed IPv6, and
+/// nothing else is inferred: `localhost:47200` is refused rather than resolved,
+/// because a bind address must be numeric for the listener and the client to
+/// agree without a resolver in between. Shared with the Agent so the address a
+/// host is allowed to serve on is parsed exactly like the one the Agent binds.
+pub fn parse_bind_addr(addr: &str) -> Result<std::net::SocketAddr, String> {
+    let trimmed = addr.trim();
+    let address = if let Some(port) = trimmed.strip_prefix(':') {
+        if port.contains(':') {
+            return Err(format!(
+                "invalid TCP address {addr:?}: bracket IPv6 addresses as [::1]:port"
+            ));
+        }
+        format!("127.0.0.1:{port}")
+    } else if trimmed.contains(':') {
+        trimmed.to_owned()
+    } else {
+        format!("127.0.0.1:{trimmed}")
+    };
+    address.parse().map_err(|_| {
+        format!("invalid TCP address {addr:?}: expected IP:port (bracket IPv6 addresses)")
+    })
+}
+
 #[cfg(unix)]
 pub fn local_socket_path() -> std::path::PathBuf {
     local_socket_path_from(

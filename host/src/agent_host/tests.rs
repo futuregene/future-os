@@ -970,7 +970,7 @@ fn a_start_mode_the_entry_does_not_understand_is_refused_before_any_probe() {
     let error = probe_block_on(host.select("auto")).map(|_| ()).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "FUTURE_DESKTOP_AGENT_MODE must be auto or external"
+        "FUTURE_DESKTOP_AGENT_MODE must be auto, external or bind"
     );
     assert_eq!(
         host.phase(),
@@ -1037,4 +1037,69 @@ fn a_local_start_permission_is_honoured_only_while_the_host_is_still_starting() 
         .expect("an overtaken start is not an error");
     assert_eq!(host.phase(), Phase::Stopped, "and it does not take it");
     assert!(!host.owns_agent());
+}
+
+/// Serving mode is about one address, so it has to name it. Falling back to the
+/// IPC endpoint is exactly what `bind` exists to avoid, so an absent address is
+/// refused before any probe rather than silently served the old way.
+#[test]
+fn a_serving_launch_without_an_address_is_refused_before_any_probe() {
+    let host = AgentHost::default();
+    {
+        let mut state = host.0.state();
+        state.phase = Phase::Starting;
+    }
+    let _mode = StartModeGuard::set("bind");
+    for configured in ["auto", "", "   "] {
+        let error = probe_block_on(host.select(configured))
+            .map(|_| ())
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("needs an explicit loopback address"),
+            "{configured:?}: {error}"
+        );
+    }
+    assert_eq!(
+        host.phase(),
+        Phase::Starting,
+        "a refused launch never reaches a start"
+    );
+}
+
+/// A serving launch probes its own address and carries it into the start, so the
+/// embedded Agent is configured with the endpoint the permission was issued for
+/// instead of the IPC endpoint this mode exists to avoid.
+#[test]
+fn a_serving_launch_carries_its_address_into_the_start() {
+    let _home = crate::remote::test_support::HomeGuard::new("agent-host-serve-endpoint");
+    let host = AgentHost::default();
+    {
+        let mut state = host.0.state();
+        state.phase = Phase::Starting;
+    }
+    let _mode = StartModeGuard::set("bind");
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let address = format!("127.0.0.1:{port}");
+
+    let selected =
+        probe_block_on(host.select(&address)).expect("a probe with nothing listening answers");
+    assert_eq!(
+        selected.served_addr.as_deref(),
+        Some(address.as_str()),
+        "the start serves the address the probe was made against"
+    );
+    let Ok(Some(future_rpc::connection::AgentSelection::LocalStart(permit))) = selected.result
+    else {
+        panic!("nothing answers there, so this must be a local-start permit");
+    };
+    assert!(
+        permit.serves_tcp("127.0.0.1", port),
+        "the permission covers the address the start will bind"
+    );
 }

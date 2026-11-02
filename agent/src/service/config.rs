@@ -1,6 +1,6 @@
 //! Service inputs captured after the host has selected its process environment.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::path::PathBuf;
 
 /// Agent settings that do not belong to argument parsing or process control.
@@ -44,16 +44,7 @@ impl AgentConfig {
 }
 
 pub(crate) fn parse_tcp_bind(addr: &str) -> Result<(String, u16)> {
-    let address = if addr.starts_with(':') && !addr[1..].contains(':') {
-        format!("127.0.0.1{addr}")
-    } else if !addr.contains(':') {
-        format!("127.0.0.1:{addr}")
-    } else {
-        addr.to_owned()
-    };
-    let socket: std::net::SocketAddr = address.parse().with_context(|| {
-        format!("invalid --grpc-addr {addr:?}: expected IP:port (bracket IPv6 addresses)")
-    })?;
+    let socket = future_rpc::transport::parse_bind_addr(addr).map_err(anyhow::Error::msg)?;
     Ok((socket.ip().to_string(), socket.port()))
 }
 
