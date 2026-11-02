@@ -9,6 +9,9 @@ pub(super) struct Budget {
     models: BTreeMap<String, (usize, usize)>,
     participant_bytes: usize,
     mapping_bytes: usize,
+    participant_pool: usize,
+    moderator_room: usize,
+    review_room: usize,
 }
 impl Budget {
     pub fn new(catalog: &Value, config: &Configuration, input_bytes: usize) -> Result<Self> {
@@ -67,8 +70,99 @@ impl Budget {
             models,
             participant_bytes,
             mapping_bytes,
+            participant_pool: participant_bytes.saturating_mul(config.panel.len()),
+            moderator_room: room,
+            review_room,
         })
     }
+    /// Pool unused allocations before discarding usable material. Full reports
+    /// stay in child sessions; only forwarded material is shortened if needed.
+    pub fn fit_material(&mut self, phase: &str, reports: &mut [Value]) -> Result<Vec<String>> {
+        let costs = reports
+            .iter()
+            .map(|report| {
+                super::reports::forwarded_bytes(
+                    phase,
+                    report["response"].as_str().unwrap_or_default(),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let per_report = if phase == "analyzing" {
+            self.review_room.saturating_sub(1024)
+        } else {
+            usize::MAX
+        };
+        let mut limits = vec![0; reports.len()];
+        let mut pending = (0..reports.len()).collect::<Vec<_>>();
+        let mut remaining = if phase == "analyzing" {
+            self.participant_pool
+        } else {
+            self.moderator_room
+        };
+        while !pending.is_empty() {
+            let share = (remaining / pending.len()).min(per_report);
+            let small = pending
+                .iter()
+                .copied()
+                .filter(|&i| costs[i] <= share)
+                .collect::<Vec<_>>();
+            if small.is_empty() {
+                for i in pending {
+                    limits[i] = share;
+                }
+                break;
+            }
+            for i in small {
+                limits[i] = costs[i];
+                remaining = remaining.saturating_sub(costs[i]);
+                pending.retain(|&j| i != j);
+            }
+        }
+        let mut shortened = vec![];
+        for (report, limit) in reports.iter_mut().zip(limits) {
+            let original = report["response"].as_str().unwrap_or_default();
+            if super::reports::forwarded_bytes(phase, original)? <= limit {
+                continue;
+            }
+            // Preserve the direct answer before spending context on the review
+            // bookkeeping. Never claim the omitted supporting fields passed.
+            let parsed = future_fusion::parse_json::<Value>(original).ok();
+            let answer = parsed
+                .as_ref()
+                .and_then(|v| v["current_answer"].as_str())
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(original);
+            let text = super::reports::fit_text(answer, limit)?;
+            report["response"] = serde_json::json!(text);
+            report["forwarded_truncated"] = serde_json::json!(true);
+            shortened.push(
+                report["participant"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            );
+        }
+        if phase == "analyzing" {
+            let largest = reports
+                .iter()
+                .map(|report| {
+                    // The reviewer receives its own answer as an escaped string.
+                    super::reports::forwarded_bytes(
+                        phase,
+                        report["response"].as_str().unwrap_or_default(),
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .max()
+                .unwrap_or(0);
+            self.mapping_bytes = self
+                .mapping_bytes
+                .min(self.review_room.saturating_sub(largest));
+        }
+        Ok(shortened)
+    }
+
     pub fn apply(
         &self,
         model: &str,
@@ -118,6 +212,41 @@ mod tests {
             {"provider":"future","id":"qwen3.7-plus","contextWindow":window,"maxTokens":32768}
         ]})
     }
+    #[test]
+    fn pools_spare_capacity_and_bounds_the_combined_moderator_input() {
+        let mut budget = Budget::new(&catalog(262144), &Configuration::default(), 1000).unwrap();
+        let long = "A".repeat(budget.participant_bytes + 2000);
+        let mut reports = vec![
+            json!({"participant":"P1","response":long}),
+            json!({"participant":"P2","response":"short"}),
+            json!({"participant":"P3","response":"short"}),
+        ];
+        assert!(budget
+            .fit_material("reviewing", &mut reports)
+            .unwrap()
+            .is_empty());
+        assert_eq!(reports[0]["response"].as_str().unwrap(), long);
+        for report in &mut reports {
+            report["response"] = json!("中文\"".repeat(budget.participant_pool));
+        }
+        assert_eq!(
+            budget
+                .fit_material("reviewing", &mut reports)
+                .unwrap()
+                .len(),
+            3
+        );
+        let bytes: usize = reports
+            .iter()
+            .map(|r| {
+                super::super::reports::forwarded_bytes("reviewing", r["response"].as_str().unwrap())
+                    .unwrap()
+            })
+            .sum();
+        assert!(bytes <= budget.moderator_room);
+        assert!(reports.iter().all(|r| r["forwarded_truncated"] == true));
+    }
+
     #[test]
     fn typed_rpc_model_catalog_survives_to_fusion_admission() {
         let mut source = catalog(1_000_000);

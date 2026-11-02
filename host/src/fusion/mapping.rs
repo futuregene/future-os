@@ -1,4 +1,5 @@
 //! Stage two organizes existing statements; it does not contribute an analysis.
+use super::quotes::contains;
 use anyhow::{ensure, Context, Result};
 use future_fusion::parse_json;
 use serde::Deserialize;
@@ -158,7 +159,7 @@ pub(super) fn validate_sources(text: &str, prompt: &str) -> Result<()> {
             !excerpt.trim().is_empty()
                 && answers
                     .get(participant)
-                    .is_some_and(|answer| answer.contains(excerpt)),
+                    .is_some_and(|answer| contains(answer, excerpt)),
             "Moderator quote does not match the participant's answer"
         );
         Ok(())
@@ -202,7 +203,7 @@ pub(super) fn validate_sources(text: &str, prompt: &str) -> Result<()> {
         ensure!(
             boundaries
                 .iter()
-                .any(|boundary| boundary.contains(&excluded.basis)),
+                .any(|boundary| contains(boundary, &excluded.basis)),
             "Exclusion invented a task boundary"
         );
     }

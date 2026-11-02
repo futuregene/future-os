@@ -87,7 +87,7 @@ function StepCard({ step, runId, toolCallId, resolveTarget, terminal, onOpen }: 
   const { t } = useTranslation("agent");
   const [open, setOpen] = useState(false);
   const failed = ["failed", "error", "interrupted"].includes(step.status);
-  const status = step.status === "running" || step.status === "starting" ? terminal ? "interrupted" : "thinking" : step.failure_kind === "timeout" ? "timed_out" : step.failure_kind === "output_limit" ? "output_limited" : step.failure_kind === "budget_reserved" ? "skipped" : step.status;
+  const status = step.status === "running" || step.status === "starting" ? terminal ? "interrupted" : "thinking" : step.status === "completed" && step.report_quality ? "partial" : step.failure_kind === "timeout" ? "timed_out" : step.failure_kind === "output_limit" ? "output_limited" : step.failure_kind === "budget_reserved" ? "skipped" : step.status;
   return (
     <div className="overflow-hidden rounded-lg border border-line-soft">
       <button

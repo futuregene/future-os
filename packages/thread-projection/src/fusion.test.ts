@@ -87,4 +87,15 @@ describe("Fusion progress", () => {
     expect(fusionProgress(discussion([failed])).models.find(model => model.model === glm)?.status).toBe("timed_out");
   });
 
+  it("retains an unvalidated report as partial rather than a failed model", () => {
+    const retained = step("reviewing", qwen, "P3", "completed", 3);
+    retained.report_quality = { validation_errors: ["Unmatched source quote"], source_run_id: "retained-report" };
+    const value = discussion([retained], "reviewing", "running", "partial");
+    value.run!.report = { version: 1, strategy: "standard", completed_phases: ["analyzing"], skipped_phases: [], analysis_participants: ["P3"], review_participants: [], degradations: [{ code: "report_unvalidated", phase: "reviewing", participant: "P3" }], available_results: [] };
+    const progress = fusionProgress(value);
+    expect(progress.models.find(model => model.model === qwen)?.status).toBe("partial");
+    expect(progress.notices).toContain("reportUnvalidated");
+    expect(progress.notices).not.toContain("reducedParticipation");
+  });
+
 });

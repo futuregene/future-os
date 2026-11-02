@@ -529,6 +529,50 @@
           "shot": "d-fusion-loading-slow.png"
         }
       ]
+    },
+    "fusion-detail-unvalidated": {
+      "url": "http://localhost:5299/shot/?fusion=unvalidated&lang=zh",
+      "steps": [
+        {
+          "wait": 1000
+        },
+        {
+          "tap": "查看过程"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "tapText": "Fusion · 讨论"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "tap": "查看讨论明细"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "wait": 700
+        },
+        {
+          "eval": "[...document.querySelectorAll('[data-fusion-panel=detail] button[aria-pressed]')].find(b=>b.textContent.includes('3.'))?.click()"
+        },
+        {
+          "eval": "[...document.querySelectorAll('[data-fusion-panel=detail] button[aria-expanded]')].at(-1)?.click()"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "eval": "(() => {const p=document.querySelector('[data-fusion-panel=detail]');if(!p?.textContent.includes('部分报告存在校验问题')||!p.querySelector('[data-fusion-public-output]'))throw new Error('retained report or quality notice missing');if(p.textContent.includes('responses[0]'))throw new Error('raw diagnostics exposed');return 'retained public report with localized quality notice';})()"
+        },
+        {
+          "shot": "d-fusion-unvalidated.png"
+        }
+      ]
     }
   }
 }

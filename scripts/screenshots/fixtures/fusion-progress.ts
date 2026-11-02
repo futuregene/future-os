@@ -3,6 +3,13 @@ import fixture from "./fusion.json";
 /** Synthetic states; never includes a user's original discussion text. */
 export function fusionProgressFixture(mode: string | null): FusionDiscussion {
   const data: FusionDiscussion = JSON.parse(JSON.stringify(fixture.discussion));
+  if (mode === "unvalidated") {
+    data.run!.completeness = "partial";
+    data.run!.report = { version: 1, strategy: "standard", completed_phases: ["analyzing", "issue_mapping", "reviewing", "synthesizing"], skipped_phases: [], analysis_participants: ["P1", "P2", "P3"], review_participants: ["P1", "P2", "P3"], degradations: [{ code: "report_unvalidated", phase: "reviewing", participant: "P3" }], available_results: [] };
+    for (const step of data.steps ?? []) {
+      if (step.phase === "reviewing" && step.participant === "P3") step.report_quality = { validation_errors: ["responses[0].quote did not match"], source_run_id: step.agent_run_id };
+    }
+  }
   if (mode === "partial") {
     data.run!.completeness = "partial";
     for (const step of data.steps ?? []) {

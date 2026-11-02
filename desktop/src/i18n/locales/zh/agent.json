@@ -367,7 +367,7 @@
     "retry": "重试 {{count}}",
     "completeness": {
       "full": "完整讨论",
-      "partial": "部分模型参与",
+      "partial": "部分完成",
       "single": "单模型意见"
     },
     "result": {
@@ -398,6 +398,7 @@
     "moderatorRole": "主持人",
     "participantRole": "参与者 {{number}}",
     "notices": {
+      "reportUnvalidated": "部分报告存在校验问题或为适应上下文而精简，已作为讨论材料保留。",
       "noConclusion": "本次未产出综合结论。",
       "moderatorFailed": "主持人不可用，未自动更换模型。",
       "noParticipants": "没有有效的参与者结果，已停止讨论。",

@@ -366,7 +366,7 @@
     "retry": "Retry {{count}}",
     "completeness": {
       "full": "Full panel",
-      "partial": "Partial panel",
+      "partial": "Partially complete",
       "single": "Single participant"
     },
     "result": {
@@ -397,6 +397,7 @@
     "moderatorRole": "Moderator",
     "participantRole": "Participant {{number}}",
     "notices": {
+      "reportUnvalidated": "Some reports have validation issues or were shortened to fit context; usable material was retained.",
       "noConclusion": "No synthesized conclusion was produced.",
       "moderatorFailed": "The moderator is unavailable; no substitute was selected.",
       "noParticipants": "No valid participant results; discussion stopped.",

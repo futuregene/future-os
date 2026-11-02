@@ -8,6 +8,7 @@ use future_rpc::proto::RpcCommand;
 use futures::{FutureExt, StreamExt};
 mod budget;
 mod mapping;
+mod quotes;
 mod reports;
 mod resilience;
 mod review;
@@ -303,7 +304,9 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
             report.note("participants_reduced", "analyzing", None, None);
         }
     })?;
-    let first = serde_json::to_string(&analyses)?;
+    let mut mapping_analyses = analyses.clone();
+    fit_material(&ctx, "analyzing", &mut mapping_analyses)?;
+    let first = serde_json::to_string(&mapping_analyses)?;
     let mut issues = json!({"issues":[]});
     let mut reviews = vec![];
     if active.len() == 1 {
@@ -344,7 +347,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         .await
         {
             Ok(mapping) => {
-                issues = parse_json(&mapping)?;
+                issues = parse_json(&mapping.text)?;
                 for (index, issue) in issues["issues"]
                     .as_array_mut()
                     .context("Missing issues")?
@@ -426,32 +429,34 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         store.phase(&run.id, owner, "synthesizing")?,
         "Fusion stopped"
     );
-    let report = ctx.report();
-    let coverage = json!({"strategy":report.strategy,"completed_phases":report.completed_phases,"skipped_phases":report.skipped_phases,"analysis_participants":report.analysis_participants,"review_participants":report.review_participants,"degradations":report.degradations});
-    // One version per role; preserve analysis-only roles when their review failed.
-    let material = analyses
+    // One current report per role. Pack the chosen mix together, including
+    // analysis-only roles; separate pools could overbook the final moderator.
+    let mut current = analyses
         .iter()
         .map(|analysis| {
             let reviewed = reviews
                 .iter()
                 .find(|r| r["participant"] == analysis["participant"]);
-            let source = reviewed.unwrap_or(analysis);
-            let response = source["response"].as_str().unwrap_or_default();
-            format!(
-                "Participant {} ({}) report, {} UTF-8 bytes:\n{}",
-                source["participant"].as_str().unwrap_or_default(),
-                if reviewed.is_some() {
-                    "reviewing"
-                } else {
-                    "analysis_only"
-                },
-                response.len(),
-                response
-            )
+            let mut source = reviewed.unwrap_or(analysis).clone();
+            source["source_phase"] = json!(if reviewed.is_some() {
+                "reviewing"
+            } else {
+                "analysis_only"
+            });
+            source
         })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    let prompt = format!("You are the moderator. Directly answer the original question, producing a useful, self-contained conclusion for the main agent. Synthesize ONLY the supplied participants' current answers and supporting reviews. Use the original task only for its goal and boundaries. Distinguish shared views from a recommendation you select from existing proposals. Preserve material disagreement and evidence limitations; do not revive withdrawn positions. Do not add facts, proposals, omissions, clarification questions, conditions sections or next-step instructions. Participant verification labels are reports, not system proof. Put any essential applicability qualification directly in the conclusion. Do not repeat meeting history, participant-by-participant recaps or general unknowns that do not affect the answer. Include supporting reasons or unresolved issues only when essential, without repeating the answer. You have no tools. Return only a plain text or Markdown report directly answering the question, without a JSON envelope or fixed section template. Respect actual coverage; full participation does not imply truth or unanimity. Missing reviews mean no cross-review.\nOriginal task:\n{}\nCurrent participant material:\n{}\nCoverage:\n{}", serde_json::to_string(&run.input)?, material, coverage);
+        .collect::<Vec<_>>();
+    fit_material(&ctx, "synthesizing", &mut current)?;
+    let report = ctx.report();
+    let coverage = json!({"strategy":report.strategy,"completed_phases":report.completed_phases,"skipped_phases":report.skipped_phases,"analysis_participants":report.analysis_participants,"review_participants":report.review_participants,"degradations":report.degradations});
+    let material = current.iter().map(|source| {
+        let response = source["response"].as_str().unwrap_or_default();
+        format!("Participant {} ({}) report, {} UTF-8 bytes. Validation issues: {}. Shortened for context: {}\n{}",
+            source["participant"].as_str().unwrap_or_default(),
+            source["source_phase"].as_str().unwrap_or_default(), response.len(),
+            source["validation_errors"], source["forwarded_truncated"].as_bool().unwrap_or(false), response)
+    }).collect::<Vec<_>>().join("\n\n");
+    let prompt = format!("You are the moderator. Directly answer the original question, producing a useful, self-contained conclusion for the main agent. Synthesize ONLY the supplied participants' current answers and supporting reviews. Use the original task only for its goal and boundaries. Distinguish shared views from a recommendation you select from existing proposals. Preserve material disagreement and evidence limitations; do not revive withdrawn positions. Do not add facts, proposals, omissions, clarification questions, conditions sections or next-step instructions. Participant verification labels are reports, not system proof. Reports with validation_errors are usable participant opinions, not validated quotations or verified facts. Do not present their unmatched quotations as established source evidence. Put any essential applicability qualification directly in the conclusion. Do not repeat meeting history, participant-by-participant recaps or general unknowns that do not affect the answer. Include supporting reasons or unresolved issues only when essential, without repeating the answer. You have no tools. Return only a plain text or Markdown report directly answering the question, without a JSON envelope or fixed section template. Respect actual coverage; full participation does not imply truth or unanimity. Missing reviews mean no cross-review.\nOriginal task:\n{}\nCurrent participant material:\n{}\nCoverage:\n{}", serde_json::to_string(&run.input)?, material, coverage);
 
     let text = match with_retry(
         &ctx,
@@ -462,7 +467,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     )
     .await
     {
-        Ok(text) => text,
+        Ok(report) => report.text,
         Err(error) => {
             ctx.stop_error("synthesizing", "moderator", &error)?;
             return Err(error);
@@ -482,6 +487,20 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         "full"
     };
     store.finish(&run.id, owner, result, completeness)?;
+    Ok(())
+}
+
+fn fit_material(ctx: &Runtime<'_>, phase: &str, material: &mut [Value]) -> Result<()> {
+    let shortened = ctx
+        .budget
+        .lock()
+        .unwrap()
+        .as_mut()
+        .context("Missing Fusion context budget")?
+        .fit_material(phase, material)?;
+    for participant in shortened {
+        ctx.note("report_truncated", phase, Some(&participant), None)?;
+    }
     Ok(())
 }
 
@@ -510,8 +529,7 @@ async fn panel(
     let mut persistence_error = None;
     while let Some((participant, model, result)) = pending.next().await {
         match result {
-            Ok(text) => good
-                .push(json!({"participant": participant, "model": model.model, "response": text})),
+            Ok(report) => good.push(json!({"participant": participant, "model": model.model, "response": report.text, "validation_errors":report.validation_errors})),
             Err(error) => {
                 if let Err(save) = ctx.stop_error(phase, &participant, &error) {
                     persistence_error = Some(save);
@@ -589,7 +607,7 @@ async fn with_retry(
     model: &ModelConfig,
     participant: &str,
     prompt: &str,
-) -> Result<String> {
+) -> Result<reports::Report> {
     if let Err(error) = ctx
         .ensure_provider(&model.model)
         .and_then(|_| ctx.timeout(phase).map(|_| ()))
@@ -707,6 +725,7 @@ async fn with_retry(
             usage: Value::Null,
             settings: Some(settings),
             failure_kind: None,
+            report_quality: None,
         };
         ctx.store.record_step(&step)?;
         let result = tokio::time::timeout(
@@ -728,17 +747,18 @@ async fn with_retry(
         };
         step.finished_at = Some(now_ms());
         match result {
-            Ok(text) => {
+            Ok(report) => {
+                let text = &report.text;
                 step.status = "completed".into();
-                step.output = future_fusion::bounded_text(&text, 2400);
+                step.output = future_fusion::bounded_text(text, 2400);
                 ctx.store.record_step(&step)?;
                 if matches!(phase, "analyzing" | "reviewing") {
-                    ctx.retain(&step, &text)?;
+                    ctx.retain(&step, text)?;
                 }
                 if participant == "moderator" {
                     ctx.mark_healthy();
                 }
-                return Ok(text);
+                return Ok(report);
             }
             Err(error) => {
                 let kind = failure_kind(&error);
@@ -859,7 +879,11 @@ async fn stop_before_retry(step: &Step) -> Result<()> {
     .await??;
     Ok(())
 }
-async fn step_inner(ctx: &Runtime<'_>, step: &mut Step, source_prompt: &str) -> Result<String> {
+async fn step_inner(
+    ctx: &Runtime<'_>,
+    step: &mut Step,
+    source_prompt: &str,
+) -> Result<reports::Report> {
     let store = ctx.store;
     let run = ctx.run;
     ctx.ensure_provider(&step.model)?;
@@ -905,12 +929,13 @@ async fn step_inner(ctx: &Runtime<'_>, step: &mut Step, source_prompt: &str) -> 
     let input = step.input.clone();
     let phase = step.phase.clone();
     let participant = step.participant.clone();
+    let original_run_id = step.agent_run_id.clone();
     let mut child = ChildSession {
         ctx,
         step,
         generation: 0,
     };
-    reports::collect(&mut child, input, &phase, capacity, |text| {
+    let report = reports::collect(&mut child, input, &phase, capacity, |text| {
         validate_step_output(&phase, text, ctx.config.panel.len())?;
         if phase == "issue_mapping" {
             mapping::validate_sources(text, source_prompt)?;
@@ -919,7 +944,30 @@ async fn step_inner(ctx: &Runtime<'_>, step: &mut Step, source_prompt: &str) -> 
         }
         Ok(())
     })
-    .await
+    .await?;
+    if !report.validation_errors.is_empty() {
+        let step = &mut *child.step;
+        if report.generation == 0 {
+            // A failed repair may still own an accepted Agent request. Fence it
+            // before committing the retained original as a completed step.
+            stop_before_retry(step).await?;
+        }
+        step.report_quality = Some(future_fusion::ReportQuality {
+            validation_errors: report.validation_errors.clone(),
+            source_run_id: if report.generation == 0 {
+                original_run_id
+            } else {
+                step.agent_run_id.clone()
+            },
+        });
+        ctx.note(
+            "report_unvalidated",
+            &phase,
+            Some(&participant),
+            Some(FailureKind::InvalidOutput),
+        )?;
+    }
+    Ok(report)
 }
 
 struct ChildSession<'a, 'b, 'c> {

@@ -424,6 +424,7 @@ export const resources = {
           "singleParticipant": "Only a single-model opinion remains; cross discussion was skipped.",
           "reducedParticipation": "Some models did not finish; continuing with valid results.",
           "budgetReserved": "Further discussion was skipped to reserve time for synthesis.",
+          "reportUnvalidated": "Some reports have validation issues or were shortened to fit context; usable material was retained.",
           "directReview": "Issue mapping was unavailable; a degraded discussion path was used.",
           "materialsRetained": "Existing analyses and degradation reasons were preserved for review."
         },
@@ -470,7 +471,7 @@ export const resources = {
         },
         "fusionCompleteness": {
           "full": "Full panel",
-          "partial": "Partial panel",
+          "partial": "Partially complete",
           "single": "Single participant"
         },
         "fusionTabs": {
@@ -1528,6 +1529,7 @@ export const resources = {
           "singleParticipant": "仅保留单模型意见，已跳过交叉讨论。",
           "reducedParticipation": "部分模型未完成，已基于有效结果继续。",
           "budgetReserved": "已跳过后续讨论，为总结保留时间。",
+          "reportUnvalidated": "部分报告存在校验问题或为适应上下文而精简，已作为讨论材料保留。",
           "directReview": "议题整理不可用，已采用降级讨论流程。",
           "materialsRetained": "已有分析与降级原因已保留，可用于复盘。"
         },
@@ -1574,7 +1576,7 @@ export const resources = {
         },
         "fusionCompleteness": {
           "full": "完整讨论",
-          "partial": "部分模型参与",
+          "partial": "部分完成",
           "single": "单模型意见"
         },
         "fusionTabs": {
