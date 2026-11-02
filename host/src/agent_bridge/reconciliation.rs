@@ -395,6 +395,18 @@ fn queued_run_ids(state: &serde_json::Value) -> impl Iterator<Item = &str> {
         .filter_map(|run| run.get("runId").and_then(|id| id.as_str()))
 }
 
+/// Tonic's Display includes response metadata (including the changing HTTP
+/// Date header). Those headers are not a new diagnosis and must not restart
+/// the watchdog's consecutive-failure count.
+fn reconcile_probe_error(error: &tonic::Status) -> String {
+    format!(
+        "get_run_state: status: {:?}, message: {:?}, details: {:?}",
+        error.code(),
+        error.message(),
+        error.details()
+    )
+}
+
 /// Reconcile one non-terminal run row against the Agent's authoritative state.
 pub(super) async fn reconcile_active_run_once(
     run: &crate::store::ActiveRun,
@@ -424,7 +436,7 @@ pub(super) async fn reconcile_active_run_once(
             canonical_run_id.to_string(),
         ))
         .await
-        .map_err(|e| format!("get_run_state: {e}"))?
+        .map_err(|error| reconcile_probe_error(&error))?
         .into_inner();
     if !state.success {
         // The Agent could not resolve this session. For a session it merely
@@ -989,6 +1001,33 @@ pub fn reconcile_thread_workspace(session_id: &str, new_cwd: &str) -> Result<(),
 
 #[cfg(test)]
 mod settled_run_tests {
+    #[test]
+    fn probe_diagnosis_ignores_transport_headers_but_preserves_the_failure() {
+        let status = |date: &'static str, message: &'static str| {
+            let mut metadata = tonic::metadata::MetadataMap::new();
+            metadata.insert("date", date.parse().unwrap());
+            tonic::Status::with_metadata(tonic::Code::Unavailable, message, metadata)
+        };
+        let first = status("Mon, 02 Nov 2026 11:22:47 GMT", "still down");
+        let later = status("Mon, 02 Nov 2026 11:22:48 GMT", "still down");
+        assert_ne!(first.to_string(), later.to_string());
+        assert_eq!(
+            super::reconcile_probe_error(&first),
+            super::reconcile_probe_error(&later)
+        );
+        assert_ne!(
+            super::reconcile_probe_error(&first),
+            super::reconcile_probe_error(&status(
+                "Mon, 02 Nov 2026 11:22:48 GMT",
+                "different diagnosis"
+            ))
+        );
+        assert_ne!(
+            super::reconcile_probe_error(&first),
+            super::reconcile_probe_error(&tonic::Status::permission_denied("still down"))
+        );
+    }
+
     use super::super::test_support::{
         break_home, mock_agent, restore_home, seed_run, seed_thread, seed_workspace, Reply,
         TestHome,
