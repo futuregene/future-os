@@ -84,6 +84,14 @@
       "x-ts-type": "string",
       "type": "string"
     },
+    "busyPolicy": {
+      "x-rust-name": "busy_policy",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "prompt: what a send means while this session already has a run in flight (enqueue_if_busy | enqueue_coalescing | supersede_session). Absent keeps the refusal legacy clients expect."
+    },
     "entryId": {
       "x-rust-name": "entry_id",
       "x-rust-type": "String",

@@ -257,6 +257,7 @@ pub fn prompt_command(
     session_id: String,
     attachments: Vec<AttachmentInput>,
     requested_run_id: Option<String>,
+    busy_policy: &str,
 ) -> RpcCommand {
     // Only paths cross the wire; the agent reads + encodes image bytes itself.
     let attachments = attachments
@@ -273,6 +274,9 @@ pub fn prompt_command(
         model_context,
         attachments,
         requested_run_id: requested_run_id.unwrap_or_default(),
+        // Empty is the Agent's own default (`enqueue_if_busy`); the caller names
+        // a policy only when the reader asked for that meaning of "send".
+        busy_policy: busy_policy.to_string(),
         client_request_id: command_id(),
         ..base_command("prompt", session_id)
     }
@@ -289,6 +293,14 @@ pub fn approval_decision_command(
         mode: status,
         entry_id: approval_request_id,
         ..base_command("approval_decision", session_id)
+    }
+}
+
+/// Drop one prompt out of the session's queue, by the run id it was accepted as.
+pub fn cancel_queued_run_command(run_id: String, session_id: String) -> RpcCommand {
+    RpcCommand {
+        run_id,
+        ..base_command("cancel_queued_run", session_id)
     }
 }
 
@@ -640,6 +652,7 @@ mod tests {
                 },
             ],
             Some("run-1".to_string()),
+            "",
         );
         assert_eq!(cmd.r#type, "prompt");
         assert_eq!(cmd.message, "hello");
@@ -665,6 +678,11 @@ mod tests {
             "s".to_string(),
             vec![],
             None,
+            "",
+        );
+        assert_eq!(
+            bare.busy_policy, "",
+            "an unnamed send keeps the Agent default"
         );
         assert_eq!(bare.requested_run_id, "");
     }
