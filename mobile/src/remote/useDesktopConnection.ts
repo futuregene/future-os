@@ -577,6 +577,7 @@ export function useDesktopConnection({
     },
     [
       applySessionActivity,
+      applySessionDelta,
       applySessionSnapshot,
       applySessionStreaming,
       closeConversation,
