@@ -449,7 +449,8 @@ mod fixtures {
 
     /// The bundle cannot be written — the only arm that leaves async-nats to do
     /// the platform load. Here the temp directory the bundle is written into
-    /// does not exist, which is what a Desktop with an unusable `TMPDIR` sees.
+    /// does not exist, which is what a Desktop with no usable temp directory
+    /// sees.
     #[test]
     fn a_bundle_that_cannot_be_written_leaves_the_platform_load_in_place() {
         let fixture = Fixture::new();
@@ -459,12 +460,22 @@ mod fixtures {
         );
         let tmp = fixture.absent("no-such-tmp");
         let mut command = fixture.command("unwritable");
-        command.env("FUTURE_RELAY_CA", &ca).env("TMPDIR", &tmp);
+        command.env("FUTURE_RELAY_CA", &ca);
+        // Every name `std::env::temp_dir()` consults, not just the Unix one:
+        // Windows reads `TMP` before `TEMP` and never reads `TMPDIR`, so a case
+        // that named only `TMPDIR` left the bundle writing into the runner's real
+        // temp directory and *succeeding* — the bundle then existed, and the
+        // child's "a refused CA must not produce a bundle" assertion failed. That
+        // is the whole of the Windows lane's failure in CI run 41347774311, while
+        // macOS and Linux set the variable the child actually reads.
+        for variable in ["TMPDIR", "TMP", "TEMP"] {
+            command.env(variable, &tmp);
+        }
         let (_, reported) = run("unwritable", command);
         let named = reported.contains("could not write the relay trust bundle");
         assert!(named, "{reported}");
         // The bundle is written into the temp directory the environment names,
-        // so a `TMPDIR` that does not exist is what the write fails on.
+        // so a temp directory that does not exist is what the write fails on.
         assert!(
             !tmp.exists(),
             "the fixture's temp directory must stay absent"

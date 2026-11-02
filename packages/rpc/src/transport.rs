@@ -446,9 +446,24 @@ pub fn endpoint_dir() -> std::path::PathBuf {
 /// directory is refused before anything is written into it.
 #[cfg(unix)]
 pub fn ensure_endpoint_dir() -> std::io::Result<std::path::PathBuf> {
+    ensure_endpoint_dir_at(&endpoint_dir())
+}
+
+/// The whole of [`ensure_endpoint_dir`], against a directory the caller names.
+///
+/// Split out so the rules can be exercised on a directory the test owns. They
+/// used to be tested on [`endpoint_dir`] itself — `/tmp/future-<uid>`, one path
+/// *shared by every process on the machine* — which made the test mutate a
+/// machine-global object: two `cargo test` runs at once (two worktrees, the
+/// recorded condition) removed and re-created each other's symlink and reported
+/// `AlreadyExists`/`NotFound` against a directory this code classifies
+/// correctly. The rules under test are about a directory's own metadata; which
+/// directory it is belongs to the caller.
+#[cfg(unix)]
+fn ensure_endpoint_dir_at(dir: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-    let dir = endpoint_dir();
+    let dir = dir.to_path_buf();
     let uid = effective_uid();
     match std::fs::symlink_metadata(&dir) {
         Ok(meta) => {
@@ -496,7 +511,7 @@ pub fn ensure_endpoint_dir() -> std::io::Result<std::path::PathBuf> {
             std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
             // Re-check what actually appeared: create_dir is atomic against a
             // concurrent creator, but the winner's object is what we must trust.
-            ensure_endpoint_dir()
+            ensure_endpoint_dir_at(&dir)
         }
         Err(error) => Err(error),
     }
@@ -979,40 +994,51 @@ mod tests {
     /// `/tmp` is world-writable: a pre-created directory there can belong to
     /// anybody, or be a symlink pointing anywhere. Both are refused rather than
     /// repaired — chmod'ing someone else's directory is the attack, not the fix.
+    ///
+    /// Driven on a directory the test owns. It used to be driven on
+    /// `endpoint_dir()` — `/tmp/future-<uid>`, shared by every process on the
+    /// machine — and then this test created a symlink there, deleted the
+    /// directory, and re-created it, so two `cargo test` processes at once (the
+    /// recorded condition: several worktrees) destroyed each other's fixture and
+    /// failed with `AlreadyExists`/`NotFound` and with each other's refusal text.
+    /// Nothing here belongs to another process: the target, the symlink and the
+    /// directory all live under this test's own temp dir.
     #[cfg(unix)]
     #[test]
     fn a_squatted_endpoint_directory_is_refused() {
         use std::os::unix::fs::{symlink, PermissionsExt};
-        let dir = endpoint_dir();
-        let _ = std::fs::remove_file(&dir);
-        let _ = std::fs::remove_dir_all(&dir);
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("future-uid");
+        let target = root.path().join("squat-target");
+        std::fs::create_dir_all(&target).unwrap();
 
         // 1. A symlink where the directory should be.
-        let target = std::env::temp_dir().join("future-squat-target-test");
-        std::fs::create_dir_all(&target).unwrap();
-        if symlink(&target, &dir).is_ok() {
-            let error = ensure_endpoint_dir().expect_err("a symlink must be refused");
-            assert!(
-                error.to_string().contains("symbolic link"),
-                "the refusal must name the cause: {error}"
-            );
-            std::fs::remove_file(&dir).unwrap();
-        }
-        let _ = std::fs::remove_dir_all(&target);
+        symlink(&target, &dir).unwrap();
+        let error = ensure_endpoint_dir_at(&dir).expect_err("a symlink must be refused");
+        assert!(
+            error.to_string().contains("symbolic link"),
+            "the refusal must name the cause: {error}"
+        );
+        assert_eq!(
+            std::fs::read_link(&dir).unwrap(),
+            target,
+            "the refusal must not repair what it refuses to trust"
+        );
+        std::fs::remove_file(&dir).unwrap();
 
         // 2. A directory with the wrong mode.
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let error = ensure_endpoint_dir().expect_err("a 0755 directory must be refused");
+        let error = ensure_endpoint_dir_at(&dir).expect_err("a 0755 directory must be refused");
         assert!(
             error.to_string().contains("expected 700"),
             "the refusal must say what to fix: {error}"
         );
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
 
-        // 3. The legitimate case still works, and creates it when absent.
-        let _ = std::fs::remove_dir_all(&dir);
-        let made = ensure_endpoint_dir().expect("a fresh owned directory is fine");
+        // 3. The legitimate case still works, and repairs a 0755 directory only
+        // when it is this user's own and nothing else changed.
+        let made = ensure_endpoint_dir_at(&dir).expect("a fresh owned directory is fine");
         assert_eq!(made, dir);
         let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700, "the created directory must be private");
