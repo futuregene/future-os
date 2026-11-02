@@ -104,6 +104,11 @@ impl CommandRuntime for Context {
             .map(|server| server.catalog_delta(pair))
             .unwrap_or_default()
     }
+    fn set_catalogue_lane(&self, pair: &str, lane: u8) {
+        if let Some(server) = self.server.upgrade() {
+            server.set_catalogue_lane(pair, lane);
+        }
+    }
     fn segmented_content(&self, pair: &str) -> Arc<AtomicBool> {
         self.server
             .upgrade()

@@ -67,7 +67,7 @@ impl Manager {
                         let actual:Value=serde_json::from_str(&content.context("missing cached checkpoint body")?)?;
                         if expected.as_ref()!=Some(&actual) { bail!("cached compaction checkpoint was modified"); }
                         let cutoff:Option<i64>=tx.query_row("SELECT position FROM entries WHERE session_id=?1 AND entry_id=?2",params![session,cp.cutoff_entry_id],|r|r.get(0)).optional()?;
-                        if !cutoff.is_some_and(|cutoff|cutoff<position) { bail!("cached compaction checkpoint range is invalid"); }
+                        if cutoff.is_none_or(|cutoff|cutoff>=position) { bail!("cached compaction checkpoint range is invalid"); }
                     }
                     return Ok(CompactionClaim::Cached { value, operation_id:original_operation });
                 }

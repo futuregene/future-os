@@ -48,6 +48,12 @@ pub trait StateHost: Send + Sync {
 
 /// A sessions snapshot plus structural/content signatures used to choose
 /// full snapshots or absolute activity updates without reading the store twice.
+///
+/// `Clone` because the desktop hands the snapshot it just computed to a pull as
+/// well as to the publisher: reading the store twice for the same second is what
+/// made a client's catalogue read cost seconds while the publisher's own tick was
+/// already holding the answer (see `remote_host::catalog::sessions_catalog_cached`).
+#[derive(Clone)]
 pub struct SessionsCatalog {
     /// What a client receives whole, exactly as [`StateHost::sessions`] answers
     /// it, including the `version` envelope both kinds of packet carry.

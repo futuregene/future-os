@@ -1772,8 +1772,19 @@ function ReadyAppShell({
                                             void refreshRemotePeers();
                                           }}
                                           onSent={() => {
+                                            // The conversation is re-read; the catalogue is
+                                            // not. A host pushes `state.sessions` when a
+                                            // conversation of its own changes, and the slow
+                                            // catalogue poll covers one that does not, so a
+                                            // per-peer catalogue read here bought nothing —
+                                            // and it crossed the same link the transcript's
+                                            // own refresh was waiting on, right after the
+                                            // host accepted the message.
+                                            //
+                                            // A *new* conversation is the exception that is
+                                            // already handled: `onCreated` above refreshes the
+                                            // peers, so its row appears without this.
                                             void remoteTimeline.refresh();
-                                            void refreshRemotePeers();
                                           }}
                                           peer={activeRemotePeer}
                                           sessionId={activeRemote.sessionId}

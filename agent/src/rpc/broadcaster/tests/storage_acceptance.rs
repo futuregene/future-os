@@ -77,7 +77,6 @@ fn paced_native_admission_and_control_latency() {
                 let control=Instant::now();writer.control.queue_flush().unwrap().recv().unwrap().unwrap();let control_micros=control.elapsed().as_micros();
                 enqueue("thinking_end",json!({"entry_id":entry,"content_key":key,"content_offset":offset,"content_bytes":0,"content_seal":true,"provider_metadata":{}}),true);
                 enqueue("message_end",json!({"entry_id":entry,"complete":true}),true);
-                drop(enqueue);
                 writer.shutdown().unwrap();done.store(true,Ordering::Release);
                 let (lags,reads)=monitor.join().unwrap();
                 assert!(health.error().is_none());assert_eq!(health.metrics.snapshot()["batchFailures"],0);assert_eq!(writer.admission.snapshot()["pendingEvents"],0);
@@ -95,7 +94,7 @@ fn paced_native_admission_and_control_latency() {
         cases.push(json!({"sessions":sessions,"workers":results,"databaseIo":store.db.metrics()}));
     }
     let report = json!({"workload":"production-event-admission-25ms-native-UUID","cases":cases,"scope":"Real EventBatchWriter enqueue/admission, natural 25ms timer and durable control fence. Eight fragments every 4ms for 64 ticks plus a 64-fragment burst per session; shared ordered SQLite writer and independent watermark observers. Observed durable lag includes up to one 2ms poll interval plus read scheduling. Does not include broadcaster projection, gRPC, Tauri IPC or UI frames. One observation per session count on the current CI runner; timing may include shared runner contention and is not a UI latency guarantee."});
-    println!("PACED_ADMISSION_REPORT={report}");
+    crate::console::println!("PACED_ADMISSION_REPORT={report}");
     if let Some(path) = std::env::var_os("FUTURE_PACED_ADMISSION_REPORT") {
         std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     }

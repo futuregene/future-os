@@ -279,7 +279,7 @@ pub fn run_from_args(args: &[String]) -> Result<()> {
             manager.initialize()?;
             if let Some(id) = cli.retry_session_recovery.as_deref() {
                 manager.retry_session_recovery(id)?;
-                println!(
+                crate::console::println!(
                     "{}",
                     serde_json::json!({"sessionId":id,"recovery":"completed","executionResumed":false})
                 );
@@ -1102,8 +1102,10 @@ mod cut_short_drain_tests {
         let (status, elapsed, outcome, output) = runtime.block_on(leg(true));
         // Diagnostic (shown on failure, and with `--nocapture`): which of the
         // two honest outcomes this run produced, plus the child's own log.
-        println!("cut-short drain: outcome={outcome:?} status={status:?} elapsed={elapsed:?}");
-        println!("cut-short drain child log:\n{output}");
+        crate::console::println!(
+            "cut-short drain: outcome={outcome:?} status={status:?} elapsed={elapsed:?}"
+        );
+        crate::console::println!("cut-short drain child log:\n{output}");
         let reported = outcome.clone().unwrap_or_default();
         let forced_out = status.code() == Some(130);
         let reported_failure = reported.contains("failed-stop:")

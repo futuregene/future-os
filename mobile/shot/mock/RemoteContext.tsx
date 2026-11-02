@@ -138,8 +138,26 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   );
   const [modelId, setModelId] = useState(parserDemo ? "future/deepseek-flash" : "future/deepseek-v4-pro");
   const [thinkingLevel, setThinkingLevel] = useState("medium");
-  const [selectedSessionId, setSelectedSessionId] = useState("");
+  const [selectedSessionId, setSelectedSessionId] = useState(
+    // `?session=<id>` opens that conversation directly. A capture that is about
+    // the conversation itself then does not have to walk the list first (whose
+    // rows, and the update reminder over them, are a different screen's story).
+    new URLSearchParams(window.location.search).get("session") ?? "",
+  );
   const [draft, setDraft] = useState(false);
+  /**
+   * Whether the demo conversation is mid-run, and whether its host refuses what
+   * the composer sends.
+   *
+   * `?streaming=1` starts it running (the states a reader sees *while* a reply is
+   * written — the send-while-running control and the send queue — only exist
+   * during one), and the stop control ends it, which is what makes the queue
+   * leave. `?queueFail=1` makes the host refuse that delivery, so the queue's
+   * "could not send, try again" state is reachable at all.
+   */
+  const [streamingLive, setStreamingLive] = useState(
+    new URLSearchParams(window.location.search).get("streaming") === "1",
+  );
   const [desktopId, setDesktopId] = useState(pairedDesktops[0]?.desktopId ?? "");
   // The phone's own labels for its desktops (name and icon): stored state here
   // so the device page and the list it sits on move together, as they do once
@@ -401,7 +419,14 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       // oldest-first and its first id is the row the page-up jump lands on.
       return multiTurnOlderEntries.map(entry => entry.id);
     },
-    streaming: baseTimeline.streaming,
+    streaming: baseTimeline.streaming || streamingLive,
+    /** The host ends the run when the reader stops it; the queue then leaves. */
+    abort: async () => setStreamingLive(false),
+    /** `?queueFail=1`: refuse what the composer sends, so the queue's retry shows. */
+    sendMessage: async () => {
+      if (new URLSearchParams(window.location.search).get("queueFail") === "1")
+        throw new Error("session_busy");
+    },
     compacting: scriptedCompaction ? baseTimeline.compacting === true : new URLSearchParams(window.location.search).get("compacting") === "1",
 
     // Composer settings

@@ -24,7 +24,7 @@ import { useChatScroll } from "./useChatScroll";
 import { useQuestionNav } from "./useQuestionNav";
 import { useTimelinePaging } from "./useTimelinePaging";
 import { useCompactContext } from "./useCompactContext";
-import { useSendMessage } from "./useSendMessage";
+import { useSendMessage, sendFailureText } from "./useSendMessage";
 import { useSkillRecommendation } from "./useSkillRecommendation";
 import { useDesktopResource } from "../settings/useDesktopResource";
 import { ChatTimeline, type SyncNoticeState } from "./components/ChatTimeline";
@@ -38,6 +38,10 @@ import { ImageViewer } from "./components/ImageViewer";
 import { SessionUsageSheet } from "./components/SessionUsageSheet";
 import { NativeFileActionSheet } from "./components/NativeFileActionSheet";
 import { newestFirst } from "./timelineListModel";
+import { expandSessionReferences } from "./sessionCompletion";
+import { sendQueue, useSendQueue } from "./sendQueue";
+import { showToast } from "./utils";
+import { collectQueuedAttachments, joinQueuedContent } from "../../lib/sendQueue";
 
 const SYNC_NOTICE_MIN_MS = 750;
 
@@ -144,6 +148,90 @@ export function ChatScreen() {
     remote, t, message, attachments, setMessage, setAttachments, setTransferProgress,
     sessionRefs, compactionPending: compactContext.pending,
   });
+
+  // ── Send queue ──────────────────────────────────────────────────────────
+  // A message held while the desktop was answering leaves the moment that run is
+  // over, joined with whatever else was queued into one message. "Over" is the
+  // desktop's own report — not streaming, not busy, still reachable and still
+  // this device's — because the desktop refuses a prompt that arrives early.
+  const queue = useSendQueue(conversationKey);
+  const queueSendingRef = useRef(false);
+  const queueIdle = !remote.draft
+    && !controls.streaming
+    && !remote.busy
+    && remote.desktopOnline
+    && remote.presence?.control !== "standby";
+  useEffect(() => {
+    if (!queueIdle || queue.failed || queueSendingRef.current || !conversationKey)
+      return;
+    if (queue.items.length === 0)
+      return;
+    // Taken, not read: the effect runs on every conversation update and the queue
+    // must leave exactly once per wait.
+    const taken = sendQueue.take(conversationKey);
+    if (taken.length === 0)
+      return;
+    queueSendingRef.current = true;
+    void (async () => {
+      try {
+        await remote.sendMessage(joinQueuedContent(taken), collectQueuedAttachments(taken));
+      }
+      catch (error) {
+        // Not delivered: back into the panel, flagged, where the reader can see
+        // it. `failed` is what stops the automatic attempt until they retry.
+        sendQueue.restore(conversationKey, taken);
+        const failure = sendFailureText(error, remote.presence?.holder?.name?.trim());
+        showToast(t(failure.key, failure.params));
+      }
+      finally {
+        queueSendingRef.current = false;
+      }
+    })();
+  }, [conversationKey, queue.failed, queue.items.length, queueIdle, remote, t]);
+
+  /**
+   * Hand the field's draft to the queue (the toolbar's "hold it" row). The
+   * references are expanded on the way in: a `#title` token edited away later
+   * must not strip the link out of a message that was already queued.
+   */
+  const enqueueComposerDraft = useCallback(() => {
+    const text = message.trim();
+    if (!text && attachments.length === 0)
+      return false;
+    if (!sendQueue.enqueue(conversationKey, {
+      content: expandSessionReferences(text, sessionRefs),
+      attachments,
+    })) {
+      showToast(t("chat.queueFull"));
+      return false;
+    }
+    setMessage("");
+    setAttachments([]);
+    return true;
+  }, [attachments, conversationKey, message, sessionRefs, setAttachments, setMessage, t]);
+
+  // The dock is memoized against the transcript's streaming commits, so what it
+  // is given has to keep its identity until the queue itself changes. The rows
+  // are derived from the store's stable snapshot, and the three handlers only
+  // ever need the conversation key.
+  const queuePanelItems = useMemo(
+    () => queue.items.map(item => ({
+      attachmentCount: item.attachments.length,
+      content: item.content,
+      id: item.id,
+    })),
+    [queue.items],
+  );
+  const updateQueuedMessage = useCallback((id: string, content: string) => {
+    sendQueue.update(conversationKey, id, content);
+  }, [conversationKey]);
+  const removeQueuedMessage = useCallback((id: string) => {
+    sendQueue.remove(conversationKey, id);
+  }, [conversationKey]);
+  const retrySendQueue = useCallback(() => {
+    sendQueue.clearFailure(conversationKey);
+  }, [conversationKey]);
+
   // Approvals live docked above the composer (not inline in the transcript), and
   // only while undecided — once a decision lands the card disappears.
   const timelineItems = useMemo(() => remote.timeline.items, [remote.timeline]);
@@ -583,6 +671,12 @@ export function ChatScreen() {
                     skillInstalling={installingSkill}
                     onInstallSkill={installSuggestedSkill}
                     onDismissSkill={dismissSuggestedSkill}
+                    queueItems={queuePanelItems}
+                    queueFailed={queue.failed}
+                    onQueueUpdate={updateQueuedMessage}
+                    onQueueRemove={removeQueuedMessage}
+                    onQueueRetry={retrySendQueue}
+                    enqueueDraft={enqueueComposerDraft}
                   />
                 </PausedTimeline>
               </View>

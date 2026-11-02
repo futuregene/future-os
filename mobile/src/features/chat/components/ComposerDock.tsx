@@ -20,6 +20,8 @@ import { SkillDetailsDialog } from "./SkillDetailsDialog";
 import { SkillSuggestionCard } from "./SkillSuggestionCard";
 import { ComposerToolbar } from "../composer/ComposerToolbar";
 import { useStyles } from "../composer/composerStyles";
+import { SendChoiceSheet } from "./SendChoiceSheet";
+import { SendQueuePanel, type SendQueuePanelItem } from "./SendQueuePanel";
 import { SkillPicker, skillPickerHeight } from "./SkillPicker";
 import { SessionPicker, sessionPickerHeight } from "./SessionPicker";
 import { FloatingTimelineButton } from "./FloatingTimelineButton";
@@ -58,6 +60,12 @@ function ComposerDockView({
   skillInstalling = false,
   onInstallSkill,
   onDismissSkill,
+  queueItems = [],
+  queueFailed = false,
+  onQueueUpdate,
+  onQueueRemove,
+  onQueueRetry,
+  enqueueDraft,
 }: {
   message: string;
   setMessage: Dispatch<SetStateAction<string>>;
@@ -98,6 +106,21 @@ function ComposerDockView({
   skillInstalling?: boolean;
   onInstallSkill?: () => void;
   onDismissSkill?: () => void;
+  /**
+   * This conversation's send queue (see `features/chat/sendQueue`): what is
+   * waiting for the run to end, shown above the box so it can be read, fixed or
+   * taken back before it leaves.
+   */
+  queueItems?: readonly SendQueuePanelItem[];
+  queueFailed?: boolean;
+  onQueueUpdate?: (id: string, content: string) => void;
+  onQueueRemove?: (id: string) => void;
+  onQueueRetry?: () => void;
+  /**
+   * Hand the field's draft to the queue. Returns false when there was nothing to
+   * queue, so the sheet stays open instead of pretending something happened.
+   */
+  enqueueDraft?: () => boolean;
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -105,6 +128,8 @@ function ComposerDockView({
   // The skill whose description is open. Owned here rather than by the picker,
   // which is unmounted as soon as the composer loses its slash token.
   const [skillDetails, setSkillDetails] = useState<RemoteSkill | null>(null);
+  // The "what does send mean now" sheet, from the toolbar while a run streams.
+  const [queueChoiceOpen, setQueueChoiceOpen] = useState(false);
   const { width, height, fontScale } = useWindowDimensions();
   const compactToolbar = width < 380 || fontScale > 1.2;
   // A running reply blocks sending, not drafting the next message. Keep the
@@ -166,6 +191,19 @@ function ComposerDockView({
     remote.selectedSessionId,
     remote.abort,
   );
+  const hasDraft = !!message.trim() || attachments.length > 0;
+  const handleChooseQueue = useCallback(() => {
+    if (enqueueDraft?.())
+      setQueueChoiceOpen(false);
+  }, [enqueueDraft]);
+  const handleChooseInterrupt = useCallback(() => {
+    // Queued first, interrupted second: the flush that runs when the run settles
+    // sends what was on screen, joined with the queue.
+    if (!enqueueDraft?.())
+      return;
+    setQueueChoiceOpen(false);
+    void stopRequest.stop();
+  }, [enqueueDraft, stopRequest]);
   const inputRef = useRef<TextInputInstance>(null);
   const completion = useComposerCompletion(
     message,
@@ -257,6 +295,15 @@ function ComposerDockView({
           t={t}
         />
       ) : null}
+      {queueItems.length > 0 && (
+        <SendQueuePanel
+          failed={queueFailed}
+          items={queueItems}
+          onRemove={id => onQueueRemove?.(id)}
+          onRetry={onQueueRetry}
+          onUpdate={(id, content) => onQueueUpdate?.(id, content)}
+        />
+      )}
       <View style={styles.composerArea}>
         {completion.session && (
           <SessionPicker
@@ -395,6 +442,9 @@ function ComposerDockView({
             skillEvaluating={skillEvaluating}
             canSend={canSend}
             send={send}
+            hasDraft={hasDraft}
+            queueCount={queueItems.length}
+            onOpenQueueChoice={() => setQueueChoiceOpen(true)}
           />
           {remote.streaming && stopRequest.status !== "idle" && (
             <Text accessibilityLiveRegion="polite" style={styles.stopStatus}>
@@ -410,6 +460,14 @@ function ComposerDockView({
         </View>
       </View>
       <SkillDetailsDialog onClose={() => setSkillDetails(null)} skill={skillDetails} />
+      <SendChoiceSheet
+        open={queueChoiceOpen}
+        queueCount={queueItems.length}
+        t={t}
+        onClose={() => setQueueChoiceOpen(false)}
+        onInterruptAndSend={handleChooseInterrupt}
+        onQueue={handleChooseQueue}
+      />
     </View>
   );
 }

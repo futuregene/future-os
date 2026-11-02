@@ -169,7 +169,7 @@ mod native_tests {
         match RestrictedToken::from_capabilities(records) {
             Ok(token) => Some(token),
             Err(error) if error.kind() == io::ErrorKind::Unsupported => {
-                eprintln!("SKIP: {error}");
+                crate::console::eprintln!("SKIP: {error}");
                 None
             }
             Err(error) => panic!("restricted token setup failed: {error}"),

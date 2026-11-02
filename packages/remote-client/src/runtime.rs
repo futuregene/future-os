@@ -741,6 +741,21 @@ enum StateEventKind {
     Other,
 }
 
+/// Which catalogue domain a push belongs to, for the reader's dispatch.
+///
+/// A `state.sessions` packet that names `rows`/`full` is a delta: it carries the
+/// part that changed and the ids that left, and a reader that treated it as a
+/// snapshot would delete everything else. Kept apart from `state_event_kind`
+/// because the shape is only knowable after the payload is opened.
+fn catalog_domain(domain: Option<&'static str>, payload: &Value) -> Option<&'static str> {
+    match domain {
+        Some("sessions") if payload.get("rows").is_some() || payload.get("full").is_some() => {
+            Some("sessions_delta")
+        }
+        other => other,
+    }
+}
+
 fn state_event_kind(subject: &str, pair_id: &str) -> StateEventKind {
     if subject == format!("p.{pair_id}.state.events") {
         StateEventKind::Events
@@ -2468,6 +2483,12 @@ impl Client {
                     // Unparsable or unauthenticated; same reasoning as above.
                     return;
                 };
+                // A `state.sessions` packet is one of two shapes: a snapshot
+                // (`sessions`) or a row-level delta (`full`/`rows`, for a client
+                // that declared `catalog_delta_v1`). The domain says which, so the
+                // reader never has to infer it from a missing key — reading a
+                // delta as a snapshot would delete every row it did not mention.
+                let domain = catalog_domain(domain, &payload);
                 let mut agent_recovered = false;
                 if kind == PRESENCE_LANE || kind == CONTROL_LANE {
                     let mut held = control
@@ -3540,6 +3561,33 @@ mod tests {
             Some("sess.with.dots")
         );
     }
+    /// A `state.sessions` packet says which shape it is, and the reader must not
+    /// have to guess: a delta read as a snapshot deletes every row it omits.
+    #[test]
+    fn a_catalogue_packet_names_its_own_shape() {
+        let snapshot = json!({ "sessions": [{ "sessionId": "s1" }], "version": {} });
+        let delta = json!({ "full": false, "rows": [], "removed": [], "version": {} });
+        let full = json!({ "full": true, "rows": [{ "sessionId": "s1" }], "version": {} });
+        assert_eq!(
+            catalog_domain(Some("sessions"), &snapshot),
+            Some("sessions")
+        );
+        assert_eq!(
+            catalog_domain(Some("sessions"), &delta),
+            Some("sessions_delta")
+        );
+        assert_eq!(
+            catalog_domain(Some("sessions"), &full),
+            Some("sessions_delta")
+        );
+        // Nothing else is re-tagged.
+        assert_eq!(
+            catalog_domain(Some("workspaces"), &delta),
+            Some("workspaces")
+        );
+        assert_eq!(catalog_domain(None, &delta), None);
+    }
+
     #[test]
     fn a_subject_that_is_not_an_event_is_refused() {
         for subject in [

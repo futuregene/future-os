@@ -67,15 +67,32 @@ fn encode_plain_reply(plain: Vec<u8>, gzip_enabled: bool) -> Vec<u8> {
     body
 }
 
+/// Below this a pushed body is not worth compressing.
+///
+/// Much lower than a reply's floor (32 KB) because of what a catalogue packet
+/// looks like: measured on this protocol's rows, a one-row delta is 546 bytes and
+/// still shrinks by a third, a five-row one by four fifths, and a twenty-row one
+/// by 93% — JSON whose keys repeat every row compresses far better than the
+/// "small bodies do not compress" rule of thumb assumes. The cost of trying is a
+/// few microseconds; the floor only keeps the header off bodies where the check
+/// below would decide there is nothing to gain anyway.
+pub(crate) const PUSH_FLOOR_BYTES: usize = 256;
+
 /// gzip a JSON body when that actually makes it smaller.
 ///
 /// The one compression policy both carriers share — replies, which only compress
 /// for a client that declared `reply_gzip_v1`, and pushes, where every client
 /// that reads them decodes through a decoder that sniffs the gzip magic. Below
-/// the threshold the header would cost more than the body saves; an
-/// incompressible body is returned untouched so a caller never pays for trying.
+/// the floor the header would cost more than the body saves; an incompressible
+/// body is returned untouched so a caller never pays for trying.
 pub(crate) fn compress_json(plain: Vec<u8>) -> Vec<u8> {
-    if plain.len() < REMOTE_JSON_GZIP_THRESHOLD_BYTES {
+    compress_json_from(plain, REMOTE_JSON_GZIP_THRESHOLD_BYTES)
+}
+
+/// [`compress_json`] with the floor supplied: pushes use
+/// [`PUSH_FLOOR_BYTES`], replies keep their larger one.
+pub(crate) fn compress_json_from(plain: Vec<u8>, floor: usize) -> Vec<u8> {
+    if plain.len() < floor {
         return plain;
     }
     let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());

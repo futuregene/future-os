@@ -1,5 +1,12 @@
 use crate::{diagnostics::FailureEpisode, supervisor::unix_timestamp};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+
+/// Consecutive failed mints that stop being "slow" and start being "stuck".
+///
+/// Three, because the renewal has 90 s of lead and a 15 s tick: three misses is
+/// nearly a whole lead window spent without a replacement grant, and the reader
+/// deserves to be told before the grant runs out.
+pub const MINT_FAILURES_BEFORE_STUCK: u8 = 3;
 
 /// Generation-local health reported by async-nats. Keeping this beside the
 /// client prevents a late callback from an old credential generation from
@@ -14,9 +21,75 @@ pub struct NatsHealth {
     pub credential_expires_at: AtomicU64,
     pub authorization_rejection_logged: AtomicBool,
     pub event_episode: FailureEpisode,
+    /// Whether this generation's inbound command lane is subscribed.
+    ///
+    /// A bridge with a live socket and no command lane answers nothing: the
+    /// phone's requests reach a subject nobody listens on and time out behind a
+    /// whole request deadline. The lane is therefore health, not a detail of the
+    /// command loop, and [`Self::command_lane_down_since`] is what makes "why was
+    /// this device unreachable for minutes" answerable.
+    command_lane_down: AtomicBool,
+    /// When the lane went down, unix milliseconds. 0 = it is up.
+    command_lane_down_since: AtomicU64,
+    /// Consecutive failed credential mints in this generation.
+    ///
+    /// Three in a row is where a renewal stops being merely slow: the user is
+    /// told, rather than reading a generic "offline" while nothing renews.
+    mint_failures: AtomicU8,
 }
 
 impl NatsHealth {
+    /// The command lane subscribed: requests will be answered from here on.
+    pub fn command_lane_up(&self) {
+        self.command_lane_down_since.store(0, Ordering::Release);
+        self.command_lane_down.store(false, Ordering::Release);
+    }
+
+    /// The command lane lost its subscription. Keeps the *first* moment it went
+    /// down, so a retry ladder reports how long the device has been deaf rather
+    /// than how long the current attempt has been running.
+    pub fn command_lane_down(&self) {
+        let _ = self.command_lane_down_since.compare_exchange(
+            0,
+            unix_millis(),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        self.command_lane_down.store(true, Ordering::Release);
+    }
+
+    /// Whether the lane is down right now.
+    pub fn command_lane_is_down(&self) -> bool {
+        self.command_lane_down.load(Ordering::Acquire)
+    }
+
+    /// Since when the lane has been down, unix milliseconds.
+    pub fn command_lane_down_since(&self) -> Option<u64> {
+        let since = self.command_lane_down_since.load(Ordering::Acquire);
+        (since > 0).then_some(since)
+    }
+
+    /// Count one failed mint; returns the new consecutive count.
+    pub fn note_mint_failure(&self) -> u8 {
+        let previous = self
+            .mint_failures
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                Some(count.saturating_add(1))
+            })
+            .unwrap_or(u8::MAX);
+        previous.saturating_add(1)
+    }
+
+    /// A mint succeeded: the consecutive count starts over.
+    pub fn clear_mint_failures(&self) {
+        self.mint_failures.store(0, Ordering::Release);
+    }
+
+    /// How many mints have failed in a row in this generation.
+    pub fn mint_failures(&self) -> u8 {
+        self.mint_failures.load(Ordering::Acquire)
+    }
+
     pub fn handle_event(&self, event: &async_nats::Event) {
         use async_nats::{ClientError, Event, ServerError};
         match event {
@@ -63,6 +136,7 @@ impl NatsHealth {
             }
             Event::ClientError(ClientError::MaxReconnects) => {
                 self.reconnect_required.store(true, Ordering::Release);
+                note_link_issue();
                 if let Some(line) = self
                     .event_episode
                     .record("network", "NATS reconnect budget exhausted")
@@ -122,6 +196,7 @@ impl NatsHealth {
     /// deliver the same error indefinitely, so one state transition is enough
     /// per generation, but the generation itself is disposable by design.
     pub fn mark_authorization_rejected(&self) {
+        note_link_issue();
         if self.credential_was_refreshed.load(Ordering::Acquire)
             && self.credential_expires_at.load(Ordering::Acquire) > unix_timestamp()
         {
@@ -157,6 +232,27 @@ pub fn unix_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+/// When any generation of this process's relay link last looked unhealthy: an
+/// authentication rejection, or an exhausted reconnect budget. Unix
+/// milliseconds; 0 = never.
+///
+/// Process-global because the reader of this fact is usually not the generation
+/// that failed — the status projection and a measurement of a slow send both ask
+/// "was the link just failing?" after the generation that answers them may
+/// already have been replaced.
+static LAST_LINK_ISSUE_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Record that the link just failed in a way a reader would notice.
+pub fn note_link_issue() {
+    LAST_LINK_ISSUE_MS.store(unix_millis(), Ordering::Release);
+}
+
+/// How long ago the link last failed, or `None` if it never has.
+pub fn link_issue_age() -> Option<std::time::Duration> {
+    let at = LAST_LINK_ISSUE_MS.load(Ordering::Acquire);
+    (at > 0).then(|| std::time::Duration::from_millis(unix_millis().saturating_sub(at)))
 }
 
 pub fn reconnect_delay(attempt: usize, random: f64) -> std::time::Duration {

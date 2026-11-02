@@ -1481,8 +1481,8 @@ impl RunClient {
     ) -> Result<bool, String> {
         let current = self.get_state(Some(session_id)).await?;
         Ok(first_turn_title_eligible(&current)
-            && !first_turn_title_baseline(&current)
-                .is_some_and(|after| Some(after.as_str()) != before))
+            && first_turn_title_baseline(&current)
+                .is_none_or(|after| Some(after.as_str()) == before))
     }
 }
 

@@ -60,7 +60,7 @@
 - [desktop/](internals/desktop/PRODUCT.md) — 产品语义、数据模型（`ER.md`）、颜色、沙箱（macOS/Windows/Linux）、连接与远程、嵌入式终端、压缩（文档地图见 `desktop/CLAUDE.md`）
 - [compaction/](internals/compaction/compaction.zh-CN.md) — 运行时上下文压缩：两个策略及其参数、生产请求形状、开发指南（`compaction-development.zh-CN.md`）、检索接口，以及两个实验——闭卷（`compaction-closed-book-experiment.zh-CN.md`）与开卷（`compaction-open-book-experiment.zh-CN.md`）
 - [mobile/](internals/mobile/README.md) — 移动端构建/TestFlight、iOS 平台对齐、流式同步设计与测量、鸿蒙兼容（带日期的审计与测量报告见 `archives/verification/`）
-- [skill_reco/](internals/skill_reco/harness.zh-CN.md) — 技能推荐：[评测](internals/skill_reco/evaluation.zh-CN.md)、[运行框架](internals/skill_reco/harness.zh-CN.md) 与[集成方案](internals/skill_reco/integration-plan.zh-CN.md)（历史设计记录）
+- [skill_reco/](internals/skill_reco/harness.zh-CN.md) — 技能推荐：[评测](internals/skill_reco/evaluation.zh-CN.md)、[运行框架](internals/skill_reco/harness.zh-CN.md)、[集成方案](internals/skill_reco/integration-plan.zh-CN.md)（历史设计记录），以及[换一个决策模型在同一批题上打分](internals/skill_reco/decider-comparison.zh-CN.md)
 - [agent/](internals/agent/README.zh-CN.md) — gRPC 后端（`agent/`）的模块地图：turn loop、工具、LLM 层、会话、沙箱，以及改每一项前该读什么
 - [host](internals/host.zh-CN.md) — `future-host`（无 GUI 的共享后端：store、agent bridge、tasks、remote、identity）的模块地图
 - [Desktop NATS 桥](internals/desktop-nats.md)

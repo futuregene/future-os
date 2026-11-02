@@ -75,6 +75,25 @@ describe("sendRemotePrompt", () => {
     expect(getRemoteOutbox("desktop_a", "sess_1")).toEqual({ prompt: null, continuation: null });
   });
 
+  /**
+   * A first delivery already knows the host cannot hold a receipt: the command
+   * id was minted a microsecond earlier. Asking anyway spends a whole
+   * client→relay→host round trip on every send, which on a remote desktop is
+   * precisely the wait between pressing send and seeing the message.
+   */
+  it("does not ask the host for a receipt on a first delivery", async () => {
+    await sendRemotePrompt("desktop_a", "sess_1", {
+      text: "hello",
+      attachments: [],
+      workspaceId: null,
+      freshModelId: null,
+      freshThinkingLevel: null,
+    });
+
+    expect(getPromptReceipt).not.toHaveBeenCalled();
+    expect(prompt).toHaveBeenCalledTimes(1);
+  });
+
   it("leaves the prompt queued when the link is down", async () => {
     prompt.mockRejectedValue(new Error("peer_not_connected"));
 
@@ -168,6 +187,7 @@ describe("sendRemoteContinuation", () => {
   it("persists a continuation and clears it after the host accepts", async () => {
     await expect(sendRemoteContinuation("desktop_a", "sess_1", "run_1")).resolves.toBeUndefined();
     expect(continuation).toHaveBeenCalledTimes(1);
+    expect(getPromptReceipt).not.toHaveBeenCalled();
     expect(getRemoteOutbox("desktop_a", "sess_1")).toEqual({ prompt: null, continuation: null });
   });
 

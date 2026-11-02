@@ -10,13 +10,16 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { ArrowUp, Loader2, Paperclip, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
 import { readNativeClipboardFilePaths, readNativeClipboardImage, savePastedFile, savePastedImage } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { EMPTY_EDITOR_ATTR } from "../../lib/editableTarget";
 import { errorMessage } from "../../lib/errors";
 import { onFutureEvent } from "../../lib/futureEvents";
+import { collectQueuedAttachments, joinQueuedContent } from "../../lib/sendQueue";
 import { useImeEnterGuard } from "../../lib/useImeEnterGuard";
 import { imageExtensionFromMime, splitFileName } from "../agent/attachments";
+import { SendQueuePanel } from "../agent/SendQueuePanel";
 import { SkillRecommendCard } from "../agent/SkillRecommendCard";
 import { RemoteApprovalMenu } from "./RemoteApprovalMenu";
 import { buildRemoteSlashMenu, insertRemoteSkill, remoteSlashItems, slashQuery, withoutSlashWord } from "./remoteCommands";
@@ -33,6 +36,7 @@ import {
   sessionReferenceQuery,
 } from "./remoteSessionReference";
 import { RemoteSlashMenu } from "./RemoteSlashMenu";
+import { remoteSendQueue, remoteSendQueueKey, useRemoteSendQueue } from "./sendQueue";
 import { useRemoteFusionAvailability } from "./useRemoteFusionAvailability";
 
 /** How many files one paste may stage. The rest are reported, not silently dropped. */
@@ -307,6 +311,15 @@ export function RemoteComposer({
    */
   const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(null);
   /**
+   * The messages held for this conversation's run to finish (see
+   * `lib/sendQueue`), and whether the send button's menu is asking what a send
+   * means while it streams.
+   */
+  const queueKey = remoteSendQueueKey(desktopId, sessionId);
+  const queue = useRemoteSendQueue(desktopId, sessionId);
+  const [queueChoiceOpen, setQueueChoiceOpen] = useState(false);
+  const queueSendingRef = useRef(false);
+  /**
    * The conversations this draft points at, keyed by the token standing in for
    * each one (`remoteSessionReference`). The draft shows `#title`; this is the
    * id that makes it a reference, and it is kept with the draft for that reason.
@@ -401,6 +414,46 @@ export function RemoteComposer({
       active = false;
     };
   }, [peer?.connected, desktopId, sessionId]);
+
+  /**
+   * Send whatever the queue holds, the moment this conversation is free again.
+   *
+   * "Free" is the host's own condition — not streaming, not in another command,
+   * and this device still in control — because the host answers one prompt at a
+   * time and refuses one that arrives early. The queue is taken before the send
+   * so a re-render cannot send it twice; a refusal puts it back and marks the
+   * queue failed, which stops the automatic attempt until the reader retries
+   * from the panel.
+   */
+  useEffect(() => {
+    if (streaming || busy || held || !peer?.connected || queue.failed || queueSendingRef.current)
+      return;
+    if (queue.items.length === 0)
+      return;
+    const taken = remoteSendQueue.take(queueKey);
+    if (taken.length === 0)
+      return;
+    queueSendingRef.current = true;
+    void (async () => {
+      try {
+        await sendRemotePrompt(desktopId, sessionId, {
+          text: joinQueuedContent(taken),
+          attachments: collectQueuedAttachments(taken),
+          workspaceId,
+          freshModelId,
+          freshThinkingLevel,
+        });
+        onSent();
+      }
+      catch (err) {
+        remoteSendQueue.restore(queueKey, taken);
+        setError(isRecoverableSendError(err) ? t("promptQueued") : errorMessage(err));
+      }
+      finally {
+        queueSendingRef.current = false;
+      }
+    })();
+  }, [busy, desktopId, freshModelId, freshThinkingLevel, held, onSent, peer?.connected, queue.failed, queue.items.length, queueKey, sessionId, streaming, t, workspaceId]);
 
   /**
    * Stage a file on the host.
@@ -584,11 +637,17 @@ export function RemoteComposer({
     // answers one prompt at a time and refuses a second with "This session is
     // still running; wait for it to finish or abort it first" — and it refuses
     // it *after* the prompt was written down, which is what turned a press into
-    // an error over a message the reader had every reason to expect to go. The
-    // send control is closed for the same reason; Enter reaches this function
-    // too, so the guard belongs here, where both paths meet.
-    if ((!message && uploads.length === 0) || busy || evaluating || streaming || held)
+    // an error over a message the reader had every reason to expect to go. So a
+    // send while it streams is a choice instead: the send button's menu holds
+    // the draft in the queue, or interrupts the run and sends it now
+    // (`queueDraft`). Enter reaches this function too, so the choice is asked
+    // here, where both paths meet.
+    if ((!message && uploads.length === 0) || busy || evaluating || held)
       return;
+    if (streaming) {
+      setQueueChoiceOpen(true);
+      return;
+    }
 
     // Skill recommendation, from *that* host: the draft is held while it is
     // asked, and a returned card keeps it unsubmitted until the user acts
@@ -659,6 +718,35 @@ export function RemoteComposer({
     finally {
       setInstallingSkill(false);
     }
+  }
+
+  /**
+   * Hold the draft for this conversation's run, and optionally end that run.
+   *
+   * The queue takes the message *before* the interrupt, so the flush that runs
+   * once the run settles sends exactly what was on screen — the queue joined
+   * with this message, as one message. The tokens the draft spells are expanded
+   * here, on the way into the queue, for the same reason `sendNow` expands them:
+   * a `#title` is a stand-in for a link, and only the link means anything to the
+   * host.
+   */
+  function queueDraft(interrupt: boolean) {
+    setQueueChoiceOpen(false);
+    if (busy || held || evaluating)
+      return;
+    const message = text.trim();
+    if (!message && uploads.length === 0)
+      return;
+    remoteSendQueue.enqueue(queueKey, {
+      content: expandRemoteReferences(message, references),
+      attachments: uploads,
+    });
+    setText("");
+    setUploads([]);
+    setReferences({});
+    clearRemoteComposerDraft(desktopId, sessionId);
+    if (interrupt)
+      void stop();
   }
 
   async function stop() {
@@ -886,6 +974,27 @@ export function RemoteComposer({
             </p>
           )
         : null}
+      {/* What is waiting for this conversation's run to end: the messages the
+          send button held, in the order they will leave. Above the box and below
+          the notices, because it is the next thing to be sent, not something
+          already in the transcript. */}
+      {queue.items.length > 0
+        ? (
+            <div className="mb-2">
+              <SendQueuePanel
+                failed={queue.failed}
+                items={queue.items.map(item => ({
+                  attachmentCount: item.attachments.length,
+                  content: item.content,
+                  id: item.id,
+                }))}
+                onRemove={id => remoteSendQueue.remove(queueKey, id)}
+                onRetry={() => remoteSendQueue.clearFailure(queueKey)}
+                onUpdate={(id, content) => remoteSendQueue.update(queueKey, id, content)}
+              />
+            </div>
+          )
+        : null}
       {/* The recommendation, above the box it is holding: it names a skill on
           that computer and offers to install it there. */}
       {skillRecommendation && recommendationCard
@@ -1066,35 +1175,77 @@ export function RemoteComposer({
         </div>
         <div className="ms-auto flex min-w-0 items-center gap-2">
           {controls}
-          {/* Stop replaces Send while a run is in flight, whatever the field
-              holds. The host answers one prompt at a time and refuses a second
-              with "This session is still running; wait for it to finish or
-              abort it first" — a refusal that arrives *after* the prompt was
-              written down, which is what turned a press into an error over a
-              message the reader had every reason to expect to go. So the send
-              control is not drawn while the run streams, however much has been
-              typed: a draft waits in the field, and the one control in this
-              slot is the Stop that ends what it is waiting for. That is the
-              local composer's rule and the phone's, and a third variant here
-              would read as a different product.
-              The button is disabled while the abort is outstanding, so
-              `disabled` is the single guard against a second abort — there is
-              no second in-flight check to make. Icon buttons, at the local
-              composer's size and colour: the same two controls in the same
+          {/* The run in flight takes the send button's meaning, and what is in
+              the field decides which meaning it has. With a draft, the button
+              asks what "send" should mean — hold it in the queue, or interrupt
+              the run and send it now — because the host answers one prompt at a
+              time and a second one is refused *after* it was written down. With
+              an empty field, the one control in this slot is the Stop that ends
+              the run; and with a queue waiting behind it, that Stop sends the
+              queue as soon as the run is over.
+              The button is disabled while an abort is outstanding, so `disabled`
+              is the single guard against a second abort. Icon buttons, at the
+              local composer's size and colour: the same two controls in the same
               place on both screens. */}
           {streaming
-            ? (
-                <button
-                  aria-label={stopping ? t("stopping") : t("stop")}
-                  className="inline-flex size-7 items-center justify-center rounded-md bg-ink text-surface transition-colors hover:bg-ink-soft disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={stopping}
-                  onClick={() => void stop()}
-                  title={stopping ? t("stopping") : t("stop")}
-                  type="button"
-                >
-                  {stopping ? <Loader2 className="size-3.5 animate-spin" /> : <Square className="size-3 fill-current" />}
-                </button>
-              )
+            ? ((text.trim() || uploads.length > 0) && !held
+                ? (
+                    <SelectMenu
+                      align="right"
+                      open={queueChoiceOpen}
+                      onDismiss={() => setQueueChoiceOpen(false)}
+                      panelClassName="w-72 overflow-hidden"
+                      trigger={(
+                        <button
+                          aria-label={t("queueChoose")}
+                          className="inline-flex size-7 items-center justify-center rounded-md bg-accent-fill text-white transition-colors hover:bg-accent-fill-hover disabled:cursor-not-allowed disabled:opacity-50"
+                          disabled={busy || evaluating}
+                          onClick={() => setQueueChoiceOpen(open => !open)}
+                          title={t("queueChoose")}
+                          type="button"
+                        >
+                          <ArrowUp className="size-3.5" />
+                        </button>
+                      )}
+                    >
+                      <SelectMenuItem className="py-1.5" selected={false} onSelect={() => queueDraft(false)}>
+                        <span className="min-w-0 flex-1 space-y-0.5">
+                          <span className="block truncate font-medium leading-tight text-ink">
+                            {t("queueAdd")}
+                          </span>
+                          <span className="block text-xs leading-tight text-ink-muted">
+                            {t("queueAddHint")}
+                          </span>
+                        </span>
+                      </SelectMenuItem>
+                      <SelectMenuItem className="py-1.5" selected={false} onSelect={() => queueDraft(true)}>
+                        <span className="min-w-0 flex-1 space-y-0.5">
+                          <span className="block truncate font-medium leading-tight text-ink">
+                            {t(queue.items.length > 0 ? "queueInterruptAll" : "queueInterrupt")}
+                          </span>
+                          <span className="block text-xs leading-tight text-ink-muted">
+                            {t(queue.items.length > 0 ? "queueInterruptAllHint" : "queueInterruptHint")}
+                          </span>
+                        </span>
+                      </SelectMenuItem>
+                    </SelectMenu>
+                  )
+                : (
+                    <button
+                      aria-label={stopping
+                        ? t("stopping")
+                        : queue.items.length > 0 ? t("stopAndSendQueue") : t("stop")}
+                      className="inline-flex size-7 items-center justify-center rounded-md bg-ink text-surface transition-colors hover:bg-ink-soft disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={stopping}
+                      onClick={() => void stop()}
+                      title={stopping
+                        ? t("stopping")
+                        : queue.items.length > 0 ? t("stopAndSendQueue") : t("stop")}
+                      type="button"
+                    >
+                      {stopping ? <Loader2 className="size-3.5 animate-spin" /> : <Square className="size-3 fill-current" />}
+                    </button>
+                  ))
             : (
                 <button
                   aria-label={busy ? t("sending") : t("send")}

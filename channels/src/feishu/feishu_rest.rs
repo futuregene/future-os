@@ -314,9 +314,8 @@ impl FeishuRestClient {
             return Err(anyhow!("Download resource failed: HTTP {}", resp.status()));
         }
         anyhow::ensure!(
-            !resp
-                .content_length()
-                .is_some_and(|length| length > max_bytes),
+            resp.content_length()
+                .is_none_or(|length| length <= max_bytes),
             "Resource exceeds download size limit"
         );
         let mut bytes = Vec::new();
