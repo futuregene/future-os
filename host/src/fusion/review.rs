@@ -1,4 +1,5 @@
 //! Each reviewer revisits its own first answer using the frozen moderator map.
+use super::quotes::contains;
 use anyhow::{ensure, Context, Result};
 use future_fusion::{parse_json, ConsultationInput};
 use serde::Deserialize;
@@ -24,7 +25,7 @@ pub(super) fn prompt(
     let packet = json!({"participant":participant,"task":input,"original_analysis":own["response"].as_str().context("Missing original public answer")?,"moderator_map":mapping});
     Ok(format!(
         "{INSTRUCTIONS}\nReview packet:\n{}",
-        serde_json::to_string_pretty(&packet)?
+        serde_json::to_string(&packet)?
     ))
 }
 
@@ -118,9 +119,6 @@ fn quoted_sources(mapping: &Value) -> Vec<(&str, &str)> {
         .filter_map(|source| Some((source["participant"].as_str()?, source["quote"].as_str()?)))
         .collect()
 }
-fn contains(source: &str, excerpt: &str) -> bool {
-    !excerpt.trim().is_empty() && source.contains(excerpt)
-}
 
 pub(super) fn validate(text: &str, prompt: &str, participant: &str) -> Result<()> {
     let review: Review = parse_json(text)?;
@@ -141,66 +139,78 @@ pub(super) fn validate(text: &str, prompt: &str, participant: &str) -> Result<()
         .context("Missing own analysis")?;
     let mapping = &packet["moderator_map"];
     let sources = quoted_sources(mapping);
-    for response in review.responses {
-        ensure!(
-            response.participant != participant
-                && sources
-                    .iter()
-                    .any(|(id, quote)| *id == response.participant
-                        && contains(quote, &response.quote)),
-            "Response must cite another participant's visible original excerpt"
-        );
-        let _ = response.decision;
-        ensure!(
-            !response.reason.trim().is_empty(),
-            "Missing response reason"
-        );
+    let mut errors = vec![];
+    for (index, response) in review.responses.iter().enumerate() {
+        if response.participant == participant
+            || !sources
+                .iter()
+                .any(|(id, quote)| *id == response.participant && contains(quote, &response.quote))
+        {
+            let visible = sources
+                .iter()
+                .filter(|(id, _)| *id == response.participant)
+                .map(|(_, quote)| *quote)
+                .collect::<Vec<_>>();
+            errors.push(format!("responses[{index}].quote must cite the named OTHER participant's visible original excerpt. Supplied quote: {:?}. Visible source excerpts for {}: {}",
+                response.quote, response.participant,
+                future_fusion::bounded_text(&serde_json::to_string(&visible)?, 1600)));
+        }
+        if response.reason.trim().is_empty() {
+            errors.push(format!("responses[{index}].reason is empty"));
+        }
+        let _ = &response.decision;
     }
-    ensure!(
-        !review.self_review.is_empty(),
-        "Missing review of own answer"
-    );
-    for revision in review.self_review {
-        ensure!(
-            contains(own, &revision.original_quote),
-            "Invented original self-position"
-        );
-        let _ = revision.decision;
-        ensure!(
-            !revision.updated_position.trim().is_empty() && !revision.reason.trim().is_empty(),
-            "Missing revised position or reason"
-        );
+    if review.self_review.is_empty() {
+        errors.push("self_review must address your own answer".into());
+    }
+    for (index, revision) in review.self_review.iter().enumerate() {
+        if !contains(own, &revision.original_quote) {
+            errors.push(format!("self_review[{index}].original_quote does not match your original_analysis: {:?}. Copy a contiguous excerpt from original_analysis; do not invent an earlier position.", revision.original_quote));
+        }
+        if revision.updated_position.trim().is_empty() || revision.reason.trim().is_empty() {
+            errors.push(format!(
+                "self_review[{index}] needs updated_position and reason"
+            ));
+        }
+        let _ = &revision.decision;
     }
     let summaries = strings(mapping);
-    for correction in review.mapping_corrections {
-        ensure!(
-            summaries
+    for (index, correction) in review.mapping_corrections.iter().enumerate() {
+        if !summaries
+            .iter()
+            .any(|s| contains(s, &correction.summary_quote))
+        {
+            errors.push(format!("mapping_corrections[{index}].summary_quote must identify a visible moderator statement"));
+        }
+        if !contains(own, &correction.source_quote)
+            && !sources
                 .iter()
-                .any(|s| contains(s, &correction.summary_quote)),
-            "Correction must identify a visible moderator statement"
-        );
-        ensure!(
-            contains(own, &correction.source_quote)
-                || sources
-                    .iter()
-                    .any(|(_, q)| contains(q, &correction.source_quote)),
-            "Correction lacks a visible original source"
-        );
-        ensure!(
-            !correction.correction.trim().is_empty() && !correction.reason.trim().is_empty(),
-            "Missing mapping correction or reason"
-        );
-    }
-    for addition in review.additions {
-        ensure!(!addition.content.trim().is_empty(), "Empty review addition");
-        if addition.kind == AdditionKind::VerifiedFact {
-            ensure!(
-                !addition.evidence.is_empty()
-                    && addition.evidence.iter().all(|e| !e.trim().is_empty()),
-                "A verified fact needs inspectable evidence references"
-            );
+                .any(|(_, q)| contains(q, &correction.source_quote))
+        {
+            errors.push(format!(
+                "mapping_corrections[{index}].source_quote lacks a visible original source"
+            ));
+        }
+        if correction.correction.trim().is_empty() || correction.reason.trim().is_empty() {
+            errors.push(format!(
+                "mapping_corrections[{index}] needs correction and reason"
+            ));
         }
     }
+    for (index, addition) in review.additions.iter().enumerate() {
+        if addition.content.trim().is_empty() {
+            errors.push(format!("additions[{index}].content is empty"));
+        }
+        if addition.kind == AdditionKind::VerifiedFact
+            && (addition.evidence.is_empty()
+                || addition.evidence.iter().any(|e| e.trim().is_empty()))
+        {
+            errors.push(format!(
+                "additions[{index}] labels a verified_fact without inspectable evidence references"
+            ));
+        }
+    }
+    ensure!(errors.is_empty(), "{}", errors.join("\n"));
     Ok(())
 }
 
@@ -233,6 +243,21 @@ mod tests {
         assert!(prompt.contains("Use files."));
         validate(&review.to_string(), &prompt, "P1").unwrap();
     }
+    #[test]
+    fn quote_layout_changes_pass_and_repair_feedback_names_all_bad_fields() {
+        let (mut review, prompt) = fixture();
+        review["responses"][0]["quote"] = json!("Use\n files.");
+        validate(&review.to_string(), &prompt, "P1").unwrap();
+        review["responses"][0]["quote"] = json!("Invented other view");
+        review["self_review"][0]["original_quote"] = json!("Invented own view");
+        let error = validate(&review.to_string(), &prompt, "P1")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("responses[0].quote"));
+        assert!(error.contains("self_review[0].original_quote"));
+        assert!(error.contains("Use files."));
+    }
+
     #[test]
     fn rejects_identity_drift_invented_positions_and_unbacked_facts() {
         let (review, prompt) = fixture();

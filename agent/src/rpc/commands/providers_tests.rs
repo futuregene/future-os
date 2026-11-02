@@ -966,11 +966,12 @@ fn suggest_skill_response_encodes_into_the_typed_payload() {
     }
 }
 
-/// The declared level list must survive the typed wire form, not only the JSON
+/// Declared thinking levels and effective output capacity must survive the typed
+/// wire form, not only the JSON
 /// envelope: clients read `payload.listModels` and the JSON `data` string is
 /// empty for a typed command.
 #[test]
-fn declared_thinking_levels_survive_the_typed_wire_payload() {
+fn declared_thinking_levels_and_output_capacity_survive_the_typed_wire_payload() {
     let home = TestHome::new();
     let path = home.models_path();
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -994,7 +995,33 @@ fn declared_thinking_levels_survive_the_typed_wire_payload() {
     let resp = parse_response(&handle_command_internal(&state, make_cmd("list_models")));
     let payload = future_rpc::encode::response_payload("list_models", &resp["data"])
         .expect("list_models encodes into its typed payload");
-    let future_rpc::proto::response_payload::Kind::ListModels(models) = payload.kind.unwrap()
+    let response = future_rpc::proto::RpcResponse {
+        command: "list_models".into(),
+        success: true,
+        payload: Some(payload),
+        ..Default::default()
+    };
+    let bytes = prost::Message::encode_to_vec(&response);
+    let response: future_rpc::proto::RpcResponse =
+        prost::Message::decode(bytes.as_slice()).unwrap();
+    assert!(response.data.is_empty());
+    let decoded = future_rpc::decode::response_data(&response);
+    let original = resp["data"]["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["provider"] == "wire-test")
+        .unwrap();
+    let model = decoded["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["provider"] == "wire-test")
+        .unwrap();
+    assert!(original["maxTokens"].as_i64().unwrap() > 0);
+    assert_eq!(model["maxTokens"], original["maxTokens"]);
+    let future_rpc::proto::response_payload::Kind::ListModels(models) =
+        response.payload.unwrap().kind.unwrap()
     else {
         panic!("list_models payload kind");
     };

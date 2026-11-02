@@ -350,7 +350,7 @@
       "issue_mapping": "Mapping issues",
       "reviewing": "Cross discussion",
       "synthesizing": "Summary",
-      "preflight": "Checking main model"
+      "preflight": "Checking moderator"
     },
     "states": {
       "preparing": "Preparing discussion",
@@ -366,7 +366,7 @@
     "retry": "Retry {{count}}",
     "completeness": {
       "full": "Full panel",
-      "partial": "Partial panel",
+      "partial": "Partially complete",
       "single": "Single participant"
     },
     "result": {
@@ -394,11 +394,12 @@
     "partialNotice": "Some models did not complete the discussion",
     "statusUnavailable": "Discussion status is temporarily unavailable",
     "disabled": "Fusion is turned off in settings",
-    "moderatorRole": "Main model",
+    "moderatorRole": "Moderator",
     "participantRole": "Participant {{number}}",
     "notices": {
+      "reportUnvalidated": "Some reports have validation issues or were shortened to fit context; usable material was retained.",
       "noConclusion": "No synthesized conclusion was produced.",
-      "moderatorFailed": "The main model is unavailable; no substitute was selected.",
+      "moderatorFailed": "The moderator is unavailable; no substitute was selected.",
       "noParticipants": "No valid participant results; discussion stopped.",
       "providerUnavailable": "The provider is temporarily unavailable; affected requests were stopped.",
       "singleParticipant": "Only a single-model opinion remains; cross discussion was skipped.",

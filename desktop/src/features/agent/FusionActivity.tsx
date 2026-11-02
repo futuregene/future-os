@@ -1,6 +1,6 @@
 import type { AgentActivityItem, FusionDiscussion, FusionReadRequest } from "@future-os/thread-projection";
 import { FUSION_PHASES, fusionProgress } from "@future-os/thread-projection";
-import { Check, ChevronDown, ChevronUp, Circle, CircleMinus, CirclePause, CircleStop, CircleX, Clock, LoaderCircle, TriangleAlert, UserRoundGroup } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Circle, CircleAlert, CircleMinus, CirclePause, CircleStop, CircleX, Clock, LoaderCircle, TriangleAlert, UserRoundGroup } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invokeCommand } from "../../integrations/tauri/invoke";
@@ -83,13 +83,14 @@ export function FusionActivity({ item, runId, resolveTarget }: {
             <div className="space-y-2" aria-live="polite" data-testid="fusion-models">
               {models.map((model) => {
                 const role = moderatorOnly ? "moderator" : model.role;
-                const name = `${role ? `${t(role === "moderator" ? "fusion.moderatorRole" : "fusion.participantRole", { number: model.number })} · ` : ""}${model.label}`;
-                const failed = ["failed", "timed_out", "output_limited"].includes(model.status);
-                const Icon = model.status === "thinking" ? LoaderCircle : model.status === "completed" ? Check : model.status === "timed_out" ? Clock : model.status === "failed" ? CircleX : model.status === "interrupted" ? CirclePause : model.status === "cancelled" ? CircleStop : model.status === "skipped" ? CircleMinus : failed || model.status === "partial" ? TriangleAlert : Circle;
+                const status = role === "moderator" && model.status === "interrupted" ? "failed" : model.status;
+                const name = `${role ? `${t(role === "moderator" ? "fusion.moderatorRole" : "fusion.participantRole", { number: model.number })} · ` : ""}${model.label} · ${t(`fusion.phases.${progress.phase === "preflight" ? "preparing" : progress.phase}`)}`;
+                const failed = ["failed", "timed_out", "output_limited"].includes(status);
+                const Icon = status === "thinking" ? LoaderCircle : status === "completed" ? Check : status === "timed_out" ? Clock : status === "failed" ? role === "moderator" ? CircleAlert : CircleX : status === "interrupted" ? CirclePause : status === "cancelled" ? CircleStop : status === "skipped" ? CircleMinus : failed || status === "partial" ? TriangleAlert : Circle;
                 return (
                   <div key={model.id} className="flex min-w-0 items-center gap-2">
-                    <span className="inline-flex shrink-0" role="img" aria-label={t(`fusion.modelStates.${model.status}`)} title={t(`fusion.modelStates.${model.status}`)}>
-                      <Icon aria-hidden="true" className={`size-3.5 ${model.status === "thinking" ? "animate-spin text-accent" : model.status === "completed" ? "text-success" : failed ? "text-danger" : model.status === "partial" || model.status === "interrupted" ? "text-warning" : "text-ink-muted"}`} />
+                    <span className="inline-flex shrink-0" role="img" aria-label={t(`fusion.modelStates.${status}`)} title={t(`fusion.modelStates.${status}`)}>
+                      <Icon aria-hidden="true" className={`size-3.5 ${status === "thinking" ? "animate-spin text-accent" : status === "completed" ? "text-success" : failed ? "text-danger" : status === "partial" || status === "interrupted" ? "text-warning" : "text-ink-muted"}`} />
                     </span>
                     <span className="min-w-0 flex-1 wrap-break-word">
                       {name}

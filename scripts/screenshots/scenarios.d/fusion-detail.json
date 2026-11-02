@@ -31,7 +31,7 @@
           "wait": 700
         },
         {
-          "eval": "(() => {const p=document.querySelector('[data-fusion-panel=detail]');if(!p||!p.textContent.includes('最终结论')||!p.textContent.includes('建议 SQLite'))throw new Error('missing conclusion or public model response');if(p.scrollWidth>p.clientWidth+1)throw new Error('horizontal overflow');return 'discussion and public response visible';})()"
+          "eval": "(() => {const p=document.querySelector('[data-fusion-panel=detail]');const header=p?.firstElementChild;if(!header?.textContent.includes('讨论完成')||!header.textContent.includes('完整讨论')||!p.textContent.includes('建议 SQLite'))throw new Error('missing inline status or public report');if(p.textContent.includes('最终结论'))throw new Error('duplicated summary');if(p.scrollWidth>p.clientWidth+1)throw new Error('horizontal overflow');return 'status badges inline, public report visible, no duplicated summary';})()"
         },
         {
           "shot": "d-fusion-detail.png"
@@ -107,13 +107,10 @@
           "wait": 500
         },
         {
-          "tap": "继续读取"
-        },
-        {
           "wait": 500
         },
         {
-          "eval": "(() => {const p=document.querySelector('[data-fusion-panel=detail]');if(!p?.querySelector('[data-fusion-public-output]')?.textContent.includes('全文读取完成。'))throw new Error('paged public response is incomplete');return 'UTF-8 transcript pages joined';})()"
+          "eval": "(() => {const p=document.querySelector('[data-fusion-panel=detail]');if(!p?.querySelector('[data-fusion-public-output]')?.textContent.includes('全文读取完成。'))throw new Error('paged public response is incomplete');if([...p.querySelectorAll('button')].some(b=>b.textContent.includes('继续读取')))throw new Error('manual paging remains');return 'complete public report loaded automatically';})()"
         },
         {
           "shot": "d-fusion-detail-paging.png"
@@ -224,7 +221,7 @@
           "wait": 700
         },
         {
-          "eval": "(() => {const p=document.querySelector('[data-fusion-panel=detail]');if(!p||!p.textContent.includes('最终结论')||!p.textContent.includes('建议 SQLite'))throw new Error('missing conclusion or public model response');if(p.scrollWidth>p.clientWidth+1)throw new Error('horizontal overflow');return 'discussion and public response visible';})()"
+          "eval": "(() => {const p=document.querySelector('[data-fusion-panel=detail]');const header=p?.firstElementChild;if(!header?.textContent.includes('讨论完成')||!header.textContent.includes('完整讨论')||!p.textContent.includes('建议 SQLite'))throw new Error('missing inline status or public report');if(p.textContent.includes('最终结论'))throw new Error('duplicated summary');if(p.scrollWidth>p.clientWidth+1)throw new Error('horizontal overflow');return 'status badges inline, public report visible, no duplicated summary';})()"
         },
         {
           "shot": "d-fusion-detail-dark.png"
@@ -362,6 +359,220 @@
         }
       ],
       "width": 1728
+    },
+    "fusion-detail-review-report": {
+      "url": "http://localhost:5299/shot/?fusion=1&fusionReviewLong=1&lang=zh",
+      "steps": [
+        {
+          "wait": 1000
+        },
+        {
+          "tap": "查看过程"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "tapText": "Fusion · 讨论"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "tap": "查看讨论明细"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "eval": "[...document.querySelectorAll('[data-fusion-panel=detail] button[aria-pressed]')].find(b=>b.textContent.includes('3.'))?.click()"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "document.querySelector('[data-fusion-panel=detail] button[aria-expanded]')?.click()"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "eval": "(() => {const p=document.querySelector('[data-fusion-panel=detail]');const text=p?.querySelector('[data-fusion-public-output]')?.textContent;if(!text?.includes('当前答案')||!text.includes('评议报告全文已读取。'))throw new Error('structured report was not loaded fully');if(text.includes('current_answer')||p.textContent.includes('继续读取'))throw new Error('raw JSON or manual paging exposed');return 'long structured report rendered as ordinary Markdown';})()"
+        },
+        {
+          "shot": "d-fusion-detail-review-report.png"
+        }
+      ]
+    },
+    "fusion-detail-final-report": {
+      "url": "http://localhost:5299/shot/?fusion=1&lang=zh",
+      "steps": [
+        {
+          "wait": 1000
+        },
+        {
+          "tap": "查看过程"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "tapText": "Fusion · 讨论"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "tap": "查看讨论明细"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "eval": "[...document.querySelectorAll('[data-fusion-panel=detail] button[aria-pressed]')].find(b=>b.textContent.includes('4.'))?.click()"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "eval": "document.querySelector('[data-fusion-panel=detail] button[aria-expanded]')?.click()"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "eval": "(() => {const p=document.querySelector('[data-fusion-panel=detail]');if(!p?.querySelector('[data-fusion-public-output]')?.textContent.includes('SQLite'))throw new Error('final tab report missing');if(p.textContent.includes('最终结论'))throw new Error('duplicated summary remains');return 'final report available in tab four';})()"
+        },
+        {
+          "shot": "d-fusion-detail-final-report.png"
+        }
+      ]
+    },
+    "fusion-detail-loading-fast": {
+      "url": "http://localhost:5299/shot/?fusion=1&lang=zh",
+      "steps": [
+        {
+          "wait": 1000
+        },
+        {
+          "tap": "查看过程"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "tapText": "Fusion · 讨论"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "eval": "(() => {const state=window.__fusionLoading={periods:[],start:null,mixed:false};const observe=()=>{const p=document.querySelector('[data-fusion-panel=detail]');const visible=!!p&&[...p.querySelectorAll('[role=status]')].some(e=>e.textContent.includes('正在读取讨论记录'));if(visible&&state.start===null)state.start=performance.now();if(!visible&&state.start!==null){state.periods.push(performance.now()-state.start);state.start=null;}if(visible&&p.querySelector('[data-fusion-public-output]'))state.mixed=true;};new MutationObserver(observe).observe(document.body,{childList:true,subtree:true,characterData:true});observe();return 'loading visibility observer installed';})()"
+        },
+        {
+          "tap": "查看讨论明细"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "eval": "document.querySelector('[data-fusion-panel=detail] button[aria-expanded]')?.click()"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "eval": "(() => {const s=window.__fusionLoading;if(s.periods.length!==0||s.start!==null)throw new Error('fast read flashed loading');if(s.mixed)throw new Error('loading and report overlapped');if(!document.querySelector('[data-fusion-public-output]'))throw new Error('report missing');return {periods:s.periods,mixed:s.mixed};})()"
+        },
+        {
+          "shot": "d-fusion-loading-fast.png"
+        }
+      ]
+    },
+    "fusion-detail-loading-slow": {
+      "url": "http://localhost:5299/shot/?fusion=1&lang=zh&fusionMetadataDelay=400&fusionReadDelay=400",
+      "steps": [
+        {
+          "wait": 1000
+        },
+        {
+          "tap": "查看过程"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "tapText": "Fusion · 讨论"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "eval": "(() => {const state=window.__fusionLoading={periods:[],start:null,mixed:false};const observe=()=>{const p=document.querySelector('[data-fusion-panel=detail]');const visible=!!p&&[...p.querySelectorAll('[role=status]')].some(e=>e.textContent.includes('正在读取讨论记录'));if(visible&&state.start===null)state.start=performance.now();if(!visible&&state.start!==null){state.periods.push(performance.now()-state.start);state.start=null;}if(visible&&p.querySelector('[data-fusion-public-output]'))state.mixed=true;};new MutationObserver(observe).observe(document.body,{childList:true,subtree:true,characterData:true});observe();return 'loading visibility observer installed';})()"
+        },
+        {
+          "tap": "查看讨论明细"
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "eval": "document.querySelector('[data-fusion-panel=detail] button[aria-expanded]')?.click()"
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "eval": "(() => {const s=window.__fusionLoading;if(s.periods.length!==2||s.periods.some(t=>t<980))throw new Error('loading was not held for one second: '+JSON.stringify(s));if(s.mixed)throw new Error('loading and report overlapped');if(!document.querySelector('[data-fusion-public-output]'))throw new Error('report missing');return {periods:s.periods,mixed:s.mixed};})()"
+        },
+        {
+          "shot": "d-fusion-loading-slow.png"
+        }
+      ]
+    },
+    "fusion-detail-unvalidated": {
+      "url": "http://localhost:5299/shot/?fusion=unvalidated&lang=zh",
+      "steps": [
+        {
+          "wait": 1000
+        },
+        {
+          "tap": "查看过程"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "tapText": "Fusion · 讨论"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "tap": "查看讨论明细"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "wait": 700
+        },
+        {
+          "eval": "[...document.querySelectorAll('[data-fusion-panel=detail] button[aria-pressed]')].find(b=>b.textContent.includes('3.'))?.click()"
+        },
+        {
+          "eval": "[...document.querySelectorAll('[data-fusion-panel=detail] button[aria-expanded]')].at(-1)?.click()"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "eval": "(() => {const p=document.querySelector('[data-fusion-panel=detail]');if(!p?.textContent.includes('部分报告存在校验问题')||!p.querySelector('[data-fusion-public-output]'))throw new Error('retained report or quality notice missing');if(p.textContent.includes('responses[0]'))throw new Error('raw diagnostics exposed');return 'retained public report with localized quality notice';})()"
+        },
+        {
+          "shot": "d-fusion-unvalidated.png"
+        }
+      ]
     }
   }
 }

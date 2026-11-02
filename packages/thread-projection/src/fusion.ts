@@ -26,6 +26,7 @@ export interface FusionStep {
   output: string;
   error?: string | null;
   failure_kind?: string | null;
+  report_quality?: { validation_errors: string[]; source_run_id: string } | null;
   session_id: string;
   agent_run_id: string;
   started_at: number;
@@ -88,6 +89,7 @@ function modelStatus(step: FusionStep): FusionModelStatus {
     if (/OUTPUT_LIMIT|finish_length/iu.test(step.error ?? "")) return "output_limited";
     return "failed";
   }
+  if (step.status === "completed" && step.report_quality) return "partial";
   if (["completed", "cancelled", "interrupted"].includes(step.status)) return step.status as FusionModelStatus;
   return "waiting";
 }
@@ -144,6 +146,7 @@ export function fusionNotices(report: FusionExecutionReport | null | undefined, 
   else if (codes.has("provider_unavailable")) notices.push("providerUnavailable");
   else if (codes.has("single_participant")) notices.push("singleParticipant");
   else if (["participant_failed", "participant_unavailable", "participants_reduced", "reviews_reduced", "no_reviews"].some(code => codes.has(code))) notices.push("reducedParticipation");
+  if (codes.has("report_unvalidated") || codes.has("report_truncated")) notices.push("reportUnvalidated");
   if (codes.has("summary_budget_reserved")) notices.push("budgetReserved");
   else if (codes.has("mapping_invalid")) notices.push("directReview");
   if (status === "failed" && report.available_results.length) notices.push("materialsRetained");
