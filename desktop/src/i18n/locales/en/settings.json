@@ -407,8 +407,8 @@
   "fusion": {
     "enabled": "Enable Fusion",
     "enabledHint": "Allow /fusion to start a discussion. Turning this off does not stop discussions already in progress.",
-    "rolesHint": "The main model organizes issues and summarizes. Each role has its own model and thinking level.",
-    "moderator": "Main model",
+    "rolesHint": "The moderator organizes issues and summarizes. Each role has its own model and thinking level.",
+    "moderator": "Moderator",
     "participants": "Discussion participants",
     "participantsHint": "Choose 2–5 participants. The same model can fill multiple roles with independent thinking levels.",
     "participant": "Participant {{number}}",
@@ -425,7 +425,7 @@
     "loading": "Loading Fusion settings…",
     "loadFailed": "Could not load Fusion settings. Please retry.",
     "conflict": "Settings changed elsewhere. Reload before saving.",
-    "moderatorRequired": "Choose one main model.",
+    "moderatorRequired": "Choose one moderator.",
     "participantCount": "Choose 2–5 participants.",
     "participantRequired": "Choose a model for every participant.",
     "thinkingRequired": "Choose a thinking level for every role."

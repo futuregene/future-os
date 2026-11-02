@@ -566,6 +566,7 @@ pub enum Key {
     FusionBudgetReserved,
     FusionDirectReview,
     FusionMaterialsRetained,
+    FusionReportUnvalidated,
     FusionWaiting,
     FusionThinking,
     FusionThought,
@@ -1091,14 +1092,14 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         CmdFusion => ("启用 Fusion 讨论工具", "Enable the Fusion discussion tool"),
         CmdFusionSettings => ("Fusion 设置（--enable/--disable、--main、--participant、--thinking）", "Fusion settings (--enable/--disable, --main, --participant, --thinking)"),
         FusionDisabled => ("Fusion 已在设置中关闭", "Fusion is turned off in settings"),
-        FusionMainRole => ("主模型", "Main model"),
-        FusionParticipantRole => ("参与模型 {}", "Participant {}"),
+        FusionMainRole => ("主持人", "Moderator"),
+        FusionParticipantRole => ("参与者 {}", "Participant {}"),
         CmdFusionLog => ("查看 Fusion 讨论进度", "Inspect Fusion discussion progress"),
         FusionLogTitle => ("Fusion 讨论记录（只读）", "Fusion discussion record (read-only)"),
-        FusionChecking => ("检查主模型", "Checking main model"),
+        FusionChecking => ("检查主持人", "Checking moderator"),
         FusionPreparing => ("准备讨论", "Preparing discussion"),
         FusionAnalyzing => ("独立思考", "Independent thinking"),
-        FusionMapping => ("整理议题", "Mapping issues"),
+        FusionMapping => ("议题整理", "Mapping issues"),
         FusionReviewing => ("交叉讨论", "Cross discussion"),
         FusionSummarizing => ("总结", "Summary"),
         FusionComplete => ("讨论完成", "Discussion complete"),
@@ -1108,13 +1109,14 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         FusionPartial => ("部分模型未完成讨论", "Some models did not complete the discussion"),
         FusionSkipped => ("已跳过", "Skipped"),
         FusionNoConclusion => ("本次未产出综合结论。", "No synthesized conclusion was produced."),
-        FusionModeratorFailed => ("主模型不可用，未自动更换模型。", "The main model is unavailable; no substitute was selected."),
-        FusionNoParticipants => ("没有有效的参与模型结果，已停止讨论。", "No valid participant results; discussion stopped."),
+        FusionModeratorFailed => ("主持人不可用，未自动更换模型。", "The moderator is unavailable; no substitute was selected."),
+        FusionNoParticipants => ("没有有效的参与者结果，已停止讨论。", "No valid participant results; discussion stopped."),
         FusionProviderUnavailable => ("提供商暂不可用，已停止受影响的请求。", "The provider is temporarily unavailable; affected requests were stopped."),
         FusionSingleParticipant => ("仅保留单模型意见，已跳过交叉讨论。", "Only a single-model opinion remains; cross discussion was skipped."),
         FusionReducedParticipation => ("部分模型未完成，已基于有效结果继续。", "Some models did not finish; continuing with valid results."),
         FusionBudgetReserved => ("已跳过后续讨论，为总结保留时间。", "Further discussion was skipped to reserve time for synthesis."),
         FusionDirectReview => ("议题整理不可用，已采用降级讨论流程。", "Issue mapping was unavailable; a degraded discussion path was used."),
+        FusionReportUnvalidated => ("部分报告存在校验问题或为适应上下文而精简，已作为讨论材料保留。", "Some reports have validation issues or were shortened to fit context; usable material was retained."),
         FusionMaterialsRetained => ("已有分析与降级原因已保留，可用于复盘。", "Existing analyses and degradation reasons were preserved for review."),
         FusionWaiting => ("等待思考", "Waiting"),
         FusionThinking => ("思考中", "Thinking"),
@@ -1534,7 +1536,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 381] = {
+    const ALL_KEYS: [Key; 382] = {
         use Key::*;
         [
             TabTodo,
@@ -1808,6 +1810,7 @@ mod tests {
             FusionBudgetReserved,
             FusionDirectReview,
             FusionMaterialsRetained,
+            FusionReportUnvalidated,
             FusionWaiting,
             FusionThinking,
             FusionThought,

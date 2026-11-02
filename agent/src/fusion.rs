@@ -117,7 +117,7 @@ pub(crate) fn main_tool() -> AgentTool {
         "fusion",
         &description,
         json!({"type":"object","additionalProperties":false,"required":["question","goal","background","constraints"],"properties":{
-            "question":{"type":"string","description":"Direct, focused question without a preferred answer or prescribed solution outline"},"goal":{"type":"string","description":"The outcome the user actually requested"},"background":{"type":"string","description":"Faithful compression of relevant context and user requirements, attributed facts and unknowns. Attribute user-provided proposals here. No main-agent reasoning, invented plans or preferences; prior assistant claims are not verified facts."},"constraints":{"type":"array","description":"Brief material task boundaries only; use an empty array when none apply. No language, length or formatting rules.","items":{"type":"string"}},"evidence":{"type":"array","description":"Sourced observations with provenance, not unsourced main-agent judgments","items":{"type":"string"}},"read_scope":{"type":"array","items":{"type":"string"},"description":"Only necessary workspace-relative files/directories. Omit for conceptual decisions."}
+            "question":{"type":"string","description":"Preserve the user's wording; change only for necessary disambiguation or focus. No added requirements, answer checklist, assumptions or preferred approach. Split broad topics across discussions rather than overloading this question."},"goal":{"type":"string","description":"Only the outcome the user actually requested; do not add quality criteria, detail, audience assumptions, compliance framing or deliverables the user did not specify."},"background":{"type":"string","description":"Faithful compression of relevant context and user requirements, attributed facts and unknowns. Attribute user-provided proposals here. No main-agent reasoning, invented plans or preferences; prior assistant claims are not verified facts. Do not relocate invented requirements here or turn research facts into user instructions. Unknown identity, location, equipment and intent remain unknown."},"constraints":{"type":"array","description":"Only brief task restrictions explicitly established by the user or relevant prior context; use an empty array when none apply. Never infer restrictions from your preferred answer. No invented compliance, equipment, language, length or formatting demands.","items":{"type":"string"}},"evidence":{"type":"array","description":"Sourced observations with provenance, not unsourced main-agent judgments","items":{"type":"string"}},"read_scope":{"type":"array","items":{"type":"string"},"description":"Only necessary workspace-relative files/directories. Omit for conceptual decisions."}
         }}),
         invoke,
     )
@@ -332,16 +332,21 @@ pub(crate) fn inner_execution(
         settings.thinking_level == thinking,
         "Fusion thinking level differs from configured policy; fallback prohibited"
     );
+    let file_tools = file_tools_allowed(
+        &step.phase,
+        !run.input.read_scope.is_empty(),
+        settings.report_revision,
+    );
     Ok(Some(InnerExecution {
         snapshot: Snapshot::load(Path::new(&run.snapshot_root))?,
         settings,
-        file_tools: file_tools_allowed(&step.phase, !run.input.read_scope.is_empty()),
+        file_tools,
     }))
 }
 
 // Only participant analysis/review may investigate; moderator stages never get tools.
-fn file_tools_allowed(phase: &str, has_scope: bool) -> bool {
-    has_scope && matches!(phase, "analyzing" | "reviewing")
+fn file_tools_allowed(phase: &str, has_scope: bool, report_revision: u32) -> bool {
+    report_revision == 0 && has_scope && matches!(phase, "analyzing" | "reviewing")
 }
 
 pub(crate) fn record_delivery(result: &str) -> Result<()> {
@@ -377,7 +382,7 @@ pub(crate) fn query_status(state: &crate::rpc::AppState) -> Result<Value> {
         "database_id": format!("{}:{}", identity.database_id, identity.restore_generation),
         "panel_models": settings.configuration.panel.iter().map(|role| &role.model).collect::<Vec<_>>(),
         "moderator_model": settings.configuration.moderator.model,
-        "context_budget_version": 1,
+        "context_budget_version": future_fusion::CONTEXT_POLICY_VERSION,
         "generation_policy_version": future_fusion::GENERATION_POLICY_VERSION,
         "resilience_policy_version": future_fusion::RESILIENCE_POLICY_VERSION,
         "agent_instance_id": state.agent_instance_id,
@@ -428,7 +433,8 @@ pub(crate) fn query_discussion(
         let mut value = serde_json::to_value(&step)?;
         if !step.session_id.is_empty() {
             let session = state.session_manager.load(&step.session_id)?;
-            let messages = crate::session::entries_to_agent_messages(&session.entries, false);
+            let entries = selected_report_entries(&session.entries, step.report_quality.as_ref())?;
+            let messages = crate::session::entries_to_agent_messages(entries, false);
             let transcript = messages
                 .iter()
                 .map(|m| {
@@ -462,6 +468,32 @@ pub(crate) fn query_discussion(
     Ok(serde_json::to_value(discussion)?)
 }
 
+/// A retained original must not be replaced by an empty/unusable later repair.
+fn selected_report_entries<'a>(
+    entries: &'a [crate::session::SessionEntry],
+    quality: Option<&future_fusion::ReportQuality>,
+) -> Result<&'a [crate::session::SessionEntry]> {
+    let Some(quality) = quality else {
+        return Ok(entries);
+    };
+    let start = entries
+        .iter()
+        .position(|entry| {
+            entry.entry_type == "run_started"
+                && entry.content.as_ref().and_then(|v| v["run_id"].as_str())
+                    == Some(quality.source_run_id.as_str())
+        })
+        .context("Selected Fusion report run is missing")?;
+    let end = entries
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find(|(_, entry)| matches!(entry.entry_type.as_str(), "run_terminal" | "run_started"))
+        .map(|(i, _)| i)
+        .unwrap_or(entries.len());
+    Ok(&entries[start..end])
+}
+
 /// Avoid hydrating child message bodies during catalogue enumeration.
 pub(crate) fn child_sessions() -> std::collections::HashSet<String> {
     Store::existing(&crate::utils::future_home())
@@ -482,24 +514,89 @@ impl crate::types::LLMProvider for ContextProvider {
         &self,
         request: crate::llm::schema::ModelRequest,
     ) -> Result<tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>> {
-        let bytes = request
-            .system_prompt
-            .len()
-            .saturating_add(serde_json::to_vec(&request.messages)?.len())
-            .saturating_add(serde_json::to_vec(&request.tools)?.len());
-        future_fusion::guard_context(
-            bytes,
-            self.settings.context_window,
-            self.settings.max_output_tokens.max(0) as usize,
-        )?;
+        let bytes = request_context_bytes(&request)?;
+        // History/tool results grow over multiple requests. Adapt to the real
+        // remaining window, never to the final report's public-byte quota.
+        let remaining = self
+            .settings
+            .context_window
+            .saturating_sub(bytes.saturating_add(future_fusion::CONTEXT_MARGIN));
+        // Keep space for a follow-up report repair in this same session, even
+        // when the catalog's output limit equals the whole context window.
+        // This reserve depends on the working window, never the report quota.
+        let repair_reserve = if self.settings.report_revision == 0 {
+            (self.settings.context_window / 4).min(remaining / 2)
+        } else {
+            0
+        };
+        let output = (self.settings.max_output_tokens.max(0) as usize)
+            .min(remaining.saturating_sub(repair_reserve));
+        ensure!(
+            output >= 256,
+            "Fusion context has no generation space; request was not sent"
+        );
+        future_fusion::guard_context(bytes, self.settings.context_window, output)?;
         self.provider
-            .stream_model_with_output_limit(request, self.settings.max_output_tokens)
+            .stream_model_with_output_limit(request, output.min(i32::MAX as usize) as i32)
             .await
     }
 }
 
+/// Conservative UTF-8 accounting of model-visible material. Tool schemas and
+/// call arguments really are JSON; surrounding HTTP string escapes are not.
+fn request_context_bytes(request: &crate::llm::schema::ModelRequest) -> Result<usize> {
+    use crate::types::ContentBlock;
+    let mut bytes = request.system_prompt.len();
+    bytes = bytes.saturating_add(serde_json::to_vec(&request.tools)?.len());
+    for message in &request.messages {
+        bytes = bytes.saturating_add(message.role.len()).saturating_add(32);
+        for block in message.model_content() {
+            let size = match block {
+                ContentBlock::Text { text } | ContentBlock::Reasoning { text, .. } => text.len(),
+                ContentBlock::ToolResult {
+                    content,
+                    tool_call_id,
+                    ..
+                } => content.len().saturating_add(tool_call_id.len()),
+                other => serde_json::to_vec(&other)?.len(),
+            };
+            bytes = bytes.saturating_add(size).saturating_add(32);
+        }
+    }
+    Ok(bytes)
+}
+
 #[cfg(test)]
 mod input_contract_tests {
+    #[test]
+    fn retained_original_selects_its_run_without_exposing_later_repair() {
+        use crate::session::SessionEntry;
+        let entries = vec![
+            SessionEntry::run_started("initial", 1),
+            SessionEntry::new_user("assistant", serde_json::json!([])),
+            SessionEntry::run_started("repair", 2),
+            SessionEntry::new_user("assistant", serde_json::json!([])),
+        ];
+        let quality = future_fusion::ReportQuality {
+            validation_errors: vec!["Invalid quote".into()],
+            source_run_id: "initial".into(),
+        };
+        let selected = super::selected_report_entries(&entries, Some(&quality)).unwrap();
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[1].id, entries[1].id);
+        let missing = future_fusion::ReportQuality {
+            source_run_id: "missing".into(),
+            ..quality
+        };
+        assert!(super::selected_report_entries(&entries, Some(&missing)).is_err());
+        assert_eq!(
+            super::selected_report_entries(&entries, None)
+                .unwrap()
+                .len(),
+            4
+        );
+    }
+
     #[tokio::test]
     async fn oversized_actual_request_never_reaches_provider() {
         use crate::types::LLMProvider;
@@ -522,6 +619,7 @@ mod input_contract_tests {
                 max_output_tokens: 1000,
                 context_window: 16384,
                 max_public_bytes: 4096,
+                report_revision: 0,
                 timeout_ms: 1000,
                 retry_reason: None,
             },
@@ -535,14 +633,99 @@ mod input_contract_tests {
         assert!(guarded.stream_model(request).await.is_err());
     }
 
+    #[tokio::test]
+    async fn tool_history_uses_remaining_window_not_report_quota_or_wire_escapes() {
+        use crate::types::{AgentMessage, ContentBlock, LLMProvider};
+        use std::sync::{Arc, Mutex};
+        struct Capture(Arc<Mutex<Vec<i32>>>);
+        #[async_trait::async_trait]
+        impl LLMProvider for Capture {
+            async fn stream_model(
+                &self,
+                _: crate::llm::schema::ModelRequest,
+            ) -> anyhow::Result<
+                tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>,
+            > {
+                panic!("capacity override was not applied")
+            }
+            async fn stream_model_with_output_limit(
+                &self,
+                _: crate::llm::schema::ModelRequest,
+                limit: i32,
+            ) -> anyhow::Result<
+                tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>,
+            > {
+                self.0.lock().unwrap().push(limit);
+                let (tx, rx) = tokio::sync::mpsc::channel(1);
+                drop(tx);
+                Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
+            }
+        }
+        let limits = Arc::new(Mutex::new(vec![]));
+        let guarded = super::ContextProvider {
+            provider: Arc::new(Capture(limits.clone())),
+            settings: future_fusion::StepSettings {
+                thinking_level: "medium".into(),
+                max_output_tokens: 50_000,
+                context_window: 65_536,
+                max_public_bytes: 1,
+                report_revision: 0,
+                timeout_ms: 300_000,
+                retry_reason: None,
+            },
+        };
+        let mut request = crate::llm::schema::ModelRequest {
+            model: "test".into(),
+            system_prompt: "Think".into(),
+            messages: vec![],
+            tools: vec![],
+        };
+        let _ = guarded.stream_model(request.clone()).await.unwrap();
+        request.messages.push(AgentMessage {
+            role: "tool".into(),
+            content: vec![ContentBlock::tool_result(
+                "read-1",
+                "\"\n中文".repeat(4000),
+                false,
+            )],
+            ..Default::default()
+        });
+        let input = super::request_context_bytes(&request).unwrap();
+        assert!(input < serde_json::to_vec(&request.messages).unwrap().len());
+        let _ = guarded.stream_model(request.clone()).await.unwrap();
+        let repaired = super::ContextProvider {
+            provider: Arc::new(Capture(limits.clone())),
+            settings: future_fusion::StepSettings {
+                report_revision: 1,
+                ..guarded.settings.clone()
+            },
+        };
+        let _ = repaired.stream_model(request).await.unwrap();
+        let limits = limits.lock().unwrap();
+        assert_eq!(
+            limits[0] as usize,
+            65_536 - 7 - future_fusion::CONTEXT_MARGIN - 65_536 / 4
+        );
+        assert_eq!(
+            limits[1] as usize,
+            (65_536 - input - future_fusion::CONTEXT_MARGIN).div_ceil(2)
+        );
+        assert!(limits[1] > 1);
+        assert_eq!(
+            limits[2] as usize,
+            65_536 - input - future_fusion::CONTEXT_MARGIN
+        );
+    }
+
     #[test]
     fn moderator_stages_never_receive_file_tools() {
         for phase in ["preflight", "issue_mapping", "synthesizing", "unknown"] {
-            assert!(!super::file_tools_allowed(phase, true));
+            assert!(!super::file_tools_allowed(phase, true, 0));
         }
         for phase in ["analyzing", "reviewing"] {
-            assert!(super::file_tools_allowed(phase, true));
-            assert!(!super::file_tools_allowed(phase, false));
+            assert!(super::file_tools_allowed(phase, true, 0));
+            assert!(!super::file_tools_allowed(phase, false, 0));
+            assert!(!super::file_tools_allowed(phase, true, 1));
         }
     }
 

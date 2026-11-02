@@ -123,6 +123,9 @@ pub struct ModelEntryPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_thinking_level: Option<String>,
     pub context_window: i64,
+    /// Effective output capacity from Agent policy; absent on older agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<i32>,
     pub is_default: bool,
     /// JSON null when the catalog carries no description (must serialize as
     /// null, not be omitted).
@@ -401,6 +404,7 @@ mod tests {
                 thinking_levels: Vec::new(),
                 default_thinking_level: None,
                 context_window: 200_000,
+                max_tokens: None,
                 is_default: true,
                 description: Some("描述".to_string()),
                 description_en: Some("desc".to_string()),
@@ -413,6 +417,7 @@ mod tests {
         let value = serde_json::to_value(&payload).unwrap();
         assert_eq!(value["models"][0]["supportsImages"], json!(true));
         assert_eq!(value["models"][0]["contextWindow"], json!(200_000));
+        assert!(value["models"][0].get("maxTokens").is_none());
         assert_eq!(value["defaultModel"], json!("m1"));
         assert!(value.get("builtinProviders").is_none());
         // An older agent omits both fields; the payload of such an agent is
@@ -439,6 +444,7 @@ mod tests {
                 ],
                 default_thinking_level: Some("default".to_string()),
                 context_window: 128_000,
+                max_tokens: Some(32_000),
                 is_default: false,
                 description: None,
                 description_en: None,
@@ -454,6 +460,7 @@ mod tests {
             json!(["default", "off", "low", "high"])
         );
         assert_eq!(value["models"][0]["defaultThinkingLevel"], json!("default"));
+        assert_eq!(value["models"][0]["maxTokens"], json!(32_000));
     }
 
     #[test]

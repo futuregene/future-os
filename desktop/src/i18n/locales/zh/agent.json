@@ -372,10 +372,10 @@
     "phases": {
       "preparing": "准备资料",
       "analyzing": "独立思考",
-      "issue_mapping": "整理议题",
+      "issue_mapping": "议题整理",
       "reviewing": "交叉讨论",
       "synthesizing": "总结",
-      "preflight": "检查主模型"
+      "preflight": "检查主持人"
     },
     "states": {
       "preparing": "准备讨论",
@@ -391,7 +391,7 @@
     "retry": "重试 {{count}}",
     "completeness": {
       "full": "完整讨论",
-      "partial": "部分模型参与",
+      "partial": "部分完成",
       "single": "单模型意见"
     },
     "result": {
@@ -419,12 +419,13 @@
     "partialNotice": "部分模型未完成讨论",
     "statusUnavailable": "暂时无法读取讨论状态",
     "disabled": "Fusion 已在设置中关闭",
-    "moderatorRole": "主模型",
-    "participantRole": "参与模型 {{number}}",
+    "moderatorRole": "主持人",
+    "participantRole": "参与者 {{number}}",
     "notices": {
+      "reportUnvalidated": "部分报告存在校验问题或为适应上下文而精简，已作为讨论材料保留。",
       "noConclusion": "本次未产出综合结论。",
-      "moderatorFailed": "主模型不可用，未自动更换模型。",
-      "noParticipants": "没有有效的参与模型结果，已停止讨论。",
+      "moderatorFailed": "主持人不可用，未自动更换模型。",
+      "noParticipants": "没有有效的参与者结果，已停止讨论。",
       "providerUnavailable": "提供商暂不可用，已停止受影响的请求。",
       "singleParticipant": "仅保留单模型意见，已跳过交叉讨论。",
       "reducedParticipation": "部分模型未完成，已基于有效结果继续。",

@@ -455,14 +455,19 @@ const handlers: Record<string, (args: any) => unknown> = {
   update_fusion_settings: args => saveFusionSettings(args.input as FusionSettingsPatch),
   get_fusion: (args) => {
     const discussion = fusionProgressFixture(new URLSearchParams(window.location.search).get("fusion"));
-    if (!args?.stepId)
-      return discussion;
+    if (!args?.stepId) {
+      const delay = Number(new URLSearchParams(window.location.search).get("fusionMetadataDelay") ?? 0);
+      return delay > 0 ? new Promise(resolve => setTimeout(resolve, delay, discussion)) : discussion;
+    }
     const step = discussion.steps?.find(s => s.id === args.stepId);
     if (!step)
       throw new Error("Unknown discussion step");
-    const publicOutput = step.status === "completed" && step.phase === "issue_mapping"
-      ? JSON.stringify(discussion.events?.find(event => event.kind === "issues")?.data)
-      : step.status === "completed" && step.phase === "synthesizing" ? JSON.stringify(discussion.run?.result) : step.output;
+    const reviewLong = new URLSearchParams(window.location.search).has("fusionReviewLong") && step.phase === "reviewing";
+    const publicOutput = reviewLong
+      ? JSON.stringify({ participant: step.participant, current_answer: `# 当前答案\n\n依据已有报告，先确认现有存储约束，再确定方案。\n\n${"复核后的依据说明。\n\n".repeat(1500)}评议报告全文已读取。`, responses: [], self_review: [{ original_quote: "建议 SQLite", decision: "revise", updated_position: "先确认现有存储约束", reason: "以已有证据为准" }], mapping_corrections: [], additions: [] })
+      : step.status === "completed" && step.phase === "issue_mapping"
+        ? JSON.stringify(discussion.events?.find(event => event.kind === "issues")?.data)
+        : step.status === "completed" && step.phase === "synthesizing" ? JSON.stringify(discussion.run?.result) : step.output;
     const output = new URLSearchParams(window.location.search).has("fusionLong") ? `${publicOutput}\n${"分页公开发言。".repeat(2400)}\n全文读取完成。` : publicOutput;
     const transcript = JSON.stringify([{ role: "user", content: [{ type: "text", text: step?.input }] }, { role: "assistant", content: [{ type: "text", text: output }] }]);
     const bytes = new TextEncoder().encode(transcript);
@@ -470,7 +475,9 @@ const handlers: Record<string, (args: any) => unknown> = {
     let end = Math.min(offset + 32768, bytes.length);
     while (end < bytes.length && (bytes[end]! & 0xC0) === 0x80)
       end--;
-    return { ...step, transcript: new TextDecoder().decode(bytes.slice(offset, end)), next_offset: end, total_bytes: bytes.length };
+    const page = { ...step, transcript: new TextDecoder().decode(bytes.slice(offset, end)), next_offset: end, total_bytes: bytes.length };
+    const delay = Number(new URLSearchParams(window.location.search).get("fusionReadDelay") ?? 0);
+    return delay > 0 ? new Promise(resolve => setTimeout(resolve, delay, page)) : page;
   },
   // ── App bootstrap ──────────────────────────────────────────────────────
   initialize_app_store: () => null,

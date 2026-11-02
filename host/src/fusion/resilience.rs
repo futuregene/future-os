@@ -189,6 +189,7 @@ impl<'a> Runtime<'a> {
             usage: serde_json::Value::Null,
             settings: None,
             failure_kind: Some(kind),
+            report_quality: None,
         })?;
         self.note(code, phase, Some(participant), Some(kind))
     }
