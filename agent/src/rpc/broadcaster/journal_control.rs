@@ -18,7 +18,9 @@ impl<T> WorkerReceipt<T> {
         // same time. An orphaned queued command must never keep this waiting.
         crossbeam_channel::select_biased! {
             recv(self.reply) -> result => result.map_err(|_| std::sync::mpsc::RecvError),
-            recv(self.exited) -> _ => Err(std::sync::mpsc::RecvError),
+            // A parked select can observe exit while the earlier reply is
+            // already buffered. Recheck it before declaring the receipt lost.
+            recv(self.exited) -> _ => self.reply.try_recv().map_err(|_| std::sync::mpsc::RecvError),
         }
     }
 }
@@ -117,7 +119,7 @@ impl JournalControl {
 
     pub(super) fn queue_async_flush(&self) -> anyhow::Result<AsyncControlReceipt> {
         let target = *self.admitted.lock();
-        let (reply, receiver) = tokio::sync::oneshot::channel();
+        let (reply, mut receiver) = tokio::sync::oneshot::channel();
         self.sender
             .try_send(ControlCommand {
                 target,
@@ -136,11 +138,11 @@ impl JournalControl {
         Ok(Box::pin(async move {
             tokio::select! {
                 biased;
-                result = receiver => result.map_err(|_| std::sync::mpsc::RecvError),
+                result = &mut receiver => result.map_err(|_| std::sync::mpsc::RecvError),
                 _ = async {
                     let already_exited = *exited.borrow();
                     if !already_exited { let _ = exited.changed().await; }
-                } => Err(std::sync::mpsc::RecvError),
+                } => receiver.try_recv().map_err(|_| std::sync::mpsc::RecvError),
             }
         }))
     }
@@ -169,6 +171,35 @@ mod tests {
         drop(receiver);
         drop(worker_exit);
         assert_eq!(reply.recv().unwrap(), Ok(()));
+    }
+
+    #[test]
+    fn a_waiting_shutdown_caller_keeps_its_ack_when_the_worker_exits() {
+        std::thread::scope(|threads| {
+            let callers: Vec<_> = (0..4)
+                .map(|_| {
+                    threads.spawn(|| {
+                        for _ in 0..512 {
+                            let (sender, receiver) = crossbeam_channel::bounded(1);
+                            let (control, worker_exit) = JournalControl::new(sender);
+                            let reply = control.queue_shutdown().unwrap();
+                            let (ready, waiting) = crossbeam_channel::bounded(0);
+                            let caller = std::thread::spawn(move || {
+                                ready.send(()).unwrap();
+                                reply.recv()
+                            });
+                            waiting.recv().unwrap();
+                            receiver.recv().unwrap().reply.send(Ok(()));
+                            drop(worker_exit);
+                            assert_eq!(caller.join().unwrap().unwrap(), Ok(()));
+                        }
+                    })
+                })
+                .collect();
+            for caller in callers {
+                caller.join().unwrap();
+            }
+        });
     }
 
     #[test]

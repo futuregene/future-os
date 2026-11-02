@@ -391,6 +391,9 @@ mod tests {
             .env("HOME", directory.path())
             .env("USERPROFILE", directory.path())
             .env("FUTURE_HOME", &home)
+            // The contract under test includes INFO records. A developer's
+            // RUST_LOG=warn must not filter out the fixture's own evidence.
+            .env("RUST_LOG", "info")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
