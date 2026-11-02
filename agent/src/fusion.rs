@@ -332,16 +332,21 @@ pub(crate) fn inner_execution(
         settings.thinking_level == thinking,
         "Fusion thinking level differs from configured policy; fallback prohibited"
     );
+    let file_tools = file_tools_allowed(
+        &step.phase,
+        !run.input.read_scope.is_empty(),
+        settings.report_revision,
+    );
     Ok(Some(InnerExecution {
         snapshot: Snapshot::load(Path::new(&run.snapshot_root))?,
         settings,
-        file_tools: file_tools_allowed(&step.phase, !run.input.read_scope.is_empty()),
+        file_tools,
     }))
 }
 
 // Only participant analysis/review may investigate; moderator stages never get tools.
-fn file_tools_allowed(phase: &str, has_scope: bool) -> bool {
-    has_scope && matches!(phase, "analyzing" | "reviewing")
+fn file_tools_allowed(phase: &str, has_scope: bool, report_revision: u32) -> bool {
+    report_revision == 0 && has_scope && matches!(phase, "analyzing" | "reviewing")
 }
 
 pub(crate) fn record_delivery(result: &str) -> Result<()> {
@@ -377,7 +382,7 @@ pub(crate) fn query_status(state: &crate::rpc::AppState) -> Result<Value> {
         "database_id": format!("{}:{}", identity.database_id, identity.restore_generation),
         "panel_models": settings.configuration.panel.iter().map(|role| &role.model).collect::<Vec<_>>(),
         "moderator_model": settings.configuration.moderator.model,
-        "context_budget_version": 1,
+        "context_budget_version": future_fusion::CONTEXT_POLICY_VERSION,
         "generation_policy_version": future_fusion::GENERATION_POLICY_VERSION,
         "resilience_policy_version": future_fusion::RESILIENCE_POLICY_VERSION,
         "agent_instance_id": state.agent_instance_id,
@@ -482,20 +487,56 @@ impl crate::types::LLMProvider for ContextProvider {
         &self,
         request: crate::llm::schema::ModelRequest,
     ) -> Result<tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>> {
-        let bytes = request
-            .system_prompt
-            .len()
-            .saturating_add(serde_json::to_vec(&request.messages)?.len())
-            .saturating_add(serde_json::to_vec(&request.tools)?.len());
-        future_fusion::guard_context(
-            bytes,
-            self.settings.context_window,
-            self.settings.max_output_tokens.max(0) as usize,
-        )?;
+        let bytes = request_context_bytes(&request)?;
+        // History/tool results grow over multiple requests. Adapt to the real
+        // remaining window, never to the final report's public-byte quota.
+        let remaining = self
+            .settings
+            .context_window
+            .saturating_sub(bytes.saturating_add(future_fusion::CONTEXT_MARGIN));
+        // Keep space for a follow-up report repair in this same session, even
+        // when the catalog's output limit equals the whole context window.
+        // This reserve depends on the working window, never the report quota.
+        let repair_reserve = if self.settings.report_revision == 0 {
+            (self.settings.context_window / 4).min(remaining / 2)
+        } else {
+            0
+        };
+        let output = (self.settings.max_output_tokens.max(0) as usize)
+            .min(remaining.saturating_sub(repair_reserve));
+        ensure!(
+            output >= 256,
+            "Fusion context has no generation space; request was not sent"
+        );
+        future_fusion::guard_context(bytes, self.settings.context_window, output)?;
         self.provider
-            .stream_model_with_output_limit(request, self.settings.max_output_tokens)
+            .stream_model_with_output_limit(request, output.min(i32::MAX as usize) as i32)
             .await
     }
+}
+
+/// Conservative UTF-8 accounting of model-visible material. Tool schemas and
+/// call arguments really are JSON; surrounding HTTP string escapes are not.
+fn request_context_bytes(request: &crate::llm::schema::ModelRequest) -> Result<usize> {
+    use crate::types::ContentBlock;
+    let mut bytes = request.system_prompt.len();
+    bytes = bytes.saturating_add(serde_json::to_vec(&request.tools)?.len());
+    for message in &request.messages {
+        bytes = bytes.saturating_add(message.role.len()).saturating_add(32);
+        for block in message.model_content() {
+            let size = match block {
+                ContentBlock::Text { text } | ContentBlock::Reasoning { text, .. } => text.len(),
+                ContentBlock::ToolResult {
+                    content,
+                    tool_call_id,
+                    ..
+                } => content.len().saturating_add(tool_call_id.len()),
+                other => serde_json::to_vec(&other)?.len(),
+            };
+            bytes = bytes.saturating_add(size).saturating_add(32);
+        }
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -522,6 +563,7 @@ mod input_contract_tests {
                 max_output_tokens: 1000,
                 context_window: 16384,
                 max_public_bytes: 4096,
+                report_revision: 0,
                 timeout_ms: 1000,
                 retry_reason: None,
             },
@@ -535,14 +577,99 @@ mod input_contract_tests {
         assert!(guarded.stream_model(request).await.is_err());
     }
 
+    #[tokio::test]
+    async fn tool_history_uses_remaining_window_not_report_quota_or_wire_escapes() {
+        use crate::types::{AgentMessage, ContentBlock, LLMProvider};
+        use std::sync::{Arc, Mutex};
+        struct Capture(Arc<Mutex<Vec<i32>>>);
+        #[async_trait::async_trait]
+        impl LLMProvider for Capture {
+            async fn stream_model(
+                &self,
+                _: crate::llm::schema::ModelRequest,
+            ) -> anyhow::Result<
+                tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>,
+            > {
+                panic!("capacity override was not applied")
+            }
+            async fn stream_model_with_output_limit(
+                &self,
+                _: crate::llm::schema::ModelRequest,
+                limit: i32,
+            ) -> anyhow::Result<
+                tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>,
+            > {
+                self.0.lock().unwrap().push(limit);
+                let (tx, rx) = tokio::sync::mpsc::channel(1);
+                drop(tx);
+                Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
+            }
+        }
+        let limits = Arc::new(Mutex::new(vec![]));
+        let guarded = super::ContextProvider {
+            provider: Arc::new(Capture(limits.clone())),
+            settings: future_fusion::StepSettings {
+                thinking_level: "medium".into(),
+                max_output_tokens: 50_000,
+                context_window: 65_536,
+                max_public_bytes: 1,
+                report_revision: 0,
+                timeout_ms: 300_000,
+                retry_reason: None,
+            },
+        };
+        let mut request = crate::llm::schema::ModelRequest {
+            model: "test".into(),
+            system_prompt: "Think".into(),
+            messages: vec![],
+            tools: vec![],
+        };
+        let _ = guarded.stream_model(request.clone()).await.unwrap();
+        request.messages.push(AgentMessage {
+            role: "tool".into(),
+            content: vec![ContentBlock::tool_result(
+                "read-1",
+                "\"\n中文".repeat(4000),
+                false,
+            )],
+            ..Default::default()
+        });
+        let input = super::request_context_bytes(&request).unwrap();
+        assert!(input < serde_json::to_vec(&request.messages).unwrap().len());
+        let _ = guarded.stream_model(request.clone()).await.unwrap();
+        let repaired = super::ContextProvider {
+            provider: Arc::new(Capture(limits.clone())),
+            settings: future_fusion::StepSettings {
+                report_revision: 1,
+                ..guarded.settings.clone()
+            },
+        };
+        let _ = repaired.stream_model(request).await.unwrap();
+        let limits = limits.lock().unwrap();
+        assert_eq!(
+            limits[0] as usize,
+            65_536 - 7 - future_fusion::CONTEXT_MARGIN - 65_536 / 4
+        );
+        assert_eq!(
+            limits[1] as usize,
+            (65_536 - input - future_fusion::CONTEXT_MARGIN).div_ceil(2)
+        );
+        assert!(limits[1] > 1);
+        assert_eq!(
+            limits[2] as usize,
+            65_536 - input - future_fusion::CONTEXT_MARGIN
+        );
+    }
+
     #[test]
     fn moderator_stages_never_receive_file_tools() {
         for phase in ["preflight", "issue_mapping", "synthesizing", "unknown"] {
-            assert!(!super::file_tools_allowed(phase, true));
+            assert!(!super::file_tools_allowed(phase, true, 0));
         }
         for phase in ["analyzing", "reviewing"] {
-            assert!(super::file_tools_allowed(phase, true));
-            assert!(!super::file_tools_allowed(phase, false));
+            assert!(super::file_tools_allowed(phase, true, 0));
+            assert!(!super::file_tools_allowed(phase, false, 0));
+            assert!(!super::file_tools_allowed(phase, true, 1));
         }
     }
 

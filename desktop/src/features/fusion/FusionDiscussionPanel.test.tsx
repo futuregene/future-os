@@ -42,7 +42,11 @@ it("reads the selected parent and pages a public response using the server byte 
   const data = discussion();
   const step = data.steps![0]!;
   const answer = "Public answer 中文 with more detail than the stored preview.";
-  const transcript = JSON.stringify([{ role: "assistant", content: [{ type: "text", text: answer }] }]);
+  const transcript = JSON.stringify([
+    { role: "assistant", content: [{ type: "text", text: "Investigation draft" }] },
+    { role: "tool", content: [{ type: "tool_result", content: "RAW_TOOL_EVIDENCE" }] },
+    { role: "assistant", content: [{ type: "text", text: answer }] },
+  ]);
   const split = transcript.indexOf("Public") + 3;
   const cursor = new TextEncoder().encode(transcript.slice(0, split)).length;
   const total = new TextEncoder().encode(transcript).length;
@@ -59,6 +63,9 @@ it("reads the selected parent and pages a public response using the server byte 
   await click("Read more");
   expect(mocks.invoke).toHaveBeenLastCalledWith("get_fusion", { runId: "r1", toolCallId: "t1", stepId: step.id, offset: cursor });
   expect(container.querySelector("[data-fusion-public-output]")?.textContent).toContain(answer);
+  expect(container.textContent).not.toContain("Investigation draft");
+  expect(container.textContent).not.toContain("RAW_TOOL_EVIDENCE");
+  expect(container.querySelector("summary")).toBeNull();
 });
 
 it("retains failed attempts and public output without presenting a stale conclusion", async () => {

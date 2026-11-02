@@ -1,11 +1,9 @@
 import type { FusionStep } from "@future-os/thread-projection";
 import type { FusionResolver } from "../../integrations/fusion/queries";
 import type { FusionSelection } from "./types";
-import { fusionTranscript } from "@future-os/thread-projection";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
-import { CopyablePre } from "../../components/ui/CopyablePre";
 import { readFusion } from "../../integrations/fusion/queries";
 import { isRecord } from "../../lib/objects";
 import { useAsyncResource } from "../../lib/useAsyncResource";
@@ -39,17 +37,11 @@ export function FusionStepBody({ step, runId, toolCallId, resolveTarget }: { ste
         </div>
       )}
       {more && <Button size="xs" disabled={resource.loading} onClick={() => setOffset(last.next_offset!)}>{t("fusion.more")}</Button>}
-      {raw && !more && (
-        <details className="text-xs text-ink-muted">
-          <summary className="cursor-pointer py-1">{t("fusion.original")}</summary>
-          <CopyablePre text={fusionTranscript(raw)} maxHeightClassName="max-h-80" />
-        </details>
-      )}
     </div>
   );
 }
 
-/** Moderator JSON is presented as readable discussion material, with raw records below. */
+/** Moderator JSON is presented as readable discussion material. */
 function StepResponse({ text, phase }: { text: string; phase: string }) {
   const { t } = useTranslation("agent");
   let content = text;
@@ -140,13 +132,15 @@ function StepResponse({ text, phase }: { text: string; phase: string }) {
   return <MarkdownContent content={content} />;
 }
 
-/** Render public assistant text; tool records stay in the optional transcript. */
+/** Render only public assistant text from the stored transcript. */
 function publicAnswer(raw: string): string {
   try {
     const messages: unknown = JSON.parse(raw);
     if (!Array.isArray(messages))
       return "";
-    return messages.filter(isRecord).filter(message => message.role === "assistant").flatMap(message => Array.isArray(message.content) ? message.content.filter(isRecord) : []).filter(block => block.type === "text" && typeof block.text === "string").map(block => block.text).join("\n\n");
+    const replies = messages.filter(isRecord).filter(message => message.role === "assistant");
+    const last = replies[replies.length - 1];
+    return (Array.isArray(last?.content) ? last.content.filter(isRecord) : []).filter(block => block.type === "text" && typeof block.text === "string").map(block => block.text).join("\n\n");
   }
   catch {
     return "";

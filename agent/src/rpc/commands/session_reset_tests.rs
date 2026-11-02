@@ -261,9 +261,19 @@ fn an_apply_rewrites_the_transcript_backs_it_up_and_refreshes_memory() {
 
 #[test]
 fn a_reset_that_applies_but_cannot_be_reloaded_reports_reload_failed() {
+    // Own session id, not the module's shared `"s1"`: `RELOAD_FAILURE_HOOK` is a
+    // process-wide single slot whose only gate is the session id, and six tests
+    // in this module apply a reset to `"s1"`. A concurrent apply landing between
+    // this test's `set_reload_failure_hook` and its own reset consumed the hook
+    // first, ran the damage closure against *this* test's state, and left this
+    // reset reporting `reset_failed` (or failing before it ran at all) instead
+    // of `reload_failed` — measured 4/25 at `--test-threads 28`. Same reasoning
+    // as `RESET_RACE_HOOKS` in `session::reset` ("the id was always meant to
+    // gate the hook"), and the hook's process-wide semantics are unchanged.
+    let id = format!("reload-failed-{}", crate::utils::generate_id());
     let state = make_app_state();
-    seed(&state, "s1");
-    hydrate(&state, "s1");
+    seed(&state, &id);
+    hydrate(&state, &id);
 
     // Damage the store in the window between the rewrite committing and the
     // reload reading it back. The read path is the `entry_records` **view**; the
@@ -271,14 +281,14 @@ fn a_reset_that_applies_but_cannot_be_reloaded_reports_reload_failed() {
     // damage has to land in that window — see the hook's own note and F-53.
     let damage = state.clone();
     super::session_reset::set_reload_failure_hook(
-        "s1",
+        &id,
         Box::new(move || {
             damage
                 .session_manager
                 .test_execute("DROP VIEW entry_records")
         }),
     );
-    let response = run(&state, "s1", apply(keep_last(2)));
+    let response = run(&state, &id, apply(keep_last(2)));
 
     assert_eq!(response["success"], false, "{response}");
     assert_eq!(response["error_code"], json!("reload_failed"), "{response}");

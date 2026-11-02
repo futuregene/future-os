@@ -108,7 +108,7 @@ impl Consultation {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Conclusion {
     #[serde(default)]
     pub fusion_run_id: String,

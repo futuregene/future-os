@@ -8,7 +8,7 @@ The real Desktop React components ran in the repository screenshot harness again
 
 The exercised flows cover opening the detail panel from inline activity, returning to the Runs tool list, preserving public responses after synthesis failure, joining UTF-8 transcript pages through the server cursor, an active discussion without a premature conclusion, moderator JSON rendered as readable issues/stances, and the dark appearance. The remote exercise opens an existing remote conversation and dispatches the same typed inspection event with the shipping host-bound resolver; the real remote request adapter reads the mock host's discussion into the same detail component. It is a boundary exercise, not a claim of a paired-device run. The Runs scenario checks the focused question and dedicated-panel routing from the original list entry.
 
-Screenshots were visually inspected for normal, dark and remote layouts. A long transcript assertion checks the rendered public response, rather than counting text hidden inside the optional original-record disclosure. Viewing original messages remains opt-in; opening another discussion or conversation cannot reuse the previous resource's data.
+Screenshots were visually inspected for normal, dark and remote layouts. A long transcript assertion checks the rendered public response. The inspector no longer exposes an original-message/tool-evidence disclosure and shows only the last report rather than earlier drafts; raw records remain available through terminal queries. opening another discussion or conversation cannot reuse the previous resource's data.
 
 ## Static checks and CI regressions
 
