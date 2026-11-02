@@ -99,7 +99,7 @@ fn migration_fault(connection: &Connection, phase: &str) -> Result<()> {
     }
     if mode == phase {
         use std::io::Write;
-        println!("MIGRATION_GATE={phase}");
+        crate::console::println!("MIGRATION_GATE={phase}");
         std::io::stdout().flush()?;
         let mut release = String::new();
         std::io::stdin().read_line(&mut release)?;

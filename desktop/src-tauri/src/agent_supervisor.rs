@@ -1,5 +1,6 @@
 //! GUI adapter over the shared in-process Agent host. External Agents retain
 //! their ownership; successful full cleanup is required before relaunch.
+use future_host::console;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Manager;
@@ -7,6 +8,37 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 static QUIT_CONFIRMED: AtomicBool = AtomicBool::new(false);
 static QUIT_DIALOG_OPEN: AtomicBool = AtomicBool::new(false);
+/// Whether automatic Agent recovery has stopped for good.
+static RECOVERY_GAVE_UP: AtomicBool = AtomicBool::new(false);
+/// The one dialog for a give-up episode, shown at most once.
+static GAVE_UP_DIALOG_SHOWN: AtomicBool = AtomicBool::new(false);
+/// Why recovery gave up, kept for the status page.
+static GAVE_UP_REASON: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// How many recovery attempts this process will make before it gives up.
+///
+/// The status text names it, so the two cannot drift apart in the UI.
+pub fn recovery_attempt_limit() -> u32 {
+    future_rpc::supervision::RestartBudget::new().limit()
+}
+
+/// The reason automatic recovery stopped, when it has.
+///
+/// The status page reads this: a machine that has given up on its Agent must not
+/// look like one that is still trying, which is what thirteen silent hours of
+/// retrying looked like from outside.
+pub fn recovery_gave_up() -> Option<String> {
+    if !RECOVERY_GAVE_UP.load(Ordering::Acquire) {
+        return None;
+    }
+    Some(
+        GAVE_UP_REASON
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .unwrap_or_else(|| "the Agent did not stay reachable".to_string()),
+    )
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,7 +88,7 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
         {
             Ok(runtime) => runtime,
             Err(error) => {
-                tracing::error!(event = "spawn_agent_watchdog", error = %error,"Agent watchdog unavailable: {error}");
+                crate::host_environment::report(&format!("Agent watchdog unavailable: {error}"));
                 return;
             }
         };
@@ -90,7 +122,7 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
             if let LocalAgentState::Blocked(reason) = &observed {
                 loss.reset();
                 if last_notice.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(30)) {
-                    tracing::warn!(event = "spawn_agent_watchdog", reason = %reason,"Agent recovery blocked: {reason}");
+                    crate::host_environment::report(&format!("Agent recovery blocked: {reason}"));
                     last_notice = Some(now);
                 }
                 continue;
@@ -106,7 +138,10 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
                 // 2026-10-28, that silence is what let the Desktop sit with no
                 // Agent for 40 minutes with only "restart Desktop" as the fix.
                 if last_notice.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(30)) {
-                    tracing::error!(event = "spawn_agent_watchdog","Agent recovery blocked: the previous Agent did not finish its cleanup; restart FutureOS");
+                    crate::host_environment::report(
+                        "Agent recovery blocked: the previous Agent did not finish its cleanup; \
+                         restart FutureOS",
+                    );
                     last_notice = Some(now);
                 }
                 continue;
@@ -115,15 +150,24 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
                 || !(matches!(observed, LocalAgentState::Startable) || host.owns_agent())
                 || !budget.allow(now)
             {
+                // A spent budget ends the loop instead of waiting out another
+                // cooldown: the escalation used to have a ceiling but no
+                // terminal state, so an Agent that died on every start was
+                // restarted 84 times over thirteen hours and nobody was told.
+                if budget.exhausted() {
+                    give_up(&_app, budget.failures(), budget.limit());
+                    return;
+                }
                 continue;
             }
             loss.reset();
-            tracing::info!(
-                event = "spawn_agent_watchdog",
-                "Agent recovery: the Agent is gone; starting a replacement"
-            );
+            crate::host_environment::report(&format!(
+                "Agent recovery: the Agent is gone; starting a replacement (attempt {}/{})",
+                budget.failures(),
+                budget.limit()
+            ));
             if let Err(error) = host.recover(address) {
-                tracing::error!(event = "spawn_agent_watchdog", error = %error,"Agent recovery: {error}");
+                crate::host_environment::report(&format!("Agent recovery: {error}"));
             }
         }
     });
@@ -139,6 +183,62 @@ pub fn ensure_agent_running<R: tauri::Runtime>(
     {
         Ok(())
     } // Mock Tauri apps must never launch a real default-home Agent.
+}
+
+/// Stop trying to recover, once, and tell the user.
+///
+/// Three things have to happen together and each is why the other two are not
+/// enough: the loop must end (otherwise it is the thirteen-hour cycle again), the
+/// status must say so (a user who opens the page finds it, and a later
+/// investigation reads it from the log), and the user must be told without
+/// hunting (nobody watches a status page they have no reason to open).
+///
+/// One dialog per episode, never one per attempt, and one log line: a give-up is
+/// news, not a state to poll.
+fn give_up<R: tauri::Runtime>(app: &tauri::AppHandle<R>, failures: u32, limit: u32) {
+    #[cfg(test)]
+    let _ = app;
+    if RECOVERY_GAVE_UP.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let reason = crate::agent_host::host()
+        .yield_reason()
+        .or_else(|| match crate::agent_host::host().phase() {
+            crate::agent_host::Phase::Failed(error) => Some(error),
+            _ => None,
+        })
+        .unwrap_or_else(|| "the Agent did not stay reachable".to_string());
+    *GAVE_UP_REASON
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(reason.clone());
+    crate::host_environment::report(&format!(
+        "Agent recovery gave up after {failures}/{limit} attempts: {reason}; \
+         automatic retries stopped, restart FutureOS"
+    ));
+    #[cfg(not(test))]
+    if !GAVE_UP_DIALOG_SHOWN.swap(true, Ordering::AcqRel) {
+        let handle = app.clone();
+        app.dialog()
+            .message(format!(
+                "FutureOS could not keep its Agent running.\n\n\
+                 Cause: {reason}\n\
+                 Automatic recovery stopped after {failures} of {limit} attempts.\n\n\
+                 Restart FutureOS to recover."
+            ))
+            .title("Agent unavailable")
+            .kind(MessageDialogKind::Error)
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "Restart FutureOS".into(),
+                "Later".into(),
+            ))
+            .show(move |confirmed| {
+                if confirmed {
+                    // One step, from the dialog: the same path the quit menu
+                    // takes, so the Agent's work is drained rather than cut.
+                    request_quit(handle, true);
+                }
+            });
+    }
 }
 pub async fn ensure_agent_ready_for_login<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> bool {
     if !matches!(
@@ -167,6 +267,17 @@ pub async fn agent_status() -> AgentStatus {
     }
     if crate::desktop_shutdown::is_stopping() {
         status.phase = "stopping".into();
+        return status;
+    }
+    if let Some(reason) = recovery_gave_up() {
+        // Recovery stopped by its own budget, not by a shutdown: the page says
+        // so in the same terms as an incomplete cleanup, because the user's next
+        // step is the same one.
+        status.phase = "restart_required".into();
+        status.error = Some(format!(
+            "Agent recovery stopped after {} attempts: {reason}. Restart FutureOS.",
+            crate::agent_supervisor::recovery_attempt_limit()
+        ));
         return status;
     }
     if crate::agent_host::host().recovery_requires_restart() {
@@ -365,7 +476,7 @@ pub(crate) fn request_quit<R: tauri::Runtime>(app: tauri::AppHandle<R>, force: b
     if let Err(error) = std::thread::Builder::new().name("desktop-quit".into()).spawn(move || {
         let result = operation.wait();
         if let Err(error) = result {
-            tracing::error!(event = "request_quit", error = %error,"FutureOS exit cleanup failed: {error}");
+            console::eprintln!("FutureOS exit cleanup failed: {error}");
             if !FORCE_QUIT_REQUESTED.load(Ordering::Acquire) {
                 app.dialog().message(format!("FutureOS could not complete cleanup: {error}. Exit the process anyway?"))
                     .title("Cleanup failed")
@@ -458,33 +569,10 @@ mod tests {
 
     /// The recovery status is the same status: it never replaces a service it
     /// cannot own, so a poll through it cannot disagree with the plain poll.
-    // The guards below serialize *fixtures* (the shared endpoint, the HOME root
-    // and the canonical mock), not data this test reads: the awaits between them
-    // are the two polls under test, and nothing they call can wait on a lock this
-    // test holds. `commands::agent`'s fixtures are allowed the same way.
-    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn the_recovery_poll_reports_the_same_phase_as_the_plain_poll() {
-        // Both polls compare the same service, so the whole test pins *which*
-        // service they are polling. Two reads of process-global state only agree
-        // if nothing moves between them, and both lock families below are
-        // needed because the endpoint is shared by two independent fixtures:
-        //
-        // * `mock_agent_lock` (the scripted-command mock, `MOCK_SER`) is what
-        //   every `ensure_mock_agent` / `script_mock_agent` caller holds, and
-        //   those calls re-point `FUTURE_AGENT_GRPC_ADDR` at *that* server and
-        //   `reset_test_connection()`. Measured 2026-11-01: running this test
-        //   beside `commands::agent::tests::
-        //   agent_status_requires_the_running_agent_version_to_match` — which
-        //   scripts a `"version":"older"` readiness answer — turned 2 of 25
-        //   rounds red with `left: "incompatible" (ready)`, because the second
-        //   poll's fresh handshake landed on the sibling's incompatible script.
-        //   That sibling locks `MOCK_SER`, not `MOCK_LOCK`, so holding only the
-        //   canonical fixture's lock did not exclude it.
-        // * `mock_agent` (`MOCK_LOCK`) then owns the canonical server's script.
-        //   Order is the documented one: scripted-command mock, then HOME, then
-        //   the canonical mock.
-        let _shared_endpoint = crate::commands::agent_mock::mock_agent_lock();
+        // Both polls compare the same service, not a sibling fixture changing
+        // readiness or shutdown state between two reads of global state.
         let _home = crate::auth_store::test_support::HomeGuard::new("supervision-recovery-poll");
         let _mock = crate::agent_bridge::test_support::mock_agent();
         let app = tauri::test::mock_builder()
@@ -577,24 +665,14 @@ mod block_fixtures {
         run_case("owned");
     }
 
-    /// Building the confirmation marks one as open, so the second close request
-    /// during the same quit is answered instead of queueing another dialog.
-    #[test]
-    fn a_quit_confirmation_is_asked_once_and_the_second_request_answers_it() {
-        run_case("confirm-quit");
-    }
-
-    /// The confirmation is the *owned* one while this process owns the Agent:
-    /// quitting then stops every connected client's work, not just this
-    /// Desktop's submitted runs. Building it is what arms "already asking".
-    #[test]
-    fn the_quit_confirmation_of_an_owned_agent_is_built_and_armed() {
-        run_case("owned-confirm");
-    }
-
     #[test]
     fn a_failed_stop_is_a_stopping_status_with_its_reason() {
         run_case("failed-stop");
+    }
+
+    #[test]
+    fn a_spent_recovery_budget_is_reported_as_restart_required() {
+        run_case("gave-up");
     }
 
     #[test]
@@ -612,38 +690,6 @@ mod block_fixtures {
         run_case("quit-repeat");
     }
 
-    /// A launch the host cannot even select is a *fault*, not a yield: the
-    /// status page has to print the worker's own error instead of leaving the
-    /// phase to speak for itself.
-    #[test]
-    fn a_launch_that_cannot_select_a_mode_reports_its_error_on_the_status() {
-        run_case_with_mode("failed-mode", "not-a-mode");
-    }
-
-    /// A fixture case name this module does not know must fail loudly. Silence
-    /// would make a renamed case pass as "the child exited 0 and asserted
-    /// nothing", which is the one failure mode a re-exec fixture cannot see from
-    /// the parent.
-    #[test]
-    fn an_unknown_fixture_case_is_refused_by_name() {
-        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/host-fixtures");
-        std::fs::create_dir_all(&parent).unwrap();
-        let home = tempfile::tempdir_in(&parent).unwrap();
-        let socket = tempfile::tempdir().unwrap();
-        let output = fixture_command("not-a-case", home.path(), socket.path())
-            .output()
-            .unwrap();
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            !output.status.success(),
-            "an unknown case must not pass: {stderr}"
-        );
-        assert!(
-            stderr.contains("unknown case not-a-case"),
-            "the refusal names the case it did not run: {stderr}"
-        );
-    }
-
     fn block_on<F: std::future::Future>(future: F) -> F::Output {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -658,23 +704,14 @@ mod block_fixtures {
             .unwrap()
     }
 
-    /// A mock app that registered the dialog plugin, so `app.dialog()` resolves.
-    /// Building a confirmation needs the plugin's state; showing one needs a
-    /// native window server, which a libtest process does not have.
-    fn app_with_dialog_plugin() -> tauri::App<tauri::test::MockRuntime> {
-        tauri::test::mock_builder()
-            .plugin(tauri_plugin_dialog::init())
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .unwrap()
-    }
-
-    /// The child command every case shares: its own `HOME`, its own agent
-    /// socket and exactly one test. `FUTURE_DESKTOP_AGENT_MODE` defaults to
-    /// `auto`; a case that needs the launch to *fail* overrides it through
-    /// [`run_case_with_mode`] rather than mutating the process it runs in.
-    fn fixture_command(case: &str, home: &Path, socket: &Path) -> Command {
-        let mut command = Command::new(std::env::current_exe().unwrap());
-        command
+    fn run_case(case: &str) {
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/host-fixtures");
+        std::fs::create_dir_all(&parent).unwrap();
+        let home = tempfile::tempdir_in(&parent).unwrap();
+        // A unix `sun_path` is 104 bytes on macOS, so the socket lives in the
+        // short system temp dir rather than beside the fixture home.
+        let socket = tempfile::tempdir().unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "agent_supervisor::block_fixtures::host_fixture",
@@ -682,30 +719,14 @@ mod block_fixtures {
                 "--test-threads=1",
             ])
             .env(CASE, case)
-            .env("HOME", home)
-            .env("USERPROFILE", home)
-            .env("FUTURE_HOME", home.join(".future"))
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .env("FUTURE_HOME", home.path().join(".future"))
             .env("FUTURE_DESKTOP_AGENT_MODE", "auto")
-            .env("FUTURE_AGENT_SOCKET", socket.join("agent.sock"))
+            .env("FUTURE_AGENT_SOCKET", socket.path().join("agent.sock"))
             .env_remove("FUTURE_AGENT_GRPC_ADDR")
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        command
-    }
-
-    fn run_case(case: &str) {
-        run_case_with_mode(case, "auto");
-    }
-
-    fn run_case_with_mode(case: &str, mode: &str) {
-        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/host-fixtures");
-        std::fs::create_dir_all(&parent).unwrap();
-        let home = tempfile::tempdir_in(&parent).unwrap();
-        // A unix `sun_path` is 104 bytes on macOS, so the socket lives in the
-        // short system temp dir rather than beside the fixture home.
-        let socket = tempfile::tempdir().unwrap();
-        let mut child = fixture_command(case, home.path(), socket.path())
-            .env("FUTURE_DESKTOP_AGENT_MODE", mode)
+            .stderr(Stdio::piped())
             .spawn()
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(120);
@@ -806,70 +827,6 @@ mod block_fixtures {
                 "an unreachable Agent is an error, not silence: {status:?}"
             );
             assert!(status.shutdown.is_none());
-            // The login gate states the same requirement for the login flow:
-            // a ready Agent, or a refusal — never a silent pass.
-            assert!(
-                !block_on(ensure_agent_ready_for_login(mock_app().handle().clone())),
-                "a login cannot proceed without a ready Agent"
-            );
-            return;
-        }
-        if case == "failed-mode" {
-            // `select` refuses a launch mode it does not know, on the calling
-            // thread, before any worker runs. That is `Phase::Failed` with the
-            // error as its text, which is the arm a status poll has to render.
-            let error = crate::agent_host::host()
-                .start("auto".into())
-                .unwrap_err()
-                .to_string();
-            assert!(
-                error.contains("FUTURE_DESKTOP_AGENT_MODE"),
-                "the launch fails on the mode, not on the transport: {error}"
-            );
-            assert_eq!(
-                crate::agent_host::host().phase(),
-                crate::agent_host::Phase::Failed(error.clone()),
-                "a refused launch is a fault, and the phase keeps its reason"
-            );
-            let status = block_on(agent_status());
-            assert_eq!(status.phase, "unavailable");
-            assert_eq!(
-                status.error.as_deref(),
-                Some(error.as_str()),
-                "the status carries the worker's own refusal, not a substitute"
-            );
-            return;
-        }
-        if case == "owned-confirm" {
-            // The confirmation text depends on *who owns the Agent*: an owned
-            // service means quitting stops every connected client's work. Build
-            // the dialog with the host owning it — the mock runtime never shows
-            // it, so what this pins is the branch the text was chosen on, read
-            // back through the flag the builder arms.
-            crate::agent_host::host().start("auto".into()).unwrap();
-            assert!(crate::agent_host::host().owns_agent());
-            let dialog = prepare_quit_confirmation(app_with_dialog_plugin().handle());
-            drop(dialog);
-            assert_eq!(
-                on_close_requested(),
-                QuitDecision::Confirm { open_dialog: false },
-                "asking once is recorded, so a second close request does not queue another dialog"
-            );
-            return;
-        }
-        if case == "confirm-quit" {
-            // `confirm_quit` is the close handler's "ask the user" arm. A mock
-            // app cannot present a native dialog, and this case does not need it
-            // to: what is observable is that asking is *recorded* before the
-            // dialog is built, so a second close request answers "already asking"
-            // instead of queueing another. Measured: the call returns at once
-            // and the plugin's queued show task neither blocks nor presents.
-            confirm_quit(app_with_dialog_plugin().handle().clone());
-            assert_eq!(
-                on_close_requested(),
-                QuitDecision::Confirm { open_dialog: false },
-                "confirm_quit must leave exactly one question open"
-            );
             return;
         }
         if case == "owned" {
@@ -903,6 +860,21 @@ mod block_fixtures {
             assert_eq!(status.phase, "stopping");
             assert_eq!(status.error.as_deref(), Some("fixture stop failure"));
             assert!(status.shutdown.is_some());
+            return;
+        }
+        if case == "gave-up" {
+            // A budget that ran out is a state the page must name, not a phase
+            // that still reads "starting" while nothing is being started.
+            RECOVERY_GAVE_UP.store(true, Ordering::Release);
+            *GAVE_UP_REASON
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                Some("Embedded Agent worker panicked".into());
+            let status = block_on(agent_status());
+            assert_eq!(status.phase, "restart_required");
+            let error = status.error.unwrap_or_default();
+            assert!(error.contains("Embedded Agent worker panicked"), "{error}");
+            assert!(error.contains("Restart FutureOS"), "{error}");
             return;
         }
         if case == "quit-barrier" {

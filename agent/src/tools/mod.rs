@@ -1440,7 +1440,7 @@ mod tests {
         std::fs::create_dir_all(&workspace).unwrap();
         let workspace_string = workspace.to_string_lossy().to_string();
         let Some(options) = restricted_tool_scope(&workspace_string) else {
-            eprintln!(
+            crate::console::eprintln!(
                 "Windows write restriction unavailable on this host; restricted runner not exercised"
             );
             return;
@@ -1454,7 +1454,7 @@ mod tests {
             {
                 Ok(output) => Some(output),
                 Err(error) if capability_lock_contended(&error) => {
-                    eprintln!("capability lock held by another process; skipped");
+                    crate::console::eprintln!("capability lock held by another process; skipped");
                     None
                 }
                 Err(error) => panic!("restricted run failed: {error}"),
@@ -1486,7 +1486,7 @@ mod tests {
         std::fs::create_dir_all(&workspace).unwrap();
         let workspace_string = workspace.to_string_lossy().to_string();
         let Some(options) = restricted_tool_scope(&workspace_string) else {
-            eprintln!(
+            crate::console::eprintln!(
                 "Windows write restriction unavailable on this host; restricted runner not exercised"
             );
             return;
@@ -1507,7 +1507,7 @@ mod tests {
                 Err(error) => error,
             };
             if capability_lock_contended(&error) {
-                eprintln!("capability lock held by another process; skipped");
+                crate::console::eprintln!("capability lock held by another process; skipped");
                 return None;
             }
             assert!(error.contains("timed out"), "{error}");
@@ -1538,7 +1538,7 @@ mod tests {
                 Err(error) => error,
             };
             if capability_lock_contended(&error) {
-                eprintln!("capability lock held by another process; skipped");
+                crate::console::eprintln!("capability lock held by another process; skipped");
                 return None;
             }
             assert!(error.contains("interrupted by abort"), "{error}");
