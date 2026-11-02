@@ -1,11 +1,13 @@
-# CLI 的域名解析（静态 musl 构建）
+# 本进程的域名解析（静态 musl 构建）
 
 当系统的 DNS 配置不在 C 库查找的位置时，`future` 会自己解析主机名。本文说明
 什么时候会这样、读哪些文件、两个覆盖用的设置，以及哪些结论是实测、哪些是推断。
 
-范围：`future` CLI 自己的出网连接——平台 API、中继、技能与 MCP 服务、以及
-TCP 形式的 agent 端点。桌面端、TUI 和 `future host` 仍然走它们的 C 库解析，
-这里没有改动它们。
+范围：所有经 `future-http` 构造的 HTTP 客户端——平台 API、技能与 MCP 服务、
+下载、以及 agent 与 `future host` 自己的请求——再加上 CLI 的 TCP agent 端点
+（gRPC）。**不包含** NATS 中继：`async-nats` 在库内部自己解析
+（`ToServerAddrs::socket_addrs` → `tokio::net::lookup_host`），没有可供替换的钩子；
+也不包含任何直接调 `getaddrinfo` 的其他代码。
 
 ## 1. 静态 musl 构建绕不过的三件事
 
@@ -35,7 +37,7 @@ musl 1.2.x）：
 `localhost`），而且立即失败。那 5 秒是 musl 自己的超时，不是网络问题——这就是
 它在 issue 里看起来像"网络挂了"的原因。
 
-## 2. 什么时候 CLI 自己解析
+## 2. 什么时候由本进程自己解析
 
 每个进程只判断一次，依据是环境变量和文件系统：
 
@@ -49,6 +51,15 @@ musl 1.2.x）：
 
 第三行是约定：在普通 Linux（以及存在同名文件的 macOS）上，这个功能是不生效的。
 §6 说明它如何被测试钉住。
+
+**Windows 是例外，而这个例外正是为了让约定成立**：它的 `getaddrinfo` 是 Windows
+DNS 客户端，根本不读 `/etc/resolv.conf`，所以那里"文件不存在"不能说明本进程无法解析。
+未设变量时 Windows 上一律保持**系统**方案；显式设置 `FUTURE_DNS_SERVER` /
+`FUTURE_RESOLV_CONF` 仍然照用。
+
+谁挂上解析器和"判断成什么"同样重要：它在 `future-http` 的 client builder 里挂，
+所以 Agent、host、CLI、TUI 全都跟着走，CLI 的 TCP agent 端点（gRPC）通过自己的
+connector 复用同一个实现。**NATS 中继不覆盖**（见本文开头）。
 
 ## 3. 候选路径
 

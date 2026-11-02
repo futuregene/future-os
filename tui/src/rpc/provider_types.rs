@@ -1,7 +1,8 @@
 //! Provider / model configuration data layer (pure, no I/O).
 //!
-//! The TUI's `/providers` and `/models` views need a typed surface over two
-//! very different representations of the same thing:
+//! The TUI's provider configuration calls (`list_providers`, `upsert_provider`,
+//! `delete_provider`, `set_auth_key`) need a typed surface over two very
+//! different representations of the same thing:
 //!
 //!   - the **read** side — `list_providers` returns a JSON object with two
 //!     arrays (`builtin` summaries and `custom` entries) whose entries have
@@ -11,8 +12,8 @@
 //!     `ProviderUpsert` sub-message, whose `models` list is a *full
 //!     replacement*, so a silently dropped field is a silent data loss.
 //!
-//! Everything here is a pure function over these values, so the form/list state
-//! machines in `components/provider_dialogs.rs` can be tested without an agent.
+//! Everything here is a pure function over these values, so the request
+//! builders in `rpc/grpc_client.rs` can be tested without an agent.
 //!
 //! Validation mirrors the agent's authoritative rules
 //! (`agent/src/config/providers.rs` `validate_provider_upsert` /

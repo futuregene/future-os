@@ -284,6 +284,7 @@ async fn spawn_mock_grpc_inner(
     tokio::sync::oneshot::Sender<()>,
     tokio::task::JoinHandle<()>,
 ) {
+    ensure_fd_headroom();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("ephemeral bind");
@@ -463,6 +464,7 @@ async fn spawn_http_inner(
     routes: Vec<HttpRoute>,
     max_connections: Option<usize>,
 ) -> ((String, RecordedRequests), tokio::task::JoinHandle<()>) {
+    ensure_fd_headroom();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
@@ -658,6 +660,7 @@ pub async fn spawn_ws(script: Vec<WsAction>) -> (String, WsReceived) {
 pub async fn spawn_ws_per_connection(scripts: Vec<Vec<WsAction>>) -> (String, WsReceived) {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message as WsMsg;
+    ensure_fd_headroom();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("local_addr");
     let received: WsReceived = Arc::new(Mutex::new(Vec::new()));
@@ -801,6 +804,64 @@ pub fn kill_write_half(socket: &crate::transport::ws::Socket) {
         expect_write_half_closed(borrowed.shutdown(std::net::Shutdown::Write));
     }
 }
+
+// ─── Descriptor budget ───────────────────────────────────────────────────────
+
+/// How many file descriptors this test binary may hold.
+///
+/// `cargo test` runs every test of a binary in threads of **one process**, and
+/// this crate's tests are the hungriest in the workspace together: every
+/// provider test drives an HTTP or WebSocket mock (a listener plus a connection
+/// per request), the gRPC mock adds one per unary call, and each
+/// `#[tokio::test]` builds its own runtime with its own reactor descriptor.
+/// Measured on this commit: the whole `--lib` suite peaks at **568** open
+/// descriptors, while the platform default soft limit is **256** unless the
+/// shell raised it.
+///
+/// Measured 2026-11-01 with `ulimit -n` left at the default, default test
+/// parallelism: `cargo test -p future-channel --lib` failed **437 of 1503**
+/// tests and finished in 24 s instead of 35 (`coverage/flaky/rust/
+/// before-channel-1.log`). 402 of those name the errno directly — `Too many
+/// open files (os error 24)`, `Failed building the Runtime:
+/// TooManyOpenFiles`, a mock listener that could not bind, a socket that could
+/// not connect — and the other 35 are downstream of the same starvation (a
+/// mock that never accepted, so the assertion it feeds failed). No test's own
+/// premise was violated. The same binary on the same commit passed **1503 of
+/// 1503** three times in a row at the same parallelism once the budget was
+/// raised (`coverage/flaky/rust/channel-after/`, 35–40 s).
+///
+/// So the suite raises its own budget instead of depending on whoever's shell
+/// started it: bounded by the hard limit, only ever upward, idempotent, and
+/// `4096` is ~7× the measured peak. Called from every mock-server constructor
+/// below — the point where a test first needs a descriptor of its own.
+#[cfg(unix)]
+pub fn ensure_fd_headroom() {
+    const WANT: libc::rlim_t = 4096;
+    let mut limits = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: both calls pass a valid `rlimit` for `RLIMIT_NOFILE`; failure is
+    // reported by the return value and only means "keep the current budget".
+    unsafe {
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limits) != 0 {
+            return;
+        }
+        if limits.rlim_cur >= WANT {
+            return;
+        }
+        let raised = libc::rlimit {
+            rlim_cur: WANT.min(limits.rlim_max),
+            rlim_max: limits.rlim_max,
+        };
+        let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &raised);
+    }
+}
+
+/// Windows has no `RLIMIT_NOFILE`: a process is limited by memory and the
+/// handle table rather than by a number a test can raise, so nothing to do.
+#[cfg(not(unix))]
+pub fn ensure_fd_headroom() {}
 
 // ─── HOME isolation ─────────────────────────────────────────────────────────
 

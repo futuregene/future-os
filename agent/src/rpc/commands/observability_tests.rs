@@ -807,8 +807,27 @@ fn export_html_writes_the_transcript_to_the_configured_directory() {
             user_message("怎么导出？", serde_json::json!({})),
             crate::types::AgentMessage {
                 role: "assistant".to_string(),
-                content: vec![crate::types::ContentBlock::Text {
-                    text: "用 export_html".to_string(),
+                content: vec![
+                    crate::types::ContentBlock::reasoning("先找导出命令", Default::default()),
+                    crate::types::ContentBlock::Text {
+                        text: "用 export_html".to_string(),
+                    },
+                    crate::types::ContentBlock::ToolCall {
+                        id: "call-1".to_string(),
+                        name: "shell".to_string(),
+                        args: serde_json::json!({"command": "future session export s1"}),
+                        provider_metadata: Default::default(),
+                    },
+                ],
+                ..Default::default()
+            },
+            crate::types::AgentMessage {
+                role: "tool".to_string(),
+                name: "shell".to_string(),
+                content: vec![crate::types::ContentBlock::ToolResult {
+                    tool_call_id: "call-1".to_string(),
+                    content: "/tmp/session.html".to_string(),
+                    is_error: false,
                 }],
                 ..Default::default()
             },
@@ -833,6 +852,18 @@ fn export_html_writes_the_transcript_to_the_configured_directory() {
     assert!(
         html.contains("用 export_html"),
         "answer missing from export"
+    );
+    assert!(
+        html.contains("<details class=\"fold thinking\">"),
+        "thinking is not folded in the export"
+    );
+    assert!(
+        html.contains("<details class=\"fold tool\">"),
+        "tool call is not folded in the export"
+    );
+    assert!(
+        html.contains("future session export s1") && html.contains("/tmp/session.html"),
+        "the call and its result do not meet in the export"
     );
 }
 

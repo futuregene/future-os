@@ -263,6 +263,35 @@ mod tests {
         assert_eq!(FUTURE_MODELS_INTERVAL, Duration::from_secs(86_400));
     }
 
+    /// The three intervals above are only policy if the global jobs are built
+    /// from them: a job constructed through its lazy must report its first run
+    /// one configured interval out, never a smaller default.
+    #[test]
+    fn the_global_jobs_are_built_on_the_configured_intervals() {
+        // Dereference every lazy before taking `now`: each job anchors its
+        // first run at construction, which is later than anything measured
+        // before it.
+        let jobs = [
+            (&*APP_UPDATE_JOB, APP_UPDATE_INTERVAL),
+            (&*FUTURE_BALANCE_JOB, FUTURE_BALANCE_INTERVAL),
+            (&*FUTURE_MODELS_JOB, FUTURE_MODELS_INTERVAL),
+        ];
+        let now = Instant::now();
+        for (job, interval) in jobs {
+            let due = job.next_due();
+            assert!(
+                due > now,
+                "the first run is one interval out: due in {:?}",
+                due - now
+            );
+            assert!(
+                due <= now + interval,
+                "a job must not wait longer than its configured interval: due in {:?}, interval {interval:?}",
+                due - now
+            );
+        }
+    }
+
     /// A job's own delegation must agree with the schedule it wraps — the
     /// scheduler reads `next_due`/`claim_if_due` through the job, not the
     /// schedule, so a mismatch here would be invisible to the pure tests above.

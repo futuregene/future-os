@@ -1,6 +1,6 @@
 import type { MessageSegment } from "@future-os/thread-projection";
 import { describe, expect, it } from "vitest";
-import { buildReplyBlocks, replyCopyText, replyTailBlock, splitFinalAnswer } from "./replyBlocks";
+import { buildReplyBlocks, replyCopyText, splitFinalAnswer } from "./replyBlocks";
 
 const thought: MessageSegment = { id: "thought", kind: "thinking", text: "Reasoning" };
 const tool: MessageSegment = { id: "tool", kind: "activity", item: { id: "tool", kind: "read", status: "completed", target: "file.ts" } };
@@ -87,48 +87,6 @@ describe("folding a settled reply onto its final answer", () => {
     const result = split([thought, tool, prose, thought]);
     expect(answerIds(result)).toEqual(["text", "thought"]);
     expect(result.process.map(block => (block.kind === "steps" ? "steps" : block.segment.id))).toEqual(["steps"]);
-  });
-});
-
-describe("the block a reply's tail rung lands on", () => {
-  const anchorOf = (segments: MessageSegment[], streaming = false) =>
-    replyTailBlock(buildReplyBlocks(segments, streaming));
-
-  it("takes the last output block, not the first", () => {
-    // The shape a long reply has: work, prose, more work, the answer. A press
-    // that reaches this reply is asking for the answer.
-    const segments = [thought, tool, prose, thought, { id: "text2", kind: "text", text: "Final" } as MessageSegment];
-    expect(anchorOf(segments)).toBe(3);
-  });
-
-  it("counts a folded run that holds a call as output", () => {
-    const segments = [prose, thought, tool];
-    expect(buildReplyBlocks(segments).map(block => (block.kind === "steps" ? "steps" : block.segment.kind)))
-      .toEqual(["text", "steps"]);
-    expect(anchorOf(segments)).toBe(1);
-  });
-
-  it("treats reasoning after the last output as a pause", () => {
-    expect(anchorOf([prose, thought])).toBe(0);
-    expect(anchorOf([prose, compaction])).toBe(0);
-  });
-
-  it("has no anchor when nothing on screen is output", () => {
-    // Still reasoning, or only a divider: the landing keeps the row's start.
-    expect(anchorOf([thought])).toBeNull();
-    expect(anchorOf([compaction])).toBeNull();
-    expect(anchorOf([])).toBeNull();
-    expect(anchorOf([thought, thought])).toBeNull();
-  });
-
-  it("anchors on the same block whether or not the reply is still streaming", () => {
-    // The live tail is never folded, so the block indexes differ — but the
-    // block the press lands on is the last output either way, which is what
-    // keeps a landing stable across the moment a run settles.
-    const segments = [prose, tool, tool];
-    expect(anchorOf(segments, true)).toBe(2);
-    expect(anchorOf(segments, false)).toBe(1);
-    expect(anchorOf(segments, true)).not.toBeNull();
   });
 });
 

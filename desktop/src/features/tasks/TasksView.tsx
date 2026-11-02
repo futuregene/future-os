@@ -9,7 +9,7 @@ import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { Select } from "../../components/ui/Select";
 import { TextInput } from "../../components/ui/TextInput";
-import { modelThinkingLevels, resolveThinkingLevel } from "../../integrations/agent/agentClient";
+import { modelThinkingLevels, resolveThinkingLevel, thinkingLevelName } from "../../integrations/agent/agentClient";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { formatDateTime } from "../../lib/date";
 import { useTauriEvent } from "../../lib/useTauriEvent";
@@ -660,7 +660,7 @@ function TaskForm({
                 does not use. Not the model's `ThinkingLevelMap` (sparse, and an
                 unmapped level is still accepted) — see `modelThinkingLevels`. */}
             {thinkingLevels.map(level => (
-              <option key={level} value={level}>{t(`agent:composer.thinkingLevelLabels.${level}`, { defaultValue: level })}</option>
+              <option key={level} value={level}>{thinkingLevelName(level)}</option>
             ))}
           </Select>
           {!supportsThinking
@@ -983,14 +983,9 @@ function TaskDetail({
                       // does this run on?".
                       [t("colModel"), task.modelId ?? t("modelDefault")],
                       // An unset level is the implicit `default` the agent applies
-                      // (send no thinking parameter), so the row names that value
-                      // instead of leaving the user to guess what "Default" means.
-                      [
-                        t("colThinking"),
-                        task.thinkingLevel
-                          ? t(`agent:composer.thinkingLevelLabels.${task.thinkingLevel}`, { defaultValue: task.thinkingLevel })
-                          : t("agent:composer.thinkingLevelLabels.default"),
-                      ],
+                      // (send no thinking parameter); `thinkingLevelName` names that
+                      // value, so the row never reads as "missing".
+                      [t("colThinking"), thinkingLevelName(task.thinkingLevel)],
                       // A chat task may name no directory at all: it runs in its own
                       // conversation's workspace, and an empty row would read as "missing".
                       [t("colCwd"), task.cwd.trim() || (task.conversationMode === "chat" ? t("cwdChatWorkspace") : "—")],

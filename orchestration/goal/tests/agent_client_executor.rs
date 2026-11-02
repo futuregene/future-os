@@ -8,6 +8,7 @@ use common::mock_agent::{completed_events, ev, spawn_mock, AttachPlan, MockState
 use future_goal::agent_client::AgentClient;
 use future_goal::executor::{execute_turn, turn_succeeded, writeback};
 use future_goal::state::{Goal, RunRecord, Todo, TodoStatus};
+use future_goal::worker_config::WorkerConfig;
 
 fn rt() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread()
@@ -660,6 +661,7 @@ fn execute_turn_completed_no_validator() {
             Some(runs_dir.clone()),
             None,
             None,
+            &WorkerConfig::default(),
         )
         .await
         .unwrap();
@@ -707,6 +709,7 @@ fn execute_turn_with_prev() {
             None,
             None,
             None,
+            &WorkerConfig::default(),
         )
         .await
         .unwrap();
@@ -743,6 +746,7 @@ fn execute_turn_error_turn_skips_validator() {
             None,
             None,
             None,
+            &WorkerConfig::default(),
         )
         .await
         .unwrap();
@@ -783,6 +787,7 @@ fn execute_turn_surfaces_agent_truncation_on_incomplete() {
             None,
             None,
             None,
+            &WorkerConfig::default(),
         )
         .await
         .unwrap();
@@ -819,6 +824,7 @@ fn execute_turn_leaves_truncation_none_without_agent_end() {
             None,
             None,
             None,
+            &WorkerConfig::default(),
         )
         .await
         .unwrap();
@@ -851,6 +857,7 @@ fn execute_turn_validator_pass_and_fail() {
             None,
             None,
             None,
+            &WorkerConfig::default(),
         )
         .await
         .unwrap();
@@ -878,6 +885,7 @@ fn execute_turn_validator_pass_and_fail() {
             None,
             None,
             None,
+            &WorkerConfig::default(),
         )
         .await
         .unwrap();

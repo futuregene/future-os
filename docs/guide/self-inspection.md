@@ -28,7 +28,7 @@ themselves.
 | `future account profile` / `balance` | The user's account and remaining credits |
 | `future skills list` | Installed vs. catalogued skills |
 | `future tools list` / `describe <name>` | Platform and browser tools the **CLI** can call (not the model's `read`/`write`/`edit`/`shell`, which are set per session) |
-| `future mcp list` | MCP servers configured in `~/.future/mcp.json` and the command each one runs |
+| `future mcp list` | MCP servers configured in `~/.future/mcp.json`, each with its transport and what it runs or points at |
 | `future session list --json` | Every recorded session, newest first (each with its `cwd`, model and title) |
 | `future session info <id> [--json]` | One session's model, cwd, message/tool counts, tokens and cost |
 | `future session status <id> [--json] [--metrics]` | One session's **live** state: effective permission and sandbox tier, context occupancy, loaded context files and skills, active/queued runs, pending approvals |

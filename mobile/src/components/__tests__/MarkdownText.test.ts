@@ -7,6 +7,7 @@ import { AppAlert as Alert } from "../appAlerts";
 import { act, create } from "react-test-renderer";
 import { MarkdownText } from "../MarkdownText";
 import { SvgXml } from "react-native-svg";
+import { MarkdownImage } from "../MarkdownImage";
 import * as parser from "../../../../packages/markdown/src/parseFutureMarkdown";
 
 jest.mock("react-i18next", () => ({
@@ -798,5 +799,61 @@ describe("a `#` conversation reference", () => {
     const root = render({ onOpenSession: jest.fn(), text: "[x](futureos://run/1)" });
     expect(paintedText(root)).toContain("x");
     expect(root.findAllByType(Text).filter(node => paintedText(node) === "#x")).toHaveLength(0);
+  });
+});
+
+describe("an image inside a sentence", () => {
+  /**
+   * `inlineRuns` splits every local or remote picture out of the text run before
+   * the inline renderer ever sees it — a native image cannot take part in a
+   * selectable `Text` layout — so the picture becomes its own block wherever it
+   * was written, and the words around it keep flowing as text.
+   *
+   * This is also the reason the inline renderer's own file-chip arm is dead code
+   * (see `case "image"` in MarkdownText): everything that could reach it is
+   * claimed here first. If that split is ever narrowed, these pictures fall back
+   * to the inline chip and this test is the one that says so.
+   */
+  test("becomes its own block wherever it sits, and the picture can still be opened", () => {
+    const placements = [
+      "![shot](file:///Users/me/Downloads/shot.png)",
+      "see ![shot](file:///Users/me/Downloads/shot.png) for the numbers",
+      "**![shot](file:///Users/me/Downloads/shot.png)**",
+      "[![shot](file:///Users/me/Downloads/shot.png)](https://example.com)",
+      "- ![shot](file:///Users/me/Downloads/shot.png)",
+      "> ![shot](file:///Users/me/Downloads/shot.png)",
+      "## ![shot](assets/pic.png)",
+      "text ![shot](../relative/pic.png) more",
+    ];
+    for (const text of placements) {
+      let renderer: ReactTestRenderer | undefined;
+      act(() => { renderer = create(createElement(MarkdownText, { text, onOpenFile: jest.fn() })); });
+      expect({ text, blocks: renderer!.root.findAllByType(MarkdownImage).length })
+        .toEqual({ text, blocks: 1 });
+      act(() => renderer!.unmount());
+    }
+  });
+
+  test("a block in the middle of a sentence still names the file and opens it on the desktop", () => {
+    const onOpenFile = jest.fn();
+    let renderer: ReactTestRenderer | undefined;
+    act(() => {
+      renderer = create(createElement(MarkdownText, {
+        onOpenFile,
+        text: "see ![shot](file:///Users/me/Downloads/shot.png) for the numbers",
+      }));
+    });
+    const root = renderer!.root;
+    expect(paintedText(root)).toContain("see");
+    expect(paintedText(root)).toContain("for the numbers");
+    // The block falls back to a chip naming the file: a `file://` source is a path
+    // on the machine that sent the message, so the phone offers it to the desktop
+    // instead of trying to load it.
+    const chip = root.findAllByType(Text).find(node => typeof node.props.onPress === "function");
+    expect(chip).toBeDefined();
+    expect(paintedText(chip!)).toBe("shot");
+    act(() => chip!.props.onPress());
+    expect(onOpenFile).toHaveBeenCalledWith("/Users/me/Downloads/shot.png");
+    act(() => renderer!.unmount());
   });
 });

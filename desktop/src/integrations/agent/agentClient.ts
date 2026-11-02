@@ -424,6 +424,20 @@ export function normalizeThinkingLevel(level?: string | null): ThinkingLevel {
   return trimmed || defaultThinkingLevel;
 }
 
+/**
+ * How a thinking level is named on screen: its wire value, verbatim.
+ *
+ * The names are the provider's own tokens — `off`, `minimal`, `xhigh`, `max`,
+ * and whatever a custom endpoint declares — so every picker shows the string
+ * that will actually be sent, in English, rather than a translated name: what a
+ * reader ticks in Settings is what they see in the composer, and both match the
+ * provider's documentation. The implicit level (no thinking parameter on the
+ * wire at all) is shown under its own name, `default`.
+ */
+export function thinkingLevelName(level?: string | null): string {
+  return normalizeThinkingLevel(level);
+}
+
 export function modelOption(modelId: string, models: AgentModelOption[]) {
   // Prefer an exact provider-qualified match so we resolve the right provider
   // when several expose the same model id.

@@ -984,6 +984,7 @@ fn a_cancellation_before_the_first_poll_is_reported_as_a_failed_start() {
     let mut stopped_cleanly = 0usize;
     for _ in 0..ATTEMPTS {
         let state = crate::rpc::service_test_state();
+        crate::test_support::ensure_fd_headroom();
         let listener = runtime
             .block_on(crate::grpc::AgentListener::bind_tcp("127.0.0.1", 0))
             .unwrap();

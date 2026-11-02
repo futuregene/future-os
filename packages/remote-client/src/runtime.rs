@@ -214,10 +214,9 @@ fn reconnect_delay(attempt: usize) -> std::time::Duration {
 /// How often a live generation re-reads its grant.
 ///
 /// A wake-up cadence, never the criterion: whether to rotate is decided by
-/// [`PeerCreds::needs_refresh`] on the expiry the store holds, and the wait
-/// before each check is the grant's own deadline (see [`rotation_wait`]). The
-/// tick only bounds how long a grant the store changed by another path can go
-/// unnoticed.
+/// [`rotation_due`] on the expiry the store holds, and the wait before each
+/// check is the grant's own deadline (see [`rotation_wait`]). The tick only
+/// bounds how long a grant the store changed by another path can go unnoticed.
 #[cfg(not(any(test, feature = "test-support")))]
 fn rotation_tick() -> std::time::Duration {
     std::time::Duration::from_secs(15)
@@ -227,20 +226,93 @@ fn rotation_tick() -> std::time::Duration {
     std::time::Duration::from_millis(25)
 }
 
+/// How long before its expiry a *live* generation's grant is rotated.
+///
+/// Wider than [`creds::REFRESH_LEAD_SECS`], which stays what it is: that margin
+/// is the connect-time predicate shared with the phone client and pinned by
+/// `fixtures/credentials.json`, so changing it would change another client's
+/// agreement. A live link is a different question with more room — the socket is
+/// already serving — and the wider window is what leaves space to retry a
+/// rotation that failed, whether the platform was briefly unreachable between
+/// the mint and the new handshake or the handshake itself timed out.
+///
+/// It matches the bridge's own renewal (`future_remote_server::pairing
+/// ::REFRESH_LEAD`, 240 s): one grant lifetime, one lead, whichever half of a
+/// pair is the one renewing it.
+///
+/// Measured 2026-11-01 on a desktop whose three outgoing links each lost their
+/// grant at every expiry and were re-minted 2-3 s *after* the relay had already
+/// cut them (10:50:44 → 10:50:47, 10:51:45 → 10:51:48, 10:53:35 → 10:53:38): the
+/// single attempt at the 60 s margin had no room to be retried, so every 15
+/// minutes the link blinked and the log filled with `User Authentication
+/// Expired` / `authorization violation`.
+const ROTATION_LEAD_SECS: i64 = 240;
+
+/// How long after a failed rotation the same grant may be attempted again, and
+/// the ceiling that doubling stops at.
+///
+/// A failure here is usually the platform or the relay being briefly
+/// unavailable, not the credential, so the attempt is retried inside the window
+/// instead of being written off for the rest of the grant's life — which is what
+/// left a lapsed grant to be rebuilt only after the socket had died.
+const ROTATION_RETRY_SECS: u64 = 15;
+const ROTATION_RETRY_MAX_SECS: u64 = 60;
+
+/// The wait after the `failures`-th consecutive failed rotation of one grant.
+fn rotation_retry_delay(failures: u32) -> std::time::Duration {
+    let doublings = failures.saturating_sub(1).min(4);
+    std::time::Duration::from_secs((ROTATION_RETRY_SECS << doublings).min(ROTATION_RETRY_MAX_SECS))
+}
+
+/// What the worker remembers about one host's grant.
+#[derive(Clone, Copy)]
+struct RotationAttempt {
+    /// The expiry this attempt belongs to. A newer grant from the store is a new
+    /// decision, not a repeat of this one.
+    expires_at: i64,
+    /// `Some` once an attempt failed: the earliest moment to try that grant
+    /// again. `None` while an attempt is in flight.
+    retry_at: Option<tokio::time::Instant>,
+    /// Consecutive failures for this grant, which is what lengthens the wait.
+    failures: u32,
+}
+
+/// Whether this grant should be rotated now.
+///
+/// Three answers, in order: outside the rotation window nothing is due; a grant
+/// this worker has not attempted is due; and a grant it has attempted is due
+/// again only once a *failed* attempt's backoff has expired. An attempt still in
+/// flight (`retry_at: None`) is never due twice.
+fn rotation_due(
+    attempt: Option<&RotationAttempt>,
+    expires_at: i64,
+    now: i64,
+    now_instant: tokio::time::Instant,
+) -> bool {
+    if expires_at <= 0 || expires_at - ROTATION_LEAD_SECS > now {
+        return false;
+    }
+    match attempt {
+        None => true,
+        Some(attempt) if attempt.expires_at != expires_at => true,
+        Some(attempt) => attempt.retry_at.is_some_and(|at| at <= now_instant),
+    }
+}
+
 /// How long the rotation worker sleeps before looking at the grant again.
 ///
 /// The wait is the credential's own deadline — its declared expiry minus
-/// [`creds::REFRESH_LEAD_SECS`] — capped by the tick, so a grant the store
-/// changed from elsewhere (a re-pair, another writer) is re-read within one
-/// cadence. A grant that is already due has a zero wait: it is rotated on the
-/// next pass rather than after a fixed delay. A credential with no declared
-/// expiry has nothing to schedule and is re-read at the tick.
+/// [`ROTATION_LEAD_SECS`] — capped by the tick, so a grant the store changed from
+/// elsewhere (a re-pair, another writer) is re-read within one cadence. A grant
+/// that is already due has a zero wait: it is rotated on the next pass rather
+/// than after a fixed delay. A credential with no declared expiry has nothing to
+/// schedule and is re-read at the tick.
 fn rotation_wait(expires_at: i64, now: i64) -> std::time::Duration {
     let tick = rotation_tick();
     if expires_at <= 0 {
         return tick;
     }
-    let due_in = expires_at - creds::REFRESH_LEAD_SECS - now;
+    let due_in = expires_at - ROTATION_LEAD_SECS - now;
     std::time::Duration::from_secs(due_in.max(0) as u64).min(tick)
 }
 
@@ -375,7 +447,9 @@ async fn attach_stream(
             control: peer_session.control_for_stream(),
         }),
         Err(error) => {
-            eprintln!("remote_peer: could not subscribe for {desktop_id}: {error}");
+            future_remote_protocol::remote_log!(
+                "remote_peer: could not subscribe for {desktop_id}: {error}"
+            );
             None
         }
     }
@@ -621,7 +695,9 @@ async fn apply_visible_lane(
         Err(error) => {
             // The old lane stays installed and the next `resumed`/reconnect
             // rebuilds the stream; a failure here is not the connection's.
-            eprintln!("remote_peer: could not move the event lane for {desktop_id}: {error}");
+            future_remote_protocol::remote_log!(
+                "remote_peer: could not move the event lane for {desktop_id}: {error}"
+            );
         }
     }
 }
@@ -946,11 +1022,14 @@ struct ClientInner {
     /// rotates every live host, and a second one would refresh the same grant
     /// twice.
     rotation_started: std::sync::atomic::AtomicBool,
-    /// The grant expiry each host was last *rotated for*, so a refresh that
-    /// hands back a grant inside the refresh window cannot make the worker
-    /// reconnect in a tight loop: the same grant is rotated once, and again only
-    /// when the store moves to a different one.
-    rotated_for: std::sync::Mutex<HashMap<String, i64>>,
+    /// What the worker remembers about each host's grant: the expiry it last
+    /// attempted, and — after a failed attempt — when it may try again.
+    ///
+    /// The expiry is here so a refresh that hands back a grant still inside the
+    /// window cannot make the worker reconnect in a tight loop: the same grant is
+    /// attempted once, and again only when the store moves to a different one or
+    /// a failed attempt's backoff expires.
+    rotated_for: std::sync::Mutex<HashMap<String, RotationAttempt>>,
     stopping: tokio::sync::watch::Sender<bool>,
     #[cfg(any(test, feature = "test-support"))]
     inject_connection_lost: std::sync::atomic::AtomicBool,
@@ -1625,7 +1704,9 @@ impl Client {
             let emitter = emitter.clone();
             async move {
                 if let Err(error) = self.connect_with_emitter(&desktop_id, emitter).await {
-                    eprintln!("remote_peer: could not reach {desktop_id}: {error}");
+                    future_remote_protocol::remote_log!(
+                        "remote_peer: could not reach {desktop_id}: {error}"
+                    );
                 }
             }
         }))
@@ -1715,7 +1796,9 @@ impl Client {
             self.check_attempt(&state, desktop_id, epoch)?;
             if connected.consumed_invitation {
                 if let Err(error) = self.inner.host.clear_secret(&creds) {
-                    eprintln!("remote_peer: could not clear the invitation secret: {error}");
+                    future_remote_protocol::remote_log!(
+                        "remote_peer: could not clear the invitation secret: {error}"
+                    );
                 }
             }
         }
@@ -1878,8 +1961,8 @@ impl Client {
     /// One worker per client, started from the outermost connect entry points —
     /// never from `connect_attempt`, because the worker rotates *by* connecting
     /// and a start inside that path would make the two futures contain each
-    /// other. The decision is [`PeerCreds::needs_refresh`] on the grant the store
-    /// holds; the tick only bounds how often that grant is re-read.
+    /// other. The decision is [`rotation_due`] on the grant the store holds; the
+    /// tick only bounds how often that grant is re-read.
     fn start_rotation_worker(&self) {
         if self
             .inner
@@ -1900,8 +1983,13 @@ impl Client {
                     // expiry, and the bounded reconnect is the fallback if the
                     // grant lapses.
                     if let Err(error) = client.connect_attempt(&desktop_id, None, false).await {
-                        eprintln!(
-                            "remote_peer: could not rotate the credential for {desktop_id}: {error}"
+                        // Retried inside the window rather than written off: one
+                        // failed rotation must not cost the grant its renewal.
+                        let delay = client.defer_rotation(&desktop_id);
+                        future_remote_protocol::remote_log!(
+                            "remote_peer: could not rotate the credential for {desktop_id} \
+                             (retrying in {}s): {error}",
+                            delay.as_secs()
                         );
                     }
                 }
@@ -1912,11 +2000,35 @@ impl Client {
         let _ = handle;
     }
 
+    /// Record a failed rotation and when the same grant may be attempted again.
+    ///
+    /// Answers the delay applied, which is what the caller's line names. The
+    /// wait doubles from [`ROTATION_RETRY_SECS`] up to
+    /// [`ROTATION_RETRY_MAX_SECS`]: a rotation that failed is usually the
+    /// platform or the relay being briefly unavailable, so the next attempt
+    /// belongs a little later in the same window, not never.
+    fn defer_rotation(&self, desktop_id: &str) -> Duration {
+        let mut attempted = self
+            .inner
+            .rotated_for
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(entry) = attempted.get_mut(desktop_id) else {
+            return Duration::ZERO;
+        };
+        entry.failures = entry.failures.saturating_add(1);
+        let delay = rotation_retry_delay(entry.failures);
+        entry.retry_at = Some(tokio::time::Instant::now() + delay);
+        delay
+    }
+
     /// How long until the earliest live grant is due, bounded by the tick.
     ///
-    /// The deadline is the credential's own: its declared expiry minus
-    /// [`creds::REFRESH_LEAD_SECS`]. A due grant returns zero, so the next check
-    /// rotates it immediately.
+    /// The deadline is the credential's own: its declared expiry minus the
+    /// rotation lead ([`ROTATION_LEAD_SECS`]). A due grant returns zero, so the
+    /// next check rotates it immediately. A grant that is inside that window but
+    /// waiting out the backoff of a failed attempt wakes at that moment instead:
+    /// zero would spin the loop for as long as the backoff lasts.
     async fn next_rotation_check(&self) -> Duration {
         let live: Vec<String> = self.inner.state.lock().await.live.keys().cloned().collect();
         // Nothing connected: nothing to rotate, and no reason to touch the
@@ -1936,50 +2048,69 @@ impl Client {
         live.iter()
             .filter_map(|desktop_id| book.find(desktop_id).map(|record| (desktop_id, record)))
             .fold(rotation_tick(), |wait, (desktop_id, record)| {
-                // A grant this worker already rotated for gets the tick: waking
-                // for it again immediately would reconnect on every pass.
-                if rotated.get(desktop_id) == Some(&record.creds.jwt_expires_at) {
-                    return wait;
+                // A grant this worker already attempted gets its own wake-up:
+                // the tick while that attempt is in flight, or the moment its
+                // backoff expires.
+                match rotated
+                    .get(desktop_id)
+                    .filter(|attempt| attempt.expires_at == record.creds.jwt_expires_at)
+                {
+                    Some(attempt) => match attempt.retry_at {
+                        Some(at) => {
+                            let left = at
+                                .saturating_duration_since(tokio::time::Instant::now())
+                                .max(Duration::from_millis(1));
+                            wait.min(left)
+                        }
+                        None => wait,
+                    },
+                    None => wait.min(rotation_wait(record.creds.jwt_expires_at, now)),
                 }
-                wait.min(rotation_wait(record.creds.jwt_expires_at, now))
             })
     }
 
-    /// The live hosts whose stored grant has entered the refresh window.
+    /// The live hosts whose stored grant has entered the rotation window.
     async fn hosts_due_for_rotation(&self) -> Vec<String> {
         let live: Vec<String> = self.inner.state.lock().await.live.keys().cloned().collect();
         if live.is_empty() {
             return Vec::new();
         }
         let now = self.now_secs();
+        let now_instant = tokio::time::Instant::now();
         let Ok(book) = self.inner.host.load() else {
             return Vec::new();
         };
-        let due: Vec<String> = live
-            .into_iter()
-            .filter(|desktop_id| {
-                book.find(desktop_id)
-                    .is_some_and(|record| record.creds.needs_refresh(now))
-            })
-            .collect();
-        let mut rotated = self
+        let mut attempted = self
             .inner
             .rotated_for
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        due.into_iter()
-            .filter(|desktop_id| {
-                // One rotation per grant: see `next_rotation_check`.
-                let Some(record) = book.find(desktop_id) else {
-                    return false;
-                };
-                if rotated.get(desktop_id) == Some(&record.creds.jwt_expires_at) {
-                    return false;
-                }
-                rotated.insert(desktop_id.clone(), record.creds.jwt_expires_at);
-                true
-            })
-            .collect()
+        let mut due = Vec::new();
+        for desktop_id in live {
+            let Some(record) = book.find(&desktop_id) else {
+                continue;
+            };
+            let expires_at = record.creds.jwt_expires_at;
+            let previous = attempted
+                .get(&desktop_id)
+                .filter(|attempt| attempt.expires_at == expires_at)
+                .copied();
+            if !rotation_due(previous.as_ref(), expires_at, now, now_instant) {
+                continue;
+            }
+            // Mark the attempt before it runs, so a connection that hangs cannot
+            // have the next pass start a second one for the same grant.
+            attempted.insert(
+                desktop_id.clone(),
+                RotationAttempt {
+                    expires_at,
+                    retry_at: None,
+                    failures: previous.map_or(0, |attempt| attempt.failures),
+                },
+            );
+            due.push(desktop_id);
+        }
+        due
     }
 
     /// The generation that owned the host is over: its socket closed for good.
@@ -2100,7 +2231,7 @@ impl Client {
                     }
                     Err(error) => {
                         for line in log.note(&desktop_id, &error.to_string()) {
-                            eprintln!("{line}");
+                            future_remote_protocol::remote_log!("{line}");
                         }
                         // A refused credential is not a network fault. The same
                         // grant cannot authenticate however often it is presented,
@@ -2122,7 +2253,7 @@ impl Client {
                     // sleep, otherwise the count would surface minutes later,
                     // next to a failure it no longer describes.
                     if let Some(line) = log.close(&desktop_id) {
-                        eprintln!("{line}");
+                        future_remote_protocol::remote_log!("{line}");
                     }
                     // Network outages are not crash loops. Keep one cancellable
                     // owner asleep, then retry; never resend business commands.
@@ -2463,7 +2594,7 @@ impl Client {
                     // re-reads the page and the catalogue), which is exactly the
                     // resync a drop needs — a new kind would be a contract change
                     // the UI does not know how to act on.
-                    eprintln!(
+                    future_remote_protocol::remote_log!(
                     "remote_peer: dropped {dropped} buffered pushes for {desktop_id}; re-syncing"
                 );
                     emitter(PeerEvent {
@@ -2539,7 +2670,9 @@ impl Client {
         let session = self.session_handle(desktop_id).await;
         if let Some(session) = &session {
             if let Err(error) = session.leave("disconnected").await {
-                eprintln!("remote_peer: could not tell {desktop_id} we left: {error}");
+                future_remote_protocol::remote_log!(
+                    "remote_peer: could not tell {desktop_id} we left: {error}"
+                );
             }
         }
         {
@@ -3268,22 +3401,100 @@ mod tests {
         assert_eq!(
             rotation_wait(now + 3_600, now),
             tick.min(std::time::Duration::from_secs(
-                (3_600 - creds::REFRESH_LEAD_SECS) as u64
+                (3_600 - ROTATION_LEAD_SECS) as u64
             ))
         );
         // Exactly at the lead: due now.
         assert_eq!(
-            rotation_wait(now + creds::REFRESH_LEAD_SECS, now),
+            rotation_wait(now + ROTATION_LEAD_SECS, now),
             std::time::Duration::ZERO
         );
         // Inside the lead, or already past it: due now (never a negative wait).
         assert_eq!(
-            rotation_wait(now + creds::REFRESH_LEAD_SECS - 1, now),
+            rotation_wait(now + ROTATION_LEAD_SECS - 1, now),
             std::time::Duration::ZERO
         );
         assert_eq!(rotation_wait(now - 10, now), std::time::Duration::ZERO);
         // No declared expiry: only the tick re-reads it.
         assert_eq!(rotation_wait(0, now), tick);
+    }
+
+    /// A live link is rotated earlier than a connect attempt is refreshed.
+    ///
+    /// The connect-time margin is the phone client's (pinned at 60 s by the
+    /// shared fixture), while a socket already serving has room to start sooner —
+    /// and that room is what a failed rotation's retries fit into.
+    #[test]
+    fn the_rotation_window_opens_before_the_connect_margin() {
+        let now = 1_000_000;
+        let base = tokio::time::Instant::now();
+        let (rotation_lead, connect_margin) = (ROTATION_LEAD_SECS, creds::REFRESH_LEAD_SECS);
+        assert!(
+            rotation_lead > connect_margin,
+            "a live link must start rotating before a connect attempt refreshes"
+        );
+        assert!(!rotation_due(None, now + ROTATION_LEAD_SECS + 1, now, base));
+        assert!(rotation_due(None, now + ROTATION_LEAD_SECS, now, base));
+        // The whole retry run has to finish inside the window, or the last
+        // attempt would land on a grant the relay has already cut.
+        assert!(
+            ROTATION_LEAD_SECS as u64
+                > rotation_retry_delay(1).as_secs()
+                    + rotation_retry_delay(2).as_secs()
+                    + rotation_retry_delay(3).as_secs()
+        );
+        // A credential with no declared expiry is never due.
+        assert!(!rotation_due(None, 0, now, base));
+    }
+
+    /// One failed rotation must not cost the grant its renewal.
+    ///
+    /// The attempt is recorded for that expiry with the backoff it earned; the
+    /// grant becomes due again at that moment and not before, and a *different*
+    /// grant is a fresh decision rather than a repeat of this one.
+    #[test]
+    fn a_failed_rotation_waits_its_backoff_and_then_retries() {
+        let now = 1_000_000;
+        let base = tokio::time::Instant::now();
+        let expires_at = now + 100;
+        let failed = RotationAttempt {
+            expires_at,
+            retry_at: Some(base + rotation_retry_delay(1)),
+            failures: 1,
+        };
+        assert!(!rotation_due(Some(&failed), expires_at, now, base));
+        assert!(
+            !rotation_due(
+                Some(&failed),
+                expires_at,
+                now,
+                base + rotation_retry_delay(1) - std::time::Duration::from_millis(1)
+            ),
+            "the backoff has not expired yet"
+        );
+        assert!(rotation_due(
+            Some(&failed),
+            expires_at,
+            now,
+            base + rotation_retry_delay(1)
+        ));
+        // An attempt still in flight is never due a second time.
+        let in_flight = RotationAttempt {
+            retry_at: None,
+            ..failed
+        };
+        assert!(!rotation_due(Some(&in_flight), expires_at, now, base));
+        // A newer grant from the store is a new decision.
+        assert!(rotation_due(Some(&failed), expires_at + 1, now, base));
+    }
+
+    #[test]
+    fn the_retry_backoff_doubles_and_stops_at_its_ceiling() {
+        assert_eq!(rotation_retry_delay(0).as_secs(), ROTATION_RETRY_SECS);
+        assert_eq!(rotation_retry_delay(1).as_secs(), 15);
+        assert_eq!(rotation_retry_delay(2).as_secs(), 30);
+        assert_eq!(rotation_retry_delay(3).as_secs(), 60);
+        assert_eq!(rotation_retry_delay(9).as_secs(), ROTATION_RETRY_MAX_SECS);
     }
     /// Both rotation sides read the *same* predicate, so a grant cannot be
     /// rotated and then immediately treated as still needing rotation.

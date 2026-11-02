@@ -334,6 +334,50 @@ describe("the recent view's order", () => {
   });
 });
 
+describe("a row with no activity stamp", () => {
+  it("draws a host's row without an age instead of inventing one", () => {
+    // A local row's stamp is coalesced (`lastMessageAt ?? updatedAt ?? createdAt`), so it
+    // is never null. A *host's* row is whatever its catalogue sent: a host that predates
+    // the field sends none, and an age built from null would print 1970. The row keeps
+    // its place (ranked by creation) and simply says nothing about when it last spoke.
+    const view = mount(
+      <ActivityRail {...props([], {
+        remoteCatalogs: [{
+          desktopId: "desk-c",
+          sessions: [{ sessionId: "say-nothing", title: "Quiet host row", mode: "chat", streaming: false, createdAt: now - hour }],
+        }],
+      })}
+      />,
+    );
+    showRecent(view.container);
+
+    const row = view.container.querySelector("[data-recent-row=\"desk-c::say-nothing\"]");
+    expect(row, "the host's row").not.toBeNull();
+    expect(row!.textContent).not.toContain("ago");
+    view.unmount();
+  });
+
+  it("still counts as a search result, so the list does not claim there are none", () => {
+    // The same row has to be findable: `hasSearchResults` reads the recent list first in
+    // this view, and a row drawn by a filter that "found nothing" is the contradiction
+    // this asserts against.
+    const unstamped = thread("unstamped", { title: "Needle", createdAt: now - hour, lastMessageAt: null });
+    const view = mount(<ActivityRail {...props([unstamped])} />);
+    showRecent(view.container);
+    act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    const input = view.container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
+    act(() => {
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+      descriptor?.set?.call(input, "needle");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    expect(drawnTitles(view.container)).toEqual(["Needle"]);
+    expect(view.container.textContent).not.toContain("No conversations match");
+    view.unmount();
+  });
+});
+
 describe("child conversations in the recent view", () => {
   /**
    * The `/future-goal` shape: a conversation that started a worker session for

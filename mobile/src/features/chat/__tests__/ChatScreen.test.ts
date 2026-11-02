@@ -881,11 +881,10 @@ describe("ChatScreen wiring", () => {
     expect(mockSendApi.continueMessage).toHaveBeenCalledWith(item);
   });
 
-  test("a reply's measured tail anchor reaches the press that lands on it", () => {
-    // The bubble measures where its last output slice sits inside its own row
-    // and reports it here; the walk turns that number into the jump's lift. A
-    // reporter that stopped forwarding would land every press on the reply's
-    // first slice without any test of the walk itself noticing.
+  test("a press of ↓ lands on the next question, skipping the answer between", () => {
+    // The walk is wired from the screen through the list into the hook: a
+    // control that stopped forwarding its press would leave ↓ doing nothing,
+    // and no test of the walk itself would notice.
     const original = mockRemote.timeline;
     try {
       mockRemote.timeline = {
@@ -904,13 +903,8 @@ describe("ChatScreen wiring", () => {
         "scrollToIndex",
       ).mockImplementation(() => {});
 
-      // The row laid itself out before the press: that is the bubble's report.
-      const card = view().findAllByType("TimelineCard" as never);
-      const answer = card.find(node => node.props.item.id === "a1")!;
-      act(() => answer.props.onReplyTailAnchor("a1", 240));
-
-      // The reader dragged up to the older question, so ↓ offers that question's
-      // answer — the rung this anchor belongs to.
+      // The reader dragged up to the older question, so ↓ offers the prompt
+      // below it — the answer in between is not a stop.
       act(() => list().props.onScrollBeginDrag({
         nativeEvent: {
           contentOffset: { x: 0, y: 1_360 },
@@ -923,15 +917,16 @@ describe("ChatScreen wiring", () => {
         changed: [],
       }));
       const down = view().findAll(node =>
-        node.props.accessibilityLabel === "chat.nextPassage"
+        node.props.accessibilityLabel === "chat.questionNext"
         && typeof node.props.onPress === "function")[0];
       expect(down).toBeDefined();
       act(() => down!.props.onPress());
 
+      // The answer between the two prompts is passed in this one press.
       expect(scrollToIndex).toHaveBeenCalledWith({
-        index: 2,
+        index: 1,
         viewPosition: 1,
-        viewOffset: JUMP_VIEW_OFFSET + 240,
+        viewOffset: JUMP_VIEW_OFFSET,
         animated: false,
       });
     } finally {
@@ -1137,3 +1132,25 @@ test("the bar carries the desktop this conversation is on, named the way the lis
     .toEqual({ icon: undefined, label: "desktop" });
 });
 
+
+// Where the viewer sits and what its dismissal is wired to. The surfaces above
+// it are stubbed in this file, so a picture cannot be opened through the
+// transcript here; what this screen owns is the position (last, so it stacks
+// above the file preview a picture can be opened from) and the state its close
+// resets.
+test("the image viewer is the last surface, and its dismissal leaves the conversation as it was", () => {
+  const viewer = () => tree.root.findAll(node => typeof node.type === "function"
+    && (node.type as { name?: string }).name === "ImageViewer").at(-1)!;
+  // Nothing is open until a picture is tapped.
+  expect(viewer().props.target).toBeNull();
+
+  // Last of the surfaces, in the same stack as the sheets it must cover.
+  const siblings = viewer().parent!.children;
+  expect(siblings[siblings.length - 1]).toBe(viewer());
+
+  // The close button and Android's back gesture both run this: with nothing
+  // open it must leave the screen exactly as it found it.
+  expect(typeof viewer().props.onClose).toBe("function");
+  act(() => viewer().props.onClose());
+  expect(viewer().props.target).toBeNull();
+});

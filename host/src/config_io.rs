@@ -150,4 +150,20 @@ mod tests {
         restore_file(&path, None, false);
         std::fs::remove_file(&path).ok();
     }
+
+    /// The three failure kinds keep their identity across the boundary: a caller
+    /// that matches `Error::Json` (as the settings writers do) must not receive a
+    /// generic message because the primitive moved into another crate.
+    #[test]
+    fn a_config_failure_keeps_its_kind() {
+        let io = into_host(future_config::Error::Io(std::io::Error::other("disk")));
+        assert!(matches!(io, Error::Io(_)), "{io:?}");
+
+        let invalid = serde_json::from_str::<i32>("not json").expect_err("invalid json");
+        let json = into_host(future_config::Error::Json(invalid));
+        assert!(matches!(json, Error::Json(_)), "{json:?}");
+
+        let message = into_host(future_config::Error::Message("no room".to_string()));
+        assert_eq!(message.to_string(), "no room");
+    }
 }

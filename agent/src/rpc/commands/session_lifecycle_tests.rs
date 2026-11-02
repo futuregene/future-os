@@ -744,6 +744,127 @@ fn get_fork_messages_handles_legacy_bare_string_content() {
     assert_eq!(messages[0]["blocks"][0]["text"], "plain legacy text");
 }
 
+// ── coverage batch 1: get_fork_entries ─────────────────────────────────
+
+/// The picker's own list: every question *and* every answer, in transcript
+/// order, with the role the surface labels the row by.
+#[test]
+fn get_fork_entries_lists_questions_and_answers() {
+    let state = make_app_state();
+    let user = crate::session::SessionEntry::new_user(
+        "user",
+        serde_json::json!([
+            {"type": "text", "text": "why does it fail?"},
+            {"type": "text", "text": "agent-injected attachment list"},
+        ]),
+    );
+    let assistant = crate::session::SessionEntry::new_assistant(
+        serde_json::json!("because the loop advanced first"),
+        vec![],
+    );
+    // A tool result and a report-less assistant step are steps of a reply, not
+    // messages a reader branches at: neither is listed.
+    let tool = crate::session::SessionEntry::new_tool("call-1", "file body");
+    let tool_only = crate::session::SessionEntry::new_assistant(serde_json::json!([]), vec![]);
+    save_via(
+        &state,
+        "pick-src",
+        "mock",
+        vec![user, assistant, tool, tool_only],
+    );
+
+    let cmd = make_cmd_for("get_fork_entries", "pick-src");
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true, "{resp}");
+    let entries = resp["data"]["entries"].as_array().unwrap();
+    let listed: Vec<_> = entries
+        .iter()
+        .map(|entry| {
+            (
+                entry["role"].as_str().unwrap().to_string(),
+                entry["blocks"][0]["text"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        vec![
+            ("user".to_string(), "why does it fail?".to_string()),
+            (
+                "assistant".to_string(),
+                "because the loop advanced first".to_string()
+            ),
+        ]
+    );
+    assert!(!entries[0]["id"].as_str().unwrap().is_empty());
+    assert!(entries[0]["createdAtMs"].is_i64());
+}
+
+#[test]
+fn get_fork_entries_unknown_session_returns_empty() {
+    let state = make_app_state();
+    let cmd = make_cmd_for("get_fork_entries", "ghost");
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["data"]["entries"], serde_json::json!([]));
+}
+
+/// A run that is still writing is not a fork point: its entries have no answer
+/// to stop at yet, so the newest message the picker offers is the prompt that
+/// started it. Settling the run puts its reply back on the list.
+#[test]
+fn get_fork_entries_stops_before_the_run_that_is_still_writing() {
+    let state = make_app_state();
+    let question = crate::session::SessionEntry::new_user("user", serde_json::json!("first"));
+    let answer = crate::session::SessionEntry::new_assistant(serde_json::json!("done"), vec![]);
+    let live_prompt = crate::session::SessionEntry::new_user("user", serde_json::json!("and now?"));
+    let live_start = crate::session::SessionEntry::run_started("run-2", 1);
+    let half_written =
+        crate::session::SessionEntry::new_assistant(serde_json::json!("half an ans"), vec![]);
+    save_via(
+        &state,
+        "live-src",
+        "mock",
+        vec![
+            question,
+            answer,
+            live_prompt,
+            live_start,
+            half_written.clone(),
+        ],
+    );
+
+    let texts = |state: &crate::rpc::AppState| -> Vec<String> {
+        let cmd = make_cmd_for("get_fork_entries", "live-src");
+        let resp = parse_response(&handle_command_internal(state, cmd));
+        resp["data"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["blocks"][0]["text"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(texts(&state), vec!["first", "done", "and now?"]);
+
+    // The run's terminal marker settles it, and the answer joins the list.
+    let mut settled = vec![half_written];
+    settled.push(crate::session::SessionEntry::run_terminal(
+        "run-2",
+        "completed",
+        10,
+        20,
+        None,
+    ));
+    let existing = state.session_manager.load("live-src").unwrap().entries;
+    let mut entries = existing;
+    entries.extend(settled);
+    save_via(&state, "live-src", "mock", entries);
+    assert_eq!(
+        texts(&state),
+        vec!["first", "done", "and now?", "half an ans"]
+    );
+}
+
 // ── coverage batch 1: new_session variants ──────────────────────────────
 
 #[test]
@@ -2564,4 +2685,129 @@ fn presence_answers_while_a_writer_job_holds_the_lane() {
         waited < std::time::Duration::from_millis(500),
         "presence waited {waited:?} behind a writer job"
     );
+}
+
+// ── coverage batch: journal maintenance and an unopenable store ────────
+
+/// A store that cannot be opened at all: `agent.db` is a directory, so every
+/// sessionless surface that reaches for the database has to answer with its
+/// own refusal rather than panicking or reporting empty data.
+fn unopenable_store_state() -> crate::rpc::AppState {
+    let dir = test_session_dir();
+    std::fs::create_dir_all(dir.join("agent.db")).unwrap();
+    make_app_state_with(dir, Arc::new(crate::runtime::GlobalQueueBudget::defaults()))
+}
+
+#[test]
+fn reclaim_run_journals_refuses_a_mode_marker_it_cannot_interpret() {
+    // The command deletes journal rows, so an unrecognised marker is refused
+    // instead of guessed at — and nothing is reclaimed.
+    let state = make_app_state();
+    save_via(
+        &state,
+        "reclaim-guard",
+        "mock",
+        vec![crate::session::SessionEntry::new_user(
+            "user",
+            serde_json::json!("keep me"),
+        )],
+    );
+
+    let mut cmd = make_cmd("reclaim_run_journals");
+    cmd.custom_instructions = "yes please".into();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], false, "{resp}");
+    assert_eq!(resp["error_code"], "invalid_request");
+    assert!(resp["error"]
+        .as_str()
+        .unwrap()
+        .contains("only the `dryRun` mode marker"));
+    assert_eq!(resp["error_data"], serde_json::json!({}));
+
+    // The refused request reclaimed nothing: the session still loads.
+    let resp = parse_response(&handle_command_internal(
+        &state,
+        make_cmd_for("get_session_entries", "reclaim-guard"),
+    ));
+    assert_eq!(resp["success"], true, "{resp}");
+}
+
+#[test]
+fn reclaim_run_journals_answers_the_dry_run_marker_with_a_plan() {
+    // `dryRun` is a plan, not a loop: no run is reclaimed, there is no
+    // "more work" claim to chase, and no integrity check is run for a pass
+    // that wrote nothing.
+    let state = make_app_state();
+    let mut cmd = make_cmd("reclaim_run_journals");
+    cmd.custom_instructions = "dryRun".into();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true, "{resp}");
+    let data = &resp["data"];
+    assert_eq!(data["dryRun"], serde_json::json!(true));
+    assert_eq!(data["hasMore"], serde_json::json!(false));
+    assert_eq!(data["reclaimedRuns"], serde_json::json!(0));
+    assert_eq!(data["reclaimedEvents"], serde_json::json!(0));
+    assert!(data["quickCheck"].is_null(), "{resp}");
+    assert!(data["entries"].is_array(), "{resp}");
+    assert!(data["database"]["bytesBefore"].is_i64(), "{resp}");
+}
+
+#[test]
+fn journal_maintenance_surfaces_report_an_unopenable_store() {
+    let state = unopenable_store_state();
+
+    for (command, expected) in [
+        ("get_journal_stats", "journal"),
+        ("get_storage_health", "storage"),
+        ("get_session_storage_format", "format"),
+    ] {
+        let mut cmd = make_cmd(command);
+        cmd.session_id = "anything".into();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false, "{command}: {resp}");
+        assert_eq!(resp["command"], command, "{resp}");
+        assert!(
+            !resp["error"].as_str().unwrap_or("").is_empty(),
+            "{command}: {resp} reports no reason ({expected})"
+        );
+    }
+
+    // The reclaim sweep names its own command in the refusal, and a plan is not
+    // served from a store that could not be opened.
+    let mut cmd = make_cmd("reclaim_run_journals");
+    cmd.custom_instructions = "dryRun".into();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], false, "{resp}");
+    assert_eq!(resp["command"], "reclaim_run_journals", "{resp}");
+    assert!(!resp["error"].as_str().unwrap_or("").is_empty(), "{resp}");
+
+    // Presence is answered per id from the store, so an unopenable store has no
+    // presence to report.
+    let mut cmd = make_cmd("get_session_presence");
+    cmd.session_ids = vec!["anything".into()];
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], false, "{resp}");
+    assert_eq!(resp["command"], "get_session_presence", "{resp}");
+    assert!(!resp["error"].as_str().unwrap_or("").is_empty(), "{resp}");
+}
+
+#[test]
+fn new_session_reports_an_unopenable_store_instead_of_minting_one() {
+    let state = unopenable_store_state();
+    let mut cmd = make_cmd("new_session");
+    cmd.session_id = "wanted".into();
+    cmd.cwd = state.welcome_cwd.clone();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], false, "{resp}");
+    assert_eq!(resp["error_code"], "session_storage_unavailable");
+    assert_eq!(resp["error_data"]["sessionId"], "wanted");
+    assert!(
+        resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("Unable to inspect session storage"),
+        "{resp}"
+    );
+    // Nothing was created: the id is still free.
+    assert!(!state.sessions.read().contains_key("wanted"));
 }

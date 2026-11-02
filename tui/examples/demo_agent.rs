@@ -100,6 +100,42 @@ fn journal() -> Value {
     json!({ "entries": entries })
 }
 
+/// The `/fork` picker's list, derived from the scripted journal.
+///
+/// The same questions and answers the transcript shows, in the same order, so a
+/// frame of the picker names rows the transcript beside it names. An entry with
+/// no text — a reasoning block, a tool call — is not a message a reader branches
+/// after, which is exactly what the agent leaves out too.
+fn fork_entries() -> Value {
+    let journal = journal();
+    let entries: Vec<Value> = journal["entries"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| {
+            let role = match entry["kind"].as_str() {
+                Some(role @ ("user" | "assistant")) => role.to_string(),
+                _ => return None,
+            };
+            let text = entry["blocks"]
+                .as_array()?
+                .iter()
+                .filter(|block| block["kind"] == "text")
+                .find_map(|block| block["text"].as_str())?
+                .to_string();
+            Some(json!({
+                "id": entry["id"],
+                "role": role,
+                "kind": role,
+                "blocks": [{"kind": "text", "text": text}],
+                "createdAtMs": 0,
+            }))
+        })
+        .collect();
+    json!({ "entries": entries })
+}
+
 /// The session in Chinese: the same two turns as [`journal_en`], so a frame taken
 /// in one language shows the same session as the other — same bug, same table,
 /// same two commits — in the words a Chinese reader would use.
@@ -871,6 +907,9 @@ impl FutureAgent for DemoAgent {
             "list_sessions" => sessions(),
             "list_models" => models(),
             "get_session_entries" => journal(),
+            // The `/fork` picker: the messages the scripted session could be
+            // branched after, taken from the same journal the frame renders.
+            "get_fork_entries" => fork_entries(),
             // A launchpad submit creates the session it then prompts; answer with
             // the id the scripted session has so both halves name one session.
             "new_session" => json!({"sessionId": SESSION_ID}),

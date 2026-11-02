@@ -697,10 +697,12 @@ it("points at the app when no models are loaded at all", async () => {
 /**
  * The composer's three pickers from the keyboard.
  *
- * Each is one command pair: `mod+alt+…` steps forward and `⇧` steps back, with
- * the ring wrapping so a key never silently stops working at the end of a list
- * the reader cannot see. The assertions go through the real dispatcher, because
- * a handler called directly would prove nothing about the key.
+ * Each is one command pair: `⌘O` / `⌘T` / `⌘S` steps forward and `⇧` steps back,
+ * the letters being the terminal workbench's own (`ctrl+o`, `ctrl+t`, `ctrl+s`
+ * there — one vocabulary for the two surfaces). The ring wraps, so a key never
+ * silently stops working at the end of a list the reader cannot see. The
+ * assertions go through the real dispatcher, because a handler called directly
+ * would prove nothing about the key.
  */
 describe("the composer's pickers from the keyboard", () => {
   let uninstallShortcuts: () => void;
@@ -714,18 +716,18 @@ describe("the composer's pickers from the keyboard", () => {
   });
 
   const press = (code: string, key: string, extra: KeyboardEventInit = {}) => act(() => {
-    window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, altKey: true, code, ctrlKey: true, key, ...extra }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, code, ctrlKey: true, key, ...extra }));
   });
 
   it("steps the model forward and back", async () => {
     const onModelChange = vi.fn();
     render({ onModelChange });
     await flush();
-    press("KeyM", "m");
+    press("KeyO", "o");
     expect(onModelChange).toHaveBeenLastCalledWith("openai/m2");
 
     render({ modelId: "openai/m2", onModelChange });
-    press("KeyM", "m", { shiftKey: true });
+    press("KeyO", "o", { shiftKey: true });
     expect(onModelChange).toHaveBeenLastCalledWith("future/m1");
   });
 
@@ -746,11 +748,11 @@ describe("the composer's pickers from the keyboard", () => {
     const onChangeApprovalTier = vi.fn();
     render({ approvalTier: "off", onChangeApprovalTier });
     await flush();
-    press("KeyA", "a");
+    press("KeyS", "s");
     expect(onChangeApprovalTier).toHaveBeenLastCalledWith("manual");
 
     render({ approvalTier: "manual", onChangeApprovalTier });
-    press("KeyA", "a", { shiftKey: true });
+    press("KeyS", "s", { shiftKey: true });
     expect(onChangeApprovalTier).toHaveBeenLastCalledWith("off");
   });
 
@@ -760,7 +762,7 @@ describe("the composer's pickers from the keyboard", () => {
     const onChangeApprovalTier = vi.fn();
     render({ approvalTier: "sandbox", futureSessionStatus: "signed_out", onChangeApprovalTier });
     await flush();
-    press("KeyA", "a");
+    press("KeyS", "s");
     expect(onChangeApprovalTier).toHaveBeenLastCalledWith("off");
   });
 
@@ -768,7 +770,7 @@ describe("the composer's pickers from the keyboard", () => {
     const onModelChange = vi.fn();
     render({ disabled: true, onModelChange });
     await flush();
-    const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, altKey: true, code: "KeyM", ctrlKey: true, key: "m" });
+    const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, code: "KeyO", ctrlKey: true, key: "o" });
     act(() => window.dispatchEvent(event));
     expect(onModelChange).not.toHaveBeenCalled();
     expect(event.defaultPrevented).toBe(false);

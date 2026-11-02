@@ -403,3 +403,223 @@ fn revised_final_arguments_do_not_alias_different_streamed_input() {
     )
     .is_err());
 }
+
+/// The projections registered on every application connection are read from
+/// SQL by the reader and the exporter, so each one must agree with the Rust
+/// implementation it wraps — and refuse input it cannot interpret.
+#[test]
+fn the_registered_sql_projections_agree_with_their_rust_implementations() {
+    use crate::session::sqlite_store::SqliteStore;
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+    let result = future_rpc::shell_result::ShellResult {
+        command: "printf hi".into(),
+        cwd: "/w".into(),
+        duration_ms: 3,
+        status: future_rpc::shell_result::ShellStatus::Exited,
+        exit_code: Some(0),
+        is_soft_fail: false,
+        is_error: false,
+        attempts: vec![future_rpc::shell_result::ShellAttempt {
+            status: future_rpc::shell_result::ShellStatus::Exited,
+            exit_code: Some(0),
+            duration_ms: 3,
+            output: "hi\n".into(),
+            output_truncated: false,
+            escalated: false,
+        }],
+        approval: None,
+        note: None,
+    };
+    let raw = serde_json::to_string(&result).unwrap();
+    let expected = future_rpc::shell_result::model_summary(&result);
+    store
+        .db
+        .read(move |db| {
+            let summary: String =
+                db.query_row("SELECT future_shell_summary(?1)", [&raw], |row| row.get(0))?;
+            assert_eq!(summary, expected);
+            assert!(!expected.is_empty());
+            // Uninterpretable facts are an error, never an empty projection.
+            let broken = db.query_row("SELECT future_shell_summary('not facts')", [], |row| {
+                row.get::<_, String>(0)
+            });
+            assert!(broken.is_err());
+
+            // Interrupted tool input is repaired through the same versioned
+            // interpretation the model loop uses; a bare body is preserved.
+            let repaired: String = db.query_row(
+                "SELECT future_tool_args_string_v1('{\"command\":\"pwd\"')",
+                [],
+                |row| row.get(0),
+            )?;
+            // The projection answers the *encoded* repaired body.
+            assert_eq!(
+                serde_json::from_str::<String>(&repaired).unwrap(),
+                "{\"command\":\"pwd\"}"
+            );
+            let empty: String =
+                db.query_row("SELECT future_tool_args_string_v1('')", [], |row| {
+                    row.get(0)
+                })?;
+            assert_eq!(serde_json::from_str::<String>(&empty).unwrap(), "{}");
+            assert_eq!(empty, "\"{}\"");
+            Ok(())
+        })
+        .unwrap();
+}
+
+/// A shell result on an entry is canonical facts: the object is staged as its
+/// own JSON body, and the `content` text that merely repeats the model summary
+/// is bound to the *summary view* of those facts instead of being copied.
+#[test]
+fn a_shell_result_entry_binds_its_facts_and_summary_as_bodies() {
+    use crate::session::sqlite_store::SqliteStore;
+    use serde_json::json;
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+    store
+        .db
+        .call(|db| {
+            let tx = db.transaction()?;
+            tx.execute("INSERT INTO sessions(id) VALUES('new')", [])?;
+            enable(&tx, "new")?;
+            tx.commit()?;
+            Ok(())
+        })
+        .unwrap();
+    let result = future_rpc::shell_result::ShellResult {
+        command: "printf hi".into(),
+        cwd: "/w".into(),
+        duration_ms: 3,
+        status: future_rpc::shell_result::ShellStatus::Exited,
+        exit_code: Some(0),
+        is_soft_fail: false,
+        is_error: false,
+        attempts: vec![future_rpc::shell_result::ShellAttempt {
+            status: future_rpc::shell_result::ShellStatus::Exited,
+            exit_code: Some(0),
+            duration_ms: 3,
+            output: "hi\n".into(),
+            output_truncated: false,
+            escalated: false,
+        }],
+        approval: None,
+        note: None,
+    };
+    let summary = future_rpc::shell_result::model_summary(&result);
+    let entry = json!({"id":"tool","type":"tool","role":"tool","timestamp":"2026-10-26T00:00:00Z",
+        "meta":{"run_id":"r","shell_result":serde_json::to_value(&result).unwrap()},
+        "content":[{"type":"tool_result","tool_call_id":"t","content":summary,"is_error":false}]});
+    store.append("new", vec![entry.clone()]).unwrap();
+    // The transcript still reads back losslessly, including the facts object.
+    assert_eq!(store.entries("new").unwrap(), vec![entry]);
+    // Both bodies are references: the facts as JSON, the repeated text as the
+    // summary projection of those same facts.
+    store
+        .db
+        .read(|db| {
+            let mut statement = db.prepare(
+                "SELECT field,encoding FROM content_references WHERE session_id='new' AND owner_kind='entry' ORDER BY field",
+            )?;
+            let rows = statement
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(
+                rows,
+                vec![
+                    ("/content/0/content".to_string(), "shell_summary".to_string()),
+                    ("/meta/shell_result".to_string(), "json".to_string()),
+                ]
+            );
+            // Both references point at the same stored facts: the summary view
+            // is a projection, never a second copy of the body.
+            let objects: i64 =
+                db.query_row("SELECT count(*) FROM content_objects", [], |r| r.get(0))?;
+            assert_eq!(objects, 1);
+            let distinct: i64 = db.query_row(
+                "SELECT count(DISTINCT content_id) FROM content_references WHERE session_id='new'",
+                [],
+                |r| r.get(0),
+            )?;
+            assert_eq!(distinct, 1, "one object serves facts and summary");
+            Ok(())
+        })
+        .unwrap();
+}
+
+/// An entry that finishes a block the run already streamed reuses the sealed
+/// stream body by identity instead of copying the bytes into a second object.
+#[test]
+fn an_entry_reuses_the_sealed_stream_body_it_finishes() {
+    use crate::session::sqlite_store::SqliteStore;
+    use serde_json::json;
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+    let body = "streamed text";
+    let id = store
+        .db
+        .call(|db| {
+            let tx = db.transaction()?;
+            tx.execute("INSERT INTO sessions(id) VALUES('new')", [])?;
+            enable(&tx, "new")?;
+            let id = create(&tx)?;
+            append(&tx, id, 0, body)?;
+            let mut digest = ContentDigest::default();
+            digest.push(body)?;
+            let range = seal(&tx, id, digest)?;
+            let scope = stream::StreamIdentity {
+                session_id: "new".into(),
+                run_id: "r".into(),
+                epoch: 0,
+            };
+            stream_body::bind(&tx, &scope, "block-0", range, stream::Encoding::Text)?;
+            tx.commit()?;
+            Ok(id)
+        })
+        .unwrap();
+    let entry = json!({"id":"a","type":"assistant","role":"assistant","timestamp":"2026-10-26T00:00:00Z",
+        "meta":{"run_id":"r","_future_stream_blocks":["block-0"],"_future_stream_epoch":0},
+        "content":[{"type":"text","text":body}]});
+    store.append("new", vec![entry.clone()]).unwrap();
+    // The transcript reads back the same text (the stream bookkeeping keys are
+    // internal and are not returned to readers).
+    let mut readable = entry.clone();
+    let meta = readable["meta"].as_object_mut().unwrap();
+    meta.remove("_future_stream_blocks");
+    meta.remove("_future_stream_epoch");
+    assert_eq!(store.entries("new").unwrap(), vec![readable]);
+    store
+        .db
+        .read(move |db| {
+            // ...because the entry's reference points at the streamed object,
+            // which is still the only body stored for this conversation.
+            let objects: i64 =
+                db.query_row("SELECT count(*) FROM content_objects", [], |r| r.get(0))?;
+            assert_eq!(objects, 1, "the finished block must not be copied");
+            let referenced: i64 = db.query_row(
+                "SELECT count(*) FROM content_references WHERE session_id='new' AND owner_kind='entry' AND owner_id='a' AND field='/content/0/text' AND content_id=?1",
+                [id],
+                |r| r.get(0),
+            )?;
+            assert_eq!(referenced, 1, "the entry must own a reference to it");
+            Ok(())
+        })
+        .unwrap();
+
+    // Text that is not byte-identical to the streamed body is *not* reused: it
+    // is staged as its own object, so a different completion cannot alias it.
+    let mut changed = entry.clone();
+    changed["id"] = json!("b");
+    changed["content"][0]["text"] = json!("streamed text!");
+    store.append("new", vec![changed]).unwrap();
+    store
+        .db
+        .read(|db| {
+            let objects: i64 =
+                db.query_row("SELECT count(*) FROM content_objects", [], |r| r.get(0))?;
+            assert_eq!(objects, 2);
+            Ok(())
+        })
+        .unwrap();
+}

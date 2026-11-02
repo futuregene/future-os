@@ -14,6 +14,7 @@ async fn controlled_server() -> (
     mpsc::Sender<&'static str>,
     tokio::task::JoinHandle<()>,
 ) {
+    crate::test_support::ensure_fd_headroom();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let (tx, mut rx) = mpsc::channel::<&'static str>(8);

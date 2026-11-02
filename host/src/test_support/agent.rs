@@ -427,6 +427,14 @@ pub fn mock_agent_with_cleanup(cleanup: fn()) -> MockAgentGuard {
     let mut timing = crate::test_support::timing::FixtureTiming::start("MockAgentGuard", "agent");
     let lock = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     timing.mark("lock_wait");
+    // The process-global agent loops (`config_observer`, `session_events`) are
+    // not the session observers `cleanup` cancels: they re-attach a plain
+    // subscription after every reconnect, and the mock hands a scripted stream
+    // to whoever attaches first, so a copy left by an earlier test takes the
+    // script this one is about to push — and this test then waits on an
+    // unscripted stream, which the mock parks forever. Stop them here, under
+    // the lock, before the script is written.
+    crate::agent_bridge::stop_global_agent_observers_for_test();
     // A finished test's observers keep re-attaching on the ambient runtime;
     // drop them now so their get_state/stream_events calls can't consume the
     // replies this test is about to script.
@@ -694,6 +702,11 @@ impl TestHome {
         let lock = crate::TEST_HOME_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // Owning the process globals is what this lock means, and the remote
+        // supervisor is one of them: a fixture that holds the lock owns the
+        // machine, which is also the right to stop it (see
+        // `remote::test_support::assert_fixture_scope`).
+        crate::remote::test_support::enter_fixture_scope();
         timing.mark("lock_wait");
         // Process-lifetime workers and observers must be gone BEFORE publishing
         // the new HOME and creating its schema, not later when mock_agent is
@@ -756,6 +769,12 @@ impl TestHome {
 
     fn restore(&mut self) {
         self.timing.mark("body");
+        // Re-publish the scope: `restore` runs twice for a fixture that calls it
+        // directly and then drops (or is dropped after its body), and the drain
+        // below is this fixture's own machine-wide teardown, so it has to be
+        // attributed to this fixture both times (see
+        // `remote::test_support::enter_fixture_scope`).
+        crate::remote::test_support::enter_fixture_scope();
         (self.cleanup)();
         self.timing.mark("cleanup");
         match &self.prev_home {
@@ -772,6 +791,7 @@ impl TestHome {
         crate::store::close_pool();
         let _ = std::fs::remove_dir_all(&self.dir);
         self.timing.finish();
+        crate::remote::test_support::leave_fixture_scope();
     }
 }
 

@@ -1107,4 +1107,170 @@ mod settled_run_tests {
             "the ledger's duration is anchored on the row's start"
         );
     }
+
+    // ── Fault recovery: abort, then read the marker back ───────────────────
+
+    /// One live run row plus the `ActiveRun` snapshot the watchdog is handed.
+    fn faulted_run(tag: &str, session: &str) -> (TestHome, store::ActiveRun, String) {
+        let home = TestHome::new(tag);
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some(session));
+        let run = seed_run(&thread.id);
+        let active = store::ActiveRun {
+            run_id: run.id.clone(),
+            thread_id: thread.id.clone(),
+            session_id: session.to_string(),
+            created_at: run.created_at,
+        };
+        (home, active, run.id)
+    }
+
+    /// The Agent's ACK releases a dead lease; it does not say the run finished.
+    /// The watchdog therefore aborts, reads the run state again, and settles the
+    /// row only from the terminal marker that read returns.
+    #[tokio::test]
+    async fn a_faulted_lease_is_aborted_and_settled_from_the_marker_it_then_reports() {
+        let (_home, active, run_id) = faulted_run("reconcile-fault", "sess-fault");
+        let mock = mock_agent();
+        mock.push_run_state(
+            &run_id,
+            serde_json::json!({
+                "isStreaming": true,
+                "activeRun": {"runId": run_id, "state": "cancellation_stuck"},
+            }),
+        );
+        mock.push_run_state(
+            &run_id,
+            serde_json::json!({
+                "requestedRun": {
+                    "runId": run_id,
+                    "status": "cancelled",
+                    "error": "The runtime lease was released.",
+                },
+            }),
+        );
+
+        reconcile_active_run_once(&active, &run_id, WATCHDOG_GRACE_SECS)
+            .await
+            .expect("a recoverable fault is not an error");
+
+        let aborts = mock.requests_of("abort");
+        assert_eq!(aborts.len(), 1, "exactly one abort: {aborts:?}");
+        assert_eq!(
+            aborts[0].run_id, run_id,
+            "the abort names the canonical run"
+        );
+        assert_eq!(
+            mock.requests_of("get_state").len(),
+            2,
+            "one read to detect the fault, one to see what the abort left behind"
+        );
+        let row = store::get_run(&run_id).expect("get").expect("some");
+        assert_eq!(row.status, "cancelled", "{row:?}");
+        assert_eq!(row.error_type.as_deref(), Some("cancelled"));
+        assert_eq!(
+            row.error_message.as_deref(),
+            Some("The runtime lease was released."),
+            "the Agent's own error text is what the user sees"
+        );
+    }
+
+    /// A refused abort is a fact the caller has to see: the row is left exactly
+    /// as it was, and no second read claims a terminal state the Agent never
+    /// agreed to.
+    #[tokio::test]
+    async fn a_refused_abort_is_an_error_and_leaves_the_row_alone() {
+        let (_home, active, run_id) = faulted_run("reconcile-fault-refused", "sess-refused");
+        let mock = mock_agent();
+        mock.push_run_state(
+            &run_id,
+            serde_json::json!({
+                "isStreaming": true,
+                "activeRun": {"runId": run_id, "state": "cancellation_stuck"},
+            }),
+        );
+        mock.push(
+            "abort",
+            Reply::Reject("run is not owned by this client".into()),
+        );
+
+        let error = reconcile_active_run_once(&active, &run_id, WATCHDOG_GRACE_SECS)
+            .await
+            .expect_err("a refused abort cannot be read as a repaired run");
+        assert_eq!(error, "run is not owned by this client");
+        assert_eq!(
+            mock.requests_of("get_state").len(),
+            1,
+            "no read-back after a refusal"
+        );
+        assert_eq!(
+            store::get_run(&run_id).expect("get").expect("some").status,
+            "running",
+            "the row keeps the state the lease left it in"
+        );
+    }
+
+    /// The read-back can be a non-answer. Then nothing settles the row here: the
+    /// pass returns `Ok` and the next tick asks again.
+    #[tokio::test]
+    async fn a_read_back_that_fails_settles_nothing() {
+        let (_home, active, run_id) = faulted_run("reconcile-fault-silent", "sess-silent");
+        let mock = mock_agent();
+        mock.push_run_state(
+            &run_id,
+            serde_json::json!({
+                "isStreaming": true,
+                "activeRun": {"runId": run_id, "state": "persistence_degraded"},
+            }),
+        );
+        mock.push(
+            &format!("get_state#{run_id}"),
+            Reply::Reject("ledger busy".into()),
+        );
+
+        reconcile_active_run_once(&active, &run_id, WATCHDOG_GRACE_SECS)
+            .await
+            .expect("a non-answer is not an error");
+
+        assert_eq!(mock.requests_of("abort").len(), 1, "the abort still ran");
+        assert_eq!(
+            store::get_run(&run_id).expect("get").expect("some").status,
+            "running"
+        );
+    }
+
+    /// A conversation deleted while the watchdog held its snapshot is settled
+    /// once, with the reason the user needs; the Agent is never asked about a
+    /// run no session can carry.
+    #[tokio::test]
+    async fn a_run_whose_conversation_is_gone_is_settled_with_that_reason() {
+        let home = TestHome::new("reconcile-thread-gone");
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-gone"));
+        let run = seed_run(&thread.id);
+        // The snapshot is taken first: the delete below is the race this arm
+        // exists for.
+        let active = store::ActiveRun {
+            run_id: run.id.clone(),
+            thread_id: thread.id.clone(),
+            session_id: "sess-gone".to_string(),
+            created_at: run.created_at,
+        };
+        store::delete_thread(&thread.id).expect("delete the conversation");
+        let mock = mock_agent();
+
+        reconcile_active_run_once(&active, &run.id, WATCHDOG_GRACE_SECS)
+            .await
+            .expect("an orphaned row is settled, not an error");
+
+        assert!(
+            store::get_run(&run.id).expect("get").is_none(),
+            "the delete took the row with it"
+        );
+        assert!(
+            mock.requests_of("get_state").is_empty(),
+            "a run with no conversation is never put to the Agent: {:?}",
+            mock.requests_of("get_state")
+        );
+    }
 }

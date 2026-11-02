@@ -128,6 +128,23 @@ describe("classifyAgentError", () => {
     expect(classifyAgentError("[NOT_A_CODE] something").key).toBe("agent:failure.run");
   });
 
+  it("carries the endpoint and cause of a transport failure", () => {
+    // The client's own wording when the endpoint is never reached: no HTTP
+    // status exists, so without this the run fell through to the generic
+    // failure whose copy hid both the host and the reason.
+    expect(classifyAgentError(
+      "error sending request for url (https://hpc-api.westlake.edu.cn/v1/chat/completions): client error (Connect): tls handshake eof",
+    )).toEqual({
+      key: "agent:failure.network",
+      params: { message: "hpc-api.westlake.edu.cn: tls handshake eof" },
+    });
+    // A bare connect failure has no endpoint to name, so its own text is kept.
+    expect(classifyAgentError("connection refused")).toEqual({
+      key: "agent:failure.network",
+      params: { message: "connection refused" },
+    });
+  });
+
   it("extracts an embedded provider message and drops the diagnostic tail", () => {
     expect(classifyAgentError('boom. {"error":{"message":"Invalid model id"}} Request: 2 messages, 16 KB.')).toEqual({
       key: "agent:failure.run",

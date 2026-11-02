@@ -160,12 +160,12 @@ async fn publish_batch(
             // `get_events_since` backfill.
             Ok(_) => {
                 if let Some(line) = failures.recovered() {
-                    eprintln!("{line}");
+                    future_remote_protocol::remote_log!("{line}");
                 }
             }
             Err(error) => {
                 if let Some(line) = failures.record("event_publish", error) {
-                    eprintln!("{line}");
+                    future_remote_protocol::remote_log!("{line}");
                 }
                 return Err(crate::Error::Message("event publish failed".into()));
             }

@@ -648,7 +648,8 @@ def ensure_demo_assets() -> None:
     captures every screen, it just shows the image fallback chip in a reply.
     """
     assets = ROOT / "desktop" / "shot" / "assets"
-    if (assets / "effect-size.png").exists() and (assets / "forest-plot.png").exists():
+    figures = ("effect-size.png", "forest-plot.png", "parser-throughput.png")
+    if all((assets / name).exists() for name in figures):
         return
     print("generating the demo figures (scripts/screenshots/gen-demo-assets.py)")
     result = subprocess.run(

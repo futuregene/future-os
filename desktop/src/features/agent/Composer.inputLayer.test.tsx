@@ -35,6 +35,7 @@ let root: ReturnType<typeof createRoot>;
 
 async function mount(options: {
   controls?: "full" | "none";
+  draftKey?: string;
   onEmptySubmit?: () => void;
   onQueue?: (payload: { content: string }) => boolean;
   onSend?: (payload: unknown) => void;
@@ -43,6 +44,7 @@ async function mount(options: {
   await act(async () => root.render(
     <Composer
       controls={options.controls}
+      draftKey={options.draftKey}
       modelOptions={[]}
       onEmptySubmit={options.onEmptySubmit}
       onQueue={options.onQueue}
@@ -147,6 +149,23 @@ describe("a sentence said while the run is still going", () => {
     expect(onQueue).toHaveBeenCalledTimes(1);
     expect(onSend).not.toHaveBeenCalled();
     expect(editor().textContent).toBe("第二句");
+  });
+
+  it("clears the stored draft once the queue has taken the whole sentence", async () => {
+    // The box and the stored draft are two copies of the same sentence. Handing it to
+    // the queue empties the box, so the stored copy has to go with it — otherwise a
+    // relaunch (or another view reading the draft) brings back a sentence that is
+    // already held, and the reader types it twice.
+    sessionStorage.setItem("composer-draft:T9", JSON.stringify({ attachments: [], text: "held", version: 1 }));
+    const onQueue = vi.fn(() => true);
+    await mount({ draftKey: "T9", onQueue, sending: true });
+    dictate("整句都交给队列");
+
+    press({ code: "Enter", key: "Enter" });
+
+    expect(onQueue).toHaveBeenCalledTimes(1);
+    expect(editor().textContent).toBe("");
+    expect(sessionStorage.getItem("composer-draft:T9")).toBeNull();
   });
 
   it("does not queue while the run is idle — it sends", async () => {

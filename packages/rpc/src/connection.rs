@@ -498,4 +498,4 @@ pub async fn select_agent(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

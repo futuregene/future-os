@@ -1,13 +1,15 @@
-# Hostname resolution in the CLI (static musl builds)
+# Hostname resolution in this process (static musl builds)
 
 `future` resolves host names itself when the system's own configuration is not
 where its C library looks. This page explains when that happens, which files are
 read, the two settings that override them, and what is measured versus assumed.
 
-Scope: the `future` CLI's own outbound connections — the platform API, the
-relay, skill and MCP servers, and a TCP Agent endpoint. The desktop app, the
-TUI and `future host` keep resolving through their C library; nothing here
-changes them.
+Scope: every HTTP client built through `future-http` — the platform API, skill
+and MCP servers, downloads, and the Agent's and host's own requests — plus the
+CLI's TCP Agent endpoint (gRPC). **Not** covered: the NATS relay (`async-nats`
+resolves inside itself — `ToServerAddrs::socket_addrs` →
+`tokio::net::lookup_host` — and offers no hook to replace that), and any lookup
+some other code makes through `getaddrinfo` directly.
 
 ## 1. What a static musl build cannot do
 
@@ -39,7 +41,7 @@ a missing `hosts` file only breaks names that live in it (`localhost` above all)
 and fails instantly. The five-second stall is musl's own timeout, not a network
 problem, which is why it looks like "the network is down" in a bug report.
 
-## 2. When the CLI resolves on its own
+## 2. When the process resolves on its own
 
 One decision, made once per process, from the environment and the filesystem:
 
@@ -53,6 +55,17 @@ One decision, made once per process, from the environment and the filesystem:
 
 The third row is the contract: on an ordinary Linux (and on macOS, where the
 same file exists), this feature is inert. See §6 for how that is pinned.
+
+**Windows** is the exception that keeps the contract honest: its `getaddrinfo`
+is the Windows DNS client, not a reader of `/etc/resolv.conf`, so a missing file
+there is no evidence that the process cannot resolve. Without an explicit
+setting the plan stays **system** on Windows; an explicit `FUTURE_DNS_SERVER` /
+`FUTURE_RESOLV_CONF` is still honoured.
+
+Who attaches the resolver matters as much as the decision: it is attached in
+`future-http`'s client builders, so the Agent, the host, the CLI and the TUI all
+follow it — and the CLI's TCP Agent endpoint (gRPC) reuses it through its own
+connector. The NATS relay is **not** covered (see the top of this page).
 
 ## 3. Candidate paths
 

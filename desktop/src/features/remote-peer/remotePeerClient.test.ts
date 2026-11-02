@@ -652,6 +652,18 @@ describe("listRemoteModels", () => {
     ]);
   });
 
+  it("keeps only the thinking levels a host actually named", async () => {
+    // The level list comes off the wire as `unknown[]`: a host that mixed in a number
+    // or a null must not put a level in the menu that no model can be set to.
+    invokeMock.mockResolvedValue({
+      models: [{ id: "gpt-5", thinkingLevels: ["low", 3, null, "high"], thinkingLevel: "low" }],
+    });
+
+    expect(await listRemoteModels("desktop_a")).toEqual([
+      { id: "gpt-5", thinkingLevel: "low", thinkingLevels: ["low", "high"] },
+    ]);
+  });
+
   it("drops rows that name no model and tolerates a malformed payload", async () => {
     invokeMock.mockResolvedValue({ models: [null, "nope", { label: "orphan" }, { id: "" }, { id: "ok" }] });
     expect(await listRemoteModels("desktop_a")).toEqual([{ id: "ok" }]);

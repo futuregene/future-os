@@ -147,7 +147,7 @@ async fn unavailable_explicit_tcp_is_never_a_local_start_permission() {
 }
 
 #[derive(Clone)]
-struct MockAgent {
+pub(crate) struct MockAgent {
     info: std::sync::Arc<std::sync::Mutex<AgentReadinessPayload>>,
     mutations: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     handshake_failure: u8,
@@ -155,6 +155,10 @@ struct MockAgent {
     /// Agent starts answering. Fault injection for the retry policy: a stalled
     /// or descheduled Agent looks exactly like this from the client side.
     transient_readiness_failures: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Pages answered to `get_event_content_range`, in order. Empty means the
+    /// command fails, which is what a client that asked for more than the host
+    /// published sees.
+    contents: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<serde_json::Value>>>,
 }
 
 #[tonic::async_trait]
@@ -210,6 +214,27 @@ impl proto::future_agent_server::FutureAgent for MockAgent {
                 _ => {}
             }
         }
+        if command.r#type == "get_event_content_range" {
+            let next = self.contents.lock().unwrap().pop_front();
+            return Ok(tonic::Response::new(match next {
+                Some(page) => proto::RpcResponse {
+                    id: command.id,
+                    r#type: "response".into(),
+                    command: command.r#type,
+                    success: true,
+                    data: page.to_string(),
+                    ..Default::default()
+                },
+                None => proto::RpcResponse {
+                    id: command.id,
+                    r#type: "response".into(),
+                    command: command.r#type,
+                    success: false,
+                    error: "no content pages left".into(),
+                    ..Default::default()
+                },
+            }));
+        }
         let data = if command.r#type == "get_agent_readiness" {
             serde_json::to_string(&*self.info.lock().unwrap()).unwrap()
         } else {
@@ -239,7 +264,7 @@ impl proto::future_agent_server::FutureAgent for MockAgent {
     }
 }
 
-async fn serve_mock(
+pub(crate) async fn serve_mock(
     listener: tokio::net::TcpListener,
     mock: MockAgent,
 ) -> (
@@ -262,7 +287,7 @@ async fn serve_mock(
     (stop, task)
 }
 
-fn mock_agent() -> MockAgent {
+pub(crate) fn mock_agent() -> MockAgent {
     MockAgent {
         info: std::sync::Arc::new(std::sync::Mutex::new(AgentReadinessPayload {
             version: "1.2.3".into(),
@@ -274,6 +299,15 @@ fn mock_agent() -> MockAgent {
         mutations: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         handshake_failure: 0,
         transient_readiness_failures: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        contents: std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+    }
+}
+
+/// A mock that answers `get_event_content_range` with these pages, in order.
+pub(crate) fn mock_agent_answering(pages: Vec<serde_json::Value>) -> MockAgent {
+    MockAgent {
+        contents: std::sync::Arc::new(std::sync::Mutex::new(pages.into())),
+        ..mock_agent()
     }
 }
 

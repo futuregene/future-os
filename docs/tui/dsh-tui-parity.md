@@ -316,7 +316,10 @@ Five palette entries used to be advertised and then answer `Unknown command` —
 now `[V]` (`[S:workbench-usage-panel.png]`, `[S:workbench-skills-panel.png]`),
 and `every_palette_entry_has_a_handler` keeps the next entry from rotting the
 same way. That gap was a regression against what the inline UI could do, and it
-was item P0-3 in the change list.
+was item P0-3 in the change list. `/transcript` was the one of the five that
+had nothing of its own to do: its whole answer named `/export` and
+`/reply-detail`, which the palette already advertises on their own rows, so the
+entry (and the unused full-detail render behind it) is gone.
 
 ## 6. Gap matrix
 

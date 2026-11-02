@@ -378,6 +378,62 @@ describe("activity rail conversation search", () => {
     expect(list.textContent).toContain("a title that says nothing");
   });
 
+  it("narrows a host's workspace headings by the query, and drops the machine it is not showing", async () => {
+    // The remote half of the tree is a second list of headings: a host's workspaces
+    // that match the query, grouped under that host. Two rules meet here — the device
+    // filter picks the machines, the query picks the headings — and a machine the
+    // filter excludes must not contribute even when its workspaces match.
+    const peer = (desktopId: string, name: string) => ({
+      agentAvailable: true,
+      bridgeInstanceId: `bridge_${desktopId}`,
+      connected: true,
+      error: null,
+      features: [] as string[],
+      icon: "laptop",
+      name,
+      pairId: `pair_${desktopId}`,
+      stopped: false,
+      desktopId,
+    });
+    const p = {
+      ...props([], []),
+      deviceFilter: { desktopId: "desktop_a", kind: "device" as const },
+      remotePeers: [peer("desktop_a", "Studio iMac"), peer("desktop_b", "Attic PC")],
+      remoteCatalogs: [
+        {
+          desktopId: "desktop_a",
+          sessions: [],
+          workspaces: [
+            { id: "ws_a1", name: "Charts", path: "/charts", pinned: false },
+            { id: "ws_a2", name: "Notes", path: "/notes", pinned: false },
+          ],
+        },
+        { desktopId: "desktop_b", sessions: [], workspaces: [{ id: "ws_b1", name: "Charts archive", path: "/archive", pinned: false }] },
+      ],
+      onChangeDeviceFilter: vi.fn(),
+      onManageDesktops: vi.fn(),
+    };
+    const { container } = await render(p);
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
+    const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
+    await act(async () => {
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+      descriptor?.set?.call(input, "char");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushAsync();
+
+    const list = container.querySelector("[data-activity-rail-content]")!;
+    // The filtered machine's matching heading is drawn …
+    expect(list.textContent).toContain("Charts");
+    // … its non-matching one is not …
+    expect(list.textContent).not.toContain("Notes");
+    // … and the machine the device filter excludes contributes nothing, even though
+    // its workspace also matches.
+    expect(list.textContent).not.toContain("Charts archive");
+  });
+
   /**
    * A workspace row is a result, so the rail must not also say there are none.
    *

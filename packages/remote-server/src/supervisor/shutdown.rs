@@ -290,6 +290,7 @@ impl Supervisor {
     }
 
     pub async fn handle_system_suspend(self: &Arc<Self>) {
+        self.access.note("handle_system_suspend");
         let notices = self.mobile_disconnect_notices("system_sleep");
         self.access.invalidate(|| {
             self.suspended.store(true, Ordering::Release);
@@ -311,6 +312,7 @@ impl Supervisor {
     }
 
     pub fn handle_system_resume(self: &Arc<Self>) {
+        self.access.note("handle_system_resume");
         if self.closed.load(Ordering::Acquire) {
             return;
         }
@@ -349,7 +351,9 @@ impl Supervisor {
                         server
                             .resume_recovery_running
                             .store(false, Ordering::Release);
-                        eprintln!("remote: resume recovery failed [PW001]: {error}");
+                        future_remote_protocol::remote_log!(
+                            "remote: resume recovery failed [PW001]: {error}"
+                        );
                         *server.last_error_code.lock().unwrap() =
                             Some("reconnect_required".to_string());
                     }
@@ -447,7 +451,9 @@ impl Supervisor {
         // A failure here is not fatal: creating the invitation replaces the old
         // binding anyway, and `create_pairing` retires whatever revoke is left.
         if let Err(error) = self.host.retry_revokes().await {
-            eprintln!("remote: re-pair could not settle the saved pairing's revoke: {error}");
+            future_remote_protocol::remote_log!(
+                "remote: re-pair could not settle the saved pairing's revoke: {error}"
+            );
         }
         match self.add_device().await {
             Ok(status) => Ok(status),
@@ -455,6 +461,7 @@ impl Supervisor {
         }
     }
     pub fn stop_with<T>(self: &Arc<Self>, cleanup: impl FnOnce() -> T) -> T {
+        self.access.note("stop_with");
         self.access.invalidate(|| {
             self.start_requested.store(false, Ordering::Release);
             self.suspended.store(false, Ordering::Release);

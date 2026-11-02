@@ -139,3 +139,47 @@ pub fn seed_message_less_threads(conn: &Connection, threads: &[(&str, &str, i64)
         .expect("seed thread");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::auth_store::test_support::HomeGuard;
+
+    /// The fixture the entry tests open has to be the database the application
+    /// itself writes: the row a store write commits is the row this connection
+    /// reads back, and the schema is already applied so a fixture query can name
+    /// the real tables instead of creating its own.
+    #[test]
+    fn the_schema_connection_is_the_store_the_application_writes() {
+        let _home = HomeGuard::new("store-schema-connection");
+        let conn = super::open_schema_connection();
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("schema fixture".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some("sess-schema-fixture".to_string()),
+        })
+        .expect("the store writes through its own connection");
+
+        let read_back: String = conn
+            .query_row(
+                "SELECT agent_session_id FROM threads WHERE id = ?1",
+                [&thread.id],
+                |row| row.get(0),
+            )
+            .expect("the fixture reads the same row");
+        assert_eq!(read_back, "sess-schema-fixture");
+        let tables: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'threads'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count the schema's own tables");
+        assert_eq!(
+            tables, 1,
+            "the schema is applied by the fixture, not by a query"
+        );
+    }
+}

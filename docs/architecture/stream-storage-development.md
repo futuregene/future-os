@@ -131,11 +131,11 @@ Finalization still seals current blocks and commits terminal state, without rewr
 |---|---|
 | New-format scheduling | Approximately 25 ms, 128 events or 64 KiB; deadline from oldest pending data |
 | Segment/write/raw read page | 16 KiB / 64 KiB / 256 KiB |
-| Pending capacity | 32 MiB per session, 128 MiB global, 2-second age threshold; independent controls |
+| Pending capacity | 32 MiB per session, 128 MiB global, 30-second age threshold; independent controls |
 | SQLite | WAL + FULL, dedicated writer, bounded query-only readers, independent PASSIVE checkpoint |
 | Clients | Bounded native transfers, cooperative large JSON decode, generation cancellation and decoded-object propagation |
 
-Scheduling parameters are neither crash-loss limits nor arbitrary-disk latency guarantees. Do not lower durability, extend commit intervals, queue without limits or block cancellation to improve space figures.
+Scheduling parameters are neither crash-loss limits nor arbitrary-disk latency guarantees. Do not lower durability, extend commit intervals, queue without limits or block cancellation to improve space figures. The age threshold only decides whether the writer has stalled: memory is already capped by the byte budgets, and a measured WAL + FULL `commit` tail reached 1.2 s (2026-10-31), so a 2-second bound sat inside the normal band and turned one slow commit into a killed run.
 
 Read bounded compact rows, then fetch the page's distinct contexts and extra fields in batches. Query count scales with pages, not events; parse/assemble outside database workers.
 Context and residual JSON count toward page/memory budgets; bounding change-row count alone is insufficient.

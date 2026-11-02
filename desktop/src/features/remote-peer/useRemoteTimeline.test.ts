@@ -1769,3 +1769,150 @@ describe("useRemoteTimeline guards", () => {
     hook.unmount();
   });
 });
+
+/**
+ * Two more ways a read can be overtaken: the conversation is left, and the
+ * event was never this conversation's. Both are the same question — "is this
+ * still the thing I asked about?" — asked at the two places the answer can
+ * change, and both used to be answered only by the code that *starting* the
+ * work happened to check.
+ */
+describe("useRemoteTimeline stale answers", () => {
+  it("ignores a pushed event that names another conversation", async () => {
+    requestMock.mockResolvedValue(page([entry("e1", "user", "hello")]));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+
+    // A frame for a sibling conversation reaches the same window listener (the
+    // bridge is per-desktop, not per-conversation). It must not land in this
+    // transcript: the same `type` and a plausible body are what makes this the
+    // easy mistake to make.
+    push({
+      sessionId: "sess_2",
+      type: "agent_text",
+      eventId: "other-1",
+      timestamp: "2026-01-01T00:00:00Z",
+      data: JSON.stringify({ text: "not mine" }),
+    });
+    await settle();
+
+    expect(hook.current.entries.map(item => item.id)).toEqual(["e1"]);
+    expect(hook.current.messages.map(message => message.content)).toEqual(["hello"]);
+    hook.unmount();
+  });
+
+  it("drops a state read that answers after another conversation was opened", async () => {
+    let answered: ((state: unknown) => void) | null = null;
+    stateReply = new Promise((resolve) => {
+      answered = resolve;
+    });
+    requestMock.mockResolvedValue(page([]));
+    let session = "sess_1";
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", session, true));
+    await settle();
+    expect(answered).not.toBeNull();
+
+    // The reader moves on before the host answers. The reply names the
+    // conversation it is about, and by now that is the previous one, so its
+    // answer is dropped rather than shown under the new title.
+    stateReply = { activeRun: null };
+    session = "sess_2";
+    hook.rerender();
+    await settle();
+    expect(hook.current.sessionState?.sessionId).toBe("sess_2");
+
+    await act(async () => answered!({ model: "openai/gpt-5", thinkingLevel: "high" }));
+    await settle();
+
+    // Still the new conversation's own answer, untouched by the late one.
+    expect(hook.current.sessionState).toEqual({ sessionId: "sess_2", state: { activeRun: null } });
+    hook.unmount();
+  });
+
+  it("drops a run log that arrives after the conversation was left", async () => {
+    let answer: ((page: unknown) => void) | null = null;
+    const reads: string[] = [];
+    stateReply = { activeRun: { runId: "run_1" } };
+    requestMock.mockImplementation(async (_desktop: string, command: { runId?: string; type?: string }) => {
+      if (command?.type === "get_events_since") {
+        reads.push(command.runId ?? "");
+        return new Promise((resolve) => {
+          answer = resolve;
+        });
+      }
+      return page([]);
+    });
+    let session = "sess_1";
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", session, true));
+    await settle();
+    expect(reads).toEqual(["run_1"]);
+
+    session = "sess_2";
+    stateReply = {};
+    hook.rerender();
+    await settle();
+
+    // The log lands for a conversation that is no longer on screen. Applying it
+    // would rebuild a reply under the new title — the exact failure the session
+    // check exists for — so the answer is dropped and nothing is drawn.
+    await act(async () => answer!({
+      events: [
+        { type: "agent_start", data: JSON.stringify({ started_at_ms: 1_700_000_000_000 }), runId: "run_1", idx: 0 },
+        { type: "text_chunk", data: JSON.stringify({ text: "the old answer" }), runId: "run_1", idx: 1 },
+      ],
+      watermark: 1,
+    }));
+    await settle();
+
+    expect(hook.current.liveReplies).toEqual([]);
+    hook.unmount();
+  });
+
+  /**
+   * A body that cannot be fetched sends the client back to the record.
+   *
+   * The pushed frame is a *reference*, not the text (a lean host trims it), so
+   * the lane has to load it before the projector may fold the event — otherwise
+   * a reply is drawn with a hole where its first paragraph was. When the load
+   * fails the event is not delivered at all: the record is re-read instead, and
+   * the run's live copy is restarted so nothing half-built stays on screen.
+   */
+  it("re-reads the record when a referenced body cannot be fetched", async () => {
+    const reference = {
+      cursor: 1,
+      databaseId: "db",
+      epoch: 1,
+      field: "/data/text",
+      restoreGeneration: "generation",
+    };
+    const historyReads: number[] = [];
+    requestMock.mockImplementation(async (_desktop: string, command: { type?: string }) => {
+      if (command?.type === "get_event_content_range")
+        throw new Error("content_read_failed");
+      if (command?.type === "get_session_entries") {
+        historyReads.push(1);
+        return page([entry("e1", "user", "hello")]);
+      }
+      return page([entry("e1", "user", "hello")]);
+    });
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    const before = historyReads.length;
+
+    push({
+      sessionId: "sess_1",
+      type: "user_message",
+      eventId: "evt_ref",
+      timestamp: "2026-01-01T00:00:00Z",
+      data: JSON.stringify({ content_refs: { text: reference }, text: "" }),
+    });
+    await settle();
+
+    // The frame produced no entry of its own...
+    expect(hook.current.entries.map(item => item.id)).toEqual(["e1"]);
+    // ...and the host's record was read again, which is where the whole message
+    // lives once the pushed copy cannot be completed.
+    expect(historyReads.length).toBeGreaterThan(before);
+    hook.unmount();
+  });
+});

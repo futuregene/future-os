@@ -81,10 +81,10 @@ describe("keyboard shortcut settings", () => {
   });
 
   it("offers the reading and composer keys beside the ones they extend", () => {
-    // ``⇧⌘O`` beside the paperclip, ``⌘⌥C`` beside the reply's copy button,
-    // ``⌘⌥G`` beside the corner's jump button: a reader who came here after
+    // ``⌥⌘A`` beside the paperclip, ``⌥⌘C`` beside the reply's copy button,
+    // ``⌥⌘G`` beside the corner's jump button: a reader who came here after
     // seeing one of those buttons should be able to find its key.
-    expect(bindingButton("Attach files").textContent).toBe("Ctrl+Shift+O");
+    expect(bindingButton("Attach files").textContent).toBe("Ctrl+Alt+A");
     expect(bindingButton("Copy the last reply").textContent).toBe("Ctrl+Alt+C");
     expect(bindingButton("Jump to the latest message").textContent).toBe("Ctrl+Alt+G");
   });
@@ -247,5 +247,41 @@ describe("keyboard shortcut settings", () => {
   it("says when nothing matches", () => {
     search("zzzz");
     expect(container.textContent).toContain("No command matches");
+  });
+});
+
+describe("the recorder while it is armed", () => {
+  it("shows a held modifier instead of sitting unchanged", () => {
+    act(() => bindingButton("New conversation").click());
+    // A modifier on its own is half a combination: the recorder keeps waiting and
+    // shows what is held, so the control answers the press.
+    keydown({ ctrlKey: true, key: "Control" });
+    expect(bindingButton("New conversation").textContent).toBe("Ctrl+");
+    expect(bindingButton("New conversation").getAttribute("aria-pressed")).toBe("true");
+    keydown({ ctrlKey: true, shiftKey: true, key: "Shift" });
+    expect(bindingButton("New conversation").textContent).toBe("Ctrl+Shift+");
+  });
+
+  it("clears the held modifiers when they are released", () => {
+    act(() => bindingButton("New conversation").click());
+    keydown({ ctrlKey: true, key: "Control" });
+    expect(bindingButton("New conversation").textContent).toBe("Ctrl+");
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Control" }));
+    });
+    expect(bindingButton("New conversation").textContent).toContain("Press a new combination");
+    // Still armed: releasing a modifier is not an answer.
+    expect(bindingButton("New conversation").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("disarms on a second click, and drops the refusal it was showing", () => {
+    act(() => bindingButton("New conversation").click());
+    keydown({ key: "k" });
+    expect(container.querySelector("[role=\"alert\"]")).not.toBeNull();
+    act(() => bindingButton("New conversation").click());
+    expect(bindingButton("New conversation").getAttribute("aria-pressed")).toBe("false");
+    // Nothing is left over from the cancelled attempt.
+    expect(container.querySelector("[role=\"alert\"]")).toBeNull();
+    expect(resolvedBindingText("chat.new")).toBe("mod+n");
   });
 });

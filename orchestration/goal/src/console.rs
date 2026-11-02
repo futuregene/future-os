@@ -4499,12 +4499,55 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
             ts: crate::state::now_epoch(),
         })?;
     }
-    if let Some(m) = model {
-        client.set_model(&session_id, &m).await?;
+    // ── Worker configuration: the supervisor's model/thinking level is the
+    //    default, not a per-run judgement.
+    //
+    //    Both flags are optional and were previously applied only when given,
+    //    so an omitted flag silently left the worker on the agent's registry
+    //    default. With per-run flags and no goal-level default, that made one
+    //    pasted command line the de-facto configuration of every worker in a
+    //    goal — and an explicit flag was applied without any line saying so.
+    //    Resolution rules (and the vocabulary stamped into the run header) live
+    //    in `crate::worker_config`.
+    let supervisor_settings = match goal0.supervisor_session_id.as_deref() {
+        Some(id) => client.session_settings(id).await?,
+        None => None,
+    };
+    let resolution = crate::worker_config::resolve(
+        model.as_deref(),
+        thinking.as_deref(),
+        supervisor_settings
+            .as_ref()
+            .map(|(model, level)| (model.as_str(), level.as_str())),
+        !created_session,
+    );
+    if let Some(m) = resolution.set_model.as_deref() {
+        client.set_model(&session_id, m).await?;
     }
-    if let Some(l) = thinking {
-        client.set_thinking_level(&session_id, &l).await?;
+    if let Some(l) = resolution.set_thinking.as_deref() {
+        client.set_thinking_level(&session_id, l).await?;
     }
+    // Record what ACTUALLY took effect. The inherited shapes copy a value from
+    // another session and the agent-default shape sends nothing at all, so only
+    // a read-back can put the truth in the header.
+    let resolved = match client.session_settings(&session_id).await? {
+        Some((model, thinking_level)) => crate::worker_config::WorkerConfig {
+            model,
+            thinking_level,
+            source: resolution.source,
+        },
+        None => crate::worker_config::WorkerConfig::unknown(resolution.source),
+    };
+    println!(
+        "{}",
+        crate::worker_config::console_line(
+            agent_id.as_deref().unwrap_or("anonymous"),
+            &resolved,
+            supervisor_settings
+                .as_ref()
+                .map(|(model, level)| (model.as_str(), level.as_str())),
+        )
+    );
 
     // Run the turn loop. Session lifecycle: the session is never deleted —
     // the kernel records the retention state (id + failure classification +
@@ -4538,6 +4581,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         &mut executed_turn,
         !no_title,
         created_session,
+        &resolved,
     )
     .await;
     steer_handle.abort();
@@ -4835,6 +4879,7 @@ async fn run_turns(
     executed_turn: &mut bool,
     auto_title: bool,
     created_session: bool,
+    worker_config: &crate::worker_config::WorkerConfig,
 ) -> Result<()> {
     let mut turn = 0u32;
     // P2: goal-monotonic turn counter. `turn` below restarts at 1 on every
@@ -5076,6 +5121,7 @@ async fn run_turns(
             Some(runs_dir),
             Some(&progress),
             turn_note.as_deref(),
+            worker_config,
         );
         let record = match turn_future.await {
             Ok(rec) => rec,
@@ -11098,6 +11144,17 @@ mod residual_branch_tests {
         (dir, store)
     }
 
+    /// The configuration a dispatch stamps into the run header. These tests
+    /// exercise the turn loop, not the provenance rules — those are covered by
+    /// `worker_config`'s own tests.
+    fn test_worker_config() -> crate::worker_config::WorkerConfig {
+        crate::worker_config::WorkerConfig {
+            model: "future/test-model".to_string(),
+            thinking_level: "medium".to_string(),
+            source: crate::worker_config::ConfigSource::Default,
+        }
+    }
+
     fn registered(store: &mut Store, id: &str) {
         let goal = Goal::new(id, "obj", "/tmp");
         store.register(&goal).unwrap();
@@ -11727,6 +11784,7 @@ mod residual_branch_tests {
             &mut executed,
             false,
             true,
+            &test_worker_config(),
         )
         .await
         .unwrap_err();
@@ -11956,6 +12014,16 @@ mod rate_limit_backoff_tests {
     /// below the 45 s cool-down it is there to catch.
     const WATCH: Duration = Duration::from_secs(5);
 
+    /// The configuration a dispatch stamps into the run header; this module
+    /// exercises the backoff path, not the provenance rules.
+    fn test_worker_config() -> crate::worker_config::WorkerConfig {
+        crate::worker_config::WorkerConfig {
+            model: "future/test-model".to_string(),
+            thinking_level: "medium".to_string(),
+            source: crate::worker_config::ConfigSource::Default,
+        }
+    }
+
     struct Drive {
         _dir: tempfile::TempDir,
         store: Store,
@@ -12014,6 +12082,7 @@ mod rate_limit_backoff_tests {
 
         let mut last_failure_kind = None;
         let mut executed = false;
+        let worker_config = test_worker_config();
         // `max-turns 1`: the failing turn is the whole run.
         let run = run_turns(
             &mut client,
@@ -12029,6 +12098,7 @@ mod rate_limit_backoff_tests {
             &mut executed,
             false,
             true,
+            &worker_config,
         );
         // The wrapper is the observation: a run that returns inside WATCH did
         // not wait out the cool-down.

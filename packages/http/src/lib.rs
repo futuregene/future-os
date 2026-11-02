@@ -9,6 +9,11 @@
 //! the TUI's update check needs it without linking either of them. A caller
 //! that installed the provider by hand would be re-deciding Ring versus another
 //! backend, and the two decisions would drift apart silently.
+//!
+//! The same reasoning applies to name resolution: [`dns`] decides once per
+//! process whether hostnames go through the system resolver or a configured
+//! nameserver, and every builder below attaches that decision. A component that
+//! built its own client would silently resolve the other way.
 
 /// Install Ring unless an entry point already selected a process provider.
 pub fn install_tls_provider() {
@@ -19,7 +24,7 @@ pub fn install_tls_provider() {
 /// authentication and timeout settings.
 pub fn client_builder() -> reqwest::ClientBuilder {
     install_tls_provider();
-    reqwest::Client::builder()
+    dns::attach(reqwest::Client::builder())
 }
 
 /// Construct a client with Reqwest's default settings.
@@ -36,7 +41,7 @@ pub mod blocking {
     /// Start a blocking HTTP client builder with the process provider ready.
     pub fn client_builder() -> reqwest::blocking::ClientBuilder {
         super::install_tls_provider();
-        reqwest::blocking::Client::builder()
+        super::dns::attach_blocking(reqwest::blocking::Client::builder())
     }
 
     /// Construct a blocking client with Reqwest's default settings.
@@ -46,3 +51,5 @@ pub mod blocking {
             .expect("initialize blocking HTTP client")
     }
 }
+
+pub mod dns;

@@ -631,6 +631,193 @@ mod tests {
         assert!(run(&["serve".to_string(), "--bogus".to_string()]).is_err());
     }
 
+    /// The usage text is the answer to a bare `future relay` and to `--help`:
+    /// both are a request to read it, not an error.
+    #[test]
+    fn a_bare_invocation_prints_the_usage() {
+        for args in [vec![], vec!["--help".to_string()], vec!["help".to_string()]] {
+            run(&args).expect("the usage is not an error");
+        }
+    }
+
+    #[test]
+    fn init_names_the_option_it_cannot_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+        let error = run(&[
+            "init".to_string(),
+            "--dir".to_string(),
+            path.clone(),
+            "--bogus".to_string(),
+        ])
+        .expect_err("unknown option")
+        .to_string();
+        assert!(error.contains("unknown option `--bogus`"), "{error}");
+
+        // Half a certificate can never be a deployment.
+        let error = run(&[
+            "init".to_string(),
+            "--dir".to_string(),
+            path,
+            "--tls-cert".to_string(),
+            "cert.pem".to_string(),
+        ])
+        .expect_err("a certificate needs its key")
+        .to_string();
+        assert!(error.contains("go together"), "{error}");
+    }
+
+    /// `serve` has no default configuration file: a relay that guessed would
+    /// serve somebody else's rooms.
+    #[test]
+    fn serve_names_the_argument_it_is_missing() {
+        let error = serve(&[]).expect_err("serve has no default config");
+        assert!(
+            error.to_string().contains("serve needs --config"),
+            "{error}"
+        );
+
+        let error = serve(&["--config".to_string()]).expect_err("--config needs a value");
+        assert!(
+            error.to_string().contains("--config needs a path"),
+            "{error}"
+        );
+
+        let error = serve(&["--bogus".to_string()]).expect_err("unknown option");
+        assert!(
+            error.to_string().contains("unknown option `--bogus`"),
+            "{error}"
+        );
+    }
+
+    /// A listen address that is not an address is refused by name, before
+    /// anything is bound — and the file it came from is not modified.
+    #[test]
+    fn serve_refuses_a_listen_address_it_cannot_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = serve_config(dir.path(), |config| {
+            config.listen = "127.0.0.1:not-a-port".into();
+        });
+        let error = serve(&["--config".to_string(), path])
+            .expect_err("an unreadable address must not boot")
+            .to_string();
+        assert!(error.contains("listen address"), "{error}");
+        assert!(error.contains("not-a-port"), "{error}");
+    }
+
+    /// The relay is shaped after `relay init`, so every field is filled in the
+    /// way the generated file fills it.
+    fn serve_config(dir: &std::path::Path, mutate: impl FnOnce(&mut RelayConfig)) -> String {
+        let account = nkeys::KeyPair::new_account();
+        let mut config = RelayConfig {
+            listen: "127.0.0.1:8099".into(),
+            public_url: "http://127.0.0.1:8099".into(),
+            nats_url: "nats://127.0.0.1:4222".into(),
+            nats_ws_url: "ws://127.0.0.1:9090".into(),
+            account_seed: account.seed().expect("account seed"),
+            jwt_ttl_seconds: 300,
+            invitation_ttl_seconds: 300,
+            room_ttl_seconds: 7_776_000,
+            subs_limit: -1,
+            payload_limit: jwt::DEFAULT_PAYLOAD_LIMIT,
+            http_timeout_seconds: 15,
+            tls_cert: None,
+            tls_key: None,
+        };
+        mutate(&mut config);
+        let path = dir.join("relay.json");
+        config.save(&path).expect("write the config");
+        path.to_string_lossy().into_owned()
+    }
+
+    /// A port something else is already listening on, held for the test's
+    /// lifetime so `serve`'s bind fails at once instead of running forever.
+    fn held_port() -> (std::net::TcpListener, u16) {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind a holder");
+        let port = listener.local_addr().expect("address").port();
+        (listener, port)
+    }
+
+    /// The plaintext deployment: an `https` public URL with no certificate is a
+    /// terminator in front of this listener, which `serve` says out loud before
+    /// it starts. The bind failure that follows names the address, so the reader
+    /// knows both what it was trying to be and what stopped it.
+    #[test]
+    fn serve_announces_the_plaintext_listener_behind_an_https_url() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (holder, port) = held_port();
+        let path = serve_config(dir.path(), |config| {
+            config.listen = format!("127.0.0.1:{port}");
+            config.public_url = "https://relay.example.com".into();
+        });
+
+        let error =
+            serve(&["--config".to_string(), path]).expect_err("the address is taken by the holder");
+        // The bind error is the OS's, with no address added on top — this
+        // assertion is what proves the deployment got as far as binding: a
+        // certificate or room-registry problem would have surfaced instead.
+        // It is read as the *kind*, not as one host's spelling of it: unix
+        // answers "Address already in use" and Windows "Only one usage of each
+        // socket address (protocol/network address/port) is normally
+        // permitted".
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::AddrInUse),
+            "the OS reason survives: {error}"
+        );
+        drop(holder);
+    }
+
+    /// The same for a listener that terminates TLS itself: the banner names the
+    /// certificate, the account and the public URL, because those three are what
+    /// a phone has to trust.
+    #[test]
+    fn serve_announces_a_tls_listener_with_its_certificate() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (cert, key) = super::serve_tls_tests::write_certificate(dir.path());
+        let (holder, port) = held_port();
+        let path = serve_config(dir.path(), |config| {
+            config.listen = format!("127.0.0.1:{port}");
+            config.public_url = "https://localhost".into();
+            config.tls_cert = Some(cert.to_string_lossy().into_owned());
+            config.tls_key = Some(key.to_string_lossy().into_owned());
+        });
+
+        let error =
+            serve(&["--config".to_string(), path]).expect_err("the address is taken by the holder");
+        // Reaching the bind proves the certificate was read and matched its
+        // key: a bad pair fails in `server_tls_config`, before the socket.
+        // Read as the kind for the same reason as the plaintext case above.
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::AddrInUse),
+            "the TLS configuration was built and the bind was what failed: {error}"
+        );
+        drop(holder);
+    }
+
+    /// A certificate file with no certificate in it is refused at startup: a
+    /// listener that cannot present a certificate fails every pairing, which is
+    /// harder to diagnose than a relay that refuses to start.
+    #[test]
+    fn a_certificate_file_holding_nothing_is_refused() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (cert, key) = super::serve_tls_tests::write_certificate(dir.path());
+        let empty = dir.path().join("empty.pem");
+        std::fs::write(&empty, "").expect("write the empty certificate");
+        let error = server_tls_config(&empty, &key)
+            .expect_err("no certificate is not a configuration")
+            .to_string();
+        assert!(error.contains("empty.pem"), "{error}");
+        // The real certificate still loads, so the fixture itself is not the
+        // reason the empty one failed.
+        server_tls_config(&cert, &key).expect("the fixture certificate loads");
+    }
+
     #[test]
     fn init_writes_a_trust_setup_and_refuses_to_clobber_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -903,7 +1090,7 @@ mod serve_tls_tests {
     const SERVER_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDonurV3++RlP6S\nUiQ/Lyt9ulCJsi2tEq6Baj5JIOCZf1S99PbDDjNzH2uiT6gWj22yHI0k3PhW+Vzm\nyUT8WqJ82q8SKYh9YQxIrZsISwJlRhbtjLFfCwhVZbB3eCqkomi3M+nY2uSsqN8i\nfPwIXA/LFnwtOC64f6BPDzdOgxXHux3f1RCiHwvwdHV6hNnDphJh5uSKTuBOjLya\noB/3eUf00ZL8xaiAVre/BdULTIGZwFhOJTLYPmx/Zmx4aJ57AcPu4qQDv05uKxh/\nrcwwM5u/IlO0PNpXbB4QhXecOCYpy4J6EVz2OXXhyDiW/AgUePEzmhHF6NwpE7nN\nFkjA7REFAgMBAAECggEAEgGjKfUQpVNENW1YUu/CzROsAkyhjoEgsvHXam+6Ewex\nNpcMtuKVhvbKrSC/YSevFRdysYTNUGYzE8ZGqcYWR9XhsWU3pITrn4CYvJaZ098O\nDUtTu4iuF3Ysp8LMgjv0ISJKmreu9dKImzHTjI4bxtuxtwpfS3bNoPELle89s10Z\n1Anr5gDdGeW3Hxk/RnU++KMVSObDS1VZjSJQ+HItYuJyevX9VGmcIQfgCY49+G0o\na4eVTNbetCmdPTuKnOgIjBmtTsgXcMCG0e8wAVvyWoYqgIHXlQDU6pohH3l7UTH8\nBVhwuSLqSLk3Ja6SO4RYH5HmrtROvNcOPs29iEN2TQKBgQD5WGPkztGdQaGLYU35\nUBA6Wq/s3mHcCsMf3W4bhhJ/89nvWEBGS5PPxhJ7sWTPDoelQytTampMGGPcTM8R\nPlNPrIdyCbo2dV9cYBSeqjea34fiFs5XDsyG/WX1SxOjfnwFS61uDTkO6jqPinhM\nZVITuK7oF7sIZxgSFoUt0Pl12wKBgQDu1EJ+8TBPToyeQvq0qg8vsFB0kaHRCi0u\nmpWTd8CdQh+wSdCcETAUzUy3SsCC7FtTLbHR4jAxz4DaNSX/qkFHfddQbuxOE4sD\nGhj0K2fBxUklbpWeCXkXOrwCaaMiGU4dllJEhGVojLKONSbVqxXtezhb2r0QTmHW\nwIJAiD/6nwKBgQDVrTudvua+3plzeiV5+3SMrV6JnGE8UjS4v+c1ywVbhTtD8trR\n4r5+lX0NZw2+qvLvWspsJ4uEPnqFNYVVf5Whd3Zy8YcUWC0qWmQRPEl+fQRTabvV\nuybmn4yaUoY325KobxvmbYpyD6OzkrRYs5NMtz2cQ4nSP5bPGWFzy9ubdQKBgEVR\n2pMZ0lnShMIS0s3JZmsDE/chpgQUnhSezbdl1MRQQv5aDnCeFISVKiUxTzsw+zjj\nVG+E5VQv1EiBkKvqcNQdVHeGGpR226xk0MVeK9l0N8zjkg2y1jDF3XgdzTnCeoff\n77TvcLetzs2z47e01sJ9N1iB3spy1bcNXUD5ywglAoGBALeyldkGLqObYovrqkBx\nWR/g9n5QAfbJv0Ww+Vb/FEBBKOHi/gd6UamoVsVIC0qTyRxSC50onLHW1raR+qgk\nAlVzRgbakmvP+RZtnWCo3GdAfUEKj5WvJGGnMPTw/j2rHgsX3ANQVKxx0OpFln8r\nCpd7bnByNNjOfkFH8k6TqSF9\n-----END PRIVATE KEY-----\n";
 
     /// Write the fixture into `dir` and return `(cert, key)`.
-    fn write_certificate(dir: &std::path::Path) -> (PathBuf, PathBuf) {
+    pub(super) fn write_certificate(dir: &std::path::Path) -> (PathBuf, PathBuf) {
         let cert = dir.join("fullchain.pem");
         let key = dir.join("privkey.pem");
         std::fs::write(&cert, SERVER_CERT_PEM).expect("write the certificate");
@@ -1028,6 +1215,17 @@ mod serve_tls_tests {
         assert!(
             lower.contains("certificate") || lower.contains("unknown issuer"),
             "expected a certificate failure, got: {error}"
+        );
+
+        // The refused handshake is ordinary traffic, not a relay failure: the
+        // listener is still answering, which is the behaviour the per-connection
+        // task's error arm exists for.
+        let response = https_get(port, Some(&roots))
+            .await
+            .expect("the listener survives a client that does not trust it");
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "the relay kept serving after a refused handshake: {response}"
         );
 
         server.abort();

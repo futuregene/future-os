@@ -178,3 +178,266 @@ pub async fn hydrate_stream_event(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connection::AgentSelection;
+    use serde_json::json;
+    use std::time::Duration;
+
+    const DATABASE: &str = "db-1";
+    const GENERATION: &str = "gen-1";
+
+    /// A host that answers `get_event_content_range` with these pages, in order.
+    async fn serving(
+        pages: Vec<serde_json::Value>,
+    ) -> (
+        Client,
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let mock = crate::connection::tests::mock_agent_answering(pages);
+        let (stop, task) = crate::connection::tests::serve_mock(listener, mock).await;
+        let selection = crate::connection::select_agent(
+            &address,
+            "1.2.3",
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("the mock is serving");
+        let AgentSelection::External(client) = selection else {
+            panic!("a serving Agent is an external client, not a local-start permit");
+        };
+        (*client, stop, task)
+    }
+
+    fn request() -> ContentRequest {
+        ContentRequest {
+            database_id: DATABASE.into(),
+            restore_generation: GENERATION.into(),
+            epoch: 1,
+            cursor: 2,
+            field: "/data/text".into(),
+            offset: 0,
+            max_bytes: 64 * 1024,
+        }
+    }
+
+    /// One canonical page, as the host serializes it.
+    fn page(text: &str, next: i64, total: i64, more: bool, etag: &str, encoding: &str) -> Value {
+        json!({
+            "text": text,
+            "nextOffset": next,
+            "totalBytes": total,
+            "hasMore": more,
+            "etag": etag,
+            "encoding": encoding,
+            "databaseId": DATABASE,
+            "restoreGeneration": GENERATION,
+        })
+    }
+
+    /// A text page that covers exactly `text` and ends the feed.
+    fn whole(text: &str) -> Value {
+        let length = text.len() as i64;
+        page(text, length, length, false, "etag-1", "text")
+    }
+
+    #[tokio::test]
+    async fn a_single_text_page_comes_back_verbatim() {
+        let (mut client, stop, task) = serving(vec![whole("hello")]).await;
+        let value = read_field(&mut client, "s", "r", request())
+            .await
+            .expect("one page");
+        assert_eq!(value, Value::String("hello".into()));
+        let _ = stop.send(());
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_json_page_is_parsed_into_a_value_rather_than_left_as_text() {
+        let body = "{\"a\":1}";
+        let (mut client, stop, task) = serving(vec![page(
+            body,
+            body.len() as i64,
+            body.len() as i64,
+            false,
+            "etag-1",
+            "json",
+        )])
+        .await;
+        let value = read_field(&mut client, "s", "r", request())
+            .await
+            .expect("one page");
+        assert_eq!(value, json!({"a": 1}));
+        let _ = stop.send(());
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pages_are_joined_until_the_feed_says_it_is_done() {
+        let (mut client, stop, task) = serving(vec![
+            page("he", 2, 5, true, "etag-1", "text"),
+            page("llo", 5, 5, false, "etag-1", "text"),
+        ])
+        .await;
+        let value = read_field(&mut client, "s", "r", request())
+            .await
+            .expect("two pages");
+        assert_eq!(value, Value::String("hello".into()));
+        let _ = stop.send(());
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_body_that_changed_between_pages_is_refused_rather_than_mixed() {
+        let (mut client, stop, task) = serving(vec![
+            page("he", 2, 5, true, "etag-1", "text"),
+            page("llo", 5, 5, false, "etag-2", "text"),
+        ])
+        .await;
+        let error = read_field(&mut client, "s", "r", request())
+            .await
+            .expect_err("two etags");
+        assert_eq!(error, "content page changed while reading");
+        let _ = stop.send(());
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_field_larger_than_the_materialization_budget_names_the_way_out() {
+        let oversized = (MAX_MATERIALIZED_BYTES + 1) as i64;
+        let (mut client, stop, task) =
+            serving(vec![page("he", 2, oversized, true, "etag-1", "text")]).await;
+        let error = read_field(&mut client, "s", "r", request())
+            .await
+            .expect_err("over budget");
+        assert!(error.contains("exceeds materialization budget"), "{error}");
+        let _ = stop.send(());
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_body_that_is_not_a_page_is_reported_as_such() {
+        let (mut client, stop, task) = serving(vec![json!({"nextOffset": 0})]).await;
+        let error = read_field(&mut client, "s", "r", request())
+            .await
+            .expect_err("no text");
+        assert_eq!(error, "invalid content page text");
+        let _ = stop.send(());
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_refused_page_surfaces_the_hosts_own_message() {
+        // No pages queued: the mock refuses, which is what a host that stopped
+        // publishing this body looks like.
+        let (mut client, stop, task) = serving(Vec::new()).await;
+        let error = read_field(&mut client, "s", "r", request())
+            .await
+            .expect_err("refused");
+        assert_eq!(error, "no content pages left");
+        let _ = stop.send(());
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn only_the_kinds_a_decision_needs_are_materialized() {
+        assert!(required_inline("user_message"));
+        assert!(required_inline("approval_request"));
+        assert!(!required_inline("tool_end"));
+
+        // A tool body stays a reference: hydrating it would pull megabytes to
+        // show a line the reader has not asked for.
+        let (mut client, stop, task) = serving(Vec::new()).await;
+        let mut data = json!({"content_refs": {"output": {"field": "/data/output"}}});
+        hydrate_required(&mut client, "s", "r", "tool_end", &mut data)
+            .await
+            .expect("a lazy kind is left alone");
+        assert_eq!(data["content_refs"]["output"]["field"], "/data/output");
+        let _ = stop.send(());
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_referenced_field_is_replaced_by_its_text_and_the_reference_is_dropped() {
+        let (mut client, stop, task) = serving(vec![whole("hello")]).await;
+        let mut data = json!({
+            "text": "",
+            "content_refs": {
+                "text": {
+                    "databaseId": DATABASE,
+                    "restoreGeneration": GENERATION,
+                    "epoch": 1,
+                    "cursor": 2,
+                    "field": "/data/text"
+                }
+            }
+        });
+        hydrate_required(&mut client, "s", "r", "user_message", &mut data)
+            .await
+            .expect("one referenced field");
+        assert_eq!(data["text"], "hello");
+        assert!(data.get("content_refs").is_none(), "{data}");
+        let _ = stop.send(());
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_reference_pointing_at_another_field_is_refused_before_any_read() {
+        let (mut client, stop, task) = serving(Vec::new()).await;
+        let mut data = json!({
+            "text": "",
+            "content_refs": {
+                "text": {
+                    "databaseId": DATABASE,
+                    "restoreGeneration": GENERATION,
+                    "epoch": 1,
+                    "cursor": 2,
+                    "field": "/data/somewhere-else"
+                }
+            }
+        });
+        let error = hydrate_required(&mut client, "s", "r", "user_message", &mut data)
+            .await
+            .expect_err("a reference is only allowed to name its own field");
+        assert_eq!(error, "event field reference mismatch");
+        let _ = stop.send(());
+        task.await.unwrap();
+    }
+
+    #[test]
+    fn a_stream_event_is_only_hydrated_when_it_or_its_snapshot_carries_a_reference() {
+        let plain = proto::StreamEvent {
+            r#type: "agent_text".into(),
+            data: "{\"text\":\"hi\"}".into(),
+            ..Default::default()
+        };
+        assert!(!stream_needs_hydration(&plain));
+
+        let referenced = proto::StreamEvent {
+            r#type: "user_message".into(),
+            data: "{\"content_refs\":{}}".into(),
+            ..Default::default()
+        };
+        assert!(stream_needs_hydration(&referenced));
+
+        // The envelope itself carries nothing; a folded projection inside it
+        // does — that is the form a replayed snapshot arrives in.
+        let snapshot = proto::StreamEvent {
+            r#type: "agent_end".into(),
+            data: "{}".into(),
+            snapshot_events: vec![proto::ProjectedRunEvent {
+                r#type: "user_message".into(),
+                data: "{\"content_refs\":{}}".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(stream_needs_hydration(&snapshot));
+    }
+}

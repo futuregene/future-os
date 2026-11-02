@@ -95,7 +95,7 @@ describe("custom provider thinking-level detection", () => {
   it("tests the default request first, then every level, and selects the accepted ones", async () => {
     const onProbe = accepting(["low", "high"]);
     mount(provider([model({ thinkingLevels: ["off", "medium"] })]), onProbe);
-    expect(pressedLabels()).toEqual(["Off", "Medium"]);
+    expect(pressedLabels()).toEqual(["off", "medium"]);
 
     await act(async () => button("Detect").click());
 
@@ -110,7 +110,7 @@ describe("custom provider thinking-level detection", () => {
       providerId: "acme",
     });
     // Exactly the accepted levels replace the previous guess.
-    expect(pressedLabels()).toEqual(["Low", "High"]);
+    expect(pressedLabels()).toEqual(["low", "high"]);
     expect(document.body.textContent).toContain("Selected the 2 accepted level(s).");
   });
 
@@ -124,7 +124,7 @@ describe("custom provider thinking-level detection", () => {
     await act(async () => button("Detect").click());
 
     expect(onProbe).toHaveBeenCalledTimes(1);
-    expect(pressedLabels()).toEqual(["Low"]);
+    expect(pressedLabels()).toEqual(["low"]);
     expect(document.body.textContent).toContain("The default request failed");
     expect(document.body.textContent).toContain("invalid api key");
   });
@@ -145,10 +145,10 @@ describe("custom provider thinking-level detection", () => {
     mount(provider([model({ thinkingLevels: [] })]), onProbe);
 
     act(() => button("Detect").click());
-    expect(document.body.textContent).toContain("Testing Default…");
+    expect(document.body.textContent).toContain("Testing default…");
 
     await act(async () => pending.shift()!());
-    expect(document.body.textContent).toContain("Testing Off…");
+    expect(document.body.textContent).toContain("Testing off…");
 
     // Drain the remaining levels one round trip at a time so the run finishes
     // before unmount.
@@ -171,7 +171,7 @@ describe("custom provider thinking-level detection", () => {
 
     // `default` and `off` were answered, so `off` is selected; the transport
     // failure is reported rather than silently dropping what was proven.
-    expect(pressedLabels()).toEqual(["Off"]);
+    expect(pressedLabels()).toEqual(["off"]);
     expect(document.body.textContent).toContain("Detection failed");
     expect(document.body.textContent).toContain("Future Agent is unavailable");
   });
@@ -216,4 +216,127 @@ describe("custom provider thinking-level detection", () => {
       await act(async () => pending.shift()!());
     expect(onProbe).toHaveBeenCalledTimes(2);
   });
+});
+
+/**
+ * A calibration call that could not be *sent* is not a level verdict.
+ *
+ * `ok: false` is the endpoint answering "no" to the default request, and it is
+ * covered above: the words are "check the Base URL / key". A rejected call — the
+ * agent unreachable, the IPC gone — never reached the endpoint, so it must not be
+ * dressed up as that diagnosis, and no level may be judged from it.
+ */
+it("reports a calibration call that could not be sent, and judges no level", async () => {
+  const onProbe = vi.fn(async (): Promise<ThinkingLevelProbeOutcome> => {
+    throw new Error("Future Agent is unavailable");
+  });
+  mount(provider([model({ thinkingLevels: ["low"] })]), onProbe);
+  await act(async () => button("Detect").click());
+
+  expect(onProbe).toHaveBeenCalledTimes(1);
+  expect(pressedLabels()).toEqual(["low"]);
+  expect(document.body.textContent).toContain("Detection failed: Future Agent is unavailable");
+  expect(document.body.textContent).not.toContain("The default request failed");
+});
+
+/** The dialog re-rendered for a new provider: the old run's answer is stale. */
+function rerenderable(initial: CustomProvider, onProbe: (input: ThinkingLevelProbeInput) => Promise<ThinkingLevelProbeOutcome>) {
+  const container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  const render = (open: boolean, next: CustomProvider = initial) => act(() => root.render(
+    <CustomProviderDialog
+      existing={[]}
+      initial={next}
+      onClose={vi.fn()}
+      onProbe={onProbe}
+      onSubmit={vi.fn().mockResolvedValue(undefined)}
+      open={open}
+    />,
+  ));
+  render(true);
+  return { render };
+}
+
+/**
+ * An answer that arrives after the dialog was closed opens nothing.
+ *
+ * Closing is not just "stop sending": the run has a promise in flight, and when
+ * it lands the run must return without touching the row, the notice or the
+ * probing flag — a late verdict would repaint a dialog that is gone (or, worse,
+ * one that has since been reopened for a different provider).
+ */
+it("drops a calibration answer that arrives after the dialog closed", async () => {
+  let answer: ((outcome: ThinkingLevelProbeOutcome) => void) | null = null;
+  const onProbe = vi.fn((input: ThinkingLevelProbeInput) => new Promise<ThinkingLevelProbeOutcome>((resolve) => {
+    answer = resolve;
+    void input;
+  }));
+  const { render } = rerenderable(provider([model({ thinkingLevels: ["low"] })]), onProbe);
+
+  act(() => button("Detect").click());
+  expect(onProbe).toHaveBeenCalledTimes(1);
+  expect(document.body.textContent).toContain("Testing default…");
+
+  // Closed while the calibration is still on the wire.
+  render(false);
+  await act(async () => answer!({ level: "default", ok: true }));
+
+  // The run stopped where it was: no level was tried, and nothing was reported.
+  expect(onProbe).toHaveBeenCalledTimes(1);
+  expect(document.body.textContent).not.toContain("Detection failed");
+  expect(document.body.textContent).not.toContain("Selected the");
+});
+
+/**
+ * …and a *failure* that arrives after the close is dropped the same way.
+ *
+ * This is the arm that costs the most to get wrong: an IPC that gave up because
+ * the window went away would otherwise paint "Detection failed" over whatever
+ * the dialog is now showing.
+ */
+it("drops a failed level probe that arrives after the dialog closed", async () => {
+  let failProbe: (() => void) | null = null;
+  const onProbe = vi.fn((input: ThinkingLevelProbeInput) => new Promise<ThinkingLevelProbeOutcome>((resolve, reject) => {
+    if ((input.level ?? "default") === "default") {
+      resolve({ level: "default", ok: true });
+      return;
+    }
+    failProbe = () => reject(new Error("the window went away"));
+  }));
+  const { render } = rerenderable(provider([model({ thinkingLevels: ["low"] })]), onProbe);
+
+  await act(async () => button("Detect").click());
+  // `default` passed and the first level is on the wire.
+  expect(onProbe).toHaveBeenCalledTimes(2);
+  expect(document.body.textContent).toContain("Testing off…");
+
+  render(false);
+  await act(async () => failProbe!());
+
+  expect(onProbe).toHaveBeenCalledTimes(2);
+  expect(document.body.textContent).not.toContain("Detection failed");
+  expect(document.body.textContent).not.toContain("Selected the");
+});
+
+/**
+ * …including the calibration call's own failure, which is the first round trip
+ * and therefore the likeliest one to be cut off by the window closing.
+ */
+it("drops a calibration failure that arrives after the dialog closed", async () => {
+  let failCalibration: (() => void) | null = null;
+  const onProbe = vi.fn(() => new Promise<ThinkingLevelProbeOutcome>((_resolve, reject) => {
+    failCalibration = () => reject(new Error("the window went away"));
+  }));
+  const { render } = rerenderable(provider([model({ thinkingLevels: ["low"] })]), onProbe);
+
+  act(() => button("Detect").click());
+  expect(document.body.textContent).toContain("Testing default…");
+
+  render(false);
+  await act(async () => failCalibration!());
+
+  expect(onProbe).toHaveBeenCalledTimes(1);
+  expect(document.body.textContent).not.toContain("Detection failed");
+  expect(document.body.textContent).not.toContain("The default request failed");
 });

@@ -97,6 +97,55 @@ pub fn dispatch_update_helper(args: &[String]) -> Option<Result<(), String>> {
         _ => None,
     }
 }
+/// Run the macOS update-preparation chain end to end against a bundle in a temporary
+/// directory, with `helper` standing in for the privileged worker.
+///
+/// Re-exported through [`crate::test_support`]. See `macos::prepare_and_commit` for why the
+/// helper is a parameter, and why the caller must be a process without a parallel suite.
+#[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
+pub fn prepare_update_bundle_for_tests(
+    version: &str,
+    bytes: &[u8],
+    target: std::path::PathBuf,
+    helper: &std::path::Path,
+) -> Result<String, String> {
+    macos::prepare_and_commit(version, bytes, target, helper)
+}
+/// The same chain, prepared and then **dropped** instead of committed — the cancel path, whose
+/// behaviour is `Prepared::drop` removing the staging directory it created beside the bundle.
+#[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
+pub fn prepare_and_cancel_update_for_tests(
+    version: &str,
+    bytes: &[u8],
+    target: std::path::PathBuf,
+    helper: &std::path::Path,
+) -> Result<(), String> {
+    macos::prepare_and_drop(version, bytes, target, helper)
+}
+/// The **worker** half of the macOS install, for a process that can *be* the helper.
+///
+/// Production never calls this: `dispatch_update_helper` runs it as
+/// `--app-update-macos-worker`, which is how the app re-invokes *itself*. A test target that
+/// is to act as the worker (a `harness = false` driver, not a libtest body) dispatches the
+/// same flag to this and is then the real worker, not a stand-in for it.
+#[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
+pub fn run_update_worker_for_tests(args: &[String]) -> Result<(), String> {
+    macos::worker(args)
+}
+/// [`macos::probe`]: its 10 s deadline can only be *expired* by a candidate that outlives it,
+/// so the arm needs a process without a few hundred parallel libtest cases stalling its own
+/// process creation.
+#[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
+pub fn probe_update_candidate_for_tests(path: &std::path::Path) -> Result<(), String> {
+    macos::probe(path)
+}
+/// `macos::confirm` with the installed bundle's path injected: production reads that path from
+/// `current_exe()`, which a test binary is never inside, so the step that removes a confirmed
+/// install's staging directory would otherwise be unreachable.
+#[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
+pub fn confirm_update_for_tests(target: &std::path::Path, id: &str) -> Result<(), String> {
+    macos::confirm_at(target, id)
+}
 #[cfg(not(target_os = "windows"))]
 fn helper_result(result: Result<(), String>) -> Result<(), String> {
     if let Err(error) = &result {
@@ -508,39 +557,66 @@ mod tests {
     /// that one command — and the borrowed `PATH` is restored by
     /// `cli_tool::EnvGuard` even if an assertion panics (a leaked `PATH` is
     /// FLAKES item 27: 25 later tests failed spawning `git`).
+    ///
+    /// What it asserts is what discovery *captured*, so it must not be decided
+    /// by the probe's 3 s production budget: under the full parallel suite the
+    /// fixture's `sh` lost that race against this host's scheduler and the test
+    /// read `CLI discovery timed out` (measured 2026-11-01, 387 passed / 1
+    /// failed; alone it passed 3 of 3). The seam is `ProbeDeadlineGuard`, as in
+    /// `skills_bootstrap`, and it is armed on *this* thread because
+    /// `app_maintenance_status` offloads the probe to `spawn_blocking` and
+    /// carries the armed deadline across itself — the arm that pins the
+    /// production budget to 3 s is `cli_tool`'s own
+    /// `a_silent_cli_is_killed_and_reported_as_a_timeout`, not this one.
+    /// A real executable answering `<cli> version --json` with this build's
+    /// declared contract, put first on `PATH`. `CliCapabilities::default()` is
+    /// a valid contract for this build (the CLI's own discovery tests use it
+    /// the same way). Both halves of the fixture are undone on drop, panic or
+    /// not: the `PATH` restores before the temporary directory disappears.
     #[cfg(unix)]
-    #[tokio::test]
-    async fn app_maintenance_status_reports_the_cli_it_discovered() {
-        if future_host::test_support::reexec_test() {
-            return;
-        }
+    fn cli_on_path(
+        version: &str,
+    ) -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        crate::cli_tool::EnvGuard,
+    ) {
         use std::os::unix::fs::PermissionsExt;
-
-        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-update-maintenance");
-        crate::store::initialize_app_store().expect("init store");
 
         let root = tempfile::tempdir().expect("tempdir");
         let bin = root.path().join("bin");
         std::fs::create_dir_all(&bin).expect("bin dir");
         let cli = bin.join("future");
-        // `CliCapabilities::default()` is a valid contract for this build (the
-        // CLI's own discovery tests use it the same way).
         let reply = json!({
-            "version": "test-cli-1.0",
+            "version": version,
             "desktopCapabilities": future_rpc::cli_capabilities::CliCapabilities::default(),
         });
         std::fs::write(&cli, format!("#!/bin/sh\nprintf '%s' '{}'\n", reply))
             .expect("write the fixture CLI");
         std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 
-        // Prepended, not replaced: this test only adds a candidate, it never
-        // takes `git` or `sh` away from anything else in the process.
+        // Prepended, not replaced: these tests only add a candidate, they never
+        // take `git` or `sh` away from anything else in the process.
         let existing = std::env::var_os("PATH").unwrap_or_default();
         let path = std::env::join_paths(
             std::iter::once(bin.clone()).chain(std::env::split_paths(&existing)),
         )
         .expect("join PATH");
-        let _path = crate::cli_tool::EnvGuard::set("PATH", &path);
+        (root, bin, crate::cli_tool::EnvGuard::set("PATH", &path))
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn app_maintenance_status_reports_the_cli_it_discovered() {
+        if future_host::test_support::reexec_test() {
+            return;
+        }
+        let _deadline = future_host::cli_tool::ProbeDeadlineGuard::without_deadline();
+
+        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-update-maintenance");
+        crate::store::initialize_app_store().expect("init store");
+
+        let (_root, bin, _path) = cli_on_path("test-cli-1.0");
 
         let status = app_maintenance_status().await.expect("maintenance status");
         assert_eq!(
@@ -559,6 +635,43 @@ mod tests {
         );
     }
 
+    /// The deadline a test arms on its own thread has to survive
+    /// `app_maintenance_status`'s hop to the blocking pool: `spawn_blocking`
+    /// carries no thread-locals and the override is thread-local on purpose,
+    /// so the command re-arms it on the thread that probes. A zero deadline
+    /// makes the probe kill its child before its first `try_wait`, so the
+    /// timeout error appears *only* while that carry works — drop the carry and
+    /// this fails deterministically, instead of the capture test above going
+    /// back to flaking under load (which is how it was found: 387 passed / 1
+    /// failed, passing 3 of 3 alone).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_armed_probe_deadline_reaches_the_probe_behind_spawn_blocking() {
+        if future_host::test_support::reexec_test() {
+            return;
+        }
+        let _deadline = future_host::cli_tool::ProbeDeadlineGuard::set(Some(Duration::ZERO));
+
+        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-update-probe-carry");
+        crate::store::initialize_app_store().expect("init store");
+
+        let (_root, _bin, _path) = cli_on_path("must-not-be-read");
+
+        let status = app_maintenance_status().await.expect("maintenance status");
+        assert!(
+            status["cli"]["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("CLI discovery timed out")),
+            "the fixture CLI must not have been read: the armed zero deadline \
+             has to reach the probe on the blocking thread: {status}"
+        );
+        assert_eq!(
+            status["cli"]["tool"],
+            serde_json::Value::Null,
+            "a probe that timed out reports no tool: {status}"
+        );
+    }
+
     #[test]
     fn windows_resume_arguments_preserve_empty_quotes_slashes_and_option_like_values() {
         assert_eq!(quote_windows_argument(""), "\"\"");
@@ -568,6 +681,75 @@ mod tests {
             quote_windows_argument("C:\\some path\\"),
             "\"C:\\some path\\\\\""
         );
+    }
+
+    /// Only the initialisation subcommand is an update helper. Any other argv is
+    /// left to the ordinary desktop startup, which is what keeps this dispatch
+    /// from swallowing a normal launch.
+    #[test]
+    fn an_argv_that_is_not_an_update_helper_subcommand_is_not_consumed() {
+        assert!(dispatch_update_helper(&[]).is_none());
+        assert!(dispatch_update_helper(&["--version".to_string()]).is_none());
+        assert!(dispatch_update_helper(&["--app-update-worker".to_string()]).is_none());
+    }
+
+    /// The helper dispatch reports the worker's failure instead of hiding it, and
+    /// passes success through untouched. The `Err` arm also writes the `ERROR`
+    /// diagnostics line through `console::`; that line cannot be asserted here
+    /// because `console` writes straight to the process's stdout rather than
+    /// through `std`'s captured printer (see `agent/src/console.rs`), so the
+    /// observable contract is the returned result.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn helper_result_passes_the_result_through_and_reports_a_failure() {
+        assert_eq!(helper_result(Ok(())), Ok(()));
+        assert_eq!(
+            helper_result(Err("installer refused".into())),
+            Err("installer refused".to_string())
+        );
+    }
+
+    /// The worker subcommand is consumed and its refusal is dispatched: with no
+    /// plan arguments the macOS worker stops before it opens the bundle, so this
+    /// reaches the dispatch arm without an installer.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_update_helper_argv_is_consumed_and_the_workers_refusal_is_reported() {
+        let outcome = dispatch_update_helper(&["--app-update-macos-worker".to_string()])
+            .expect("the worker subcommand is consumed");
+        assert_eq!(
+            outcome.unwrap_err(),
+            "Invalid macOS update worker arguments"
+        );
+    }
+
+    /// Every native update dialog resolves its text from the bundled settings
+    /// translations, in the language the window asks for. A missing key or a
+    /// language that fell through to the wrong dictionary would surface here
+    /// rather than as an untranslated dialog at install time.
+    #[test]
+    fn every_native_update_dialog_has_its_own_text_in_both_languages() {
+        const KEYS: [&str; 8] = [
+            "installTitle",
+            "installConfirmation",
+            "installConfirm",
+            "installDefer",
+            "repairTitle",
+            "repairConfirmation",
+            "repairConfirm",
+            "repairCancel",
+        ];
+        for key in KEYS {
+            let english = update_dialog_text(None, key);
+            let chinese = update_dialog_text(Some("zh-CN"), key);
+            assert!(!english.is_empty(), "{key} has no English text");
+            assert!(!chinese.is_empty(), "{key} has no Chinese text");
+            assert_ne!(chinese, english, "{key} was not translated");
+            // Only a `zh*` tag selects Chinese; every other tag gets English.
+            assert_eq!(update_dialog_text(Some("zh-TW"), key), chinese);
+            assert_eq!(update_dialog_text(Some("en-US"), key), english);
+            assert_eq!(update_dialog_text(Some("de"), key), english);
+        }
     }
 
     #[test]
@@ -1317,6 +1499,130 @@ mod tests {
             );
         }
     }
+
+    /// An install that arrives while the Desktop is already stopping must be refused
+    /// *after* it claimed the process-wide install flag, and must hand that flag back
+    /// on the way out: a refusal that leaked it would answer "already in progress" to
+    /// every later attempt in this process.
+    ///
+    /// The stopping bit is process-global, so this fixture takes the same `HomeGuard`
+    /// every other `is_stopping()` observer in this binary holds — `TEST_HOME_LOCK`
+    /// serializes this window against them instead of leaving a sibling assertion to
+    /// sample a closed admission. The guard is live for one already-ready poll of the
+    /// future (the check precedes every await point), so the window has no yield in it.
+    #[cfg(feature = "gui")]
+    #[tokio::test]
+    async fn install_refuses_once_the_desktop_is_stopping_and_releases_the_install_flag() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("update-stopping");
+        let app = tauri::test::mock_app();
+        let stopping = crate::desktop_shutdown::close_admission_guard_for_test();
+        let error = install_app_update_impl(
+            app.handle().clone(),
+            BuildChannel::Release,
+            true,
+            RELEASE_MANIFEST_URL,
+            "1.0.0",
+            None,
+        )
+        .await
+        .unwrap_err();
+        drop(stopping);
+        assert!(
+            error.to_string().contains("Desktop has stopped"),
+            "a stopping Desktop must refuse the install, not start it: {error}"
+        );
+        // The `InstallGuard` in `install_app_update_impl` is what releases this bit; the
+        // refusal path returns early, which is exactly where the guard is easiest to lose.
+        assert!(
+            INSTALL_ACTIVE
+                .compare_exchange(
+                    false,
+                    true,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .is_ok(),
+            "a refused install must release the process-wide install flag"
+        );
+        INSTALL_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    /// The frontend calls this command with no `language` at all, so the absent-optional
+    /// path through the generated wrapper — deserialize the missing key, then reach the
+    /// body — is the shape that ships, and it is not what the direct-call fixture covers.
+    ///
+    /// This is **not** an attribute-line test, and measuring said so: the attribute owns
+    /// the wrapper only for the argument-error arm (`InvokeBody::Raw` was refused with
+    /// "expected a value for key language but the IPC call used a bytes payload" — the
+    /// arm the `history_transfer` module relies on). A dispatch that reaches the body
+    /// leaves the attribute line at `DA:0`; it is in the waiver table, not covered here.
+    /// The handler is also this fixture's own `generate_handler!`, so it says nothing
+    /// about the product's registration in `run_with` — that list is only reachable on a
+    /// real `Wry` builder.
+    ///
+    /// `check_app_update` has no offline dispatch at all: it resolves its manifest URL
+    /// from the build channel *inside* the command, so any invocation makes a live
+    /// request to `dl.future-os.cn`. Measured, not assumed: an earlier version of this
+    /// fixture dispatched it and came back with a real `0.0.2-104+nightly` manifest.
+    ///
+    /// The request carries [`ipc_harness::local_invoke_url`], i.e. the app's own origin for
+    /// the platform this runs on. A hardcoded `tauri://localhost` is the app's origin on
+    /// macOS and Linux only; on Windows and Android the same page is
+    /// `http://tauri.localhost`, so the request reads as a *remote* caller and
+    /// `Webview::on_message` refuses it in its ACL check — measured here, not assumed: with
+    /// the Windows spelling this case reproduces Windows' reply verbatim on macOS,
+    /// `"install_app_update not allowed. Plugin not found"`, without ever reaching the
+    /// argument deserialization or the wrapper's guard this case is about.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn the_install_command_refuses_a_manual_only_build_over_ipc() {
+        use crate::commands::ipc_harness::local_invoke_url;
+        use tauri::ipc::{CallbackFn, InvokeBody};
+        use tauri::test::{get_ipc_response, INVOKE_KEY};
+        use tauri::webview::InvokeRequest;
+        let app = tauri::test::mock_builder()
+            .invoke_handler(tauri::generate_handler![install_app_update])
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build mock app");
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("build webview");
+        let response = get_ipc_response(
+            &window,
+            InvokeRequest {
+                cmd: "install_app_update".into(),
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: local_invoke_url().parse().expect("url"),
+                // An empty JSON object: `language` is an `Option<String>`, and the
+                // frontend sends it absent most of the time.
+                body: InvokeBody::Json(json!({})),
+                headers: Default::default(),
+                invoke_key: INVOKE_KEY.to_string(),
+            },
+        );
+        // This build carries `BuildChannel::Local`, so the wrapper's own channel and
+        // platform derivation is what refuses — before any updater work, and without a
+        // network call.
+        assert!(
+            !automatic_install_supported(build_info::channel()),
+            "the fixture needs a build that cannot install in place"
+        );
+        let error = response.expect_err("a manual-only build cannot install over IPC");
+        assert!(
+            !error.as_str().unwrap_or_default().contains("not allowed"),
+            "the request was refused as a remote origin, so it never reached the wrapper's \
+             guard: {error}"
+        );
+        assert!(
+            error
+                .as_str()
+                .unwrap_or_default()
+                .contains("not available for this build or platform"),
+            "the refusal must come from the wrapper's own guard, not from an unregistered \
+             command: {error}"
+        );
+    }
 }
 
 /// Share the UI dictionary so native update dialogs never expose diagnostics or
@@ -1401,7 +1707,16 @@ async fn install_app_update_impl<R: tauri::Runtime>(
 
 #[tauri::command]
 pub async fn app_maintenance_status() -> Result<serde_json::Value, AppError> {
-    tokio::task::spawn_blocking(|| {
+    // `discover` probes on a blocking-pool thread, which inherits no
+    // thread-local from this one — and the probe-deadline seam is deliberately
+    // thread-local, so a test that asserts what the probe *captured* would be
+    // decided here by the production 3 s budget instead. Carry it across the
+    // hop; nothing is armed in a shipped build, where both lines compile out.
+    #[cfg(any(test, feature = "test-support"))]
+    let probe_deadline = future_host::cli_tool::ProbeDeadlineGuard::inherited();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _probe_deadline = probe_deadline.map(future_host::cli_tool::ProbeDeadlineGuard::set);
         let cli = match crate::cli_tool::discover(None) {
             Ok(descriptor) => serde_json::json!({"tool": descriptor}),
             Err(error) => serde_json::json!({"error": error.to_string()}),

@@ -281,4 +281,217 @@ mod tests {
         assert!(staging.is_dir(), "the failing staging path is left alone");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
+
+    /// The operator's own relay CA is handed to async-nats *together with* the
+    /// platform store, in one file: async-nats loads one bundle per connection,
+    /// so a private root has to travel inside the snapshot rather than replace
+    /// it. This is the branch that only runs when `FUTURE_RELAY_CA` names a file,
+    /// and it is also the only path that reads the platform store here.
+    #[test]
+    fn an_operator_relay_ca_is_bundled_with_the_platform_store() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("relay-ca-bundle");
+        let dir = std::env::temp_dir().join(unique("relay-ca-extra"));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let ca = dir.join("relay-ca.pem");
+        // The bundle code only looks for the marker; the bytes are the TLS
+        // backend's business (see `bundle_with_extra`). Deliberately written
+        // **without** a trailing newline: the bundle has to append one (an
+        // operator's file may end anywhere), and the assertion below is what
+        // pins that append — drop it and a PEM reader downstream sees a
+        // `-----END CERTIFICATE-----` glued to the next thing in the file.
+        std::fs::write(
+            &ca,
+            "-----BEGIN CERTIFICATE-----\nZGVyaXZlZA==\n-----END CERTIFICATE-----",
+        )
+        .expect("write the operator CA");
+
+        std::env::set_var("FUTURE_RELAY_CA", &ca);
+        let bundle = root_bundle().expect("a bundle is produced from the extra CA");
+        let text = std::fs::read_to_string(&bundle).expect("the bundle is readable");
+
+        assert!(
+            text.contains("-----BEGIN CERTIFICATE-----"),
+            "the operator CA is in the bundle"
+        );
+        assert!(
+            text.ends_with('\n'),
+            "the bundle ends on a line boundary so a strict PEM reader accepts it"
+        );
+        // The file is named after this process and lives in the temp directory:
+        // it is derived public material, not part of the app's data directory.
+        assert_eq!(
+            bundle.file_name().and_then(|name| name.to_str()),
+            Some(format!("future-relay-ca-{}.pem", std::process::id()).as_str())
+        );
+
+        std::env::remove_var("FUTURE_RELAY_CA");
+        let _ = std::fs::remove_file(&bundle);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The refusal arms of `bundle_with_extra` are not exercised here on
+    // purpose: the bundle is a `OnceLock`, so only one construction happens per
+    // process and whichever test runs first decides which arm executes.
+    // `fixtures` below gives each of them a process of its own for exactly that
+    // reason.
+}
+
+/// The arms of [`bundle_with_extra`] that only a *fresh* process can take.
+///
+/// The snapshot is a `OnceLock`: whichever construction wins decides which arm
+/// the rest of the test binary ever sees, so an in-process test can cover at
+/// most one of them and the others read `DA:0` no matter how many tests are
+/// written. Each case therefore re-executes this same test binary with
+/// `--exact` and one case marker in its environment — the same shape
+/// `agent_host`'s block fixtures use — and asserts on what that process
+/// reported, which is also the only way a `console::eprintln!` arm is
+/// observable at all.
+#[cfg(test)]
+mod fixtures {
+    use super::*;
+    use std::process::{Command, Output, Stdio};
+
+    const CASE: &str = "FUTURE_RELAY_CA_BUNDLE_CASE";
+
+    /// One isolated home and the command that re-executes this binary for it.
+    ///
+    /// Every case builds its own command in its own test, so there is no
+    /// "unknown case" arm to leave uncovered: the case string only reaches the
+    /// child, which switches on nothing.
+    struct Fixture {
+        dir: tempfile::TempDir,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let parent =
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/host-fixtures");
+            std::fs::create_dir_all(&parent).expect("fixture parent");
+            Fixture {
+                dir: tempfile::tempdir_in(&parent).expect("fixture dir"),
+            }
+        }
+
+        fn write(&self, name: &str, text: &str) -> PathBuf {
+            let path = self.dir.path().join(name);
+            std::fs::write(&path, text).expect("write fixture file");
+            path
+        }
+
+        fn absent(&self, name: &str) -> PathBuf {
+            self.dir.path().join(name)
+        }
+
+        fn command(&self, case: &str) -> Command {
+            let mut command = Command::new(std::env::current_exe().expect("test binary"));
+            command
+                .args([
+                    "--exact",
+                    "remote::trust::fixtures::bundle_fixture",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(CASE, case)
+                .env("HOME", self.dir.path())
+                .env("USERPROFILE", self.dir.path())
+                .env("FUTURE_HOME", self.dir.path().join(".future"))
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            command
+        }
+    }
+
+    /// Run one case and hand back what it printed. The child's own exit status
+    /// is asserted here, once, so every case inherits "it ran at all" without
+    /// restating it.
+    fn run(case: &str, mut command: Command) -> (String, String) {
+        let output: Output = command.output().expect("run the fixture");
+        // Hoisted: an `assert!` message argument is evaluated only on failure,
+        // so an inline `from_utf8_lossy` would be a residual line of its own.
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(output.status.success(), "{case}: {stdout} {stderr}");
+        (stdout, stderr)
+    }
+
+    /// A file the operator named that holds no certificate. The bundle must be
+    /// refused with the file named: a silent `None` here looks exactly like "no
+    /// operator CA", and async-nats would then do the platform load the
+    /// operator was trying to add a root beside.
+    #[test]
+    fn a_relay_ca_file_that_holds_no_certificate_is_refused_by_name() {
+        let fixture = Fixture::new();
+        let ca = fixture.write("relay-ca.pem", "this is not a certificate\n");
+        let mut command = fixture.command("no-certificate");
+        command.env("FUTURE_RELAY_CA", &ca);
+        let (_, reported) = run("no-certificate", command);
+        let named = reported.contains("holds no certificate");
+        assert!(named, "{reported}");
+        let path_named = reported.contains("relay-ca.pem");
+        assert!(path_named, "{reported}");
+    }
+
+    /// A file the operator named that cannot even be read (a typo, a path a
+    /// sandboxed Desktop cannot see). Same sentence, and the path is in it.
+    #[test]
+    fn a_relay_ca_file_that_cannot_be_read_is_refused_by_name() {
+        let fixture = Fixture::new();
+        let ca = fixture.absent("absent.pem");
+        let mut command = fixture.command("unreadable");
+        command.env("FUTURE_RELAY_CA", &ca);
+        let (_, reported) = run("unreadable", command);
+        let named = reported.contains("could not read the relay CA file");
+        assert!(named, "{reported}");
+        let path_named = reported.contains("absent.pem");
+        assert!(path_named, "{reported}");
+        assert!(!ca.exists(), "the fixture proved a missing file");
+    }
+
+    /// The bundle cannot be written — the only arm that leaves async-nats to do
+    /// the platform load. Here the temp directory the bundle is written into
+    /// does not exist, which is what a Desktop with no usable temp directory
+    /// sees.
+    #[test]
+    fn a_bundle_that_cannot_be_written_leaves_the_platform_load_in_place() {
+        let fixture = Fixture::new();
+        let ca = fixture.write(
+            "relay-ca.pem",
+            "-----BEGIN CERTIFICATE-----\nZGVyaXZlZA==\n-----END CERTIFICATE-----\n",
+        );
+        let tmp = fixture.absent("no-such-tmp");
+        let mut command = fixture.command("unwritable");
+        command.env("FUTURE_RELAY_CA", &ca);
+        // Every name `std::env::temp_dir()` consults, not just the Unix one:
+        // Windows reads `TMP` before `TEMP` and never reads `TMPDIR`, so a case
+        // that named only `TMPDIR` left the bundle writing into the runner's real
+        // temp directory and *succeeding* — the bundle then existed, and the
+        // child's "a refused CA must not produce a bundle" assertion failed. That
+        // is the whole of the Windows lane's failure in CI run 41347774311, while
+        // macOS and Linux set the variable the child actually reads.
+        for variable in ["TMPDIR", "TMP", "TEMP"] {
+            command.env(variable, &tmp);
+        }
+        let (_, reported) = run("unwritable", command);
+        let named = reported.contains("could not write the relay trust bundle");
+        assert!(named, "{reported}");
+        // The bundle is written into the temp directory the environment names,
+        // so a temp directory that does not exist is what the write fails on.
+        assert!(
+            !tmp.exists(),
+            "the fixture's temp directory must stay absent"
+        );
+    }
+
+    /// The child half: one case per process, one construction of the bundle.
+    #[test]
+    fn bundle_fixture() {
+        let Ok(case) = std::env::var(CASE) else {
+            return;
+        };
+        let bundle = root_bundle();
+        assert!(
+            bundle.is_none(),
+            "{case}: a refused CA must not produce a bundle: {bundle:?}"
+        );
+    }
 }

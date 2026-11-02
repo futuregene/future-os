@@ -176,7 +176,7 @@ describe("agentThread question navigation", () => {
   it("renders question navigation controls in the conversation's corner", () => {
     act(() => root.render(createElement(AgentThread, props)));
     const previous = container.querySelector<HTMLButtonElement>("[aria-label='Previous question']");
-    const next = container.querySelector<HTMLButtonElement>("[aria-label='Next passage']");
+    const next = container.querySelector<HTMLButtonElement>("[aria-label='Next question']");
     expect(previous).not.toBeNull();
     expect(next).not.toBeNull();
 
@@ -186,7 +186,7 @@ describe("agentThread question navigation", () => {
     expect(next?.title).toContain("PgDn");
 
     // At the top of two turns: the first row is the reader's own, so ↑ has
-    // nowhere to go, while ↓ has the first turn's reply below it.
+    // nowhere to go, while ↓ has the second turn's prompt below it.
     act(() => layoutTranscript());
     expect(previous?.disabled).toBe(true);
     expect(next?.disabled).toBe(false);
@@ -199,7 +199,7 @@ describe("agentThread question navigation", () => {
     };
     act(() => root.render(createElement(AgentThread, props)));
     act(() => layoutTranscript());
-    const next = container.querySelector<HTMLButtonElement>("[aria-label='Next passage']");
+    const next = container.querySelector<HTMLButtonElement>("[aria-label='Next question']");
     const previous = container.querySelector<HTMLButtonElement>("[aria-label='Previous question']");
     expect(next?.disabled).toBe(true);
     expect(previous?.disabled).toBe(true);
@@ -231,9 +231,9 @@ describe("agentThread page-key navigation", () => {
     act(() => layoutTranscript(120, 400));
 
     press("PageDown");
-    // ↓ from the top of the loaded window reaches the first turn's reply, at
-    // the row start (its prose is what the mocked transcript has).
-    expect(scroller.scrollTop).toBe(120 - 16);
+    // ↓ from the top of the loaded window reaches the second prompt, two rows
+    // down: the answer between them is passed in this one press.
+    expect(scroller.scrollTop).toBe(2 * 120 - 16);
 
     press("PageUp");
     expect(scroller.scrollTop).toBe(0);
@@ -279,6 +279,6 @@ describe("agentThread page-key navigation", () => {
 
     menu.unmount();
     press("PageDown");
-    expect(scroller.scrollTop).toBe(120 - 16);
+    expect(scroller.scrollTop).toBe(2 * 120 - 16);
   });
 });

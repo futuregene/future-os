@@ -6010,7 +6010,7 @@
         ]
       },
       "take-control-picker": {
-        "_comment": "The desktop picker with the control state on each row: the machine the phone is on is connected but standing by (another device drives it) and offers 接管 right there; the machine that holds it is listed as connected. This is where the user chooses, so it is where the question belongs.",
+        "_comment": "The device sheet with the control state on each row: the machine the phone is on is connected but standing by (another device drives it) and offers 接管 right there; the machine that holds it is listed as connected. This is where the user chooses, so it is where the question belongs — the sheet opens with the state the header's dot was painting, so the reason and the action are on the same surface as the choice.",
         "url": "http://localhost:8099/?held=1&peers=1",
         "steps": [
           {
@@ -6029,7 +6029,7 @@
             "wait": 1500
           },
           {
-            "eval": "(() => {\n  const sheet = document.querySelector('[aria-modal=true]') || document.body;\n  const text = sheet.innerText || '';\n  if (!text.includes('已被其他设备接管'))\n    throw new Error('the standby machine does not say why it cannot be driven: ' + text.slice(0, 400));\n  const labels = [...sheet.querySelectorAll('[role=button]')].map(el => el.getAttribute('aria-label'));\n  if (!labels.some(label => label && label.startsWith('接管'))) \n    throw new Error('the picker offers no way to take over: ' + labels.join(' / '));\n  return labels.filter(Boolean).join(' / ');\n})()"
+            "eval": "(() => {\n  const sheet = document.querySelector('[aria-modal=true]') || document.body;\n  const text = sheet.innerText || '';\n  // The sheet opens with the state the header's dot was showing: the machine is\n  // connected (nothing is down), it is standing by, and the block names the\n  // device holding it — the reason a reader cannot use it.\n  for (const wanted of ['已连接 · 待命', '已被 实验室的 MacBook Air 接管']) {\n    if (!text.includes(wanted))\n      throw new Error('the sheet does not say why the machine cannot be driven: ' + wanted + ' in ' + text.slice(0, 400));\n  }\n  const labels = [...sheet.querySelectorAll('[role=button]')].map(el => el.getAttribute('aria-label'));\n  if (!labels.some(label => label && label.startsWith('接管'))) \n    throw new Error('the picker offers no way to take over: ' + labels.join(' / '));\n  return labels.filter(Boolean).join(' / ');\n})()"
           },
           {
             "shot": "m-take-control-picker.png"
@@ -6037,7 +6037,7 @@
         ]
       },
       "connection-standby-dot": {
-        "_comment": "The status dot while the phone is connected but another device holds the machine: yellow, because nothing can be read or sent — green is reserved for connected and ours to drive.",
+        "_comment": "The status dot on the device trigger while the phone is connected but another device holds the machine: yellow, because nothing can be read or sent — green is reserved for connected and ours to drive. The dot is not a control of its own any more: it sits inside the device trigger, so the one thing to tap when it turns yellow is that trigger.",
         "url": "http://localhost:8099/?held=1",
         "steps": [
           {
@@ -6050,7 +6050,7 @@
             "wait": 1500
           },
           {
-            "eval": "(() => {\n  const dot = document.querySelector('[data-testid=connection-dot]');\n  if (!dot) throw new Error('no connection dot on screen');\n  const color = getComputedStyle(dot).backgroundColor;\n  // The warning dot is yellow; success is green. Name both so a palette\n  // change fails loudly instead of silently approving the wrong one.\n  const warning = getComputedStyle(document.documentElement).getPropertyValue('--x') || '';\n  if (color === 'rgb(34, 197, 94)' || color === 'rgb(22, 163, 74)')\n    throw new Error('a standby connection is painted as healthy green: ' + color + warning);\n  const label = document.querySelector('[role=button][aria-label^=\"桌面端连接状态\"]')?.getAttribute('aria-label');\n  if (!label || !label.includes('待命'))\n    throw new Error('the badge does not say it is in standby: ' + label);\n  return color + ' | ' + label;\n})()"
+            "eval": "(() => {\n  const dot = document.querySelector('[data-testid=connection-dot]');\n  if (!dot) throw new Error('no connection dot on screen');\n  const color = getComputedStyle(dot).backgroundColor;\n  // The warning dot is yellow; success is green. Name both so a palette\n  // change fails loudly instead of silently approving the wrong one.\n  const warning = getComputedStyle(document.documentElement).getPropertyValue('--x') || '';\n  if (color === 'rgb(34, 197, 94)' || color === 'rgb(22, 163, 74)')\n    throw new Error('a standby connection is painted as healthy green: ' + color + warning);\n  // One control, not two: the dot has to be *inside* the device trigger, or the\n  // header is back to a dot beside a picker that opens a second sheet.\n  const trigger = document.querySelector('[role=button][aria-label^=\"桌面选择\"]');\n  if (!trigger) throw new Error('no device trigger on screen');\n  if (!trigger.contains(dot)) throw new Error('the status dot is not part of the device trigger');\n  // A screen reader cannot read a colour, so the state is in the control's own\n  // name — the same words the sheet it opens begins with.\n  const label = trigger.getAttribute('aria-label');\n  if (!label || !label.includes('待命'))\n    throw new Error('the device trigger does not say it is in standby: ' + label);\n  return color + ' | ' + label;\n})()"
           },
           {
             "shot": "m-connection-standby-dot.png"
@@ -6058,7 +6058,7 @@
         ]
       },
       "take-control-list-quiet": {
-        "_comment": "The list page while another device holds the desktop: no banner, no button. The only cue is the yellow dot; the explanation and the action live behind it.",
+        "_comment": "The list page while another device holds the desktop: no banner, no button. The only cue is the yellow dot on the device trigger; the explanation and the action live in the sheet that trigger opens.",
         "url": "http://localhost:8099/?held=1",
         "steps": [
           {
