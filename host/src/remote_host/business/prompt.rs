@@ -46,7 +46,7 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
             }
         }
-        "get_queue" => match queue_snapshot(&cmd.session_id).await {
+        "get_queue" => match crate::agent_bridge::session_queue_snapshot(&cmd.session_id).await {
             Ok(snapshot) => reply(sink, true, snapshot, None).await,
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
         },
@@ -361,64 +361,6 @@ pub(crate) fn queues_while_busy(policy: &str) -> bool {
     matches!(policy, "enqueue_if_busy" | "enqueue_coalescing")
 }
 
-/// What this conversation has in flight and waiting, from the Agent's own state.
-///
-/// The queue belongs to the session, not to the client that filled it: a phone
-/// and a computer driving the same conversation see the same rows, and a row
-/// exists whether or not the sender is still connected. That is why it is read
-/// here instead of being tracked in a client.
-pub(crate) async fn queue_snapshot(session_id: &str) -> Result<Value, crate::Error> {
-    if session_id.trim().is_empty() {
-        return Ok(json!({ "activeRunId": Value::Null, "queued": [] }));
-    }
-    let mut client = crate::agent_bridge::connect_agent().await?;
-    crate::agent_bridge::verify_session_database(&mut client, session_id).await?;
-    let response = client
-        .execute_command(crate::agent_bridge::get_state_command(
-            session_id.to_string(),
-        ))
-        .await
-        .map_err(|error| format!("get_state: {error}"))?
-        .into_inner();
-    if !response.success {
-        return Err(format!("Agent rejected get_state: {}", response.error).into());
-    }
-    let state: Value = future_rpc::decode::response_data(&response);
-    Ok(queue_state_json(&state))
-}
-
-/// The queue half of a `get_state` payload, normalised for Remote clients.
-///
-/// Typed `get_state` emits canonical camelCase; the snake_case spelling is still
-/// accepted for an older Agent. Kept apart from the RPC so the shape a client
-/// relies on is testable without an Agent.
-pub(crate) fn queue_state_json(state: &Value) -> Value {
-    let queued = state
-        .get("queuedRuns")
-        .or_else(|| state.get("queued_runs"))
-        .and_then(Value::as_array)
-        .map(|rows| {
-            rows.iter()
-                .map(|row| {
-                    json!({
-                        "runId": row.get("runId").or_else(|| row.get("run_id")).and_then(Value::as_str).unwrap_or_default(),
-                        "position": row.get("queuePosition").or_else(|| row.get("queue_position")).and_then(Value::as_i64).unwrap_or(0),
-                        "acceptedAt": row.get("acceptedAt").or_else(|| row.get("accepted_at")).and_then(Value::as_str).unwrap_or_default(),
-                        "text": row.get("displayText").or_else(|| row.get("display_text")).and_then(Value::as_str).unwrap_or_default(),
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let active_run_id = state
-        .get("activeRun")
-        .or_else(|| state.get("active_run"))
-        .and_then(|run| run.get("runId").or_else(|| run.get("run_id")))
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    json!({ "activeRunId": active_run_id, "queued": queued })
-}
-
 /// The stable token a refusal of an unknown session carries, so a client can
 /// recognize *why* the prompt failed instead of showing a generic send error.
 /// Prefixed to the human sentence: the phone's toast maps the token, the text
@@ -662,44 +604,6 @@ mod tests {
                 };
             assert_eq!(prepared.session_id, "sess_busy");
         }
-    }
-
-    /// The queue a client shows is the Agent's own, in the Agent's order, with
-    /// the text it recorded. Canonical camelCase first, the older snake_case
-    /// spelling still read.
-    #[test]
-    fn the_queue_reads_the_agents_order_and_text() {
-        let state = json!({
-            "activeRun": { "runId": "run_live" },
-            "queuedRuns": [
-                { "runId": "run_2", "queuePosition": 1, "acceptedAt": "2026-11-03T10:00:00Z", "displayText": "second" },
-                { "runId": "run_3", "queuePosition": 2, "acceptedAt": "2026-11-03T10:00:01Z", "displayText": "third" }
-            ]
-        });
-        let snapshot = queue_state_json(&state);
-        assert_eq!(snapshot["activeRunId"], "run_live");
-        let queued = snapshot["queued"].as_array().expect("a list");
-        assert_eq!(queued.len(), 2);
-        assert_eq!(queued[0]["runId"], "run_2");
-        assert_eq!(queued[0]["position"], 1);
-        assert_eq!(queued[0]["text"], "second");
-        assert_eq!(queued[0]["acceptedAt"], "2026-11-03T10:00:00Z");
-
-        let legacy = json!({
-            "queued_runs": [
-                { "run_id": "run_9", "queue_position": 1, "display_text": "old agent" }
-            ]
-        });
-        let snapshot = queue_state_json(&legacy);
-        assert!(
-            snapshot["activeRunId"].is_null(),
-            "an idle session has no active run"
-        );
-        assert_eq!(snapshot["queued"][0]["runId"], "run_9");
-        assert_eq!(snapshot["queued"][0]["text"], "old agent");
-
-        let idle = queue_state_json(&json!({}));
-        assert_eq!(idle["queued"].as_array().expect("a list").len(), 0);
     }
 
     /// A continuation without a session and source run would resume "whatever
