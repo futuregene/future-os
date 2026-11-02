@@ -247,7 +247,18 @@ impl EventBatchWriter {
         let receiver = self.control.queue_shutdown()?;
         let result = receiver
             .recv()
-            .map_err(|_| anyhow::anyhow!("event shutdown acknowledgement lost"))?
+            .map_err(|_| {
+                // The receipt hands back an answer the worker queued, so reaching
+                // this arm means the worker retired without answering — and the
+                // failure it recorded on its way out is what made it retire.
+                // Naming it keeps a real loss diagnosable instead of anonymous.
+                match self.health.error() {
+                    Some(reason) => {
+                        anyhow::anyhow!("event shutdown acknowledgement lost: {reason}")
+                    }
+                    None => anyhow::anyhow!("event shutdown acknowledgement lost"),
+                }
+            })?
             .map_err(anyhow::Error::msg);
         if let Some(thread) = self.thread.take() {
             thread
