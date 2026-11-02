@@ -1057,7 +1057,9 @@ mod http_tests {
         let _home = HomeGuard::new("pairing-create");
         let platform = MockPlatform::start().await;
         sign_in(platform.url());
+        let earliest_expiry = now_secs() + 600;
         let code = platform.respond_pair_code("nats://127.0.0.1:4222");
+        let latest_expiry = now_secs() + 600;
 
         let Invitation {
             creds,
@@ -1082,12 +1084,14 @@ mod http_tests {
         assert!(creds.desktop_id.starts_with("desktop_"));
         assert_eq!(creds.nats_url, "nats://127.0.0.1:4222");
         assert!(creds.jwt_expires_at > now_secs());
-        // The mock stamps `exp = now + 600` when it builds the pair-code
-        // response; a second boundary can pass before this assertion runs, so
-        // allow the one-second skew instead of an exact `now + 600`.
+        // The mock stamps expiry when the response is scripted, before HTTP
+        // and key generation. Validate that issuance window, not the wall time
+        // after those operations (which can take seconds on a loaded runner).
         let expires_at = code_expires_at.expect("code expiry");
-        let delta = expires_at - now_secs();
-        assert!((599..=600).contains(&delta), "expiry delta {delta}");
+        assert!(
+            (earliest_expiry..=latest_expiry).contains(&expires_at),
+            "expiry {expires_at} must match the mock issuance window {earliest_expiry}..={latest_expiry}"
+        );
 
         let requests = platform.requests();
         assert_eq!(requests.len(), 1);
@@ -1898,6 +1902,7 @@ mod http_tests {
         let relay = MockPlatform::start().await;
         relay.push("/v1/rooms", 200, relay_grant());
         let _env = RelayEnv::point_at(relay.url());
+        let earliest_expiry = now_secs() + 300;
 
         let Invitation {
             creds,
@@ -1907,6 +1912,7 @@ mod http_tests {
         } = create_pairing(true, &[])
             .await
             .expect("the relay mints the room");
+        let latest_expiry = now_secs() + 300;
 
         assert!(
             cleared.is_empty(),
@@ -1920,10 +1926,10 @@ mod http_tests {
         assert_eq!(creds.pair_id.len(), 32);
         // The invitation lives for its own TTL, which is much shorter than the
         // credential it advertises: the QR is a bearer credential.
-        let lifetime = expires_at.expect("an invitation always expires") - now_secs();
+        let expiry = expires_at.expect("an invitation always expires");
         assert!(
-            (299..=300).contains(&lifetime),
-            "invitation lifetime was {lifetime}s"
+            (earliest_expiry..=latest_expiry).contains(&expiry),
+            "expiry {expiry} must match the creation window {earliest_expiry}..={latest_expiry}"
         );
 
         let invitation = reqwest::Url::parse(&code).expect("the invitation is a URL");
