@@ -331,6 +331,32 @@ function remoteRank(row: RemoteSessionRow): number {
   return activity + (row.pinned ? PINNED_FLOOR : 0);
 }
 
+/** The workspace fields a row keeps when its packet does not describe them. */
+function carriedWorkspace(
+  row: RemoteSessionRow,
+  previous: RemoteSessionRow | undefined,
+  entry: { name?: string; pinned?: boolean; orderedAt?: number } | undefined,
+): RemoteSessionRow {
+  if (entry) {
+    return {
+      ...row,
+      ...(entry.name !== undefined ? { workspaceName: entry.name } : {}),
+      ...(entry.pinned !== undefined ? { workspacePinned: entry.pinned } : {}),
+      ...(entry.orderedAt !== undefined ? { workspaceOrderedAt: entry.orderedAt } : {}),
+    };
+  }
+  if (!previous)
+    return row;
+  return {
+    ...row,
+    ...(previous.workspaceName !== undefined ? { workspaceName: previous.workspaceName } : {}),
+    ...(previous.workspacePinned !== undefined ? { workspacePinned: previous.workspacePinned } : {}),
+    ...(previous.workspaceOrderedAt !== undefined
+      ? { workspaceOrderedAt: previous.workspaceOrderedAt }
+      : {}),
+  };
+}
+
 function workspaceEntries(raw: unknown): Map<string, { name?: string; pinned?: boolean; orderedAt?: number }> {
   const entries = new Map<string, { name?: string; pinned?: boolean; orderedAt?: number }>();
   if (!Array.isArray(raw))
@@ -358,7 +384,15 @@ export function mergeRemoteSessionDelta(
   if (!delta.full) {
     for (const row of current) merged.set(row.sessionId, row);
   }
-  for (const row of delta.rows) merged.set(row.sessionId, row);
+  for (const row of delta.rows) {
+    // A packet carries the dictionary only when it moved, so a row arriving
+    // without one must keep the workspace it already knew: replacing it wholesale
+    // dropped the name and the merged list drew its generic heading until the
+    // next dictionary-bearing packet brought it back.
+    const previous = merged.get(row.sessionId);
+    const entry = row.workspaceId ? workspaceEntries(delta.dictionary).get(row.workspaceId) : undefined;
+    merged.set(row.sessionId, carriedWorkspace(row, previous, entry));
+  }
   const dictionary = workspaceEntries(delta.dictionary);
   if (dictionary.size > 0) {
     // A workspace moved: this lane's rows name it by id alone, so every held row

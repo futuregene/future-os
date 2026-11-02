@@ -232,12 +232,19 @@ pub fn apply_declared_features(handshake: &HandshakeState, pair_id: &str, featur
     // client that does not make it keeps receiving whole snapshots, because a
     // packet naming only what changed reads as a mass deletion to a reader that
     // expects a catalogue.
-    handshake.runtime.catalog_delta(pair_id).store(
-        features
-            .iter()
-            .any(|feature| feature == future_remote_protocol::CATALOG_DELTA_FEATURE),
-        Ordering::Release,
-    );
+    let delta = features
+        .iter()
+        .any(|feature| feature == future_remote_protocol::CATALOG_DELTA_FEATURE);
+    handshake
+        .runtime
+        .catalog_delta(pair_id)
+        .store(delta, Ordering::Release);
+    // The declared lane is reported by `future remote status`: the two lanes are
+    // indistinguishable from outside (same commands, no log line), so "did the
+    // capability take" had no answer anywhere before this.
+    handshake
+        .runtime
+        .set_catalogue_lane(pair_id, u8::from(delta));
     // The declaration belongs to the connection that made it: it is recorded on
     // the handshake (what the command path reads) and on the pairing's shared
     // runtime (what the event publisher reads, since events go to the device in
@@ -1460,6 +1467,9 @@ pub(crate) trait CommandRuntime: crate::secure::HandshakeHost {
     fn catalog_delta(&self, _pair: &str) -> Arc<AtomicBool> {
         Arc::new(AtomicBool::new(false))
     }
+    /// Record the catalogue lane a connection is declared on, so status can
+    /// report it. A runtime that keeps no such record ignores it.
+    fn set_catalogue_lane(&self, _pair: &str, _lane: u8) {}
     /// The directory a controller reads on demand, through `get_presence`.
     ///
     /// Deliberately not the same question as [`HandshakeHost::presence`]: the

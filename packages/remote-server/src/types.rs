@@ -1,5 +1,5 @@
 //! Controlled-endpoint runtime status DTOs, independent of an application entry point.
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -157,6 +157,28 @@ pub struct RemoteDevice {
     pub pairing_code: Option<String>,
     pub pairing_code_expires_at: Option<i64>,
     pub desktop_id: String,
+    /// Which catalogue lane this connection is served on: `delta` (row-level
+    /// packets, for a client that applies them) or `snapshot` (whole lists).
+    ///
+    /// Reported rather than inferred: the two lanes look identical from outside —
+    /// no log line, no error, the same command set — so "did the capability
+    /// actually take" had no answer anywhere before this field.
+    pub catalogue_lane: CatalogueLane,
+    /// Packets and bytes this connection has been sent on that lane since its
+    /// bridge came up. Bytes are the sealed payload, which is what the relay
+    /// carries; the compression in front of it is already applied.
+    pub catalogue_packets: u64,
+    pub catalogue_bytes: u64,
+}
+
+/// The catalogue lane a connection is served on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CatalogueLane {
+    /// Whole `sessions` lists: a client that did not declare `catalog_delta_v1`.
+    Snapshot,
+    /// Row-level packets: changed rows, explicit removals, the dictionary.
+    Delta,
 }
 
 impl std::fmt::Debug for RemoteDevice {
@@ -266,6 +288,9 @@ mod tests {
             client: None,
             pairing_code: Some("private_device_invitation_fixture".into()),
             pairing_code_expires_at: Some(42),
+            catalogue_lane: CatalogueLane::Snapshot,
+            catalogue_packets: 0,
+            catalogue_bytes: 0,
         });
         let debug = format!("{status:?}");
         for marker in [

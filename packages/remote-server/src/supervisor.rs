@@ -311,6 +311,36 @@ impl Supervisor {
         self.shared_or_insert(pair_id).catalog_activity
     }
 
+    /// Record which lane this connection is declared on.
+    ///
+    /// The declaration decides it, not the first packet: a client that says it
+    /// applies deltas is on that lane from then on, and status should say so even
+    /// before anything has changed.
+    pub fn set_catalogue_lane(&self, pair_id: &str, lane: u8) {
+        self.shared_or_insert(pair_id)
+            .catalogue_lane
+            .store(lane, Ordering::Release);
+    }
+
+    /// Record one published catalogue packet and its sealed size.
+    pub fn note_catalogue_packet(&self, pair_id: &str, bytes: usize) {
+        let shared = self.shared_or_insert(pair_id);
+        shared.catalogue_packets.fetch_add(1, Ordering::AcqRel);
+        shared
+            .catalogue_bytes
+            .fetch_add(bytes as u64, Ordering::AcqRel);
+    }
+
+    /// What this connection has been sent on the catalogue lane, for status.
+    pub fn catalogue_traffic(&self, pair_id: &str) -> (u8, u64, u64) {
+        let shared = self.shared_or_insert(pair_id);
+        (
+            shared.catalogue_lane.load(Ordering::Acquire),
+            shared.catalogue_packets.load(Ordering::Acquire),
+            shared.catalogue_bytes.load(Ordering::Acquire),
+        )
+    }
+
     /// Whether the connection on `pair_id` declared the lean feed.
     /// Whether the client on `pair_id` applies row-level catalogue deltas.
     ///
@@ -349,6 +379,9 @@ impl Supervisor {
                 coalesce_events: Arc::new(AtomicBool::new(false)),
                 catalog_activity: Arc::new(AtomicBool::new(false)),
                 catalog_delta: Arc::new(AtomicBool::new(false)),
+                catalogue_lane: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+                catalogue_packets: Arc::new(AtomicU64::new(0)),
+                catalogue_bytes: Arc::new(AtomicU64::new(0)),
                 lean_events: Arc::new(AtomicBool::new(false)),
                 segmented_content: Arc::new(AtomicBool::new(false)),
                 content_refusals: Default::default(),
@@ -661,6 +694,12 @@ pub struct BridgeRuntimeShared {
     /// Whether this client keeps the rows a delta packet does not mention.
     /// The lane's whole safety is this declaration: without it the publisher
     /// sends whole snapshots, exactly as it did before the capability existed.
+    /// Catalogue packets and sealed bytes this connection has been sent,
+    /// and which lane they went out on. Read by `future remote status`, so
+    /// "did the delta capability actually take" has an answer.
+    pub catalogue_lane: Arc<std::sync::atomic::AtomicU8>,
+    pub catalogue_packets: Arc<AtomicU64>,
+    pub catalogue_bytes: Arc<AtomicU64>,
     pub catalog_delta: Arc<AtomicBool>,
     /// Whether this connection declared the lean feed. Per pairing like the
     /// others: trimming one device's history to fields another device asked to
@@ -766,6 +805,9 @@ impl Supervisor {
             coalesce_events: Arc::new(AtomicBool::new(false)),
             catalog_activity: Arc::new(AtomicBool::new(false)),
             catalog_delta: Arc::new(AtomicBool::new(false)),
+            catalogue_lane: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            catalogue_packets: Arc::new(AtomicU64::new(0)),
+            catalogue_bytes: Arc::new(AtomicU64::new(0)),
             lean_events: Arc::new(AtomicBool::new(false)),
             segmented_content: Arc::new(AtomicBool::new(false)),
             content_refusals: Default::default(),
