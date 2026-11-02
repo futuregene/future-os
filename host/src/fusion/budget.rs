@@ -9,6 +9,9 @@ pub(super) struct Budget {
     models: BTreeMap<String, (usize, usize)>,
     participant_bytes: usize,
     mapping_bytes: usize,
+    participant_pool: usize,
+    moderator_room: usize,
+    review_room: usize,
 }
 impl Budget {
     pub fn new(catalog: &Value, config: &Configuration, input_bytes: usize) -> Result<Self> {
@@ -36,43 +39,29 @@ impl Budget {
             let output = model["maxTokens"]
                 .as_u64()
                 .filter(|n| *n > 0)
-                .unwrap_or((window / 4) as u64) as usize;
-            models.insert(
-                profile.model.clone(),
-                (window, output.max(1).min(window / 4)),
-            );
+                .with_context(|| format!("Fusion model {} requires positive maxTokens from list_models; upgrade Agent and Host together", profile.model))?
+                as usize;
+            models.insert(profile.model.clone(), (window, output.max(1).min(window)));
         }
         let &(window, output) = models
             .get(&config.moderator.model)
             .context("Missing moderator capacity")?;
-        // Account for JSON escaping, task serialization and stage instructions.
-        let room = window.saturating_sub(
-            output + future_fusion::CONTEXT_MARGIN + input_bytes.saturating_mul(6) + 16_384,
-        );
-        let own_review_room = models
+        // Reserve generation space for capacity planning, independently of the
+        // actual per-request generation limit. Count real task/report bytes;
+        // transport JSON escaping is not model-visible context.
+        let base = future_fusion::CONTEXT_MARGIN
+            .saturating_add(input_bytes)
+            .saturating_add(16_384);
+        let room = window.saturating_sub(output.min(window / 4).saturating_add(base));
+        let review_room = models
             .values()
-            .map(|(w, o)| {
-                w.saturating_sub(
-                    o + future_fusion::CONTEXT_MARGIN + input_bytes.saturating_mul(6) + 16_384,
-                ) / 12
-            })
+            .map(|(w, o)| w.saturating_sub(o.min(&(w / 4)).saturating_add(base)))
             .min()
             .unwrap_or(0);
-        let participant_bytes = (room / (config.panel.len().max(1) * 6)).min(own_review_room);
+        // A reviewer receives its own report and the moderator map.
+        let participant_bytes = (room / config.panel.len().max(1)).min(review_room / 2);
         ensure!(participant_bytes >= 1024, "Task context leaves insufficient moderator capacity; narrow the discussion before dispatch");
-        let mapping_bytes = models
-            .values()
-            .map(|(w, o)| {
-                w.saturating_sub(
-                    o + future_fusion::CONTEXT_MARGIN
-                        + input_bytes.saturating_mul(6)
-                        + participant_bytes * 6
-                        + 16_384,
-                ) / 6
-            })
-            .min()
-            .unwrap_or(0)
-            .min(room);
+        let mapping_bytes = review_room.saturating_sub(participant_bytes).min(room);
         ensure!(
             mapping_bytes >= 1024,
             "Insufficient context for a sourced moderator map"
@@ -81,8 +70,99 @@ impl Budget {
             models,
             participant_bytes,
             mapping_bytes,
+            participant_pool: participant_bytes.saturating_mul(config.panel.len()),
+            moderator_room: room,
+            review_room,
         })
     }
+    /// Pool unused allocations before discarding usable material. Full reports
+    /// stay in child sessions; only forwarded material is shortened if needed.
+    pub fn fit_material(&mut self, phase: &str, reports: &mut [Value]) -> Result<Vec<String>> {
+        let costs = reports
+            .iter()
+            .map(|report| {
+                super::reports::forwarded_bytes(
+                    phase,
+                    report["response"].as_str().unwrap_or_default(),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let per_report = if phase == "analyzing" {
+            self.review_room.saturating_sub(1024)
+        } else {
+            usize::MAX
+        };
+        let mut limits = vec![0; reports.len()];
+        let mut pending = (0..reports.len()).collect::<Vec<_>>();
+        let mut remaining = if phase == "analyzing" {
+            self.participant_pool
+        } else {
+            self.moderator_room
+        };
+        while !pending.is_empty() {
+            let share = (remaining / pending.len()).min(per_report);
+            let small = pending
+                .iter()
+                .copied()
+                .filter(|&i| costs[i] <= share)
+                .collect::<Vec<_>>();
+            if small.is_empty() {
+                for i in pending {
+                    limits[i] = share;
+                }
+                break;
+            }
+            for i in small {
+                limits[i] = costs[i];
+                remaining = remaining.saturating_sub(costs[i]);
+                pending.retain(|&j| i != j);
+            }
+        }
+        let mut shortened = vec![];
+        for (report, limit) in reports.iter_mut().zip(limits) {
+            let original = report["response"].as_str().unwrap_or_default();
+            if super::reports::forwarded_bytes(phase, original)? <= limit {
+                continue;
+            }
+            // Preserve the direct answer before spending context on the review
+            // bookkeeping. Never claim the omitted supporting fields passed.
+            let parsed = future_fusion::parse_json::<Value>(original).ok();
+            let answer = parsed
+                .as_ref()
+                .and_then(|v| v["current_answer"].as_str())
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(original);
+            let text = super::reports::fit_text(answer, limit)?;
+            report["response"] = serde_json::json!(text);
+            report["forwarded_truncated"] = serde_json::json!(true);
+            shortened.push(
+                report["participant"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            );
+        }
+        if phase == "analyzing" {
+            let largest = reports
+                .iter()
+                .map(|report| {
+                    // The reviewer receives its own answer as an escaped string.
+                    super::reports::forwarded_bytes(
+                        phase,
+                        report["response"].as_str().unwrap_or_default(),
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .max()
+                .unwrap_or(0);
+            self.mapping_bytes = self
+                .mapping_bytes
+                .min(self.review_room.saturating_sub(largest));
+        }
+        Ok(shortened)
+    }
+
     pub fn apply(
         &self,
         model: &str,
@@ -95,17 +175,16 @@ impl Budget {
             .get(model)
             .context("Unknown Fusion model capacity")?;
         let public_bytes = match phase {
-            "analyzing" | "reviewing" => self.participant_bytes,
+            "analyzing" | "reviewing" | "synthesizing" => self.participant_bytes,
             "issue_mapping" => self.mapping_bytes,
             _ => usize::MAX,
         };
-        let remaining = window.saturating_sub(prompt.len() + future_fusion::CONTEXT_MARGIN);
+        let remaining =
+            window.saturating_sub(prompt.len().saturating_add(future_fusion::CONTEXT_MARGIN));
         let output = natural_output.min(remaining);
-        let output = if public_bytes == usize::MAX {
-            output
-        } else {
-            output.min(public_bytes / 4)
-        };
+        // Generation includes reasoning as well as public text. Only public
+        // text is forwarded; its byte allocation is validated independently.
+        // A downstream byte quota must never become a reasoning-token cap.
         ensure!(
             output >= 256,
             "Fusion prompt cannot fit the model context with output reserve"
@@ -134,6 +213,83 @@ mod tests {
         ]})
     }
     #[test]
+    fn pools_spare_capacity_and_bounds_the_combined_moderator_input() {
+        let mut budget = Budget::new(&catalog(262144), &Configuration::default(), 1000).unwrap();
+        let long = "A".repeat(budget.participant_bytes + 2000);
+        let mut reports = vec![
+            json!({"participant":"P1","response":long}),
+            json!({"participant":"P2","response":"short"}),
+            json!({"participant":"P3","response":"short"}),
+        ];
+        assert!(budget
+            .fit_material("reviewing", &mut reports)
+            .unwrap()
+            .is_empty());
+        assert_eq!(reports[0]["response"].as_str().unwrap(), long);
+        for report in &mut reports {
+            report["response"] = json!("中文\"".repeat(budget.participant_pool));
+        }
+        assert_eq!(
+            budget
+                .fit_material("reviewing", &mut reports)
+                .unwrap()
+                .len(),
+            3
+        );
+        let bytes: usize = reports
+            .iter()
+            .map(|r| {
+                super::super::reports::forwarded_bytes("reviewing", r["response"].as_str().unwrap())
+                    .unwrap()
+            })
+            .sum();
+        assert!(bytes <= budget.moderator_room);
+        assert!(reports.iter().all(|r| r["forwarded_truncated"] == true));
+    }
+
+    #[test]
+    fn typed_rpc_model_catalog_survives_to_fusion_admission() {
+        let mut source = catalog(1_000_000);
+        // Match the required public model-list envelope and entries, not a
+        // Host-only fixture that bypasses RPC's field filtering.
+        source["defaultModel"] = json!("future/deepseek-flash");
+        source["isScoped"] = json!(false);
+        for model in source["models"].as_array_mut().unwrap() {
+            model["label"] = model["id"].clone();
+            model["supportsImages"] = json!(false);
+            model["thinkingLevel"] = json!("default");
+            model["isDefault"] = json!(false);
+            model["recommended"] = json!(false);
+        }
+        let payload = future_rpc::encode::response_payload("list_models", &source).unwrap();
+        let response = future_rpc::proto::RpcResponse {
+            command: "list_models".into(),
+            success: true,
+            payload: Some(payload),
+            ..Default::default()
+        };
+        let decoded = future_rpc::decode::response_data(&response);
+        let config = Configuration::default();
+        let budget = Budget::new(&decoded, &config, 1748).unwrap();
+        for profile in config.panel.iter().chain([&config.moderator]) {
+            let mut settings = super::super::attempt_settings(&config, profile, None, 0).unwrap();
+            budget
+                .apply(&profile.model, "analyzing", "task", &mut settings)
+                .unwrap();
+            assert_eq!(settings.max_output_tokens, 32768);
+        }
+        let mut legacy = decoded;
+        legacy["models"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("maxTokens");
+        let Err(error) = Budget::new(&legacy, &config, 1748) else {
+            panic!("invented capacity for an old Agent");
+        };
+        assert!(error.to_string().contains("future/deepseek-flash"));
+    }
+
+    #[test]
     fn sharing_more_roles_reduces_output_without_overbooking_moderator() {
         let mut config = Configuration::default();
         let smaller = Budget::new(&catalog(262144), &config, 1000).unwrap();
@@ -142,13 +298,53 @@ mod tests {
             .extend([config.panel[0].clone(), config.panel[0].clone()]);
         let larger = Budget::new(&catalog(262144), &config, 1000).unwrap();
         assert!(larger.participant_bytes < smaller.participant_bytes);
-        assert!(larger.participant_bytes * 6 * 5 + 32768 + future_fusion::CONTEXT_MARGIN < 262144);
+        assert!(larger.participant_bytes * 5 + 32768 + future_fusion::CONTEXT_MARGIN < 262144);
         assert!(Budget::new(&catalog(32768), &config, 30000).is_err());
         assert!(Budget::new(&catalog(0), &config, 0).is_err());
         let mut mixed = catalog(1048576);
         mixed["models"][1]["contextWindow"] = json!(131072);
         assert!(Budget::new(&mixed, &Configuration::default(), 1000).is_ok());
     }
+    #[test]
+    fn participant_reasoning_is_independent_of_forwarded_public_bytes() {
+        let mut catalog = catalog(1_000_000);
+        for model in catalog["models"].as_array_mut().unwrap() {
+            model["maxTokens"] = json!(1_000_000);
+        }
+        for count in 2..=5 {
+            let mut config = Configuration::default();
+            config.panel = vec![config.panel[0].clone(); count];
+            // Reproduce the device run that reduced DeepSeek to 9,929 tokens
+            // by dividing its 39,718-byte public allocation by four.
+            let budget = Budget::new(&catalog, &config, 1748).unwrap();
+            for phase in ["analyzing", "reviewing"] {
+                for retry in [None, Some(super::super::RetryReason::OutputLimit)] {
+                    let mut settings =
+                        super::super::attempt_settings(&config, &config.panel[0], retry, 0)
+                            .unwrap();
+                    budget
+                        .apply(&config.panel[0].model, phase, "task", &mut settings)
+                        .unwrap();
+                    assert_eq!(
+                        settings.max_output_tokens,
+                        1_000_000 - 4 - future_fusion::CONTEXT_MARGIN as i32
+                    );
+                    assert_eq!(settings.max_public_bytes, budget.participant_bytes);
+                    assert!(settings.max_output_tokens as usize > settings.max_public_bytes / 4);
+                    future_fusion::guard_context(
+                        4,
+                        settings.context_window,
+                        settings.max_output_tokens as usize,
+                    )
+                    .unwrap();
+                }
+            }
+            if count == 3 {
+                assert!(budget.participant_bytes > 39_718 * 4);
+            }
+        }
+    }
+
     #[test]
     fn actual_prompt_admission_is_checked_before_dispatch() {
         let config = Configuration::default();
@@ -159,6 +355,16 @@ mod tests {
             .apply(&config.panel[0].model, "analyzing", "task", &mut settings)
             .unwrap();
         assert!(settings.max_output_tokens > 0);
+        assert!(settings.max_public_bytes > 0);
+        budget
+            .apply(
+                &config.moderator.model,
+                "issue_mapping",
+                "task",
+                &mut settings,
+            )
+            .unwrap();
+        assert_eq!(settings.max_output_tokens, 32768);
         assert!(settings.max_public_bytes > 0);
         assert!(budget
             .apply(

@@ -196,6 +196,29 @@ describe("previewLoadingGate", () => {
     hook.unmount();
   });
 
+  it("supports a one-second minimum and stays visible across a renewed request", () => {
+    vi.useFakeTimers();
+    let loading = true;
+    const hook = renderHook(() => usePreviewLoadingGate(loading, 1000));
+    act(() => vi.advanceTimersByTime(PREVIEW_LOADING_DELAY_MS));
+    expect(hook.current).toEqual({ showContent: false, showLoading: true });
+    act(() => vi.advanceTimersByTime(50));
+    loading = false;
+    hook.rerender();
+    act(() => vi.advanceTimersByTime(100));
+    loading = true;
+    hook.rerender();
+    expect(hook.current).toEqual({ showContent: false, showLoading: true });
+    act(() => vi.advanceTimersByTime(50));
+    loading = false;
+    hook.rerender();
+    act(() => vi.advanceTimersByTime(799));
+    expect(hook.current).toEqual({ showContent: false, showLoading: true });
+    act(() => vi.advanceTimersByTime(1));
+    expect(hook.current).toEqual({ showContent: true, showLoading: false });
+    hook.unmount();
+  });
+
   it("moves straight to ready once the minimum visible time has elapsed", () => {
     vi.useFakeTimers();
     let loading = true;

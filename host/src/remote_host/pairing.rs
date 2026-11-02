@@ -137,23 +137,70 @@ pub(crate) fn load_creds_checked() -> Result<Option<PairingCreds>, crate::Error>
 }
 
 fn load_book_checked() -> Result<PairingBook, crate::Error> {
+    pairing_read_retry(load_book_once, cfg!(windows), std::thread::sleep)
+}
+
+/// Windows can reject opening a delete-pending file until its last handle is
+/// released. Retry the whole snapshot, including legacy fallback, but never
+/// hide a persistent permissions error or corrupt credentials.
+fn pairing_read_retry<T>(
+    mut read: impl FnMut() -> Result<T, crate::Error>,
+    windows: bool,
+    mut pause: impl FnMut(std::time::Duration),
+) -> Result<T, crate::Error> {
+    for attempt in 0..8 {
+        match read() {
+            Err(crate::Error::Io(error))
+                if windows
+                    && matches!(error.raw_os_error(), Some(5 | 32 | 33 | 303))
+                    && attempt < 7 =>
+            {
+                pause(std::time::Duration::from_millis(10 << attempt.min(4)));
+            }
+            result => return result,
+        }
+    }
+    unreachable!("the final read always returns")
+}
+
+fn pairing_object(path: &std::path::Path) -> Result<Option<Value>, crate::Error> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let value: Value = serde_json::from_str(&contents).map_err(|error| {
+        crate::Error::Message(format!(
+            "Failed to parse {}: {error}. Please fix the file and retry.",
+            path.display()
+        ))
+    })?;
+    if !value.is_object() {
+        return Err(crate::Error::Message(format!(
+            "The root of {} must be a JSON object.",
+            path.display()
+        )));
+    }
+    Ok(Some(value))
+}
+
+fn load_book_once() -> Result<PairingBook, crate::Error> {
     let path = book_path()?;
-    if path.try_exists()? {
-        let value = crate::config_io::read_json_object(&path)?;
+    if let Some(value) = pairing_object(&path)? {
         return Ok(serde_json::from_value(value)?);
     }
     // An installation paired before multi-device kept one credential here. It
     // becomes the book's only slot — and the one in control, because a single
     // device is trivially the one driving the machine.
     let legacy = pairing_path()?;
-    if !legacy.try_exists()? {
+    let Some(value) = pairing_object(&legacy)? else {
         return Ok(PairingBook {
             version: BOOK_VERSION,
             active: None,
             slots: Vec::new(),
         });
-    }
-    let creds: PairingCreds = serde_json::from_value(crate::config_io::read_json_object(&legacy)?)?;
+    };
+    let creds: PairingCreds = serde_json::from_value(value)?;
     Ok(PairingBook {
         version: BOOK_VERSION,
         active: Some(creds.pair_id.clone()),
@@ -889,6 +936,67 @@ pub(crate) async fn retry_pending_revokes() -> Result<(), crate::Error> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn windows_pairing_read_survives_a_delete_pending_file() {
+        for code in [5, 32, 33, 303] {
+            let mut attempts = 0;
+            let mut delays = Vec::new();
+            let result = pairing_read_retry(
+                || {
+                    attempts += 1;
+                    if attempts == 1 {
+                        Err(crate::Error::Io(std::io::Error::from_raw_os_error(code)))
+                    } else {
+                        Ok(None::<PairingBook>)
+                    }
+                },
+                true,
+                |delay| delays.push(delay),
+            )
+            .unwrap();
+            assert!(result.is_none(), "a deleted book is an unpaired snapshot");
+            assert_eq!(attempts, 2);
+            assert_eq!(delays, [std::time::Duration::from_millis(10)]);
+        }
+    }
+
+    #[test]
+    fn persistent_pairing_permissions_errors_are_bounded_and_preserved() {
+        let mut attempts = 0;
+        let mut delays = Vec::new();
+        let error = pairing_read_retry::<()>(
+            || {
+                attempts += 1;
+                Err(crate::Error::Io(std::io::Error::from_raw_os_error(5)))
+            },
+            true,
+            |delay| delays.push(delay),
+        )
+        .unwrap_err();
+        assert!(matches!(error, crate::Error::Io(error) if error.raw_os_error() == Some(5)));
+        assert_eq!(attempts, 8);
+        assert_eq!(delays.iter().sum::<std::time::Duration>().as_millis(), 630);
+    }
+
+    #[test]
+    fn pairing_read_does_not_retry_corruption_or_non_windows_errors() {
+        for windows in [false, true] {
+            let error = pairing_read_retry::<()>(
+                || Err(crate::Error::Message("corrupt credentials".into())),
+                windows,
+                |_| panic!("corrupt credentials must fail immediately"),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("corrupt credentials"));
+        }
+        assert!(pairing_read_retry::<()>(
+            || Err(crate::Error::Io(std::io::Error::from_raw_os_error(5))),
+            false,
+            |_| panic!("other platforms keep their original error semantics"),
+        )
+        .is_err());
+    }
+
     /// A book written before the `version` field existed (or by any writer that
     /// omitted it) must decode as the current version rather than being refused:
     /// the field exists to *detect* an old file, and `serde(default)` is what
@@ -918,6 +1026,20 @@ mod http_tests {
         init_store, jwt, now_secs, pairing_code, sign_in, HomeGuard, MockPlatform,
     };
     use serde_json::json;
+
+    #[test]
+    fn missing_pairing_files_are_absent_but_corrupt_files_fail_closed() {
+        let _home = HomeGuard::new("pairing-read-snapshot");
+        assert!(load_book_once().unwrap().slots().is_empty());
+        let path = pairing_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for contents in ["{", "[]", "{}"] {
+            std::fs::write(&path, contents).unwrap();
+            assert!(load_book_checked().is_err());
+        }
+        std::fs::remove_file(&path).unwrap();
+        assert!(load_book_checked().unwrap().slots().is_empty());
+    }
 
     fn fixture_creds() -> PairingCreds {
         let key_pair = nkeys::KeyPair::new_user();
@@ -1057,7 +1179,9 @@ mod http_tests {
         let _home = HomeGuard::new("pairing-create");
         let platform = MockPlatform::start().await;
         sign_in(platform.url());
+        let earliest_expiry = now_secs() + 600;
         let code = platform.respond_pair_code("nats://127.0.0.1:4222");
+        let latest_expiry = now_secs() + 600;
 
         let Invitation {
             creds,
@@ -1082,12 +1206,14 @@ mod http_tests {
         assert!(creds.desktop_id.starts_with("desktop_"));
         assert_eq!(creds.nats_url, "nats://127.0.0.1:4222");
         assert!(creds.jwt_expires_at > now_secs());
-        // The mock stamps `exp = now + 600` when it builds the pair-code
-        // response; a second boundary can pass before this assertion runs, so
-        // allow the one-second skew instead of an exact `now + 600`.
+        // The mock stamps expiry when the response is scripted, before HTTP
+        // and key generation. Validate that issuance window, not the wall time
+        // after those operations (which can take seconds on a loaded runner).
         let expires_at = code_expires_at.expect("code expiry");
-        let delta = expires_at - now_secs();
-        assert!((599..=600).contains(&delta), "expiry delta {delta}");
+        assert!(
+            (earliest_expiry..=latest_expiry).contains(&expires_at),
+            "expiry {expires_at} must match the mock issuance window {earliest_expiry}..={latest_expiry}"
+        );
 
         let requests = platform.requests();
         assert_eq!(requests.len(), 1);
@@ -1898,6 +2024,7 @@ mod http_tests {
         let relay = MockPlatform::start().await;
         relay.push("/v1/rooms", 200, relay_grant());
         let _env = RelayEnv::point_at(relay.url());
+        let earliest_expiry = now_secs() + 300;
 
         let Invitation {
             creds,
@@ -1907,6 +2034,7 @@ mod http_tests {
         } = create_pairing(true, &[])
             .await
             .expect("the relay mints the room");
+        let latest_expiry = now_secs() + 300;
 
         assert!(
             cleared.is_empty(),
@@ -1920,10 +2048,10 @@ mod http_tests {
         assert_eq!(creds.pair_id.len(), 32);
         // The invitation lives for its own TTL, which is much shorter than the
         // credential it advertises: the QR is a bearer credential.
-        let lifetime = expires_at.expect("an invitation always expires") - now_secs();
+        let expiry = expires_at.expect("an invitation always expires");
         assert!(
-            (299..=300).contains(&lifetime),
-            "invitation lifetime was {lifetime}s"
+            (earliest_expiry..=latest_expiry).contains(&expiry),
+            "expiry {expiry} must match the creation window {earliest_expiry}..={latest_expiry}"
         );
 
         let invitation = reqwest::Url::parse(&code).expect("the invitation is a URL");

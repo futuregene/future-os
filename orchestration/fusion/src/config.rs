@@ -4,7 +4,7 @@ use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 
 pub const GENERATION_POLICY_VERSION: u32 = 2;
-pub const STEP_TIMEOUT_SECS: u64 = 300;
+pub const STEP_TIMEOUT_SECS: u64 = 600;
 pub const RUN_TIMEOUT_SECS: u64 = 2700;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -55,6 +55,15 @@ impl Default for Configuration {
 }
 
 impl Configuration {
+    /// Upgrade the retired default in saved settings, never historical run
+    /// snapshots or role thinking levels. Explicitly shorter total budgets and
+    /// other custom timeouts keep their existing behavior.
+    pub(crate) fn upgrade_legacy_timeout(&mut self) {
+        if self.step_timeout_secs == 300 && self.run_timeout_secs >= STEP_TIMEOUT_SECS {
+            self.step_timeout_secs = STEP_TIMEOUT_SECS;
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         ensure!(
             self.version == GENERATION_POLICY_VERSION,
@@ -86,13 +95,17 @@ impl Configuration {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StepSettings {
     pub thinking_level: String,
-    /// Actual request-local capacity allocation; zero occurs only in legacy records.
+    /// Generation ceiling; Agent adapts each turn to remaining context/repair space.
+    /// Independent of the final report quota; zero occurs only in legacy records.
     #[serde(default)]
     pub max_output_tokens: i32,
     #[serde(default)]
     pub context_window: usize,
     #[serde(default)]
     pub max_public_bytes: usize,
+    /// Same-session report repairs; investigation tools are disabled after zero.
+    #[serde(default)]
+    pub report_revision: u32,
     pub timeout_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_reason: Option<String>,
@@ -206,9 +219,28 @@ mod tests {
             assert_eq!(model.retry_max_output_tokens, 0);
         }
         assert_eq!(config.panel[1].thinking_level, "low");
-        // Four sequential phases, each with two attempts, still fit the outer
-        // deadline, with time left for admission and delivery.
-        assert!(config.run_timeout_secs > config.step_timeout_secs * 8);
+        // Four discussion phases fit at the new per-step ceiling. Retries
+        // still share the original run deadline and cannot extend it.
+        assert_eq!(config.step_timeout_secs, 600);
+        assert_eq!(config.run_timeout_secs, 2700);
+        assert!(config.run_timeout_secs > config.step_timeout_secs * 4);
+    }
+
+    #[test]
+    fn timeout_upgrade_preserves_custom_budgets_and_user_thinking() {
+        let mut config = Configuration {
+            step_timeout_secs: 900,
+            ..Default::default()
+        };
+        config.moderator.thinking_level = "high".into();
+        let before = config.clone();
+        config.upgrade_legacy_timeout();
+        assert_eq!(config, before);
+        config.step_timeout_secs = 300;
+        config.run_timeout_secs = 450;
+        let before = config.clone();
+        config.upgrade_legacy_timeout();
+        assert_eq!(config, before);
     }
 
     #[test]

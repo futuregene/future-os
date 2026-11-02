@@ -9,6 +9,7 @@ fn state(step: &Value) -> Key {
     }
     match step["status"].as_str().unwrap_or_default() {
         "starting" | "running" => Key::FusionThinking,
+        "completed" if !step["report_quality"].is_null() => Key::FusionModelPartial,
         "completed" => Key::FusionThought,
         "skipped" => Key::FusionSkipped,
         "cancelled" => Key::FusionStopped,
@@ -159,6 +160,9 @@ pub(super) fn progress(data: &Value, lang: Language) -> String {
         {
             key = Key::FusionModelPartial;
         }
+        if participant.as_deref() == Some("moderator") && key == Key::FusionThinkInterrupted {
+            key = Key::FusionThinkFailed;
+        }
         let name = match model.as_str() {
             "future/deepseek-flash" => "DeepSeek Flash",
             "future/glm-5.3-flash" => "GLM 5.3 Flash",
@@ -196,6 +200,9 @@ pub(super) fn progress(data: &Value, lang: Language) -> String {
         {
             notices.push(Key::FusionReducedParticipation);
         }
+        if has("report_unvalidated") || has("report_truncated") {
+            notices.push(Key::FusionReportUnvalidated);
+        }
         if has("summary_budget_reserved") {
             notices.push(Key::FusionBudgetReserved);
         } else if has("mapping_invalid") {
@@ -226,6 +233,15 @@ pub(super) fn progress(data: &Value, lang: Language) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn retained_report_is_partial_not_failed() {
+        let step = serde_json::json!({"status":"completed","report_quality":{"validation_errors":["quote"],"source_run_id":"kept"}});
+        assert!(matches!(
+            super::state(&step),
+            super::Key::FusionModelPartial
+        ));
+    }
+
     use super::*;
     #[test]
     fn failed_participant_is_visible_in_a_completed_discussion() {
@@ -242,7 +258,7 @@ mod tests {
         assert!(text.contains("[==== .... .... >>>>]"));
         assert!(text.contains("GLM 5.3 Flash · 已跳过"));
         assert!(text.contains("本次未产出综合结论。"));
-        assert!(text.contains("主模型不可用，未自动更换模型。"));
+        assert!(text.contains("主持人不可用，未自动更换模型。"));
         assert!(text.contains("已有分析与降级原因已保留"));
     }
 }
