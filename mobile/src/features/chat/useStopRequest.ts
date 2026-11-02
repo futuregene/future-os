@@ -89,8 +89,16 @@ export function useStopRequest(
     };
   }, [sessionId, log]);
 
-  const stop = useCallback(async () => {
-    if (!streaming || attemptRef.current?.inFlight) return;
+  /**
+   * Ask the desktop to stop the run, and say whether it accepted the request.
+   *
+   * The answer is what lets the caller act on the *acknowledgement* rather than on
+   * its own reading of the conversation: a queue the reader asked to send leaves
+   * as soon as the stop is acknowledged, and the desktop — not this screen — has
+   * the last word on whether the run is really over yet.
+   */
+  const stop = useCallback(async (): Promise<boolean> => {
+    if (!streaming || attemptRef.current?.inFlight) return false;
     const attempt: Attempt = {
       id: ++sequenceRef.current,
       startedAt: performance.now(),
@@ -105,9 +113,11 @@ export function useStopRequest(
       await abort();
       log(attempt, "request_acknowledged");
       if (attemptRef.current === attempt) setStatus("requested");
+      return true;
     } catch {
       log(attempt, "request_failed");
       if (attemptRef.current === attempt) setStatus("failed");
+      return false;
     } finally {
       attempt.inFlight = false;
     }

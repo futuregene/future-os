@@ -76,3 +76,17 @@ test("sends the queue as one message, keeping attachment-only entries' files", (
   expect(joinQueuedContent(items)).toBe("words");
   expect(collectQueuedAttachments(items)).toEqual(["only.png", "doc.pdf"]);
 });
+
+test("hydrates a conversation from storage, without overwriting what is already queued", () => {
+  const store = makeStore();
+  store.hydrate("k", [{ attachments: [], content: "restored", createdAt: 1, id: "q1" }]);
+  expect(store.snapshot("k").items.map(item => item.content)).toEqual(["restored"]);
+
+  // A queue the reader filled while the read was in flight is the newer intent.
+  store.enqueue("k", { content: "typed since" });
+  store.hydrate("k", [{ attachments: [], content: "stale", createdAt: 2, id: "q2" }]);
+  expect(store.snapshot("k").items.map(item => item.content)).toEqual(["restored", "typed since"]);
+  // Nothing to restore is not a change.
+  store.hydrate("other", []);
+  expect(store.snapshot("other").items).toEqual([]);
+});

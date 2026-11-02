@@ -57,9 +57,22 @@ export interface SendQueueStore<TAttachment> {
   restore: (key: string, items: readonly QueuedSend<TAttachment>[]) => void;
   clearFailure: (key: string) => void;
   clear: (key: string) => void;
+  /**
+   * Seed a conversation's queue from storage (the phone's queue outlives the app).
+   *
+   * A queue that is already live for that conversation wins: the reader could
+   * have typed into it while the read was in flight, and the newer words are not
+   * the ones to throw away.
+   */
+  hydrate: (key: string, items: readonly QueuedSend<TAttachment>[]) => void;
 }
 
-export function createSendQueueStore<TAttachment>(): SendQueueStore<TAttachment> {
+export interface SendQueueStoreOptions<TAttachment> {
+  /** Called after every change, with the conversation's whole new state. */
+  onChange?: (key: string, state: SendQueueState<TAttachment>) => void;
+}
+
+export function createSendQueueStore<TAttachment>(options: SendQueueStoreOptions<TAttachment> = {}): SendQueueStore<TAttachment> {
   const states = new Map<string, SendQueueState<TAttachment>>();
   const listeners = new Map<string, Set<() => void>>();
   const empty: SendQueueState<TAttachment> = { failed: false, items: [] };
@@ -69,8 +82,13 @@ export function createSendQueueStore<TAttachment>(): SendQueueStore<TAttachment>
     return states.get(key) ?? empty;
   }
 
-  function publish(key: string, next: SendQueueState<TAttachment>): void {
+  function publish(key: string, next: SendQueueState<TAttachment>, options2: { persist?: boolean } = {}): void {
     states.set(key, next);
+    // Hydration is a *read* of what storage already holds: reporting it back would
+    // rewrite the whole record from a partially filled map (the keys not yet
+    // hydrated would be written out as absent).
+    if (options2.persist !== false)
+      options.onChange?.(key, next);
     const set = listeners.get(key);
     if (!set)
       return;
@@ -146,10 +164,19 @@ export function createSendQueueStore<TAttachment>(): SendQueueStore<TAttachment>
     publish(key, empty);
   }
 
+  function hydrate(key: string, items: readonly QueuedSend<TAttachment>[]): void {
+    if (items.length === 0)
+      return;
+    if (read(key).items.length > 0)
+      return;
+    publish(key, { failed: false, items: [...items] }, { persist: false });
+  }
+
   return {
     clear,
     clearFailure,
     enqueue,
+    hydrate,
     remove,
     restore,
     snapshot: key => key ? read(key) : empty,

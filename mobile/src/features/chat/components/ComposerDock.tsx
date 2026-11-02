@@ -66,6 +66,7 @@ function ComposerDockView({
   onQueueRemove,
   onQueueRetry,
   enqueueDraft,
+  onStopped,
 }: {
   message: string;
   setMessage: Dispatch<SetStateAction<string>>;
@@ -121,6 +122,12 @@ function ComposerDockView({
    * queue, so the sheet stays open instead of pretending something happened.
    */
   enqueueDraft?: () => boolean;
+  /**
+   * Called once the desktop has acknowledged a stop request, so the screen can
+   * send whatever the reader was holding without waiting for its own reading of
+   * the conversation to catch up.
+   */
+  onStopped?: () => void;
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -192,18 +199,39 @@ function ComposerDockView({
     remote.abort,
   );
   const hasDraft = !!message.trim() || attachments.length > 0;
+  /**
+   * Stop the run, and tell the screen once the desktop has taken the request.
+   *
+   * The acknowledgement is the moment a held queue may go: the reader has already
+   * decided ("stop, and send what I was holding"), and waiting for this screen to
+   * read the conversation as over adds a round-trip of its own. The desktop still
+   * refuses a send that arrives before the run has settled — that answer is
+   * retried by the screen (`isTransientQueueRefusal`).
+   */
+  const stopRun = useCallback(async () => {
+    const stopped = await stopRequest.stop();
+    if (stopped)
+      onStopped?.();
+    return stopped;
+  }, [onStopped, stopRequest]);
+  // The toolbar's own stop control goes through the same door, so a press there
+  // hands the held queue over too — it is the same decision from a different button.
+  const queueAwareStopRequest = useMemo(
+    () => ({ ...stopRequest, stop: stopRun }),
+    [stopRequest, stopRun],
+  );
   const handleChooseQueue = useCallback(() => {
     if (enqueueDraft?.())
       setQueueChoiceOpen(false);
   }, [enqueueDraft]);
   const handleChooseInterrupt = useCallback(() => {
-    // Queued first, interrupted second: the flush that runs when the run settles
-    // sends what was on screen, joined with the queue.
+    // Queued first, interrupted second: the flush that follows sends what was on
+    // screen, joined with the queue.
     if (!enqueueDraft?.())
       return;
     setQueueChoiceOpen(false);
-    void stopRequest.stop();
-  }, [enqueueDraft, stopRequest]);
+    void stopRun();
+  }, [enqueueDraft, stopRun]);
   const inputRef = useRef<TextInputInstance>(null);
   const completion = useComposerCompletion(
     message,
@@ -438,7 +466,7 @@ function ComposerDockView({
             completion={completion}
             editable={editable}
             openAttachmentMenu={openAttachmentMenu}
-            stopRequest={stopRequest}
+            stopRequest={queueAwareStopRequest}
             skillEvaluating={skillEvaluating}
             canSend={canSend}
             send={send}
