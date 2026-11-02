@@ -11,6 +11,11 @@ static QUIT_DIALOG_OPEN: AtomicBool = AtomicBool::new(false);
 /// Whether automatic Agent recovery has stopped for good.
 static RECOVERY_GAVE_UP: AtomicBool = AtomicBool::new(false);
 /// The one dialog for a give-up episode, shown at most once.
+///
+/// Gated exactly as its only writer is: `give_up` exists to end the watchdog
+/// loop, and the watchdog body is `not(test)`, so in a test build both would be
+/// unreachable — which `-D warnings` reports rather than tolerates.
+#[cfg(not(test))]
 static GAVE_UP_DIALOG_SHOWN: AtomicBool = AtomicBool::new(false);
 /// Why recovery gave up, kept for the status page.
 static GAVE_UP_REASON: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
@@ -195,9 +200,13 @@ pub fn ensure_agent_running<R: tauri::Runtime>(
 ///
 /// One dialog per episode, never one per attempt, and one log line: a give-up is
 /// news, not a state to poll.
+///
+/// `not(test)` because its only caller is the watchdog loop, which a test build
+/// does not compile: the state it sets is still reachable through
+/// [`recovery_gave_up`], and the dialog it shows is the one thing a test must
+/// never put on screen.
+#[cfg(not(test))]
 fn give_up<R: tauri::Runtime>(app: &tauri::AppHandle<R>, failures: u32, limit: u32) {
-    #[cfg(test)]
-    let _ = app;
     if RECOVERY_GAVE_UP.swap(true, Ordering::AcqRel) {
         return;
     }
@@ -215,7 +224,6 @@ fn give_up<R: tauri::Runtime>(app: &tauri::AppHandle<R>, failures: u32, limit: u
         "Agent recovery gave up after {failures}/{limit} attempts: {reason}; \
          automatic retries stopped, restart FutureOS"
     ));
-    #[cfg(not(test))]
     if !GAVE_UP_DIALOG_SHOWN.swap(true, Ordering::AcqRel) {
         let handle = app.clone();
         app.dialog()
