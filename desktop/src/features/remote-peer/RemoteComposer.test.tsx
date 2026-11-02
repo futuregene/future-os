@@ -2,11 +2,12 @@
 import type { RemotePeer } from "./remotePeerClient";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { RemoteComposer } from "./RemoteComposer";
 import { clearRemoteComposerDraft } from "./remoteComposerDraft";
 import { getRemoteOutbox, resetRemoteOutbox } from "./remotePromptOutbox";
+import { remoteSendQueue } from "./sendQueue";
 
 /**
  * The composer's contract is about *which machine* a prompt or a stop goes to,
@@ -364,21 +365,21 @@ it("stops a run in flight instead of sending", async () => {
 });
 
 /**
- * A draft typed during a run does not bring Send back: the host refuses a second
- * prompt while it is answering the first ("This session is still running; wait
- * for it to finish or abort it first"), so a press could only produce an error
- * over a message the reader meant to send. The draft waits in the field, Stop
- * stays reachable, and Send returns when the run settles — the local composer's
- * rule and the phone's.
+ * A draft typed during a run used to wait in the field, because the host refuses
+ * a second prompt while it is answering the first ("This session is still
+ * running; wait for it to finish or abort it first"). It now has somewhere to
+ * go: the send button asks whether to hold the draft in this conversation's send
+ * queue or to interrupt the run and send it now (see `lib/sendQueue`). Enter asks
+ * the same question, and the draft is never taken without a choice.
  */
-it("keeps Send away while a run is in flight, however much is drafted", async () => {
+it("asks what a send means while a run is in flight, however much is drafted", async () => {
   const view = await mount({ streaming: true });
   await view.type("a follow-up");
 
   expect(view.button("Send")).toBeUndefined();
-  const stop = view.button("Stop");
-  expect(stop).toBeTruthy();
-  expect(stop!.disabled).toBe(false);
+  // With a draft, Stop is no longer the only control in this slot.
+  expect(view.button("Stop")).toBeUndefined();
+  expect(view.button("Choose what to do with this message")).toBeTruthy();
 
   // Enter takes the same route as the button, and the draft survives it.
   await view.press("Enter");
@@ -386,8 +387,9 @@ it("keeps Send away while a run is in flight, however much is drafted", async ()
   expect(prompt).not.toHaveBeenCalled();
   expect(view.input.value).toBe("a follow-up");
 
-  // The run ends: what was typed meanwhile is still there, and now it can go.
+  // The run ends: the question is gone, and the draft can go as it always did.
   await view.rerender({ streaming: false });
+  expect(view.button("Choose what to do with this message")).toBeUndefined();
   expect(view.button("Stop")).toBeUndefined();
   expect(view.button("Send")!.disabled).toBe(false);
   await act(async () => view.button("Send")!.click());
@@ -1579,4 +1581,90 @@ it("leaves compact out of the `/` menu while another device holds the machine", 
   await settle();
   expect(onCompact).not.toHaveBeenCalled();
   await view.unmount();
+});
+
+describe("the send queue", () => {
+  const queueKey = "desktop_a:sess_1";
+  /** A menu row, whose label is a title plus a hint inside one button. */
+  const menuRow = (view: { container: HTMLElement }, text: string) =>
+    [...view.container.querySelectorAll("button")].find(node => node.textContent?.includes(text));
+
+  beforeEach(() => {
+    remoteSendQueue.clear(queueKey);
+  });
+
+  it("asks what a send means while that host is answering, and flushes when it settles", async () => {
+    const view = await mount({ streaming: true });
+    await view.type("and then this");
+    // Stop is not the only control in the slot: with a draft, the button asks.
+    expect(view.button("Stop")).toBeUndefined();
+    const choose = view.button("Choose what to do with this message")!;
+    await act(async () => choose.click());
+    expect(view.text()).toContain("Add to the send queue");
+    expect(view.text()).toContain("Interrupt and send");
+
+    await act(async () => menuRow(view, "Add to the send queue")!.click());
+    await settle();
+    expect(prompt).not.toHaveBeenCalled();
+    expect(abort).not.toHaveBeenCalled();
+    // Handed over: the field gives it up, and the queue shows what is waiting.
+    expect(view.input.value).toBe("");
+    expect(view.container.querySelector("[data-send-queue]")).not.toBeNull();
+
+    // The host's run settles; the queue leaves as one message, by itself.
+    await view.rerender({ streaming: false });
+    await settle();
+    expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "and then this", [], null, { modelId: null, thinkingLevel: null }, expect.any(String));
+    expect(view.onSent).toHaveBeenCalled();
+    expect(view.container.querySelector("[data-send-queue]")).toBeNull();
+    await view.unmount();
+  });
+
+  it("interrupts the run on request, with the draft already queued", async () => {
+    const view = await mount({ streaming: true });
+    await view.type("send this now");
+    await act(async () => view.button("Choose what to do with this message")!.click());
+    await act(async () => menuRow(view, "Interrupt and send")!.click());
+    await settle();
+    expect(abort).toHaveBeenCalledWith("desktop_a", "sess_1");
+    expect(prompt).not.toHaveBeenCalled();
+    expect(remoteSendQueue.snapshot(queueKey).items.map(item => item.content)).toEqual(["send this now"]);
+    await view.unmount();
+  });
+
+  it("stops from an empty field and says the queue goes with it", async () => {
+    remoteSendQueue.enqueue(queueKey, { content: "held while it runs", attachments: [] });
+    const view = await mount({ streaming: true });
+    const stop = view.button("Stop and send the queued messages")!;
+    expect(stop).toBeDefined();
+    await act(async () => stop.click());
+    await settle();
+    expect(abort).toHaveBeenCalledTimes(1);
+    // The flush waits for the host to report the run over.
+    expect(prompt).not.toHaveBeenCalled();
+    await view.rerender({ streaming: false });
+    await settle();
+    expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "held while it runs", [], null, { modelId: null, thinkingLevel: null }, expect.any(String));
+    await view.unmount();
+  });
+
+  it("keeps a refused queue visible and retries it only when asked", async () => {
+    prompt.mockRejectedValueOnce(new Error("session_busy"));
+    remoteSendQueue.enqueue(queueKey, { content: "try me", attachments: [] });
+    const view = await mount({ streaming: false });
+    await settle();
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(view.container.querySelector("[data-send-queue]")).not.toBeNull();
+    const retry = view.container.querySelector<HTMLButtonElement>("[data-queue-retry]");
+    expect(retry).not.toBeNull();
+    // No retry from a re-render: that would hammer a host that keeps refusing.
+    await view.rerender({ streaming: false });
+    await settle();
+    expect(prompt).toHaveBeenCalledTimes(1);
+    await act(async () => retry!.click());
+    await settle();
+    expect(prompt).toHaveBeenCalledTimes(2);
+    expect(view.container.querySelector("[data-send-queue]")).toBeNull();
+    await view.unmount();
+  });
 });

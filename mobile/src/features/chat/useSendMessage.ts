@@ -25,7 +25,7 @@ export interface SendMessageApi {
   forkMessage: (item: TimelineItem) => void;
 }
 
-type FailureText = { key: string; params?: Record<string, unknown> };
+export type FailureText = { key: string; params?: Record<string, unknown> };
 
 /**
  * Say what actually happened instead of one catch-all sentence.
@@ -35,8 +35,10 @@ type FailureText = { key: string; params?: Record<string, unknown> };
  * a reply that can no longer be continued, and a genuine send fault — so the
  * only thing a reader could do with it was guess. Everything the clients can
  * recognize gets its own line now; the unknown remainder keeps the old one.
+ * The send queue and a failed manual send both report through this, so the
+ * wording of "the desktop is busy" is one sentence rather than two.
  */
-function sendFailureText(error: unknown, holder: string | undefined): FailureText {
+export function sendFailureText(error: unknown, holder: string | undefined): FailureText {
   const code = error instanceof Error ? error.message : "";
   // `superseded` is the desktop refusing because another device holds it. The
   // composer's own notice says so while the pointer already reads standby; this

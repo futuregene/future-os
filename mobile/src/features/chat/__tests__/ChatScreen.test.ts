@@ -20,6 +20,7 @@ import type { TimelineCardProps } from "../messages/types";
 import { FloatingTimelineButton } from "../components/FloatingTimelineButton";
 import type { TimelineSyncStatus } from "@future-os/remote-client/syncEngine";
 import type { RemoteSession, RemoteSessionUsage, RemoteWorkspace, TimelineItem } from "../../../remote/types";
+import { sendQueue } from "../sendQueue";
 
 const mockRemote = {
   credentials: { expectedDesktopId: "desktop" },
@@ -80,6 +81,8 @@ const mockRemote = {
   connectionPresentation: { level: "connected" },
   presence: null as { control?: string; holder?: { name?: string } | null } | null,
   takeControl: jest.fn(async () => {}),
+  // The send queue's flush delivers through this, as `useSendMessage` does.
+  sendMessage: jest.fn<Promise<void>, [string, unknown[]?]>(async () => {}),
 };
 jest.mock("../../../remote/RemoteContext", () => ({
   useRemote: () => mockRemote,
@@ -107,10 +110,18 @@ jest.mock("../../../components/ErrorBanner", () => ({
 // the hooks are read at render time, after this module has initialised.
 // `setMessage` mirrors the real hook's contract (it writes the draft back) so a
 // test can tell a composed send from one that only stored the text.
-const mockDraft: { message: string; attachments: unknown[]; setMessage: jest.Mock } = {
+const mockDraft: {
+  message: string;
+  attachments: unknown[];
+  setMessage: jest.Mock;
+  setAttachments: jest.Mock;
+  sessionRefs: Record<string, unknown>;
+} = {
   message: "",
   attachments: [],
   setMessage: jest.fn(),
+  setAttachments: jest.fn(),
+  sessionRefs: {},
 };
 jest.mock("../useComposerDraft", () => ({
   useComposerDraft: () => mockDraft,
@@ -149,10 +160,15 @@ const mockSendApi: { send: jest.Mock; retryMessage: jest.Mock; continueMessage: 
 };
 // The send/retry pair the timeline rows drive. `send` is asserted directly;
 // the two others exist so the row wiring has a real controller to reach.
-jest.mock("../useSendMessage", () => ({ useSendMessage: (options: typeof mockSendOptions.current) => {
-  mockSendOptions.current = options;
-  return mockSendApi;
-} }));
+jest.mock("../useSendMessage", () => ({
+  // The queue's failed flush reports through the same wording a manual send
+  // uses; the mapping itself is covered by `useSendMessage.test.ts`.
+  sendFailureText: () => ({ key: "chat.sendFailed" }),
+  useSendMessage: (options: typeof mockSendOptions.current) => {
+    mockSendOptions.current = options;
+    return mockSendApi;
+  },
+}));
 const mockSkillReco: {
   suggestion: PendingSuggestion | null;
   evaluating: boolean;
@@ -222,6 +238,7 @@ beforeEach(() => {
   mockRemote.sessions = [];
   mockRemote.workspaces = [];
   mockRemote.sessionUsage = null;
+  mockRemote.sendMessage.mockReset().mockResolvedValue(undefined);
   mockRemote.loadOlderTimeline.mockReset().mockResolvedValue([]);
   mockDraft.message = "";
   mockDraft.attachments = [];
@@ -1153,4 +1170,77 @@ test("the image viewer is the last surface, and its dismissal leaves the convers
   expect(typeof viewer().props.onClose).toBe("function");
   act(() => viewer().props.onClose());
   expect(viewer().props.target).toBeNull();
+});
+
+test("a queued message leaves as one message once the desktop reports the run over", async () => {
+  const key = "desktop:history";
+  sendQueue.clear(key);
+  mockRemote.streaming = true;
+  act(() => tree.update(createElement(ChatScreen)));
+  act(() => {
+    sendQueue.enqueue(key, { attachments: [], content: "queued one" });
+    sendQueue.enqueue(key, { attachments: [], content: "queued two" });
+  });
+  act(() => tree.update(createElement(ChatScreen)));
+  expect(mockRemote.sendMessage).not.toHaveBeenCalled();
+  expect(tree.root.findByType(ComposerDock).props.queueItems.map((item: { content: string }) => item.content))
+    .toEqual(["queued one", "queued two"]);
+
+  // The desktop owns the truth: not streaming is what makes the conversation
+  // free, and only then does the queue leave.
+  mockRemote.streaming = false;
+  await act(async () => {
+    tree.update(createElement(ChatScreen));
+  });
+  expect(mockRemote.sendMessage).toHaveBeenCalledWith("queued one\n\nqueued two", []);
+  expect(sendQueue.snapshot(key).items).toEqual([]);
+  expect(tree.root.findByType(ComposerDock).props.queueItems).toEqual([]);
+});
+
+test("a refused queue stays on screen, flagged, and retries only when asked", async () => {
+  const key = "desktop:history";
+  sendQueue.clear(key);
+  mockRemote.sendMessage.mockRejectedValueOnce(new Error("session_busy"));
+  act(() => {
+    sendQueue.enqueue(key, { attachments: [], content: "keep me" });
+  });
+  await act(async () => {
+    tree.update(createElement(ChatScreen));
+  });
+  expect(mockRemote.sendMessage).toHaveBeenCalledTimes(1);
+  const dock = () => tree.root.findByType(ComposerDock).props;
+  expect(dock().queueItems.map((item: { content: string }) => item.content)).toEqual(["keep me"]);
+  expect(dock().queueFailed).toBe(true);
+
+  // A re-render must not retry by itself.
+  await act(async () => {
+    tree.update(createElement(ChatScreen));
+  });
+  expect(mockRemote.sendMessage).toHaveBeenCalledTimes(1);
+
+  await act(async () => {
+    dock().onQueueRetry();
+  });
+  expect(mockRemote.sendMessage).toHaveBeenCalledTimes(2);
+  expect(sendQueue.snapshot(key).items).toEqual([]);
+});
+
+test("the dock's enqueue stores the draft against this conversation and clears the box", () => {
+  const key = "desktop:history";
+  sendQueue.clear(key);
+  // A send while the desktop answers is where the queue comes from; an idle
+  // conversation would send it straight away instead.
+  mockRemote.streaming = true;
+  mockDraft.message = "  hold this  ";
+  act(() => tree.update(createElement(ChatScreen)));
+  const dock = () => tree.root.findByType(ComposerDock).props;
+  let queued = false;
+  act(() => {
+    queued = dock().enqueueDraft();
+  });
+  expect(queued).toBe(true);
+  expect(sendQueue.snapshot(key).items.map(item => item.content)).toEqual(["hold this"]);
+  expect(dock().queueItems.map((item: { content: string }) => item.content)).toEqual(["hold this"]);
+  expect(mockDraft.setMessage).toHaveBeenCalledWith("");
+  act(() => sendQueue.clear(key));
 });
