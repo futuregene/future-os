@@ -185,6 +185,35 @@ describe("native history transfer", () => {
     }
   });
 
+  it("records how long a newest page waited, and stays quiet on a short read", async () => {
+    vi.useFakeTimers();
+    const log = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const slots = holdSlots();
+      await vi.advanceTimersByTimeAsync(1);
+      const page = { entries: [], hasMore: false, nextOffset: 0 };
+      const read = readHistoryTransfer({ before: null }, () => true, TAIL_WAIT_MS);
+      await vi.advanceTimersByTimeAsync(9_000);
+      snapshot(new TextEncoder().encode(JSON.stringify(page)));
+      const finished = slots.finish();
+      await vi.advanceTimersByTimeAsync(10);
+      await finished;
+      await expect(read).resolves.toEqual(page);
+      // The longer window must leave evidence: a 15 s spin with no trace cannot
+      // answer "how long did it wait".
+      expect(log).toHaveBeenCalledOnce();
+      expect(log.mock.calls[0]![0]).toMatch(/^\[history\] blocking load waited≈\d+s$/);
+      // An older page is opportunistic: it never reaches the short window here.
+      log.mockClear();
+      await expect(readHistoryTransfer({ before: 42 })).resolves.toEqual(page);
+      expect(log).not.toHaveBeenCalled();
+    }
+    finally {
+      log.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("refuses a waiter that was cancelled while it queued", async () => {
     vi.useFakeTimers();
     try {
