@@ -179,8 +179,12 @@ supervisor（运行 `/future-goal` 技能的编排 agent）与其 worker 通过�
   supervisor 已行动；旧通知只触发当前状态核对。`supervisor events` 展示待送状态和控制/
   合批回执。
 
-- **基础设施停止 + 死 worker：** 在到达回合边界写回之前退出的 worker（gRPC 传输丢失、
-  不完整重试预算耗尽）也会上报一条 `infra_stopped` 备注。
+- **基础设施停止 + 死 worker：** 传输层丢失（agent 宿主重启、事件流被 reset）不再让
+  worker 退出：这一回合记成基础设施失败（花费、失败原因都入账，不消耗修复预算），循环继续
+  重试。同一个 todo 上连续三次传输失败才停 run，并上报 `infra_stopped`
+  （`transport_budget`）；不完整重试预算耗尽同理。此前这类回合根本到不了写回：worker
+  在任务中途死掉，回合在台账里没有记录，supervisor 只能重新派一个（实测：一个 goal 有 31
+  次启动是这样凭空消失的）。
   直接死掉的 worker 不执行代码。detached run / supervisor 注册启动的独立 watchdog
   即使在最后一个 worker 死亡后也会检查死租约，且会提醒超过五分钟未验证的交付，
   不依赖新的付费回合。`scheduler tick` 保留为补充。宿主重启后重新注册，或用系统服务
