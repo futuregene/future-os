@@ -1037,3 +1037,260 @@ fn goal_client_fences_commands_and_streams_after_instance_change() {
         assert!(state.attach_after_idx.is_empty());
     });
 }
+
+// ── attach race: a run that does not own the stream yet ────────────────────
+//
+// `prompt` answers with a run id while the previous run is still finalizing, so
+// the run is queued and the atomic attach is refused with
+// `FailedPrecondition: run … is not the active run`. Before this, that refusal
+// killed the turn (and with it the worker) on the spot — measured in one goal:
+// five launches died instantly, every one of them a `--resume-session` that
+// landed on a session whose previous run had just completed.
+
+#[test]
+fn attach_refused_while_queued_waits_and_then_consumes_the_run() {
+    rt().block_on(async {
+        let (addr, shared) = spawn_mock(MockState {
+            events: completed_events("mock-run-1"),
+            stream_attach_plan: vec![AttachPlan::RefuseNotActive(2)],
+            run_states: vec![serde_json::json!({
+                "queuedRuns": [{"runId": "mock-run-1"}],
+            })],
+            ..Default::default()
+        })
+        .await;
+        let mut client = AgentClient::connect(&addr).await.unwrap();
+        let summary = client
+            .run_turn("sess", "mock-run-1", None, None)
+            .await
+            .expect("a queued run must be waited for, not failed");
+        assert_eq!(summary.terminal_state, "completed");
+        assert_eq!(summary.tools, vec!["shell".to_string()]);
+        // Two refusals, then the real attach.
+        assert_eq!(shared.lock().unwrap().attach_after_idx.len(), 3);
+    });
+}
+
+#[test]
+fn attach_refused_for_a_finished_run_adopts_the_agents_verdict() {
+    rt().block_on(async {
+        let (addr, _) = spawn_mock(MockState {
+            stream_attach_plan: vec![AttachPlan::RefuseNotActive(1)],
+            run_states: vec![serde_json::json!({
+                "requestedRun": {
+                    "runId": "mock-run-1",
+                    "status": "completed",
+                    "durationMs": 42,
+                    "usage": {"output_tokens": 5},
+                },
+            })],
+            ..Default::default()
+        })
+        .await;
+        let mut client = AgentClient::connect(&addr).await.unwrap();
+        let summary = client
+            .run_turn("sess", "mock-run-1", None, None)
+            .await
+            .expect("a run that already finished is a result, not a failure");
+        assert_eq!(summary.terminal_state, "completed");
+        assert_eq!(summary.duration_ms, Some(42));
+        assert!(summary.usage.is_some());
+    });
+}
+
+#[test]
+fn attach_refused_for_a_cancelled_run_reports_its_error_without_dying() {
+    rt().block_on(async {
+        let (addr, _) = spawn_mock(MockState {
+            stream_attach_plan: vec![AttachPlan::RefuseNotActive(1)],
+            run_states: vec![serde_json::json!({
+                "requestedRun": {
+                    "runId": "mock-run-1",
+                    "status": "cancelled",
+                    "error": "Terminated by user after the run task exited.",
+                },
+            })],
+            ..Default::default()
+        })
+        .await;
+        let mut client = AgentClient::connect(&addr).await.unwrap();
+        let summary = client
+            .run_turn("sess", "mock-run-1", None, None)
+            .await
+            .unwrap();
+        // The agent's own verdict, mapped to the goal plane's vocabulary.
+        assert_eq!(summary.terminal_state, "error");
+        assert_eq!(
+            summary.error.as_deref(),
+            Some("Terminated by user after the run task exited.")
+        );
+    });
+}
+
+#[test]
+fn attach_refused_for_an_unknown_run_fails_with_the_attach_reason() {
+    rt().block_on(async {
+        let (addr, _) = spawn_mock(MockState {
+            stream_attach_plan: vec![AttachPlan::RefuseNotActive(1)],
+            run_states: vec![serde_json::json!({})],
+            ..Default::default()
+        })
+        .await;
+        let mut client = AgentClient::connect(&addr).await.unwrap();
+        let error = client
+            .run_turn("sess", "mock-run-1", None, None)
+            .await
+            .expect_err("an unknown run id cannot be resumed");
+        let text = format!("{error:#}");
+        assert!(text.contains("is not the active run"), "{text}");
+        assert!(text.contains("does not know this run id"), "{text}");
+    });
+}
+
+#[test]
+fn attach_refused_for_an_interrupted_run_names_the_restart() {
+    rt().block_on(async {
+        let (addr, _) = spawn_mock(MockState {
+            stream_attach_plan: vec![AttachPlan::RefuseNotActive(1)],
+            run_states: vec![serde_json::json!({
+                "interruptedRun": {
+                    "runId": "mock-run-1",
+                    "error": "Agent restarted before completion.",
+                },
+            })],
+            ..Default::default()
+        })
+        .await;
+        let mut client = AgentClient::connect(&addr).await.unwrap();
+        let error = client
+            .run_turn("sess", "mock-run-1", None, None)
+            .await
+            .expect_err("a run killed by an agent restart has no result");
+        let text = format!("{error:#}");
+        assert!(text.contains("interrupted by an agent restart"), "{text}");
+        // …and the goal plane must treat that as infrastructure, not as a
+        // verdict on the work (no repair budget, no supervisor page).
+        assert!(future_goal::executor::is_transport_error(Some(&text)));
+    });
+}
+
+#[test]
+fn parse_run_status_reads_both_spellings() {
+    use future_goal::agent_client::{parse_run_status, RunStatus};
+    let camel = serde_json::json!({
+        "activeRun": {"runId": "r1"},
+        "queuedRuns": [{"runId": "r2"}],
+        "requestedRun": {"runId": "r3", "status": "failed", "error": "boom"},
+        "interruptedRun": {"runId": "r4", "error": "restart"},
+    });
+    assert_eq!(parse_run_status(&camel, "r1"), RunStatus::Active);
+    assert_eq!(parse_run_status(&camel, "r2"), RunStatus::Queued);
+    assert_eq!(
+        parse_run_status(&camel, "r3"),
+        RunStatus::Terminal {
+            state: "failed".into(),
+            error: Some("boom".into()),
+            usage: None,
+            duration_ms: None,
+        }
+    );
+    assert_eq!(
+        parse_run_status(&camel, "r4"),
+        RunStatus::Interrupted {
+            error: Some("restart".into())
+        }
+    );
+    assert_eq!(parse_run_status(&camel, "absent"), RunStatus::Unknown);
+    // The JSON fallback used snake_case; a client that reads only one spelling
+    // silently sees `null` (the retired-usage-key bug).
+    let snake = serde_json::json!({
+        "active_run": {"run_id": "s1"},
+        "queued_runs": [{"run_id": "s2"}],
+        "requested_run": {"run_id": "s3", "status": "completed", "duration_ms": 9},
+    });
+    assert_eq!(parse_run_status(&snake, "s1"), RunStatus::Active);
+    assert_eq!(parse_run_status(&snake, "s2"), RunStatus::Queued);
+    assert_eq!(
+        parse_run_status(&snake, "s3"),
+        RunStatus::Terminal {
+            state: "completed".into(),
+            error: None,
+            usage: None,
+            duration_ms: Some(9),
+        }
+    );
+    // An empty payload is never "completed".
+    assert_eq!(
+        parse_run_status(&serde_json::json!({}), "r1"),
+        RunStatus::Unknown
+    );
+}
+
+#[test]
+fn transport_failure_turn_is_recorded_instead_of_killing_the_worker() {
+    rt().block_on(async {
+        // The stream dies with a non-gap error before any agent_end: the shape
+        // of an agent host that went away mid-turn.
+        let (addr, _) = spawn_mock(MockState {
+            stream_attach_plan: vec![AttachPlan::HardErrorAfter(0)],
+            ..Default::default()
+        })
+        .await;
+        let mut client = AgentClient::connect(&addr).await.unwrap();
+        let (goal, todo) = sample_goal_with_todo();
+        let record = execute_turn(
+            &mut client,
+            "sess",
+            &goal,
+            None,
+            &todo,
+            1,
+            None,
+            true,
+            None,
+            None,
+            None,
+            &WorkerConfig::default(),
+        )
+        .await
+        .expect("a dead stream must still produce a turn record");
+        assert_eq!(record.terminal_state, "error");
+        let error = record.error.as_deref().unwrap_or_default();
+        assert!(error.contains("mock hard failure"), "{error}");
+        assert!(!turn_succeeded(&record));
+    });
+}
+
+#[test]
+fn transport_failure_streak_counts_only_trailing_transport_errors() {
+    use future_goal::executor::transport_failure_streak;
+    let mut record = sample_record("error");
+    record.todo_id = "todo_x".into();
+    record.error = Some("stream error: h2 protocol error: error reading a body".into());
+    let transport = record.clone();
+    let mut science = record.clone();
+    science.error = Some("validator failed: 3 assertions".into());
+    let mut completed = record.clone();
+    completed.terminal_state = "completed".into();
+    completed.error = None;
+
+    assert_eq!(transport_failure_streak(&[], "todo_x"), 0);
+    assert_eq!(
+        transport_failure_streak(std::slice::from_ref(&transport), "todo_x"),
+        1
+    );
+    assert_eq!(
+        transport_failure_streak(&[transport.clone(), transport.clone()], "todo_x"),
+        2
+    );
+    // A science failure, a success, or another todo breaks the streak.
+    assert_eq!(
+        transport_failure_streak(&[transport.clone(), science], "todo_x"),
+        0
+    );
+    assert_eq!(
+        transport_failure_streak(&[transport.clone(), completed], "todo_x"),
+        0
+    );
+    assert_eq!(transport_failure_streak(&[transport], "todo_other"), 0);
+}

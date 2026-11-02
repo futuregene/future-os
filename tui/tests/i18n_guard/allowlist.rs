@@ -65,6 +65,26 @@ impl Allow {
 /// The exemptions. One row per literal; a row that no longer matches anything
 /// fails the test, so a stale entry cannot hide a gap that was already closed.
 pub const ALLOW: &[Allow] = &[
+    Allow::not_chrome(
+        "workbench/fusion.rs",
+        "DeepSeek Flash",
+        "the configured model's proper name, identical across client languages",
+    ),
+    Allow::not_chrome(
+        "workbench/fusion.rs",
+        "GLM 5.3 Flash",
+        "the configured model's proper name, identical across client languages",
+    ),
+    Allow::not_chrome(
+        "workbench/fusion.rs",
+        "Qwen 3.7 Plus",
+        "the configured model's proper name, identical across client languages",
+    ),
+    Allow::not_chrome(
+        "workbench/fusion.rs",
+        "timed out",
+        "matches stored executor errors; the displayed status uses the bilingual table",
+    ),
     // A theme's name is a proper noun: `One Dark` is not "一个深色" to a Chinese
     // reader, and the desktop does not translate it either.
     Allow::not_chrome(
@@ -360,4 +380,6 @@ pub const FILES: &[FileExempt] = &[FileExempt {
 /// are git's own diff format, read and never written: the row on screen is the
 /// line git printed, so a Chinese reader seeing `new file mode` is seeing their
 /// repository, not the surface failing to translate itself.
-pub const BUDGET: usize = 51;
+/// 51 → 55: Fusion's three configured model proper names and one comparison
+/// against an executor timeout error; every phase and status uses the table.
+pub const BUDGET: usize = 55;

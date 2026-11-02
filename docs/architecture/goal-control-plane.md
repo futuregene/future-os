@@ -210,9 +210,15 @@ channel. Both directions ride the same event-sourced state:
   notifications. `supervisor events` includes delivery pending state and
   control/batch receipts.
 
-- **Infra stops + dead workers:** a worker that exits before reaching a
-  turn-boundary writeback (gRPC transport loss, incomplete-retry budget
-  exhaustion) also reports an `infra_stopped` note.
+- **Infra stops + dead workers:** a transport loss (the agent host restarted,
+  the event stream reset) no longer ends the worker: the turn is recorded as an
+  infra failure — spend kept, failure reason kept, no repair budget charged — and
+  the loop retries. Three consecutive transport failures on the same todo stop
+  the run with an `infra_stopped` note (`transport_budget`), as does an
+  incomplete-retry budget exhaustion. Before this, those turns never reached a
+  writeback: the worker died mid-task, the turn left no ledger record at all,
+  and the supervisor had to relaunch it (measured: 31 launches of one goal
+  vanished this way).
   A worker that dies outright (SIGKILL / crash / host failure) executes no
   code. The independent watchdog started by detached run/registration detects
   dead lease holders even when the last worker dies. It also flags verification

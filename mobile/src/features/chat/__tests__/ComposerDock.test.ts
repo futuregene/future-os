@@ -35,7 +35,13 @@ jest.mock("react-i18next", () => ({
 jest.mock("react-native-safe-area-context", () =>
   jest.requireActual("react-native-safe-area-context/jest/mock").default);
 jest.mock("../messages/PendingApprovalCard", () => ({ PendingApprovalCard: jest.fn(() => null) }));
-jest.mock("../../../remote/RemoteContext", () => ({ useRemote: jest.fn() }));
+const mockRemoteControls = {
+  capabilities: new Set<string>(), desktopReadable: false, desktopSettingsRevision: 0,
+  getFusionSettings: jest.fn(),
+};
+jest.mock("../../../remote/RemoteContext", () => ({
+  useRemote: jest.fn(), useRemoteControls: () => mockRemoteControls,
+}));
 jest.mock("../../../remote/files", () => ({ deleteTemporaryAttachment: jest.fn() }));
 // The picker itself is replaced, but its sizing helpers are the real ones: the
 // composer's height budget is what's under test here.

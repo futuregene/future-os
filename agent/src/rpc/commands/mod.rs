@@ -63,6 +63,24 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         return RpcResponse::build_fail(id, cmd_type, &format!("unknown command: {cmd_type}"));
     }
 
+    if matches!(
+        cmd_type.as_str(),
+        "get_fusion_status" | "get_fusion" | "get_fusion_settings" | "update_fusion_settings"
+    ) {
+        let result = if cmd_type == "get_fusion_settings" {
+            crate::fusion::query_settings()
+        } else if cmd_type == "update_fusion_settings" {
+            crate::fusion::update_settings(state, &cmd.fusion_settings_json)
+        } else if cmd_type == "get_fusion_status" {
+            crate::fusion::query_status(state)
+        } else {
+            crate::fusion::query_discussion(state, &cmd)
+        };
+        return match result {
+            Ok(data) => RpcResponse::ok(id, cmd_type, data),
+            Err(error) => RpcResponse::build_fail(id, cmd_type, &format!("{error:#}")),
+        };
+    }
     if cmd_type == "get_agent_info" {
         return providers::get_agent_info_response(state, id);
     }

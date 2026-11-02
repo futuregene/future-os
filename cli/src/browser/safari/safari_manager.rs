@@ -472,12 +472,23 @@ mod tests {
 
     /// Kill a spawned child on drop (macOS/Linux `kill`). Prevents the fake
     /// driver scripts these launch tests spawn from leaking as orphans.
+    ///
+    /// Never pid 0: `kill 0` signals **the whole process group**, and in a test
+    /// run that group is the shell that ran `cargo test`, cargo itself and every
+    /// other process in it — measured on macOS 2026-11-02, where this binary's
+    /// pgid is the shell's. `safari_start` reports `driver_pid` from
+    /// `child.id().unwrap_or(0)`, so a child whose id had already been reaped
+    /// would arrive here as 0 and turn a leak-cleanup into a kill of the entire
+    /// run. That path is not reachable today (`id()` is `Some` straight after
+    /// the spawn, and 20 of 20 in-tree kills recorded in
+    /// `coverage/flaky/rust/f4/` carried a live child pid), which is exactly why
+    /// the guard belongs in the cleanup instead of being inferred from it.
     #[cfg(unix)]
     struct KillChild(Option<i64>);
     #[cfg(unix)]
     impl Drop for KillChild {
         fn drop(&mut self) {
-            if let Some(pid) = self.0 {
+            if let Some(pid) = self.0.filter(|pid| *pid > 1) {
                 let _ = std::process::Command::new("kill")
                     .arg(pid.to_string())
                     .status();

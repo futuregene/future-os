@@ -3,7 +3,7 @@
 [中文](data-backup.zh-CN.md)
 
 `future data` is the offline, coordinated backup and recovery path for a local
-FutureOS home. It copies both SQLite databases and the managed file trees that
+FutureOS home. It copies the Agent/Desktop SQLite databases and optional Fusion database and the managed file trees that
 carry conversations, attachments, review repositories and Agent credentials,
 verifies every copied byte with SHA-256, and can put that set back at the same
 path. It is not a live backup: it refuses to run while a Desktop backend or an
@@ -41,6 +41,7 @@ collects; anything outside them is simply not in the backup.
 | --- | --- |
 | `agent/agent.db` | Agent store: sessions, runs, events, skill inventory (SQLite snapshot). |
 | `app/app.db` | Desktop store: workspaces, threads, runs, approvals (SQLite snapshot). |
+| `fusion/fusion.db`, `fusion/snapshots` | Consultation metadata (SQLite snapshot) and immutable file evidence. Full child transcripts are in `agent/agent.db`. |
 | `app/images` | Per-thread image tree (`thumb/`, `origin/`). |
 | `app/review` | Per-workspace shadow git review repositories. |
 | `workspaces/chat` | Per-thread chat workspaces. |
@@ -48,10 +49,10 @@ collects; anything outside them is simply not in the backup.
 | `agent/session-backups` | Pre-reset history snapshots written by `future session reset`. |
 | `agent/settings.json`, `agent/models.json`, `agent/auth.json` | Agent configuration, including provider credentials. |
 
-Both databases are copied as standalone snapshots, not as files plus WAL: each
+All present databases are copied as standalone snapshots, not as files plus WAL: each
 is opened read-only and dumped through SQLite's snapshot API while a
 `BEGIN IMMEDIATE` transaction on the live database blocks other writers, so the
-two snapshots and the managed-file inventory cannot straddle a commit. A
+snapshots and the managed-file inventory cannot straddle a commit. A
 database's `-wal`/`-shm` sidecars are never copied and are rejected if they
 appear next to a database inside a backup.
 

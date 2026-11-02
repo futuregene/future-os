@@ -453,7 +453,7 @@ impl Supervisor {
                 // Credentials created before the signed mutual handshake have no
                 // QR-bound peer identity. They cannot be upgraded safely in place.
                 future_remote_protocol::remote_log!("remote: replacing legacy pairing [PA003]");
-                self.forget_slot(&pair_id)?;
+                self.forget_slot(&pair_id, "legacy_handshake")?;
                 continue;
             }
             match self.host.refresh(creds).await {
@@ -464,7 +464,7 @@ impl Supervisor {
                     // and leaving it on disk would make every start retry a
                     // credential that can never succeed.
                     future_remote_protocol::remote_log!("remote: a pairing was revoked [PA001 invalid_remote_credential]; forgetting that device");
-                    self.forget_slot(&pair_id)?;
+                    self.forget_slot(&pair_id, "invalid_remote_credential")?;
                     // Only the first one is kept: one reason names the event, and
                     // a machine whose book held several revoked devices has the
                     // same thing to do about it.
@@ -510,7 +510,18 @@ impl Supervisor {
         Ok(plans)
     }
 
-    pub fn forget_slot(self: &Arc<Self>, pair_id: &str) -> Result<(), crate::Error> {
+    /// Remove one device from the book, and say so.
+    ///
+    /// A removal is the event that turns the remote desktop off from the user's
+    /// side: the switch preference stays on, but a machine with no devices left
+    /// serves nothing, and the UI renders that as off. Measured on this machine
+    /// 2026-11-02: the book went from two devices to one to none overnight, and
+    /// the only trace afterwards was the absence of traffic — the reasons lived
+    /// on two of the four paths that remove a device, none of them named the
+    /// device, and the last removal (the one that empties the book) was silent.
+    /// The book size is part of the line because "how many are left" is what
+    /// distinguishes a device leaving from the machine going dark.
+    pub fn forget_slot(self: &Arc<Self>, pair_id: &str, reason: &str) -> Result<(), crate::Error> {
         // Local disk faults propagate: a credential that cannot be forgotten will
         // be retried on every start, and hiding that behind a log line turns a
         // read-only home directory into a machine that silently never recovers.
@@ -520,6 +531,10 @@ impl Supervisor {
         self.release_control(pair_id);
         self.promote_a_lone_device();
         self.stop_slot(pair_id);
+        let remaining = self.host.load_slots().len();
+        future_remote_protocol::remote_log!(
+            "remote: forgot device pair={pair_id} (reason={reason}); {remaining} device(s) left"
+        );
         Ok(())
     }
 
@@ -881,7 +896,7 @@ impl Supervisor {
                 return Ok(self.empty());
             }
             SlotRecovery::Forget => {
-                self.forget_slot(pair_id)?;
+                self.forget_slot(pair_id, "unupgradable_pairing")?;
                 return Ok(self.empty());
             }
             SlotRecovery::Refresh(creds) => *creds,
@@ -894,7 +909,7 @@ impl Supervisor {
                 future_remote_protocol::remote_log!(
                     "remote: invalid_remote_credential; forgetting that device"
                 );
-                self.forget_slot(pair_id)?;
+                self.forget_slot(pair_id, "invalid_remote_credential")?;
                 return Ok(self.empty());
             }
             Err(error) => return self.start_failure(error),

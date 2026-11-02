@@ -64,6 +64,9 @@ streams the response to stdout, and exits.
 
 Usage:
   future run [options] [@files...] [message...]
+  future run '/fusion <task>'   Enable a thinking-only Fusion tool for this run.
+                                Requires a running FutureOS Host. The main Agent
+                                decides when to consult, then continues the task.
 
 Session options:
   --session <id>           Connect to an existing session by ID
@@ -79,7 +82,9 @@ Session options:
   --no-session             Ephemeral mode: do not persist the session to disk
 
 Model & behavior:
-  --model <id>             Model ID. Only affects this run; subsequent runs use the default.
+  --model <id>             Model ID. Recorded on the session, so later runs on
+                           this session keep it; a one-shot run mints its own
+                           session, so nothing carries over to the next one.
                            Supports model:thinking shorthand, e.g. "sonnet:high" or
                            "sonnet:max".
   --thinking <level>       Thinking/reasoning level: default (send no thinking

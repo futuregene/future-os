@@ -46,6 +46,12 @@ pub const RATE_LIMIT_BACKOFF_SECS: u64 = 45;
 /// progress, so it is bounded.
 pub const DEFAULT_MAX_INCOMPLETE_RETRIES: u32 = 3;
 
+/// Default bound for consecutive transport-failure turns on the same todo
+/// before `future goal run` stops. A transport failure no longer ends the
+/// worker (it is recorded as an infra turn and retried), but an agent that
+/// stays down would otherwise spend the whole turn budget on instant failures.
+pub const DEFAULT_MAX_TRANSPORT_RETRIES: u32 = 3;
+
 /// Whether a turn's error is a recoverable rate-limit (HTTP 429 / overloaded).
 /// These are NOT science failures — they are throttle events — so the loop
 /// must back off, not count them toward a repair budget or replan.
@@ -74,6 +80,12 @@ pub fn is_rate_limit_error(error: Option<&str>) -> bool {
 /// surfaces its own idle / disconnect verdicts as `[UPSTREAM_DISCONNECTED] …`.
 /// None of these are plan problems, so they must not count toward the repair
 /// budget or page the supervisor — same policy as HTTP 429.
+///
+/// The agent host dying counts here too: the run and its stream go with it, and
+/// the goal plane learns `h2 protocol error: error reading a body from
+/// connection`, `Agent restarted before completion`, or the resume refusal
+/// "interrupted by an agent restart". None of that says anything about the
+/// work being done.
 pub fn is_transport_error(error: Option<&str>) -> bool {
     // Lower-cased marker substrings. Deliberately conservative: science
     // failure messages (validator output, proof/derivation errors) never
@@ -90,6 +102,10 @@ pub fn is_transport_error(error: Option<&str>) -> bool {
         "broken pipe",
         "reset by peer",
         "event stream gap",
+        // The agent host itself went away (restart / crash): the run is gone
+        // with it. Same policy — the turn is infra, not a bad plan.
+        "agent restarted",
+        "interrupted by an agent restart",
     ];
     match error {
         None => false,
@@ -223,6 +239,24 @@ pub fn incomplete_streak(history: &[RunRecord], todo_id: &str) -> u32 {
         .iter()
         .rev()
         .take_while(|r| r.todo_id == todo_id && r.terminal_state == "incomplete")
+        .count() as u32
+}
+
+/// Consecutive trailing transport-failure records for `todo_id` (the
+/// just-written record included). A transport failure is a turn that never
+/// reached `agent_end` because the agent host or the stream under it went away;
+/// it is infra, not science, so the worker retries instead of stopping — but a
+/// dead agent would otherwise burn the whole turn budget, so the loop bounds
+/// the streak. Replayed from the ledger, like the incomplete streak.
+pub fn transport_failure_streak(history: &[RunRecord], todo_id: &str) -> u32 {
+    history
+        .iter()
+        .rev()
+        .take_while(|r| {
+            r.todo_id == todo_id
+                && r.terminal_state == "error"
+                && is_transport_error(r.error.as_deref())
+        })
         .count() as u32
 }
 
@@ -369,10 +403,37 @@ pub async fn execute_turn(
             let _ = writeln!(f, "{header}");
         }
     }
-    let summary: RunSummary = client
+    let summary: RunSummary = match client
         .run_turn(session_id, &run_id, live_path.as_deref(), progress)
-        .await?;
-    let after = client.session_totals(session_id).await?;
+        .await
+    {
+        Ok(summary) => summary,
+        // A transport-level ending — the agent host restarted, the h2 stream
+        // reset, the connection closed — is an infrastructure event, not a turn
+        // result: no `agent_end` ever arrived. It must still BECOME a record.
+        // Propagating the error skipped the writeback entirely, so the turn's
+        // spend, its failure reason and the attempt itself vanished from the
+        // ledger, and the worker's whole run loop ended on the spot (measured:
+        // 31 launches of one goal left no run record at all, one todo was
+        // relaunched 48 times). Recording it keeps the spend, lets
+        // `classify_failure` stamp it `InfraRecoverable` (no repair budget), and
+        // lets the loop bound consecutive transport failures instead of dying
+        // on the first one.
+        Err(error) => RunSummary {
+            run_id: run_id.clone(),
+            terminal_state: "error".to_string(),
+            error: Some(format!("{error:#}")),
+            tools: Vec::new(),
+            text: String::new(),
+            usage: None,
+            duration_ms: None,
+            truncation: None,
+        },
+    };
+    // The accounting probe can fail for the same reason the stream did (a dead
+    // or restarting agent). Losing the delta is acceptable; losing the turn is
+    // not, so fall back to "nothing spent" instead of propagating.
+    let after = client.session_totals(session_id).await.unwrap_or(before);
     let terminal_state = summary.terminal_state.clone();
 
     let mut record = RunRecord {

@@ -1097,19 +1097,29 @@ fn run_notifies_supervisor_on_incomplete_budget_exhausted() {
     );
 }
 
-/// A registered supervisor receives a report when the worker dies on a gRPC
-/// transport failure (h2 reset / mid-stream non-gap error). This exit never
-/// reaches a writeback, so without this report the supervisor would be left
-/// polling a worker that already stopped.
+/// A transport failure (h2 reset / mid-stream non-gap error) is an infra event,
+/// not a verdict on the work: the turn is RECORDED and the worker keeps going.
+/// It used to end the whole run on the spot, leaving no run record behind —
+/// measured in one goal: 31 launches vanished from the ledger this way, and the
+/// supervisor had to relaunch a worker that had died mid-task. A *streak* of
+/// them still stops the run (an agent that is gone will not come back by
+/// retrying), and that stop is reported, because a worker that stops mid-task
+/// must not leave the supervisor polling.
 #[test]
-fn run_notifies_supervisor_on_transport_error() {
+fn run_bounds_consecutive_transport_failures_and_reports_the_stop() {
     let cr = cli_root();
     let (_rt, shared) = mock_env(MockState {
-        // A non-DataLoss mid-stream error: no reconnect, the turn fails.
-        stream_attach_plan: vec![AttachPlan::HardErrorAfter(0)],
+        // A non-DataLoss mid-stream error: no reconnect, the turn fails. One
+        // scripted attach per failed turn (the bound is three).
+        stream_attach_plan: vec![
+            AttachPlan::TransportAfter(0),
+            AttachPlan::TransportAfter(0),
+            AttachPlan::TransportAfter(0),
+            AttachPlan::TransportAfter(0),
+        ],
         ..Default::default()
     });
-    let goal = init_goal(&cr, "notify on transport");
+    let goal = init_goal(&cr, "bound transport");
     cli_ok(&[
         "supervisor",
         "register",
@@ -1118,9 +1128,18 @@ fn run_notifies_supervisor_on_transport_error() {
         "--session-id",
         "sup-sess",
     ]);
-    let err = cli_err(&["run", "--goal", &goal, "--anonymous", "--max-turns", "1"]);
-    assert!(err.contains("stream error"), "{err}");
+    cli_ok(&["run", "--goal", &goal, "--anonymous", "--max-turns", "8"]);
     let st = shared.lock().unwrap();
+    let worker_turns = st
+        .prompt_calls
+        .iter()
+        .filter(|call| call.0.as_str() != "sup-sess")
+        .count();
+    assert_eq!(
+        worker_turns, 3,
+        "one recorded turn per transport failure, then the bound stops the run: {:?}",
+        st.prompt_calls
+    );
     let reports: Vec<_> = st
         .prompt_calls
         .iter()
@@ -1130,15 +1149,15 @@ fn run_notifies_supervisor_on_transport_error() {
     assert_eq!(
         reports.len(),
         1,
-        "one transport report: {:?}",
+        "one transport-budget report: {:?}",
         st.prompt_calls
     );
     assert_eq!(reports[0].0 .1, "enqueue_coalescing");
     assert!(
         reports[0]
             .1
-            .contains("stopped before completion (transport)"),
-        "transport stop reported: {}",
+            .contains("stopped before completion (transport_budget)"),
+        "transport-budget stop reported: {}",
         reports[0].1
     );
 }

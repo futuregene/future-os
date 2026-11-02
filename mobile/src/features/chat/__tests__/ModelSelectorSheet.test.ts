@@ -194,7 +194,8 @@ test("the sheet clears the composing keyboard so the lower model rows are reacha
   }
 });
 
-test("the sheet is padded clear of the system navigation area", () => {
+test.each(["model", "thinking"] as const)("the %s sheet is padded clear of the system navigation area", selector => {
+  act(() => tree.update(createElement(ModelSelectorSheet, { ...props, selector })));
   const overlay = tree.root.findAllByType(View).find(node =>
     StyleSheet.flatten(node.props.style)?.justifyContent === "flex-end")!;
   // bottom inset (24) + the layout gutter (16); the left/right gutter is kept.
