@@ -1,165 +1,8 @@
 {
-  "_comment": "The send queue a run in flight fills: a draft turns the send control into a question (hold it in the queue, or interrupt and send), and what is held waits above the box, readable, editable and removable, until the run ends. The desktop runs are the real `remoteStream` fixture; the phone's is the demo conversation reported as mid-run by `?streaming=1`.",
+  "_comment": "The send queue a run in flight fills: a draft turns the send control into a question (hold it in the queue, or interrupt and send), and what is held waits above the box, readable, editable and removable, until the run ends. Every row here was produced by the composer's own menu against a run the harness streams, and every sentence is placeholder text — nothing on these screens comes from a real conversation.",
   "desktop": {
     "send-queue-choice": {
       "note": "A follow-up typed while the host is answering the previous prompt. The slot that was Stop now asks what this send means — `加入发送队列` (sent when the reply ends) or `打断后发送` (stop the reply and send now) — because the host takes one prompt at a time and a press that reached the wire could only come back as a refusal over a message the reader meant to send.",
-      "url": "http://localhost:5299/shot/?lang=zh&remoteStream=1",
-      "steps": [
-        {
-          "wait": 1200
-        },
-        {
-          "wait": 1500
-        },
-        {
-          "wait": 1500
-        },
-        {
-          "tapText": "重画森林图并核对置信区间"
-        },
-        {
-          "wait": 2000
-        },
-        {
-          "tap": "消息"
-        },
-        {
-          "type": "把森林图的置信区间改成 95% 并重画"
-        },
-        {
-          "wait": 250
-        },
-        {
-          "tap": "发送"
-        },
-        {
-          "wait": 700
-        },
-        {
-          "tap": "消息"
-        },
-        {
-          "type": "顺便把图例移到右下角"
-        },
-        {
-          "wait": 300
-        },
-        {
-          "eval": "(() => {\n  const form = document.querySelector('form');\n  if (!form) throw new Error('no composer');\n  const stop = form.querySelector(\"button[aria-label='停止']\");\n  if (stop) throw new Error('a draft during a run still offers only Stop');\n  const choose = form.querySelector(\"button[aria-label='选择如何处理这条消息']\");\n  if (!choose) throw new Error('a draft during a run does not offer the queue choice');\n  const field = form.querySelector('textarea');\n  if (!(field && (field.value || '').includes('图例'))) throw new Error('the draft was lost: ' + (field && field.value));\n  return 'choice offered, draft kept';\n})()"
-        },
-        {
-          "tap": "选择如何处理这条消息"
-        },
-        {
-          "wait": 500
-        },
-        {
-          "eval": "(() => {\n  const rows = [...document.querySelectorAll('button')].map(button => (button.innerText || '').trim());\n  const want = ['加入发送队列', '打断后发送'];\n  const missing = want.filter(text => !rows.some(row => row.startsWith(text)));\n  if (missing.length) throw new Error('the choice is missing a row: ' + JSON.stringify(missing));\n  return 'rows: ' + want.join(' / ');\n})()"
-        },
-        {
-          "shot": "d-send-queue-choice.png"
-        }
-      ]
-    },
-    "send-queue-queued": {
-      "note": "The same run, one message held instead of sent. The row is what the reader is about to send, so the queue sits directly above the box that filled it — numbered, with its attachment count, a pencil and a bin — and the interrupt control says what pressing it will do: stop the reply and send the queue. The row here was put there by the composer's own menu, not by a fixture.",
-      "url": "http://localhost:5299/shot/?lang=zh&remoteStream=1",
-      "steps": [
-        {
-          "wait": 1200
-        },
-        {
-          "wait": 1500
-        },
-        {
-          "wait": 1500
-        },
-        {
-          "tapText": "重画森林图并核对置信区间"
-        },
-        {
-          "wait": 2000
-        },
-        {
-          "tap": "消息"
-        },
-        {
-          "type": "把森林图的置信区间改成 95% 并重画"
-        },
-        {
-          "wait": 250
-        },
-        {
-          "tap": "发送"
-        },
-        {
-          "wait": 700
-        },
-        {
-          "tap": "消息"
-        },
-        {
-          "type": "顺便把图例移到右下角"
-        },
-        {
-          "wait": 300
-        },
-        {
-          "tap": "选择如何处理这条消息"
-        },
-        {
-          "wait": 400
-        },
-        {
-          "tap": "加入发送队列"
-        },
-        {
-          "wait": 350
-        },
-        {
-          "eval": "(() => {\n  const panel = document.querySelector('[data-send-queue]');\n  if (!panel) throw new Error('the queued message is not shown');\n  if (panel.querySelectorAll('[data-queue-item]').length !== 1) throw new Error('the panel does not hold one row');\n  if (!(panel.innerText || '').includes('顺便把图例移到右下角')) throw new Error('the row does not carry the held message');\n  const stop = document.querySelector(\"button[aria-label='停止并发送队列中的消息']\");\n  if (!stop) throw new Error('the interrupt control does not say the queue goes with it');\n  return 'one row, stop-and-send named';\n})()"
-        },
-        {
-          "shot": "d-send-queue-queued.png"
-        }
-      ]
-    },
-    "send-queue-interrupt-merge": {
-      "note": "The other answer to the same question: with one message already held, a second draft is sent by `打断并全部发送`. The reply is interrupted, and what leaves is **one** message — the queued sentence and the drafted one, in order — because a reader who chose to interrupt meant the whole thing, not two prompts racing each other. The transcript here is the host's own: the merged text is the prompt the fixture's next run reports it received.",
-      "url": "http://localhost:5299/shot/?lang=zh&remoteStream=1",
-      "steps": [
-        { "wait": 1200 },
-        { "wait": 1500 },
-        { "wait": 1500 },
-        { "tapText": "重画森林图并核对置信区间" },
-        { "wait": 2000 },
-        { "eval": "document.querySelector('form textarea').focus()" },
-        { "type": "把森林图的置信区间改成 95% 并重画" },
-        { "eval": "document.querySelector(\"button[aria-label='发送']\").click()" },
-        { "wait": 400 },
-        { "eval": "document.querySelector('form textarea').focus()" },
-        { "type": "顺便把图例移到右下角" },
-        { "wait": 150 },
-        { "eval": "document.querySelector(\"button[aria-label='选择如何处理这条消息']\").click()" },
-        { "wait": 250 },
-        { "eval": "(() => { const row = [...document.querySelectorAll('button')].find(button => (button.innerText || '').trim().startsWith('加入发送队列')); if (!row) throw new Error('no queue row'); row.click(); return 'queued'; })()" },
-        { "wait": 250 },
-        { "eval": "document.querySelector('form textarea').focus()" },
-        { "type": "再把图注也改成中文" },
-        { "wait": 150 },
-        { "eval": "document.querySelector(\"button[aria-label='选择如何处理这条消息']\").click()" },
-        { "wait": 250 },
-        { "eval": "(() => { const row = [...document.querySelectorAll('button')].find(button => (button.innerText || '').trim().startsWith('打断并全部发送')); if (!row) throw new Error('no interrupt-all row: ' + [...document.querySelectorAll('button')].map(button => (button.innerText || '').trim().slice(0, 8)).join(' | ')); row.click(); return 'interrupted'; })()" },
-        { "wait": 400 },
-        {
-          "eval": "(async () => {\n  // Poll: the interrupt settles the run, the flush sends the queue, and the\n  // host's next run reports the prompt it received — three hand-offs, none of\n  // which the click itself can wait on.\n  const deadline = Date.now() + 12000;\n  const rows = () => [...document.querySelectorAll('[data-message-id]')];\n  while (Date.now() < deadline) {\n    const merged = rows().filter(row => (row.innerText || '').includes('顺便把图例移到右下角'));\n    if (merged.length > 1) throw new Error('the two drafts left as separate messages');\n    if (merged.length === 1) {\n      const text = merged[0].innerText || '';\n      if (!text.includes('再把图注也改成中文')) throw new Error('the second draft did not travel with the queue: ' + text.slice(0, 160));\n      if (document.querySelector('[data-send-queue]')) throw new Error('the queue outlived the interrupt');\n      return 'one message carried both: ' + text.replace(/\\s+/g, ' ').slice(0, 120);\n    }\n    await new Promise(r => setTimeout(r, 250));\n  }\n  throw new Error('the queue never left the composer');\n})()"
-        },
-        { "wait": 5200 },
-        { "shot": "d-send-queue-interrupt-merge.png" }
-      ]
-    },
-    "send-queue-interrupt-many": {
-      "note": "The case a queue is really for: two sentences already held, a third still in the field, then `打断并全部发送`. One message leaves and it carries all three, in the order they were written — not one prompt per entry. `?slowStream=1` stretches the host's run so the three rounds of typing and choosing fit inside it.",
       "url": "http://localhost:5299/shot/?lang=zh&remoteStream=1&slowStream=1",
       "steps": [
         { "wait": 1200 },
@@ -168,59 +11,83 @@
         { "tapText": "重画森林图并核对置信区间" },
         { "wait": 2000 },
         { "eval": "document.querySelector('form textarea').focus()" },
-        { "type": "把森林图的置信区间改成 95% 并重画" },
-        { "eval": "document.querySelector(\"button[aria-label='发送']\").click()" },
+        { "type": "把表格第一列改成百分比" },
+        { "tap": "发送" },
         {
-          "eval": "(async () => {\n  // The slot only becomes a question once the host reports the run started, and\n  // `?slowStream=1` pushes the first frame out; poll rather than guess, because a\n  // click on a button that is not there yet is a silent no-op.\n  const deadline = Date.now() + 8000;\n  while (Date.now() < deadline) {\n    if (document.querySelector(\"button[aria-label='停止']\")) return 'run started';\n    await new Promise(r => setTimeout(r, 100));\n  }\n  throw new Error('the run never started');\n})()"
+          "eval": "(async () => {\n  const deadline = Date.now() + 8000;\n  while (Date.now() < deadline) {\n    if (document.querySelector(\"button[aria-label='停止']\")) return 'run started';\n    await new Promise(r => setTimeout(r, 100));\n  }\n  throw new Error('the run never started');\n})()"
         },
-        { "wait": 150 },
         { "eval": "document.querySelector('form textarea').focus()" },
-        { "type": "顺便把图例移到右下角" },
-        { "wait": 150 },
-        { "eval": "document.querySelector(\"button[aria-label='选择如何处理这条消息']\").click()" },
-        { "wait": 250 },
-        { "eval": "(() => { const row = [...document.querySelectorAll('button')].find(button => (button.innerText || '').trim().startsWith('加入发送队列')); if (!row) throw new Error('no queue row'); row.click(); return 'queued 1'; })()" },
-        { "wait": 250 },
-        { "eval": "document.querySelector('form textarea').focus()" },
-        { "type": "再把图注也改成中文" },
-        { "wait": 150 },
-        { "eval": "document.querySelector(\"button[aria-label='选择如何处理这条消息']\").click()" },
-        { "wait": 250 },
-        { "eval": "(() => { const row = [...document.querySelectorAll('button')].find(button => (button.innerText || '').trim().startsWith('加入发送队列')); if (!row) throw new Error('no queue row'); row.click(); return 'queued 2'; })()" },
-        { "wait": 250 },
-        { "eval": "document.querySelector('form textarea').focus()" },
-        { "type": "最后把配色换成低饱和" },
-        { "wait": 150 },
-        { "eval": "document.querySelector(\"button[aria-label='选择如何处理这条消息']\").click()" },
-        { "wait": 250 },
-        {
-          "eval": "(() => {\n  const panel = document.querySelector('[data-send-queue]');\n  if (!panel) throw new Error('the queue is not shown');\n  if (panel.querySelectorAll('[data-queue-item]').length !== 2) throw new Error('the panel does not hold the two queued rows');\n  const row = [...document.querySelectorAll('button')].find(button => (button.innerText || '').trim().startsWith('打断并全部发送'));\n  if (!row) throw new Error('no interrupt-all row');\n  row.click();\n  return 'interrupted with two held and one in the field';\n})()"
-        },
+        { "type": "顺便把图注也改成中文" },
+        { "wait": 200 },
+        { "tap": "选择如何处理这条消息" },
         { "wait": 400 },
         {
-          "eval": "(async () => {\n  // One message, three paragraphs: each sentence is found by its own text, and a\n  // second row carrying any of them is a failure — that would mean the queue went\n  // out as more than one prompt.\n  const wanted = ['顺便把图例移到右下角', '再把图注也改成中文', '最后把配色换成低饱和'];\n  const deadline = Date.now() + 15000;\n  const rows = () => [...document.querySelectorAll('[data-message-id]')];\n  while (Date.now() < deadline) {\n    const hits = wanted.map(text => rows().filter(row => (row.innerText || '').includes(text)));\n    if (hits.some(list => list.length > 1)) throw new Error('a queued sentence left as its own message');\n    if (hits.every(list => list.length === 1)) {\n      if (new Set(hits.map(list => list[0])).size !== 1) throw new Error('the three sentences did not travel as one message');\n      const text = hits[0][0].innerText || '';\n      const order = wanted.map(item => text.indexOf(item));\n      if (order.some((at, index) => at < 0 || (index > 0 && at < order[index - 1]))) throw new Error('the sentences left out of order: ' + text.slice(0, 160));\n      if (document.querySelector('[data-send-queue]')) throw new Error('the queue outlived the interrupt');\n      return 'one message, three paragraphs: ' + text.replace(/\\s+/g, ' ').slice(0, 140);\n    }\n    await new Promise(r => setTimeout(r, 250));\n  }\n  throw new Error('the queue never left the composer');\n})()"
+          "eval": "(() => {\n  const rows = [...document.querySelectorAll('button')].map(button => (button.innerText || '').trim());\n  const want = ['加入发送队列', '打断后发送'];\n  const missing = want.filter(text => !rows.some(row => row.startsWith(text)));\n  if (missing.length) throw new Error('the choice is missing a row: ' + JSON.stringify(missing));\n  return 'rows: ' + want.join(' / ');\n})()"
         },
-        { "wait": 5200 },
-        { "shot": "d-send-queue-interrupt-many.png" }
+        { "shot": "d-send-queue-choice.png" }
       ]
     },
-    "send-queue-local-choice": {
-      "note": "This machine's own conversation, answering a prompt it was just given (the harness's `agent_prompt` now writes a streamed reply, see `shot/mock/backend.ts`). A follow-up typed while that reply streams turns the send slot into the same question the host's conversation asks: hold it in the queue, or interrupt and send — so the main window and a paired computer's conversation answer one rule the same way.",
-      "url": "http://localhost:5299/shot/?lang=zh&settings=skillRecommend:false",
+    "send-queue-local-interrupt": {
+      "note": "The interrupt, in the two frames that matter, from one real gesture on this machine's own conversation. `打断并全部发送` is pressed with one sentence held and another in the field: the first frame is the gap before the run is reported over — the reply still finishing, the queue still holding both sentences, nothing handed over yet — and the second is what actually left, one message carrying both in the order they were written, above the stopped reply. Cropped to the composer's column: no rail, no transcript above the turn.",
+      "url": "http://localhost:5299/shot/?lang=zh&thread=th_fig&settings=skillRecommend:false",
       "steps": [
         { "wait": 2500 },
         { "eval": "(() => { const box = document.querySelector('[role=textbox]'); box.focus(); box.textContent = ''; box.dispatchEvent(new Event('input', { bubbles: true })); return 'draft cleared'; })()" },
         { "wait": 300 },
-        { "type": "把森林图的置信区间改成 95% 并重画" },
+        { "type": "把表格第一列改成百分比" },
         { "wait": 300 },
         { "tap": "发送" },
-        { "wait": 700 },
+        {
+          "eval": "(async () => {\n  const deadline = Date.now() + 8000;\n  while (Date.now() < deadline) {\n    if (document.querySelector(\"button[aria-label='停止']\")) return 'run started';\n    await new Promise(r => setTimeout(r, 100));\n  }\n  throw new Error('the run never started');\n})()"
+        },
         { "eval": "document.querySelector('[role=textbox]').focus()" },
+        { "wait": 150 },
+        { "type": "顺便把图注也改成中文" },
         { "wait": 200 },
-        { "type": "顺便把图例移到右下角" },
+        { "tap": "选择如何处理这条消息" },
+        { "wait": 400 },
+        { "tap": "加入发送队列" },
+        { "wait": 300 },
+        { "eval": "document.querySelector('[role=textbox]').focus()" },
+        { "wait": 150 },
+        { "type": "最后把配色换成低对比" },
+        { "wait": 200 },
+        { "tap": "选择如何处理这条消息" },
+        { "wait": 400 },
+        {
+          "eval": "(() => {\n  const panel = document.querySelector('[data-send-queue]');\n  if (!panel) throw new Error('the queue is not shown');\n  if (panel.querySelectorAll('[data-queue-item]').length !== 1) throw new Error('the panel does not hold the held row');\n  const row = [...document.querySelectorAll('button')].find(button => (button.innerText || '').trim().startsWith('打断并全部发送'));\n  if (!row) throw new Error('no interrupt-all row');\n  row.click();\n  return 'interrupted with one held and one in the field';\n})()"
+        },
+        { "wait": 250 },
+        {
+          "eval": "(() => {\n  // The gap between the press and the run being reported over: the queue still\n  // holds both sentences, so nothing has been handed over yet.\n  const panel = document.querySelector('[data-send-queue]');\n  if (!panel) throw new Error('the queue left before the run was reported over');\n  const rows = panel.querySelectorAll('[data-queue-item]').length;\n  if (rows !== 2) throw new Error('the interrupt did not carry the draft into the queue: ' + rows);\n  const text = panel.innerText || '';\n  if (!text.includes('顺便把图注也改成中文') || !text.includes('最后把配色换成低对比')) throw new Error('a held sentence is missing while stopping');\n  return 'stopping, two rows still held';\n})()"
+        },
+        { "shot": "d-send-queue-interrupt-instant.png" },
+        {
+          "eval": "(async () => {\n  const wanted = ['顺便把图注也改成中文', '最后把配色换成低对比'];\n  const deadline = Date.now() + 15000;\n  const rows = () => [...document.querySelectorAll('[data-message-id]')];\n  while (Date.now() < deadline) {\n    const hits = wanted.map(text => rows().filter(row => (row.innerText || '').includes(text)));\n    if (hits.some(list => list.length > 1)) throw new Error('a queued sentence left as its own message');\n    if (hits.every(list => list.length === 1)) {\n      if (new Set(hits.map(list => list[0])).size !== 1) throw new Error('the two sentences did not travel as one message');\n      if (document.querySelector('[data-send-queue]')) throw new Error('the queue outlived the interrupt');\n      return 'one message carried both';\n    }\n    await new Promise(r => setTimeout(r, 200));\n  }\n  throw new Error('the queue never left the composer');\n})()"
+        },
+        { "wait": 600 },
+        { "shot": "d-send-queue-interrupt-merged.png" }
+      ]
+    },
+    "send-queue-local-choice": {
+      "note": "The same slot, before anything is held: a follow-up typed while this machine's conversation answers. The figure conversation carries no approval card, so nothing but the queue and its copy is on screen.",
+      "url": "http://localhost:5299/shot/?lang=zh&thread=th_fig&settings=skillRecommend:false",
+      "steps": [
+        { "wait": 2500 },
+        { "eval": "(() => { const box = document.querySelector('[role=textbox]'); box.focus(); box.textContent = ''; box.dispatchEvent(new Event('input', { bubbles: true })); return 'draft cleared'; })()" },
+        { "wait": 300 },
+        { "type": "把表格第一列改成百分比" },
+        { "wait": 300 },
+        { "tap": "发送" },
+        {
+          "eval": "(async () => {\n  const deadline = Date.now() + 8000;\n  while (Date.now() < deadline) {\n    if (document.querySelector(\"button[aria-label='停止']\")) return 'run started';\n    await new Promise(r => setTimeout(r, 100));\n  }\n  throw new Error('the run never started');\n})()"
+        },
+        { "eval": "document.querySelector('[role=textbox]').focus()" },
+        { "wait": 150 },
+        { "type": "顺便把图注也改成中文" },
         { "wait": 300 },
         {
-          "eval": "(() => {\n  const form = document.querySelector('form');\n  if (!form) throw new Error('no composer');\n  if (form.querySelector(\"button[aria-label='停止']\")) throw new Error('a draft during a run still offers only Stop');\n  if (!form.querySelector(\"button[aria-label='选择如何处理这条消息']\")) throw new Error('a draft during a run does not offer the queue choice');\n  const field = form.querySelector('[role=textbox]');\n  if (!(field && (field.innerText || '').includes('图例'))) throw new Error('the draft was lost');\n  return 'choice offered, draft kept';\n})()"
+          "eval": "(() => {\n  const form = document.querySelector('form');\n  if (!form) throw new Error('no composer');\n  if (form.querySelector(\"button[aria-label='停止']\")) throw new Error('a draft during a run still offers only Stop');\n  if (!form.querySelector(\"button[aria-label='选择如何处理这条消息']\")) throw new Error('a draft during a run does not offer the queue choice');\n  return 'choice offered, draft kept';\n})()"
         },
         { "tap": "选择如何处理这条消息" },
         { "wait": 500 },
@@ -232,25 +99,27 @@
     },
     "send-queue-local-queued": {
       "note": "The same local run, one message held instead of sent: the queue sits above this machine's composer, numbered and iconed exactly as it does over a paired computer's conversation, and the interrupt control says the queue leaves with it.",
-      "url": "http://localhost:5299/shot/?lang=zh&settings=skillRecommend:false",
+      "url": "http://localhost:5299/shot/?lang=zh&thread=th_fig&settings=skillRecommend:false",
       "steps": [
         { "wait": 2500 },
         { "eval": "(() => { const box = document.querySelector('[role=textbox]'); box.focus(); box.textContent = ''; box.dispatchEvent(new Event('input', { bubbles: true })); return 'draft cleared'; })()" },
         { "wait": 300 },
-        { "type": "把森林图的置信区间改成 95% 并重画" },
+        { "type": "把表格第一列改成百分比" },
         { "wait": 300 },
         { "tap": "发送" },
-        { "wait": 700 },
+        {
+          "eval": "(async () => {\n  const deadline = Date.now() + 8000;\n  while (Date.now() < deadline) {\n    if (document.querySelector(\"button[aria-label='停止']\")) return 'run started';\n    await new Promise(r => setTimeout(r, 100));\n  }\n  throw new Error('the run never started');\n})()"
+        },
         { "eval": "document.querySelector('[role=textbox]').focus()" },
-        { "wait": 200 },
-        { "type": "顺便把图例移到右下角" },
+        { "wait": 150 },
+        { "type": "顺便把图注也改成中文" },
         { "wait": 300 },
         { "tap": "选择如何处理这条消息" },
         { "wait": 400 },
         { "tap": "加入发送队列" },
         { "wait": 350 },
         {
-          "eval": "(() => {\n  const panel = document.querySelector('[data-send-queue]');\n  if (!panel) throw new Error('the queued message is not shown');\n  if (panel.querySelectorAll('[data-queue-item]').length !== 1) throw new Error('the panel does not hold one row');\n  if (!(panel.innerText || '').includes('顺便把图例移到右下角')) throw new Error('the row does not carry the held message');\n  if (!document.querySelector(\"button[aria-label='停止并发送队列中的消息']\")) throw new Error('the interrupt control does not say the queue goes with it');\n  return 'one row, stop-and-send named';\n})()"
+          "eval": "(() => {\n  const panel = document.querySelector('[data-send-queue]');\n  if (!panel) throw new Error('the queued message is not shown');\n  if (panel.querySelectorAll('[data-queue-item]').length !== 1) throw new Error('the panel does not hold one row');\n  if (!(panel.innerText || '').includes('顺便把图注也改成中文')) throw new Error('the row does not carry the held message');\n  if (!document.querySelector(\"button[aria-label='停止并发送队列中的消息']\")) throw new Error('the interrupt control does not say the queue goes with it');\n  return 'one row, stop-and-send named';\n})()"
         },
         { "shot": "d-send-queue-local-queued.png" }
       ]
@@ -261,109 +130,33 @@
       "note": "The same question on the phone: a reply is running (`?streaming=1` reports the demo conversation as mid-run) and a follow-up is typed, so the send control opens a sheet instead of refusing the press — hold the message in the queue, or interrupt the run and send it now. The sheet is the phone's own surface: the desktop shows the same two rows in a popover above its send button.",
       "url": "http://localhost:8099/?lang=zh&streaming=1&session=sess_dopamine_review",
       "steps": [
-        {
-          "wait": 1200
-        },
+        { "wait": 1200 },
         {
           "eval": "(async () => { const deadline = Date.now() + 12000; while (Date.now() < deadline) { if (document.querySelector('[aria-label=\"给 FutureOS 发消息\"]')) return 'chat open'; const dismiss = [...document.querySelectorAll('button,[role=button]')].find(button => /以后再说|稍后再说/.test(button.textContent || '')); if (dismiss) { dismiss.click(); } await new Promise(r => setTimeout(r, 300)); } throw new Error('the conversation never opened'); })()"
         },
+        { "wait": 600 },
         {
-          "wait": 600
+          "eval": "(() => {\n  // The phone keeps each conversation's draft across page loads, so a capture that\n  // only adds text inherits what the previous one typed. Clear it first.\n  const box = document.querySelector('[aria-label=\"给 FutureOS 发消息\"]');\n  box.focus();\n  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;\n  setter.call(box, '');\n  box.dispatchEvent(new Event('input', { bubbles: true }));\n  return 'draft cleared';\n})()"
         },
+        { "wait": 300 },
+        { "type": "顺便把图注也改成中文" },
+        { "wait": 500 },
         {
-          "eval": "document.querySelector('[aria-label=\"给 FutureOS 发消息\"]').focus()"
+          "eval": "(() => {\n  const choose = document.querySelector(\"[aria-label='选择如何处理这条消息']\");\n  if (!choose) throw new Error('a draft during a run offers no queue choice');\n  if (document.querySelector(\"[aria-label='停止']\")) throw new Error('a draft during a run still offers only Stop');\n  return 'choice offered';\n})()"
         },
-        {
-          "wait": 400
-        },
-        {
-          "type": "顺便把图例移到右下角"
-        },
-        {
-          "wait": 500
-        },
-        {
-          "eval": "(() => {\n  const choose = document.querySelector(\"[aria-label='选择如何处理这条消息']\");\n  if (!choose) throw new Error('a draft during a run offers no queue choice: ' + [...document.querySelectorAll('[role=button]')].map(b => b.getAttribute('aria-label') || (b.textContent || '').trim().slice(0, 10)).slice(-8).join(' | '));\n  if (document.querySelector(\"[aria-label='停止']\")) throw new Error('a draft during a run still offers only Stop');\n  return 'choice offered';\n})()"
-        },
-        {
-          "eval": "document.querySelector(\"[aria-label='选择如何处理这条消息']\").click()"
-        },
-        {
-          "wait": 700
-        },
+        { "eval": "document.querySelector(\"[aria-label='选择如何处理这条消息']\").click()" },
+        { "wait": 700 },
         {
           "eval": "(() => {\n  const body = document.body.innerText || '';\n  for (const text of ['加入发送队列', '打断后发送', '当前回复结束后自动发送']) {\n    if (!body.includes(text)) throw new Error('the sheet is missing: ' + text);\n  }\n  return 'sheet rows present';\n})()"
         },
         {
           "eval": "(async () => {\n  const button = [...document.querySelectorAll('button,[role=button]')].find(element => /以后再说|稍后再说/.test(element.textContent || ''));\n  if (!button) return 'no update prompt';\n  button.click();\n  await new Promise(r => setTimeout(r, 500));\n  return 'dismissed the update prompt';\n})()"
         },
-        {
-          "shot": "m-send-queue-choice.png"
-        }
+        { "shot": "m-send-queue-choice.png" }
       ]
     },
-    "send-queue-queued": {
-      "note": "One message held while the demo reply runs: the panel above the box, numbered, with the row's pencil and (on the right) the bin — and the same row turned into a field in place, which is how a message is fixed before it leaves. The row came from the sheet's own `加入发送队列`, not from a fixture.",
-      "url": "http://localhost:8099/?lang=zh&streaming=1&session=sess_dopamine_review",
-      "steps": [
-        {
-          "wait": 1200
-        },
-        {
-          "eval": "(async () => { const deadline = Date.now() + 12000; while (Date.now() < deadline) { if (document.querySelector('[aria-label=\"给 FutureOS 发消息\"]')) return 'chat open'; const dismiss = [...document.querySelectorAll('button,[role=button]')].find(button => /以后再说|稍后再说/.test(button.textContent || '')); if (dismiss) { dismiss.click(); } await new Promise(r => setTimeout(r, 300)); } throw new Error('the conversation never opened'); })()"
-        },
-        {
-          "wait": 600
-        },
-        {
-          "eval": "document.querySelector('[aria-label=\"给 FutureOS 发消息\"]').focus()"
-        },
-        {
-          "wait": 300
-        },
-        {
-          "type": "顺便把图例移到右下角"
-        },
-        {
-          "wait": 400
-        },
-        {
-          "eval": "document.querySelector(\"[aria-label='选择如何处理这条消息']\").click()"
-        },
-        {
-          "wait": 600
-        },
-        {
-          "eval": "(() => {\n  const row = [...document.querySelectorAll('[role=button],button')].find(button => (button.textContent || '').trim().startsWith('加入发送队列'));\n  if (!row) throw new Error('the sheet has no queue row');\n  row.click();\n  return 'queued';\n})()"
-        },
-        {
-          "wait": 700
-        },
-        {
-          "eval": "(() => {\n  const panel = document.querySelector('[data-testid=\"send-queue\"]');\n  if (!panel) throw new Error('the queued message is not shown');\n  const rows = panel.querySelectorAll('[data-testid=\"send-queue-item\"]');\n  if (rows.length !== 1) throw new Error('the panel does not hold one row: ' + rows.length);\n  if (!(panel.innerText || '').includes('顺便把图例移到右下角')) throw new Error('the row does not carry the held message');\n  for (const label of ['修改队列中的消息', '从队列中删除']) {\n    if (!panel.querySelector(`[aria-label=\"${label}\"]`)) throw new Error('the row lost its control: ' + label);\n  }\n  return 'one row with edit and delete';\n})()"
-        },
-        {
-          "eval": "(async () => {\n  const button = [...document.querySelectorAll('button,[role=button]')].find(element => /以后再说|稍后再说/.test(element.textContent || ''));\n  if (!button) return 'no update prompt';\n  button.click();\n  await new Promise(r => setTimeout(r, 500));\n  return 'dismissed the update prompt';\n})()"
-        },
-        {
-          "shot": "m-send-queue-queued.png"
-        },
-        {
-          "eval": "document.querySelector(\"[aria-label='修改队列中的消息']\").click()"
-        },
-        {
-          "wait": 700
-        },
-        {
-          "eval": "(() => {\n  const panel = document.querySelector('[data-testid=\"send-queue\"]');\n  const field = panel && panel.querySelector('input, textarea');\n  if (!field) throw new Error('the row did not become a field');\n  return 'editing: ' + (field.value || '');\n})()"
-        },
-        {
-          "shot": "m-send-queue-edit.png"
-        }
-      ]
-    },
-    "send-queue-refused": {
-      "note": "What a queue looks like when the host would not take it. The reader interrupts with the queue waiting, the phone sends it as one message, and the host refuses (`?queueFail=1` reports `session_busy`). Nothing is lost: the row stays exactly where it was — still readable, still editable — and the panel offers `重试` instead of its hint. This is the state that stops the automatic retry from turning a refusal into a loop.",
+    "send-queue-refused-edit": {
+      "note": "What a queue looks like when the host would not take it, and the row being fixed. The reader interrupts with the queue waiting, the phone sends it as one message, the host refuses (`?queueFail=1` reports `session_busy`), and the sentence stays exactly where it was — still readable, still editable. The panel swaps its hint for `重试`, and the row is opened into a field in the same frame: a state that must not be retried on its own, and must not look the same as one still waiting.",
       "url": "http://localhost:8099/?lang=zh&streaming=1&queueFail=1&session=sess_dopamine_review",
       "steps": [
         { "wait": 1200 },
@@ -371,9 +164,11 @@
           "eval": "(async () => { const deadline = Date.now() + 12000; while (Date.now() < deadline) { if (document.querySelector('[aria-label=\"给 FutureOS 发消息\"]')) return 'chat open'; const dismiss = [...document.querySelectorAll('button,[role=button]')].find(button => /以后再说|稍后再说/.test(button.textContent || '')); if (dismiss) { dismiss.click(); } await new Promise(r => setTimeout(r, 300)); } throw new Error('the conversation never opened'); })()"
         },
         { "wait": 600 },
-        { "eval": "document.querySelector('[aria-label=\"给 FutureOS 发消息\"]').focus()" },
+        {
+          "eval": "(() => {\n  const box = document.querySelector('[aria-label=\"给 FutureOS 发消息\"]');\n  box.focus();\n  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;\n  setter.call(box, '');\n  box.dispatchEvent(new Event('input', { bubbles: true }));\n  return 'draft cleared';\n})()"
+        },
         { "wait": 300 },
-        { "type": "顺便把图例移到右下角" },
+        { "type": "顺便把图注也改成中文" },
         { "wait": 400 },
         { "eval": "document.querySelector(\"[aria-label='选择如何处理这条消息']\").click()" },
         { "wait": 600 },
@@ -386,15 +181,16 @@
         },
         { "wait": 1500 },
         {
-          "eval": "(() => {\n  const panel = document.querySelector('[data-testid=\"send-queue\"]');\n  if (!panel) throw new Error('the refused queue is not shown');\n  if (!(panel.innerText || '').includes('顺便把图例移到右下角')) throw new Error('the refused message was dropped');\n  if (!panel.querySelector('[aria-label=\"重试\"]')) throw new Error('the panel offers no retry: ' + (panel.innerText || '').slice(0, 120));\n  return 'refused, still held, retry offered';\n})()"
+          "eval": "(() => {\n  const panel = document.querySelector('[data-testid=\"send-queue\"]');\n  if (!panel) throw new Error('the refused queue is not shown');\n  if (!(panel.innerText || '').includes('顺便把图注也改成中文')) throw new Error('the refused message was dropped');\n  if (!panel.querySelector('[aria-label=\"重试\"]')) throw new Error('the panel offers no retry');\n  const edit = panel.querySelector('[aria-label=\"修改队列中的消息\"]');\n  if (!edit) throw new Error('the refused row cannot be edited');\n  edit.click();\n  return 'refused, still held, opened for editing';\n})()"
+        },
+        { "wait": 600 },
+        {
+          "eval": "(() => {\n  const panel = document.querySelector('[data-testid=\"send-queue\"]');\n  if (!panel.querySelector('input, textarea')) throw new Error('the row did not become a field');\n  if (!panel.querySelector('[aria-label=\"重试\"]')) throw new Error('editing dropped the retry control');\n  return 'editing inside a refused queue';\n})()"
         },
         {
-          "eval": "(async () => {\n  const button = [...document.querySelectorAll('button,[role=button]')].find(element => /以后再说|稍后再说/.test(element.textContent || ''));\n  if (!button) return 'no update prompt';\n  button.click();\n  await new Promise(r => setTimeout(r, 500));\n  return 'dismissed the update prompt';\n})()"
+          "eval": "(async () => {\n  const close = [...document.querySelectorAll('button,[role=button]')].find(element => (element.textContent || '').trim() === '关闭');\n  if (close) { close.click(); await new Promise(r => setTimeout(r, 500)); return 'dismissed the refusal alert'; }\n  return 'no alert';\n})()"
         },
-        {
-          "eval": "(async () => {\n  // The refusal is reported as an alert over the conversation; the capture is\n  // about the queue underneath it, so dismiss it the way a reader does.\n  const close = [...document.querySelectorAll('button,[role=button]')].find(element => (element.textContent || '').trim() === '关闭');\n  if (close) { close.click(); await new Promise(r => setTimeout(r, 500)); return 'dismissed the refusal alert'; }\n  return 'no alert';\n})()"
-        },
-        { "shot": "m-send-queue-refused.png" }
+        { "shot": "m-send-queue-refused-edit.png" }
       ]
     }
   }
