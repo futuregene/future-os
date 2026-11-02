@@ -1892,8 +1892,8 @@ function ReadyAppShell({
                   </main>
                   {/* Views without thread context hide the right panel entirely, including
           the collapsed expand affordance. */}
-                  {/* A remote conversation's right panel is that machine's files — and
-          nothing else. The panel's other tabs (review, runs, artifacts)
+                  {/* A remote conversation's right panel reads that machine's files
+          and selected Fusion discussions. The local panel's other tabs (review, runs, artifacts)
           describe *this* machine, so they have no remote counterpart to show;
           the panel is hidden entirely while a remote conversation is open and
           this one is drawn instead. */}

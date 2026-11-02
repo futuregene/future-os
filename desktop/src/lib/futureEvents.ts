@@ -9,6 +9,13 @@ export interface FutureEventMap {
   "inspect-run": { runId: string };
   /** Open the Runs panel and select a specific tool call by id. */
   "inspect-tool": { runId: string; toolId: string };
+  /** A Fusion read stays bound to its original local or remote parent run. */
+  "inspect-fusion": {
+    runId: string;
+    toolCallId: string;
+    status?: string;
+    resolveTarget?: (input: { runId: string; toolCallId: string; stepId?: string; offset?: number; fusion?: boolean }) => Promise<string | null>;
+  };
   "inspect-artifact": { artifactId: string };
   "open-review": { reviewId: string };
   "review-updated": { threadId: string };

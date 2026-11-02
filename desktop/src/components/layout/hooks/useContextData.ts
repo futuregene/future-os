@@ -12,7 +12,7 @@ import {
 } from "../../../integrations/storage/threadStore";
 import { usePolling } from "../../../lib/usePolling";
 
-export type ContextTab = "runs" | "review" | "artifacts" | "files";
+export type ContextTab = "runs" | "fusion" | "review" | "artifacts" | "files";
 
 // On a thread switch, hold off blanking + showing the loading spinner: a local
 // fetch usually resolves in tens of ms, so the previous thread's data simply

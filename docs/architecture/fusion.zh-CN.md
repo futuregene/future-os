@@ -12,7 +12,7 @@ Fusion 是主 Agent 可调用的多模型思考工具，编排内核位于 `orch
 
 - 初始默认主持模型为 `future/deepseek-flash`；三个默认参与模型为 `future/deepseek-flash`、`future/glm-5.3-flash`、`future/qwen3.7-plus`。最后一个型号按当前 Future 目录和用户确认选择，不使用不存在的 `qwen3.8-plus`，主模型缺失时明确失败，参与模型缺失时记录原因并排除该角色，不替换成默认模型。
 - 启动 Desktop 或 `future host`，在 Desktop、Mobile 或 TUI 输入 `/fusion <任务>`。主 Agent 本次获得 `fusion`，对需要判断的问题按下述主动讨论策略调用；健康路径按 N→1→N→1 讨论（N 为 2–5）；故障分支可跳过阶段或返回无结论结果，外层收到唯一工具结果后继续原任务。普通后续 run 不继承该工具。
-- Desktop/Mobile 展开回复的过程，再展开 Fusion，仅显示四阶段主进度条与各模型的思考状态，使用 `user-round-group` 图标；详细发言、诊断和工具证据继续保存在数据库，通过终端查询复盘。TUI 使用 `/fusion-log` 查看当前父会话最近一次讨论，`/fusion-log <step-id>` 查看原始步骤。CLI 使用 `future fusion show <parent-session-id> [--run <id> --tool <id>] [--step <id>] [--offset <bytes>] --json`，查询不调用模型。
+- Desktop/Mobile 展开回复的过程，再展开 Fusion，仅显示四阶段主进度条与各模型的思考状态，使用 `user-round-group` 图标；详细发言、诊断和工具证据继续保存在数据库；桌面右侧“讨论”视图提供讨论明细，终端查询仍可复盘原文。TUI 使用 `/fusion-log` 查看当前父会话最近一次讨论，`/fusion-log <step-id>` 查看原始步骤。CLI 使用 `future fusion show <parent-session-id> [--run <id> --tool <id>] [--step <id>] [--offset <bytes>] --json`，查询不调用模型。
 - 共享 Host 通过 `~/.future/fusion/fusion.db` 的有界持久队列接收 Agent 工具调用，避免 Agent 反向依赖 Host。Host 实例锁保证执行器唯一，事务认领每次讨论，最多同时执行两个讨论。服务不可用或旧 Agent/Host 不支持时明确失败。
 - Agent 从原始用户提交开头的独立命令 token 验证启用，并冻结到 `ScheduledSettingsSnapshot.fusion_enabled`，同原文与请求键一起持久化；不新增持久会话开关。Remote outbox 保留原始 `/fusion`，重发继续使用原请求键。内层会话标记为 `created_by=fusion`，每次运行都强制替换成四个快照工具，不从普通会话设置继承 shell/写工具。
 - 调用时仅捕获显式 `read_scope` 中经父权限允许的 UTF-8 文件，生成同一份有哈希的文件快照，所有轮次读取它；空范围适用于纯概念问题。拒绝越界、链接/reparse point、特殊文件和越限资料。单文件 1 MiB、合计 16 MiB、最多 1024 个文件/目录；记录捕获起止时间并检测观察到的变化，不声称文件系统原子快照。
@@ -326,7 +326,17 @@ Agent 继续拥有公开模型输出、工具调用和正文；Fusion 保存编�
 
 运行中显示当前阶段各模型状态；总结期间展示主持模型状态及参与者最近状态。结束后保留未完成模型的失败状态，重试成功覆盖该阶段之前失败的展示，不删除数据库里的失败尝试。部分完成的讨论给出一行“部分模型未完成讨论”，不能把产出结论显示为三个模型全部成功。讨论完成与主任务完成仍分别表达。
 
-普通卡片不再展示完整发言、原始输入、议题矩阵、诊断 JSON、步骤 ID、token 数或长错误堆栈，也不重复显示主流程随后生成的最终回复。详细过程继续保存在原数据库和 Agent 子会话中，可用 `/fusion-log <step-id>` 或 `future fusion show` 调查，不因简化 UI 而删减审计记录。
+普通卡片不再展示完整发言、原始输入、议题矩阵、诊断 JSON、步骤 ID、token 数或长错误堆栈，也不重复显示主流程随后生成的最终回复。详细过程继续保存在原数据库和 Agent 子会话中，桌面右侧讨论详情及 `/fusion-log <step-id>`、`future fusion show` 均可用于复盘，不因简化行内 UI 而删减审计记录。
+
+### 桌面右侧讨论明细
+
+右侧下拉菜单新增“讨论”，列出当前对话的 Fusion 调用，按时间倒序显示问题、状态和时间。归档父 run 不删除讨论，仍可在这里复盘。运行列表中的 Fusion 项显示问题正文并使用 `user-round-group`；点击后进入专用讨论面板，不使用通用工具输入/输出检查器。行内紧凑进度卡提供“查看讨论明细”，即使运行列表尚未投影完成，也可以按父 run 和 tool call ID 打开对应记录。
+
+详情展示聚焦问题、真实状态、背景/目标/约束、最终结论与可展开的依据及后续建议。四个阶段可切换，各阶段按角色及 attempt 展示模型发言、状态、重试次数和错误；主持模型预检单独折叠。展开模型时才读取该步骤的完整公开文本与工具证据，正文按已有 UTF-8 字节游标分页继续读取，保留复制入口，不请求隐藏推理。失败讨论保留发言与原因，明确提示没有最终结论，不将旧结果或单独发言当作共识。
+
+仅打开的活动讨论每 1.5 秒刷新状态，终态停止轮询，可手动刷新；关闭面板即卸载详情读取。切换对话或讨论时隔离状态，迟到结果不能覆盖当前选择。使用现有 `get_fusion` 与步骤分页查询，不新增推理调用、数据库结构或执行权限。
+
+远程桌面从行内“查看讨论明细”打开同一组件，沿用原宿主/会话绑定的 resolver；失败不回退查询本机数据，返回操作回到远程文件面板。移动端保留现有紧凑卡片，终端保留原文查询；本节是桌面右侧面板的展示扩展，共享讨论记录与只读边界不变。界面验证场景位于 `scripts/screenshots/scenarios.d/fusion-detail.json`，见 [右侧讨论面板验证](../testing/fusion-detail-panel.md)。
 
 ## Windows macOS Linux 兼容
 

@@ -111,7 +111,8 @@
     "expand": "展开上下文面板",
     "resize": "拖动调整面板宽度",
     "loading": "正在加载上下文…",
-    "noThreadSelected": "未选择对话"
+    "noThreadSelected": "未选择对话",
+    "fusion": "讨论"
   },
   "leftPanelTitlebarToggle": {
     "showSidebar": "显示侧边栏"

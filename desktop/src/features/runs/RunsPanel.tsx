@@ -9,6 +9,7 @@ import {
   CircleStop,
   Pencil,
   TerminalSquare,
+  UserRoundGroup,
 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -21,7 +22,7 @@ import { errorMessage } from "../../lib/errors";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { relativizeWorkspacePath } from "../../lib/workspacePath";
 import { toolStatusLabel } from "./runDisplayFormatters";
-import { toolCommand, toolTarget } from "./toolInput";
+import { recordOf, stringField, toolCommand, toolTarget } from "./toolInput";
 
 const RUNS_PAGE_SIZE = 40;
 const LOAD_MORE_THRESHOLD_PX = 240;
@@ -254,14 +255,16 @@ function ToolRow({
   const { run, terminable, tool } = entry;
   const name = displayName(tool);
   const isShell = name === "shell";
+  const isFusion = name === "fusion";
+  const Icon = isFusion ? UserRoundGroup : Pencil;
   const rawPrimary
-    = (isShell ? toolCommand(tool.input) : toolTarget(tool.input))
+    = (isFusion ? stringField(recordOf(tool.input), "question") : isShell ? toolCommand(tool.input) : toolTarget(tool.input))
       ?? toolCommand(tool.input)
       ?? toolTarget(tool.input)
       ?? fallbackPrimary(tool.input, toolLabel(tool));
   // Shell rows show the command verbatim; file rows (write/edit) get the
   // workspace-relative path, absolute kept for files outside the workspace.
-  const primary = isShell
+  const primary = isShell || isFusion
     ? rawPrimary
     : relativizeWorkspacePath(rawPrimary, workspacePath);
   // Show the tool's own status, never the run's. A tool still marked "running"
@@ -307,7 +310,7 @@ function ToolRow({
                 />
               )
             : (
-                <Pencil
+                <Icon
                   className={cn(
                     "size-4",
                     running ? "text-accent" : "text-ink-muted",
@@ -325,7 +328,7 @@ function ToolRow({
                 "min-h-5 min-w-0 flex-1 wrap-break-word text-xs font-normal leading-5 text-ink",
                 isShell
                   ? "line-clamp-10 whitespace-pre-wrap"
-                  : "whitespace-pre-wrap font-mono",
+                  : isFusion ? "whitespace-pre-wrap" : "whitespace-pre-wrap font-mono",
               )}
               title={rawPrimary}
             >

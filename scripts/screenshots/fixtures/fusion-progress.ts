@@ -20,5 +20,17 @@ export function fusionProgressFixture(mode: string | null): FusionDiscussion {
       if (step.phase === "reviewing") step.status = "running";
     }
   }
+  if (mode === "failed") {
+    data.run!.status = "failed";
+    data.run!.result = null;
+    data.run!.error = "主持模型无法生成最终结论；已有公开发言已保留。";
+    for (const step of data.steps ?? []) {
+      if (step.phase === "synthesizing") {
+        step.status = "failed";
+        step.error = "HTTP 503";
+        step.output = "";
+      }
+    }
+  }
   return data;
 }

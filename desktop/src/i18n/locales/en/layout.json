@@ -111,7 +111,8 @@
     "expand": "Expand context panel",
     "resize": "Drag to resize panel",
     "loading": "Loading context...",
-    "noThreadSelected": "No thread selected"
+    "noThreadSelected": "No thread selected",
+    "fusion": "Discussions"
   },
   "leftPanelTitlebarToggle": {
     "showSidebar": "Show sidebar"

@@ -4,6 +4,7 @@ import { Check, ChevronDown, ChevronUp, Circle, Clock, LoaderCircle, TriangleAle
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invokeCommand } from "../../integrations/tauri/invoke";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 
 export function FusionActivity({ item, runId, resolveTarget }: {
@@ -74,6 +75,7 @@ export function FusionActivity({ item, runId, resolveTarget }: {
             })}
           </div>
           {error && <p className="text-danger" role="alert">{t("fusion.statusUnavailable")}</p>}
+          {parentRun && <button type="button" className="text-xs text-accent hover:underline" onClick={() => emitFutureEvent("inspect-fusion", { runId: parentRun, toolCallId: tool, status: item.status, resolveTarget })}>{t("fusion.detail.open")}</button>}
         </div>
       )}
     </div>
