@@ -1831,6 +1831,43 @@ mod tests {
         assert!(elapsed < slow, "the slow block was waited for: {elapsed:?}");
     }
 
+    /// The non-network half of a split request's cost: the blocks go out at the
+    /// same time, and the decision adds nothing worth waiting for.
+    ///
+    /// Two blocks that each take 300 ms must land near 300 ms, not 600 ms — that
+    /// is the whole latency claim of taking the first answer (see
+    /// `chunked_call`), and a regression that serialized the blocks, or that went
+    /// back to waiting for all of them, shows up here. The other half of the
+    /// story — latency against the real gateway — is deliberately not asserted:
+    /// no test may spend the user's credits, so it stays unmeasured rather than
+    /// being faked with a local socket's numbers.
+    #[test]
+    fn the_blocks_of_a_split_call_run_in_parallel() {
+        let delay = std::time::Duration::from_millis(300);
+        let candidates: Vec<SkillCandidate> = (0..MAX_CANDIDATES + 1)
+            .map(|index| SkillCandidate {
+                name: format!("skill-{index:03}"),
+                description: "does a thing".to_string(),
+            })
+            .collect();
+        let (url, _requests) = scripted_gateway(2, move |_| (delay, refusal()));
+
+        let started = std::time::Instant::now();
+        let (outcome, _) = attempt_call(
+            &HTTP_CLIENT,
+            &gateway(&format!("{url}/v1/systemone")),
+            "hello",
+            &candidates,
+        );
+        let elapsed = started.elapsed();
+
+        assert!(matches!(outcome, Outcome::Refused { .. }), "{outcome:?}");
+        assert!(
+            elapsed < delay + std::time::Duration::from_millis(150),
+            "two {delay:?} blocks took {elapsed:?}: they were not sent in parallel"
+        );
+    }
+
     /// A block that failed is reported as the failure, never quietly turned into
     /// "no skill fits" — and a split that produced no answer at all is still not
     /// a recommendation.
