@@ -69,6 +69,13 @@ fn tcp_bind_rejects_invalid_ports_and_accepts_bracketed_ipv6() {
     }
     assert_eq!(parse_tcp_bind(":1234").unwrap(), ("127.0.0.1".into(), 1234));
     assert_eq!(parse_tcp_bind("[::1]:1234").unwrap(), ("::1".into(), 1234));
+    // The shared parser provides the grammar; the diagnostic names the option
+    // this CLI actually took the value from.
+    let refusal = parse_tcp_bind("banana").unwrap_err().to_string();
+    assert!(
+        refusal.contains("invalid --grpc-addr \"banana\""),
+        "the refusal names the flag the operator typed: {refusal}"
+    );
 }
 
 #[derive(Parser)]

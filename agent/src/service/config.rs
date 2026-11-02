@@ -44,7 +44,10 @@ impl AgentConfig {
 }
 
 pub(crate) fn parse_tcp_bind(addr: &str) -> Result<(String, u16)> {
-    let socket = future_rpc::transport::parse_bind_addr(addr).map_err(anyhow::Error::msg)?;
+    // The grammar is the shared parser's; the option name is this CLI's own, so
+    // the refusal points at the flag the operator typed.
+    let socket = future_rpc::transport::parse_bind_addr(addr)
+        .map_err(|error| anyhow::anyhow!("{}", error.for_flag("--grpc-addr")))?;
     Ok((socket.ip().to_string(), socket.port()))
 }
 

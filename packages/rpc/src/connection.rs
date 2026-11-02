@@ -534,7 +534,23 @@ async fn select_with(
     handshake_timeout: Duration,
     bind: BindPermission,
 ) -> Result<AgentSelection, ConnectionError> {
-    match connect_verified(configured, version, connect_timeout, handshake_timeout).await {
+    let verified = connect_verified(configured, version, connect_timeout, handshake_timeout).await;
+    select_from(configured, verified, bind)
+}
+
+/// The decision after one connect attempt: attach, or decide whether this caller
+/// may start an Agent at the endpoint instead.
+///
+/// Split out of [`select_with`] so the decision can be driven with the exact
+/// failure a platform reports for an endpoint nothing serves — on Windows a
+/// connect timeout rather than a refusal (see [`nothing_answers`]) — without
+/// reproducing that platform.
+fn select_from(
+    configured: &str,
+    verified: Result<VerifiedAgentClient, ConnectionError>,
+    bind: BindPermission,
+) -> Result<AgentSelection, ConnectionError> {
+    match verified {
         Ok(client) => Ok(AgentSelection::External(Box::new(client))),
         Err(ConnectionError::Transport(error)) => {
             let endpoint = match (
@@ -557,7 +573,7 @@ async fn select_with(
                 }
                 (transport::AgentEndpoint::Tcp(addr), BindPermission::Serve) => {
                     let bound = transport::parse_bind_addr(&addr)
-                        .map_err(ConnectionError::StartupBlocked)?;
+                        .map_err(|error| ConnectionError::StartupBlocked(error.to_string()))?;
                     if !bound.ip().is_loopback() {
                         return Err(ConnectionError::StartupBlocked(format!(
                             "cannot serve an Agent on {addr}: only a loopback address is this host's to bind"
@@ -568,10 +584,7 @@ async fn select_with(
             };
             let home = crate::home::future_home();
             check_instance_lock(&home)?;
-            if !matches!(
-                error.kind,
-                Some(io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused)
-            ) {
+            if !nothing_answers(&error, &endpoint) {
                 // Still no permission to launch. Preserve the transport class
                 // so an owning host can repair its own unresponsive service.
                 return Err(ConnectionError::Transport(error));
@@ -593,6 +606,43 @@ async fn select_with(
             }))
         }
         Err(error) => Err(error),
+    }
+}
+
+/// Whether a failed connect means "nothing is serving this endpoint".
+///
+/// `ConnectionRefused` is the Unix answer for a closed port: the kernel rejects
+/// the SYN, so the endpoint is provably empty. Not every platform reports an
+/// absent *loopback* listener that way. Windows reports the same empty port as a
+/// connect timeout when the attempt is dropped rather than rejected, and a
+/// loaded runner can also spend the whole connect budget before the refusal
+/// arrives. CI measured exactly that on `127.0.0.1:59051` and `[::1]:59040`,
+/// where nothing was listening:
+///
+/// ```text
+/// Transport(ConnectError { details: "unable to connect to Future Agent
+/// (http://127.0.0.1:59051: transport error)", kind: Some(TimedOut) })
+/// ```
+///
+/// For an endpoint this host is allowed to serve, an attempt that never
+/// established is the same fact as a refusal: there is no Agent there to attach
+/// to. Two things keep that from being a wider reading of every timeout:
+///
+/// - Only a loopback TCP endpoint qualifies ([`PermitEndpoint::Tcp`] is already
+///   validated loopback above), never the local IPC endpoint, whose socket
+///   either exists or does not.
+/// - A peer that *does* accept the connection but never completes readiness
+///   fails the handshake (`ConnectionError::Unverified`), which never reaches
+///   this function — so a busy or stalled Agent is not an absent one.
+///
+/// The permit is only permission to try: the Agent's own bind (a second binder
+/// gets `AddrInUse`) and the instance lock remain the authority, exactly as they
+/// are for a refused endpoint.
+fn nothing_answers(error: &transport::ConnectError, endpoint: &PermitEndpoint) -> bool {
+    match error.kind {
+        Some(io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused) => true,
+        Some(io::ErrorKind::TimedOut) => matches!(endpoint, PermitEndpoint::Tcp(_)),
+        _ => false,
     }
 }
 
