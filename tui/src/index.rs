@@ -924,6 +924,15 @@ pub fn run(args: &[String]) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // File-only: terminal diagnostics must not corrupt the alternate screen.
+    future_logging::prepare(future_logging::Component::Tui, VERSION, false, args.verbose);
+    let _logging = future_logging::open(
+        future_logging::Component::Tui,
+        &future_logging::Component::Tui.path(&future_rpc::home::future_home()),
+        0,
+    )
+    .ok();
+
     // Build the runtime (print mode + interactive both need one). A build
     // failure means OS resource exhaustion — panic with the reason.
     let runtime = tokio::runtime::Builder::new_multi_thread()

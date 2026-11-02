@@ -1840,6 +1840,7 @@ dependencies = [
  "fs2",
  "future-fusion",
  "future-http",
+ "future-logging",
  "future-rpc",
  "futures",
  "futures-util",
@@ -1908,6 +1909,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "dirs",
+ "future-logging",
  "future-rpc",
  "futures",
  "futures-util",
@@ -1955,6 +1957,7 @@ dependencies = [
  "future-fusion",
  "future-goal",
  "future-host",
+ "future-logging",
  "future-remote-crypto",
  "future-rpc",
  "future-tasks",
@@ -2050,6 +2053,7 @@ dependencies = [
  "future-config",
  "future-fusion",
  "future-http",
+ "future-logging",
  "future-remote-client",
  "future-remote-crypto",
  "future-remote-protocol",
@@ -2088,6 +2092,18 @@ dependencies = [
  "rustls",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "future-logging"
+version = "0.0.0"
+dependencies = [
+ "fs2",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -2243,6 +2259,7 @@ dependencies = [
  "future-config",
  "future-fusion",
  "future-http",
+ "future-logging",
  "future-rpc",
  "futures-util",
  "image",
@@ -2279,6 +2296,7 @@ dependencies = [
  "future-app-settings",
  "future-app-workspaces",
  "future-host",
+ "future-logging",
  "future-remote-client",
  "future-remote-crypto",
  "future-remote-protocol",
@@ -2321,6 +2339,8 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tonic",
+ "tracing",
+ "tracing-subscriber",
  "windows",
  "zbus 6.0.0",
 ]
@@ -5834,6 +5854,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "symlink"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7973cce6668464ea31f176d85b13c7ab3bba2cb3b77a2ed26abd7801688010a"
+
+[[package]]
 name = "syn"
 version = "1.0.109"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6846,6 +6872,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-appender"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "050686193eb999b4bb3bc2acfa891a13da00f79734704c4b8b4ef1a10b368a3c"
+dependencies = [
+ "crossbeam-channel",
+ "symlink",
+ "thiserror 2.0.19",
+ "time",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "tracing-attributes"
 version = "0.1.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6878,6 +6917,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-serde"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "704b1aeb7be0d0a84fc9828cae51dab5970fee5088f83d1dd7ee6f6246fc6ff1"
+dependencies = [
+ "serde",
+ "tracing-core",
+]
+
+[[package]]
 name = "tracing-subscriber"
 version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6887,12 +6936,15 @@ dependencies = [
  "nu-ansi-term",
  "once_cell",
  "regex-automata",
+ "serde",
+ "serde_json",
  "sharded-slab",
  "smallvec",
  "thread_local",
  "tracing",
  "tracing-core",
  "tracing-log",
+ "tracing-serde",
 ]
 
 [[package]]

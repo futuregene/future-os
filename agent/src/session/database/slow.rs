@@ -41,7 +41,13 @@ pub(super) fn slow_line(job: &str, elapsed: Duration, queued: Duration) -> Optio
 /// Write that row into the agent's log, when the cut is crossed.
 pub(super) fn report(job: &str, elapsed: Duration, queued: Duration) {
     if let Some(line) = slow_line(job, elapsed, queued) {
-        tracing::warn!("{line}");
+        tracing::warn!(
+            event = "storage_job_slow",
+            job,
+            elapsed_ms = elapsed.as_millis() as u64,
+            queued_ms = queued.as_millis() as u64,
+            "{line}"
+        );
     }
 }
 

@@ -574,7 +574,7 @@ impl Loop {
             // Convert to LLM format
             if self.verbose {
                 let llm_messages: Vec<Message> = ConvertToLLM(&work_messages);
-                tracing::info!("[agent] turn={} calling LLM model={} msgs={} tools={} sys_prompt_len={} msg_chars={}",
+                tracing::debug!("[agent] turn={} calling LLM model={} msgs={} tools={} sys_prompt_len={} msg_chars={}",
                     turn,
                     ctx.model,
                     llm_messages.len(),
@@ -1569,7 +1569,7 @@ impl Loop {
 
             // Execute tools
             if self.verbose {
-                tracing::info!(
+                tracing::debug!(
                     "[agent] turn={} executing {} tools: {}",
                     turn,
                     tool_calls.len(),
@@ -1587,7 +1587,7 @@ impl Loop {
             if let Some(ref u) = total_usage {
                 let cost = u.credit_cost.unwrap_or(0.0);
                 let cum_cost = *self.cumulative_cost.lock();
-                tracing::info!(
+                tracing::debug!(
                     "[agent] turn={} tokens_in={} tokens_out={} cache_read={} cache_write={} cost={:.6} cumulative_cost={:.6}",
                     turn,
                     u.prompt_tokens,

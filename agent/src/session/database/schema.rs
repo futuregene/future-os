@@ -6,6 +6,13 @@ pub(super) fn initialize_schema(
     connection: &mut Connection,
     cancellation: &crate::service::StartupCancellation,
 ) -> Result<()> {
+    let started = std::time::Instant::now();
+    tracing::debug!(
+        event = "database_schema_install_started",
+        database = "agent",
+        schema_version = super::CURRENT_SCHEMA_VERSION,
+        storage_format = crate::session::content::FORMAT_VERSION
+    );
     cancellation.check()?;
     crate::session::content::install_functions(connection)?;
     #[cfg(test)]
@@ -19,6 +26,10 @@ pub(super) fn initialize_schema(
     tx.execute_batch(include_str!("../content/schema.sql"))?;
     tx.execute_batch(&crate::session::identity::inspection_views_sql())?;
     if missing_projection {
+        tracing::debug!(
+            event = "history_projection_invalidated",
+            reason = "missing_projection_tables"
+        );
         tx.execute("DELETE FROM history_index_state", [])?;
     }
     for key in ["database_id", "restore_generation"] {
@@ -48,7 +59,9 @@ pub(super) fn initialize_schema(
         |row| row.get(0),
     )?;
     if !stamps_repaired {
+        tracing::debug!(event = "history_activity_repair_started");
         crate::session::entry_records::repair_activity_stamps(&tx)?;
+        tracing::debug!(event = "history_activity_repair_completed");
         tx.execute(
             "INSERT OR REPLACE INTO storage_meta(key,value) VALUES ('activity_stamps_repaired','1')",
             [],
@@ -61,6 +74,12 @@ pub(super) fn initialize_schema(
     #[cfg(test)]
     migration_fault(&tx, "before-commit")?;
     tx.commit()?;
+    tracing::debug!(
+        event = "database_schema_install_completed",
+        database = "agent",
+        schema_version = super::CURRENT_SCHEMA_VERSION,
+        elapsed_ms = started.elapsed().as_millis() as u64
+    );
     #[cfg(test)]
     migration_fault(connection, "after-commit")?;
     Ok(())

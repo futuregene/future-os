@@ -1,11 +1,7 @@
 //! Shared process preparation and diagnostics, independent of CLI discovery or GUI.
 //!
-//! The host log is a ring buffer (see [`future_agent::logfile`]), so the newest
-//! lines of one run are gone as soon as the next ordinary session writes over
-//! them. [`start_logging`] therefore copies the previous run's tail to a sibling
-//! `*.prev.log` before the live file is opened: what a failed launch left behind
-//! survives one further start, and the live file keeps its existing name,
-//! format and retention unchanged.
+//! Each owned component writes bounded JSONL through `future_logging`. The
+//! previous host tail remains available as `*.prev.log` for launch diagnostics.
 
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -24,6 +20,10 @@ const TAIL_CHUNK: u64 = 8 * 1024;
 /// a runtime. Each entry applies its parsed relay options and CLI maintenance
 /// discovery after this common preparation.
 pub fn prepare_process() {
+    prepare_process_for(future_logging::Component::Desktop);
+}
+
+pub fn prepare_process_for(component: future_logging::Component) {
     static PREPARED: std::sync::Once = std::sync::Once::new();
     PREPARED.call_once(|| {
         // First, before anything can write to a terminal: a GUI launch has no
@@ -31,8 +31,8 @@ pub fn prepare_process() {
         // that emitted it — including, on this path, the task that would have
         // rebuilt a dropped remote link. See
         // `future_agent::console::redirect_windowless_standard_streams`.
-        redirect_windowless_stdio();
-        future_agent::logfile::init_embedded_tracing();
+        redirect_windowless_stdio(component);
+        future_logging::prepare(component, crate::build_info::VERSION, true, false);
         crate::install_rustls_provider();
         future_agent::sandbox::hydrate_from_login_shell();
         // The remote stack (both the bridge that serves this machine and the
@@ -53,12 +53,14 @@ pub fn prepare_process() {
 /// Best effort by design: if the file cannot be opened there is nothing to say
 /// so on the stream that just failed, and the launch must still start. The
 /// writers that matter go through [`report`] anyway.
-fn redirect_windowless_stdio() {
-    let path = future_rpc::home::future_home().join("app/logs/desktop.stdio.log");
+fn redirect_windowless_stdio(component: future_logging::Component) {
+    let path = component
+        .path(&future_rpc::home::future_home())
+        .with_extension("stdio.log");
     let _ = future_agent::console::redirect_windowless_standard_streams(&path);
 }
 
-pub fn start_logging() -> Result<(), crate::Error> {
+pub fn start_logging() -> Result<future_logging::FileGuard, crate::Error> {
     let path = log_file_path();
     // Before the live file is opened and trimmed to its ring buffer, keep the
     // tail of the run before this one. Best effort: a copy that cannot be made
@@ -66,7 +68,9 @@ pub fn start_logging() -> Result<(), crate::Error> {
     if let Err(error) = preserve_previous_log(&path, PREVIOUS_LOG_LINES) {
         report(&format!("previous host log could not be kept: {error}"));
     }
-    future_agent::logfile::init(&path, future_agent::logfile::DEFAULT_MAX_LINES)?;
+    let component =
+        future_logging::primary_component().unwrap_or(future_logging::Component::Desktop);
+    let guard = future_logging::open(component, &path, 0)?;
     report(&format!(
         "host starting version={} pid={} mode={} log={}",
         crate::build_info::VERSION,
@@ -74,37 +78,20 @@ pub fn start_logging() -> Result<(), crate::Error> {
         std::env::var("FUTURE_DESKTOP_AGENT_MODE").unwrap_or_else(|_| "auto".into()),
         path.display()
     ));
-    Ok(())
+    Ok(guard)
 }
 
 /// Where this host and its embedded Agent write their log. Available before
 /// [`start_logging`] runs, so an entry point can name it even when startup
 /// fails early or the host is killed before any diagnostics exist.
 pub fn log_file_path() -> std::path::PathBuf {
-    future_rpc::home::future_home().join("app/logs/desktop.log")
+    future_logging::primary_component()
+        .unwrap_or(future_logging::Component::Desktop)
+        .path(&future_rpc::home::future_home())
 }
 
 pub fn report(message: &str) {
-    let line = report_line(message);
-    // The file copy goes first: it is the copy that survives a launch with no
-    // terminal, and it is the one a later investigation reads. Measured
-    // 2026-10-28: the old order wrote the terminal first, so every diagnostic
-    // emitted after the Desktop's pty was revoked panicked here and never
-    // reached this file at all.
-    if let Some(mirror) = future_agent::logfile::get() {
-        mirror.write_stripped(&line);
-    }
-    crate::console::write_err(format_args!("{line}"));
-}
-
-/// A report stamped exactly the way the tracing rows in the same file are, so a
-/// start, a stall and an exit can be ordered against them — and against each
-/// other across launches that look adjacent once the stamp is missing.
-fn report_line(message: &str) -> String {
-    format!(
-        "{} FutureOS: {message}\n",
-        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ")
-    )
+    tracing::info!(event = "host_report", message);
 }
 
 /// Path of the copy holding the previous run's tail: `desktop.prev.log` beside
@@ -203,27 +190,6 @@ mod tests {
             .collect();
         names.sort();
         names
-    }
-
-    #[test]
-    fn a_report_line_leads_with_a_utc_timestamp_like_the_tracing_rows() {
-        let line = report_line("host starting version=1 pid=2");
-        assert!(line.ends_with('\n'), "{line:?}");
-        let (stamp, message) = line
-            .trim_end()
-            .split_once(' ')
-            .expect("a stamp and a message");
-        assert_eq!(message, "FutureOS: host starting version=1 pid=2");
-        // `2026-10-23T12:41:16.186523Z`: the shape tracing's `%.6f` timer writes.
-        assert_eq!(stamp.len(), 27, "{stamp}");
-        chrono::DateTime::parse_from_rfc3339(stamp).expect("an RFC 3339 stamp");
-        let (_, fraction) = stamp.split_once('.').expect("a fractional second");
-        assert_eq!(fraction.len(), 7, "{fraction}");
-        assert!(fraction.ends_with('Z'), "{fraction}");
-        assert!(
-            fraction[..6].chars().all(|digit| digit.is_ascii_digit()),
-            "{fraction}"
-        );
     }
 
     #[test]
@@ -394,9 +360,11 @@ mod tests {
             log.contains("remote: bridge diagnostic on a dead stderr"),
             "the remote stack's diagnostics must reach the host log: {log}"
         );
-        // The Agent run loop's streaming path writes to both sinks; the file
-        // half must survive the terminal half failing.
-        assert!(log.contains("[output] streamed delta"), "{log}");
+        // Streamed model content is terminal output, separate from diagnostics.
+        assert!(
+            !log.contains("[output] streamed delta"),
+            "streamed content belongs in the session journal: {log}"
+        );
     }
 
     /// Spawn the child half with a stderr nobody is reading.
@@ -456,7 +424,7 @@ mod tests {
         // leaves the same evidence in crash.log that the production failure
         // left behind.
         let _armed = crate::crash_log::ReportingArmed::arm();
-        start_logging().expect("the host log opens");
+        let _logging = start_logging().expect("the host log opens");
         report("the terminal is gone");
         // Every remaining writer in the process, in the shape it has in the
         // host: `crate::console::*` is what a file imports over the prelude,

@@ -1,0 +1,15 @@
+[package]
+name = "future-logging"
+version = "0.0.0"
+edition = "2021"
+description = "Shared structured diagnostics for FutureOS Rust entry points"
+
+[dependencies]
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["json"] }
+tracing-appender = "0.2"
+serde_json.workspace = true
+fs2 = "0.4"
+
+[dev-dependencies]
+tempfile.workspace = true

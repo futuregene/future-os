@@ -21,7 +21,7 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 │   ├── skills/                # installed user skills (APP_SKILLS_DIR)
 │   ├── browser/               # CLI browser-tool state (config.json, profile/, artifacts/)
 │   ├── images/                # CLI image-tool output directory
-│   └── logs/agent.log         # agent log (when logging is enabled)
+│   └── logs/agent.log         # Agent JSONL diagnostics, embedded and standalone
 ├── fusion/                    # shared read-only consultation control plane
 │   ├── fusion.db              # settings/revisions, runs, phases, participants, issues and transcript references
 │   └── snapshots/             # bounded, hashed consultation file snapshots
@@ -59,6 +59,8 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 │   └── remote-control/        # transient device requests (`future remote devices add|remove|use`, `future remote peers connect|disconnect|takeover|remove`)
 └── bin/                       # CLI / agent links: `future`, `future-agent` (see below)
 ```
+
+See [Rust diagnostics](logging.md) for all component log paths and retention.
 
 ## `~/.future/agent/` — agent backend
 

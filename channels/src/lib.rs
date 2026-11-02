@@ -75,13 +75,6 @@ pub fn run(args: &[String]) -> Result<()> {
     // agent set one up first — which is fine, so ignore the result.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
-
     // Diagnostics run before (and instead of) the bridge: `future channel
     // status` must answer whether or not a bridge is running, and must not
     // start one.
@@ -90,6 +83,23 @@ pub fn run(args: &[String]) -> Result<()> {
         _ => {}
     }
 
+    future_logging::prepare(
+        future_logging::Component::Channel,
+        env!("FUTURE_CHANNEL_VERSION"),
+        true,
+        false,
+    );
+    let _logging = match future_logging::open(
+        future_logging::Component::Channel,
+        &future_logging::Component::Channel.path(&config::future_home()),
+        0,
+    ) {
+        Ok(guard) => Some(guard),
+        Err(error) => {
+            tracing::warn!(%error, "Channel log unavailable");
+            None
+        }
+    };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;

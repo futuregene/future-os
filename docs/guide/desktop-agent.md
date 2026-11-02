@@ -96,11 +96,12 @@ WAL or lock files to accelerate exit.
 ## Troubleshooting and logs
 
 The default data root is `~/.future`; a valid absolute FUTURE_HOME replaces the
-whole root. Embedded host logs are at `<root>/app/logs/desktop.log`; that file
-keeps its newest 1000 lines, and each start first copies the tail of the run
-before it to `<root>/app/logs/desktop.prev.log`, so a launch that never came
-back stays readable after the next session filled the live file. Independent
-CLI Agent file logs remain at `<root>/agent/logs/agent.log` when enabled. A
+whole root. Desktop writes `app/logs/desktop.log`, foreground Host writes
+`app/logs/host.log`, and both embedded and standalone Agent write
+`agent/logs/agent.log`. Files are bounded JSONL with detailed test-build and
+concise release defaults; see [Rust diagnostics](logging.md) for component
+paths, retention and startup filters. Each Host start also preserves its previous
+tail in `*.prev.log`. A
 launch that panics appends the panic (UTC time, process, thread, `file:line`,
 payload, startup step, best-effort backtrace) to
 `<root>/app/logs/crash.log`, which is never trimmed — a windowless GUI launch has

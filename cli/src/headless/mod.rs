@@ -111,7 +111,7 @@ impl Options {
 /// event loop is constructed on this path.
 pub fn run(options: Options) -> Result<(), String> {
     // Hydration may supply FUTURE_HOME; freeze it before selecting the lock.
-    future_host::environment::prepare_process();
+    future_host::environment::prepare_process_for(future_logging::Component::Host);
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     future_host::cli_tool::prepare_path_for(&executable).map_err(|e| e.to_string())?;
     let _guard = future_host::instance::InstanceGuard::acquire().map_err(|e| e.to_string())?;
@@ -124,9 +124,13 @@ pub fn run(options: Options) -> Result<(), String> {
     // A read-only install or a full disk must not stop a headless host: the
     // terminal still reports what happens, and the log is a convenience, not a
     // prerequisite.
-    if let Err(error) = future_host::environment::start_logging() {
-        future_host::environment::report(&format!("host log unavailable: {error}"));
-    }
+    let _logging = match future_host::environment::start_logging() {
+        Ok(logging) => Some(logging),
+        Err(error) => {
+            future_host::environment::report(&format!("host log unavailable: {error}"));
+            None
+        }
+    };
     // Say where diagnostics land before any Agent work starts — after the data
     // root is final, because hydration above can still change it. The Agent logs
     // each startup phase to that file as well as this terminal, and on a host
@@ -192,7 +196,12 @@ fn exit_outcome(
 /// must be able to finish: name the log that holds the preceding startup phases
 /// whenever one was written.
 fn with_log_hint(message: String) -> String {
-    let log = future_host::environment::log_file_path();
+    let agent_log = future_logging::Component::Agent.path(&future_rpc::home::future_home());
+    let log = if agent_log.is_file() {
+        agent_log
+    } else {
+        future_host::environment::log_file_path()
+    };
     if log.is_file() {
         format!(
             "{message}\nThe Agent's last startup phase and any failure are in {}.",

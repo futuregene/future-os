@@ -17,7 +17,6 @@ use serde_json::Value;
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::info;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 1800;
 pub(crate) const UPSTREAM_DISCONNECTED: &str = "[UPSTREAM_DISCONNECTED]";
@@ -331,7 +330,7 @@ impl crate::types::LLMProvider for Client {
         let body_bytes = serde_json::to_vec(&body)?;
         let body_len = body_bytes.len();
         let req = builder.body(body_bytes).build()?;
-        info!(
+        tracing::debug!(
             protocol = target.protocol.protocol().canonical_name(),
             model = %request.model,
             body_kb = body_len / 1024,
