@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use future_tasks::{
     compose_run_prompt, finish_reason, kernel, new_run_id, ConversationMode, RunKind, RunOrigin,
-    RunStatus, SessionPolicy, Store, Task, TaskRun,
+    RunStatus, SessionPolicy, Store, Task, TaskRun, TriggerKind,
 };
 
 /// The failure a run with no answer is recorded with. A stable `[CODE]` prefix,
@@ -91,6 +91,24 @@ pub fn accept_revision(store: &Store, task_id: &str, revision_id: &str) -> Resul
     task.updated_at = now_ms();
     store.update_task(&task).map_err(|e| e.to_string())?;
     Ok(task)
+}
+
+/// Apply a pause or resume to a task, wherever the request came from.
+///
+/// The webview command and the phone's remote bridge both go through here, so
+/// "enable" means the same thing on both: the switch, the timestamp, and the
+/// next slot. Re-enabling a schedule has to land on a real next slot — a task
+/// created while disabled, or one whose schedule was edited while paused, can
+/// carry no due time at all, and `next_due_at = None` is the store's *no longer
+/// scheduled*, so enabling it without this leaves it permanently idle: on in
+/// every list, never selected by the tick. The remote side used to set the flag
+/// alone, and a task enabled from the phone never fired.
+pub fn apply_task_enabled(task: &mut Task, enabled: bool, now: i64) {
+    task.enabled = enabled;
+    if enabled && task.trigger_kind == TriggerKind::Schedule {
+        task.next_due_at = kernel::next_due(task, now);
+    }
+    task.updated_at = now;
 }
 
 /// How a finished run announces itself. The GUI refreshes the sidebar; the

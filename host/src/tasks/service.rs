@@ -362,14 +362,10 @@ pub fn set_task_enabled(id: String, enabled: bool) -> Result<TaskView, crate::Er
         .get_task(&id)
         .map_err(|e| crate::Error::Message(e.to_string()))?
         .ok_or_else(|| crate::Error::Message("task not found".to_string()))?;
-    task.enabled = enabled;
-    // Re-enabling a schedule must land on a real next slot. A task created while
-    // disabled, or one whose schedule was edited while paused, can carry no due
-    // time at all — enabling it without this would leave it permanently idle.
-    if enabled && task.trigger_kind == TriggerKind::Schedule {
-        task.next_due_at = future_tasks::next_due(&task, now_ms());
-    }
-    task.updated_at = now_ms();
+    // Re-enabling a schedule must land on a real next slot (see
+    // `crate::tasks::apply_task_enabled`, where the phone's remote bridge applies
+    // the same rule instead of drifting from it).
+    crate::tasks::apply_task_enabled(&mut task, enabled, now_ms());
     store
         .update_task(&task)
         .map_err(|e| crate::Error::Message(e.to_string()))?;
