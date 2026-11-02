@@ -114,15 +114,47 @@ struct RequestIdentity {
     run_sequence: u64,
 }
 
+/// Why a queued prompt is waiting for a person instead of running itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParkReason {
+    /// It waited past `stale_after`.
+    TooOld,
+    /// Its `queuedAt` could not be read, so its age is unknowable.
+    UnknownAge,
+}
+
+impl ParkReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TooOld => "stale",
+            Self::UnknownAge => "unknown_age",
+        }
+    }
+}
+
+/// One prompt parked by this pass, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParkedRun {
+    pub run_id: String,
+    pub reason: ParkReason,
+}
+
+/// A queued prompt set aside until someone releases it, with the reason it was.
+#[derive(Debug, Clone)]
+struct HeldRun {
+    request: ScheduledRunRequest,
+    reason: ParkReason,
+}
+
 #[derive(Debug)]
 struct QueueState {
     next_sequence: u64,
     active: Option<(ScheduledRunRequest, u64)>,
     queued: VecDeque<ScheduledRunRequest>,
-    /// Queued prompts too old to start on their own. They keep their place in
-    /// the order the reader sees, and are moved back into `queued` only when
-    /// someone asks for them.
-    held: Vec<ScheduledRunRequest>,
+    /// Queued prompts too old to start on their own (or with no readable age).
+    /// They keep their place in the order the reader sees, and are moved back
+    /// into `queued` only when someone asks for them.
+    held: Vec<HeldRun>,
     queued_bytes: usize,
     requests: HashMap<String, RequestIdentity>,
     run_ids: HashSet<String>,
@@ -306,6 +338,16 @@ impl InMemoryRunQueue {
         let mut state = self.state.lock();
         if let Some(run) = state.queued.iter_mut().find(|run| run.run_id == run_id) {
             run.accepted_at = stamped;
+        }
+    }
+
+    /// Stamp one queued prompt with whatever a test needs — including a value
+    /// that cannot be parsed at all.
+    #[cfg(test)]
+    pub fn test_stamp_queued_at(&self, run_id: &str, stamped: &str) {
+        let mut state = self.state.lock();
+        if let Some(run) = state.queued.iter_mut().find(|run| run.run_id == run_id) {
+            run.accepted_at = stamped.to_string();
         }
     }
 
@@ -615,9 +657,12 @@ impl InMemoryRunQueue {
         let mut state = self.state.lock();
         // A parked prompt is still the reader's to take back, so deleting from
         // the panel has to reach it too.
-        let held = state.held.iter().position(|run| run.run_id == run_id);
+        let held = state
+            .held
+            .iter()
+            .position(|held| held.request.run_id == run_id);
         let cancelled = if let Some(index) = held {
-            state.held.remove(index)
+            state.held.remove(index).request
         } else {
             let Some(index) = state.queued.iter().position(|run| run.run_id == run_id) else {
                 return Err(RunQueueError::RunNotQueued(run_id.to_string()));
@@ -642,7 +687,7 @@ impl InMemoryRunQueue {
     pub fn cancel_all_queued(&self, reason: QueuedCancellationReason) -> Vec<ScheduledRunRequest> {
         let mut state = self.state.lock();
         let mut cancelled: Vec<_> = state.queued.drain(..).collect();
-        cancelled.append(&mut state.held);
+        cancelled.extend(state.held.drain(..).map(|held| held.request));
         cancelled.sort_by_key(|request| request.run_sequence);
         state.queued_bytes = 0;
         for request in &cancelled {
@@ -668,33 +713,54 @@ impl InMemoryRunQueue {
     /// place in the order the reader sees and their quota, but the dequeue path
     /// no longer sees them — they move back only through [`Self::release_held`].
     ///
-    /// Returns the run ids that were parked now, so the caller can tell clients
-    /// the queue changed shape.
-    pub fn park_stale(&self) -> Vec<String> {
+    /// A prompt whose timestamp cannot be read is parked too, as `UnknownAge`.
+    /// The two mistakes do not cost the same: parking wrongly costs the reader
+    /// one press, while letting an unknown-age prompt through spends their money
+    /// on a run written days ago. "I cannot tell how old this is" is therefore a
+    /// reason to ask, not a reason to proceed — and it is loud, because an
+    /// unreadable timestamp is a data problem somebody has to look at.
+    ///
+    /// Returns what was parked now, so the caller can tell clients the queue
+    /// changed shape.
+    pub fn park_stale(&self) -> Vec<ParkedRun> {
         let now = chrono::Utc::now();
         let mut state = self.state.lock();
         let mut parked = Vec::new();
         let mut kept = VecDeque::with_capacity(state.queued.len());
         let mut held = Vec::new();
         for request in state.queued.drain(..) {
-            // An unreadable timestamp never parks anything: "I cannot tell how
-            // old this is" must not become "it is old".
-            let too_old = chrono::DateTime::parse_from_rfc3339(&request.accepted_at)
-                .map(|at| {
+            let reason = match chrono::DateTime::parse_from_rfc3339(&request.accepted_at) {
+                Ok(at) => {
                     let age = now.signed_duration_since(at.with_timezone(&chrono::Utc));
-                    age.num_seconds() >= self.stale_after.as_secs() as i64
-                })
-                .unwrap_or(false);
-            if too_old {
-                parked.push(request.run_id.clone());
-                held.push(request);
-            } else {
-                kept.push_back(request);
+                    (age.num_seconds() >= self.stale_after.as_secs() as i64)
+                        .then_some(ParkReason::TooOld)
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        event = "queue_unparsable_queued_at",
+                        session_id = %self.session_id,
+                        run_id = %request.run_id,
+                        accepted_at = %request.accepted_at,
+                        %error,
+                        "queued prompt parked: its queuedAt could not be read"
+                    );
+                    Some(ParkReason::UnknownAge)
+                }
+            };
+            match reason {
+                Some(reason) => {
+                    parked.push(ParkedRun {
+                        run_id: request.run_id.clone(),
+                        reason,
+                    });
+                    held.push(HeldRun { request, reason });
+                }
+                None => kept.push_back(request),
             }
         }
         state.queued = kept;
-        state.held.append(&mut held);
-        state.held.sort_by_key(|request| request.run_sequence);
+        state.held.extend(held);
+        state.held.sort_by_key(|held| held.request.run_sequence);
         parked
     }
 
@@ -704,7 +770,17 @@ impl InMemoryRunQueue {
             .lock()
             .held
             .iter()
-            .any(|run| run.run_id == run_id)
+            .any(|held| held.request.run_id == run_id)
+    }
+
+    /// Why this run is parked, if it is.
+    pub fn held_reason(&self, run_id: &str) -> Option<ParkReason> {
+        self.state
+            .lock()
+            .held
+            .iter()
+            .find(|held| held.request.run_id == run_id)
+            .map(|held| held.reason)
     }
 
     /// Put a parked prompt back in line, in its original order, so the next
@@ -714,9 +790,9 @@ impl InMemoryRunQueue {
         let index = state
             .held
             .iter()
-            .position(|run| run.run_id == run_id)
+            .position(|held| held.request.run_id == run_id)
             .ok_or_else(|| RunQueueError::RunNotQueued(run_id.to_string()))?;
-        let mut request = state.held.remove(index);
+        let mut request = state.held.remove(index).request;
         // The reader just answered the question the parking asked, so the clock
         // that asked it starts again: without this the boundary would park it
         // straight back, and "send it now" would be a button that does nothing.
@@ -764,7 +840,8 @@ impl InMemoryRunQueue {
     /// shows does not reorder itself when one crosses the staleness line.
     pub fn queued(&self) -> Vec<ScheduledRunRequest> {
         let state = self.state.lock();
-        let mut all: Vec<ScheduledRunRequest> = state.held.iter().cloned().collect();
+        let mut all: Vec<ScheduledRunRequest> =
+            state.held.iter().map(|held| held.request.clone()).collect();
         all.extend(state.queued.iter().cloned());
         all.sort_by_key(|request| request.run_sequence);
         all
@@ -902,6 +979,47 @@ mod tests {
         InMemoryRunQueue::new("session-a", 1)
     }
 
+    /// A prompt whose age cannot be read is parked, not let through: the two
+    /// mistakes are not equally expensive, and "I cannot tell how old this is"
+    /// is a reason to ask rather than a reason to proceed.
+    #[test]
+    fn a_prompt_with_no_readable_age_is_parked_rather_than_let_through() {
+        let queue = queue();
+        queue
+            .accept(
+                "request-1",
+                Some("run-unknown"),
+                BusyPolicy::EnqueueCoalescing,
+                serde_json::json!({"message":"age unknown"}),
+            )
+            .unwrap();
+        queue.test_stamp_queued_at("run-unknown", "not a timestamp");
+
+        let parked = queue.park_stale();
+        assert_eq!(
+            parked,
+            vec![ParkedRun {
+                run_id: "run-unknown".to_string(),
+                reason: ParkReason::UnknownAge,
+            }]
+        );
+        assert_eq!(
+            queue.held_reason("run-unknown"),
+            Some(ParkReason::UnknownAge),
+            "the reason travels with the row, so the reader is not told 'long ago'"
+        );
+        // Not startable, still listed, still theirs.
+        assert_eq!(queue.next_startable(), None);
+        assert_eq!(queue.queued().len(), 1);
+        // And releasing it makes it runnable again, with a timestamp now.
+        queue.release_held("run-unknown").expect("release");
+        assert!(!queue.is_held("run-unknown"));
+        assert_eq!(
+            queue.next_startable().map(|run| run.run_id),
+            Some("run-unknown".to_string())
+        );
+    }
+
     /// A prompt that waited past the window stops being automatic: it keeps its
     /// place in the list the reader sees, and the dequeue path no longer reaches
     /// it until someone releases it.
@@ -928,7 +1046,13 @@ mod tests {
             .unwrap();
         queue.test_backdate("run-old", Duration::from_secs(3_600));
 
-        assert_eq!(queue.park_stale(), vec!["run-old".to_string()]);
+        assert_eq!(
+            queue.park_stale(),
+            vec![ParkedRun {
+                run_id: "run-old".to_string(),
+                reason: ParkReason::TooOld,
+            }]
+        );
         // Both are still listed, in the order they were written: a row that
         // crossed the line must not jump to the end of the panel.
         let listed: Vec<String> = queue.queued().into_iter().map(|run| run.run_id).collect();
