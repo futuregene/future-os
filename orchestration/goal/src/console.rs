@@ -120,7 +120,10 @@ pub fn run(prog: &str, args: Vec<String>) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(main_from_args(prog, args))
+    // The dispatch future contains RPC-heavy command states. Keep it on the
+    // heap across the runtime boundary, including detached Windows re-execs
+    // whose main thread has a small stack (as the unified CLI already does).
+    runtime.block_on(Box::pin(main_from_args(prog, args)))
 }
 
 /// Invocation name for error hints — set by `run`, falls back to the
@@ -212,51 +215,66 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         return Ok(());
     }
     let mut store = Store::open(&root_dir())?;
+    dispatch_command(&mut store, &registry, &args, prog).await
+}
+
+/// Construct the selected handler outside the async dispatcher. Debug builds
+/// otherwise reserve stack temporaries for every RPC-heavy match arm inside
+/// one poll frame, even when that command is not selected. Windows detached
+/// re-execs must reach their identity gate on the normal main-thread stack.
+fn dispatch_command<'a>(
+    store: &'a mut Store,
+    registry: &CommandRegistry,
+    args: &'a [String],
+    prog: &str,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + 'a>> {
     match args[0].as_str() {
-        "init" | "cancel" | "delete" => cmd_goal(&mut store, &args[..]).await,
-        "agent" => cmd_agent(&mut store, &args[1..]),
-        "todo" => cmd_todo(&mut store, &args[1..]).await,
-        "gate" => cmd_gate(&mut store, &args[1..]),
-        "backup" => cmd_backup(&store, &args[1..]),
-        "authority" => cmd_authority(&mut store, &args[1..]),
-        "replan" => cmd_replan(&mut store, &args[1..]),
-        "frontier" => cmd_frontier(&store, &args[1..]),
-        "profile" => cmd_profile(&mut store, &args[1..]),
-        "status" => cmd_status(&mut store, &args[1..]).await,
-        "ui" => cmd_webui(&args[1..]).await,
-        "quota" => cmd_quota(&store, &args[1..]),
-        "scheduler" => cmd_scheduler(&mut store, &args[1..]).await,
-        "store" => cmd_store(&mut store, &args[1..]),
-        "backfill" => cmd_backfill(&mut store, &args[1..]),
-        "privacy" => cmd_privacy(&store, &args[1..]),
-        "lease" => cmd_lease(&mut store, &args[1..]),
-        "runs" => cmd_runs(&store, &args[1..]),
-        "heartbeat-prompt" => cmd_heartbeat(&store, &args[1..]),
-        "worker-bridge" => cmd_worker_bridge(&mut store, &args[1..]).await,
-        "models" => cmd_models(&args[1..]).await,
-        "diagnose" => cmd_diagnose(&store, &args[1..]),
-        "run" => cmd_run(&mut store, &args[1..]).await,
+        "init" | "cancel" | "delete" => Box::pin(cmd_goal(store, args)),
+        "agent" => Box::pin(std::future::ready(cmd_agent(store, &args[1..]))),
+        "todo" => Box::pin(cmd_todo(store, &args[1..])),
+        "gate" => Box::pin(std::future::ready(cmd_gate(store, &args[1..]))),
+        "backup" => Box::pin(std::future::ready(cmd_backup(store, &args[1..]))),
+        "authority" => Box::pin(std::future::ready(cmd_authority(store, &args[1..]))),
+        "replan" => Box::pin(std::future::ready(cmd_replan(store, &args[1..]))),
+        "frontier" => Box::pin(std::future::ready(cmd_frontier(store, &args[1..]))),
+        "profile" => Box::pin(std::future::ready(cmd_profile(store, &args[1..]))),
+        "status" => Box::pin(cmd_status(store, &args[1..])),
+        "ui" => Box::pin(cmd_webui(&args[1..])),
+        "quota" => Box::pin(std::future::ready(cmd_quota(store, &args[1..]))),
+        "scheduler" => Box::pin(cmd_scheduler(store, &args[1..])),
+        "store" => Box::pin(std::future::ready(cmd_store(store, &args[1..]))),
+        "backfill" => Box::pin(std::future::ready(cmd_backfill(store, &args[1..]))),
+        "privacy" => Box::pin(std::future::ready(cmd_privacy(store, &args[1..]))),
+        "lease" => Box::pin(std::future::ready(cmd_lease(store, &args[1..]))),
+        "runs" => Box::pin(std::future::ready(cmd_runs(store, &args[1..]))),
+        "heartbeat-prompt" => Box::pin(std::future::ready(cmd_heartbeat(store, &args[1..]))),
+        "worker-bridge" => Box::pin(cmd_worker_bridge(store, &args[1..])),
+        "models" => Box::pin(cmd_models(&args[1..])),
+        "diagnose" => Box::pin(std::future::ready(cmd_diagnose(store, &args[1..]))),
+        "run" => Box::pin(cmd_run(store, &args[1..])),
         // ── P3 commands ──────────────────────────────────────────────────
-        "scope" => cmd_scope(&store, &args[1..]),
-        "lane" => cmd_lane(&store, &args[1..]),
-        "supervisor" => cmd_supervisor(&mut store, &args[1..]).await,
-        "report" => cmd_report(&mut store, &args[1..]),
-        "worker" => cmd_worker(&mut store, &args[1..]).await,
-        "task-graph" => cmd_task_graph(&store, &args[1..]),
-        "attention" => cmd_attention(&store, &args[1..]),
-        "inbox" => cmd_inbox(&store, &args[1..]),
-        "delivery" => cmd_delivery(&mut store, &args[1..]).await,
-        "registry" => cmd_registry(&registry, &args[1..]),
-        "commands" => cmd_commands(&registry, &args[1..]),
+        "scope" => Box::pin(std::future::ready(cmd_scope(store, &args[1..]))),
+        "lane" => Box::pin(std::future::ready(cmd_lane(store, &args[1..]))),
+        "supervisor" => Box::pin(cmd_supervisor(store, &args[1..])),
+        "report" => Box::pin(std::future::ready(cmd_report(store, &args[1..]))),
+        "worker" => Box::pin(cmd_worker(store, &args[1..])),
+        "task-graph" => Box::pin(std::future::ready(cmd_task_graph(store, &args[1..]))),
+        "attention" => Box::pin(std::future::ready(cmd_attention(store, &args[1..]))),
+        "inbox" => Box::pin(std::future::ready(cmd_inbox(store, &args[1..]))),
+        "delivery" => Box::pin(cmd_delivery(store, &args[1..])),
+        "registry" => Box::pin(std::future::ready(cmd_registry(registry, &args[1..]))),
+        "commands" => Box::pin(std::future::ready(cmd_commands(registry, &args[1..]))),
         // ── P4 commands (G-20 / G-27) ───────────────────────────────────
-        "canary" => cmd_canary(&store, &args[1..]),
-        "version" => cmd_version(&store, &args[1..]),
-        "doctor" => cmd_doctor(&store, &args[1..]).await,
-        "history" => cmd_history(&store, &args[1..]),
-        "turn" => cmd_turn(&store, &args[1..]),
-        "todo-event" => cmd_todo_event(&store, &args[1..]),
-        "evidence-log" => cmd_evidence_log(&store, &args[1..]),
-        other => bail!("unknown command `{other}` (try `{prog} --help`)"),
+        "canary" => Box::pin(std::future::ready(cmd_canary(store, &args[1..]))),
+        "version" => Box::pin(std::future::ready(cmd_version(store, &args[1..]))),
+        "doctor" => Box::pin(cmd_doctor(store, &args[1..])),
+        "history" => Box::pin(std::future::ready(cmd_history(store, &args[1..]))),
+        "turn" => Box::pin(std::future::ready(cmd_turn(store, &args[1..]))),
+        "todo-event" => Box::pin(std::future::ready(cmd_todo_event(store, &args[1..]))),
+        "evidence-log" => Box::pin(std::future::ready(cmd_evidence_log(store, &args[1..]))),
+        other => Box::pin(std::future::ready(Err(anyhow::anyhow!(
+            "unknown command `{other}` (try `{prog} --help`)"
+        )))),
     }
 }
 
