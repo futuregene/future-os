@@ -75,8 +75,12 @@ impl Store {
                 |row| row.get(0),
             )
             .optional()?;
-        raw.map(|raw| serde_json::from_str(&raw).map_err(Into::into))
-            .unwrap_or_else(|| Ok(crate::Settings::default()))
+        let mut settings: crate::Settings = raw
+            .map(|raw| serde_json::from_str(&raw))
+            .transpose()?
+            .unwrap_or_default();
+        settings.configuration.upgrade_legacy_timeout();
+        Ok(settings)
     }
 
     pub fn settings(&self) -> Result<crate::Settings> {
@@ -97,6 +101,7 @@ impl Store {
         if let Some(configuration) = patch.configuration {
             settings.configuration = configuration;
         }
+        settings.configuration.upgrade_legacy_timeout();
         settings.configuration.validate()?;
         settings.revision = settings
             .revision
@@ -559,6 +564,78 @@ mod tests {
         let (parent, mut conflict, _) = admissions.pop().unwrap();
         conflict.question = "different decision for the same call".into();
         assert!(reopened.prepare(parent, conflict, dir.path()).is_err());
+    }
+
+    #[test]
+    fn saved_five_minute_default_upgrades_without_changing_thinking_or_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let mut saved = crate::Settings::default();
+        saved.configuration.step_timeout_secs = 300;
+        saved.configuration.moderator.thinking_level = "high".into();
+        saved.configuration.panel[0].thinking_level = "low".into();
+        saved.revision = 7;
+        store
+            .connect()
+            .unwrap()
+            .execute(
+                "INSERT INTO fusion_meta(key,value) VALUES('settings',?1)",
+                [serde_json::to_string(&saved).unwrap()],
+            )
+            .unwrap();
+        let parent = Parent {
+            database_id: "db".into(),
+            session_id: "s".into(),
+            run_id: "r".into(),
+            tool_call_id: "t".into(),
+        };
+        let input = ConsultationInput {
+            question: "Question?".into(),
+            goal: "Answer".into(),
+            background: "Facts".into(),
+            constraints: vec![],
+            legacy_options: vec![],
+            evidence: vec![],
+            read_scope: vec![],
+        };
+        let (new, _) = store
+            .prepare(parent.clone(), input.clone(), dir.path())
+            .unwrap();
+        assert_eq!(new.configuration.as_ref().unwrap().step_timeout_secs, 600);
+        let mut historic = new.clone();
+        historic.configuration.as_mut().unwrap().step_timeout_secs = 300;
+        store
+            .connect()
+            .unwrap()
+            .execute(
+                "UPDATE fusion_runs SET data=?2 WHERE id=?1",
+                params![historic.id, serde_json::to_string(&historic).unwrap()],
+            )
+            .unwrap();
+        let loaded = store.settings().unwrap();
+        assert_eq!(loaded.configuration.step_timeout_secs, 600);
+        assert_eq!(
+            loaded.configuration.moderator,
+            saved.configuration.moderator
+        );
+        assert_eq!(loaded.configuration.panel, saved.configuration.panel);
+        assert_eq!(loaded.revision, 7);
+        let (replayed, created) = store.prepare(parent, input, dir.path()).unwrap();
+        assert!(!created);
+        assert_eq!(replayed.configuration.unwrap().step_timeout_secs, 300);
+        let updated = store
+            .update_settings(crate::SettingsPatch {
+                expected_revision: 7,
+                enabled: None,
+                configuration: Some(saved.configuration.clone()),
+            })
+            .unwrap();
+        assert_eq!(updated.configuration.step_timeout_secs, 600);
+        assert_eq!(
+            updated.configuration.moderator,
+            saved.configuration.moderator
+        );
+        assert_eq!(updated.revision, 8);
     }
 
     #[test]

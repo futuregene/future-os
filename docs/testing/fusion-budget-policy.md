@@ -76,3 +76,12 @@ Regression source covers the real Agent handler through typed encoding, protobuf
 
 
 A separate manual smoke check started the newly built Agent with an isolated temporary FutureOS home, a dummy local provider and a fresh loopback port. The normal verified connection performed readiness/contract checks and read `list_models`. The typed-only response (`data` empty) preserved `contextWindow=262144` and `maxTokens=32768` through the real gRPC client decoder. No model prompt was submitted, no user instance was stopped, and the test process/home and temporary client source were cleaned up. This validates model-catalog transport, not a paid four-stage discussion.
+
+
+## Moderator scope and ten-minute discussion steps (2026-11-02)
+
+The next device run completed all three initial participant reports but reached the old 300-second Host deadline during issue mapping. Its Agent stream retained 5,059 thinking deltas (123,238 UTF-8 bytes), no public report chunks and no tool calls. The input reports totalled 26,162 bytes. This identified ongoing internal generation rather than a long public report; it does not isolate a single cause of the model's reasoning behavior.
+
+Thinking mode remains user-controlled without phase overrides. Moderator role prompts now explicitly limit work to supplied material; a neutral capacity suffix replaces the shared investigation instruction. Issue mapping merges equivalent positions, preserves material differences/qualifications, chooses shortest sufficient source excerpts and submits when the existing categories have sufficient coverage, without fixed word/item limits.
+
+Default discussion-step timeout is now 600 seconds. Readiness remains capped at 120 seconds; total run time remains 2700 seconds. Saved former 300-second defaults are normalized on settings reads/saves for new admissions when the total budget permits; custom role/thinking choices, revision checks and historical run snapshots are preserved. Regression source covers legacy settings, user thinking preservation, replayed historical snapshots and ten-minute phase admission bounded by the original overall deadline. Local unit execution and new paid-model latency measurements are not claimed.

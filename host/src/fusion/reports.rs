@@ -3,6 +3,11 @@ use anyhow::{ensure, Result};
 use serde_json::Value;
 use std::future::Future;
 
+/// A neutral capacity bound: it must not broaden any stage into investigation.
+pub(super) fn capacity_instruction(bytes: usize) -> String {
+    format!("Final report capacity: {bytes} UTF-8 bytes including its actual forwarding representation. This is an upper bound, not a target length; include only material needed for this stage. It applies only to the final report, not to working generation or intermediate material. Follow this stage's scope and format. Oversized reports will be revised in this same session without repeating the task.")
+}
+
 pub(super) trait ReportSession {
     fn generate(
         &mut self,
