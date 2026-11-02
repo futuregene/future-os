@@ -846,13 +846,13 @@ fn perform(
             OP_ENABLE => {
                 let status = crate::remote::enable().await?;
                 if crate::remote::is_on(status.phase) {
-                    crate::remote::remember_switch(true);
+                    crate::remote::remember_switch(true, "cli_enable");
                 }
                 Ok(status)
             }
             OP_DISABLE => {
                 let status = crate::remote::stop_gracefully("user_disconnect").await;
-                crate::remote::remember_switch(false);
+                crate::remote::remember_switch(false, "cli_disable");
                 Ok(status)
             }
             other => Err(crate::Error::Message(format!(
