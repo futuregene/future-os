@@ -1,4 +1,3 @@
-use crate::console;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -464,7 +463,7 @@ fn reclaim_orphan_subdirs(
                     removed += 1;
                 }
                 Err(error) => {
-                    console::eprintln!("FutureOS: managed directory cleanup deferred: {error}")
+                    tracing::warn!(event = "reclaim_orphan_subdirs", error = %error,"FutureOS: managed directory cleanup deferred: {error}")
                 }
             }
         }

@@ -6,7 +6,6 @@ use super::client::{
     add_session_rule_command, approval_decision_command, connect_agent, get_state_command,
     RpcResponseExt,
 };
-use crate::console;
 use crate::store;
 
 /// Inject a same-run "allow in this workspace/chat" rule into the thread's live
@@ -283,7 +282,7 @@ fn heal_pending_approval_from_agent(
             .and_then(|value| value.as_str())
             .map(str::to_string),
     }) {
-        console::eprintln!("FutureOS approval heal failed for {approval_request_id}: {error}");
+        tracing::warn!(event = "heal_pending_approval_from_agent", approval_request_id = %approval_request_id, error = %error,"FutureOS approval heal failed for {approval_request_id}: {error}");
         return;
     }
     // Same CAS as the live persist path: the parked run awaits this decision.
@@ -293,7 +292,7 @@ fn heal_pending_approval_from_agent(
         error_message: None,
         error_type: None,
     });
-    console::eprintln!(
+    tracing::info!(event = "heal_pending_approval_from_agent", approval_request_id = %approval_request_id,
         "FutureOS rebuilt missing approval card {approval_request_id} from agent state"
     );
 }

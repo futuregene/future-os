@@ -86,3 +86,34 @@ files. In particular, `history_transfer_retired` records `completed`, `expired`
 or `released` when the snapshot disappears; a later missing read does not need
 to guess why it disappeared. These new events record metadata, not prompt,
 thinking, tool argument/result bodies or credentials.
+
+## Diagnostic migration and output boundaries
+
+Agent, Host and Desktop Rust diagnostics use `tracing` with severity chosen by impact:
+
+| Level | Use |
+|---|---|
+| ERROR | Startup/service failure, run-state or approval persistence failure, failed config rollback, caught panic |
+| WARN | Recoverable failure, degradation, failed maintenance, slow commands, first Agent event-stream interruption |
+| INFO | Startup/exit, import/cleanup/repair results, remote service lifecycle |
+| DEBUG | Reconnect attempts, cache eviction, routine refresh, expected deferral, shutdown detail |
+
+Events retain their readable messages and attach structured event names, errors,
+session/run IDs and counts where applicable. Windowed processes use the same
+writers. Compatibility string callbacks still forward to tracing; new call sites
+should select their severity directly.
+
+Separate output boundaries remain intact: CLI JSON/help/argument errors, updater
+and sandbox helper parent/child protocols, skill child output forwarding, and
+model thinking/reply/newline streams. These outputs remain outside diagnostics.
+Frontend code is outside this migration.
+
+Run `cargo run -p future-logging --example audit_diagnostics` for a static source
+audit. It follows the production module graph for Agent, Host and Desktop,
+including platform branches and calls nested in DSL macros such as
+`tokio::select!`, while excluding test code. The explicit allowlist in
+`packages/logging/tests/support/output_boundaries.json` pins each preserved
+output's source location, tokens and count. New raw diagnostics or changes to
+preserved output fail the check. CI integration tests reuse the audit and check
+its ability to find nested calls. This command only parses source: it starts no
+application and runs no unit tests.

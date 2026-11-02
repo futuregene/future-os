@@ -1,6 +1,5 @@
 //! CLI tool discovery is separate from Agent ownership. Never execute an empty
 //! externalBin placeholder, search the current directory or invoke a shell.
-use crate::console;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -411,7 +410,7 @@ pub fn prepare_path() -> Result<(), crate::Error> {
     let cli = match resolve() {
         Ok(cli) => cli,
         Err(error) => {
-            console::eprintln!("FutureOS: {error}");
+            tracing::warn!(event = "prepare_path", error = %error,"FutureOS: {error}");
             return Ok(());
         }
     };

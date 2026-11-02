@@ -1,6 +1,5 @@
 //! GUI adapter over the shared in-process Agent host. External Agents retain
 //! their ownership; successful full cleanup is required before relaunch.
-use future_host::console;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Manager;
@@ -57,7 +56,7 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
         {
             Ok(runtime) => runtime,
             Err(error) => {
-                crate::host_environment::report(&format!("Agent watchdog unavailable: {error}"));
+                tracing::error!(event = "spawn_agent_watchdog", error = %error,"Agent watchdog unavailable: {error}");
                 return;
             }
         };
@@ -91,7 +90,7 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
             if let LocalAgentState::Blocked(reason) = &observed {
                 loss.reset();
                 if last_notice.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(30)) {
-                    crate::host_environment::report(&format!("Agent recovery blocked: {reason}"));
+                    tracing::warn!(event = "spawn_agent_watchdog", reason = %reason,"Agent recovery blocked: {reason}");
                     last_notice = Some(now);
                 }
                 continue;
@@ -107,10 +106,7 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
                 // 2026-10-28, that silence is what let the Desktop sit with no
                 // Agent for 40 minutes with only "restart Desktop" as the fix.
                 if last_notice.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(30)) {
-                    crate::host_environment::report(
-                        "Agent recovery blocked: the previous Agent did not finish its cleanup; \
-                         restart FutureOS",
-                    );
+                    tracing::error!(event = "spawn_agent_watchdog","Agent recovery blocked: the previous Agent did not finish its cleanup; restart FutureOS");
                     last_notice = Some(now);
                 }
                 continue;
@@ -122,11 +118,12 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
                 continue;
             }
             loss.reset();
-            crate::host_environment::report(
-                "Agent recovery: the Agent is gone; starting a replacement",
+            tracing::info!(
+                event = "spawn_agent_watchdog",
+                "Agent recovery: the Agent is gone; starting a replacement"
             );
             if let Err(error) = host.recover(address) {
-                crate::host_environment::report(&format!("Agent recovery: {error}"));
+                tracing::error!(event = "spawn_agent_watchdog", error = %error,"Agent recovery: {error}");
             }
         }
     });
@@ -368,7 +365,7 @@ pub(crate) fn request_quit<R: tauri::Runtime>(app: tauri::AppHandle<R>, force: b
     if let Err(error) = std::thread::Builder::new().name("desktop-quit".into()).spawn(move || {
         let result = operation.wait();
         if let Err(error) = result {
-            console::eprintln!("FutureOS exit cleanup failed: {error}");
+            tracing::error!(event = "request_quit", error = %error,"FutureOS exit cleanup failed: {error}");
             if !FORCE_QUIT_REQUESTED.load(Ordering::Acquire) {
                 app.dialog().message(format!("FutureOS could not complete cleanup: {error}. Exit the process anyway?"))
                     .title("Cleanup failed")

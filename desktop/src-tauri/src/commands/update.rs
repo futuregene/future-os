@@ -156,7 +156,7 @@ fn helper_result(result: Result<(), String>) -> Result<(), String> {
 #[cfg(not(test))]
 pub(crate) fn confirm_update_startup() {
     if let Err(error) = journal::confirm_startup(build_info::VERSION) {
-        crate::host_environment::report(&format!("Update startup confirmation deferred: {error}"));
+        tracing::warn!(event = "confirm_update_startup", error = %error,"Update startup confirmation deferred: {error}");
     }
 }
 
@@ -1962,7 +1962,7 @@ async fn install_app_update_inner<R: tauri::Runtime>(
             ),
         };
         if let Err(error) = persisted {
-            crate::host_environment::report(&format!("Cannot persist update result: {error}"));
+            tracing::error!(event = "install_app_update_inner", error = %error,"Cannot persist update result: {error}");
             return (Err(error), false);
         }
         (installed, safe)
@@ -1972,7 +1972,7 @@ async fn install_app_update_inner<R: tauri::Runtime>(
     if let Err(error) = installed {
         // The journal and update screen own recovery. A second native failure
         // dialog would expose raw diagnostics and hide the available actions.
-        crate::host_environment::report(&format!("Update installation failed: {error}"));
+        tracing::error!(event = "install_app_update_inner", error = %error,"Update installation failed: {error}");
         return Err(error);
     }
     #[cfg(target_os = "windows")]

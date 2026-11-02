@@ -1,6 +1,5 @@
 //! systemd-logind sleep/shutdown notifications for Linux desktops.
 
-use future_host::console;
 use futures::StreamExt;
 use std::time::Duration;
 
@@ -8,7 +7,7 @@ pub fn install_disconnect_notifier() {
     crate::runtime::spawn(async {
         loop {
             if let Err(error) = listen().await {
-                console::eprintln!(
+                tracing::warn!(event = "install_disconnect_notifier", error = %error,
                     "remote: Linux power notification listener unavailable: {error}"
                 );
             }

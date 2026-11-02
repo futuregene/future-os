@@ -18,7 +18,7 @@ pub fn run_builtin_skills<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let executable = match crate::cli_tool::resolve_for("skills.init") {
         Ok(path) => path,
         Err(error) => {
-            crate::host_environment::report(&format!("{error}; skipping built-in skill bootstrap"));
+            tracing::warn!(event = "run_builtin_skills", error = %error,"{error}; skipping built-in skill bootstrap");
             return;
         }
     };
@@ -27,7 +27,7 @@ pub fn run_builtin_skills<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let (rx, child) = match command.spawn() {
         Ok(pair) => pair,
         Err(error) => {
-            console::eprintln!("FutureOS: failed to start skill bootstrap: {error}");
+            tracing::error!(event = "run_builtin_skills", error = %error,"FutureOS: failed to start skill bootstrap: {error}");
             return;
         }
     };
@@ -80,8 +80,14 @@ fn drain_skill_events(
     if stopping.is_some() && !terminated {
         crate::runtime::record_cleanup_error("CLI bootstrap termination was not confirmed".into());
     }
-    if exit_code != Some(0) {
-        console::eprintln!("FutureOS: skill bootstrap did not complete (exit {exit_code:?})");
+    if stopping.is_some() {
+        tracing::debug!(
+            event = "skill_bootstrap_cancelled",
+            ?exit_code,
+            "Skill bootstrap stopped during shutdown"
+        );
+    } else if exit_code != Some(0) {
+        tracing::error!(event = "drain_skill_events", exit_code = ?exit_code,"FutureOS: skill bootstrap did not complete (exit {exit_code:?})");
     }
     exit_code
 }
@@ -95,7 +101,7 @@ fn handle_skill_event(event: CommandEvent, exit_code: &mut Option<i32>) {
             console::eprint!("[skills] {}", String::from_utf8_lossy(&bytes));
         }
         CommandEvent::Error(error) => {
-            console::eprintln!("FutureOS: skill bootstrap error: {error}");
+            tracing::error!(event = "handle_skill_event", error = %error,"FutureOS: skill bootstrap error: {error}");
         }
         CommandEvent::Terminated(payload) => {
             *exit_code = payload.code;

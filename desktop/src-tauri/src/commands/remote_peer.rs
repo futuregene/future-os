@@ -7,7 +7,6 @@
 //! status where it meant the other.
 
 use crate::remote_peer::{runtime, PeerEvent, PeerSummary};
-use future_host::console;
 use serde_json::Value;
 use tauri::Emitter as _;
 
@@ -44,7 +43,7 @@ fn emitter<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> runtime::Emitter {
 /// and the next status poll still sees the host as connected.
 fn report_emit_failure<E: std::fmt::Display>(result: Result<(), E>) {
     if let Err(error) = result {
-        console::eprintln!("remote_peer: could not deliver a peer event: {error}");
+        tracing::warn!(event = "report_emit_failure", error = %error,"remote_peer: could not deliver a peer event: {error}");
     }
 }
 
@@ -59,7 +58,7 @@ pub async fn remote_peer_pair<R: tauri::Runtime>(
         Err(error) => {
             // The UI shows a support code; the real cause goes to stderr where
             // a support session can read it.
-            console::eprintln!("remote_peer: pairing failed: {error}");
+            tracing::warn!(event = "remote_peer_pair", error = %error,"remote_peer: pairing failed: {error}");
             Err(error)
         }
     }

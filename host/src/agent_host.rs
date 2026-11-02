@@ -368,10 +368,13 @@ impl AgentHost {
                                 state.yield_reason = yield_reason;
                             }
                             state.finished = true;
-                            crate::environment::report(&format!(
-                                "Agent host finished owned={} phase={:?}",
-                                state.owned, state.phase
-                            ));
+                            if matches!(state.phase, Phase::Failed(_)) {
+                                tracing::error!(event = "agent_host_finished", owned = state.owned, phase = ?state.phase,
+                                    "Agent host finished owned={} phase={:?}", state.owned, state.phase);
+                            } else {
+                                tracing::info!(event = "agent_host_finished", owned = state.owned, phase = ?state.phase,
+                                    "Agent host finished owned={} phase={:?}", state.owned, state.phase);
+                            }
                             host.0.changed.notify_all();
                         })
                     {
@@ -602,9 +605,10 @@ impl AgentHost {
                             became_ready
                         };
                         self.0.changed.notify_all();
-                        crate::environment::report(&format!("Agent identity version={} instance={}", identity.version, identity.agent_instance_id));
+                        tracing::info!(event = "agent_identity", version = %identity.version, agent_instance_id = %identity.agent_instance_id,
+                            "Agent identity version={} instance={}", identity.version, identity.agent_instance_id);
                         if became_ready {
-                            crate::environment::report("embedded Agent ready");
+                            tracing::info!(event = "embedded_agent_ready", "embedded Agent ready");
                         }
                     }
                 }

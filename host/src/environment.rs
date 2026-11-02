@@ -66,7 +66,7 @@ pub fn start_logging() -> Result<future_logging::FileGuard, crate::Error> {
     // tail of the run before this one. Best effort: a copy that cannot be made
     // must not cost this launch its log.
     if let Err(error) = preserve_previous_log(&path, PREVIOUS_LOG_LINES) {
-        report(&format!("previous host log could not be kept: {error}"));
+        tracing::warn!(event = "previous_log_preservation_failed", %error, "previous host log could not be kept: {error}");
     }
     let component =
         future_logging::primary_component().unwrap_or(future_logging::Component::Desktop);

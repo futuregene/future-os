@@ -7,7 +7,6 @@ use super::client::{
     run_control_command, RpcResponseExt,
 };
 use super::replica::AGENT_REPLICAS;
-use crate::console;
 use crate::store;
 
 /// A missing session is already stopped; an accepted abort still needs idle
@@ -231,7 +230,7 @@ pub async fn abort_run(
             if !is_agent_unavailable_error(&error) {
                 return Err(error);
             }
-            console::eprintln!(
+            tracing::warn!(event = "abort_run", error = %error,
                 "FutureOS agent abort skipped because agent is unavailable: {error}"
             );
         }
@@ -258,7 +257,7 @@ pub(super) fn mark_run_failed_if_active(run_id: Option<&str>, error: &str) {
     // Compare-and-set: only fails a run that isn't already terminal, atomically,
     // so a concurrent `abort_run` (which sets `cancelled`) is never overwritten.
     if let Err(update_error) = store::fail_run_if_active(run_id, error, error_type) {
-        console::eprintln!("FutureOS run failure status update failed: {update_error}");
+        tracing::error!(event = "mark_run_failed_if_active", error = %update_error,"FutureOS run failure status update failed: {update_error}");
     }
 }
 
@@ -292,13 +291,13 @@ pub(super) fn mark_run_completed_if_active(
             // finalization, the observer's event stream or the next user send.
             Some(crate::runtime::spawn(async move {
                 if let Err(error) = title_settled_thread_if_enabled(&run_id).await {
-                    console::eprintln!("FutureOS title generation skipped or failed: {error}");
+                    tracing::debug!(event = "mark_run_completed_if_active", error = %error,"FutureOS title generation skipped or failed: {error}");
                 }
             }))
         }
         Ok(false) => None,
         Err(update_error) => {
-            console::eprintln!("FutureOS run completion status update failed: {update_error}");
+            tracing::error!(event = "mark_run_completed_if_active", error = %update_error,"FutureOS run completion status update failed: {update_error}");
             None
         }
     }

@@ -2099,7 +2099,9 @@ name = "future-logging"
 version = "0.0.0"
 dependencies = [
  "fs2",
+ "proc-macro2",
  "serde_json",
+ "syn 2.0.119",
  "tempfile",
  "tracing",
  "tracing-appender",
