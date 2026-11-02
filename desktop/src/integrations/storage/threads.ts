@@ -4,7 +4,7 @@ import type {
   ThreadCleanupSummary,
 } from "./types";
 import { invokeCommand } from "../tauri/invoke";
-import { readHistoryTransfer } from "./historyTransfer";
+import { readHistoryTransfer, TAIL_WAIT_MS } from "./historyTransfer";
 
 // ─── Workspaces ──────────────────────────────────────────────────────────
 
@@ -197,6 +197,10 @@ export interface SessionHistoryPage {
   nextOffset: number;
 }
 
+/**
+ * The newest page (`before === null`) is the first paint of a conversation, so
+ * it waits out the running transfers instead of painting a refusal.
+ */
 export async function getSessionEntriesPage(
   threadId: string,
   before: number | null = null,
@@ -209,5 +213,5 @@ export async function getSessionEntriesPage(
     before,
     limit,
     ...(historySource ? { historySource } : {}),
-  }, isCurrent);
+  }, isCurrent, before === null ? TAIL_WAIT_MS : undefined);
 }

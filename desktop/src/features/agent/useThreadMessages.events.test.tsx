@@ -833,6 +833,14 @@ describe("useThreadMessages page guards", () => {
     expect(current.messages.map(message => message.content)).toEqual(["recovered"]);
   });
 
+  it("reports an admission refusal as the thread error rather than as empty history", async () => {
+    // Admission refusing a read is still a failed read: the transcript must say
+    // so and keep the retry affordance, never settle into "no messages".
+    storage.getSessionEntriesPage.mockRejectedValueOnce(new Error("history_transfer_admission_timeout"));
+    await mount();
+    expect(current.historyError).toBe("history_transfer_admission_timeout");
+  });
+
   it("ignores a stale run-status refresh from a replaced conversation", async () => {
     // concurrency: a session replacement invalidates the outgoing owner's
     // callbacks, so its run read must not write into the new conversation.
