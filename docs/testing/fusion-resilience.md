@@ -48,3 +48,14 @@ Desktop and Mobile consume the same TypeScript projection. TUI maps the same sto
 Scoped Rust fmt and Clippy include all targets for Fusion, Agent, Host, CLI, TUI and the Desktop Rust consumer. Desktop/Mobile TypeScript and their project ESLint checks validate the UI consumers. Documentation placement, English/Chinese pairing and links use the repository docs gate. Unit tests are compiled by Clippy but are not executed locally, per repository policy; execution belongs to CI.
 
 The manual runtime exercises ran on macOS. Windows/Linux compilation and native Android/iOS device interaction remain CI/device validation. The three clients share one backend policy; this record does not claim device runs that were not performed. The 60-second readiness observation does not guarantee later provider health; monetary budgets, finer multiple-account routing and automatic moderator replacement remain outside this batch.
+
+## PR CI follow-up (2026-11-02)
+
+PR #1459 exposed integration regressions that local static checks cannot detect:
+
+- Rust's handshake confirmation advertised `fusion_v1` and `fusion_settings_v1`, while the shared Rust/TypeScript protocol fixture still described the old list. The fixture now includes both capabilities in wire order; exact confirmation comparison remains enabled.
+- Existing Desktop composer suites did not mock the new native event subscription, and the settings-navigation contract omitted Fusion. Their test boundaries now include the event API and the new page; a dedicated availability test covers both invalidation events, fail-closed reads and listener cleanup.
+- Mobile composer tests lacked the controls context newly used by Fusion. Their mocks now provide that boundary. The shared selection sheet also had a real safe-area regression: `KeyboardAvoidingView`'s bottom padding replaced its navigation-area inset. Safe-area padding now belongs to an inner view; both model and thinking selection retain the original padding assertion.
+- The Windows libraries job's real Goal detached-process drive overflowed the main-thread stack before creating its run log. Goal now constructs selected command futures in a synchronous dispatch function and boxes them before entering the async await wrapper, following the unified CLI's existing pattern. This avoids one async poll frame reserving RPC-heavy temporaries from every command arm. The detached-process test and identity-gate assertions remain unchanged.
+
+A manual macOS driver invoked the shipping shared Goal console on a 512 KiB thread with an isolated state directory and no Agent. Goal creation, cancellation and detached re-execution completed; exactly one child log contained the expected `run requires --agent-id` identity error. This is a process exercise, not a local unit-test run or a claim of Windows execution. Native CI validates the platform-specific path. Scoped Clippy, typecheck, ESLint and docs checks cover the follow-up; unit execution remains in CI.
