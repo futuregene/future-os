@@ -109,7 +109,16 @@ pub(crate) fn forget_known_device(pair_id: &str) {
 /// already stopped), which is what the switch renders. Failing the command over
 /// an unwritten preference would leave the UI describing a state it cannot
 /// show.
-pub fn remember_switch(on: bool) {
+pub fn remember_switch(on: bool, source: &str) {
+    // The one line that answers "why is the remote desktop off": the switch is
+    // the user's preference and nothing else writes it, so a stored `off` names
+    // its own author. Without it the only trace of a switch-off was the phase
+    // afterwards, which cannot tell a flipped switch from a bridge that stopped
+    // on its own. `source` distinguishes the window from `future remote`.
+    future_remote_protocol::remote_log!(
+        "remote: switch stored {} (source={source})",
+        if on { "on" } else { "off" }
+    );
     if let Err(error) = crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
         auto_connect_remote: Some(on),
         ..Default::default()

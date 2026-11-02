@@ -87,6 +87,21 @@ pub async fn select_agent_with_retries(
     .await
 }
 
+/// [`select_agent_with_retries`] for a host that serves the Agent at
+/// `configured` (see [`connection::select_agent_serving`]): the same retries,
+/// with an absent endpoint treated as this host's to fill rather than a refusal.
+pub async fn select_agent_serving_with_retries(
+    configured: &str,
+    version: &str,
+    connect_timeout: Duration,
+    handshake_timeout: Duration,
+) -> Result<AgentSelection, ConnectionError> {
+    with_readiness_retries(READINESS_PROBE_ATTEMPTS, READINESS_RETRY_BASE, || {
+        connection::select_agent_serving(configured, version, connect_timeout, handshake_timeout)
+    })
+    .await
+}
+
 /// Probe the local Agent and classify the result.
 ///
 /// A successful selection is dropped immediately: this only classifies. An
@@ -98,13 +113,40 @@ pub async fn probe_local_agent(
     connect_timeout: Duration,
     handshake_timeout: Duration,
 ) -> LocalAgentState {
-    let outcome = select_agent_with_retries(
-        configured,
-        connection::EXPECTED_AGENT_VERSION,
-        connect_timeout,
-        handshake_timeout,
+    classify_selection(
+        select_agent_with_retries(
+            configured,
+            connection::EXPECTED_AGENT_VERSION,
+            connect_timeout,
+            handshake_timeout,
+        )
+        .await,
     )
-    .await;
+}
+
+/// [`probe_local_agent`] for a host that serves the Agent at `configured`.
+///
+/// The distinction matters to a supervisor: with the attach-only probe, an
+/// address nothing answers on is `Blocked` — "somebody else's endpoint is
+/// down". For the host that owns that address it is `Startable`, and the
+/// service has to come back.
+pub async fn probe_served_agent(
+    configured: &str,
+    connect_timeout: Duration,
+    handshake_timeout: Duration,
+) -> LocalAgentState {
+    classify_selection(
+        select_agent_serving_with_retries(
+            configured,
+            connection::EXPECTED_AGENT_VERSION,
+            connect_timeout,
+            handshake_timeout,
+        )
+        .await,
+    )
+}
+
+fn classify_selection(outcome: Result<AgentSelection, ConnectionError>) -> LocalAgentState {
     match outcome {
         Ok(AgentSelection::External(client)) => {
             drop(client);

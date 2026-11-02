@@ -23,7 +23,7 @@ pub async fn remote_start(
             // it must not be remembered as one: the next launch must not replay
             // a state the user never saw.
             if is_on(status.phase) {
-                remember_switch(true);
+                remember_switch(true, "window_start");
             }
             Ok(status)
         }
@@ -39,7 +39,7 @@ pub async fn remote_start(
 #[tauri::command]
 pub async fn remote_stop() -> Result<remote::RemoteStatus, crate::AppError> {
     let status = remote::stop_gracefully("user_disconnect").await;
-    remember_switch(false);
+    remember_switch(false, "window_stop");
     Ok(status)
 }
 
