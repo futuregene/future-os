@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     io::{BufRead, BufReader, Write},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -32,6 +32,13 @@ pub(super) struct PreparedProcess {
     output: Option<BufReader<ChildStdout>>,
     committed: bool,
 }
+
+/// How long a helper that closed its output without announcing `READY` is given to become
+/// reapable so that its exit code can be read. It bounds process teardown only — the helper's
+/// own work is bounded by the readiness timeout — and it is spent only once the helper has
+/// already stopped saying anything.
+#[cfg(not(target_os = "windows"))]
+const EXIT_REAP_GRACE: Duration = Duration::from_secs(2);
 #[cfg(not(target_os = "windows"))]
 impl PreparedProcess {
     pub(super) fn start(mut command: Command) -> Result<Self, String> {
@@ -60,17 +67,49 @@ impl PreparedProcess {
             .map_err(|_| "Update preparation timed out; no installation was started")?
             .map_err(|e| e.to_string())?;
         if line.trim() != "READY" {
-            let status = prepared.child.try_wait().map_err(|e| e.to_string())?;
+            // The helper will not install anything, so its exit code is the last thing that can
+            // name why — and it cannot be read with a probe. `read_line` returns as soon as the
+            // helper **closes its stdout**, which happens while it is still tearing down; only
+            // afterwards does the kernel make the process reapable. A single `try_wait` lands in
+            // that gap, answers `None`, and the dialog's own 126 is reported as a generic refusal
+            // (CI run 41369153605 on macOS; here that gap cost the classification in ~1 run in 20
+            // for an `exit 126` helper, measured at 0.3 ms on an idle machine and longer under
+            // the full suite's parallel load).
+            let said = line.trim().to_owned();
+            let status = prepared.wait_for_reap(EXIT_REAP_GRACE)?;
             if status.is_some_and(|status| status.code() == Some(126)) {
                 return Err("Authorization cancelled; current services are still running".into());
             }
+            let detail = match (said.is_empty(), status) {
+                (false, _) => said,
+                (true, Some(status)) => format!("the helper exited with {status}"),
+                (true, None) => "the helper said nothing and did not exit".to_owned(),
+            };
             return Err(format!(
-                "Update preparation was cancelled or refused: {}",
-                line.trim()
+                "Update preparation was cancelled or refused: {detail}"
             ));
         }
         prepared.output = Some(output);
         Ok(prepared)
+    }
+    /// Bounded wait for a helper that has already closed its output to become reapable, and its
+    /// exit status when it does. `try_wait` is the only poll std offers; the bound is what stops
+    /// a helper that closed stdout and kept running from stalling the update path, since "it said
+    /// nothing and did not exit" is then the honest answer.
+    fn wait_for_reap(
+        &mut self,
+        grace: Duration,
+    ) -> Result<Option<std::process::ExitStatus>, String> {
+        let deadline = Instant::now() + grace;
+        loop {
+            if let Some(status) = self.child.try_wait().map_err(|e| e.to_string())? {
+                return Ok(Some(status));
+            }
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
     pub(super) fn commit(mut self) -> Result<Completion, String> {
         if let Err(error) = self
@@ -183,6 +222,50 @@ mod tests {
         assert_eq!(
             cancelled, "Authorization cancelled; current services are still running",
             "126 is the dialog's cancellation, not a generic failure"
+        );
+    }
+
+    /// The silent helper's exit code may not be read while it is still closing down: `start`
+    /// sees EOF when the helper closes stdout, one step **before** the kernel makes the process
+    /// reapable, so a single non-blocking look loses the dialog's 126 (CI run 41369153605 on
+    /// macOS). This helper closes its output and only then exits, which puts the parent on the
+    /// far side of that gap every time instead of occasionally.
+    #[test]
+    fn a_silent_helper_that_exits_126_after_closing_its_output_is_a_cancellation() {
+        let cancelled = PreparedProcess::start({
+            let mut command = Command::new("/bin/sh");
+            command.arg("-c").arg("exec 1>&-; sleep 0.2; exit 126");
+            command
+        })
+        .err()
+        .expect("a helper that says nothing is refused");
+        assert_eq!(
+            cancelled, "Authorization cancelled; current services are still running",
+            "the exit code arrives after the output closes, and the refusal still has to read it"
+        );
+    }
+
+    /// The wait above is a grace, not a licence to stall: a helper that closes its output and
+    /// keeps running is nobody's cancellation, so the update path reports the refusal instead of
+    /// waiting for an exit that may never come.
+    #[test]
+    fn a_silent_helper_that_keeps_running_is_refused_instead_of_stalling() {
+        let started = Instant::now();
+        let refused = PreparedProcess::start({
+            let mut command = Command::new("/bin/sh");
+            command.arg("-c").arg("exec 1>&-; sleep 30");
+            command
+        })
+        .err()
+        .expect("a helper that says nothing is refused");
+        assert_eq!(
+            refused,
+            "Update preparation was cancelled or refused: the helper said nothing and did not exit"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the exit-code wait is bounded, took {:?}",
+            started.elapsed()
         );
     }
 
