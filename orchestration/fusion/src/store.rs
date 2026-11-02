@@ -535,7 +535,7 @@ mod tests {
                 goal: "choose".into(),
                 background: "new facts".into(),
                 constraints: vec![],
-                options: vec![],
+                legacy_options: vec![],
                 evidence: vec![],
                 read_scope: vec![],
             };
@@ -577,7 +577,7 @@ mod tests {
             goal: "choose".into(),
             background: "facts".into(),
             constraints: vec![],
-            options: vec![],
+            legacy_options: vec![],
             evidence: vec![],
             read_scope: vec![],
         };
@@ -643,7 +643,7 @@ mod tests {
             goal: "choose".into(),
             background: "facts".into(),
             constraints: vec![],
-            options: vec![],
+            legacy_options: vec![],
             evidence: vec![],
             read_scope: vec![],
         };
@@ -703,7 +703,7 @@ mod tests {
             goal: "choose".into(),
             background: "facts".into(),
             constraints: vec![],
-            options: vec![],
+            legacy_options: vec![],
             evidence: vec![],
             read_scope: vec![],
         };
@@ -758,7 +758,7 @@ mod tests {
             goal: "decide".into(),
             background: "facts".into(),
             constraints: vec![],
-            options: vec![],
+            legacy_options: vec![],
             evidence: vec![],
             read_scope: vec![],
         };
@@ -806,21 +806,24 @@ mod tests {
             })
             .collect();
         oversized.report = Some(large);
-        let bounded = oversized.tool_output().unwrap();
-        assert!(bounded.len() <= crate::MAX_RESULT_BYTES);
-        let bounded: Value = serde_json::from_str(&bounded).unwrap();
+        let complete = oversized.tool_output().unwrap();
+        assert!(complete.len() > 32 * 1024);
+        let complete: Value = serde_json::from_str(&complete).unwrap();
         assert_eq!(
-            bounded["report"]["available_results"]
+            complete["report"]["available_results"]
                 .as_array()
                 .unwrap()
                 .len(),
             10
         );
         assert_eq!(
-            bounded["report"]["available_results"][0]["step_id"],
+            complete["report"]["available_results"][0]["step_id"],
             "step0"
         );
-        assert_eq!(bounded["report"]["available_results"][0]["truncated"], true);
+        assert_eq!(
+            complete["report"]["available_results"][0]["truncated"],
+            false
+        );
         assert_eq!(
             failed.report.unwrap().degradations[0].kind,
             Some(crate::FailureKind::Authentication)
@@ -849,7 +852,7 @@ mod tests {
             goal: "decide".into(),
             background: "facts".into(),
             constraints: vec![],
-            options: vec![],
+            legacy_options: vec![],
             evidence: vec![],
             read_scope: vec![],
         };

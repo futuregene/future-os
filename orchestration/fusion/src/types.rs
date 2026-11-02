@@ -9,15 +9,13 @@ pub const PANEL_MODELS: [&str; 3] = [
     "future/qwen3.7-plus",
 ];
 pub const MODERATOR_MODEL: &str = "future/deepseek-flash";
-pub const MAX_INPUT_BYTES: usize = 48 * 1024;
-pub const MAX_RESULT_BYTES: usize = 32 * 1024;
 pub const INNER_TOOL_NAMES: [&str; 4] = ["read", "ls", "glob", "grep"];
 /// Shared by the enabled parent run and its tool description on every client.
 pub const DISCUSSION_POLICY: &str = "Fusion is enabled for this run only. You MUST call fusion before forming a new substantive judgment, choosing an approach or presenting a recommendation that requires analysis, diagnosis, design, comparison, review, or assessment of risks, impact, compatibility or edge cases. Confidence, apparent simplicity and the absence of competing options are NOT reasons to skip discussion; even a small bug fix requires discussion when its cause or remedy needs judgment.\n\
 Gather necessary facts with ordinary tools first. You may directly perform factual searches/reads, exact user-specified edits requiring no new judgment, and implementation or verification already covered by an applicable discussion conclusion. Reuse that conclusion throughout its covered work; do not discuss every file edit, command or mechanical correction. Group related questions about ONE decision, including its rationale, risks and verification plan, into one consultation. Consult again only for a new decision or new evidence that could invalidate the existing conclusion. Do not delegate the whole task.\n\
 Fusion only thinks; the main agent executes and verifies under the original user authorization. Honor explicit user instructions requiring or prohibiting consultation. There is no per-run limit on the number of discussions; continue consulting as new decisions arise, while reusing applicable conclusions instead of repeating the same question. If consultation fails, do not automatically repeat it; transparently explain the limitation and continue using applicable existing conclusions or clearly qualified independent reasoning. Never present a failed or skipped discussion as a completed conclusion or consensus.";
 
-pub const TOOL_DESCRIPTION: &str = "Think through ONE focused decision with multiple models and return a final recommendation. This is THINKING ONLY: no file writes, shell commands, external actions or implementation. Investigate first. Provide the goal, relevant background, confirmed facts, unknowns, constraints and necessary evidence; include candidate options and comparison criteria when useful. Supply enough context for models that cannot see the parent conversation. Inner models can read/search authorized files only. Propose actions and verification for the main agent to carry out under the original user authorization. A recommendation does not grant permission or prove verification. Inspect status, has_conclusion and report: failed consultations may return preserved public materials without a conclusion; never claim a complete discussion or consensus in that case.";
+pub const TOOL_DESCRIPTION: &str = "Independently think through ONE focused question with multiple models and return a recommendation. This is THINKING ONLY: no file writes, shell commands, external actions or implementation. State the question directly without embedding an answer, preferred approach or answer outline. Provide the user's desired outcome. Background must faithfully compress the relevant conversation and user requirements: attribute user statements, confirmed observations and prior assistant statements separately, retain important corrections, and identify unknowns. Prior assistant suggestions are not verified facts or accepted user decisions. Summarize prior replies only as needed to explain the user's follow-up or corrections; do not copy their solution outline unless the user explicitly adopted it or requested its review. Do not include the main agent's private reasoning, newly invented plans, preferences or recommended solution. If the user supplied proposals or explicitly requested their comparison, faithfully include them in background with that attribution. Evidence must be sourced observations, not unsourced model beliefs presented as facts. Constraints are only brief, material task boundaries and may be empty; do not add language, word-count, length or formatting constraints. Supply sufficient factual context for models that cannot see the parent conversation. Inner models can read/search authorized files only. Propose actions and verification for the main agent under the original user authorization. Inspect status, has_conclusion and report; preserved materials from failed consultations are not a conclusion or consensus.";
 
 /// Recognizes only a leading, complete command token, never quoted/source text.
 pub fn fusion_prompt(message: &str) -> Option<&str> {
@@ -35,9 +33,11 @@ pub struct ConsultationInput {
     pub question: String,
     pub goal: String,
     pub background: String,
-    pub constraints: Vec<String>,
     #[serde(default)]
-    pub options: Vec<String>,
+    pub constraints: Vec<String>,
+    // Historical records remain readable; never forward this field to models.
+    #[serde(default, skip_serializing, rename = "options")]
+    pub legacy_options: Vec<String>,
     #[serde(default)]
     pub evidence: Vec<String>,
     #[serde(default)]
@@ -54,16 +54,8 @@ impl ConsultationInput {
             ensure!(!text.trim().is_empty(), "Fusion requires {name}");
         }
         ensure!(
-            self.question.len() <= 2048,
-            "Focus Fusion on one decision (question exceeds 2048 bytes)"
-        );
-        ensure!(
             self.read_scope.len() <= 16,
             "At most 16 read scopes are allowed"
-        );
-        ensure!(
-            serde_json::to_vec(self)?.len() <= MAX_INPUT_BYTES,
-            "Fusion input exceeds 48 KiB; narrow the question and evidence"
         );
         Ok(())
     }
@@ -217,5 +209,28 @@ mod tests {
         b.tool_call_id = "t2".into();
         assert_ne!(a.consultation_id(), b.consultation_id());
         assert_eq!(a.consultation_id(), a.clone().consultation_id());
+    }
+}
+
+#[cfg(test)]
+mod independent_input_tests {
+    #[test]
+    fn large_context_and_empty_constraints_are_accepted_without_forwarding_legacy_options() {
+        let input: super::ConsultationInput = serde_json::from_value(serde_json::json!({
+            "question": "Q".repeat(3000),
+            "goal": "User outcome",
+            "background": "Factual context. ".repeat(10000),
+            "options": ["Old main-agent preference"]
+        }))
+        .unwrap();
+        input.validate().unwrap();
+        assert!(input.constraints.is_empty());
+        assert_eq!(input.legacy_options.len(), 1);
+        let forwarded = serde_json::to_value(&input).unwrap();
+        assert!(forwarded.get("options").is_none());
+        assert_eq!(
+            forwarded["background"].as_str().unwrap().len(),
+            input.background.len()
+        );
     }
 }

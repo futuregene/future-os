@@ -2,7 +2,15 @@
 
 Date: 2026-10-29 (Asia/Shanghai). Follow-up to the [device-run diagnosis](fusion-database-audit.md).
 
-## Fixed development configuration
+## Current independent-discussion policy (2026-11-02)
+
+Fusion now defaults to independent solution generation. The tool has no candidate-options field; background faithfully compresses context and user requirements with provenance, including user-provided proposals. It excludes the main agent's invented plans and preferences. Constraints are brief material boundaries and may be empty, without language, word-count or formatting rules.
+
+Fusion adds no input/context, public-response, synthesis or tool-envelope length cap. It uses the ordinary provider/model policy for first attempts and retries, without a Fusion token override; provider context windows and output capacities still apply. Legacy token-budget fields are read for compatibility but not used or emitted in new configuration snapshots. Step metadata records zero to indicate no output override. Timeouts, cancellation, retry admission, read-only file limits and query preview paging remain in force. The shared Host/Agent policy applies equally to Desktop, Mobile and terminal.
+
+Regression source covers long inputs, omitted/empty constraints, exclusion of legacy options from forwarded prompts, long synthesis, unshortened envelopes, legacy budgets ignored on retry, and provider settings preserved across attempts. Clippy compiles these tests; local unit execution remains delegated to CI. The historical probes below exercised the old bounded policy and do not validate the new one.
+
+## Historical development configuration (2026-10-29)
 
 `orchestration/fusion/src/config.rs` is the single default-policy source. The same versioned configuration is consumed by the Host and Agent serving Desktop, Mobile and terminal clients. There is no new per-client setting. A future settings page can supply this contract; each admitted discussion already freezes its configuration independently of subsequent defaults.
 

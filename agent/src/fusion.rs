@@ -74,11 +74,6 @@ pub(crate) fn update_settings(state: &crate::rpc::AppState, raw: &str) -> Result
                 "Fusion requires a text model"
             );
             profile.model = format!("{}/{}", model.provider, model.id);
-            if model.max_tokens > 0 {
-                profile.max_output_tokens = profile.max_output_tokens.min(model.max_tokens);
-                profile.retry_max_output_tokens =
-                    profile.retry_max_output_tokens.min(model.max_tokens);
-            }
         }
     }
     let settings = Store::open(&crate::utils::future_home())?.update_settings(patch)?;
@@ -122,7 +117,7 @@ pub(crate) fn main_tool() -> AgentTool {
         "fusion",
         &description,
         json!({"type":"object","additionalProperties":false,"required":["question","goal","background","constraints"],"properties":{
-            "question":{"type":"string","description":"One focused decision, not the whole task"},"goal":{"type":"string"},"background":{"type":"string","description":"Confirmed facts, relevant investigation, assumptions and unknowns"},"constraints":{"type":"array","items":{"type":"string"}},"options":{"type":"array","items":{"type":"string"}},"evidence":{"type":"array","items":{"type":"string"}},"read_scope":{"type":"array","items":{"type":"string"},"description":"Only necessary workspace-relative files/directories. Omit for conceptual decisions."}
+            "question":{"type":"string","description":"Direct, focused question without a preferred answer or prescribed solution outline"},"goal":{"type":"string","description":"The outcome the user actually requested"},"background":{"type":"string","description":"Faithful compression of relevant context and user requirements, attributed facts and unknowns. Attribute user-provided proposals here. No main-agent reasoning, invented plans or preferences; prior assistant claims are not verified facts."},"constraints":{"type":"array","description":"Brief material task boundaries only; use an empty array when none apply. No language, length or formatting rules.","items":{"type":"string"}},"evidence":{"type":"array","description":"Sourced observations with provenance, not unsourced main-agent judgments","items":{"type":"string"}},"read_scope":{"type":"array","items":{"type":"string"},"description":"Only necessary workspace-relative files/directories. Omit for conceptual decisions."}
         }}),
         invoke,
     )
@@ -151,6 +146,10 @@ fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
         ensure!(
             !parent.tool_call_id.is_empty(),
             "Missing Fusion tool call identity"
+        );
+        ensure!(
+            args.get("options").is_none(),
+            "Fusion no longer accepts options; attribute user-provided proposals in background"
         );
         let input: ConsultationInput = serde_json::from_value(args)?;
         input.validate()?;
@@ -297,7 +296,6 @@ pub(crate) fn inner_tools() -> Vec<AgentTool> {
 
 pub(crate) struct InnerExecution {
     pub snapshot: Snapshot,
-    pub settings: future_fusion::StepSettings,
     pub file_tools: bool,
 }
 
@@ -333,13 +331,8 @@ pub(crate) fn inner_execution(
         settings.thinking_level == thinking,
         "Fusion thinking level differs from configured policy; fallback prohibited"
     );
-    ensure!(
-        settings.max_output_tokens > 0,
-        "Invalid Fusion output limit"
-    );
     Ok(Some(InnerExecution {
         snapshot: Snapshot::load(Path::new(&run.snapshot_root))?,
-        settings,
         file_tools: step.phase != "preflight" && !run.input.read_scope.is_empty(),
     }))
 }
@@ -367,23 +360,6 @@ pub(crate) fn record_delivery(result: &str) -> Result<()> {
         store.delivered(&value.fusion_run_id)?;
     }
     Ok(())
-}
-
-/// Bound each inner completion without changing any live session settings.
-pub(crate) struct LimitedProvider {
-    pub provider: Arc<dyn crate::types::LLMProvider>,
-    pub max_output_tokens: i32,
-}
-#[async_trait::async_trait]
-impl crate::types::LLMProvider for LimitedProvider {
-    async fn stream_model(
-        &self,
-        request: crate::llm::schema::ModelRequest,
-    ) -> Result<tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>> {
-        self.provider
-            .stream_model_with_output_limit(request, self.max_output_tokens)
-            .await
-    }
 }
 
 pub(crate) fn query_status(state: &crate::rpc::AppState) -> Result<Value> {
@@ -485,4 +461,22 @@ pub(crate) fn child_sessions() -> std::collections::HashSet<String> {
         .unwrap_or_default()
         .into_iter()
         .collect()
+}
+
+#[cfg(test)]
+mod input_contract_tests {
+    #[test]
+    fn tool_exposes_factual_context_without_a_candidate_field() {
+        let tool = super::main_tool();
+        let schema = &tool.def.function.parameters;
+        assert!(schema["properties"].get("options").is_none());
+        assert!(schema["properties"]["background"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("No main-agent reasoning"));
+        assert!(schema["properties"]["constraints"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("empty array"));
+    }
 }

@@ -1815,12 +1815,8 @@ mod tests {
             let client = Client::from_target(target);
             let frozen = client.snapshot().unwrap();
             client.update_thinking("high", 16_000);
-            for cap in [profile.max_output_tokens, profile.retry_max_output_tokens] {
-                let limited = crate::fusion::LimitedProvider {
-                    provider: frozen.clone(),
-                    max_output_tokens: cap,
-                };
-                let _: Vec<_> = limited
+            for _ in 0..2 {
+                let _: Vec<_> = frozen
                     .stream_model(canonical_request())
                     .await
                     .unwrap()
@@ -1834,12 +1830,10 @@ mod tests {
                 .collect()
                 .await;
             let requests = server.requests.lock().unwrap();
-            for (index, cap) in [profile.max_output_tokens, profile.retry_max_output_tokens]
-                .into_iter()
-                .enumerate()
-            {
+            // Initial and retry attempts retain ordinary provider generation settings.
+            for index in 0..2 {
                 let body: Value = serde_json::from_str(&requests[index]).unwrap();
-                assert_eq!(body["max_tokens"], cap);
+                assert_eq!(body["max_tokens"], 256);
                 assert_eq!(body["reasoning_effort"], profile.thinking_level);
                 assert!(body["enable_thinking"] == true || body["thinking"]["type"] == "enabled");
             }

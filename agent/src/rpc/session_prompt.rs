@@ -1070,10 +1070,7 @@ impl ServerSession {
             run_loop.config.max_turns = 5;
             // Fusion Host owns the bounded retry policy; do not multiply it here.
             run_loop.config.max_retries = 0;
-            run_loop.provider = Arc::new(crate::fusion::LimitedProvider {
-                provider: run_loop.provider.clone(),
-                max_output_tokens: execution.settings.max_output_tokens,
-            });
+            // Use the ordinary provider policy; Fusion adds no token/context cap.
             run_loop.parallel_tools = false;
         } else if fusion_enabled {
             anyhow::ensure!(

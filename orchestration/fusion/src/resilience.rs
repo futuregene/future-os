@@ -228,7 +228,7 @@ pub fn phase_timeout_ms(
 }
 
 impl crate::Consultation {
-    /// The one bounded tool envelope used by every client and the outer Agent.
+    /// The tool envelope used by every client and the outer Agent.
     pub fn tool_output(&self) -> anyhow::Result<String> {
         let mut value = if let Some(result) = &self.result {
             serde_json::to_value(result)?
@@ -245,30 +245,7 @@ impl crate::Consultation {
         if self.result.is_none() {
             value["message"] = serde_json::json!("No valid Fusion conclusion was produced. Preserved public materials are evidence, not a synthesized or verified recommendation. Do not automatically repeat the whole consultation.");
         }
-        let mut output = serde_json::to_string(&value)?;
-        // Keep evidence identities even when escaped public text exceeds the
-        // wire bound. Full originals remain queryable by these step IDs.
-        for limit in [700, 300, 0] {
-            if output.len() <= crate::MAX_RESULT_BYTES {
-                break;
-            }
-            if let Some(items) = value["report"]["available_results"].as_array_mut() {
-                for item in items {
-                    let text = item["text"].as_str().unwrap_or_default();
-                    let preview = bounded_text(text, limit);
-                    if preview.len() < text.len() {
-                        item["truncated"] = serde_json::json!(true);
-                    }
-                    item["text"] = serde_json::json!(preview);
-                }
-            }
-            output = serde_json::to_string(&value)?;
-        }
-        anyhow::ensure!(
-            output.len() <= crate::MAX_RESULT_BYTES,
-            "Fusion tool envelope exceeds bound"
-        );
-        Ok(output)
+        Ok(serde_json::to_string(&value)?)
     }
 }
 

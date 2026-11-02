@@ -241,7 +241,7 @@ mod tests {
             goal: "decide".into(),
             background: "facts".into(),
             constraints: vec![],
-            options: vec![],
+            legacy_options: vec![],
             evidence: vec![],
             read_scope: vec![],
         };
