@@ -29,3 +29,22 @@ export const QUEUE_RETRY_DELAY_MS = 350;
  * budget covers a slow link without leaving a queue that retries forever.
  */
 export const QUEUE_RETRY_LIMIT = 20;
+
+/**
+ * The command id a batch of rows was handed to the desktop under, if it has one.
+ *
+ * The desktop dedupes a prompt by its command id and by nothing else, so one
+ * message must keep one id from the first attempt onward: the queue's own retry
+ * and the outbox's recovery are two paths to the same message, and a fresh id on
+ * either is a second run of the same words. The first attempt mints it; a row that
+ * failed with an error the link recovers from carries it back into the panel.
+ *
+ * A batch answers only when every row agrees — rows the reader added or edited
+ * since are a different message, and the next attempt mints a new id for them.
+ */
+export function batchCommandId(items: readonly { commandId?: string }[]): string | null {
+  const id = items[0]?.commandId;
+  if (!id)
+    return null;
+  return items.every(item => item.commandId === id) ? id : null;
+}

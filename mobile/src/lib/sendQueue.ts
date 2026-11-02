@@ -22,6 +22,14 @@ import { useCallback, useSyncExternalStore } from "react";
 /** One message waiting for its conversation's run to finish. */
 export interface QueuedSend<TAttachment> {
   readonly id: string;
+  /**
+   * The command id this message was handed to the desktop under, once an attempt
+   * has been made and the failure was one the link recovers from.
+   *
+   * Absent until then, and dropped again the moment the words change: it is the
+   * desktop's only dedupe key, so it belongs to *this* message and to no other.
+   */
+  readonly commandId?: string;
   /** The message as it will be sent, already expanded by the writer. */
   readonly content: string;
   readonly attachments: readonly TAttachment[];
@@ -128,7 +136,11 @@ export function createSendQueueStore<TAttachment>(options: SendQueueStoreOptions
     }
     publish(key, {
       failed: false,
-      items: current.items.map(entry => entry.id === id ? { ...entry, content: trimmed } : entry),
+      items: current.items.map(entry => entry.id === id
+        // Edited words are a different message: they must not be sent under the
+        // command id of the text they replaced.
+        ? { ...entry, content: trimmed, commandId: undefined }
+        : entry),
     });
   }
 

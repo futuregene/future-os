@@ -29,6 +29,8 @@ const KEY = "futureos.remote.send-queue.v1";
 /** One stored row: the queue's own fields, no runtime state. */
 interface StoredItem {
   attachments: MobileAttachment[];
+  /** The command id a recoverable failure left this message under, if any. */
+  commandId?: string;
   content: string;
   createdAt: number;
   id: string;
@@ -123,6 +125,11 @@ export async function loadSendQueue(): Promise<Map<string, QueuedSend<MobileAtta
         continue;
       restored.push({
         attachments: pruned.attachments,
+        // A record written before this field existed has no command id, and the
+        // next attempt mints one; that is the same path a freshly typed row takes.
+        ...(typeof pruned.commandId === "string" && pruned.commandId
+          ? { commandId: pruned.commandId }
+          : {}),
         content: pruned.content,
         createdAt: pruned.createdAt,
         id: pruned.id,
@@ -141,6 +148,7 @@ export function saveSendQueue(conversations: Map<string, readonly QueuedSend<Mob
       continue;
     record.conversations[conversationKey] = items.map(item => ({
       attachments: [...item.attachments],
+      ...(item.commandId ? { commandId: item.commandId } : {}),
       content: item.content,
       createdAt: item.createdAt,
       id: item.id,

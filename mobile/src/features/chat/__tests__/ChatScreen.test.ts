@@ -1359,3 +1359,104 @@ test("the dock's enqueue stores the draft against this conversation and clears t
   expect(mockDraft.setMessage).toHaveBeenCalledWith("");
   act(() => sendQueue.clear(key));
 });
+
+/**
+ * The desktop and the phone's durable outbox, at the one rule they share: a prompt
+ * is deduped by its command id and by nothing else.
+ *
+ * `sendMessage` behaves like `usePromptOutbox.sendMessage` — it keeps the command
+ * id it is handed, mints one when it was not, keeps its record when the failure is
+ * one the link recovers from, and reports that id with the failure. `prompt`
+ * behaves like the host's, which answers with the receipt of an id it already
+ * accepted instead of running the same message again.
+ */
+function promptHost() {
+  const accepted: string[] = [];
+  let record: { commandId: string; text: string } | null = null;
+  let unreachable = true;
+  let minted = 0;
+  const sendMessage = jest.fn(async (
+    text: string,
+    _attachments?: unknown[],
+    _onUploadProgress?: unknown,
+    options?: { commandId?: string },
+  ) => {
+    const commandId = options?.commandId ?? `prompt_minted_${minted += 1}`;
+    if (accepted.includes(commandId)) {
+      record = null;
+      return;
+    }
+    if (unreachable) {
+      record = { commandId, text };
+      throw Object.assign(new Error("not_connected"), { commandId });
+    }
+    record = null;
+    accepted.push(commandId);
+  });
+  return {
+    accepted: () => accepted,
+    record: () => record,
+    sendMessage: sendMessage as unknown as typeof mockRemote.sendMessage,
+    /** The outbox's own readiness recovery: deliver the record it kept. */
+    recover() {
+      const kept = record;
+      if (!kept || unreachable)
+        return;
+      if (!accepted.includes(kept.commandId))
+        accepted.push(kept.commandId);
+      record = null;
+    },
+    reachable() { unreachable = false; },
+  };
+}
+
+test("a delivery the outbox kept is not sent again by the queue's retry", async () => {
+  const key = "desktop:history";
+  sendQueue.clear(key);
+  const host = promptHost();
+  mockRemote.sendMessage = host.sendMessage;
+  act(() => { sendQueue.enqueue(key, { attachments: [], content: "still mine?" }); });
+  await act(async () => { tree.update(createElement(ChatScreen)); });
+
+  // The link dropped between the composer's gate and the request. The message now
+  // lives in the durable outbox — the record the phone replays after a restart —
+  // and the panel still holds the row, because it has not gone anywhere.
+  expect(host.record()).toEqual({ commandId: expect.any(String), text: "still mine?" });
+  expect(host.accepted()).toEqual([]);
+  const dock = () => tree.root.findByType(ComposerDock).props;
+  expect(dock().queueItems.map((item: { content: string }) => item.content)).toEqual(["still mine?"]);
+
+  // The link is back and the outbox delivers the record it kept.
+  host.reachable();
+  act(() => { host.recover(); });
+  expect(host.accepted()).toHaveLength(1);
+
+  // The reader presses the panel's retry. That message is already a prompt, and a
+  // second command id would be a second run of the same words, charged again.
+  await act(async () => { dock().onQueueRetry(); await Promise.resolve(); });
+  expect(host.accepted()).toHaveLength(1);
+  expect(sendQueue.snapshot(key).items).toEqual([]);
+});
+
+test("a row the outbox already delivered leaves the panel on the next idle look", async () => {
+  const key = "desktop:history";
+  sendQueue.clear(key);
+  const host = promptHost();
+  mockRemote.sendMessage = host.sendMessage;
+  act(() => { sendQueue.enqueue(key, { attachments: [], content: "went already" }); });
+  await act(async () => { tree.update(createElement(ChatScreen)); });
+  host.reachable();
+  act(() => { host.recover(); });
+  expect(host.accepted()).toHaveLength(1);
+  expect(tree.root.findByType(ComposerDock).props.queueItems).toHaveLength(1);
+
+  // A screen that comes back to an idle conversation settles what is left: the row
+  // carries the id the delivery happened under, the desktop answers with that
+  // receipt, and the row goes without a send.
+  act(() => tree.unmount());
+  act(() => { tree = create(createElement(ChatScreen)); });
+  await act(async () => { await Promise.resolve(); });
+  expect(host.accepted()).toHaveLength(1);
+  expect(sendQueue.snapshot(key).items).toEqual([]);
+  expect(tree.root.findByType(ComposerDock).props.queueItems).toEqual([]);
+});
