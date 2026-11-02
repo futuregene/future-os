@@ -1015,6 +1015,35 @@ fn forwards_to_webview(event_type: &str, origin: EventOrigin) -> bool {
         && !(origin == EventOrigin::Replay && is_compaction_lifecycle(event_type))
 }
 
+/// Settle a local run row from the run's own `agent_end`.
+///
+/// A clean finish stays `completed`. Anything else is mirrored through
+/// [`reconciliation::settle_from_agent_terminal`] — the same mapping the
+/// watchdog already applies to the Agent's durable terminal marker — so a run
+/// the Agent *cancelled* is recorded as `cancelled` rather than as an
+/// unexplained `failed`/`stream_interrupted` row. Flattening every non-finish
+/// into one message is what made 29 runs (12 in a single morning, 2026-11-02)
+/// look like a crash when the user had simply stopped them. A run whose state
+/// this build does not recognise still falls back to the generic failure.
+pub(super) fn settle_agent_end(local_run_id: &str, data: &str) {
+    match stream::agent_end_outcome(data) {
+        stream::AgentEndOutcome::Completed => {
+            mark_run_completed_if_active(Some(local_run_id));
+        }
+        stream::AgentEndOutcome::Unfinished { state, error } => {
+            if let Err(settlement) = super::reconciliation::settle_from_agent_terminal(
+                local_run_id,
+                &state,
+                error.as_deref(),
+            ) {
+                tracing::warn!(event = "settle_agent_end", run_id = %local_run_id, error = %settlement,
+                    "FutureOS run settlement failed for {local_run_id}: {settlement}"
+                );
+            }
+        }
+    }
+}
+
 /// Process one event from the live subscription. Returns false when the run's
 /// idx sequence broke — the caller re-attaches, and the replay/projection
 /// snapshot heals the gap.
@@ -1148,14 +1177,7 @@ async fn handle_event_from(
             stream::replace_projection_off_thread(&thread_id, Some(&local_run_id), events).await;
             if let Some(agent_end_data) = terminal_agent_end {
                 crate::request_scope::release_run(session_id, run_id);
-                if stream::agent_end_incomplete(&agent_end_data) {
-                    mark_run_failed_if_active(
-                        Some(&local_run_id),
-                        "Future Agent response ended before a clean terminal.",
-                    );
-                } else {
-                    mark_run_completed_if_active(Some(&local_run_id));
-                }
+                settle_agent_end(&local_run_id, &agent_end_data);
                 crate::store::clear_run_event_buffer(&local_run_id);
                 note_run_settled(shared, state, run_id);
             }
@@ -1272,14 +1294,7 @@ async fn handle_event_from(
 
         match event_type {
             "agent_end" => {
-                if stream::agent_end_incomplete(&event_data) {
-                    mark_run_failed_if_active(
-                        Some(&local_run_id),
-                        "Future Agent response ended before a clean terminal.",
-                    );
-                } else {
-                    mark_run_completed_if_active(Some(&local_run_id));
-                }
+                settle_agent_end(&local_run_id, &event_data);
                 crate::store::clear_run_event_buffer(&local_run_id);
                 note_run_settled(shared, state, run_id);
             }

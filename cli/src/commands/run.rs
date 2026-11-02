@@ -82,7 +82,9 @@ Session options:
   --no-session             Ephemeral mode: do not persist the session to disk
 
 Model & behavior:
-  --model <id>             Model ID. Only affects this run; subsequent runs use the default.
+  --model <id>             Model ID. Recorded on the session, so later runs on
+                           this session keep it; a one-shot run mints its own
+                           session, so nothing carries over to the next one.
                            Supports model:thinking shorthand, e.g. "sonnet:high" or
                            "sonnet:max".
   --thinking <level>       Thinking/reasoning level: default (send no thinking
