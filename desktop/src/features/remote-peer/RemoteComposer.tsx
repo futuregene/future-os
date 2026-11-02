@@ -21,6 +21,7 @@ import { useImeEnterGuard } from "../../lib/useImeEnterGuard";
 import { imageExtensionFromMime, splitFileName } from "../agent/attachments";
 import { SendQueuePanel } from "../agent/SendQueuePanel";
 import { SkillRecommendCard } from "../agent/SkillRecommendCard";
+import { isTransientQueueRefusal, QUEUE_RETRY_DELAY_MS, QUEUE_RETRY_LIMIT } from "./queueDelivery";
 import { RemoteApprovalMenu } from "./RemoteApprovalMenu";
 import { buildRemoteSlashMenu, insertRemoteSkill, remoteSlashItems, slashQuery, withoutSlashWord } from "./remoteCommands";
 import { clearRemoteComposerDraft, loadRemoteComposerDraft, saveRemoteComposerDraft } from "./remoteComposerDraft";
@@ -319,6 +320,7 @@ export function RemoteComposer({
   const queue = useRemoteSendQueue(desktopId, sessionId);
   const [queueChoiceOpen, setQueueChoiceOpen] = useState(false);
   const queueSendingRef = useRef(false);
+  const queueRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /**
    * The conversations this draft points at, keyed by the token standing in for
    * each one (`remoteSessionReference`). The draft shows `#title`; this is the
@@ -421,20 +423,36 @@ export function RemoteComposer({
    * "Free" is the host's own condition — not streaming, not in another command,
    * and this device still in control — because the host answers one prompt at a
    * time and refuses one that arrives early. The queue is taken before the send
-   * so a re-render cannot send it twice; a refusal puts it back and marks the
-   * queue failed, which stops the automatic attempt until the reader retries
-   * from the panel.
+   * so a re-render cannot send it twice, and a refusal puts it back.
+   *
+   * A refusal is not always a "no": `session_busy` is the host saying the run it is
+   * finishing has not settled yet, which is exactly the state an interrupt leaves
+   * behind for a moment. Those are retried on a short clock instead of being marked
+   * failed — the same rule the phone applies — so a queue the reader already asked
+   * to send does not wait for them to press 重试. Anything else keeps the old
+   * behaviour: back into the panel, flagged, attempted again only on request.
    */
   useEffect(() => {
     if (streaming || busy || held || !peer?.connected || queue.failed || queueSendingRef.current)
       return;
     if (queue.items.length === 0)
       return;
-    const taken = remoteSendQueue.take(queueKey);
-    if (taken.length === 0)
-      return;
     queueSendingRef.current = true;
-    void (async () => {
+
+    /**
+     * One delivery and the retries that belong to it.
+     *
+     * The rows are taken per attempt, not carried in a closure: a refused attempt
+     * puts them back into the panel (so the reader keeps seeing what is waiting)
+     * and the next attempt takes them again. Restoring one array twice would
+     * duplicate it.
+     */
+    const deliver = async (attempt: number): Promise<void> => {
+      const taken = remoteSendQueue.take(queueKey);
+      if (taken.length === 0) {
+        queueSendingRef.current = false;
+        return;
+      }
       try {
         await sendRemotePrompt(desktopId, sessionId, {
           text: joinQueuedContent(taken),
@@ -444,16 +462,35 @@ export function RemoteComposer({
           freshThinkingLevel,
         });
         onSent();
+        queueSendingRef.current = false;
       }
       catch (err) {
         remoteSendQueue.restore(queueKey, taken);
+        if (isTransientQueueRefusal(err) && attempt < QUEUE_RETRY_LIMIT) {
+          // Not a failure: the rows go back without the brake, and the chain keeps
+          // ownership of the queue until it succeeds or gives up.
+          remoteSendQueue.clearFailure(queueKey);
+          queueRetryTimerRef.current = setTimeout(() => {
+            queueRetryTimerRef.current = null;
+            void deliver(attempt + 1);
+          }, QUEUE_RETRY_DELAY_MS);
+          return;
+        }
+        queueSendingRef.current = false;
         setError(isRecoverableSendError(err) ? t("promptQueued") : errorMessage(err));
       }
-      finally {
-        queueSendingRef.current = false;
-      }
-    })();
+    };
+    void deliver(0);
   }, [busy, desktopId, freshModelId, freshThinkingLevel, held, onSent, peer?.connected, queue.failed, queue.items.length, queueKey, sessionId, streaming, t, workspaceId]);
+
+  // Switching conversations (or closing the composer) drops the timer, not the
+  // queue: the rows live in the store, and the next mount picks them up again.
+  useEffect(() => () => {
+    if (queueRetryTimerRef.current) {
+      clearTimeout(queueRetryTimerRef.current);
+      queueRetryTimerRef.current = null;
+    }
+  }, []);
 
   /**
    * Stage a file on the host.
