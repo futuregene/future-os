@@ -1032,6 +1032,22 @@ impl Supervisor {
     /// `sessions()`/`workspaces()` recompute it from the store on every catalog
     /// tick: the signal is derived from ground truth, not from an accumulating
     /// dirty flag that a missed mark could strand.
+    /// What a handshake confirmation answers with: liveness plus revisions.
+    ///
+    /// The directory itself deliberately does not travel here. It used to, which
+    /// made the confirmation grow with this machine's conversation count — 604
+    /// conversations is 291 KB, 378 KB on the wire — and stop fitting in a single
+    /// sealed record at roughly 2 200 of them, after which no device could
+    /// complete a handshake at all. Every client already reads the catalogue from
+    /// `list_sessions` (on connect) and keeps it current from `state.sessions`;
+    /// what they cannot derive on their own is the revision to sync towards, and
+    /// that is `catalogVersion`.
+    pub fn handshake_presence(&self, pair_id: &str, bridge_instance_id: &str) -> serde_json::Value {
+        let mut payload = self.presence_heartbeat_payload(pair_id, bridge_instance_id);
+        payload["catalogEpoch"] = json!(self.host.catalog_epoch());
+        payload
+    }
+
     pub fn presence_heartbeat_payload(
         &self,
         pair_id: &str,
