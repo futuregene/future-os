@@ -57,6 +57,30 @@ pub use future_remote_protocol::handshake::REFUSED;
 fn refused(reason: &str) -> crate::Error {
     crate::Error::Message(format!("{REFUSED} ({reason})"))
 }
+
+/// The stage name a confirmation refused for size reports itself under.
+///
+/// A stage refusal (`open_undecryptable`, `peer_mismatch`) can only say *which*
+/// stage failed — the cause is a property of the exchange. A confirmation
+/// refused for size is different: the cause is a property of this machine's
+/// data, and the stage name hides the one fact an operator needs. Measured
+/// 2026-11-02: a directory that outgrew the client's inflate ceiling failed as
+/// `refused (confirmation)` on both ends, naming neither the payload nor its
+/// size, while the machine that produced it could not be connected to at all.
+const PRESENCE_TOO_LARGE: &str = "handshake_presence_too_large";
+
+/// Turn a failed confirmation into the error the reply carries.
+///
+/// Everything else keeps the byte-stable `refused (confirmation)` form; only the
+/// size refusal passes through with its own words.
+fn confirmation_refusal(error: crate::Error) -> crate::Error {
+    match error {
+        crate::Error::Message(message) if message.starts_with(PRESENCE_TOO_LARGE) => {
+            crate::Error::Message(message)
+        }
+        _ => refused("confirmation"),
+    }
+}
 fn decode(value: &str) -> Result<Vec<u8>, crate::Error> {
     if value.len() > 12_000 {
         return Err(error("length"));
@@ -352,7 +376,7 @@ impl Transport {
                         &channel,
                         server.host.as_ref(),
                     )
-                    .map_err(|_| refused("confirmation"))?;
+                    .map_err(confirmation_refusal)?;
                     server.candidates.push(Candidate {
                         channel,
                         created: Instant::now(),
@@ -402,7 +426,7 @@ impl Transport {
                     .map_err(|_| refused("save_creds"))?;
                 let confirmation =
                     confirmation(&creds.pair_id, bridge, &channel, server.host.as_ref())
-                        .map_err(|_| refused("confirmation"))?;
+                        .map_err(confirmation_refusal)?;
                 server.creds = creds;
                 server.pending.clear();
                 server.candidates.push(Candidate {
@@ -426,12 +450,20 @@ fn confirmation(
     channel: &SharedChannel,
     host: &dyn HandshakeHost,
 ) -> Result<String, crate::Error> {
-    let body = future_remote_protocol::handshake::confirmation(
-        pair_id,
-        bridge,
-        host.presence(pair_id, bridge),
+    let presence = host.presence(pair_id, bridge);
+    let counts = (
+        presence
+            .get("sessions")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len),
+        presence
+            .get("workspaces")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len),
     );
+    let body = future_remote_protocol::handshake::confirmation(pair_id, bridge, presence);
     let payload = serde_json::to_vec(&body).map_err(error)?;
+    let payload = within_client_ceiling(payload, counts)?;
     Ok(URL_SAFE_NO_PAD.encode(
         channel
             .lock()
@@ -439,6 +471,31 @@ fn confirmation(
             .seal("handshake-confirm", &payload)
             .map_err(error)?,
     ))
+}
+
+/// Refuse a presence larger than either end will inflate, and say so.
+///
+/// The confirmation travels as one sealed record, and both ends bound an
+/// inflated JSON body at [`future_remote_crypto::MAX_PLAINTEXT`] (the clients
+/// reject a gzip footer claiming more, `remote_json_gzip_too_large`). So a
+/// machine whose directory grows past that ceiling can never complete a
+/// handshake — the failure has to be raised here, naming the payload and its
+/// size, instead of surfacing as an anonymous "confirmation" refusal while the
+/// phone only shows "the desktop refused the handshake".
+fn within_client_ceiling(
+    payload: Vec<u8>,
+    (sessions, workspaces): (usize, usize),
+) -> Result<Vec<u8>, crate::Error> {
+    let ceiling = future_remote_crypto::MAX_PLAINTEXT;
+    if payload.len() <= ceiling {
+        return Ok(payload);
+    }
+    Err(crate::Error::Message(format!(
+        "{PRESENCE_TOO_LARGE}: the presence payload is {} bytes ({sessions} sessions, \
+         {workspaces} workspaces), past the {ceiling}-byte ceiling a client will inflate; \
+         the directory must stop travelling inside the handshake reply",
+        payload.len()
+    )))
 }
 
 #[derive(Clone)]
@@ -579,12 +636,17 @@ mod tests {
                 transport.handshake(&serde_json::to_vec(&finish).unwrap(), "bridge_secure")?;
         }
         let mut channel = noise.finish().map_err(error)?;
+        // Read the confirmation with a plain base64 decode, not the module's
+        // `decode()`: that one carries the key guard (12 000 bytes) and it is
+        // the confirmation that grows with a machine's catalogue, so reusing it
+        // here silently bounded every fixture at 12 KB — no test could stand in
+        // for a real directory, which is why the size ceiling went unnoticed.
+        let confirmation = URL_SAFE_NO_PAD
+            .decode(response["confirmation"].as_str().unwrap())
+            .map_err(error)?;
         let confirm: Value = serde_json::from_slice(
             &channel
-                .open(
-                    "handshake-confirm",
-                    &decode(response["confirmation"].as_str().unwrap())?,
-                )
+                .open("handshake-confirm", &confirmation)
                 .map_err(error)?,
         )
         .unwrap();
@@ -1237,5 +1299,116 @@ mod tests {
         assert!(!second.is_active(&reply));
         second.clear();
         assert!(first.is_active(&reply));
+    }
+
+    /// A host whose presence is whatever the case under test needs it to be.
+    struct PresenceHost(Value);
+    impl HandshakeHost for PresenceHost {
+        fn save_binding(&self, _: &crate::PairingCreds) -> Result<(), crate::Error> {
+            Ok(())
+        }
+        fn presence(&self, _: &str, _: &str) -> Value {
+            self.0.clone()
+        }
+    }
+
+    /// A presence shaped like a real machine's catalogue: the same fourteen
+    /// fields the desktop puts on every row, with a title of realistic length.
+    fn presence_with_sessions(rows: usize) -> Value {
+        let sessions: Vec<Value> = (0..rows)
+            .map(|i| {
+                json!({
+                    "sessionId": format!("{i:08x}-1111-2222-3333-{i:012x}"),
+                    "threadId": format!("{i:08x}-4444-5555-6666-{i:012x}"),
+                    "title": "解释一下这个握手为什么带整份会话目录",
+                    "mode": "chat",
+                    "workspaceId": "0b6a1c2e-7777-8888-9999-000011112222",
+                    "workspaceName": "FutureOS 远程控制",
+                    "workspacePinned": false,
+                    "workspaceOrderedAt": 1_762_000_000_000i64,
+                    "parentSessionId": Value::Null,
+                    "pinned": false,
+                    "streaming": false,
+                    "status": "completed",
+                    "lastMessageAt": 1_762_000_000_000i64,
+                    "createdAt": 1_762_000_000_000i64,
+                })
+            })
+            .collect();
+        json!({
+            "online": true,
+            "agentAvailable": true,
+            "pairId": "pair_secure",
+            "bridgeInstanceId": "bridge_secure",
+            "sessions": sessions,
+            "workspaces": [],
+        })
+    }
+
+    /// The ceiling itself: one byte under seals, one byte over is refused by
+    /// name. This is the boundary the guard exists for, tested without crypto.
+    #[test]
+    fn the_client_ceiling_is_a_hard_boundary_that_names_the_payload() {
+        let ceiling = future_remote_crypto::MAX_PLAINTEXT;
+        assert!(within_client_ceiling(vec![0; ceiling], (604, 52)).is_ok());
+        let error = within_client_ceiling(vec![0; ceiling + 1], (2417, 52)).unwrap_err();
+        let text = error.to_string();
+        assert!(
+            text.starts_with(PRESENCE_TOO_LARGE),
+            "the refusal must name its payload: {text}"
+        );
+        assert!(
+            text.contains(&format!("{} bytes", ceiling + 1))
+                && text.contains(&format!("{ceiling}-byte ceiling")),
+            "size and ceiling must both be readable: {text}"
+        );
+        assert!(
+            text.contains("(2417 sessions, 52 workspaces)"),
+            "the catalogue shape says how far past the ceiling the machine is: {text}"
+        );
+        assert!(
+            !text.contains(REFUSED),
+            "not an anonymous stage refusal: {text}"
+        );
+    }
+
+    /// The size refusal must reach the peer. Until 2026-11-02 both call sites
+    /// replaced it with `refused (confirmation)`, so a machine that had outgrown
+    /// the ceiling reported "the desktop refused the handshake" and nothing else
+    /// — neither side named the payload, its size, or the limit it broke.
+    #[test]
+    fn a_presence_over_the_ceiling_reaches_the_peer_with_its_own_reason() {
+        let creds = creds();
+        let rows = 3_000;
+        let transport =
+            Transport::new(&creds, Arc::new(PresenceHost(presence_with_sessions(rows))));
+        let (private, _) = future_remote_crypto::generate_identity().unwrap();
+        let error = connect(&transport, &creds, &private, true)
+            .err()
+            .expect("the confirmation cannot be sealed");
+        let text = error.to_string();
+        assert!(text.starts_with(PRESENCE_TOO_LARGE), "{text}");
+        assert!(text.contains(&format!("{rows} sessions")), "{text}");
+        assert!(
+            text.contains(&format!(
+                "{}-byte ceiling",
+                future_remote_crypto::MAX_PLAINTEXT
+            )),
+            "{text}"
+        );
+        assert!(
+            !text.contains(REFUSED),
+            "the stage name must not hide this: {text}"
+        );
+    }
+
+    /// A catalogue of today's actual size still completes the handshake, so the
+    /// guard has not been set so tight that a normal machine is refused.
+    #[test]
+    fn a_catalogue_of_todays_size_still_completes_the_handshake() {
+        let creds = creds();
+        let transport = Transport::new(&creds, Arc::new(PresenceHost(presence_with_sessions(604))));
+        let (private, _) = future_remote_crypto::generate_identity().unwrap();
+        connect(&transport, &creds, &private, true).expect("604 sessions is under the ceiling");
     }
 }
