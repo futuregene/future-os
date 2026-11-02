@@ -848,8 +848,10 @@ Usage:
   title     Ask the session's model for a title. This spends credits and fails
             without a provider; the language defaults to the desktop app's
             titleLanguage. It only prints the title unless --apply is given.
-  export    Write the session to a standalone HTML file. The agent writes its
-            own temporary copy; --out copies it to a path you choose.
+  export    Write the session to a standalone HTML file: markdown rendered,
+            thinking and tool calls folded, in one file with no external
+            assets. The agent writes its own temporary copy; --out copies it
+            to a path you choose.
 
 Forks and clones are new sessions: a fork keeps the parent's lineage, and
 `--json` prints the child's id as `sessionId`. None of these touches the parent.";
@@ -3860,5 +3862,65 @@ mod tests {
         assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
         assert_eq!(stderr, "The agent reported no export path.\n");
+    }
+
+    /// `prune` is reached through the dispatcher, not only through its own
+    /// module: a subcommand the entry point forgets to route is invisible until
+    /// somebody types it.
+    #[tokio::test]
+    async fn the_dispatcher_reaches_prune() {
+        let (out, cap) = Output::memory();
+        session(Some("prune"), &["--help".into()], &out)
+            .await
+            .expect("prune answers its own help");
+        let printed = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(printed.contains("future session prune"), "{printed}");
+    }
+
+    /// `list` owns a two-flag argument shape, and every way of getting it wrong
+    /// is a usage error *before* the Agent is asked: a mistyped flag must not
+    /// read as a filter that matched nothing.
+    #[tokio::test]
+    async fn list_refuses_its_own_unknown_and_valueless_options() {
+        let (out, cap) = Output::memory();
+        session(Some("list"), &["--help".into()], &out)
+            .await
+            .expect("list answers its own help");
+        let printed = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(printed.contains("--parent"), "{printed}");
+
+        // `--parent` with nothing after it, and `--parent` followed by another
+        // flag: the flag is not a session id.
+        for argv in [vec!["--parent"], vec!["--parent", "--json"]] {
+            let (out, cap) = Output::memory();
+            let args: Vec<String> = argv.iter().map(|a| a.to_string()).collect();
+            assert_eq!(
+                session(Some("list"), &args, &out).await,
+                Err(crate::HANDLED_EXIT.to_string()),
+                "{argv:?}"
+            );
+            let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+            assert_eq!(stderr, "Missing value for --parent\n", "{argv:?}");
+        }
+
+        let (out, cap) = Output::memory();
+        assert_eq!(
+            session(Some("list"), &["--bogus".into()], &out).await,
+            Err(crate::HANDLED_EXIT.to_string())
+        );
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert_eq!(stderr, "Unknown option: --bogus\n");
+    }
+
+    /// A setting this build does not model is still printed by `session info` —
+    /// under a generic label rather than dropped, because the value came from the
+    /// session's own document and the reader is the one who has to judge it.
+    #[test]
+    fn an_unmodelled_setting_keeps_a_generic_label() {
+        assert_eq!(option_label("parent"), pad_end("Parent:", 14));
+        assert_eq!(option_label("autoRetry"), pad_end("AutoRetry:", 14));
+        assert_eq!(option_label("frobnicate"), pad_end("Setting:", 14));
+        // Padded, so every value in the block starts at the same column.
+        assert_eq!(option_label("frobnicate").chars().count(), 14);
     }
 }

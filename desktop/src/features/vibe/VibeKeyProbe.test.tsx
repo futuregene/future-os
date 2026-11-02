@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearCommandHandlers, hasCommandHandler } from "../keyboard/commands";
 import { resetShortcutScopes } from "../keyboard/scopes";
 import { resetAllCommandBindings } from "../keyboard/shortcuts";
@@ -139,5 +139,66 @@ describe("vibeKeyProbe", () => {
     expect(container.querySelector("[data-vibe-key-probe]")).toBeNull();
     gesture();
     expect(lines()).toEqual([]);
+  });
+});
+
+describe("the readout's two buttons", () => {
+  function button(label: string) {
+    return [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(item => item.textContent === label || item.getAttribute("aria-label") === label);
+  }
+
+  it("copies what it shows, and says so until the moment passes", async () => {
+    const writeText = vi.fn<(text: string) => Promise<void>>(async () => {});
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    try {
+      render(true);
+      gesture();
+      press("ArrowUp", "ArrowUp");
+
+      await act(async () => button("Copy")!.click());
+
+      expect(writeText).toHaveBeenCalledTimes(1);
+      // The text is the readout itself, so what lands on the clipboard is what the
+      // person was reading — one line per press it kept.
+      expect(String(writeText.mock.calls[0]![0])).toContain("ArrowUp");
+      expect(button("Copied")).not.toBeUndefined();
+    }
+    finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("stays quiet when the webview refuses the clipboard", async () => {
+    // The text stays on screen and selectable, which is the fallback that always works:
+    // a refusal must not throw into a panel whose keys are load-bearing.
+    const writeText = vi.fn<(text: string) => Promise<void>>(async () => {
+      throw new Error("denied");
+    });
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    try {
+      render(true);
+      gesture();
+
+      await act(async () => button("Copy")!.click());
+
+      expect(button("Copy"), "still offering to copy").not.toBeUndefined();
+    }
+    finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("closes from its own close button", () => {
+    render(true);
+    gesture();
+    expect(container.querySelector("[data-vibe-key-probe]")).not.toBeNull();
+
+    act(() => button("Close")!.click());
+
+    expect(container.querySelector("[data-vibe-key-probe]")).toBeNull();
+    // Closing is not disabling: the gesture still opens it again.
+    gesture();
+    expect(container.querySelector("[data-vibe-key-probe]")).not.toBeNull();
   });
 });

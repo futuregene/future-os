@@ -28,7 +28,7 @@ function button(text: string) {
 }
 
 /** The per-model thinking-level chips, in their fixed order. */
-const CHIPS = ["Off", "Minimal", "Low", "Medium", "High", "XHigh", "Max"];
+const CHIPS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 function chips(): HTMLButtonElement[] {
   const pressed = [...document.querySelectorAll<HTMLButtonElement>("button[aria-pressed]")];
@@ -69,7 +69,7 @@ describe("custom model thinking levels", () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(modelId, "unlisted-deployment");
       modelId.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    expect(pressedLabels()).toEqual(["Off", "Low", "Medium", "High"]);
+    expect(pressedLabels()).toEqual(["off", "low", "medium", "high"]);
 
     await act(async () => button("Save").click());
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
@@ -89,10 +89,10 @@ describe("custom model thinking levels", () => {
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(modelId, "qwen");
       modelId.dispatchEvent(new Event("input", { bubbles: true }));
-      chips()[6]!.click(); // Max on
-      chips()[2]!.click(); // Low off
+      chips()[6]!.click(); // max on
+      chips()[2]!.click(); // low off
     });
-    expect(pressedLabels()).toEqual(["Off", "Medium", "High", "Max"]);
+    expect(pressedLabels()).toEqual(["off", "medium", "high", "max"]);
 
     await act(async () => button("Save").click());
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
@@ -120,7 +120,7 @@ describe("custom model thinking levels", () => {
     const onSubmit = mount(provider);
 
     // The known ones show as selected; the unknown one has no chip of its own...
-    expect(pressedLabels()).toEqual(["Off", "Max"]);
+    expect(pressedLabels()).toEqual(["off", "max"]);
     // ...but it is not lost: it rides along in the submitted list.
     await act(async () => button("Save").click());
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
@@ -151,12 +151,100 @@ describe("custom model thinking levels", () => {
     };
     const onSubmit = mount(provider);
     act(() => {
-      chips()[0]!.click(); // Off off
-      chips()[2]!.click(); // Low off
+      chips()[0]!.click(); // off off
+      chips()[2]!.click(); // low off
     });
     await act(async () => button("Save").click());
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
       models: [expect.objectContaining({ thinkingLevels: [] })],
     }));
   });
+});
+
+/**
+ * What the write carries is a clean list, not whatever was stored.
+ *
+ * A provider saved by an older build (or edited by hand) can hold the reserved
+ * `default`, a blank, or the same level twice. The host applies the same rules
+ * and would drop them anyway — this keeps the payload honest and, more to the
+ * point, keeps a duplicate from becoming a second chip that cannot be turned
+ * off.
+ */
+it("drops reserved, blank and repeated levels on the way out", async () => {
+  const stored = (thinkingLevels: string[]) => ({
+    ...initial,
+    models: [{
+      id: "m1",
+      name: "M1",
+      supportsImages: false,
+      contextWindow: 128000,
+      maxTokens: 16384,
+      reasoning: true,
+      thinkingLevels,
+      inputCost: 0,
+      outputCost: 0,
+      cacheReadCost: 0,
+      cacheWriteCost: 0,
+    }],
+  });
+  const onSubmit = mount(stored(["default", " low ", "low", "", "high"]));
+
+  // `default` is implicit and `low` already appeared, so the row shows two.
+  expect(pressedLabels()).toEqual(["low", "high"]);
+  await act(async () => button("Save").click());
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+    models: [expect.objectContaining({ thinkingLevels: ["low", "high"] })],
+  }));
+});
+
+/**
+ * A level toggled on one row belongs to that row.
+ *
+ * The rows are one array, so every toggle maps over all of them; a mapping that
+ * wrote on every index would toggle the same chip on every model at once.
+ */
+it("toggles a level on one model only", async () => {
+  const onSubmit = mount({
+    ...initial,
+    models: [
+      {
+        id: "m1",
+        name: "M1",
+        supportsImages: false,
+        contextWindow: 128000,
+        maxTokens: 16384,
+        reasoning: true,
+        thinkingLevels: ["low"],
+        inputCost: 0,
+        outputCost: 0,
+        cacheReadCost: 0,
+        cacheWriteCost: 0,
+      },
+      {
+        id: "m2",
+        name: "M2",
+        supportsImages: false,
+        contextWindow: 128000,
+        maxTokens: 16384,
+        reasoning: true,
+        thinkingLevels: ["medium"],
+        inputCost: 0,
+        outputCost: 0,
+        cacheReadCost: 0,
+        cacheWriteCost: 0,
+      },
+    ],
+  });
+
+  // The second row's `high` chip: two rows of seven, in row order.
+  const all = [...document.querySelectorAll<HTMLButtonElement>("button[aria-pressed]")];
+  expect(all).toHaveLength(CHIPS.length * 2);
+  act(() => all[CHIPS.length + CHIPS.indexOf("high")]!.click());
+  await act(async () => button("Save").click());
+
+  const submitted = onSubmit.mock.calls[0]![0] as { models: Array<{ id: string; thinkingLevels: string[] }> };
+  expect(submitted.models.map(model => [model.id, model.thinkingLevels])).toEqual([
+    ["m1", ["low"]],
+    ["m2", ["medium", "high"]],
+  ]);
 });

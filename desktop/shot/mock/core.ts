@@ -36,6 +36,9 @@ export class Channel<T = unknown> {
 const ASSETS: Array<[RegExp, string]> = [
   [/effect-size\.png$/, "/shot/assets/effect-size.png"],
   [/forest-plot\.png$/, "/shot/assets/forest-plot.png"],
+  // The parser session's benchmark figure; the reply embeds it with a path in
+  // the demo checkout, and this is what turns that path into a real PNG.
+  [/parser-throughput\.png$/, "/shot/assets/parser-throughput.png"],
 ];
 
 /** `convertFileSrc` equivalent: map the demo dataset's file paths to URLs. */

@@ -47,6 +47,15 @@ describe("newConversationTarget", () => {
 
     store([]);
     expect(readNewConversationTarget()).toBeNull();
+
+    // `JSON.parse` also accepts these: a document that is not an object at all is
+    // equally unreadable, and reading `mode` off it would be a guess.
+    store("null");
+    expect(readNewConversationTarget()).toBeNull();
+    store(42);
+    expect(readNewConversationTarget()).toBeNull();
+    store("\"workspace\"");
+    expect(readNewConversationTarget()).toBeNull();
   });
 
   it("reads and writes without a usable storage", () => {

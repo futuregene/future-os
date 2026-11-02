@@ -1,5 +1,5 @@
 import { Check, CircleAlert, Copy, GitBranch } from "lucide-react-native";
-import { Fragment, memo, useCallback, useRef, useState } from "react";
+import { Fragment, memo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
 import { Pressable, Text, useWindowDimensions, View } from "react-native";
@@ -17,7 +17,7 @@ import { AttachmentImage } from "./AttachmentImage";
 import { collapsedPromptHeight, isLongPrompt, promptPreview } from "./promptCollapse";
 import { PromptReader } from "../components/PromptReader";
 import { StatusDivider } from "./MessageStatus";
-import { buildReplyBlocks, ProcessFold, ReplyBlockRow, replyTailBlock, splitFinalAnswer } from "./ReplyBlocks";
+import { buildReplyBlocks, ProcessFold, ReplyBlockRow, splitFinalAnswer } from "./ReplyBlocks";
 
 function TimelineCardView({
   item,
@@ -29,7 +29,6 @@ function TimelineCardView({
   onContinue,
   onFork,
   onResolveToolTarget,
-  onReplyTailAnchor,
 }: TimelineCardProps) {
   const styles = useStyles();
   const { colors, chat } = useTheme();
@@ -46,27 +45,6 @@ function TimelineCardView({
   // the state lives here rather than in a wrapper component so the row keeps
   // its memoized identity.
   const [promptOpen, setPromptOpen] = useState(false);
-  /**
-   * Where this reply's tail anchor sits **inside its own row**: the block
-   * list's own offset below the bubble's top, plus the anchor block's offset
-   * within that list. Chained from the layout events rather than assumed from
-   * `messageStyles`, because the walk that consumes it takes its geometry from
-   * measured frames and this number has to describe the layout that exists.
-   * (The bubble is the row's only child and carries no margin of its own, so its
-   * top is the row's top and the chain starts there.)
-   *
-   * Both are reported by the same render (see the `segmentList` below), so a
-   * row that re-lays out — a streaming reply, an image that arrives late —
-   * republishes its anchor instead of leaving a stale offset behind.
-   */
-  const blockListOffset = useRef<number | null>(null);
-  const anchorOffset = useRef<number | null>(null);
-  const reportReplyTailAnchor = useCallback(() => {
-    const list = blockListOffset.current;
-    const anchor = anchorOffset.current;
-    if (list === null || anchor === null) return;
-    onReplyTailAnchor?.(item.id, list + anchor);
-  }, [item.id, onReplyTailAnchor]);
 
   if (item.kind === "message") {
     if (item.role === "assistant") {
@@ -95,8 +73,7 @@ function TimelineCardView({
             ? t("failure.modelResponseError")
             : null;
       const copyableText = item.text;
-      // The reply's rendered slices, and the one a ↑/↓ press lands on: its
-      // last output block (see `replyTailBlock`).
+      // The reply's rendered slices.
       const blocks = buildReplyBlocks(item.segments ?? [], item.streaming);
       // This phone's reading setting: a reply that has settled keeps only the
       // answer it ends on, with the work that produced it folded into one row
@@ -108,7 +85,6 @@ function TimelineCardView({
         : null;
       const visibleBlocks = folded ? folded.answer : blocks;
       const hiddenWork = folded && folded.process.length > 0 ? folded.process : null;
-      const tail = replyTailBlock(visibleBlocks);
       // The copy button follows what the row shows: with the work folded away it
       // belongs to the answer, not to notes the reader cannot see.
       const copyPayload = folded
@@ -117,16 +93,7 @@ function TimelineCardView({
       return (
         <View style={styles.assistantMessage}>
           {item.segments && item.segments.length > 0 ? (
-            <View
-              onLayout={event => {
-                // The block list's own offset below the bubble's top: half of
-                // the anchor's position in the row, which the styles own and a
-                // jump must not have to guess.
-                blockListOffset.current = event.nativeEvent.layout.y;
-                reportReplyTailAnchor();
-              }}
-              style={styles.segmentList}
-            >
+            <View style={styles.segmentList}>
               {hiddenWork
                 ? (
                     <ProcessFold
@@ -136,32 +103,18 @@ function TimelineCardView({
                     />
                   )
                 : null}
-              {visibleBlocks.map((block, index) => {
+              {visibleBlocks.map((block) => {
                 const key = block.kind === "steps" ? block.segments[0]!.id : block.segment.id;
-                const content = (
-                  <ReplyBlockRow
-                    block={block}
-                    onOpenFile={onOpenFile}
-                    replyStreaming={item.streaming}
-                    onResolveToolTarget={onResolveToolTarget}
-                    streaming={item.streaming && block.kind === "segment" && block.segment === item.segments?.at(-1)}
-                  />
-                );
-                // The anchor block is wrapped so its own offset can be
-                // measured: the wrapper carries no style, so it reports where
-                // the block sits without moving it.
-                return index === tail ? (
-                  <View
-                    key={key}
-                    onLayout={event => {
-                      anchorOffset.current = event.nativeEvent.layout.y;
-                      reportReplyTailAnchor();
-                    }}
-                  >
-                    {content}
-                  </View>
-                ) : (
-                  <Fragment key={key}>{content}</Fragment>
+                return (
+                  <Fragment key={key}>
+                    <ReplyBlockRow
+                      block={block}
+                      onOpenFile={onOpenFile}
+                      replyStreaming={item.streaming}
+                      onResolveToolTarget={onResolveToolTarget}
+                      streaming={item.streaming && block.kind === "segment" && block.segment === item.segments?.at(-1)}
+                    />
+                  </Fragment>
                 );
               })}
             </View>

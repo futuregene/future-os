@@ -132,6 +132,12 @@ async function settle(): Promise<void> {
 
 beforeEach(() => {
   document.body.innerHTML = "";
+  // The composer persists an unsent draft in `localStorage`, keyed by desktop +
+  // session, and every test in this file uses the same pair: a test that ends
+  // with text still in the field handed it to the next mount, so "an empty
+  // draft" arrived with the previous test's sentence and was evaluated. Each
+  // test now starts from the storage a new window would have.
+  localStorage.clear();
   prompt.mockReset().mockResolvedValue({ sessionId: "sess_1" });
   getPromptReceipt.mockReset().mockResolvedValue(null);
 });

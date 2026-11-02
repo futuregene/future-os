@@ -139,6 +139,13 @@ describe("eventCode", () => {
     expect(eventCode(key({ key: "Enter" }))).toBe("Enter");
     expect(eventCode(key({ key: "Unidentified" }))).toBeNull();
   });
+
+  it("reads a code the event spells out in `key`", () => {
+    // Some engines send the physical code as the key (a synthetic event, or a
+    // WebKitGTK build with no `code`). `digit3` and `Digit3` both name `Digit3`.
+    expect(eventCode(key({ key: "Digit3" }))).toBe("Digit3");
+    expect(eventCode(key({ key: "digit3" }))).toBe("Digit3");
+  });
 });
 
 describe("formatBinding", () => {
@@ -207,5 +214,12 @@ describe("bindingFromEvent", () => {
 
   it("waits for a real key", () => {
     expect(bindingFromEvent(key({ key: "Shift", shiftKey: true }), false)).toBeNull();
+  });
+
+  it("waits when the event names no key at all", () => {
+    // A dead key or an unidentified press: there is nothing to record yet, and
+    // guessing a code would store a binding the user never pressed.
+    expect(bindingFromEvent(key({ key: "Unidentified", ctrlKey: true }), false)).toBeNull();
+    expect(bindingFromEvent(key({ ctrlKey: true }), false)).toBeNull();
   });
 });

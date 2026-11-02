@@ -1,4 +1,5 @@
 use super::*;
+use crate::rpc::broadcaster::projection::Projection;
 
 #[test]
 fn projection_preserves_semantic_order_while_coalescing_deltas() {
@@ -184,4 +185,85 @@ fn projection_pushes_when_event_data_is_not_foldable() {
         &SseEvent::new("text_chunk", serde_json::json!({"text": "b"})),
     );
     assert_eq!(projection.len(), 2);
+}
+
+// ─── the projection's own state machine ────────────────────────────────────
+// These drive `Projection` directly: the broadcaster's budget and cursor rules
+// are decided here, and a reconnect is only as good as the cursor this type can
+// still describe.
+
+fn with_idx(mut event: SseEvent, idx: i64) -> SseEvent {
+    event.idx = idx;
+    event
+}
+
+#[test]
+fn a_raw_text_delta_never_becomes_a_projected_event() {
+    let mut projection = Projection::from_events(Vec::new());
+    projection.push(&with_idx(
+        SseEvent::new("text_delta", serde_json::json!({"text": "raw"})),
+        7,
+    ));
+    // `text_delta` is the pre-coalescing spelling; a client that reconnects must
+    // never be handed it in place of the `text_chunk` it supersedes.
+    assert_eq!(projection.first_idx(), None);
+    assert!(projection.view().materialize().is_empty());
+}
+
+#[test]
+fn the_cursor_a_projection_can_describe_follows_its_pending_segment() {
+    let mut projection = Projection::from_events(Vec::new());
+    assert_eq!(
+        projection.first_idx(),
+        None,
+        "nothing held, nothing described"
+    );
+
+    projection.push(&with_idx(
+        SseEvent::new("text_chunk", serde_json::json!({"text": "hola"})),
+        3,
+    ));
+    assert_eq!(
+        projection.first_idx(),
+        Some(3),
+        "a still-coalescing segment is already the oldest thing a reconnect can replay from"
+    );
+
+    // A non-delta event flushes the segment into `closed`; the cursor must not move.
+    projection.push(&with_idx(
+        SseEvent::new("tool_start", serde_json::json!({"tool_id": "t1"})),
+        4,
+    ));
+    assert_eq!(projection.first_idx(), Some(3));
+}
+
+#[test]
+fn a_projection_over_its_budget_forgets_its_cursor_and_stops_accepting_events() {
+    let mut projection = Projection::from_events(Vec::new());
+    projection.limit(1024);
+    projection.push(&with_idx(
+        SseEvent::new("agent_start", serde_json::json!({})),
+        0,
+    ));
+    assert_eq!(projection.first_idx(), Some(0));
+
+    // Each event is charged its data plus 512 bytes of framing, so this one
+    // crosses a 1024-byte budget.
+    projection.push(&with_idx(
+        SseEvent::new("usage", serde_json::json!({"blob": "x".repeat(600)})),
+        1,
+    ));
+    assert!(projection.over_budget());
+    assert_eq!(
+        projection.first_idx(),
+        None,
+        "an over-budget projection described nothing it could keep — keeping the cursor would promise a replay it cannot serve"
+    );
+
+    // Everything after the overflow is dropped rather than re-arming the budget.
+    projection.push(&with_idx(SseEvent::new("usage", serde_json::json!({})), 2));
+    assert!(
+        projection.view().materialize().is_empty(),
+        "no event survives the budget"
+    );
 }

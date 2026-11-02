@@ -223,7 +223,12 @@ describe("preview stack", () => {
     return ids;
   };
   beforeEach(() => jest.clearAllMocks());
-  afterEach(() => act(() => tree.unmount()));
+  afterEach(() => {
+    // Not every case in this block mounts a reader: `previewLayerKey` is a pure
+    // function, so its cases own no tree and must not be handed one that an
+    // earlier case left behind.
+    if (tree) act(() => tree.unmount());
+  });
 
   test("the document that linked here stays open underneath, reachable by the back control", () => {
     act(() => { tree = create(createElement(PreviewModal, { ...props, previews: [doc("/root/publishing.md"), doc("/root/SOURCES.md")] })); });

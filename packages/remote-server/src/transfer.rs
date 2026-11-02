@@ -59,13 +59,13 @@ impl TransferLoop {
             Ok(sub) => sub,
             Err(error) => {
                 if let Some(line) = self.failures.record("transfer_subscription", error) {
-                    eprintln!("{line}");
+                    future_remote_protocol::remote_log!("{line}");
                 }
                 return;
             }
         };
         if let Some(line) = self.failures.recovered() {
-            eprintln!("{line}");
+            future_remote_protocol::remote_log!("{line}");
         }
         if let Some(sender) = ready.take() {
             let _ = sender.send(());
@@ -140,7 +140,7 @@ impl TransferLoop {
             .failures
             .record("transfer_subscription", "subscription ended unexpectedly")
         {
-            eprintln!("{line}");
+            future_remote_protocol::remote_log!("{line}");
         }
     }
 }

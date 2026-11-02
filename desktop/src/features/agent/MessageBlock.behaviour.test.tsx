@@ -287,38 +287,14 @@ it("keeps a streaming reply's tail unhighlighted when only activity is growing",
   expect(container.querySelector("[role=status]")).not.toBeNull();
 });
 
-it("marks the block the question ladder lands on, and only that one", () => {
-  // A press that reaches this reply is asking for its answer, not for the work
-  // it opened with: the row marks its last output slice so the jump can measure
-  // where that slice starts (`useQuestionNav` reads this attribute).
-  const segments: MessageSegment[] = [
-    { id: "reason", kind: "thinking", text: "thinking" },
-    { id: "call", kind: "activity", item: { id: "call", kind: "read", status: "completed" } },
-    { id: "answer", kind: "text", text: "the answer" },
-  ] as MessageSegment[];
-  render(message({ segments }));
-
-  const marked = container.querySelectorAll("[data-reply-tail]");
-  expect(marked).toHaveLength(1);
-  expect(marked[0]!.textContent).toContain("the answer");
-  // The wrapper is layout-transparent: it carries no class that could move the
-  // block, so the marked offset is the block's real position in the row.
-  expect(marked[0]!.className).toBe("");
-});
-
-it("marks nothing when the reply has no output on screen yet", () => {
-  // Still reasoning: the landing keeps the row's own start, and there is
-  // nothing for a jump to aim at.
-  const segments: MessageSegment[] = [
-    { id: "reason", kind: "thinking", text: "thinking" },
-  ] as MessageSegment[];
-  render(message({ segments, status: "streaming" }));
-
-  expect(container.querySelectorAll("[data-reply-tail]")).toHaveLength(0);
-});
-
 it("shows the author and a formatted timestamp", () => {
-  render(message({ createdAt: new Date("2026-03-04T05:06:07Z").toISOString() }));
+  // Built from local wall-clock parts rather than a UTC instant: the label is
+  // rendered on the viewer's clock (`MM-dd HH:mm`), so a hardcoded `…T05:06:07Z`
+  // reads 03-04 in UTC and 03-03 in anything west of it — the test passed only
+  // because CI and this machine sit at/after UTC. Same construction as
+  // `lib/date.test.ts`, which is why that file is timezone-neutral too.
+  const createdAt = new Date(2026, 2, 4, 5, 6, 7).toISOString();
+  render(message({ createdAt }));
   expect(container.textContent).toContain("03-04");
 });
 

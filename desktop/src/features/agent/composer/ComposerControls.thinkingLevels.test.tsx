@@ -11,6 +11,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { clearCommandHandlers, hasCommandHandler, runCommand } from "../../keyboard/commands";
 import { resetShortcutScopes } from "../../keyboard/scopes";
 import { resetAllCommandBindings } from "../../keyboard/shortcuts";
 import { ComposerControls } from "./ComposerControls";
@@ -29,6 +30,7 @@ let container: HTMLElement;
 let root: ReturnType<typeof createRoot>;
 
 beforeEach(() => {
+  clearCommandHandlers();
   resetAllCommandBindings();
   resetShortcutScopes();
   container = document.createElement("div");
@@ -89,36 +91,92 @@ function menuRows(): string[] {
 it("lists only the levels the model declares", async () => {
   await mount([narrowModel], "low");
   await act(async () => thinkingTrigger().click());
-  expect(menuRows()).toEqual(["Default", "Off", "Low", "High"]);
+  expect(menuRows()).toEqual(["default", "off", "low", "high"]);
 });
 
 it("offers arbitrary wire values verbatim, with a raw label fallback", async () => {
   await mount([{ ...narrowModel, thinkingLevels: ["default", "max", "ultra"], defaultThinkingLevel: "default" }], "max");
   await act(async () => thinkingTrigger().click());
-  // `max` ships a translation; `ultra` does not and falls back to its raw value.
-  expect(menuRows()).toEqual(["Default", "Max", "ultra"]);
+  expect(menuRows()).toEqual(["default", "max", "ultra"]);
 });
 
 it("shows the stored level only while the model offers it", async () => {
   // `xhigh` came from another model (or from before this one narrowed its list):
   // the trigger must not claim an effort this model cannot run at.
   await mount([narrowModel], "xhigh");
-  expect(thinkingTrigger().textContent).toContain("Default");
+  expect(thinkingTrigger().textContent).toContain("default");
 });
 
 it("keeps all six when the model declares nothing", async () => {
   await mount([{ id: "narrow", provider: "custom", label: "Narrow" }], "medium");
   await act(async () => thinkingTrigger().click());
-  expect(menuRows()).toEqual(["Off", "Minimal", "Low", "Medium", "High", "XHigh"]);
+  expect(menuRows()).toEqual(["off", "minimal", "low", "medium", "high", "xhigh"]);
 });
 
 it("disables the picker when the model offers only the implicit default", async () => {
   await mount([{ id: "narrow", provider: "custom", label: "Narrow", thinkingLevels: ["default"], defaultThinkingLevel: "default" }], "default");
   expect(thinkingTrigger().disabled).toBe(true);
-  expect(thinkingTrigger().textContent).toContain("Default");
+  expect(thinkingTrigger().textContent).toContain("default");
 });
 
 it("enables the picker as soon as there is a second option", async () => {
   await mount([{ ...narrowModel, thinkingLevels: ["default", "off"], defaultThinkingLevel: "default" }], "default");
   expect(thinkingTrigger().disabled).toBe(false);
+});
+
+it("enters the model ring at the end the move comes from when the stored model is gone", async () => {
+  // The stored model was dropped from the catalogue (another machine's, or one this
+  // build no longer ships). Stepping forward must land on the first model and stepping
+  // back on the last — the same rule as a list nobody has selected from yet, in the
+  // direction the hand is moving.
+  const changes: string[] = [];
+  const other = { id: "wide", label: "Wide", provider: "custom" };
+  await act(async () => root.render(
+    <ComposerControls
+      approvalTier="off"
+      attachmentCount={0}
+      futureSessionStatus="ready"
+      handleAttachFiles={async () => {}}
+      inputEmpty
+      modelId="custom/gone"
+      modelOptions={[narrowModel, other]}
+      modelsEmptyReason={undefined}
+      onModelChange={id => changes.push(id)}
+      onThinkingLevelChange={() => {}}
+      sendPending={false}
+      recommendPending={false}
+      compactionPending={false}
+      thinkingLevel="default"
+    />,
+  ));
+
+  act(() => void runCommand("composer.model.next"));
+  act(() => void runCommand("composer.model.previous"));
+
+  expect(changes).toEqual(["custom/narrow", "custom/wide"]);
+});
+
+it("claims no key for a picker with nothing to cycle", async () => {
+  // One level is no choice at all, and an empty model list has nowhere to step to:
+  // the commands stay unregistered rather than swallowing a press for a no-op.
+  await act(async () => root.render(
+    <ComposerControls
+      approvalTier="off"
+      attachmentCount={0}
+      futureSessionStatus="ready"
+      handleAttachFiles={async () => {}}
+      inputEmpty
+      modelId="custom/narrow"
+      modelOptions={[{ ...narrowModel, thinkingLevels: ["default"] }]}
+      modelsEmptyReason={undefined}
+      onThinkingLevelChange={() => {}}
+      sendPending={false}
+      recommendPending={false}
+      compactionPending={false}
+      thinkingLevel="default"
+    />,
+  ));
+
+  expect(hasCommandHandler("composer.thinking.next")).toBe(false);
+  expect(hasCommandHandler("composer.thinking.previous")).toBe(false);
 });

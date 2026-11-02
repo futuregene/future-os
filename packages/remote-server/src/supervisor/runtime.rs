@@ -134,13 +134,15 @@ impl Supervisor {
         };
         // Said out loud: this removes a device row the user may remember
         // pairing, and the log is the only place that explains why.
-        eprintln!(
+        future_remote_protocol::remote_log!(
             "remote: the same device is already paired [{older}]; dropping that pairing instead of serving it twice [PA001]"
         );
         let server = self.clone();
         self.spawn(async move {
             if let Err(error) = server.unpair_slot(&older).await {
-                eprintln!("remote: could not drop the duplicate pairing [{older}]: {error}");
+                future_remote_protocol::remote_log!(
+                    "remote: could not drop the duplicate pairing [{older}]: {error}"
+                );
             }
         });
     }
@@ -163,7 +165,7 @@ impl Supervisor {
             loop {
                 if let Err(error) = host.retry_revokes().await {
                     if let Some(line) = failures.record("local", error) {
-                        eprintln!("{line}");
+                        future_remote_protocol::remote_log!("{line}");
                     }
                 }
                 tokio::time::sleep(Duration::from_secs(30)).await;
@@ -174,6 +176,7 @@ impl Supervisor {
     }
     pub async fn shutdown(self: &Arc<Self>, budget: Duration) -> Result<(), crate::Error> {
         let started = std::time::Instant::now();
+        self.access.note("supervisor shutdown");
         self.closed.store(true, Ordering::Release);
         self.stop();
         for task in self.generation_tasks.lock().unwrap().iter() {
@@ -257,6 +260,7 @@ impl Supervisor {
         if !self.closed.load(Ordering::Acquire) {
             return;
         }
+        self.access.note("reset_after_shutdown_for_test");
         assert!(self.state.lock().unwrap().is_empty());
         for jobs in [&self.tasks, &self.retiring, &self.generation_tasks] {
             let mut jobs = jobs.lock().unwrap();

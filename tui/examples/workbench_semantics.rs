@@ -22,11 +22,13 @@ type Case = (&'static str, fn() -> Result<(), String>);
 fn main() {
     let cases: &[Case] = &[
         (
-            "history scrolls and clicks its own row",
-            history_row_after_scroll,
+            "session picker scrolls and clicks its own row",
+            session_picker_row_after_scroll,
         ),
-        ("history filter and click agree", history_after_filter),
-        ("tree click opens the node it drew", tree_row),
+        (
+            "session picker filter and click agree",
+            session_picker_after_filter,
+        ),
         ("fork click forks the message it drew", fork_row),
         ("worktree click selects the path it drew", worktree_row),
         ("queue click recalls the prompt it drew", queue_row),
@@ -151,11 +153,12 @@ fn sessions(count: usize) -> WorkbenchData {
 
 /// A long list, scrolled to its end: the last visible row must open the session
 /// that row draws — the classic off-by-one when the window and the hit map are
-/// computed separately.
-fn history_row_after_scroll() -> Result<(), String> {
+/// computed separately. The sessions picker (`ctrl+r`) is the door that lists
+/// them, so the row under the pointer is its row.
+fn session_picker_row_after_scroll() -> Result<(), String> {
     let data = sessions(24);
     let mut wb = wb();
-    wb.overlay = Some(Overlay::History);
+    wb.open_picker(PickerKind::Sessions, &data);
     for _ in 0..40 {
         wb.handle(WbEvent::Key("down".into()), &data);
     }
@@ -164,13 +167,13 @@ fn history_row_after_scroll() -> Result<(), String> {
         .hits()
         .regions()
         .iter()
-        .filter(|(_, id)| id.starts_with("workflow.row."))
+        .filter(|(_, id)| id.starts_with("picker.row."))
         .filter_map(|(rect, id)| {
-            let index: usize = id.strip_prefix("workflow.row.")?.parse().ok()?;
+            let index: usize = id.strip_prefix("picker.row.")?.parse().ok()?;
             Some((*rect, index))
         })
         .max_by_key(|(_, index)| *index)
-        .ok_or("no visible history rows")?;
+        .ok_or("no visible picker rows")?;
     let (rect, index) = last;
     let (x, y) = centre(rect);
     let actions = wb.handle(WbEvent::Mouse(press(x, y)), &data);
@@ -183,7 +186,7 @@ fn history_row_after_scroll() -> Result<(), String> {
     }
 }
 
-fn history_after_filter() -> Result<(), String> {
+fn session_picker_after_filter() -> Result<(), String> {
     let mut data = demo::chat();
     data.sessions = vec![
         SessionRow {
@@ -206,7 +209,7 @@ fn history_after_filter() -> Result<(), String> {
         },
     ];
     let mut wb = wb();
-    wb.overlay = Some(Overlay::History);
+    wb.open_picker(PickerKind::Sessions, &data);
     for ch in "pars".chars() {
         wb.handle(WbEvent::Key(ch.to_string()), &data);
     }
@@ -214,28 +217,11 @@ fn history_after_filter() -> Result<(), String> {
     // gamma, not beta: the click resolves against the filtered window.
     wb.handle(WbEvent::Key("down".into()), &data);
     wb.render(&data, 100, 30);
-    let row = region(&wb, "workflow.row.1")?;
+    let row = region(&wb, "picker.row.1")?;
     let (x, y) = centre(row);
     match wb.handle(WbEvent::Mouse(press(x, y)), &data).as_slice() {
         [WbAction::SwitchSession(id)] if id == "gamma" => Ok(()),
         other => Err(format!("filtered row 1 opened {other:?}, expected gamma")),
-    }
-}
-
-fn tree_row() -> Result<(), String> {
-    let mut data = sessions(6);
-    let root = data.sessions[0].id.clone();
-    for (index, row) in data.sessions.iter_mut().enumerate() {
-        row.parent_id = (index > 0).then(|| root.clone());
-    }
-    let mut wb = wb();
-    wb.overlay = Some(Overlay::Tree);
-    wb.render(&data, 100, 30);
-    let row = region(&wb, "workflow.row.2")?;
-    let (x, y) = centre(row);
-    match wb.handle(WbEvent::Mouse(press(x, y)), &data).as_slice() {
-        [WbAction::SwitchSession(_)] => Ok(()),
-        other => Err(format!("tree row 2 opened {other:?}")),
     }
 }
 
@@ -244,6 +230,7 @@ fn fork_row() -> Result<(), String> {
     data.fork_points = (0..6)
         .map(|index| future_tui::workbench::state::ForkPoint {
             id: format!("e{index}"),
+            role: future_tui::workbench::state::ForkRole::User,
             text: format!("point {index}"),
         })
         .collect();
@@ -621,8 +608,6 @@ fn escape_closes() -> Result<(), String> {
     for overlay in [
         Overlay::Help,
         Overlay::Palette,
-        Overlay::History,
-        Overlay::Tree,
         Overlay::Fork,
         Overlay::Worktree,
         Overlay::Diff,

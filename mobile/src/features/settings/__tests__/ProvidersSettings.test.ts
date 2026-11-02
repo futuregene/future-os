@@ -548,3 +548,17 @@ test("provider pages keep the settings back stack and the desktop scope banner",
   expect(link("Acme Gateway")).toBeDefined();
   expect(props.onClose).not.toHaveBeenCalled();
 });
+
+// The host caps a model's level list (it is metadata the desktop's own form
+// writes), so a list past that cap has to be refused here rather than sent and
+// bounced — the phone is the only place the user can still see it.
+test("refuses a model carrying more thinking levels than the host accepts", async () => {
+  providers.custom[0]!.models[0]!.thinkingLevels = Array.from({ length: 17 }, (_, index) => `lvl-${index}`);
+  mockRemote.listProviders.mockResolvedValueOnce(providers);
+  await openProviders();
+  await act(async () => link("Acme Gateway").props.onPress());
+
+  await act(async () => button("desktopSettings.save").props.onPress());
+  expect(rendered()).toContain("desktopSettings.modelThinkingLevelsMax");
+  expect(mockRemote.upsertCustomProvider).not.toHaveBeenCalled();
+});

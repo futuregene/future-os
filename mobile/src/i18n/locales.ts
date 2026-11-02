@@ -593,7 +593,7 @@ export const resources = {
           "The beginning of this run is no longer available in the live buffer.",
         backToLatest: "Back to latest",
         previousQuestion: "Previous question",
-        nextPassage: "Next passage",
+        questionNext: "Next question",
         runStopped: "Stopped",
         responseInterrupted: "The response was interrupted before it finished.",
         responseIncomplete: "Response not completed",
@@ -632,11 +632,11 @@ export const resources = {
       failure: {
         connect:
           "Couldn't connect to the FutureOS background service.\n\nPlease quit FutureOS completely, reopen it, and try again.",
-        run: "Please try again later.",
+        run: "Please try again later. ({{message}})",
         runTitle: "Model service error",
         unknown: "The run failed. Please try again later.",
         insufficientCredit:
-          "Insufficient account balance, so this run could not finish. Please top up at https://future-os.cn/platform/#recharge and try again — if you are on a team account, ask your admin to recharge.",
+          "Insufficient account credit, so this run could not finish. Please contact your administrator to add credit, then try again.",
         auth: "Check your model provider settings and try again.",
         authTitle: "Model service authentication failed",
         serverErrorTitle: "Model service is temporarily unavailable",
@@ -648,7 +648,7 @@ export const resources = {
         contextLimit:
           "The conversation exceeds the model's context length limit. Start a new conversation or compact the current context, then try again.",
         network:
-          "Network error — the model service is unreachable. Check your connection and try again.",
+          "Network error — the model service is unreachable ({{message}}). Check your connection and try again.",
         upstreamDisconnected:
           "Please wait, then click Continue to resume or try again.",
         upstreamDisconnectedTitle:
@@ -729,6 +729,7 @@ export const resources = {
         allowing: "Allowing",
       },
       share: {
+        chooseDevice: "Choose a device",
         chooseDestination: "Share to a conversation",
         newConversation: "New conversation",
         existingConversation: "Existing conversation",
@@ -986,6 +987,7 @@ export const resources = {
         showFullTitle: "Show full title",
         hideFullTitle: "Hide full title",
         version: "Version {{version}}",
+        privacyPolicy: "Privacy Policy",
       },
       thinking: {
         default: "Default",
@@ -1676,7 +1678,7 @@ export const resources = {
         truncated: "本轮开头已超出实时缓冲，无法回放。",
         backToLatest: "回到最新",
         previousQuestion: "上一个提问",
-        nextPassage: "下一段",
+        questionNext: "下一个提问",
         runStopped: "已停止",
         responseInterrupted: "回复在完成前被中断。",
         responseIncomplete: "本次回复未完成",
@@ -1715,11 +1717,11 @@ export const resources = {
       failure: {
         connect:
           "无法连接 FutureOS 后台服务。\n\n请完全退出 FutureOS 后重新打开，然后再试一次。",
-        run: "请稍后重试。",
+        run: "请稍后重试。（{{message}}）",
         runTitle: "模型服务异常",
         unknown: "运行失败，请稍后重试。",
         insufficientCredit:
-          "账户余额不足，本次对话未能完成。请前往 https://future-os.cn/platform/#recharge 充值后重试；如果您使用的是团队账户，请联系管理员充值。",
+          "账户额度不足，本次对话未能完成。请联系管理员补充额度后重试。",
         auth: "请检查模型提供商配置后重试。",
         authTitle: "模型服务验证失败",
         serverErrorTitle: "模型服务暂时不可用",
@@ -1728,7 +1730,7 @@ export const resources = {
         badRequest: "{{message}}",
         badRequestTitle: "模型服务拒绝了本次请求（HTTP 400）",
         contextLimit: "系统未能通过自动压缩恢复本次回复。请新建对话后重试。",
-        network: "网络连接异常，无法访问模型服务。请检查网络连接后重试。",
+        network: "网络连接异常，无法访问模型服务（{{message}}）。请检查网络连接后重试。",
         upstreamDisconnected: "请稍后点击“继续”接着处理，或重试。",
         upstreamDisconnectedTitle: "模型服务连接中断，本次回复未能完成",
         modelResponseError: "请更换模型后点击“继续”接着处理，或重试。",
@@ -1797,6 +1799,7 @@ export const resources = {
         allowing: "允许中",
       },
       share: {
+        chooseDevice: "选择设备",
         chooseDestination: "分享到会话",
         newConversation: "新会话",
         existingConversation: "已有会话",
@@ -2039,6 +2042,7 @@ export const resources = {
         showFullTitle: "查看完整标题",
         hideFullTitle: "收起完整标题",
         version: "版本 {{version}}",
+        privacyPolicy: "隐私政策",
       },
       thinking: {
         default: "默认",

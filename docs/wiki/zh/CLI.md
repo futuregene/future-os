@@ -192,6 +192,7 @@ future tools call <name> --args '<json>' --output result.png
 future mcp list                          # 已配置的服务器,以及它们来自哪个文件
 future mcp status                        # 逐个启动、握手、报告工具数——确认真的可用
 future mcp add rea --command rea --arg --mcp
+future mcp add remote --url https://example.com/mcp --header 'Authorization: Bearer <token>'
 future mcp tools rea --query binary      # 该服务器的工具,一行一个
 future mcp describe rea inspect_go_binary  # 一个工具的完整参数 schema
 future mcp call rea inspect_go_binary --args '{"path":"/usr/bin/foo"}'
@@ -201,8 +202,15 @@ future mcp remove rea
 ```
 
 服务器配置在 `~/.future/mcp.json`(与 `agent/` 同级,所以 `FUTURE_HOME` 会把它一起搬走),
-以本地进程、stdio 上的 MCP 协议运行。agent 自身没有 MCP 客户端,所以这一组就是 agent
-会话触达 MCP 服务器的途径:技能或用户通过普通的 `shell` 工具调用 `future mcp`。
+有两种触达方式:本地进程在 stdio 上说 MCP(`"command"`),或 Streamable HTTP 端点(`"url"`)。
+agent 自身没有 MCP 客户端,所以这一组就是 agent 会话触达 MCP 服务器的途径:技能或用户
+通过普通的 `shell` 工具调用 `future mcp`。
+
+HTTP 条目就是一个 URL:客户端把 JSON-RPC 消息 POST 过去,回包可能是 JSON 也可能是 SSE 流;
+客户端一直读到「自己那条回答」出现为止,而不是等流关闭。`initialize` 回的 session id 会
+在后续每个请求上回传,命令结束时用 `DELETE` 收尾,协商出的协议版本以 `MCP-Protocol-Version`
+发送。`--header 'Name: value'` 把凭据写进配置文件而不是环境变量,`list` 只显示 header 的
+**名字**。
 
 `list` 只回答「配置了什么」,`status` 回答「能不能用」——它逐个启动服务器、完成握手、
 报告工具数与耗时然后停掉(不调用任何工具);失败时附上服务器自己的 stderr(通常正是
@@ -219,7 +227,8 @@ JSON Schema。`call` 最多打印 `--max-bytes`(默认 64 KB),并提示用 `--ou
 限制**读入内存**的单帧多大(默认 32 MiB,也可用 `FUTURE_MCP_MAX_FRAME_BYTES`)。
 帧装不下时 `--max-bytes` 帮不上忙,所以超限报错会同时点名正在等待的方法、说明这是读预算,
 并给出两个旋钮;很多服务器自己也有响应预算(REA 是 `REA_MCP_MAX_RESPONSE_BYTES`)。
-工具名写错时,`describe` 与 `call` 给出同样的「Did you mean」提示。
+工具名写错时,`describe` 与 `call` 给出同样的「Did you mean」提示。这两个预算和
+`--timeout` 对 HTTP 端点同样生效;被拒绝或不可达时,报错会带上 HTTP 状态码与服务器自己的回包内容。
 工具自己报告的错误(`isError`)会把内容打到 **stderr** 并
 以退出码 1 结束,与 `future tools call` 报告工具失败的方式一致——脚本或 agent 不必从
 stdout 里解析标记来判断调用是否成功。

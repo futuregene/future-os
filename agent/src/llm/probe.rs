@@ -236,6 +236,7 @@ mod tests {
         fn start(
             respond: impl Fn(&serde_json::Value) -> (u16, &'static str, String) + Send + 'static,
         ) -> Self {
+            crate::test_support::ensure_fd_headroom();
             let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
             let port = listener.local_addr().unwrap().port();
             let bodies = Arc::new(Mutex::new(Vec::new()));

@@ -20,11 +20,4 @@ export interface TimelineCardProps {
   /** Fork the conversation at this reply's turn (desktop Fork parity). */
   onFork?(item: TimelineItem): void;
   onResolveToolTarget?: ToolTargetResolver;
-  /**
-   * Where an assistant reply's tail anchor sits inside its own row, in the
-   * row's own coordinates: the offset of the last output block the question
-   * ladder lands on (see `replyTailBlock`). Reported from the row's layout
-   * events, so a jump can aim at it; questions and notices never report one.
-   */
-  onReplyTailAnchor?(itemId: string, offset: number): void;
 }

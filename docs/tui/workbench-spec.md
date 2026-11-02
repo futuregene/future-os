@@ -371,21 +371,25 @@ the row under the pointer rather than one beside it.
 `shift`): `ctrl+o` model chooser; `ctrl+t` thinking-effort chooser; `ctrl+s`
 approval-mode chooser; `ctrl+l` workspace chooser; `ctrl+f` the files panel
 (this session's own workspace); `ctrl+g` the git browser; `ctrl+d` the rail's
-open/focus/hide; `ctrl+q` preferences; `ctrl+v` read the clipboard (an image becomes a draft attachment, text is pasted); `tab`/`shift+tab` step
+open/focus/hide; `ctrl+q` preferences; `ctrl+v` (`alt+v` on Windows) read the clipboard (an image becomes a draft attachment, text is pasted); `tab`/`shift+tab` step
 the conversation's links and pictures (`enter` opens the one under the cursor —
 browser, that conversation, or the preview box), and on the launchpad move between
 the prompt and its chips; `/` command palette; `?` help; `esc` close one layer at
 a time. `shift+←`/`shift+→` walk the rail's two tabs and do the
 sidebar's open/focus/hide job when the rail is closed.
 
-No default is `alt` — on macOS Option composes a character unless the reader
+`ctrl+v` is the one default that is not the same chord on every platform: Windows
+reads the clipboard on `alt+v`, because Windows Terminal binds `ctrl+v` to its own
+paste — text only, never an image — so that key never reaches the app there. The
+typed door `/paste` exists on all of them.
+
+No other default is `alt` — on macOS Option composes a character unless the reader
 turns on "Use Option as Meta" — and the letters left over after the collisions
 run out, so the remaining actions have **no chord**: deleting a conversation (`/delete`, or
 `delete` in the rail — it asks first), the queue (`/queue` — the prompts sent
 while a run was in flight), the interface language (`/lang`), a refresh
 (`/refresh`), copy (`/copy`), mouse capture (`/mouse`), the newest attachment
-(`/preview`), the rail's two panels (a click, or `shift+←`/`shift+→`), and
-reduced motion (the preferences overlay). The
+(a click on the count the composer's title carries), the rail's two panels (a click, or `shift+←`/`shift+→`). The
 help overlay prints `—` in the key column for those. The collisions are the
 reason: a terminal sends Backspace, Tab, `\n` and Enter for `ctrl+h`/`i`/`j`/`m`;
 `ctrl+a`/`ctrl+b` are the `screen` and `tmux` prefixes; `ctrl+z` is suspend;

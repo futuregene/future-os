@@ -47,6 +47,9 @@ tracing-subscriber.workspace = true
 chrono.workspace = true
 regex = "1"
 unicode-width = "0.2.2"
+# The session export renders the model's markdown rather than dumping it as
+# text; kept in step with the TUI's own renderer.
+pulldown-cmark = "0.13"
 rand = "0.8"
 sha2 = "0.10"
 fs2 = "0.4"
@@ -108,5 +111,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+# paused-clock tests: the idle-history release is a real 30 s sleep otherwise.
+tokio = { workspace = true, features = ["test-util"] }
 tokio-test = "0.4"
 tempfile.workspace = true

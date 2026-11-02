@@ -122,3 +122,37 @@ previous release, including both reinstall and uninstall-first upgrade choices.
 A previous release's uninstaller contains its original hooks, not the new ones.
 No preflight can prevent another application from acquiring a lock after the
 check; avoid reopening FutureOS until installation finishes.
+
+## A windowless launch has no writable stderr
+
+A process started by Explorer, an installer's "run now", or an auto-start entry
+has no console window, and fd 2 is either absent or names a handle the process
+may not write. `eprintln!` does not merely lose that line:
+`std::io::stdio::print_to` panics on the failed write, which ends the task that
+emitted it.
+
+Measured 2026-11-01 in `app/logs/crash.log` of one `futureos.exe` process:
+**699** records of `panicked ... failed printing to stderr: 拒绝访问 (os error 5)`,
+all on `tokio-rt-worker`, one exactly **11.1 s** after every relay
+`authorization violation` the remote supervisor reported. Two consequences, both
+observed that day: the reason a remote desktop stopped was nowhere on disk, and a
+panic could kill the task that would have gone on to rebuild the link.
+
+Two layers answer it, and both are needed:
+
+- **`future_agent::console::redirect_windowless_standard_streams`**, called first
+  in `future_host::environment::prepare_process`: when `GetConsoleWindow()` is
+  null, this launch's stdout and stderr are pointed at
+  `~/.future/app/logs/desktop.stdio.log` (a fresh file past 4 MiB), so *any*
+  `eprintln!` — std, a dependency, or code nobody audited — appends to a file
+  instead of panicking. A launch from a terminal keeps its terminal.
+- **the tolerant writers**, for a stream that dies *during* a run:
+  `console::eprintln!` / `console::println!` drop a failed write,
+  `logfile::eprintln_log!` also mirrors into `desktop.log`, and the remote stack
+  reports through `future_remote_protocol::diagnostics`, which the host installs
+  onto `environment::report`. A terminal that goes away after startup cannot be
+  detected at startup, so a long-lived write must never be a plain `eprintln!`.
+
+Rule for new code in this tree: a diagnostic emitted by a long-lived task goes
+through one of those three, and `grep -rn 'eprintln!'` finding your line means it
+does not.

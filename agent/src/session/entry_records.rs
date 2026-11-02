@@ -1,8 +1,16 @@
 //! Relational transcript encoding. JSON is reserved for extensible metadata;
 //! message bodies live in ordered blocks, never in the entry envelope.
+use crate::session::content;
 use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection};
 use serde_json::Value;
+
+/// Statements this module repeats on every entry write. Hoisted so the call and
+/// its `?` share a line: a lone `)?;` row records only the error edge, so it
+/// reads as uncovered while the statement runs thousands of times.
+const SESSION_METADATA: &str = "UPDATE sessions SET current_metadata_json=?2 WHERE id=?1";
+const EMPTY_BLOCKS: &str =
+    "UPDATE entries SET content_json='[]' WHERE session_id=?1 AND position=?2";
 
 use crate::session::entry::{ENTRY_TYPE_ASSISTANT, ENTRY_TYPE_TOOL, ENTRY_TYPE_USER};
 
@@ -205,15 +213,11 @@ pub(crate) fn insert_entry_record(
     }
     if kind == "session_info" {
         if segmented {
-            crate::session::content::metadata::validate_thin(
-                content.as_ref().unwrap_or(&Value::Null),
-            )?;
+            content::metadata::validate_thin(content.as_ref().unwrap_or(&Value::Null))?;
             crate::session::content::metadata::advance_generation(db, session)?;
         }
-        db.execute(
-            "UPDATE sessions SET current_metadata_json=?2 WHERE id=?1",
-            params![&stored_session, content.as_ref().map(Value::to_string)],
-        )?;
+        let metadata = content.as_ref().map(Value::to_string);
+        db.execute(SESSION_METADATA, params![&stored_session, metadata])?;
     }
     if kind == "model_change" {
         if let Some(model) = content
@@ -329,10 +333,7 @@ pub(crate) fn insert_entry_record(
                 if block.is_object() { Value::Object(extra).to_string() } else { block.to_string() }])?;
         }
         // Distinguish an explicitly empty block array from absent content.
-        db.execute(
-            "UPDATE entries SET content_json='[]' WHERE session_id=?1 AND position=?2",
-            params![&stored_session, position],
-        )?;
+        db.execute(EMPTY_BLOCKS, params![&stored_session, position])?;
     }
     Ok(())
 }

@@ -90,7 +90,7 @@ impl Supervisor {
                 session_id,
                 unix_timestamp_ms(),
             ) {
-                eprintln!("{line}");
+                future_remote_protocol::remote_log!("{line}");
             }
             return;
         }
@@ -172,7 +172,7 @@ impl Supervisor {
                 session_id,
                 unix_timestamp_ms(),
             ) {
-                eprintln!("{line}");
+                future_remote_protocol::remote_log!("{line}");
             }
             return;
         }
@@ -180,7 +180,7 @@ impl Supervisor {
         // enqueued normally. Report once, with the episode's total. Best-effort —
         // a burst racing across threads may miscount a line, never the flood.
         if let Some(line) = drop_counters.report_recovery() {
-            eprintln!("{line}");
+            future_remote_protocol::remote_log!("{line}");
         }
     }
 
@@ -257,12 +257,12 @@ impl Supervisor {
                 secure::publish(&client, &security, format!("p.{pair_id}.presence"), bytes).await
             {
                 if let Some(line) = self.publisher_failures.record("heartbeat_publish", error) {
-                    eprintln!("{line}");
+                    future_remote_protocol::remote_log!("{line}");
                 }
                 return;
             }
             if let Some(line) = self.publisher_failures.recovered() {
-                eprintln!("{line}");
+                future_remote_protocol::remote_log!("{line}");
             }
         }
     }
@@ -391,7 +391,7 @@ impl Supervisor {
                                 if let Some(line) =
                                     self.publisher_failures.record("state_publish", e)
                                 {
-                                    eprintln!("{line}");
+                                    future_remote_protocol::remote_log!("{line}");
                                 }
                                 return;
                             }
@@ -438,7 +438,7 @@ impl Supervisor {
                                 if let Some(line) =
                                     self.publisher_failures.record("state_publish", e)
                                 {
-                                    eprintln!("{line}");
+                                    future_remote_protocol::remote_log!("{line}");
                                 }
                                 return;
                             }
@@ -466,7 +466,7 @@ impl Supervisor {
                     Ok(false) => {}
                     Err(e) => {
                         if let Some(line) = self.publisher_failures.record("state_publish", e) {
-                            eprintln!("{line}");
+                            future_remote_protocol::remote_log!("{line}");
                         }
                         return;
                     }

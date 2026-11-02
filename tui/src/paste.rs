@@ -448,7 +448,7 @@ pub fn attachment_notice(images: usize, supported: Option<bool>) -> Option<Strin
     Some(line)
 }
 
-// ─── Clipboard capture (`ctrl+v`) ──────────────────────────────────────────
+// ─── Clipboard capture (the paste chord) ───────────────────────────────────
 
 /// Directory under the system temp directory holding images captured from the
 /// clipboard.
@@ -654,7 +654,8 @@ fn applescript_literal(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-/// Reads the system clipboard for a `ctrl+v`.
+/// Reads the system clipboard for the paste chord (`ctrl+v`, `alt+v` on
+/// Windows — the front end owns `ctrl+v` there).
 ///
 /// `Clone` because the capture runs on a blocking thread (a subprocess, a file
 /// write) while the event loop keeps painting: what is cloned is the runner
@@ -944,7 +945,7 @@ fn spawn_capture(program: &str, args: &[String]) -> Result<(i32, String, String)
 }
 
 /// Re-word the shared spawner's timeout marker, which names the skill CLI: a
-/// `ctrl+v` that gave up must not read as "future skills: timed out".
+/// chord that gave up must not read as "future skills: timed out".
 fn humanize_capture_error(error: String) -> String {
     match error.strip_prefix(crate::subprocess::TIMEOUT_MARKER) {
         Some(rest) => format!("the clipboard tool timed out{rest}"),

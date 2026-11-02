@@ -173,6 +173,24 @@ mod tests {
         publish_to_gui(Event::ControlClaimed);
     }
 
+    /// The producer side of that gate: raising a control claim goes through
+    /// `publish_to_gui`, so a headless host drops it *at the gate* instead of
+    /// reaching a presentation that does not exist — and raising one is never
+    /// what attaches a sink (`events::attach` belongs to the entry point, and
+    /// it is process-global and one-shot, so whether a sink exists here depends
+    /// on which other test ran first: the invariant that holds either way is
+    /// that this call does not change it).
+    #[test]
+    fn raising_a_control_claim_does_not_attach_a_presentation() {
+        let attached = has_presentation();
+        emit_control_claimed();
+        assert_eq!(
+            has_presentation(),
+            attached,
+            "raising the claim must not attach a presentation sink"
+        );
+    }
+
     #[test]
     fn presentation_receives_the_activity_stamp_it_must_patch() {
         publish_to(

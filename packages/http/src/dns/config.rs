@@ -24,6 +24,17 @@ const RESOLV_CONF_CANDIDATES: &[&str] = &[
     "/run/resolvconf/resolv.conf",
 ];
 
+/// The resolv.conf path this build looks at first.
+///
+/// Anything other than `/etc/resolv.conf` means the binary was patched to read
+/// a path the device can actually write (the appliance case: `/etc` is
+/// read-only and musl has no environment override) — worth naming at startup,
+/// because such a binary that finds no file looks like "no DNS elsewhere"
+/// rather than "my patch lost its configuration file".
+pub(crate) fn compiled_resolv_conf() -> &'static std::path::Path {
+    std::path::Path::new(RESOLV_CONF_CANDIDATES[0])
+}
+
 /// Where host overrides are read from, before `$PREFIX` is considered.
 const HOSTS_CANDIDATES: &[&str] = &["/etc/hosts"];
 
@@ -104,6 +115,13 @@ impl Plan {
         let dns_server = non_empty(std::env::var(DNS_SERVER_ENV).ok());
         let resolv_conf = non_empty(std::env::var(RESOLV_CONF_ENV).ok());
         let prefix = non_empty(std::env::var(PREFIX_ENV).ok());
+        // Windows' `getaddrinfo` is the Windows DNS client, not a reader of
+        // `/etc/resolv.conf`, so the absence of that file there says nothing
+        // about whether this process can resolve a name. Only an explicit
+        // setting moves Windows onto the custom path.
+        if cfg!(windows) && dns_server.is_none() && resolv_conf.is_none() {
+            return Plan::System;
+        }
         let inputs = Inputs {
             dns_server: dns_server.as_deref(),
             resolv_conf: resolv_conf.as_deref(),

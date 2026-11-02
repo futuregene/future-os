@@ -104,13 +104,12 @@ impl PickerKind {
         }
     }
 
-    /// Older spellings that still open this menu. `/sandbox` cycled the approval
-    /// mode before the menu existed; it now opens the mode the palette lists, the
-    /// way `/lang` and `/theme` open theirs.
+    /// Older spellings that still open this menu. `/effort` was the thinking
+    /// level's name before the chooser existed; it opens the same menu the
+    /// palette lists.
     pub fn aliases(self) -> &'static [&'static str] {
         match self {
             Self::Thinking => &["/effort"],
-            Self::Approval => &["/sandbox"],
             _ => &[],
         }
     }

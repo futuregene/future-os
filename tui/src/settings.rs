@@ -52,8 +52,6 @@ pub struct TuiSettings {
     pub mouse_capture: Option<bool>,
     /// Successful-run terminal notifications (BEL and OSC 9 independently).
     pub notify: Option<crate::notifications::NotifyConfig>,
-    /// Keep the activity indicator still; streaming itself is never delayed.
-    pub reduced_motion: Option<bool>,
     /// Conversation ids the reader pinned, in the order they were pinned
     /// (`pinnedSessions`).
     ///
@@ -132,9 +130,6 @@ impl TuiSettings {
                 obj.insert("notify".into(), value);
             }
         }
-        if let Some(reduced) = self.reduced_motion {
-            obj.insert("reducedMotion".into(), Value::Bool(reduced));
-        }
         if let Some(pinned) = &self.pinned_sessions {
             obj.insert(
                 "pinnedSessions".into(),
@@ -187,7 +182,6 @@ impl TuiSettings {
             notify: value
                 .get("notify")
                 .and_then(|value| serde_json::from_value(value.clone()).ok()),
-            reduced_motion: value.get("reducedMotion").and_then(Value::as_bool),
             pinned_sessions: value
                 .get("pinnedSessions")
                 .and_then(Value::as_array)
@@ -236,7 +230,6 @@ mod tests {
                 osc9: true,
                 title: false,
             }),
-            reduced_motion: Some(true),
             pinned_sessions: Some(vec!["s1".into()]),
             folded_workspaces: Some(vec!["/src/mobile".into()]),
             last_workspace: Some("/src/future-os".into()),
@@ -254,7 +247,6 @@ mod tests {
         assert_eq!(back.sidebar_visible, Some(false));
         assert_eq!(back.mouse_capture, Some(false));
         assert!(!back.notify.unwrap().bell);
-        assert_eq!(back.reduced_motion, Some(true));
         assert_eq!(back.pinned_sessions, Some(vec!["s1".into()]));
         assert_eq!(back.folded_workspaces, Some(vec!["/src/mobile".into()]));
         assert_eq!(back.last_workspace.as_deref(), Some("/src/future-os"));

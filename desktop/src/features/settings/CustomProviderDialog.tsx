@@ -13,7 +13,7 @@ import { Field } from "../../components/ui/Field";
 import { IconButton } from "../../components/ui/IconButton";
 import { Select } from "../../components/ui/Select";
 import { TextInput } from "../../components/ui/TextInput";
-import { knownThinkingLevels } from "../../integrations/agent/agentClient";
+import { knownThinkingLevels, thinkingLevelName } from "../../integrations/agent/agentClient";
 import { errorMessage } from "../../lib/errors";
 
 const API_OPTIONS = [
@@ -175,10 +175,17 @@ export function CustomProviderDialog({
     setModels(current => current.map((model, modelIndex) => (modelIndex === index ? { ...model, ...patch } : model)));
   }
 
-  /** A chip label: the level's translated name, or its wire value when unknown. */
+  /**
+   * A chip label: the level's **wire** value, untranslated.
+   *
+   * These chips configure the model's wire vocabulary — the exact strings the
+   * agent sends — so they read as `off`, `xhigh`, `max` (see
+   * {@link thinkingLevelName}); the point of this row is to match the
+   * endpoint's documentation and the saved config, and a translated name would
+   * hide the string being configured.
+   */
   function levelLabel(level: string) {
-    const key = level === "" ? "default" : level;
-    return t(`agent:composer.thinkingLevelLabels.${key}`, { defaultValue: key });
+    return thinkingLevelName(level);
   }
 
   /** A result describes one probe's inputs; editing them makes it stale. */

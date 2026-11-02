@@ -118,7 +118,7 @@ impl Supervisor {
         // Is the device's client at the other end? Read per pairing and without
         // the bridge in the way: a client whose bridge is rebuilding is still
         // sitting there, and the two facts are reported separately.
-        let present = self.client_link(pair_id).present();
+        let present = self.client_link(pair_id).present_and_report();
         RemoteDevice {
             pair_id: pair_id.to_string(),
             phase,

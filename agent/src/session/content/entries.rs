@@ -9,6 +9,9 @@ use anyhow::{ensure, Context, Result};
 use rusqlite::params;
 use serde_json::Value;
 
+/// The digest of a sealed content object, read once per retried stage.
+const OBJECT_SHA: &str = "SELECT sha256 FROM content_objects WHERE id=?1";
+
 /// Keep the original shape and provider metadata; only known body fields move.
 fn fields(value: &Value) -> Vec<(String, String)> {
     let Some(blocks) = value.get("content").and_then(Value::as_array) else {
@@ -384,11 +387,7 @@ pub(crate) fn stage_named(
                 prior_encoding == encoding,
                 "conflicting content field encoding"
             );
-            let sealed: Option<String> = tx.query_row(
-                "SELECT sha256 FROM content_objects WHERE id=?1",
-                [prior.id],
-                |r| r.get(0),
-            )?;
+            let sealed: Option<String> = tx.query_row(OBJECT_SHA, [prior.id], |r| r.get(0))?;
             if kind == "entry" && sealed.is_none() {
                 let owner_key = super::owner_key(&tx, &scope.0, kind, &scope.1)?;
                 let published: bool = tx.query_row(

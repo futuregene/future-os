@@ -974,6 +974,15 @@ mod end_to_end {
 
     use tokio_tungstenite::tungstenite::Message;
 
+    // Every wait in this module is an escape hatch on **another process**: a real
+    // shell starting, a socket that owes a reply, a blocking read that must not
+    // hang the suite. They were sized on an idle host, so they go through
+    // `crate::test_support::wait_budget`: a fixture that arms a budget widens all
+    // of them, and an unarmed one keeps the number written at the call site (which
+    // is what a reviewer audits). Same family as `agent_bridge::presence`'s 5 s
+    // project read, measured red under the instrumented suite on 2026-11-01.
+    use crate::test_support::wait_budget::{deadline as escape_deadline, wait_budget as escape};
+
     use super::*;
     use crate::terminal::test_support;
 
@@ -1050,7 +1059,7 @@ mod end_to_end {
     ) -> HttpResponse {
         let mut stream = StdStream::connect(("127.0.0.1", port)).expect("connect");
         stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
+            .set_read_timeout(Some(escape(Duration::from_secs(10))))
             .expect("timeout");
         let payload = body.unwrap_or("");
         let mut head = format!(
@@ -1106,7 +1115,7 @@ mod end_to_end {
     fn raw_exchange_split(port: u16, head: &[u8], body: &[u8], gap: Duration) -> String {
         let mut stream = StdStream::connect(("127.0.0.1", port)).expect("connect");
         stream
-            .set_read_timeout(Some(Duration::from_secs(20)))
+            .set_read_timeout(Some(escape(Duration::from_secs(20))))
             .expect("timeout");
         if !head.is_empty() {
             stream.write_all(head).expect("write head");
@@ -1173,6 +1182,11 @@ mod end_to_end {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_real_shell_streams_over_the_loopback_transport() {
+        // A real shell starts in this fixture: under an instrumented suite that
+        // takes longer than any number chosen on an idle machine, so the waits
+        // below may be widened without touching them.
+        let _waits =
+            crate::test_support::wait_budget::WaitBudgetGuard::armed(Duration::from_secs(120));
         let _home = setup_home("terminal-e2e");
         let thread_id = create_thread_in_new_workspace("terminal-e2e");
         let server = bind().expect("bind");
@@ -1332,7 +1346,7 @@ mod end_to_end {
         let mut answered_dsr = false;
         let mut output = String::new();
         let mut meta: Option<Meta> = None;
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = escape_deadline(Duration::from_secs(15));
         while Instant::now() < deadline && !output.contains("marker-42") {
             let next = tokio::time::timeout_at(deadline.into(), socket.next()).await;
             match next {
@@ -1897,6 +1911,10 @@ mod end_to_end {
     ///   exit code and the same `Close` immediately.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pump_answers_pings_carries_input_and_ends_with_the_shell() {
+        // A real shell starts in this fixture — the waits below are escapes on
+        // it, not assertions, and may be widened by arming a budget.
+        let _waits =
+            crate::test_support::wait_budget::WaitBudgetGuard::armed(Duration::from_secs(120));
         let _home = setup_home("terminal-pump");
         let thread_id = create_thread_in_new_workspace("terminal-pump");
         let server = bind().expect("bind");
@@ -1949,9 +1967,9 @@ mod end_to_end {
         // query — the pump deliberately does not, because the query belongs to
         // the terminal protocol, not to the transport).
         let mut answered_dsr = false;
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = escape_deadline(Duration::from_secs(20));
         while Instant::now() < deadline && pong.is_none() {
-            match tokio::time::timeout(Duration::from_secs(5), socket.next()).await {
+            match tokio::time::timeout(escape(Duration::from_secs(5)), socket.next()).await {
                 Ok(Some(Ok(Message::Pong(payload)))) => pong = Some(payload.to_vec()),
                 Ok(Some(Ok(Message::Binary(bytes)))) => {
                     if bytes.first() != Some(&protocol::CONTROL_PREFIX) {
@@ -1983,9 +2001,9 @@ mod end_to_end {
             .send(Message::Text("echo pump-marker\r".into()))
             .await
             .expect("send text");
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = escape_deadline(Duration::from_secs(20));
         while Instant::now() < deadline && !echoed.contains("pump-marker") {
-            match tokio::time::timeout(Duration::from_secs(5), socket.next()).await {
+            match tokio::time::timeout(escape(Duration::from_secs(5)), socket.next()).await {
                 Ok(Some(Ok(Message::Binary(bytes)))) => {
                     if bytes.first() != Some(&protocol::CONTROL_PREFIX) {
                         echoed.push_str(&String::from_utf8_lossy(&bytes));
@@ -2020,9 +2038,9 @@ mod end_to_end {
 
         let mut exit_frame = None;
         let mut close_code = None;
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = escape_deadline(Duration::from_secs(20));
         while Instant::now() < deadline && close_code.is_none() {
-            match tokio::time::timeout(Duration::from_secs(5), socket.next()).await {
+            match tokio::time::timeout(escape(Duration::from_secs(5)), socket.next()).await {
                 Ok(Some(Ok(Message::Binary(bytes)))) => {
                     if bytes.first() == Some(&protocol::CONTROL_PREFIX) {
                         exit_frame = serde_json::from_slice::<Meta>(&bytes[1..]).ok();
@@ -2056,9 +2074,9 @@ mod end_to_end {
         assert_eq!(response.status().as_u16(), 101);
         let mut late_exit = None;
         let mut late_close = None;
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = escape_deadline(Duration::from_secs(20));
         while Instant::now() < deadline && late_close.is_none() {
-            match tokio::time::timeout(Duration::from_secs(5), late.next()).await {
+            match tokio::time::timeout(escape(Duration::from_secs(5)), late.next()).await {
                 Ok(Some(Ok(Message::Binary(bytes)))) => {
                     if bytes.first() == Some(&protocol::CONTROL_PREFIX) {
                         late_exit = serde_json::from_slice::<Meta>(&bytes[1..]).ok();
@@ -2243,7 +2261,13 @@ mod end_to_end {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Every wait below is an escape hatch, not an assertion: it answers "did this
+    // finish at all", never "did it finish in n seconds". They go through
+    // `crate::test_support::wait_budget` so a fixture that waits on another
+    // process can widen them, while an in-memory fixture keeps the number
+    // written at the call site.
     use crate::terminal::test_support;
+    use crate::test_support::wait_budget::{deadline as escape_deadline, wait_budget as escape};
     // The DSR-aware pump tests are Windows-only, but the unix pump test below
     // waits on a deadline too, so the import is unconditional.
     use std::time::Instant;
@@ -2689,7 +2713,7 @@ mod tests {
         await_first_write(&socket).await;
         socket.fail_writes();
         live.on_data(b"undeliverable");
-        tokio::time::timeout(Duration::from_secs(20), pump)
+        tokio::time::timeout(escape(Duration::from_secs(20)), pump)
             .await
             .expect("the pump must stop when the client is gone")
             .expect("pump task");
@@ -2711,7 +2735,7 @@ mod tests {
         await_first_write(&socket).await;
         socket.fail_writes();
         live.on_eof();
-        tokio::time::timeout(Duration::from_secs(20), pump)
+        tokio::time::timeout(escape(Duration::from_secs(20)), pump)
             .await
             .expect("the pump must stop when the exit cannot be sent")
             .expect("pump task");
@@ -2728,7 +2752,7 @@ mod tests {
         await_first_write(&socket).await;
         socket.fail_writes();
         socket.push_frame(OP_PING, b"keepalive");
-        tokio::time::timeout(Duration::from_secs(20), pump)
+        tokio::time::timeout(escape(Duration::from_secs(20)), pump)
             .await
             .expect("an unanswerable ping must not wedge the pump")
             .expect("pump task");
@@ -2767,7 +2791,7 @@ mod tests {
 
         // Wait for the shell's cursor query, then answer it — the frame that a
         // terminal emulator sends.
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = escape_deadline(Duration::from_secs(20));
         while Instant::now() < deadline && !test_support::asks_for_the_cursor(&socket.sent()) {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -2784,7 +2808,7 @@ mod tests {
         socket.push_frame(OP_PING, b"probe");
         socket.push_frame(OP_PONG, b"unsolicited");
 
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = escape_deadline(Duration::from_secs(20));
         let mut seen = String::new();
         while Instant::now() < deadline {
             seen = test_support::visible_text(&socket.sent());
@@ -2806,7 +2830,7 @@ mod tests {
 
         // `Close` ends the conversation.
         socket.push_frame(OP_CLOSE, &[]);
-        tokio::time::timeout(Duration::from_secs(20), pump)
+        tokio::time::timeout(escape(Duration::from_secs(20)), pump)
             .await
             .expect("a Close frame must end the pump")
             .expect("pump task");
@@ -2845,7 +2869,7 @@ mod tests {
         // pump must ignore it rather than treat it as text to type.
         socket.push_frame(OP_PONG, b"unsolicited");
 
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = escape_deadline(Duration::from_secs(20));
         let mut seen = String::new();
         while Instant::now() < deadline {
             seen = test_support::visible_text(&socket.sent());
@@ -2864,7 +2888,7 @@ mod tests {
         );
 
         socket.push_frame(OP_CLOSE, &[]);
-        tokio::time::timeout(Duration::from_secs(20), pump)
+        tokio::time::timeout(escape(Duration::from_secs(20)), pump)
             .await
             .expect("a Close frame must end the tunnel")
             .expect("pump task");
@@ -2895,7 +2919,7 @@ mod tests {
                     .await
             })
         };
-        tokio::time::timeout(Duration::from_secs(20), pump)
+        tokio::time::timeout(escape(Duration::from_secs(20)), pump)
             .await
             .expect("a protocol error must end the pump, not wedge it")
             .expect("pump task");
@@ -2911,11 +2935,15 @@ mod tests {
     /// (see the run status), and that is a different branch.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pump_replays_and_closes_a_session_that_already_exited() {
+        // The wait below is on a real child process reaping, so it is the one
+        // escape in this module that may legitimately outlast an idle host.
+        let _waits =
+            crate::test_support::wait_budget::WaitBudgetGuard::armed(Duration::from_secs(120));
         let server = isolated_server();
         let id = isolated_session(&server, "thread-gone", test_support::exit_command(4));
         let live = server.manager.session_for_test(&id).expect("session");
         assert!(
-            live.wait_for_child_exit(Duration::from_secs(30)),
+            live.wait_for_child_exit(escape(Duration::from_secs(30))),
             "the fixture child must really exit"
         );
         live.on_data(b"the last screen");
@@ -2971,7 +2999,7 @@ mod tests {
                 !live.is_running(),
                 "the {label} case must start from a dead session"
             );
-            tokio::time::timeout(Duration::from_secs(20), pump)
+            tokio::time::timeout(escape(Duration::from_secs(20)), pump)
                 .await
                 .unwrap_or_else(|_| panic!("the {label} input must end the pump"))
                 .expect("pump task");

@@ -139,6 +139,67 @@ it("does not run the local opener on a remote path when the fetch fails", async 
   expect(toasts[0]?.message).not.toContain("moved or deleted");
 });
 
+it("opens the cached copy on a second look instead of transferring again", async () => {
+  // A second look at the same file is the cache's job: the entry it landed on is
+  // keyed by machine, session and path, and re-fetching would be another round trip
+  // for bytes this machine already holds.
+  mocks.previewRemoteFile.mockResolvedValue({
+    name: "pasted-ab12cd34ef56.png",
+    path: "/Users/me/.future/app/remote-previews/0123456789abcdef__pasted-ab12cd34ef56.png",
+  });
+  render(
+    <RemoteAttachmentProvider value={{ desktopId: "desktop_a", sessionId: "sess_1" }}>
+      <AttachmentChip attachment={attachment} />
+    </RemoteAttachmentProvider>,
+  );
+
+  await act(async () => {
+    host.querySelector("button")!.click();
+  });
+  await act(async () => {
+    host.querySelector("button")!.click();
+  });
+
+  expect(mocks.previewRemoteFile).toHaveBeenCalledTimes(1);
+  // Still showing the same cached copy — the second look re-opened it rather than
+  // re-rendering a new one from a fresh transfer.
+  expect(mocks.previews.filter(item => item.open)).toEqual([{
+    kind: "image",
+    name: "pasted-ab12cd34ef56.png",
+    open: true,
+    path: "/Users/me/.future/app/remote-previews/0123456789abcdef__pasted-ab12cd34ef56.png",
+  }]);
+  expect(mocks.openPath).not.toHaveBeenCalled();
+});
+
+it("hands a fetched file with nothing to draw to the OS, from the cached copy too", async () => {
+  // A zip has no preview: the bytes are here after the transfer, so the gesture
+  // becomes the local one — and the second click finds the cache and does the same
+  // thing without the transfer.
+  const archive: MessageAttachment = { ...attachment, kind: "file", name: "bundle.zip" };
+  mocks.previewRemoteFile.mockResolvedValue({
+    name: "bundle.zip",
+    path: "/Users/me/.future/app/remote-previews/feed__bundle.zip",
+  });
+  render(
+    <RemoteAttachmentProvider value={{ desktopId: "desktop_a", sessionId: "sess_1" }}>
+      <AttachmentChip attachment={archive} />
+    </RemoteAttachmentProvider>,
+  );
+
+  await act(async () => {
+    host.querySelector("button")!.click();
+  });
+  expect(mocks.openPath).toHaveBeenLastCalledWith("/Users/me/.future/app/remote-previews/feed__bundle.zip");
+  expect(mocks.previews.filter(item => item.open)).toEqual([]);
+
+  await act(async () => {
+    host.querySelector("button")!.click();
+  });
+  expect(mocks.previewRemoteFile).toHaveBeenCalledTimes(1);
+  expect(mocks.openPath).toHaveBeenCalledTimes(2);
+});
+
 it("stays a local chip outside a remote transcript", async () => {
   render(<AttachmentChip attachment={{ ...attachment, thumbnail: null }} />);
 

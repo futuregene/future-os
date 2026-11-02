@@ -8,7 +8,7 @@ import type { KeyBinding } from "../../lib/keybinding";
  * from drifting apart. A component registers the *handler*; the metadata lives
  * here.
  *
- * Three rules for this file:
+ * Four rules for this file:
  *
  * - **Only `mod`-style bindings in the global scope.** `mod` is `⌘` on macOS and
  *   `Ctrl` elsewhere (see `lib/keybinding`), so one default serves all three
@@ -22,6 +22,14 @@ import type { KeyBinding } from "../../lib/keybinding";
  * - **A scope is a keymap that exists only while its mode is on** (`scopes.ts`).
  *   Inside it a key may sit on one the global keymap already uses — that is the
  *   point of the mode — and the global meaning comes back when the mode closes.
+ * - **A chord both surfaces have keeps its letter.** The terminal workbench
+ *   (`tui/src/workbench/preferences.rs`) binds the same verbs on `ctrl+…`, and
+ *   `mod` *is* `Ctrl` on Windows and Linux — so `mod+p` here is the very key the
+ *   terminal binds, and only macOS reads it as `⌘` where the terminal is `⌃`.
+ *   The letters that are shared on purpose are `p` (the palette), `d` (the rail)
+ *   and `o` / `t` / `s` (the composer's three pickers); the pairs that stay
+ *   apart are listed with their reasons in
+ *   `docs/internals/desktop/KEYBINDINGS.md` ("Agreement with the TUI").
  */
 import type { ShortcutScope } from "./scopes";
 import { formatBinding, parseBinding } from "../../lib/keybinding";
@@ -192,18 +200,30 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "thread.usage", category: "chat", defaultBinding: "mod+alt+u", inTerminal: false },
   // The composer's fourth control beside the three pickers: a paperclip is a
   // pointer target, and attaching is the one composer action with no key at all.
-  { id: "composer.attach", category: "chat", defaultBinding: "mod+shift+o", inTerminal: false },
+  // `⌘⌥A` is the chord the approval picker gave up when it moved to `⌘S`; `a` is
+  // the attachment, and this is the one key in the composer's row that has no
+  // counterpart to match (the terminal's door to the same thing is `/paste` and
+  // the clipboard, which is a key of its own there).
+  { id: "composer.attach", category: "chat", defaultBinding: "mod+alt+a", inTerminal: false },
   // The composer's three pickers, from the keyboard: model, thinking level and
   // who approves a tool call. Stepping the value rather than opening the menu —
   // a `SelectMenu` has no roving focus, so opening it would only get a reader to
   // a pointer target. One pair per picker so ⇧ walks back instead of making the
   // reader go the long way round a ring of six thinking levels.
-  { id: "composer.model.previous", category: "chat", defaultBinding: "mod+alt+shift+m", inTerminal: false },
-  { id: "composer.model.next", category: "chat", defaultBinding: "mod+alt+m", inTerminal: false },
-  { id: "composer.thinking.previous", category: "chat", defaultBinding: "mod+alt+shift+t", inTerminal: false },
-  { id: "composer.thinking.next", category: "chat", defaultBinding: "mod+alt+t", inTerminal: false },
-  { id: "composer.approval.previous", category: "chat", defaultBinding: "mod+alt+shift+a", inTerminal: false },
-  { id: "composer.approval.next", category: "chat", defaultBinding: "mod+alt+a", inTerminal: false },
+  //
+  // **The letters are the workbench's** (`tui/src/workbench/preferences.rs`):
+  // `ctrl+o` the model, `ctrl+t` the thinking level, `ctrl+s` the approval mode.
+  // `mod` is `Ctrl` on Windows and Linux, so the chord is the same physical key
+  // in both surfaces, and only macOS reads it as `⌘` where the terminal reads
+  // `⌃` — one vocabulary for the two places this reader works, rather than three
+  // letters learnt twice. Each picker keeps its `⇧` reverse for the reason
+  // above.
+  { id: "composer.model.previous", category: "chat", defaultBinding: "mod+shift+o", inTerminal: false },
+  { id: "composer.model.next", category: "chat", defaultBinding: "mod+o", inTerminal: false },
+  { id: "composer.thinking.previous", category: "chat", defaultBinding: "mod+shift+t", inTerminal: false },
+  { id: "composer.thinking.next", category: "chat", defaultBinding: "mod+t", inTerminal: false },
+  { id: "composer.approval.previous", category: "chat", defaultBinding: "mod+shift+s", inTerminal: false },
+  { id: "composer.approval.next", category: "chat", defaultBinding: "mod+s", inTerminal: false },
   // Two levels, because the list is two levels: a workspace holds conversations,
   // a conversation holds its forks. `thread.*` walks the conversation rows;
   // `group.*` steps between the top-level items (each workspace, each standalone
@@ -237,10 +257,21 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "section.skill", category: "navigation", defaultBinding: "mod+3", inTerminal: false },
   { id: "section.tasks", category: "navigation", defaultBinding: "mod+4", inTerminal: false },
   { id: "section.remote", category: "navigation", defaultBinding: "mod+5", inTerminal: false },
-  { id: "panel.left", category: "panels", defaultBinding: "mod+b", inTerminal: false },
+  // The rail, on the workbench's own letter (`ctrl+d` there — `d` is the dock it
+  // slides in and out of). `⌘⇧D` sits beside it as the device filter, so the pair
+  // reads as one family. Being `inTerminal: false` is what keeps `Ctrl+D` (EOF)
+  // the shell's inside the terminal panel.
+  { id: "panel.left", category: "panels", defaultBinding: "mod+d", inTerminal: false },
   { id: "panel.right", category: "panels", defaultBinding: "mod+shift+b", inTerminal: false },
+  // The terminal panel's key, not the shell's: in the workbench's composer
+  // `ctrl+j` inserts a newline, but the panel is what the chord means in both
+  // frames and VSCode taught it first. Inside a shell it is handed to the panel
+  // deliberately (`features/terminal/shortcut.ts`).
   { id: "terminal.toggle", category: "terminal", defaultBinding: "mod+j", inTerminal: true },
-  { id: "palette.open", category: "palette", defaultBinding: "mod+k", inTerminal: false },
+  // `⌘P`, the workbench's `ctrl+p`: the palette is the same door on both
+  // surfaces, so it answers to the same letter. It moved off `⌘K`, which the
+  // terminal surface cannot use at all — there `ctrl+k` is readline's kill-line.
+  { id: "palette.open", category: "palette", defaultBinding: "mod+p", inTerminal: false },
   { id: "shortcuts.help", category: "palette", defaultBinding: "mod+slash", inTerminal: false },
   { id: "settings.open", category: "settings", defaultBinding: "mod+comma", inTerminal: false },
   // Settings, but straight to the page that edits these bindings — the one place

@@ -482,4 +482,81 @@ mod tests {
             "error: {error}"
         );
     }
+
+    fn a_probe() -> future_rpc::proto::ThinkingLevelProbe {
+        future_rpc::proto::ThinkingLevelProbe {
+            api: "openai-completions".into(),
+            base_url: "https://api.example/v1".into(),
+            api_key: "sk-test".into(),
+            provider_id: "acme".into(),
+            model_id: "acme-large".into(),
+            level: "high".into(),
+        }
+    }
+
+    /// The editor's "detect levels" button: the probe is forwarded verbatim, and
+    /// the verdict is the editor's answer rather than a local guess. A level the
+    /// provider refuses is a *successful* call (`ok: false`) — reporting it as
+    /// an error would make the editor throw away levels it should keep.
+    #[tokio::test]
+    async fn a_thinking_level_probe_forwards_the_request_and_keeps_a_refusal_as_an_answer() {
+        let mock = mock_agent();
+
+        mock.push_data(
+            "probe_thinking_level",
+            serde_json::json!({"level": "high", "ok": true}),
+        );
+        let accepted = probe_thinking_level(a_probe()).await.expect("probe");
+        assert!(accepted.ok);
+        assert_eq!(accepted.level, "high");
+        assert_eq!(accepted.error, None);
+        let probes = mock.requests_of("probe_thinking_level");
+        let sent = probes[0]
+            .thinking_probe
+            .as_ref()
+            .expect("the probe is forwarded");
+        assert_eq!(sent.level, "high");
+        assert_eq!(sent.model_id, "acme-large");
+        assert_eq!(sent.api_key, "sk-test");
+
+        mock.push_data(
+            "probe_thinking_level",
+            serde_json::json!({"level": "high", "ok": false, "error": "unsupported"}),
+        );
+        let refused = probe_thinking_level(a_probe()).await.expect("probe");
+        assert!(!refused.ok);
+        assert_eq!(refused.error.as_deref(), Some("unsupported"));
+
+        // A payload the decoder cannot read is an error: the editor must not
+        // treat a garbled answer as "the endpoint refused the level".
+        mock.push_data("probe_thinking_level", serde_json::json!({"level": 7}));
+        let error = probe_thinking_level(a_probe()).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Invalid thinking-level probe response"),
+            "{error}"
+        );
+
+        // A transport failure names the step that did not complete.
+        mock.push(
+            "probe_thinking_level",
+            Reply::Status(tonic::Code::Unavailable, "connection reset"),
+        );
+        let error = probe_thinking_level(a_probe()).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Thinking-level detection did not complete"),
+            "{error}"
+        );
+
+        // And a rejection without a message still names the command.
+        mock.push("probe_thinking_level", Reply::Reject(String::new()));
+        let error = probe_thinking_level(a_probe()).await.unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Future Agent could not probe the thinking level."
+        );
+    }
 }

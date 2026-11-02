@@ -49,11 +49,75 @@ fn needs_user_prefix(
         })
 }
 
+/// Where a backward page may begin inside the exchange it lands in.
+///
+/// **The two modes are a deliberate divergence, not an oversight — do not
+/// "unify" them.** One paging call serves clients whose first page means
+/// different things:
+///
+/// * [`ExchangeStart::Complete`] — the host's history read (`host::agent_bridge`)
+///   behind the desktop and mobile apps. A page there is a slice of a
+///   conversation being read front to back, so it begins at the question its
+///   reply answers; completing the exchange costs one small extra fetch.
+/// * [`ExchangeStart::Anywhere`] — the terminal's conversation switch
+///   (`GrpcClient::session_tail_page`). That first page is not a slice to read
+///   but a *tail to look at*: the reader wants the newest rows as fast as the
+///   agent can cut them, and the agent bounds a page by rows and bytes now (150
+///   rows / 2 MB for a first page). Completing the exchange would fetch the whole
+///   turn back — measured at 541 rows, 1.69 MB and 629 ms on this store, which is
+///   exactly the page the ceiling exists to prevent.
+///
+/// Which way the cost lands if someone makes them agree: giving the terminal
+/// `Complete` restores that whole-turn first page and its 629 ms; giving the host
+/// `Anywhere` starts its pages mid-turn, with no question above the reply the
+/// reader lands on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ExchangeStart {
+    /// Fetch the exchange's missing prefix too, so the page begins at the
+    /// question its reply answers. Used by a caller reading a conversation front
+    /// to back.
+    Complete,
+    /// Accept a page that begins in the middle of an exchange. Used by a
+    /// conversation's *first* page, which is bounded by rows and bytes and must
+    /// not be grown back to the turn it lands in.
+    Anywhere,
+}
+
 /// Assemble oversized entries before exposing them to message projection.
-/// Backward transport pages may split an exchange; fetch its missing prefix
-/// too, since renderers need the user and tool declarations to interpret it.
-pub async fn read_page<Entry, F, Fut>(
+///
+/// A backward transport page may split an exchange; the missing prefix is
+/// fetched too (`ExchangeStart::Complete`), since renderers need the user and
+/// tool declarations to interpret it. A page that is allowed to begin anywhere
+/// (`ExchangeStart::Anywhere`) is returned as the agent cut it.
+///
+/// Not an `async fn`, and that is the point: the only thing it adds to
+/// [`read_page_from`] is a constant, and an `async fn` would pay for that
+/// constant with a second state machine. That is not free in the one caller
+/// that matters — the desktop's history read is the deepest `await` chain in the
+/// host (`remote_host::business` → `history::execute` → the page read → the
+/// agent call), and it runs on a worker thread with the platform's default stack.
+/// Measured on the `remote::commands::bridge_tests` group, which reaches it: the
+/// redundant nesting cost **78 KiB** of the 2 MiB a worker gets in a debug build
+/// (1970 KiB against 1892 KiB when the wrapper is transparent), which is what
+/// took `Rust Windows test / host-remote` over the edge (MSVC debug frames are
+/// wider than arm64 ones). Keep this a plain `fn`: there is nothing to await on
+/// this side of the call.
+pub fn read_page<Entry, F, Fut>(
+    command: RpcCommand,
+    execute: F,
+) -> impl Future<Output = Result<SessionEntriesPage<Entry>, String>>
+where
+    Entry: HistoryEntry,
+    F: FnMut(RpcCommand) -> Fut,
+    Fut: Future<Output = Result<SessionEntriesPage<Entry>, String>>,
+{
+    read_page_from(command, ExchangeStart::Complete, execute)
+}
+
+/// [`read_page`], naming what a page may do to the exchange it starts in.
+pub async fn read_page_from<Entry, F, Fut>(
     mut command: RpcCommand,
+    start: ExchangeStart,
     mut execute: F,
 ) -> Result<SessionEntriesPage<Entry>, String>
 where
@@ -112,9 +176,10 @@ where
         if backward {
             page.entries.append(&mut accumulated);
             accumulated = page.entries;
-            let needs_prefix = accumulated
-                .first()
-                .is_some_and(HistoryEntry::needs_user_prefix);
+            let needs_prefix = start == ExchangeStart::Complete
+                && accumulated
+                    .first()
+                    .is_some_and(HistoryEntry::needs_user_prefix);
             if page.has_more && needs_prefix {
                 if accumulated.is_empty() || page.next_offset >= command.before.unwrap_or(i64::MAX)
                 {
@@ -135,7 +200,7 @@ mod tests {
     use super::*;
     use crate::payloads::{HistoryEntryFragment, SessionEntryPayload};
     use serde::de::DeserializeOwned;
-    use serde_json::Value;
+    use serde_json::{json, Value};
 
     fn fragment(offset: i64, text: &str, full: &str) -> SessionEntriesPage {
         SessionEntriesPage {
@@ -228,6 +293,18 @@ mod tests {
     where
         Entry: HistoryEntry + DeserializeOwned,
     {
+        scripted_from(command, ExchangeStart::Complete, pages).await
+    }
+
+    /// [`scripted`], naming what the read may do to the exchange it starts in.
+    async fn scripted_from<Entry>(
+        command: RpcCommand,
+        start: ExchangeStart,
+        pages: Vec<SessionEntriesPage<Entry>>,
+    ) -> (Result<SessionEntriesPage<Entry>, String>, Vec<RpcCommand>)
+    where
+        Entry: HistoryEntry + DeserializeOwned,
+    {
         let mut pages = std::collections::VecDeque::from(pages);
         let seen = std::cell::RefCell::new(Vec::new());
         let result = {
@@ -235,9 +312,49 @@ mod tests {
                 seen.borrow_mut().push(command);
                 std::future::ready(Ok(pages.pop_front().expect("scripted page")))
             };
-            read_page::<Entry, _, _>(command, &mut execute).await
+            read_page_from::<Entry, _, _>(command, start, &mut execute).await
         };
         (result, seen.into_inner())
+    }
+
+    /// A page that is allowed to begin anywhere is returned as the agent cut it.
+    ///
+    /// The completion fetch (`limit = 1` for the exchange's missing prefix) is
+    /// what would undo a row-bounded page: a turn with hundreds of rows in it can
+    /// never be completed inside a bounded page, so the read would fetch the
+    /// whole turn back one exchange at a time.
+    #[tokio::test]
+    async fn a_page_that_may_begin_anywhere_is_not_completed() {
+        let partial = || {
+            page::<Value>(
+                None,
+                vec![json!({"id": "a1", "role": "assistant"})],
+                true,
+                7,
+            )
+        };
+        let command = RpcCommand {
+            before: Some(i64::MAX),
+            ..Default::default()
+        };
+
+        let (result, seen) =
+            scripted_from::<Value>(command.clone(), ExchangeStart::Anywhere, vec![partial()]).await;
+        let cut = result.expect("a partial page is a page");
+        assert_eq!(seen.len(), 1, "one fetch, no prefix: {:?}", seen.len());
+        assert_eq!(cut.entries.len(), 1, "the rows the agent cut");
+        assert!(cut.has_more, "and the way up is intact");
+
+        // The default completes the same page: one more fetch, asking for the
+        // exchange's prefix.
+        let (result, seen) = scripted::<Value>(
+            command,
+            vec![partial(), page(None, Vec::<Value>::new(), false, 0)],
+        )
+        .await;
+        assert_eq!(seen.len(), 2, "the prefix was fetched: {:?}", seen.len());
+        assert_eq!(seen[1].limit, Some(1), "one exchange at a time");
+        assert!(result.is_ok());
     }
 
     /// A two-chunk fragmented read of `json`, whose first fragment claims
