@@ -426,8 +426,12 @@
       "noOutput": "暂无公开发言",
       "readFailed": "读取完整发言失败，已保留现有预览。",
       "resultDetails": "判断依据与后续建议",
-      "consensus": "共同意见",
-      "blindSpots": "共同遗漏"
+      "consensus": "已有共同观点",
+      "excluded": "超出边界或不适合继续讨论的观点",
+      "notMentioned": "未提及",
+      "boundary": "已有边界",
+      "noMappedViews": "暂无共同观点、分歧或不适合继续讨论的观点",
+      "disagreements": "已有分歧"
     }
   }
 }

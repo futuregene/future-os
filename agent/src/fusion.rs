@@ -333,8 +333,13 @@ pub(crate) fn inner_execution(
     );
     Ok(Some(InnerExecution {
         snapshot: Snapshot::load(Path::new(&run.snapshot_root))?,
-        file_tools: step.phase != "preflight" && !run.input.read_scope.is_empty(),
+        file_tools: file_tools_allowed(&step.phase, !run.input.read_scope.is_empty()),
     }))
+}
+
+// Only participant analysis/review may investigate; moderator stages never get tools.
+fn file_tools_allowed(phase: &str, has_scope: bool) -> bool {
+    has_scope && matches!(phase, "analyzing" | "reviewing")
 }
 
 pub(crate) fn record_delivery(result: &str) -> Result<()> {
@@ -465,6 +470,17 @@ pub(crate) fn child_sessions() -> std::collections::HashSet<String> {
 
 #[cfg(test)]
 mod input_contract_tests {
+    #[test]
+    fn moderator_stages_never_receive_file_tools() {
+        for phase in ["preflight", "issue_mapping", "synthesizing", "unknown"] {
+            assert!(!super::file_tools_allowed(phase, true));
+        }
+        for phase in ["analyzing", "reviewing"] {
+            assert!(super::file_tools_allowed(phase, true));
+            assert!(!super::file_tools_allowed(phase, false));
+        }
+    }
+
     #[test]
     fn tool_exposes_factual_context_without_a_candidate_field() {
         let tool = super::main_tool();

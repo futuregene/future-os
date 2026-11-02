@@ -6,6 +6,7 @@ use future_fusion::{
 };
 use future_rpc::proto::RpcCommand;
 use futures::{FutureExt, StreamExt};
+mod mapping;
 mod resilience;
 use future_fusion::{failure, failure_kind, FailureKind};
 use resilience::Runtime;
@@ -316,7 +317,10 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
             store.phase(&run.id, owner, "issue_mapping")?,
             "Fusion stopped"
         );
-        let prompt = format!("{intro}\nYou are the moderator. Map agreement and material disagreements without deciding or widening the task. Return ONLY JSON: {{\"consensus\":[\"...\"],\"issues\":[{{\"topic\":\"...\",\"stances\":[{{\"participant\":\"P1\",\"position\":\"...\"}}]}}],\"blind_spots\":[\"...\"]}}. Use only IDs in the supplied analyses.\nDecision input:\n{input}\nIndependent analyses:\n{first}");
+        let prompt = format!(
+            "{}\nDecision input:\n{input}\nIndependent analyses:\n{first}",
+            mapping::INSTRUCTIONS
+        );
         match with_retry(
             &ctx,
             "issue_mapping",
@@ -370,7 +374,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         }
         if ctx.timeout("reviewing").is_ok() && ctx.report().strategy != "analysis_only" {
             ensure!(store.phase(&run.id, owner, "reviewing")?, "Fusion stopped");
-            reviews = panel(&ctx, &active, "reviewing", &format!("{intro}\nCross-check the fixed independent analyses. Explain agreement, objections, missing evidence, risks and any changed position. If issues are empty, directly compare the supplied analyses; do not invent issue IDs. Never claim views from absent participants.\nDecision input:\n{input}\nAnalyses:\n{first}\nIssues:\n{issues}")).await?;
+            reviews = panel(&ctx, &active, "reviewing", &format!("{intro}\nCross-check the fixed independent analyses. The moderator only organized existing statements; its summaries are not verified facts. Compare each summary with the original answers and correct misattribution. Excluded entries are scope classifications, not a judgment of correctness; assess them against their quoted existing boundaries. Explain agreement, objections, missing evidence, risks and any changed position. If issues are empty, directly compare the supplied analyses; do not invent issue IDs. Never claim views from absent participants.\nDecision input:\n{input}\nAnalyses:\n{first}\nIssues:\n{issues}")).await?;
             ctx.update(|report| {
                 if !reviews.is_empty() {
                     report.complete("reviewing");
@@ -407,7 +411,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         "Fusion stopped"
     );
     let coverage = ctx.report();
-    let prompt = format!("{intro}\nYou are the moderator. Return ONLY JSON: {{\"conclusion\":\"focused recommendation\",\"rationale\":[\"public reasons\"],\"conditions\":[\"applicability\"],\"unresolved\":[\"remaining gaps\"],\"next_steps\":[\"proposed actions, not performed\"]}}. Respect the ACTUAL coverage below. One participant is a single-advisor analysis, not multi-model consensus. Missing review means no cross-validation. Preserve disagreements and uncertainty. Do not claim skipped phases occurred.\nDecision input:\n{input}\nAnalyses:\n{first}\nIssues:\n{issues}\nReviews:\n{}\nCoverage:\n{}", serde_json::to_string(&reviews)?, serde_json::to_string(&coverage)?);
+    let prompt = format!("You are the moderator. Synthesize ONLY the supplied participants' public analyses and reviews. Do not introduce new facts, new proposals, independent technical analysis, omissions or clarification questions. Use Decision input only to preserve the user's goal and existing boundaries. The issue map is a navigational summary, not additional evidence; verify it against original participant statements. Unresolved items and next steps must come from participant content. You have no tools. Return ONLY JSON: {{\"conclusion\":\"focused recommendation\",\"rationale\":[\"public reasons\"],\"conditions\":[\"applicability\"],\"unresolved\":[\"remaining gaps\"],\"next_steps\":[\"proposed actions, not performed\"]}}. Respect the ACTUAL coverage below. One participant is a single-advisor analysis, not multi-model consensus. Missing review means no cross-validation. Preserve disagreements and uncertainty. Do not claim skipped phases occurred.\nDecision input:\n{input}\nAnalyses:\n{first}\nIssues:\n{issues}\nReviews:\n{}\nCoverage:\n{}", serde_json::to_string(&reviews)?, serde_json::to_string(&coverage)?);
     let text = match with_retry(
         &ctx,
         "synthesizing",
@@ -647,18 +651,7 @@ async fn with_retry(
                 let validation = validate_step_output(phase, &text, ctx.config.panel.len())
                     .and_then(|_| {
                         if phase == "issue_mapping" {
-                            let value: Value = parse_json(&text)?;
-                            let active = ctx.report().analysis_participants;
-                            for issue in value["issues"].as_array().into_iter().flatten() {
-                                for stance in issue["stances"].as_array().into_iter().flatten() {
-                                    ensure!(
-                                        active
-                                            .iter()
-                                            .any(|p| stance["participant"].as_str() == Some(p)),
-                                        "Moderator cited an absent participant"
-                                    );
-                                }
-                            }
+                            mapping::validate_sources(&text, prompt)?;
                         }
                         Ok(())
                     });
@@ -743,36 +736,7 @@ async fn with_retry(
 
 fn validate_step_output(phase: &str, text: &str, participants: usize) -> Result<()> {
     if phase == "issue_mapping" {
-        let mapping: Value = parse_json(text)?;
-        let issues = mapping["issues"]
-            .as_array()
-            .context("Moderator did not return issues")?;
-        for issue in issues {
-            ensure!(
-                issue["topic"]
-                    .as_str()
-                    .is_some_and(|s| !s.trim().is_empty()),
-                "Invalid issue topic"
-            );
-            for stance in issue["stances"]
-                .as_array()
-                .context("Missing issue stances")?
-            {
-                ensure!(
-                    stance["participant"].as_str().is_some_and(|id| id
-                        .strip_prefix('P')
-                        .and_then(|id| id.parse::<usize>().ok())
-                        .is_some_and(|n| (1..=participants).contains(&n) && id == format!("P{n}"))),
-                    "Unknown participant"
-                );
-                ensure!(
-                    stance["position"]
-                        .as_str()
-                        .is_some_and(|s| !s.trim().is_empty()),
-                    "Empty position"
-                );
-            }
-        }
+        mapping::validate_shape(text, participants)?;
     } else if phase == "synthesizing" {
         let result: Conclusion = parse_json(text)?;
         ensure!(
@@ -1045,17 +1009,18 @@ mod tests {
 
     #[test]
     fn rejects_invalid_moderator_output_before_recording_completion() {
-        let fifth = r#"{"issues":[{"topic":"x","stances":[{"participant":"P5","position":"x"}]}]}"#;
-        assert!(validate_step_output("issue_mapping", fifth, 5).is_ok());
-        assert!(validate_step_output("issue_mapping", fifth, 2).is_err());
-        assert!(validate_step_output("issue_mapping", &fifth.replace("P5", "P05"), 5).is_err());
         assert!(validate_step_output(
             "issue_mapping",
-            r#"{"issues":[{"topic":"x","stances":[{"participant":"P9","position":"x"}]}]}"#,
+            r#"{"consensus":[],"issues":[],"excluded":[]}"#,
+            3
+        )
+        .is_ok());
+        assert!(validate_step_output(
+            "issue_mapping",
+            r#"{"consensus":[],"issues":[],"excluded":[],"blind_spots":["new idea"]}"#,
             3
         )
         .is_err());
-        assert!(validate_step_output("issue_mapping", r#"{"issues":[]}"#, 3).is_ok());
         assert!(
             validate_step_output("synthesizing", r#"{"conclusion":"","rationale":[]}"#, 3).is_err()
         );

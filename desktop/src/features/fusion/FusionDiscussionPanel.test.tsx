@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import fixture from "../../../../scripts/screenshots/fixtures/fusion.json";
 import { readFusion } from "../../integrations/fusion/queries";
 import { FusionDiscussionPanel } from "./FusionDiscussionPanel";
+import { FusionStepBody } from "./FusionStepBody";
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("../../integrations/tauri/invoke", () => ({ invokeCommand: mocks.invoke }));
@@ -115,4 +116,25 @@ it("does not expose internal preflight or the input-context section", async () =
   expect(container.textContent).not.toContain("Checking main model");
   expect(container.textContent).not.toContain("Background and constraints");
   expect(container.textContent).toContain(data.run!.input.question);
+});
+
+it("renders sourced mapping and explicit silence without moderator omissions", async () => {
+  const step = { ...discussion().steps![0]!, phase: "issue_mapping", output: JSON.stringify({
+    consensus: [{ point: "Keep data", sources: [{ participant: "P1", quote: "Preserve existing records" }] }],
+    issues: [{ topic: "Storage choice", stances: [
+      { participant: "P1", status: "stated", position: "SQLite", quote: "Use SQLite" },
+      { participant: "P2", status: "not_mentioned", position: "", quote: "" },
+    ] }],
+    excluded: [{ participant: "P1", quote: "Delete records", reason: "Outside user scope", basis: "Preserve user data" }],
+    blind_spots: ["An old moderator omission"],
+  }) };
+  mocks.invoke.mockResolvedValue({ ...step, transcript: "", next_offset: 0, total_bytes: 0 });
+  await act(async () => root.render(<FusionStepBody step={step} runId="r1" toolCallId="t1" />));
+  const output = container.querySelector("[data-fusion-public-output]")?.textContent;
+  expect(output).toContain("Keep data");
+  expect(output).toContain("Preserve existing records");
+  expect(output).toContain("Not mentioned");
+  expect(output).toContain("Outside user scope");
+  expect(output).toContain("Preserve user data");
+  expect(output).not.toContain("An old moderator omission");
 });

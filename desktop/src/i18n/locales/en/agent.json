@@ -425,8 +425,12 @@
       "noOutput": "No public response yet",
       "readFailed": "Could not load the full response. The existing preview is preserved.",
       "resultDetails": "Rationale and follow-up",
-      "consensus": "Agreement",
-      "blindSpots": "Blind spots"
+      "consensus": "Existing shared views",
+      "excluded": "Statements outside boundaries or unsuitable for further discussion",
+      "notMentioned": "Not mentioned",
+      "boundary": "Existing boundary",
+      "noMappedViews": "No shared views, disagreements or excluded statements",
+      "disagreements": "Existing disagreements"
     }
   }
 }
