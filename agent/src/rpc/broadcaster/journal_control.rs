@@ -18,7 +18,18 @@ impl<T> WorkerReceipt<T> {
         // same time. An orphaned queued command must never keep this waiting.
         crossbeam_channel::select_biased! {
             recv(self.reply) -> result => result.map_err(|_| std::sync::mpsc::RecvError),
-            recv(self.exited) -> _ => Err(std::sync::mpsc::RecvError),
+            // The worker answers before it retires, but the retirement is what
+            // can end a *blocked* wait: `select_biased!` orders the initial
+            // pass, and a wait is resolved by whichever notification claims it
+            // first. So an answer queued before the retirement can still arrive
+            // here through the retirement, and reporting it lost turns a
+            // healthy stop into a failure nothing in the journal earned. Take
+            // the answer the worker left; a retirement that left none is the
+            // only real loss.
+            recv(self.exited) -> _ => match self.reply.try_recv() {
+                Ok(answer) => Ok(answer),
+                Err(_) => Err(std::sync::mpsc::RecvError),
+            },
         }
     }
 }
@@ -149,6 +160,48 @@ impl JournalControl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A worker answers before it retires, so a receipt that observes the
+    /// retirement must still hand back the answer the worker left. The wait is
+    /// ended by whichever notification claims it first, and `select_biased!`
+    /// orders only the *initial* pass — so the retirement can be the one that
+    /// ends a blocked wait while the answer is already queued. Losing that
+    /// answer is what turned a healthy stop into `Phase::Failed("Agent failed to
+    /// stop: event journal: event shutdown acknowledgement lost")` with no
+    /// failing append behind it.
+    ///
+    /// The window is a scheduling race, not a sleep: it needs the waiter blocked
+    /// when both notifications land, so this drives the primitive from several
+    /// threads. Under the ordering-buggy receipt this loses roughly one answer
+    /// per two thousand attempts on a contended machine; with the receipt fixed
+    /// it cannot lose any, whatever the scheduler does.
+    #[test]
+    fn a_retirement_never_costs_the_answer_the_worker_already_queued() {
+        const ATTEMPTS: usize = 10_000;
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for attempt in 0..ATTEMPTS {
+                        let (answer, reply) = crossbeam_channel::bounded::<ReplyResult>(1);
+                        let (exit, exited) = crossbeam_channel::bounded::<()>(0);
+                        let receipt = WorkerReceipt { reply, exited };
+                        std::thread::scope(|worker| {
+                            worker.spawn(move || {
+                                // The worker's own order: answer, then retire.
+                                answer.send(Ok(())).expect("the waiter is alive");
+                                drop(exit);
+                            });
+                            assert_eq!(
+                                receipt.recv(),
+                                Ok(Ok(())),
+                                "attempt {attempt} lost an answer the worker queued"
+                            );
+                        });
+                    }
+                });
+            }
+        });
+    }
 
     #[test]
     fn an_orphaned_shutdown_reply_cannot_hold_a_sync_waiter() {
