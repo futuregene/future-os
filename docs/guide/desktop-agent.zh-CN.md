@@ -10,6 +10,8 @@ Desktop 先检查当前系统用户、数据根及端点上的外部 Agent。兼
 
 显式设置 `FUTURE_AGENT_GRPC_ADDR` 的连接和 `FUTURE_DESKTOP_AGENT_MODE=external` 都只连接外部服务，失败不会自动接管。开发环境可先在另一终端运行 `future agent`，再以 external 模式启动 Desktop。默认 `auto` 同时支持兼容外部服务和内置服务，没有强制绕过外部 owner 的开关。
 
+建不出 UNIX socket 的宿主（沙箱、容器、受 SELinux 限制的 Android 设备）改为在环回 TCP 端口上服务 Agent，一条命令即可：`future host --agent-grpc-addr 127.0.0.1:47200`。该地址上已有兼容 Agent 就连接它，否则内置 Agent 绑定该地址，且不创建 socket。这等同于把 `FUTURE_AGENT_GRPC_ADDR` 设为该地址并把 `FUTURE_DESKTOP_AGENT_MODE` 设为 `bind`——它是 `auto` 与 `external` 之外的第三种模式：只接受环回地址，其它地址直接拒绝，而不去猜一个本地服务。同机其他客户端需要把同一地址写进自己的 `FUTURE_AGENT_GRPC_ADDR` 才能连上，因为按用户的默认端点上一无所有。
+
 release Desktop 配置的 Future 平台为非生产环境时拒绝连接外部 Agent；外部 owner 持有数据根时，不改写认证文件或删除 key。应独立退出该 Agent，再重开 Desktop，由本地所有者执行原有生产环境策略。开发版本保留明确选择的环境。直接账户、登录和技能指南请求也执行同一检查，不因 Agent 启动失败而绕过。Agent 正在停止时也阻止连接和本地启动，应等待它退出后重试。
 
 CLI/TUI 连接内置服务时，必须使用同一系统用户、`FUTURE_HOME` 和端点设置。需要独立常驻服务时，先退出 Desktop，再独立启动 `future agent`，然后重新打开 Desktop。不能通过更换端口绕过同一数据根的实例锁。

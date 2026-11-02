@@ -120,6 +120,12 @@ DMG、Windows 便携 zip 与 Linux 便携 tarball。它们是**活文档**——
 - [testing/](archives/testing/) — 被取代的覆盖率战役任务记录快照，整体移出
   `testing/`；同属非用户文档仅英文例外
 
+## 提案（`proposals/`）
+
+- [superagent-borrowing.zh-CN.md](proposals/superagent-borrowing.zh-CN.md)（[en](proposals/superagent-borrowing.md)）—
+  借鉴 `deepseek-ai/dsh-superagent-prototype` 的哪些部分、不借哪些，以及每条的
+  代价、验收与回退。**未立项**：各项等 owner 决定。
+
 ## 维护者文档（`maintainers/`）
 
 - [wiki-prompt.md](maintainers/wiki-prompt.md)（[中文](maintainers/wiki-prompt.zh-CN.md)）—

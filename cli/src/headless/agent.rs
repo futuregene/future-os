@@ -5,8 +5,8 @@ use future_agent::console;
 use std::time::{Duration, Instant};
 
 use future_rpc::supervision::{
-    probe_local_agent, Attached, LocalAgentState, ReadinessLoss, RestartBudget, WAIT_FOR_OWNER,
-    WAIT_NOTICE_AFTER,
+    probe_local_agent, probe_served_agent, Attached, LocalAgentState, ReadinessLoss, RestartBudget,
+    WAIT_FOR_OWNER, WAIT_NOTICE_AFTER,
 };
 
 /// How long a probe may take before it is not worth waiting for inside the
@@ -60,7 +60,14 @@ impl Agent {
     /// so an Agent the host keeps killing cannot become a restart loop.
     pub(super) async fn supervise(&mut self) -> Result<(), future_host::Error> {
         let address = future_host::agent_client::raw_agent_addr();
-        let state = probe_local_agent(&address, PROBE_CONNECT, PROBE_HANDSHAKE).await;
+        // A host that serves the Agent at an explicit endpoint owns that
+        // endpoint: an address nothing answers on is its own service to bring
+        // back, not someone else's endpoint that happens to be down.
+        let state = if future_host::agent_host::serves_explicit_endpoint()? {
+            probe_served_agent(&address, PROBE_CONNECT, PROBE_HANDSHAKE).await
+        } else {
+            probe_local_agent(&address, PROBE_CONNECT, PROBE_HANDSHAKE).await
+        };
         match state {
             LocalAgentState::Attached => {
                 self.loss.reset();

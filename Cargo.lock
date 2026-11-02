@@ -1985,6 +1985,7 @@ dependencies = [
  "tokio-stream",
  "tokio-tungstenite",
  "tonic",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 
