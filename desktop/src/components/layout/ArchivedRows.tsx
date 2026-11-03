@@ -211,10 +211,17 @@ export function ArchivedEmpty({ label }: { label: string }) {
 export function ArchivedWorkspaceContents({
   loading,
   onOpen,
+  onToggleSelection,
+  selectedIds,
+  selectionMode,
   threads,
 }: {
   loading: boolean;
   onOpen: (thread: StoredThread) => void;
+  onToggleSelection?: (thread: StoredThread) => void;
+  /** Ids of the rows ticked in a batch. */
+  selectedIds?: ReadonlySet<string>;
+  selectionMode?: boolean;
   threads: StoredThread[] | undefined;
 }) {
   const { t } = useTranslation("layout");
@@ -229,6 +236,20 @@ export function ArchivedWorkspaceContents({
       {threads.map(thread => (
         <RailRow active={false} compact key={thread.id} onSelect={() => onOpen(thread)} title={thread.title}>
           <RailRowTitle>{thread.title}</RailRowTitle>
+          {selectionMode
+            ? (
+                <input
+                  aria-label={t("activityRail.selectThread", { title: thread.title })}
+                  checked={selectedIds?.has(thread.id) ?? false}
+                  className="relative z-10 size-5 shrink-0 rounded border-line accent-accent"
+                  onChange={(event) => {
+                    event.stopPropagation();
+                    onToggleSelection?.(thread);
+                  }}
+                  type="checkbox"
+                />
+              )
+            : null}
         </RailRow>
       ))}
     </div>

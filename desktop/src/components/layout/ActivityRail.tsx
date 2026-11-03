@@ -904,6 +904,7 @@ export function ActivityRail({
     selectedRemoteKeys,
     selectedThreadIds,
     selectionMode,
+    selectionScope,
     toggleRemoteSelection,
     toggleThreadSelection,
     totalCount,
@@ -1689,6 +1690,9 @@ export function ActivityRail({
                                           <ArchivedWorkspaceContents
                                             loading={archiveView.loading}
                                             onOpen={onOpenArchivedThread ?? onSelectThread}
+                                            onToggleSelection={toggleThreadSelection}
+                                            selectedIds={selectedThreadIds}
+                                            selectionMode={selectionMode && selectionScope === `archived-workspace:${workspace.id}`}
                                             threads={archiveView.workspaceThreads[workspace.id]}
                                           />
                                         </ArchivedWorkspaceGroup>
