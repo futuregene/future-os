@@ -1,4 +1,4 @@
-import { Check, Pencil, RotateCcw, Trash2 } from "lucide-react";
+import { Check, Pencil, Play, RotateCcw, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/cn";
@@ -9,6 +9,12 @@ export interface SendQueuePanelItem {
   /** The text as it will be sent (empty for an attachment-only message). */
   content: string;
   attachmentCount: number;
+  /**
+   * Parked by the Agent: it waited too long to run by itself and now starts only
+   * when the reader says so. Undefined means "will run at the next turn
+   * boundary", which is what every row is on a host without that rule.
+   */
+  parked?: boolean;
 }
 
 /**
@@ -27,6 +33,7 @@ export interface SendQueuePanelItem {
 export function SendQueuePanel({
   failed,
   items,
+  onRelease,
   onRemove,
   onRetry,
   onUpdate,
@@ -34,6 +41,8 @@ export function SendQueuePanel({
   /** The last automatic delivery failed; offer a retry instead of the hint. */
   failed?: boolean;
   items: readonly SendQueuePanelItem[];
+  /** Start a parked row now. Offered only when the queue can hold one (Agent-side queues). */
+  onRelease?: (id: string) => void;
   onRemove: (id: string) => void;
   onRetry?: () => void;
   onUpdate: (id: string, content: string) => void;
@@ -161,6 +170,19 @@ export function SendQueuePanel({
                               <p className="text-[11px] leading-4 text-ink-muted">
                                 {t("composer.queue.attachments", { count: item.attachmentCount })}
                               </p>
+                            )
+                          : null}
+                        {item.parked && onRelease
+                          ? (
+                              <button
+                                className="mt-0.5 inline-flex items-center gap-1 rounded px-1 py-0.5 text-[11px] font-medium text-warning transition-colors hover:bg-warning-soft"
+                                data-queue-release=""
+                                onClick={() => onRelease(item.id)}
+                                type="button"
+                              >
+                                <Play className="size-3" />
+                                {t("composer.queue.release")}
+                              </button>
                             )
                           : null}
                       </div>

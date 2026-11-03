@@ -203,6 +203,7 @@
       "cancel": "Cancel",
       "remove": "Remove from the queue",
       "retry": "Try again",
+      "release": "Send this one now",
       "full": "The send queue is full. Send or remove something first."
     },
     "noFiles": "No matching files.",

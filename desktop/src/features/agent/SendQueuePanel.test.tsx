@@ -90,3 +90,39 @@ it("offers a retry instead of the hint after a failed automatic send", () => {
     panel.cleanup();
   }
 });
+
+it("offers a parked row a start, and only a parked one", () => {
+  // The Agent runs a `queued` row by itself at the turn boundary; a `stale` one
+  // waits for a person, so that row — and only that row — carries the control.
+  const onRelease = vi.fn();
+  const panel = renderPanel({
+    items: [
+      { attachmentCount: 0, content: "will run by itself", id: "a" },
+      { attachmentCount: 0, content: "waited too long", id: "b", parked: true },
+    ],
+    onRelease,
+  });
+  try {
+    const releases = panel.host.querySelectorAll("[data-queue-release]");
+    expect(releases).toHaveLength(1);
+    act(() => (releases[0] as HTMLButtonElement).click());
+    expect(onRelease).toHaveBeenCalledWith("b");
+  }
+  finally {
+    panel.cleanup();
+  }
+});
+
+it("hides the start control when the queue cannot be started by hand", () => {
+  // A client-side queue (a paired computer's, or the phone's) has no Agent row
+  // behind a parked flag, and must not show a button that does nothing.
+  const panel = renderPanel({
+    items: [{ attachmentCount: 0, content: "waiting", id: "a", parked: true }],
+  });
+  try {
+    expect(panel.host.querySelector("[data-queue-release]")).toBeNull();
+  }
+  finally {
+    panel.cleanup();
+  }
+});

@@ -853,7 +853,10 @@ attachments together) at the run boundary, and the row is the session's — the
 same row every other client on that conversation reads from `get_state`'s
 `queuedRuns`. It therefore outlives the window that wrote it (a reload, a
 renderer crash, a second client), and waiting rows longer than ten minutes are
-parked for the reader to start rather than spent automatically. Interrupting
+parked for the reader to start rather than spent automatically. The waiting rows
+are listed above the composer, read from the Agent: taking one back cancels it
+(editing it cancels and re-sends the corrected text, since the Agent has no
+update-in-place), and a parked row offers to start now. Interrupting
 sends the draft as its own turn. The phone still keeps its queue in local
 storage, so a restart holds it (attachments the OS has cleaned up are dropped on
 the way back) and an uninstall takes it with everything else; the desktop app's

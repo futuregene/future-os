@@ -27,6 +27,7 @@ import { useCommittedRef } from "../../lib/useCommittedRef";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { useCommand } from "../keyboard/commands";
 import { installRecommendedSkill } from "../skills/installRecommendedSkill";
+import { cancelAgentQueuedRun, isParkedRow, releaseAgentQueuedRun, useAgentQueue } from "./agentQueue";
 import { ApprovalPrompt } from "./ApprovalPrompt";
 import {
   buildContinuePrompt,
@@ -39,6 +40,7 @@ import { MessageList } from "./MessageList";
 import { QuestionNavControl } from "./QuestionNavControl";
 import { replyCopyText } from "./replyBlocks";
 import { useThreadCompaction } from "./runtime/useThreadCompaction";
+import { SendQueuePanel } from "./SendQueuePanel";
 import { ThreadHeader } from "./ThreadHeader";
 import { ThreadSearch } from "./ThreadSearch";
 import { useAgentThreadState } from "./useAgentThreadState";
@@ -331,12 +333,34 @@ export function AgentThread({
   // it survives this window and is visible to every other client on the
   // conversation. Nothing is held here any more — the old in-memory queue could
   // only ever be flushed by the window that filled it.
+  // The rows are read back from the Agent (`agentQueue`), which is also where
+  // "take it back" and "start it now" go; the panel is a view of that queue, not
+  // a second copy of it.
+  const agentQueue = useAgentQueue(thread?.id ?? null, isReplyStreaming);
   const handleEnqueueDraft = useCallback((payload: ComposerSendPayload) => {
     if (!thread?.id)
       return false;
-    void handleQueuedSend(payload);
+    void handleQueuedSend(payload).finally(() => agentQueue.refresh());
     return true;
-  }, [handleQueuedSend, thread?.id]);
+  }, [agentQueue, handleQueuedSend, thread?.id]);
+  const handleQueueRemove = useCallback((runId: string) => {
+    void cancelAgentQueuedRun(runId).catch(() => {}).finally(() => agentQueue.refresh());
+  }, [agentQueue]);
+  const handleQueueRelease = useCallback((runId: string) => {
+    void releaseAgentQueuedRun(runId).catch(() => {}).finally(() => agentQueue.refresh());
+  }, [agentQueue]);
+  // Editing a waiting message: the Agent has no "update this row" command, so
+  // the corrected text is a new prompt behind the same run boundary — take the
+  // old row back first, or both would run. Attachments cannot be recovered from
+  // the queue row (it carries text only), which is why the panel edits words.
+  const handleQueueUpdate = useCallback((runId: string, content: string) => {
+    void (async () => {
+      await cancelAgentQueuedRun(runId).catch(() => {});
+      if (content.trim())
+        await handleQueuedSend({ attachments: [], content });
+      agentQueue.refresh();
+    })();
+  }, [agentQueue, handleQueuedSend]);
 
   // Settings → Keyboard: the same interrupt the send button turns into while a
   // reply streams. Registered only then, so the key is unclaimed whenever there
@@ -627,6 +651,27 @@ export function AgentThread({
         {/* A message written while this reply streams is already the Agent's
             (see `handleEnqueueDraft`): it waits above the transcript as its own
             turn, so nothing is mirrored here. */}
+        {/* What the Agent is holding for this conversation, above the box that
+            filled it: a queued message is not yet gone, so it is looked at, fixed
+            and taken back here. The rows are the Agent's (`agentQueue`), so this
+            panel disappears with the window and the message does not. */}
+        {queueEnabled && agentQueue.rows.length > 0
+          ? (
+              <div className="pointer-events-auto mx-auto w-full max-w-3xl">
+                <SendQueuePanel
+                  items={agentQueue.rows.map(row => ({
+                    attachmentCount: 0,
+                    content: row.text,
+                    id: row.runId,
+                    parked: isParkedRow(row),
+                  }))}
+                  onRelease={handleQueueRelease}
+                  onRemove={handleQueueRemove}
+                  onUpdate={handleQueueUpdate}
+                />
+              </div>
+            )
+          : null}
         <Composer
           className="pointer-events-auto mx-auto w-full max-w-3xl"
           disabled={composerDisabled}

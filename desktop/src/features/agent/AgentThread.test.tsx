@@ -49,6 +49,12 @@ const h = vi.hoisted(() => ({
   },
   reco: { dismiss: vi.fn(), evaluate: vi.fn(async () => null) },
   agentState: { current: null as { isCompacting?: boolean; usage?: unknown } | null },
+  /** The Agent-side queue this view reads: `{ rows, refresh }` plus the commands. */
+  queue: {
+    value: { refresh: vi.fn(), rows: [] as { acceptedAt: string; position: number; runId: string; state: string; text: string }[] },
+    cancel: vi.fn(async (_runId: string) => {}),
+    release: vi.fn(async (_runId: string) => {}),
+  },
   store: { forkThread: vi.fn() },
   client: { compactThreadContext: vi.fn() },
   skills: { installRecommendedSkill: vi.fn(async () => {}) },
@@ -136,6 +142,14 @@ vi.mock("../../components/ui/FloatingScrollbar", () => ({
   FloatingScrollbar: () => <div data-scrollbar="" />,
 }));
 vi.mock("./useAgentThreadState", () => ({ useAgentThreadState: () => h.threadState.value }));
+vi.mock("./agentQueue", () => ({
+  // The panel is a view of the Agent's queue (`agentQueue.test.ts` covers the
+  // reading); here it only has to be wired to the rows and the two commands.
+  useAgentQueue: () => h.queue.value,
+  cancelAgentQueuedRun: (runId: string) => h.queue.cancel(runId),
+  releaseAgentQueuedRun: (runId: string) => h.queue.release(runId),
+  isParkedRow: (row: { state: string }) => row.state.startsWith("stale"),
+}));
 vi.mock("./useMessagePaging", () => ({
   useMessagePaging: (options: Record<string, unknown>) => {
     h.pagingArgs.value = options;
@@ -182,6 +196,8 @@ let props: Parameters<typeof AgentThread>[0];
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Every test starts on an empty Agent queue; the panel tests fill it.
+  h.queue.value = { refresh: vi.fn(), rows: [] };
   // Command handlers outlive a mount in the module-level registry; a test that
   // left one behind would answer the next test's keystrokes.
   clearCommandHandlers();
@@ -1128,6 +1144,40 @@ describe("agentThread send while the reply streams", () => {
     // No client-side panel: the row lives in `get_state`'s `queuedRuns`, and a
     // second copy here would be a guess about the Agent's own order.
     expect(container.querySelector("[data-send-queue]")).toBeNull();
+  });
+
+  it("shows the Agent's waiting rows, and takes one back through the Agent", async () => {
+    h.queue.value = {
+      refresh: vi.fn(),
+      rows: [{ acceptedAt: "2026-11-03T10:00:00Z", position: 1, runId: "run-7", state: "queued", text: "waiting" }],
+    };
+    setMessages([user("u1"), assistant("a1", { status: "streaming" })]);
+    render();
+
+    const panel = container.querySelector("[data-send-queue]");
+    expect(panel).not.toBeNull();
+    expect(panel!.textContent).toContain("waiting");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("[data-queue-remove]")!.click();
+      await Promise.resolve();
+    });
+    // Addressed by run id: the queue belongs to the session, not to this panel.
+    expect(h.queue.cancel).toHaveBeenCalledWith("run-7");
+  });
+
+  it("offers a parked row a start, because the Agent will not run it alone", async () => {
+    h.queue.value = {
+      refresh: vi.fn(),
+      rows: [{ acceptedAt: "2026-11-03T10:00:00Z", position: 1, runId: "run-8", state: "stale:stale", text: "too old" }],
+    };
+    render();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("[data-queue-release]")!.click();
+      await Promise.resolve();
+    });
+    expect(h.queue.release).toHaveBeenCalledWith("run-8");
   });
 
   it("hands one message per send to the Agent, never a joined one", async () => {
