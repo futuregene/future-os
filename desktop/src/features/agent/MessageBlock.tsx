@@ -16,6 +16,7 @@ import { MessageMeta } from "./MessageMeta";
 import { AttachmentChip } from "./messages/AttachmentChip";
 import { MessageFrame } from "./messages/MessageFrame";
 import { CompactionDivider, StatusDivider } from "./messages/MessageStatus";
+import { PreviewSyncBadge } from "./PreviewSyncBadge";
 import { buildReplyBlocks, replyCopyText, splitFinalAnswer } from "./replyBlocks";
 import { ReplyProcess } from "./ReplyProcess";
 import { ReplySteps } from "./ReplySteps";
@@ -339,6 +340,9 @@ function MessageBlockImpl({
                   )
                 : null}
               <MessageMeta message={message} hovered={hovered} />
+              {streaming && message.previewStalled
+                ? <PreviewSyncBadge stall={message.previewStalled} />
+                : null}
               {streaming && message.thinkingActive && !segments?.some(segment => segment.kind === "thinking")
                 ? <span className="select-none text-xs text-ink-muted">{t("message.thinking")}</span>
                 : null}
