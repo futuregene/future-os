@@ -1,8 +1,7 @@
 import type { StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import { Archive, Folder } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { listThreadsPage } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { ArchivedThreadMenu } from "./ActivityRailMenus";
@@ -113,29 +112,45 @@ export function ArchivedThreadRow({
 /**
  * One archived workspace's heading in the archived view.
  *
+ * Drawn like an active workspace's heading — disclosure, folder, name, then the
+ * controls folded into a "more" menu — because it is the same thing with a
+ * different status. The archived list used to spell "restore" out as a text
+ * button on the heading, which made it the one control in the rail that did not
+ * fold away; a reader with several shelved workspaces saw a column of them.
+ *
  * Expanding it browses the workspace's conversations (they keep their own
  * `active` status — the workspace, not they, is what was shelved), so the reader
- * can open one read-only before deciding to restore the whole workspace.
+ * can open one read-only before deciding to restore everything.
  */
 export function ArchivedWorkspaceGroup({
   children,
   count,
   expanded,
-  onRestore,
+  menu,
+  onOpenMenu,
   onToggle,
   workspace,
 }: {
   children?: React.ReactNode;
   count: number | null;
   expanded: boolean;
-  onRestore: (workspace: StoredWorkspace) => void;
+  /** The heading's actions menu (rendered by the owner, which knows the commands). */
+  menu: React.ReactNode;
+  /** Right-click on the heading asks the owner to open that same menu. */
+  onOpenMenu: () => void;
   onToggle: () => void;
   workspace: StoredWorkspace;
 }) {
   const { t } = useTranslation("layout");
   return (
     <div className="space-y-0.5">
-      <div className="flex h-7 w-full items-center gap-1 rounded-md px-2 text-left transition-colors hover:bg-surface-subtle">
+      <div
+        className="group/workspace flex h-7 w-full items-center gap-1 rounded-md px-2 text-left transition-colors hover:bg-surface-subtle"
+        onContextMenu={(event) => {
+          event.preventDefault();
+          onOpenMenu();
+        }}
+      >
         <button
           aria-expanded={expanded}
           aria-label={expanded ? t("activityRail.collapseWorkspace") : t("activityRail.expandWorkspace")}
@@ -145,20 +160,14 @@ export function ArchivedWorkspaceGroup({
         >
           <span className="text-xs leading-none">{expanded ? "−" : "+"}</span>
         </button>
-        <Folder className="size-4 shrink-0 text-ink-muted" />
-        <span className="min-w-0 flex-1 truncate text-13 font-medium text-ink-soft" title={workspace.name}>
+        <Folder className="size-4 shrink-0 text-ink-soft" />
+        <span className="min-w-0 flex-1 truncate text-13 font-semibold text-ink" title={workspace.name}>
           {workspace.name}
         </span>
         {count !== null
           ? <span className="shrink-0 text-2xs tabular-nums text-ink-muted">{count}</span>
           : null}
-        <button
-          className="shrink-0 rounded px-1.5 text-2xs text-accent transition-colors hover:bg-surface-subtle"
-          onClick={() => onRestore(workspace)}
-          type="button"
-        >
-          {t("activityRail.restoreWorkspace")}
-        </button>
+        {menu}
       </div>
       {expanded ? children : null}
     </div>
@@ -191,40 +200,27 @@ export function ArchivedEmpty({ label }: { label: string }) {
 }
 
 /**
- * The conversations inside one archived workspace, fetched when the group is
- * expanded.
+ * The conversations inside one archived workspace, drawn as plain rows.
  *
- * They keep their own `active` status — the workspace, not they, is what was
- * shelved — so this reads the `workspace-archived:<id>` scope, which returns
- * them whatever their status. A reader can therefore open one read-only and look
- * before deciding to restore the whole workspace.
+ * The rows come from the shell's archive view (which fetched them for this
+ * group), not from a private fetch here: the same array is what a batch
+ * selection addresses, so it must be one copy. They keep their own `active`
+ * status — the workspace, not they, is what was shelved — so opening one shows
+ * it read-only before the reader decides to restore anything.
  */
 export function ArchivedWorkspaceContents({
+  loading,
   onOpen,
-  workspaceId,
+  threads,
 }: {
+  loading: boolean;
   onOpen: (thread: StoredThread) => void;
-  workspaceId: string;
+  threads: StoredThread[] | undefined;
 }) {
   const { t } = useTranslation("layout");
-  const [threads, setThreads] = useState<StoredThread[] | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    void listThreadsPage(`workspace-archived:${workspaceId}`, null, 50)
-      .then((page) => {
-        if (!cancelled)
-          setThreads(page.threads);
-      })
-      .catch(() => {
-        if (!cancelled)
-          setThreads([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [workspaceId]);
-
-  if (threads === null)
+  if (threads === undefined)
+    return <div className="px-4 py-1 text-xs text-ink-muted">{t("activityRail.loading")}</div>;
+  if (loading && threads.length === 0)
     return <div className="px-4 py-1 text-xs text-ink-muted">{t("activityRail.loading")}</div>;
   if (threads.length === 0)
     return <div className="px-4 py-1 text-xs text-ink-muted">{t("activityRail.archivedThreadsEmpty")}</div>;

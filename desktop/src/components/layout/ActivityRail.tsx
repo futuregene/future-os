@@ -29,6 +29,7 @@ import { groupMergedRows, mergeConversations, rowKey } from "../../features/remo
 import { peersDotState } from "../../features/remote-peer/peerStatus";
 import { SkillIntroBubble } from "../../features/skills/SkillIntroBubble";
 import { listInstalledSkills } from "../../integrations/skills/skillsClient";
+import { openPath } from "../../integrations/storage/files";
 import { cn } from "../../lib/cn";
 import { formatMessageTimestamp } from "../../lib/date";
 import { onFutureEvent } from "../../lib/futureEvents";
@@ -39,7 +40,7 @@ import { startWindowDrag } from "../../lib/windowDrag";
 import { FloatingScrollbar } from "../ui/FloatingScrollbar";
 import { IconButton } from "../ui/IconButton";
 import { ActivityRailAccountFooter } from "./ActivityRailAccountFooter";
-import { ChatSectionMenu, WorkspaceHeaderMenu } from "./ActivityRailMenus";
+import { ArchivedWorkspaceMenu, ChatSectionMenu, WorkspaceHeaderMenu } from "./ActivityRailMenus";
 import { ActivityRailSelectionToolbar } from "./ActivityRailSelectionToolbar";
 import { ArchivedEmpty, ArchivedSectionHeading, ArchivedThreadRow, ArchivedWorkspaceContents, ArchivedWorkspaceGroup } from "./ArchivedRows";
 import { ArchiveGuideBubble } from "./ArchiveGuideBubble";
@@ -391,15 +392,30 @@ export function ActivityRail({
    * heading". The rows come from the archived stream, not the store, so they
    * are offered to the selection explicitly.
    */
-  const archiveViewThreads = archiveView.threads;
+  interface ArchivedScopeEntry { scope: string; thread: StoredThread }
+  const archiveViewThreads = useMemo<ArchivedScopeEntry[]>(
+    () => [
+      ...archiveView.threads.map(thread => ({ scope: "archived", thread }) as ArchivedScopeEntry),
+      ...Object.entries(archiveView.workspaceThreads).flatMap(([workspaceId, rows]) =>
+        rows.map(thread => ({ scope: `archived-workspace:${workspaceId}`, thread }) as ArchivedScopeEntry)),
+    ],
+    [archiveView.threads, archiveView.workspaceThreads],
+  );
   const archivedThreadScopes = useMemo(
-    () => new Map(archiveViewThreads.map(thread => [thread.id, "archived"] as const)),
+    () => new Map(archiveViewThreads.map(entry => [entry.thread.id, entry.scope] as const)),
+    [archiveViewThreads],
+  );
+  /** The archived rows the selection can address (flat, both kinds of shelf). */
+  const archivedSelectableThreads = useMemo(
+    () => archiveViewThreads.map(entry => entry.thread),
     [archiveViewThreads],
   );
 
   const refreshArchiveView = archiveView.refresh;
   // Archived workspace groups the reader has expanded to browse.
   const [expandedArchivedWorkspaces, setExpandedArchivedWorkspaces] = useState<Set<string>>(() => new Set());
+  // Which archived workspace heading has its actions menu open (one at a time).
+  const [openArchivedWorkspaceMenuId, setOpenArchivedWorkspaceMenuId] = useState<string | null>(null);
   const ensureArchivedLoaded = useCallback(() => {
     archiveView.ensureLoaded();
   }, [archiveView]);
@@ -914,7 +930,7 @@ export function ActivityRail({
     visibleThreads: railView === "recent"
       ? recentThreads
       : railView === "archived"
-        ? archiveViewThreads
+        ? archivedSelectableThreads
         : mergedMode
           ? filteredVisibleThreads
           : visibleThreads,
@@ -1649,13 +1665,31 @@ export function ActivityRail({
                                           count={null}
                                           expanded={expandedArchivedWorkspaces.has(workspace.id)}
                                           key={workspace.id}
-                                          onRestore={restoreArchivedWorkspace}
-                                          onToggle={() => toggleArchivedWorkspace(workspace.id)}
+                                          menu={(
+                                            <ArchivedWorkspaceMenu
+                                              open={openArchivedWorkspaceMenuId === workspace.id}
+                                              onDelete={onDeleteWorkspace}
+                                              onOpenChange={open => setOpenArchivedWorkspaceMenuId(open ? workspace.id : null)}
+                                              onRename={onRenameWorkspace}
+                                              onRestore={restoreArchivedWorkspace}
+                                              onReveal={() => void openPath(workspace.path).catch(() => {})}
+                                              onSelectConversations={() => enterSelectionMode(`archived-workspace:${workspace.id}`)}
+                                              workspace={workspace}
+                                            />
+                                          )}
+                                          onOpenMenu={() => setOpenArchivedWorkspaceMenuId(workspace.id)}
+                                          onToggle={() => {
+                                            const next = !expandedArchivedWorkspaces.has(workspace.id);
+                                            if (next)
+                                              archiveView.ensureWorkspaceThreads(workspace.id);
+                                            toggleArchivedWorkspace(workspace.id);
+                                          }}
                                           workspace={workspace}
                                         >
                                           <ArchivedWorkspaceContents
+                                            loading={archiveView.loading}
                                             onOpen={onOpenArchivedThread ?? onSelectThread}
-                                            workspaceId={workspace.id}
+                                            threads={archiveView.workspaceThreads[workspace.id]}
                                           />
                                         </ArchivedWorkspaceGroup>
                                       ))}

@@ -231,6 +231,103 @@ export function WorkspaceHeaderMenu({
 }
 
 /**
+ * An archived workspace's heading menu: restore / rename / reveal / select /
+ * delete.
+ *
+ * The same shape as `WorkspaceHeaderMenu` — the archived view draws a workspace
+ * heading exactly as the active list does, one heading with its controls folded
+ * into a menu — with "restore" where the active list has "archive".
+ */
+export function ArchivedWorkspaceMenu({
+  onDelete,
+  onOpenChange,
+  onRename,
+  onRestore,
+  onReveal,
+  onSelectConversations,
+  open,
+  workspace,
+}: {
+  onDelete: (workspace: StoredWorkspace) => void;
+  onOpenChange: (open: boolean) => void;
+  onRename: (workspace: StoredWorkspace) => void;
+  onRestore: (workspace: StoredWorkspace) => void;
+  onReveal: () => void;
+  onSelectConversations?: () => void;
+  open: boolean;
+  workspace: StoredWorkspace;
+}) {
+  const { t } = useTranslation("layout");
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const layerRef = useDismissableLayer<HTMLDivElement>({
+    enabled: open,
+    onDismiss: () => onOpenChange(false),
+    onEscapeDismiss: () => {
+      onOpenChange(false);
+      triggerRef.current?.focus();
+    },
+  });
+  const { menuRef, dropUp } = useDropUpMenu(open);
+  useKeyboardOwner(open);
+
+  return (
+    <div className="relative" ref={layerRef}>
+      <button
+        ref={triggerRef}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        aria-label={t("activityRail.workspaceActions", { name: workspace.name })}
+        className={cn(
+          "inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition hover:bg-surface hover:text-ink-soft group-hover/workspace:opacity-100",
+          open && "opacity-100",
+        )}
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpenChange(!open);
+        }}
+        title={t("activityRail.workspaceActions", { name: workspace.name })}
+        type="button"
+      >
+        <MoreHorizontal className="size-3.5" />
+      </button>
+      {open
+        ? (
+            <MenuPanel
+              ref={menuRef}
+              onKeyDown={handleMenuKeyDown}
+              role="menu"
+              className={cn(
+                "absolute right-0 z-40 w-max min-w-36 p-1",
+                dropUp ? "bottom-7" : "top-7",
+              )}
+            >
+              <ThreadMenuItem icon={<Archive className="size-3.5" />} onClick={() => onRestore(workspace)} onClose={() => onOpenChange(false)}>
+                {t("activityRail.restoreWorkspace")}
+              </ThreadMenuItem>
+              <ThreadMenuItem icon={<Pencil className="size-3.5" />} onClick={() => onRename(workspace)} onClose={() => onOpenChange(false)}>
+                {t("activityRail.rename")}
+              </ThreadMenuItem>
+              <ThreadMenuItem icon={<FolderOpen className="size-3.5" />} onClick={onReveal} onClose={() => onOpenChange(false)}>
+                {t("activityRail.revealInFinder")}
+              </ThreadMenuItem>
+              {onSelectConversations
+                ? (
+                    <ThreadMenuItem icon={<CheckSquare className="size-3.5" />} onClick={onSelectConversations} onClose={() => onOpenChange(false)}>
+                      {t("activityRail.selectThreads")}
+                    </ThreadMenuItem>
+                  )
+                : null}
+              <ThreadMenuItem danger icon={<Trash2 className="size-3.5" />} onClick={() => onDelete(workspace)} onClose={() => onOpenChange(false)}>
+                {t("activityRail.delete")}
+              </ThreadMenuItem>
+            </MenuPanel>
+          )
+        : null}
+    </div>
+  );
+}
+
+/**
  * Chat section header menu: select conversations for batch deletion.
  */
 export function ChatSectionMenu({
