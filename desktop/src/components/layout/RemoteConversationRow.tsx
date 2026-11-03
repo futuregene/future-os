@@ -41,7 +41,6 @@ export function RemoteConversationRow({
   peer,
   selected,
   selectionMode,
-  showSource,
   unread,
 }: {
   active: boolean;
@@ -81,15 +80,6 @@ export function RemoteConversationRow({
    * the user could see the batch around and not add to it.
    */
   selectionMode?: boolean;
-  /**
-   * Whether the row still needs to say which machine it is on.
-   *
-   * False when the list is already filtered to one machine: every row is that
-   * machine's, so the badge repeats what the selector above says. The title
-   * does not carry the machine either way (the row has a title and a time
-   * already), so the badge is only ever a qualifier.
-   */
-  showSource?: boolean;
   unread?: boolean;
 }) {
   const { t } = useTranslation("remotePeer");
@@ -131,14 +121,15 @@ export function RemoteConversationRow({
           the row is about, and the icon says whose it is. Aligned with the
           title rather than with the row's right edge — at the far edge it read
           as a second, unrelated column, and on a narrow rail it was further
-          from the title than from the next row. */}
-      {showSource === false
-        ? null
-        : (
-            <span aria-hidden className="pointer-events-none shrink-0" data-testid="remote-source-icon">
-              <PeerIconGlyph className="size-3" id={peer?.icon} />
-            </span>
-          )}
+          from the title than from the next row.
+
+          Always drawn. It used to be withheld when the list held one machine or
+          the selector above already named it, which left a row of a remote
+          desktop looking exactly like a local one — the selector says what the
+          *list* is filtered to, not where the line being read lives. */}
+      <span aria-hidden className="pointer-events-none shrink-0" data-testid="remote-source-icon">
+        <PeerIconGlyph className="size-3" id={peer?.icon} />
+      </span>
       <RailRowSpacer />
       {/* The age, before the run indicator: the same column the local row puts
           it in, so a list holding both machines' rows keeps one right edge. */}

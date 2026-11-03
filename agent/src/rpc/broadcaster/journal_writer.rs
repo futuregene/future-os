@@ -356,6 +356,12 @@ fn run_event_batch_writer(
     health: std::sync::Arc<EventJournalHealth>,
     #[cfg(test)] commits: std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) {
+    let _storage_context = crate::session::database::request::Context::new(
+        "event_journal".into(),
+        session_id.clone(),
+        None,
+    )
+    .enter();
     let mut canonical = match store.storage_format(&session_id) {
         Ok(crate::session::content::FORMAT_VERSION) => {
             Some(crate::session::content::journal::Writer::default())

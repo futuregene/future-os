@@ -1,13 +1,31 @@
 //! Tauri IPC adapter for shared application operations.
 use crate::store;
 #[tauri::command]
-pub fn create_run(input: store::CreateRunInput) -> Result<store::RunRecord, crate::AppError> {
-    future_host::application::runs::create_run(input)
+pub async fn create_run(input: store::CreateRunInput) -> Result<store::RunRecord, crate::AppError> {
+    let started = std::time::Instant::now();
+    let result = future_host::runtime::run_blocking(move || {
+        future_host::application::runs::create_run(input)
+    })
+    .await?;
+    tracing::debug!(
+        event = "desktop_storage_completed",
+        operation = "create_run",
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        success = result.is_ok()
+    );
+    result
 }
 
 #[tauri::command]
-pub fn list_runs(thread_id: String) -> Result<Vec<store::RunRecord>, crate::AppError> {
-    future_host::application::runs::list_runs(thread_id)
+pub async fn list_runs(
+    thread_id: String,
+    after: Option<i64>,
+    before: Option<i64>,
+) -> Result<Vec<store::RunRecord>, crate::AppError> {
+    future_host::runtime::run_blocking(move || {
+        future_host::application::runs::list_runs_in_window(thread_id, after, before)
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -183,13 +201,38 @@ mod tests {
         );
     }
 
-    #[test]
-    fn run_read_wrappers_round_trip() {
+    #[tokio::test]
+    async fn a_busy_run_insert_keeps_the_ipc_runtime_responsive() {
+        let (_home, thread) = seeded("cmd-runs-busy");
+        let conn = crate::store::test_support::open_schema_connection();
+        conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let creation = create_run(run_input(&thread.id, "run-busy"));
+        tokio::pin!(creation);
+        let pending =
+            tokio::time::timeout(std::time::Duration::from_millis(25), &mut creation).await;
+        conn.execute_batch("ROLLBACK").unwrap();
+        assert!(
+            pending.is_err(),
+            "the timer must run while SQLite is waiting for its writer"
+        );
+        assert_eq!(creation.await.unwrap().id, "run-busy");
+    }
+
+    #[tokio::test]
+    async fn run_read_wrappers_round_trip() {
         let (_home, thread) = seeded("cmd_runs");
-        let created = create_run(run_input(&thread.id, "run_1")).expect("create run");
+        let created = create_run(run_input(&thread.id, "run_1"))
+            .await
+            .expect("create run");
         assert_eq!(created.id, "run_1");
 
-        assert_eq!(list_runs(thread.id.clone()).expect("list").len(), 1);
+        assert_eq!(
+            list_runs(thread.id.clone(), None, None)
+                .await
+                .expect("list")
+                .len(),
+            1
+        );
         assert_eq!(
             get_latest_run(thread.id.clone())
                 .expect("latest")
@@ -219,7 +262,9 @@ mod tests {
 
         let _lock = mock_agent_lock();
         let (_home, thread) = seeded("cmd_runs_agent");
-        create_run(run_input(&thread.id, "run_wave")).expect("create run");
+        create_run(run_input(&thread.id, "run_wave"))
+            .await
+            .expect("create run");
         crate::commands::agent_mock::ensure_mock_agent();
         script_mock_agent(MockScript {
             data: HashMap::from([

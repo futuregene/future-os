@@ -155,6 +155,47 @@ pub fn slice_cols(text: &str, from: usize, to: usize) -> String {
     out
 }
 
+/// One row's worth of `text`: what a multi-line message has to become before it
+/// can be painted into a band that is one row tall.
+///
+/// A frame row is a row, not a paragraph. Text carrying a line break came out
+/// measured as if the break were one column and then written out with the break
+/// still in it, so the terminal answered with a hard line feed in the middle of
+/// the frame and every row below shifted — the footer's notice is where this
+/// first bit, because the update message was written as two sentences on two
+/// lines while the hint band is a single row. Control characters are never
+/// text: line breaks become the same `·` the hint row uses between its parts, a
+/// tab becomes a space, anything else is dropped, and any styling in the source
+/// is stripped (callers paint these rows themselves).
+pub fn one_line(text: &str) -> String {
+    let plain = crate::utils::strip_ansi_codes(text);
+    let mut out = String::with_capacity(plain.len());
+    // Held back until there is a character to put after it, so a trailing break
+    // does not leave a separator hanging off the end of the row.
+    let mut break_pending = false;
+    for ch in plain.chars() {
+        match ch {
+            '\n' | '\r' => break_pending = true,
+            '\t' => {
+                if !break_pending {
+                    out.push(' ');
+                }
+            }
+            _ if ch.is_control() => {}
+            _ => {
+                if break_pending {
+                    if !out.is_empty() {
+                        out.push_str(" · ");
+                    }
+                    break_pending = false;
+                }
+                out.push(ch);
+            }
+        }
+    }
+    out.trim_end().to_string()
+}
+
 /// Colour a run of text (foreground only).
 pub fn style(color: u8, text: &str) -> String {
     fg(color, text)
@@ -236,6 +277,27 @@ mod tests {
         assert!(clipped.trim_start().starts_with('…'), "{clipped:?}");
         assert!(clipped.ends_with("main.rs"), "{clipped:?}");
         assert_eq!(width(&align_right("x", 0)), 0);
+    }
+
+    #[test]
+    fn one_line_joins_the_sentences_a_break_separated() {
+        // A line break becomes the hint row's separator rather than a control
+        // character: the row it is painted into is one row tall.
+        assert_eq!(one_line("saved\nretry later"), "saved · retry later");
+        assert_eq!(one_line("saved\r\nretry later"), "saved · retry later");
+        // Breaks at the edges leave no separator hanging.
+        assert_eq!(one_line("\n saved"), " saved");
+        assert_eq!(one_line("saved\n"), "saved");
+        assert_eq!(one_line("a\n\n\nb"), "a · b");
+        // A tab is a gap; other control characters are not text at all.
+        assert_eq!(one_line("a\tb"), "a b");
+        assert_eq!(one_line("a\u{7}b"), "ab");
+        // Styling is the caller's job on these rows, so it is stripped here.
+        assert_eq!(one_line("\u{1b}[38;5;80msaved\u{1b}[m"), "saved");
+        // Whatever comes out is one row and carries nothing the terminal acts on.
+        let joined = one_line("\u{1b}[1m中文\u{1b}[m\n命令");
+        assert_eq!(joined, "中文 · 命令");
+        assert!(!joined.chars().any(char::is_control), "{joined:?}");
     }
 
     #[test]

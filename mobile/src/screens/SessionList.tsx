@@ -93,6 +93,21 @@ export type SessionListHandle = {
   startSelecting(): void;
 };
 
+/**
+ * A row with the machine it came from attached.
+ *
+ * The single-machine tree is built from the connected desktop's own catalogue,
+ * where a source would be the same fact on every line — so it carries none, and
+ * that is the only list on the phone whose rows come from nowhere. The
+ * connection the list is drawing is that machine, so it is stamped here, at the
+ * one place that knows it, rather than threaded through the tree builder for a
+ * fact the tree does not use.
+ */
+function withMachine(row: CatalogRow, desktopId: string): CatalogRow {
+  if (row.kind === "section" || row.desktopId) return row;
+  return { ...row, desktopId };
+}
+
 /** A batch's rows, grouped by the machine that will delete them. */
 function groupByMachine(targets: SessionTarget[]): Map<string | null, SessionTarget[]> {
   const byMachine = new Map<string | null, SessionTarget[]>();
@@ -131,7 +146,7 @@ export function SessionList({
    */
   merged?: import("../remote/mergeSessions").MergedSessionRow[];
   /**
-   * Per-desktop icon id, so a merged row shows which machine it is on.
+   * Per-desktop icon id, so every row shows which machine it is on.
    *
    * A machine with no icon of its own is absent from the map (or maps to
    * `undefined`) and draws the shared set's default — the same mark the
@@ -287,10 +302,18 @@ export function SessionList({
     // `recent` is this page's own rows, computed above under the same conditions
     // — narrowed on `tab` here so the two tree builders keep their own two-page
     // contract.
-    if (tab === "recent") return recent ? recent.rows : [];
-    return merged !== undefined
-      ? sessionTreeMergedRows(merged, query, activeDesktopId, tab, collapsed, expanded)
-      : catalogRows(remote.sessions, remote.workspaces, tab, collapsed, expanded, query);
+    const built = tab === "recent"
+      ? (recent ? recent.rows : [])
+      : merged !== undefined
+        ? sessionTreeMergedRows(merged, query, activeDesktopId, tab, collapsed, expanded)
+        : catalogRows(remote.sessions, remote.workspaces, tab, collapsed, expanded, query);
+    // Every row the list draws belongs to a machine, and every row says which
+    // one it is: the single-machine tree is built from the connected desktop's
+    // own catalogue and so carries no source of its own, which would leave it
+    // the only list on the phone whose rows came from nowhere. Stamped here
+    // rather than in the tree builder because it is the list, not the tree,
+    // that knows which desktop this connection is to.
+    return activeDesktopId ? built.map(row => withMachine(row, activeDesktopId)) : built;
   }, [
     remote.sessions,
     remote.workspaces,
@@ -302,29 +325,6 @@ export function SessionList({
     activeDesktopId,
     recent,
   ]);
-  /**
-   * Whether a row's own machine has to be named on it.
-   *
-   * Only when the list really holds more than one machine's conversations: with
-   * a single desktop (the picker's filter, or one pairing) every glyph would
-   * repeat what the selector above the list already says, and take the width the
-   * title needs.
-   *
-   * A heading's machine counts as much as a conversation's. Its group's
-   * conversations leave the list when the group is folded, and they are the only
-   * rows that would have named that machine — so reading the machine set off the
-   * drawn conversations alone took the glyphs off a list of folded groups and
-   * pinned shortcuts entirely, leaving two machines' workspaces of the same name
-   * side by side with nothing saying which was whose. What is being decided is
-   * whether the *list* holds one machine or several, and a folded group is still
-   * in it.
-   */
-  const showSource = useMemo(() => {
-    const sources = new Set(
-      rows.flatMap(row => ("desktopId" in row && row.desktopId ? [row.desktopId] : [])),
-    );
-    return sources.size > 1;
-  }, [rows]);
   /**
    * Every conversation the list holds, folded or not, under the key a batch
    * uses for it.
@@ -717,7 +717,7 @@ export function SessionList({
             <Text numberOfLines={1} style={styles.workspaceName}>
               {name}
             </Text>
-            {showSource && item.desktopId ? (
+            {item.desktopId ? (
               <View accessibilityLabel={item.desktopId} style={styles.sourceIcon}>
                 <PeerIconGlyph id={icons?.get(item.desktopId)} size={13} />
               </View>
@@ -874,7 +874,7 @@ export function SessionList({
                     opens the under-line at the row's own left edge, so the
                     glyph column lines up with the title above it instead of
                     trailing whatever the name happens to be. */}
-                {showSource && item.desktopId ? (
+                {item.desktopId ? (
                   <View accessibilityLabel={item.desktopId} style={[styles.sourceIcon, styles.leadingSourceIcon]}>
                     <PeerIconGlyph id={icons?.get(item.desktopId)} size={13} />
                   </View>
@@ -892,15 +892,15 @@ export function SessionList({
           <Text numberOfLines={1} ellipsizeMode="tail" style={[styles.title, unread && styles.unreadTitle]}>
             {session.title || t("sessions.unnamed")}
           </Text>
-          {/* In the merged list a row carries its machine's glyph — but only
-              when more than one machine is in the list, and only when no
-              heading above it already says which machine it is: with a single
-              desktop the selector above already names it, and under a workspace
-              group the heading carries the same glyph, so the row would repeat
-              it on every line of that group's list. A machine the user never
-              gave an icon draws the default one, for the same reason the
-              heading does. */}
-          {showSource && !item.groupHasSource && item.desktopId ? (
+          {/* Every row carries its machine's glyph — on a phone every
+              conversation is on a remote desktop, so a row without one reads as
+              a row that came from nowhere, and the selector above names the
+              machine for the whole list rather than for the line being read. It
+              is the same on a list of one machine, under a workspace heading
+              that carries the same mark, and on a row the selector already
+              filtered to. A machine the user never gave an icon draws the
+              default one. */}
+          {item.desktopId ? (
             <View accessibilityLabel={item.desktopId} style={styles.sourceIcon}>
               <PeerIconGlyph id={icons?.get(item.desktopId)} size={13} />
             </View>

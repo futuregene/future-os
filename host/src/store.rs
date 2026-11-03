@@ -77,7 +77,7 @@ pub use runs::{
     active_run_sessions, advance_tool_projection, clear_all_run_events_files,
     clear_run_event_buffer, create_run, delete_run_events_file, fail_run_if_active,
     find_run_by_trigger_message_id, get_tool_call_input, has_active_run, latest_run,
-    latest_run_infos, list_run_events, list_runs, mark_remote_prompt_accepted,
+    latest_run_infos, list_run_events, list_runs, list_runs_in_window, mark_remote_prompt_accepted,
     update_run_status_if_active, LatestRunInfo, RunEventRecord, RunRecord, ToolCallRecord,
     ToolOutputRecord,
 };
@@ -275,7 +275,8 @@ pub fn test_schema_home(label: &str) -> crate::auth_store::test_support::HomeGua
 }
 
 pub use cleanup::{
-    empty_conversation_candidates, session_reconcile_candidates, SessionReconcileCandidates,
+    empty_conversation_candidates, record_thread_has_messages, session_reconcile_candidates,
+    SessionReconcileCandidates,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;

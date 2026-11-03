@@ -264,9 +264,6 @@ export function MergedRows({
   // The chat section's menu is the rail's own control, which owns its open state
   // through props — so the state lives here, next to the header that draws it.
   const [chatMenuOpen, setChatMenuOpen] = useState(false);
-  // One machine selected: it is named by the selector directly above the list, so
-  // repeating it on every row says nothing and takes the space a title needs.
-  const oneMachine = filter.kind === "device" && filter.desktopId !== null;
   // Creating a workspace or a chat makes one on *this* machine, so the controls
   // that do it belong only where this machine's rows are listed: under a remote
   // device's filter they would add something the user cannot see.
@@ -284,7 +281,6 @@ export function MergedRows({
   function renderRow(
     conversation: MergedConversation,
     compact: boolean,
-    groupHasSource: boolean,
     /**
      * The recent view's own column.
      *
@@ -348,10 +344,6 @@ export function MergedRows({
         peer={peers.find(peer => peer.desktopId === conversation.desktopId)}
         selected={remoteSelection?.selected(conversation) === true}
         selectionMode={selectable}
-        // The machine is named once per group, on the heading. Repeating it on
-        // every row under that heading is the same word on every line — and the
-        // row pays for it in the width its title needs.
-        showSource={!oneMachine && !groupHasSource}
       />
     );
   }
@@ -384,7 +376,7 @@ export function MergedRows({
             </RailSectionHeader>
             {section.rows.map(row => (
               <div data-recent-row={row.key} data-testid="recent-row" key={row.key}>
-                {renderRow(row, false, false, {
+                {renderRow(row, false, {
                   age: ageLabels?.get(row.key),
                 })}
               </div>
@@ -418,7 +410,7 @@ export function MergedRows({
         ? (
             <div className="mb-3 space-y-0.5">
               <RailSectionHeader>{t("activityRail.pinnedHeader")}</RailSectionHeader>
-              {pinned.map(row => renderRow(row, false, false))}
+              {pinned.map(row => renderRow(row, false))}
             </div>
           )
         : null}
@@ -477,7 +469,7 @@ export function MergedRows({
                     {renderLocalGroupHeader(group.workspaceId)}
                     {collapsed
                       ? null
-                      : group.rows.map(row => renderRow(row, true, false))}
+                      : group.rows.map(row => renderRow(row, true))}
                   </div>
                 );
               }
@@ -490,7 +482,7 @@ export function MergedRows({
                     collapsed={collapsed}
                     collapsedLabel={t("activityRail.expandWorkspace")}
                     expandedLabel={t("activityRail.collapseWorkspace")}
-                    glyph={oneMachine ? null : <GroupGlyph desktopId={desktopId} peers={peers} />}
+                    glyph={<GroupGlyph desktopId={desktopId} peers={peers} />}
                     menu={desktopId && workspaceId
                       ? (
                           <>
@@ -540,7 +532,7 @@ export function MergedRows({
                     pinned={group.pinned}
                     testId="merged-group-heading"
                   />
-                  {collapsed ? null : group.rows.map(row => renderRow(row, true, true))}
+                  {collapsed ? null : group.rows.map(row => renderRow(row, true))}
                 </div>
               );
             })}
@@ -594,7 +586,7 @@ export function MergedRows({
           ? <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noChats")}</div>
           : null}
         <div className="shrink-0 space-y-0.5" data-testid="merged-conversations">
-          {chatSectionCollapsed ? null : chats.map(row => renderRow(row, false, false))}
+          {chatSectionCollapsed ? null : chats.map(row => renderRow(row, false))}
         </div>
       </div>
     </>
@@ -605,8 +597,10 @@ export function MergedRows({
  * Which machine a heading belongs to.
  *
  * Local headings are the rail's own; a remote one carries that machine's icon,
- * because with several machines in one list the name alone does not say which
- * pane a group came from.
+ * because a group's name alone does not say which machine holds it. Drawn under
+ * every filter, including the one that names a single machine: the same rule the
+ * rows follow, so a heading and the conversations under it are marked alike
+ * whichever filter is in effect.
  */
 function GroupGlyph({ desktopId, peers }: { desktopId: string | null; peers: RemotePeer[] }) {
   if (desktopId === null)

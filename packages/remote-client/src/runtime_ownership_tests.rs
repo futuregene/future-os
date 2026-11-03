@@ -81,6 +81,9 @@ impl ClientHost for MemoryHost {
             return Ok(false);
         };
         record.creds.user_jwt = fresh.user_jwt.clone();
+        // The grant is the expiry too: a store that kept the old one would make
+        // every later `needs_refresh` true again and re-mint on every tick.
+        record.creds.jwt_expires_at = fresh.jwt_expires_at;
         Ok(true)
     }
     fn clear_secret(&self, _: &PeerCreds) -> Result<bool, crate::Error> {
@@ -157,6 +160,70 @@ async fn two_instances_share_no_connection_intent_or_stop_state() {
     assert!(!second.is_stopped());
     assert_eq!(second.list().await.unwrap().len(), 1);
     second.shutdown(Duration::from_secs(1)).await.unwrap();
+}
+
+#[tokio::test]
+async fn an_offline_pairing_is_left_alone_before_this_process_has_served_anything() {
+    let host = Arc::new(MemoryHost::default());
+    host.upsert(creds()).unwrap();
+    let client = Client::new(host.clone());
+    // `creds()` carries a grant that lapsed decades ago, and this process has
+    // never served a host: a connect attempt renews it on its own, so there is
+    // nothing for a background mint to protect and nothing to pay for.
+    client.renew_lapsed_offline_grants().await;
+    assert_eq!(host.refreshes.load(Ordering::SeqCst), 0);
+    client.shutdown(Duration::from_secs(1)).await.unwrap();
+}
+
+/// A pairing whose grant lapsed while it was offline is renewed on its own, so
+/// the reconnect that follows presents a usable grant instead of a lapsed one.
+///
+/// This is the shape measured 2026-11-03: the offline peer's grant lapsed at
+/// 08:04:12, the reconnect one second later was refused with
+/// `Authorization Violation`, and the mint the refusal triggered a second after
+/// that was the first usable grant. Renewal must happen before the attempt, and
+/// it must not connect anything to do it.
+#[tokio::test]
+async fn a_lapsed_grant_of_an_offline_host_is_renewed_without_connecting() {
+    let host = Arc::new(MemoryHost::default());
+    host.upsert(creds()).unwrap();
+    let client = Client::new(host.clone());
+    // The production precondition: this process has served a host before, which
+    // is what the offline pass is gated on. A real connection cannot be made in
+    // this fixture, so the flag is set directly.
+    client.inner.state.lock().await.ever_connected = true;
+
+    let pass = client.clone();
+    let pending = tokio::spawn(async move { pass.renew_lapsed_offline_grants().await });
+    tokio::time::timeout(Duration::from_secs(5), host.entered.notified())
+        .await
+        .expect("the lapsed grant was asked for a mint");
+    // Renewing an offline pairing is a credential exchange, not a connection.
+    assert!(
+        client
+            .list()
+            .await
+            .unwrap()
+            .iter()
+            .all(|peer| !peer.connected),
+        "nothing may be connected by a renewal"
+    );
+    host.release.notify_one();
+    tokio::time::timeout(Duration::from_secs(5), pending)
+        .await
+        .expect("the renewal finished")
+        .unwrap();
+
+    let stored = host.load().unwrap();
+    assert_eq!(stored.peers[0].creds.user_jwt, "new-token-fixture");
+    assert!(
+        stored.peers[0].creds.jwt_expires_at > client.now_secs(),
+        "the stored grant must no longer be lapsed"
+    );
+    // Idempotent: the grant is fresh now, so the next tick asks for nothing.
+    client.renew_lapsed_offline_grants().await;
+    assert_eq!(host.refreshes.load(Ordering::SeqCst), 1);
+    client.shutdown(Duration::from_secs(1)).await.unwrap();
 }
 
 struct Dropped(Arc<AtomicBool>);

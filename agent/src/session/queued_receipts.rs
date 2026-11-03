@@ -12,7 +12,7 @@ impl Manager {
         request: &str,
     ) -> Result<Option<(String, i64, String)>> {
         let (session, request) = (session.to_owned(), request.to_owned());
-        self.storage()?.db.call(move |db| {
+        self.storage()?.db.fence(move |db| {
             let session=super::identity::BoundIdentity::session(db,&session)?;
             Ok(db.query_row("SELECT run_id,run_sequence,fingerprint FROM queued_run_receipts WHERE session_id=?1 AND client_request_id=?2",params![session,request],|row|Ok((row.get::<_,super::identity::BoundIdentity>(0)?.to_string(),row.get(1)?,row.get(2)?))).optional()?)
         })
@@ -20,7 +20,7 @@ impl Manager {
 
     pub(crate) fn has_queued_receipt_run(&self, session: &str, run: &str) -> Result<bool> {
         let (session, run) = (session.to_owned(), run.to_owned());
-        self.storage()?.db.call(move |db| {
+        self.storage()?.db.fence(move |db| {
             let run=super::identity::BoundIdentity::run(db,&session,&run)?;
             let session=super::identity::BoundIdentity::session(db,&session)?;
             Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM queued_run_receipts WHERE session_id=?1 AND run_id=?2)",params![session,run],|row|row.get(0))?)

@@ -193,22 +193,9 @@ pub(crate) fn cmd_list_sessions(state: &AppState, cmd: &RpcCommand, id: &str) ->
     // Scope by the caller's cwd when provided (empty = all sessions).
     let cwd_filter = cmd.cwd.trim().to_string();
 
-    // Snapshot streaming flags of live sessions.  Collect within a single
-    // outer read guard — safe because we only acquire inner read locks, and
-    // ParkingLot RwLock allows concurrent reads.
-    let active_flags: std::collections::HashMap<String, bool> = {
-        let active = state.sessions.read();
-        active
-            .iter()
-            .map(|(sid, sess)| {
-                let streaming = sess
-                    .read()
-                    .is_streaming
-                    .load(std::sync::atomic::Ordering::Relaxed);
-                (sid.clone(), streaming)
-            })
-            .collect()
-    };
+    // Flags have their own short-lived registry lock. A command waiting for
+    // SQLite may hold ServerSession's write lock for seconds.
+    let active_flags = state.control_plane.streaming_snapshot();
 
     // One canonical contract shared by every client.
     let fusion_children = crate::fusion::child_sessions();
@@ -268,16 +255,13 @@ pub(crate) fn cmd_list_session_ids(state: &AppState, id: &str) -> String {
 /// that isn't in the map can't be streaming (runs are always started through
 /// a hydrated ServerSession), so this is the exact set of active runs.
 pub(crate) fn cmd_list_streaming_sessions(state: &AppState, id: &str) -> String {
+    let flags = state.control_plane.streaming_snapshot();
     let ids: Vec<String> = state
         .sessions
         .read()
-        .iter()
-        .filter(|(_, sess)| {
-            sess.read()
-                .is_streaming
-                .load(std::sync::atomic::Ordering::Relaxed)
-        })
-        .map(|(sid, _)| sid.clone())
+        .keys()
+        .filter(|id| flags.get(*id).copied().unwrap_or(false))
+        .cloned()
         .collect();
     RpcResponse::ok(
         id,
@@ -710,6 +694,8 @@ pub(crate) fn cmd_get_commands(id: &str) -> String {
 }
 
 pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
+    let creation_started = std::time::Instant::now();
+    let mut stage_started = creation_started;
     // Create a new session with shared agent_loop, preserving model/thinking
     // Use TUI-provided cwd if available, otherwise default workspace.
     // Trim trailing whitespace / separators so the saved cwd doesn't
@@ -768,6 +754,13 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
         }
     };
     let is_new = existing_entries.is_none();
+    tracing::debug!(
+        event = "new_session_stage",
+        stage = "inspect_storage",
+        session_id = new_session_id,
+        elapsed_ms = stage_started.elapsed().as_millis() as u64
+    );
+    stage_started = std::time::Instant::now();
 
     let mut new_sess = ServerSession::new_with_queue_budget(
         new_session_id.clone(),
@@ -779,6 +772,13 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
         state.model_registry.clone(),
         state.queue_budget.clone(),
     );
+    tracing::debug!(
+        event = "new_session_stage",
+        stage = "bind_journal",
+        session_id = new_session_id,
+        elapsed_ms = stage_started.elapsed().as_millis() as u64
+    );
+    stage_started = std::time::Instant::now();
     // Resolve the default model from the cached registry (not inherited from
     // the active session) so that CLI one-shot runs always start from the
     // preferred default.  GUI/TUI explicitly set model_id on the command,
@@ -789,9 +789,8 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
     // identity-only client that resolves the authoritative provider/model
     // snapshot for each request. A bare `loop_.model = bare_id` would retain
     // the template's static startup client.
-    if let Err(e) = new_sess.set_model(&default_model.clone()) {
-        tracing::warn!("[new_session] could not sync model to fresh loop: {e}");
-    }
+    // Install the dynamic client once, after command/disk overrides below.
+    new_sess.model = default_model;
     // Start new sessions at the product default thinking level, NOT at some
     // remembered preference: `DEFAULT_THINKING_LEVEL` is `"default"`, i.e. send
     // no thinking/effort parameter and let the provider decide. Clients that
@@ -921,6 +920,13 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
         tracing::warn!("[new_session] could not sync agent loop model: {e}");
     }
 
+    tracing::debug!(
+        event = "new_session_stage",
+        stage = "configure",
+        session_id = new_session_id,
+        elapsed_ms = stage_started.elapsed().as_millis() as u64
+    );
+    stage_started = std::time::Instant::now();
     // Commit a new session before announcing it or returning its identity.
     // Journal binding only reserves a revision=-1 row; clients verify the
     // durable catalogue before the first prompt, so waiting until that prompt
@@ -962,9 +968,20 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
         }
     }
 
+    tracing::debug!(
+        event = "new_session_stage",
+        stage = "persist",
+        session_id = new_session_id,
+        elapsed_ms = stage_started.elapsed().as_millis() as u64
+    );
     // Add to sessions map only after durable creation succeeds.
     let new_id = state.create_session(new_sess);
 
+    tracing::debug!(
+        event = "new_session_completed",
+        session_id = new_id,
+        elapsed_ms = creation_started.elapsed().as_millis() as u64
+    );
     RpcResponse::ok(id, "new_session", serde_json::json!({"sessionId": new_id}))
 }
 
