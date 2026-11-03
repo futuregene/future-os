@@ -627,7 +627,11 @@ function handlePresence(
     return;
 
   // Authenticate/refresh the gate from the handshake epoch carried in presence.
-  const gate = ensureGate(desktopId, epoch);
+  // It is the same gate the accepted snapshots write (`handleCatalog`), which is
+  // what lets the comparison below see what this client actually applied; a
+  // ledger of its own could only ever hold the last revision *healed*, so the
+  // first snapshot would look lost forever.
+  const gate = gateFor(gates, desktopId, epoch);
 
   const checkDomain = (domain: string, key: string) => {
     const value = readNumber(catalogVersion, key);
@@ -702,8 +706,13 @@ function handleCatalog(
     gates.set(desktopId, gate);
   }
 
-  // Domain must match the authenticated epoch.
-  if (!gate.accept(domain === "sessions_activity" ? "sessions" : domain, version))
+  // Every packet about conversations advances the *sessions* revision: the
+  // host's version counter is per domain, so a delta or an activity packet
+  // reported under its own bucket would leave `sessions` behind and the next
+  // heartbeat — which names the sessions revision — would read the whole list
+  // to "heal" a snapshot that already arrived in pieces.
+  const bucket = domain === "workspaces" ? "workspaces" : "sessions";
+  if (!gate.accept(bucket, version))
     return;
 
   if (domain === "sessions_activity") {
@@ -802,8 +811,7 @@ function handleCatalog(
   });
 }
 
-function ensureGate(desktopId: string, epoch: string): CatalogVersionGate {
-  const gates = ensureGates();
+function gateFor(gates: Map<string, CatalogVersionGate>, desktopId: string, epoch: string): CatalogVersionGate {
   let gate = gates.get(desktopId);
   if (!gate) {
     gate = new CatalogVersionGate();
@@ -811,14 +819,6 @@ function ensureGate(desktopId: string, epoch: string): CatalogVersionGate {
   }
   gate.authenticate(epoch);
   return gate;
-}
-
-let globalGates: Map<string, CatalogVersionGate> | undefined;
-
-function ensureGates(): Map<string, CatalogVersionGate> {
-  if (!globalGates)
-    globalGates = new Map();
-  return globalGates;
 }
 
 /**
