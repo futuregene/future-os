@@ -24,9 +24,11 @@ import { SettingsRow } from "./SettingsPrimitives";
  * open grid applies it at once, which is why the grid stays open afterwards
  * (nobody compares themes one reopening at a time).
  *
- * The component owns its whole row, because the row's *shape* follows the state:
- * beside the label while collapsed (a compact control, like a Select) and below
- * it once expanded (a grid as wide as the column).
+ * The button that opens and closes the catalogue stays in the row's control
+ * column in **both** states: top right, level with the description, which is
+ * where every other setting in this list keeps its control. Below the grid it
+ * would be a control nobody looks for, and it would move every time the grid
+ * grew.
  *
  * Each preview carries its own `data-palette`, which is why the palette rules in
  * `styles/globals.css` match a nested preview element as well as the root: the
@@ -39,61 +41,64 @@ export function ThemePalettePicker() {
   const active = useThemePalette();
   const [expanded, setExpanded] = useState(false);
 
-  const toggle = (
-    <Button
-      aria-expanded={expanded}
-      onClick={() => setExpanded(value => !value)}
-      size="sm"
-      variant="secondary"
-    >
+  // Collapsed, the control column holds the value as well as the way out of it;
+  // expanded, the grid below *is* the value, so only the button stays up here.
+  const controls = (
+    <div className="flex items-center gap-3">
       {expanded
-        ? t("theme.collapse")
-        : t("theme.showAll", { count: THEME_PALETTES.length })}
-    </Button>
+        ? null
+        : (
+            <span className="flex items-center gap-2" title={t(`theme.palettes.${active}.description`)}>
+              <span data-palette={active}>
+                <PaletteSwatch />
+              </span>
+              <span className="text-sm text-ink">{t(`theme.palettes.${active}.name`)}</span>
+            </span>
+          )}
+      <Button
+        aria-expanded={expanded}
+        onClick={() => setExpanded(value => !value)}
+        size="sm"
+        variant="secondary"
+      >
+        {expanded
+          ? t("theme.collapse")
+          : t("theme.showAll", { count: THEME_PALETTES.length })}
+      </Button>
+    </div>
   );
 
   return (
-    <SettingsRow
-      description={t("theme.description")}
-      stacked={expanded}
-      title={t("theme.title")}
-    >
+    // One child of the settings list, so the list's between-rows border never
+    // lands between the row and its own grid.
+    <div>
+      <SettingsRow
+        description={t("theme.description")}
+        title={t("theme.title")}
+      >
+        {controls}
+      </SettingsRow>
       {expanded
         ? (
-            <div className="flex w-full flex-col gap-2.5">
-              <div
-                aria-label={t("theme.title")}
-                className="grid w-full grid-cols-3 gap-2.5"
-                role="radiogroup"
-              >
-                {THEME_PALETTES.map(palette => (
-                  <PaletteCard
-                    active={active === palette}
-                    key={palette}
-                    label={t(`theme.palettes.${palette}.name`)}
-                    onSelect={() => setThemePalette(palette)}
-                    description={t(`theme.palettes.${palette}.description`)}
-                    palette={palette}
-                  />
-                ))}
-              </div>
-              {toggle}
+            <div
+              aria-label={t("theme.title")}
+              className="grid grid-cols-3 gap-2.5 pb-3.5"
+              role="radiogroup"
+            >
+              {THEME_PALETTES.map(palette => (
+                <PaletteCard
+                  active={active === palette}
+                  key={palette}
+                  label={t(`theme.palettes.${palette}.name`)}
+                  onSelect={() => setThemePalette(palette)}
+                  description={t(`theme.palettes.${palette}.description`)}
+                  palette={palette}
+                />
+              ))}
             </div>
           )
-        : (
-            <div className="flex items-center gap-3">
-              {/* The active palette, as the swatch the row reads at a glance —
-                  the value of this setting, next to the way out of it. */}
-              <span className="flex items-center gap-2" title={t(`theme.palettes.${active}.description`)}>
-                <span data-palette={active}>
-                  <PaletteSwatch />
-                </span>
-                <span className="text-sm text-ink">{t(`theme.palettes.${active}.name`)}</span>
-              </span>
-              {toggle}
-            </div>
-          )}
-    </SettingsRow>
+        : null}
+    </div>
   );
 }
 

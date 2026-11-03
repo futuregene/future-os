@@ -181,6 +181,28 @@ describe("generalPage color theme picker", () => {
     expect(toggle(container).textContent).toBe("Show all 14 color themes");
   });
 
+  it("keeps the toggle in the row's control column, above the grid", () => {
+    const { container } = mount();
+    const row = toggle(container).closest("[role=radiogroup]") ?? null;
+
+    // Collapsed: the control sits in the row, and no grid exists yet.
+    expect(row).toBeNull();
+    expect(toggle(container).closest("div[class*='py-3.5']")).not.toBeNull();
+
+    expand(container);
+
+    // Expanded: still in the row (not under the grid), and the grid follows it.
+    const rowAfter = toggle(container).closest("div[class*='py-3.5']");
+    expect(rowAfter).not.toBeNull();
+    expect(toggle(container).closest("[role=radiogroup]")).toBeNull();
+
+    const grid = container.querySelector("[role=radiogroup]")!;
+    expect(rowAfter!.compareDocumentPosition(grid) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The grid is a sibling of the row, so the list's row divider does not cut
+    // the row off from its own grid.
+    expect(grid.parentElement).toBe(rowAfter!.parentElement);
+  });
+
   it("offers every palette as a named radio, with the active one checked", () => {
     const { container } = mount();
 
