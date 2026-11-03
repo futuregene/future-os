@@ -32,8 +32,29 @@ use crate::theme::{
 };
 use crate::tui::{Component, RESET};
 use crate::utils::{
-    apply_background_to_line, strip_ansi_codes, visible_width, wrap_text_with_ansi,
+    apply_background_to_line, grapheme_width, strip_ansi_codes, visible_width, wrap_text_with_ansi,
 };
+use unicode_segmentation::UnicodeSegmentation;
+
+/// The widest single grapheme in `text`, in cells: the narrowest column that can
+/// hold `text` without laying a glyph over the column border.
+fn widest_glyph_width(text: &str) -> usize {
+    text.graphemes(true).map(grapheme_width).max().unwrap_or(1)
+}
+
+/// A table that cannot be drawn at this width (too narrow for its columns, or
+/// for the glyphs they hold) renders as its raw markdown source instead.
+fn raw_table_fallback(raw: &str, available_width: usize, next_type: Option<&str>) -> Vec<String> {
+    let mut fallback = if !raw.is_empty() {
+        wrap_text_with_ansi(raw, available_width)
+    } else {
+        Vec::new()
+    };
+    if next_type.is_some() && next_type != Some("space") {
+        fallback.push(String::new());
+    }
+    fallback
+}
 
 // ─── Token tree (marked-shaped) ────────────────────────────────────────────
 
@@ -1733,15 +1754,7 @@ impl MarkdownRenderer {
         let avail_for_cells = available_width as isize - border_overhead as isize;
         if avail_for_cells < num_cols as isize {
             // Too narrow — fall back to raw text.
-            let mut fallback = if !raw.is_empty() {
-                wrap_text_with_ansi(raw, available_width)
-            } else {
-                Vec::new()
-            };
-            if next_type.is_some() && next_type != Some("space") {
-                fallback.push(String::new());
-            }
-            return fallback;
+            return raw_table_fallback(raw, available_width, next_type);
         }
 
         // Gather cell text.
@@ -1791,17 +1804,36 @@ impl MarkdownRenderer {
             }
         }
 
+        // A column must be at least as wide as the widest glyph it holds: a
+        // 2-cell glyph laid out in a 1-cell column is emitted over the border,
+        // which makes the composed row one cell wider than the frame, and
+        // `render_impl`'s outer wrap then tears the row in two. When the floors
+        // themselves do not fit, the table cannot be drawn at this width.
+        let glyph_floors: Vec<usize> = (0..num_cols)
+            .map(|i| {
+                std::iter::once(&header_texts[i])
+                    .chain(row_texts.iter().filter_map(|r| r.get(i)))
+                    .map(|t| widest_glyph_width(&strip_ansi_codes(t)))
+                    .max()
+                    .unwrap_or(1)
+            })
+            .collect();
+        let floor_total: usize = glyph_floors.iter().sum();
+        if floor_total as isize > avail_for_cells {
+            return raw_table_fallback(raw, available_width, next_type);
+        }
+
         // Ensure min word widths don't exceed available.
         let mut min_col_widths = min_word_widths.clone();
         let mut min_total: usize = min_col_widths.iter().sum();
 
         if min_total as isize > avail_for_cells {
-            // Shrink to fit.
-            min_col_widths = vec![1; num_cols];
-            let remaining = avail_for_cells - num_cols as isize;
+            // Shrink to fit, but never below a column's widest glyph.
+            min_col_widths = glyph_floors.clone();
+            let remaining = avail_for_cells - floor_total as isize;
             if remaining > 0 {
                 // total_weight is always > 0 here: min_total > avail ≥
-                // num_cols ⇒ Σ(w-1) = min_total - num_cols > 0.
+                // Σ floors ≥ num_cols ⇒ Σ(w-1) = min_total - num_cols > 0.
                 let total_weight = min_word_widths
                     .iter()
                     .map(|w| w.saturating_sub(1))
@@ -1813,11 +1845,13 @@ impl MarkdownRenderer {
                         (weight as f64 / total_weight as f64 * remaining as f64).floor() as usize;
                     min_col_widths[i] += add;
                 }
-                let allocated: usize = min_col_widths.iter().sum();
-                // JS distributes `leftover = remaining - allocated` one cell
-                // at a time; here it is always ≤ 0 (each floor loses < 1, so
-                // Σadd > remaining - num_cols), making the loop a no-op.
-                debug_assert!(remaining - allocated as isize <= 0);
+                let added: usize = min_col_widths.iter().sum::<usize>() - floor_total;
+                // JS then hands out `leftover = remaining - Σadd` one cell at
+                // a time; each floor loses < 1 cell, so Σadd > remaining -
+                // num_cols and the leftover is smaller than one cell per
+                // column — it is left for the grow branch below, exactly as it
+                // was before the glyph floors.
+                debug_assert!(added as isize > remaining - num_cols as isize);
             }
             min_total = min_col_widths.iter().sum();
         }
@@ -2433,6 +2467,57 @@ mod tests {
         let joined = lines.join("\n");
         assert!(joined.contains("wraps"));
         assert!(lines.iter().all(|l| visible_width(l) <= 20));
+    }
+
+    /// A cell display column for every `│` in a rendered table row.
+    fn border_columns(line: &str) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut col = 0usize;
+        for g in line.graphemes(true) {
+            if g == "│" {
+                out.push(col);
+            }
+            col += grapheme_width(g);
+        }
+        out
+    }
+
+    /// A table squeezed narrow enough to hand every column one cell, one of
+    /// those columns holding a double-width CJK glyph: the composed row used to
+    /// be one cell too wide, so `render_impl`'s outer wrap tore the row in two
+    /// (its right border landed on a line of its own) and every row below it
+    /// shifted a column.
+    #[test]
+    fn table_with_a_cjk_cell_in_a_squeezed_column_never_tears() {
+        let md =
+            "| c0 | c1 | c2 |\n|---|---|---|\n| 中文 | ok | ok |\n| pending | pending | pending |";
+        for width in 12..=40 {
+            let lines = plain(md, width);
+            let joined = lines.join("\n");
+            assert!(
+                joined.contains('中') && joined.contains('文'),
+                "width {width}: the CJK cell was dropped from the output:\n{joined}"
+            );
+            let mut reference: Option<Vec<usize>> = None;
+            for line in &lines {
+                assert!(
+                    visible_width(line) <= width,
+                    "width {width}: a line is {} cells: {line:?}\n{joined}",
+                    visible_width(line)
+                );
+                if !line.starts_with('│') {
+                    continue;
+                }
+                let cols = border_columns(line);
+                match &reference {
+                    None => reference = Some(cols),
+                    Some(r) => assert_eq!(
+                        &cols, r,
+                        "width {width}: a table row's borders moved: {line:?}\n{joined}"
+                    ),
+                }
+            }
+        }
     }
 
     #[test]
