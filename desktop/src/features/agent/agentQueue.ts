@@ -33,7 +33,57 @@ export interface AgentQueueRow {
 interface QueueSnapshot {
   activeRunId: string | null;
   queued: AgentQueueRow[];
-  recentTerminalAcks: { runId: string; state: string; reason: string }[];
+  recentTerminalAcks: QueueAck[];
+}
+
+/**
+ * What became of a row that left the queue without running.
+ *
+ * The Agent reports those with the queue itself (`recentTerminalAcks`): folded
+ * into the turn ahead (`merged`), taken back by a reader (`cancelled`), replaced
+ * by a send that names `supersede_session` (`superseded`), or gone with a deleted
+ * conversation (`session_deleted`). Reading only the waiting rows lets one
+ * disappear with nobody told.
+ */
+export interface QueueAck {
+  runId: string;
+  state: string;
+  reason: string;
+}
+
+/** The queue of one conversation: what waits, and what just left it. */
+export interface AgentQueueSnapshot {
+  rows: AgentQueueRow[];
+  acks: QueueAck[];
+}
+
+/** One sentence about a row that will not run, for the composer to show. */
+export interface AgentQueueNotice {
+  reason: string;
+  count: number;
+}
+
+/**
+ * How long a notice stays on screen.
+ *
+ * The acks stay in the Agent's window, so a notice left alone would repeat itself
+ * on every read. It is news, not state: it says its piece once and goes.
+ */
+export const QUEUE_NOTICE_MS = 12_000;
+
+/** The i18n suffix a reason is drawn as, or `other` for one with no sentence yet. */
+export function agentQueueNoticeReason(
+  reason: string,
+): "merged" | "cancelled" | "superseded" | "session_deleted" | "other" {
+  switch (reason) {
+    case "merged":
+    case "cancelled":
+    case "superseded":
+    case "session_deleted":
+      return reason;
+    default:
+      return "other";
+  }
 }
 
 /** Whether a row is parked rather than about to run by itself. */
@@ -56,13 +106,33 @@ function asRow(raw: unknown): AgentQueueRow | null {
   };
 }
 
-/** The rows waiting in this conversation's queue on the Agent. */
-export async function fetchAgentQueue(threadId: string): Promise<AgentQueueRow[]> {
+/** One ack as `session_queue` reports it, or null when it cannot be explained. */
+function asAck(raw: unknown): QueueAck | null {
+  if (!raw || typeof raw !== "object")
+    return null;
+  const ack = raw as Record<string, unknown>;
+  // An ack with no run id or reason cannot be explained, so it is not announced
+  // as "something happened".
+  if (typeof ack.runId !== "string" || !ack.runId)
+    return null;
+  if (typeof ack.reason !== "string" || !ack.reason)
+    return null;
+  return {
+    reason: ack.reason,
+    runId: ack.runId,
+    state: typeof ack.state === "string" && ack.state ? ack.state : "terminal",
+  };
+}
+
+/** The queue's rows and the reasons rows left it, as `session_queue` answers. */
+export async function fetchAgentQueue(threadId: string): Promise<AgentQueueSnapshot> {
   const snapshot = await invokeCommand<Partial<QueueSnapshot>>("session_queue", { threadId });
   const queued = Array.isArray(snapshot?.queued) ? snapshot.queued : [];
-  return queued
-    .map(asRow)
-    .filter((row): row is AgentQueueRow => row !== null);
+  const acks = Array.isArray(snapshot?.recentTerminalAcks) ? snapshot.recentTerminalAcks : [];
+  return {
+    acks: acks.map(asAck).filter((ack): ack is QueueAck => ack !== null),
+    rows: queued.map(asRow).filter((row): row is AgentQueueRow => row !== null),
+  };
 }
 
 /** Take one waiting message back out, before it leaves. */
@@ -87,8 +157,18 @@ const QUEUE_POLL_MS = 2000;
 
 export interface AgentQueueState {
   rows: AgentQueueRow[];
+  /** A row that left the queue without running, in one sentence; null when none has. */
+  notice: AgentQueueNotice | null;
   /** Re-read now (after a send, a removal, or a start). */
   refresh: () => void;
+  /**
+   * This window removed `runId` itself, so its ack is not news.
+   *
+   * A notice repeating the reader's own click reads as a fault; rows removed
+   * anywhere else — another client, the Agent folding a burst into one turn, a
+   * deleted conversation — are announced.
+   */
+  forget: (runId: string) => void;
 }
 
 /**
@@ -102,6 +182,7 @@ export interface AgentQueueState {
  */
 export function useAgentQueue(threadId: string | null, live: boolean): AgentQueueState {
   const [rows, setRows] = useState<AgentQueueRow[]>([]);
+  const [notice, setNotice] = useState<AgentQueueNotice | null>(null);
   const [revision, setRevision] = useState(0);
   // A late answer for a conversation this view already left must not land in the
   // next one's panel. Updated in an effect, not during render: the ref only has
@@ -111,21 +192,55 @@ export function useAgentQueue(threadId: string | null, live: boolean): AgentQueu
   useEffect(() => {
     threadRef.current = threadId;
   }, [threadId]);
+  // Acks already told, and acks this window caused itself: identity, not state.
+  const toldRef = useRef(new Set<string>());
+  const forgottenRef = useRef(new Set<string>());
+  // The conversation whose first answer has been read: the Agent's window holds
+  // acks from before this view existed, and those are not news.
+  const primedRef = useRef<string | null>(null);
   const polling = live || rows.length > 0;
 
   const refresh = useCallback(() => setRevision(value => value + 1), []);
+  const forget = useCallback((runId: string) => {
+    forgottenRef.current.add(runId);
+  }, []);
+
+  // A notice is news: it says its piece and goes.
+  useEffect(() => {
+    if (!notice)
+      return;
+    const timer = setTimeout(setNotice, QUEUE_NOTICE_MS, null);
+    return () => clearTimeout(timer);
+  }, [notice]);
 
   useEffect(() => {
     if (!threadId) {
       setRows([]);
+      setNotice(null);
       return;
     }
     let cancelled = false;
     const read = async () => {
       try {
         const next = await fetchAgentQueue(threadId);
-        if (!cancelled && threadRef.current === threadId)
-          setRows(next);
+        if (cancelled || threadRef.current !== threadId)
+          return;
+        setRows(next.rows);
+        const fresh = next.acks.filter(ack =>
+          !forgottenRef.current.has(ack.runId) && !toldRef.current.has(`${ack.runId}:${ack.reason}`));
+        for (const ack of next.acks)
+          toldRef.current.add(`${ack.runId}:${ack.reason}`);
+        if (primedRef.current !== threadId) {
+          primedRef.current = threadId;
+          setNotice(null);
+          return;
+        }
+        if (fresh.length > 0) {
+          setNotice({
+            count: fresh.length,
+            reason: fresh[fresh.length - 1]!.reason,
+          });
+        }
       }
       catch {
         // A queue that cannot be read is not an error to show: the panel simply
@@ -145,5 +260,5 @@ export function useAgentQueue(threadId: string | null, live: boolean): AgentQueu
     };
   }, [polling, revision, threadId]);
 
-  return { refresh, rows };
+  return { forget, notice, refresh, rows };
 }

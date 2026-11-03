@@ -39,6 +39,60 @@ export function isParkedSessionQueueRow(row: SessionQueueRow): boolean {
   return row.state.startsWith("stale");
 }
 
+/**
+ * What became of a row that left the queue without running.
+ *
+ * A row can go without this phone asking: the session folds a queued prompt into
+ * the turn ahead of it (`merged`), the reader takes it back (`cancelled`), a send
+ * that names `supersede_session` replaces it (`superseded`), or the conversation
+ * is deleted with it still waiting (`session_deleted`). The desktop reports each
+ * of those for a while after it happens. A screen that reads only the waiting
+ * rows sees one disappear and cannot tell a merge from a deletion, so the reader
+ * is left believing a message went out that never ran.
+ */
+export interface SessionQueueAck {
+  runId: string;
+  /** `terminal` for every ack the desktop keeps. */
+  state: string;
+  /** `merged` | `cancelled` | `superseded` | `session_deleted`, or anything new. */
+  reason: string;
+}
+
+/** The queue of one conversation as the desktop reports it. */
+export interface SessionQueueSnapshot {
+  rows: SessionQueueRow[];
+  acks: SessionQueueAck[];
+}
+
+/** One sentence about a row that will not run, for the panel to show. */
+export interface SessionQueueNotice {
+  reason: string;
+  count: number;
+}
+
+/**
+ * How long a notice stays on screen.
+ *
+ * The acks stay in the desktop's window, so a notice left alone would repeat
+ * itself on every read. It is news, not state: it says its piece once and goes.
+ */
+export const QUEUE_NOTICE_MS = 12_000;
+
+/** The i18n suffix a reason is drawn as, or `other` for one with no sentence yet. */
+export function sessionQueueNoticeReason(
+  reason: string,
+): "merged" | "cancelled" | "superseded" | "session_deleted" | "other" {
+  switch (reason) {
+    case "merged":
+    case "cancelled":
+    case "superseded":
+    case "session_deleted":
+      return reason;
+    default:
+      return "other";
+  }
+}
+
 function asRow(raw: unknown): SessionQueueRow | null {
   if (!raw || typeof raw !== "object")
     return null;
@@ -55,7 +109,8 @@ function asRow(raw: unknown): SessionQueueRow | null {
 }
 
 /**
- * The rows waiting in this conversation's queue on the desktop.
+ * The rows waiting in this conversation's queue on the desktop, and the reasons
+ * rows left it.
  *
  * An empty session id (a draft that has not been sent yet) has no queue on the
  * desktop, and asking about one would answer for "whatever the desktop calls
@@ -64,19 +119,41 @@ function asRow(raw: unknown): SessionQueueRow | null {
 export async function fetchSessionQueue(
   client: RemoteClient,
   sessionId: string,
-): Promise<SessionQueueRow[]> {
+): Promise<SessionQueueSnapshot> {
   if (!sessionId.trim())
-    return [];
-  const reply = await client.requestRetry<{ queued?: unknown }>(
+    return { acks: [], rows: [] };
+  const reply = await client.requestRetry<{ queued?: unknown; recentTerminalAcks?: unknown }>(
     { type: "get_queue", sessionId },
     sessionId,
   );
   const queued = reply.data?.queued;
-  if (!Array.isArray(queued))
-    return [];
-  return queued
-    .map(asRow)
-    .filter((row): row is SessionQueueRow => row !== null);
+  const acks = reply.data?.recentTerminalAcks;
+  return {
+    acks: Array.isArray(acks)
+      ? acks.map(asAck).filter((ack): ack is SessionQueueAck => ack !== null)
+      : [],
+    rows: Array.isArray(queued)
+      ? queued.map(asRow).filter((row): row is SessionQueueRow => row !== null)
+      : [],
+  };
+}
+
+/** One ack as the desktop reports it, or null when it cannot be explained. */
+function asAck(raw: unknown): SessionQueueAck | null {
+  if (!raw || typeof raw !== "object")
+    return null;
+  const ack = raw as Record<string, unknown>;
+  // An ack with no run id or no reason cannot be told to the reader, so it is
+  // not announced as "something happened".
+  if (typeof ack.runId !== "string" || !ack.runId)
+    return null;
+  if (typeof ack.reason !== "string" || !ack.reason)
+    return null;
+  return {
+    reason: ack.reason,
+    runId: ack.runId,
+    state: typeof ack.state === "string" && ack.state ? ack.state : "terminal",
+  };
 }
 
 /** Take one waiting message back out, before it leaves. */
@@ -129,11 +206,11 @@ function sameRows(left: readonly SessionQueueRow[], right: readonly SessionQueue
 
 export interface SessionQueueViewOptions {
   /**
-   * Read this conversation's rows from the desktop (the context's `getQueue`).
-   * Held in a ref: it is re-read on every poll, and a caller that rebuilds the
-   * function each render must not restart the timer.
+   * Read this conversation's rows (and what recently left it) from the desktop
+   * (the context's `getQueue`). Held in a ref: it is re-read on every poll, and a
+   * caller that rebuilds the function each render must not restart the timer.
    */
-  read: () => Promise<SessionQueueRow[]>;
+  read: () => Promise<SessionQueueSnapshot>;
   /** The conversation whose queue this is. Empty means "no conversation". */
   sessionId: string;
   /** A run is in flight or a send is on its way: worth reading again. */
@@ -144,8 +221,19 @@ export interface SessionQueueViewOptions {
 
 export interface SessionQueueView {
   rows: SessionQueueRow[];
+  /** A row that left the queue without running, in one sentence; null when none has. */
+  notice: SessionQueueNotice | null;
   /** Re-read now: after a cancel, a release, or a send. */
   refresh: () => void;
+  /**
+   * This screen removed `runId` itself, so its ack is not news.
+   *
+   * The bin is here: a notice that repeats the reader's own tap would read as a
+   * fault. Rows removed anywhere else — the desktop's window, another phone, the
+   * session folding a burst into one turn, a deleted conversation — are
+   * announced.
+   */
+  forget: (runId: string) => void;
 }
 
 /**
@@ -165,6 +253,7 @@ export function useSessionQueue({
     rows: [],
     sessionId: "",
   });
+  const [notice, setNotice] = useState<SessionQueueNotice | null>(null);
   const [revision, setRevision] = useState(0);
   const readRef = useRef(read);
   useEffect(() => {
@@ -175,9 +264,27 @@ export function useSessionQueue({
   // update at all: a 2 s poll of a queue that is not moving must not re-render
   // the screen (and a phone that is only watching costs nothing).
   const latestRef = useRef(state);
+  // Acks already told, and acks this screen caused itself: identity, not state.
+  const toldRef = useRef(new Set<string>());
+  const forgottenRef = useRef(new Set<string>());
+  // The conversation whose first answer has been read: the desktop's window
+  // holds acks from before this screen opened, and those are not news.
+  const primedRef = useRef<string | null>(null);
   const rows = state.sessionId === sessionId ? state.rows : [];
   const polling = enabled && !!sessionId && (live || rows.length > 0);
   const refresh = useCallback(() => setRevision(value => value + 1), []);
+  const forget = useCallback((runId: string) => {
+    forgottenRef.current.add(runId);
+  }, []);
+
+  // A notice is news: it says its piece and goes, so an ack still inside the
+  // desktop's window cannot keep the sentence on screen.
+  useEffect(() => {
+    if (!notice)
+      return;
+    const timer = setTimeout(() => setNotice(null), QUEUE_NOTICE_MS);
+    return () => clearTimeout(timer);
+  }, [notice]);
 
   const readOnce = useCallback(async () => {
     try {
@@ -185,11 +292,27 @@ export function useSessionQueue({
       // Kept with the session it was read for, so a read that lands after the
       // reader moved on cannot draw the previous queue under this composer.
       const current = latestRef.current;
-      if (current.sessionId === sessionId && sameRows(current.rows, next))
+      if (current.sessionId !== sessionId || !sameRows(current.rows, next.rows)) {
+        const updated = { rows: next.rows, sessionId };
+        latestRef.current = updated;
+        setState(updated);
+      }
+      const fresh = next.acks.filter(ack =>
+        !forgottenRef.current.has(ack.runId) && !toldRef.current.has(`${ack.runId}:${ack.reason}`));
+      for (const ack of next.acks)
+        toldRef.current.add(`${ack.runId}:${ack.reason}`);
+      if (primedRef.current !== sessionId) {
+        // Everything in the desktop's window belongs to before this screen.
+        primedRef.current = sessionId;
+        setNotice(null);
         return;
-      const updated = { rows: next, sessionId };
-      latestRef.current = updated;
-      setState(updated);
+      }
+      if (fresh.length > 0) {
+        setNotice({
+          count: fresh.length,
+          reason: fresh[fresh.length - 1]!.reason,
+        });
+      }
     }
     catch {
       // A queue that cannot be read is not an error to show: the panel keeps
@@ -213,5 +336,5 @@ export function useSessionQueue({
     return () => clearInterval(timer);
   }, [enabled, polling, readOnce, sessionId]);
 
-  return { refresh, rows };
+  return { forget, notice, refresh, rows };
 }

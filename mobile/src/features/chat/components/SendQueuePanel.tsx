@@ -15,7 +15,14 @@ export interface SendQueuePanelItem {
   id: string;
   /** The text as the session holds it (empty for an attachment-only message). */
   content: string;
-  /** How many files travel with it, when the sender knows. */
+  /**
+   * How many files travel with it — `undefined` when the queue that holds the row
+   * does not report it.
+   *
+   * A row read back from the session carries a message's text and its acceptance
+   * time, never the uploads it was sent with, so there is no number to show; the
+   * absence is spelled as absence rather than as a zero nobody measured.
+   */
   attachmentCount?: number;
   /**
    * Parked by the session: it waited too long to run by itself and now starts
@@ -37,11 +44,19 @@ export interface SendQueuePanelItem {
  * new words" — there is no local record here to rename.
  */
 export function SendQueuePanel({
+  attachmentsUnreported,
   items,
   onRelease,
   onRemove,
   onUpdate,
 }: {
+  /**
+   * The queue behind these rows does not say which files a message carries, so
+   * an edit — a removal and a re-send, the only kind there is — sends the new
+   * text and leaves those files behind. Said in the editor, where the reader is
+   * about to make that trade.
+   */
+  attachmentsUnreported?: boolean;
   items: readonly SendQueuePanelItem[];
   /** Start a parked row now. Offered only when the session can park one. */
   onRelease?: (id: string) => void;
@@ -81,6 +96,9 @@ export function SendQueuePanel({
             {editing
               ? (
                   <View style={styles.editArea}>
+                    {attachmentsUnreported ? (
+                      <Text style={styles.editNote}>{t("chat.queue.editDropsFiles")}</Text>
+                    ) : null}
                     <TextInput
                       accessibilityLabel={t("chat.queue.editLabel")}
                       autoFocus
@@ -142,19 +160,25 @@ export function SendQueuePanel({
                           )
                         : null}
                     </View>
-                    <Pressable
-                      accessibilityLabel={t("chat.queue.edit")}
-                      accessibilityRole="button"
-                      hitSlop={8}
-                      onPress={() => {
-                        setEditingId(item.id);
-                        setEditingText(item.content);
-                      }}
-                      style={({ pressed }) => [styles.rowButton, pressed && styles.rowPressed]}
-                      testID="send-queue-edit"
-                    >
-                      <Pencil color={colors.inkMuted} size={14} />
-                    </Pressable>
+                    {/* Nothing to edit in a message that is only files: an empty
+                        save is a removal, and the bin beside it says so plainly. */}
+                    {item.content
+                      ? (
+                          <Pressable
+                            accessibilityLabel={t("chat.queue.edit")}
+                            accessibilityRole="button"
+                            hitSlop={8}
+                            onPress={() => {
+                              setEditingId(item.id);
+                              setEditingText(item.content);
+                            }}
+                            style={({ pressed }) => [styles.rowButton, pressed && styles.rowPressed]}
+                            testID="send-queue-edit"
+                          >
+                            <Pencil color={colors.inkMuted} size={14} />
+                          </Pressable>
+                        )
+                      : null}
                     <Pressable
                       accessibilityLabel={t("chat.queue.remove")}
                       accessibilityRole="button"
@@ -265,6 +289,11 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   },
   rowPressed: { opacity: 0.6 },
   editArea: { minWidth: 0, flex: 1, gap: spacing.xs },
+  editNote: {
+    color: theme.colors.inkMuted,
+    fontSize: theme.font(11),
+    lineHeight: theme.font(15),
+  },
   editField: {
     maxHeight: 120,
     paddingHorizontal: spacing.sm,

@@ -47,6 +47,53 @@ export interface RemoteQueueRow {
   state: string;
 }
 
+/**
+ * What became of a row that left the queue without running.
+ *
+ * A row can go without anyone in this window asking: the session folds a queued
+ * prompt into the turn ahead of it (`merged`), the reader takes it back
+ * (`cancelled`), a send that names `supersede_session` replaces it
+ * (`superseded`), or the conversation is deleted with it still waiting
+ * (`session_deleted`). The host reports each of those for a while after it
+ * happens. A client that reads only the waiting rows sees one disappear and
+ * cannot tell a merge from a deletion, so the reader is left believing a message
+ * went out that never ran — which is why these are read too.
+ */
+export interface RemoteQueueAck {
+  runId: string;
+  /** `terminal` for every ack the host keeps. */
+  state: string;
+  /** `merged` | `cancelled` | `superseded` | `session_deleted`, or anything the host adds next. */
+  reason: string;
+}
+
+/** The queue of one conversation on the host: what waits, and what just left it. */
+export interface RemoteQueueSnapshot {
+  rows: RemoteQueueRow[];
+  acks: RemoteQueueAck[];
+}
+
+/**
+ * One sentence about a row that will not run, for the panel to show.
+ *
+ * `count` is how many rows left the queue between two reads: a burst folded into
+ * one turn leaves several acks at once, and the reader needs the number as well
+ * as the reason.
+ */
+export interface RemoteQueueNotice {
+  reason: string;
+  count: number;
+}
+
+/**
+ * How long a notice stays on screen.
+ *
+ * The acks themselves stay in the host's window, so a notice left alone would
+ * repeat itself on every read. It is news, not state: it says its piece once and
+ * goes away.
+ */
+export const QUEUE_NOTICE_MS = 12_000;
+
 /** Whether a row is parked rather than about to run by itself. */
 export function isParkedRemoteQueueRow(row: RemoteQueueRow): boolean {
   return row.state.startsWith("stale");
@@ -67,6 +114,32 @@ function asRow(raw: unknown): RemoteQueueRow | null {
     text: typeof row.text === "string" ? row.text : "",
     state: typeof row.state === "string" && row.state ? row.state : "queued",
   };
+}
+
+function asAck(raw: unknown): RemoteQueueAck | null {
+  if (!raw || typeof raw !== "object")
+    return null;
+  const ack = raw as Record<string, unknown>;
+  // An ack with no run id or no reason cannot be explained to the reader, so it
+  // is not announced rather than announced as "something happened".
+  if (typeof ack.runId !== "string" || !ack.runId)
+    return null;
+  if (typeof ack.reason !== "string" || !ack.reason)
+    return null;
+  return {
+    reason: ack.reason,
+    runId: ack.runId,
+    state: typeof ack.state === "string" && ack.state ? ack.state : "terminal",
+  };
+}
+
+/** The terminal acks of a host's `get_queue` reply (`recentTerminalAcks`). */
+export function parseRemoteQueueAcks(raw: unknown): RemoteQueueAck[] {
+  if (!Array.isArray(raw))
+    return [];
+  return raw
+    .map(asAck)
+    .filter((ack): ack is RemoteQueueAck => ack !== null);
 }
 
 /** The waiting rows of a host's `get_queue` reply. */
@@ -93,13 +166,38 @@ export function parseRemoteQueueRows(raw: unknown): RemoteQueueRow[] {
 export async function getRemoteQueue(
   desktopId: string,
   sessionId: string,
-): Promise<RemoteQueueRow[]> {
+): Promise<RemoteQueueSnapshot> {
   const raw = await requestRemotePeer<Record<string, unknown> | null>(
     desktopId,
     { type: "get_queue", sessionId },
     sessionId,
   );
-  return parseRemoteQueueRows(raw?.queued);
+  return {
+    acks: parseRemoteQueueAcks(raw?.recentTerminalAcks),
+    rows: parseRemoteQueueRows(raw?.queued),
+  };
+}
+
+/**
+ * The i18n suffix a reason is drawn as, or `other` for one this client has no
+ * sentence for.
+ *
+ * A host that grows a new reason must not render a raw token at the reader, and
+ * must not be silently dropped either: `other` says the row left the queue and
+ * names the reason verbatim.
+ */
+export function remoteQueueNoticeReason(
+  reason: string,
+): "merged" | "cancelled" | "superseded" | "session_deleted" | "other" {
+  switch (reason) {
+    case "merged":
+    case "cancelled":
+    case "superseded":
+    case "session_deleted":
+      return reason;
+    default:
+      return "other";
+  }
 }
 
 /** Take one waiting message back out, on the host that holds it. */
@@ -138,8 +236,22 @@ const QUEUE_POLL_MS = 2000;
 
 export interface RemoteQueueState {
   rows: RemoteQueueRow[];
+  /**
+   * A row that left the queue without running, in one sentence — null when
+   * nothing has left since this view started watching.
+   */
+  notice: RemoteQueueNotice | null;
   /** Re-read now (after a send, a removal, an edit or a start). */
   refresh: () => void;
+  /**
+   * This window removed `runId` itself, so its ack is not news.
+   *
+   * The bin is here: a notice that repeats the reader's own click would read as
+   * a fault. Rows removed anywhere else — another device, the session folding a
+   * burst into one turn, a deleted conversation — are not forgotten and are
+   * announced.
+   */
+  forget: (runId: string) => void;
 }
 
 /**
@@ -161,6 +273,7 @@ export function useRemoteQueue(
   live: boolean,
 ): RemoteQueueState {
   const [rows, setRows] = useState<RemoteQueueRow[]>([]);
+  const [notice, setNotice] = useState<RemoteQueueNotice | null>(null);
   const [revision, setRevision] = useState(0);
   // The conversation the answer must belong to, updated in an effect: the ref
   // only has to be right by the time an answer arrives, and an answer always
@@ -169,15 +282,36 @@ export function useRemoteQueue(
   useEffect(() => {
     addressRef.current = `${desktopId}:${sessionId}`;
   }, [desktopId, sessionId]);
+  // Acks already told to the reader, and acks this window caused itself. Both
+  // are identity, not state: they only stop a sentence from repeating.
+  const toldRef = useRef(new Set<string>());
+  const forgottenRef = useRef(new Set<string>());
+  // The address whose first answer has been read. The host keeps a window of
+  // acks that predate this view ("something was merged before you opened this
+  // conversation"), and announcing those would be news about the past.
+  const primedRef = useRef<string | null>(null);
   const polling = live || rows.length > 0;
 
   const refresh = useCallback(() => setRevision(value => value + 1), []);
+  const forget = useCallback((runId: string) => {
+    forgottenRef.current.add(runId);
+  }, []);
+
+  // A notice is news: it says its piece and goes, so an ack that stays in the
+  // host's window cannot keep the sentence on screen.
+  useEffect(() => {
+    if (!notice)
+      return;
+    const timer = setTimeout(setNotice, QUEUE_NOTICE_MS, null);
+    return () => clearTimeout(timer);
+  }, [notice]);
 
   useEffect(() => {
     // A draft has no conversation on the host to hold a queue, so there is
     // nothing to ask about and nothing to show.
     if (!sessionId) {
       setRows([]);
+      setNotice(null);
       return;
     }
     const address = `${desktopId}:${sessionId}`;
@@ -185,8 +319,25 @@ export function useRemoteQueue(
     const read = async () => {
       try {
         const next = await getRemoteQueue(desktopId, sessionId);
-        if (!cancelled && addressRef.current === address)
-          setRows(next);
+        if (cancelled || addressRef.current !== address)
+          return;
+        setRows(next.rows);
+        const fresh = next.acks.filter(ack =>
+          !forgottenRef.current.has(ack.runId) && !toldRef.current.has(`${ack.runId}:${ack.reason}`));
+        for (const ack of next.acks)
+          toldRef.current.add(`${ack.runId}:${ack.reason}`);
+        if (primedRef.current !== address) {
+          // Everything in the window belongs to before this view opened.
+          primedRef.current = address;
+          setNotice(null);
+          return;
+        }
+        if (fresh.length > 0) {
+          setNotice({
+            count: fresh.length,
+            reason: fresh[fresh.length - 1]!.reason,
+          });
+        }
       }
       catch {
         // A queue that cannot be read is not an error to show: a link that is
@@ -207,5 +358,5 @@ export function useRemoteQueue(
     };
   }, [desktopId, polling, revision, sessionId]);
 
-  return { refresh, rows };
+  return { forget, notice, refresh, rows };
 }

@@ -4,10 +4,13 @@ import {
   cancelSessionQueuedRun,
   fetchSessionQueue,
   isParkedSessionQueueRow,
+  QUEUE_NOTICE_MS,
   QUEUE_POLL_MS,
   releaseSessionQueuedRun,
+  sessionQueueNoticeReason,
   useSessionQueue,
   type SessionQueueRow,
+  type SessionQueueSnapshot,
   type SessionQueueView,
 } from "../sessionQueue";
 import type { RemoteClient } from "../client";
@@ -28,7 +31,7 @@ describe("reading the session's queue", () => {
       ],
       recentTerminalAcks: [],
     });
-    const rows = await fetchSessionQueue(client, "session-1");
+    const { rows } = await fetchSessionQueue(client, "session-1");
     expect(client.requestRetry).toHaveBeenCalledWith(
       { sessionId: "session-1", type: "get_queue" },
       "session-1",
@@ -44,15 +47,48 @@ describe("reading the session's queue", () => {
   });
 
   test("a row without a run id is not a row, and a missing list is an empty queue", async () => {
-    expect(await fetchSessionQueue(clientFor({ queued: [{ text: "no id" }] }), "s")).toEqual([]);
-    expect(await fetchSessionQueue(clientFor({}), "s")).toEqual([]);
-    expect(await fetchSessionQueue(clientFor(null), "s")).toEqual([]);
+    expect((await fetchSessionQueue(clientFor({ queued: [{ text: "no id" }] }), "s")).rows).toEqual([]);
+    expect(await fetchSessionQueue(clientFor({}), "s")).toEqual({ acks: [], rows: [] });
+    expect(await fetchSessionQueue(clientFor(null), "s")).toEqual({ acks: [], rows: [] });
   });
 
   test("a draft with no session asks nothing at all", async () => {
     const client = clientFor({ queued: [] });
-    expect(await fetchSessionQueue(client, "  ")).toEqual([]);
+    expect(await fetchSessionQueue(client, "  ")).toEqual({ acks: [], rows: [] });
     expect(client.requestRetry).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The other half of the answer: rows that left the queue without running.
+   * Reading only `queued` is what let a cancelled or merged message disappear
+   * with nobody told.
+   */
+  test("reads why rows left the queue, and skips ones it cannot explain", async () => {
+    const client = clientFor({
+      queued: [],
+      recentTerminalAcks: [
+        { reason: "merged", runId: "run_a", state: "terminal" },
+        { reason: "session_deleted", runId: "run_b", state: "terminal" },
+        { reason: "", runId: "run_c", state: "terminal" },
+        { reason: "cancelled", state: "terminal" },
+      ],
+    });
+
+    const { acks } = await fetchSessionQueue(client, "session-1");
+
+    expect(acks).toEqual([
+      { reason: "merged", runId: "run_a", state: "terminal" },
+      { reason: "session_deleted", runId: "run_b", state: "terminal" },
+    ]);
+  });
+
+  /** A reason this phone has no sentence for is named, not dropped or invented. */
+  test("maps a reason to its sentence, and an unknown one to the catch-all", () => {
+    expect(sessionQueueNoticeReason("merged")).toBe("merged");
+    expect(sessionQueueNoticeReason("cancelled")).toBe("cancelled");
+    expect(sessionQueueNoticeReason("superseded")).toBe("superseded");
+    expect(sessionQueueNoticeReason("session_deleted")).toBe("session_deleted");
+    expect(sessionQueueNoticeReason("something_new")).toBe("other");
   });
 
   test("a parked row is the one that waits for a person", () => {
@@ -93,7 +129,7 @@ describe("the panel's view", () => {
   let view: SessionQueueView;
 
   function Panel({ read, sessionId, live, enabled }: {
-    read: () => Promise<SessionQueueRow[]>;
+    read: () => Promise<SessionQueueSnapshot>;
     sessionId: string;
     live: boolean;
     enabled: boolean;
@@ -105,6 +141,10 @@ describe("the panel's view", () => {
   const row = (runId: string): SessionQueueRow => ({
     acceptedAt: "", position: 1, runId, state: "queued", text: runId,
   });
+  const reply = (
+    rows: SessionQueueRow[],
+    acks: SessionQueueSnapshot["acks"] = [],
+  ): SessionQueueSnapshot => ({ acks, rows });
 
   beforeEach(() => jest.useFakeTimers());
   afterEach(() => {
@@ -114,7 +154,7 @@ describe("the panel's view", () => {
     jest.useRealTimers();
   });
 
-  const mount = async (read: () => Promise<SessionQueueRow[]>, sessionId = "s1", live = false) => {
+  const mount = async (read: () => Promise<SessionQueueSnapshot>, sessionId = "s1", live = false) => {
     const element = createElement(Panel, { enabled: true, live, read, sessionId });
     await act(async () => {
       if (tree) tree.update(element);
@@ -124,7 +164,7 @@ describe("the panel's view", () => {
   };
 
   test("the rows are read once when the panel opens on an idle conversation", async () => {
-    const read = jest.fn(async () => [row("run_a")]);
+    const read = jest.fn(async () => reply([row("run_a")]));
     await mount(read);
     expect(view.rows.map(item => item.runId)).toEqual(["run_a"]);
     expect(read).toHaveBeenCalledTimes(1);
@@ -134,7 +174,7 @@ describe("the panel's view", () => {
   });
 
   test("an empty queue on an idle conversation costs no timer", async () => {
-    const read = jest.fn(async () => []);
+    const read = jest.fn(async () => reply([]));
     await mount(read);
     expect(read).toHaveBeenCalledTimes(1);
     await act(async () => { jest.advanceTimersByTime(QUEUE_POLL_MS * 2); });
@@ -142,7 +182,7 @@ describe("the panel's view", () => {
   });
 
   test("a live run keeps reading, and a refresh reads immediately", async () => {
-    const read = jest.fn(async () => []);
+    const read = jest.fn(async () => reply([]));
     await mount(read);
     await mount(read, "s1", true);
     await act(async () => { jest.advanceTimersByTime(QUEUE_POLL_MS); });
@@ -154,7 +194,7 @@ describe("the panel's view", () => {
   });
 
   test("a read that fails leaves the last rows in place", async () => {
-    const read = jest.fn(async () => [row("run_a")]);
+    const read = jest.fn(async () => reply([row("run_a")]));
     await mount(read);
     read.mockRejectedValueOnce(new Error("not_connected"));
     await act(async () => { jest.advanceTimersByTime(QUEUE_POLL_MS); });
@@ -162,16 +202,79 @@ describe("the panel's view", () => {
   });
 
   test("another conversation's rows are never handed to this one", async () => {
-    const resolvers: ((rows: SessionQueueRow[]) => void)[] = [];
-    const read = jest.fn(() => new Promise<SessionQueueRow[]>(yes => { resolvers.push(yes); }));
+    const resolvers: ((rows: SessionQueueSnapshot) => void)[] = [];
+    const read = jest.fn(() => new Promise<SessionQueueSnapshot>(yes => { resolvers.push(yes); }));
     await mount(read, "s1");
     // The reader moves on while the first conversation's read is still in flight.
     await act(async () => {
       tree!.update(createElement(Panel, { enabled: true, live: false, read, sessionId: "s2" }));
     });
     // The read that belonged to the conversation the reader left lands now.
-    await act(async () => { resolvers[0]!([row("run_a")]); });
+    await act(async () => { resolvers[0]!(reply([row("run_a")])); });
     await act(async () => { await Promise.resolve(); });
     expect(view.rows).toEqual([]);
+  });
+
+  /**
+   * A row that leaves the queue without running — folded into the turn ahead,
+   * taken back on the desktop, or lost with a deleted conversation — is not
+   * announced as an event. Its terminal ack is the only trace, and reading it is
+   * what stops the message from vanishing unremarked.
+   */
+  test("says what became of a row that left the queue after the screen opened", async () => {
+    const read = jest.fn(async () => reply([row("run_a")]));
+    await mount(read, "s1", true);
+    expect(view.notice).toBeNull();
+
+    read.mockResolvedValue(reply([], [{ reason: "merged", runId: "run_a", state: "terminal" }]));
+    await act(async () => { jest.advanceTimersByTime(QUEUE_POLL_MS); });
+
+    expect(view.rows).toEqual([]);
+    expect(view.notice).toEqual({ count: 1, reason: "merged" });
+  });
+
+  /**
+   * The desktop keeps a window of acks older than this screen. Opening a
+   * conversation must not greet the reader with news about a row that was merged
+   * before they got there, and a poll must not repeat a sentence already said.
+   */
+  test("does not announce acks that predate the screen, or say the same thing twice", async () => {
+    const oldAck = { reason: "cancelled", runId: "run_old", state: "terminal" };
+    const read = jest.fn(async () => reply([], [oldAck]));
+    await mount(read, "s1", true);
+    expect(view.notice).toBeNull();
+
+    read.mockResolvedValue(reply([], [oldAck, { reason: "session_deleted", runId: "run_new", state: "terminal" }]));
+    await act(async () => { jest.advanceTimersByTime(QUEUE_POLL_MS); });
+    expect(view.notice).toEqual({ count: 1, reason: "session_deleted" });
+
+    const shown = view.notice;
+    await act(async () => { jest.advanceTimersByTime(QUEUE_POLL_MS); });
+    expect(view.notice).toBe(shown);
+  });
+
+  /** Removing a row is this screen's own act: its ack would read as a fault. */
+  test("does not announce a removal this screen made itself", async () => {
+    const read = jest.fn(async () => reply([row("run_a")]));
+    await mount(read, "s1", true);
+
+    await act(async () => { view.forget("run_a"); });
+    read.mockResolvedValue(reply([], [{ reason: "cancelled", runId: "run_a", state: "terminal" }]));
+    await act(async () => { jest.advanceTimersByTime(QUEUE_POLL_MS); });
+
+    expect(view.rows).toEqual([]);
+    expect(view.notice).toBeNull();
+  });
+
+  /** A notice is news, not state: it says its piece once and goes. */
+  test("takes the notice off the screen after a while", async () => {
+    const read = jest.fn(async () => reply([row("run_a")]));
+    await mount(read, "s1", true);
+    read.mockResolvedValue(reply([], [{ reason: "merged", runId: "run_a", state: "terminal" }]));
+    await act(async () => { jest.advanceTimersByTime(QUEUE_POLL_MS); });
+    expect(view.notice).not.toBeNull();
+
+    await act(async () => { jest.advanceTimersByTime(QUEUE_NOTICE_MS); });
+    expect(view.notice).toBeNull();
   });
 });

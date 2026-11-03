@@ -28,7 +28,7 @@ import { useCommittedRef } from "../../lib/useCommittedRef";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { useCommand } from "../keyboard/commands";
 import { installRecommendedSkill } from "../skills/installRecommendedSkill";
-import { cancelAgentQueuedRun, isParkedRow, releaseAgentQueuedRun, useAgentQueue } from "./agentQueue";
+import { agentQueueNoticeReason, cancelAgentQueuedRun, isParkedRow, releaseAgentQueuedRun, useAgentQueue } from "./agentQueue";
 import { ApprovalPrompt } from "./ApprovalPrompt";
 import {
   buildContinuePrompt,
@@ -345,6 +345,7 @@ export function AgentThread({
     return true;
   }, [agentQueue, handleQueuedSend, thread?.id]);
   const handleQueueRemove = useCallback((runId: string) => {
+    agentQueue.forget(runId);
     void cancelAgentQueuedRun(runId).catch(() => {}).finally(() => agentQueue.refresh());
   }, [agentQueue]);
   const handleQueueRelease = useCallback((runId: string) => {
@@ -353,9 +354,13 @@ export function AgentThread({
   // Editing a waiting message: the Agent has no "update this row" command, so
   // the corrected text is a new prompt behind the same run boundary — take the
   // old row back first, or both would run. Attachments cannot be recovered from
-  // the queue row (it carries text only), which is why the panel edits words.
+  // the queue row (it carries text only), which is why the panel edits words and
+  // says so in the editor rather than claiming a count of zero. A re-send that
+  // the Agent refuses is not a lost message: the send pipeline puts the words in
+  // the thread as a failed bubble, which is where the retry lives.
   const handleQueueUpdate = useCallback((runId: string, content: string) => {
     void (async () => {
+      agentQueue.forget(runId);
       await cancelAgentQueuedRun(runId).catch(() => {});
       if (content.trim())
         await handleQueuedSend({ attachments: [], content });
@@ -656,12 +661,34 @@ export function AgentThread({
             filled it: a queued message is not yet gone, so it is looked at, fixed
             and taken back here. The rows are the Agent's (`agentQueue`), so this
             panel disappears with the window and the message does not. */}
+        {/* A row that left the queue without running — folded into the turn
+            ahead, taken back elsewhere, or lost with a deleted conversation —
+            has no event of its own; its terminal ack is the only trace. Said
+            outside the panel because it matters most once the panel is empty. */}
+        {queueEnabled && agentQueue.notice
+          ? (
+              <p
+                className="pointer-events-auto mx-auto mb-2 w-full max-w-3xl text-xs text-ink-muted"
+                data-queue-notice=""
+              >
+                {t(`composer.queue.notice.${agentQueueNoticeReason(agentQueue.notice.reason)}`, {
+                  reason: agentQueue.notice.reason,
+                })}
+                {agentQueue.notice.count > 1
+                  ? ` · ${t("composer.queue.notice.more", { count: agentQueue.notice.count })}`
+                  : ""}
+              </p>
+            )
+          : null}
         {queueEnabled && agentQueue.rows.length > 0
           ? (
               <div className="pointer-events-auto mx-auto w-full max-w-3xl">
                 <SendQueuePanel
+                  // The Agent's queue carries a message's text and its acceptance
+                  // time, never the files it was sent with: the panel says that
+                  // rather than being handed a count of zero it would have made up.
+                  attachmentsUnreported
                   items={agentQueue.rows.map(row => ({
-                    attachmentCount: 0,
                     content: row.text,
                     id: row.runId,
                     parked: isParkedRow(row),

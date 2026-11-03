@@ -49,9 +49,14 @@ const h = vi.hoisted(() => ({
   },
   reco: { dismiss: vi.fn(), evaluate: vi.fn(async () => null) },
   agentState: { current: null as { isCompacting?: boolean; usage?: unknown } | null },
-  /** The Agent-side queue this view reads: `{ rows, refresh }` plus the commands. */
+  /** The Agent-side queue this view reads: `{ rows, notice, refresh, forget }` plus the commands. */
   queue: {
-    value: { refresh: vi.fn(), rows: [] as { acceptedAt: string; position: number; runId: string; state: string; text: string }[] },
+    value: {
+      forget: vi.fn(),
+      notice: null as { reason: string; count: number } | null,
+      refresh: vi.fn(),
+      rows: [] as { acceptedAt: string; position: number; runId: string; state: string; text: string }[],
+    },
     cancel: vi.fn(async (_runId: string) => {}),
     release: vi.fn(async (_runId: string) => {}),
   },
@@ -146,6 +151,8 @@ vi.mock("./agentQueue", () => ({
   // The panel is a view of the Agent's queue (`agentQueue.test.ts` covers the
   // reading); here it only has to be wired to the rows and the two commands.
   useAgentQueue: () => h.queue.value,
+  agentQueueNoticeReason: (reason: string) =>
+    ["merged", "cancelled", "superseded", "session_deleted"].includes(reason) ? reason : "other",
   cancelAgentQueuedRun: (runId: string) => h.queue.cancel(runId),
   releaseAgentQueuedRun: (runId: string) => h.queue.release(runId),
   isParkedRow: (row: { state: string }) => row.state.startsWith("stale"),
@@ -197,7 +204,7 @@ let props: Parameters<typeof AgentThread>[0];
 beforeEach(() => {
   vi.clearAllMocks();
   // Every test starts on an empty Agent queue; the panel tests fill it.
-  h.queue.value = { refresh: vi.fn(), rows: [] };
+  h.queue.value = { forget: vi.fn(), notice: null, refresh: vi.fn(), rows: [] };
   // Command handlers outlive a mount in the module-level registry; a test that
   // left one behind would answer the next test's keystrokes.
   clearCommandHandlers();
@@ -1148,6 +1155,8 @@ describe("agentThread send while the reply streams", () => {
 
   it("shows the Agent's waiting rows, and takes one back through the Agent", async () => {
     h.queue.value = {
+      forget: vi.fn(),
+      notice: null,
       refresh: vi.fn(),
       rows: [{ acceptedAt: "2026-11-03T10:00:00Z", position: 1, runId: "run-7", state: "queued", text: "waiting" }],
     };
@@ -1168,6 +1177,8 @@ describe("agentThread send while the reply streams", () => {
 
   it("offers a parked row a start, because the Agent will not run it alone", async () => {
     h.queue.value = {
+      forget: vi.fn(),
+      notice: null,
       refresh: vi.fn(),
       rows: [{ acceptedAt: "2026-11-03T10:00:00Z", position: 1, runId: "run-8", state: "stale:stale", text: "too old" }],
     };
@@ -1178,6 +1189,53 @@ describe("agentThread send while the reply streams", () => {
       await Promise.resolve();
     });
     expect(h.queue.release).toHaveBeenCalledWith("run-8");
+  });
+
+  /**
+   * A row can leave the Agent's queue without this window asking — folded into
+   * the turn ahead, taken back on the phone, lost with a deleted conversation.
+   * Without its terminal ack the row just disappears, and the reader believes the
+   * message went out.
+   */
+  it("says why a row left the Agent's queue, even with no rows left to show", async () => {
+    h.queue.value = { forget: vi.fn(), notice: { count: 1, reason: "merged" }, refresh: vi.fn(), rows: [] };
+    render();
+
+    const notice = container.querySelector("[data-queue-notice]");
+    expect(notice).not.toBeNull();
+    expect(notice!.textContent).toContain("folded into the turn");
+    expect(container.querySelector("[data-send-queue]")).toBeNull();
+  });
+
+  /**
+   * The bin is this window's own act: its ack would otherwise come back as "a
+   * waiting message was taken out of the queue" right after the reader took it
+   * out, which reads as a fault rather than as confirmation.
+   */
+  it("takes its own removal out of the news, and names no file count it does not have", async () => {
+    const forget = vi.fn();
+    h.queue.value = {
+      forget,
+      notice: null,
+      refresh: vi.fn(),
+      rows: [{ acceptedAt: "2026-11-03T10:00:00Z", position: 1, runId: "run-9", state: "queued", text: "waiting" }],
+    };
+    render();
+
+    // The Agent's queue reports a message's text, never the files it was sent
+    // with, so the panel must not claim the message carried none.
+    expect(container.querySelector("[data-send-queue]")!.textContent).not.toContain("Attachments:");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("[data-queue-remove]")!.click();
+      await Promise.resolve();
+    });
+    expect(forget).toHaveBeenCalledWith("run-9");
+
+    // An edit is the only kind there is — a removal and a re-send — so the trade
+    // is named in the editor, before the save.
+    act(() => container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
+    expect(container.querySelector("[data-send-queue]")!.textContent).toContain("Saving sends the new text only");
   });
 
   it("hands one message per send to the Agent, never a joined one", async () => {

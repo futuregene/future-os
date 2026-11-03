@@ -30,6 +30,7 @@ import {
   isParkedRemoteQueueRow,
   QUEUED_SEND_POLICY,
   releaseRemoteQueuedRun,
+  remoteQueueNoticeReason,
   useRemoteQueue,
 } from "./remoteQueue";
 import { RemoteSessionMenu } from "./RemoteSessionMenu";
@@ -633,6 +634,8 @@ export function RemoteComposer({
     setError(null);
     try {
       await cancelRemoteQueuedRun(desktopId, sessionId, runId);
+      // The reader's own bin: its terminal ack is confirmation, not news.
+      queue.forget(runId);
     }
     catch (err) {
       setError(errorMessage(err));
@@ -671,10 +674,15 @@ export function RemoteComposer({
    * to tell which will run. An emptied row is not an edit — the panel's own rule
    * — so it is only removed.
    *
-   * The row's attachments do not travel with the new text: the host's queue
-   * reports a message's text and its acceptance time, never the upload ids it was
-   * sent with, so this client cannot name them again. (Both desktop paths share
-   * that limit; the local one keeps the same shape and re-sends text only.)
+   * The row's files do not travel with the new text: the host's queue reports a
+   * message's text and its acceptance time, never the upload ids it was sent with,
+   * so this client cannot name them again. The panel says so in the editor, where
+   * the reader is about to make that trade, instead of showing a count it would
+   * have had to invent.
+   *
+   * If the re-send is refused after the removal, the words are put back in the
+   * box: the row is gone on the host, and losing the text as well would leave the
+   * reader nothing to retry with.
    */
   async function replaceQueued(runId: string, content: string) {
     const next = content.trim();
@@ -685,6 +693,7 @@ export function RemoteComposer({
     setError(null);
     try {
       await cancelRemoteQueuedRun(desktopId, sessionId, runId);
+      queue.forget(runId);
       await sendRemotePrompt(desktopId, sessionId, {
         text: next,
         attachments: [],
@@ -697,6 +706,11 @@ export function RemoteComposer({
     }
     catch (err) {
       setError(errorMessage(err));
+      // The row is gone from the host by now. A link failure left the prompt in
+      // the outbox, which will send it when the link returns; a refusal left it
+      // nowhere, so the words go back in the box instead of being lost.
+      if (!isRecoverableSendError(err))
+        setText(current => current.trim() ? current : next);
     }
     finally {
       queue.refresh();
@@ -1055,6 +1069,24 @@ export function RemoteComposer({
             </p>
           )
         : null}
+      {/* A row that left the queue without running — folded into the turn ahead,
+          taken back on another device, or lost with a deleted conversation — is
+          not an event the host announces. Its terminal ack is the only trace, so
+          it is said here; without it the row would simply disappear and the
+          reader would believe the message had been sent. It lives outside the
+          panel because it matters most when the panel is empty. */}
+      {queue.notice
+        ? (
+            <p className="mb-2 text-xs text-ink-muted" data-queue-notice="">
+              {fusionT(`composer.queue.notice.${remoteQueueNoticeReason(queue.notice.reason)}`, {
+                reason: queue.notice.reason,
+              })}
+              {queue.notice.count > 1
+                ? ` · ${fusionT("composer.queue.notice.more", { count: queue.notice.count })}`
+                : ""}
+            </p>
+          )
+        : null}
       {/* What is waiting behind this conversation's run on that host, in its own
           order. Above the box and below the notices, because it is the next thing
           to be sent, not something already in the transcript.
@@ -1068,10 +1100,10 @@ export function RemoteComposer({
             <div className="mb-2">
               <SendQueuePanel
                 // The host's queue reports a message's text and its acceptance
-                // time, never the uploads it was sent with — an attachment count
-                // here would be an invented number for every remote row.
+                // time, never the uploads it was sent with, so the panel is told
+                // that rather than handed a count of zero it would have invented.
+                attachmentsUnreported
                 items={queue.rows.map(row => ({
-                  attachmentCount: 0,
                   content: row.text,
                   id: row.runId,
                   parked: isParkedRemoteQueueRow(row),
