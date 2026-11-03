@@ -136,22 +136,39 @@ pub async fn reconcile_undeliverable_delete_intents() -> Result<usize, crate::Er
 /// mirror allocated for it. Import no longer does that; this heals the rows that
 /// are already stored, so an existing list converges without hand deletion.
 ///
-/// Only threads that never produced a run are candidates — a thread with runs
-/// always had something to show — and only when the Agent itself answers that
-/// the session holds no message. An unreachable Agent, an unreadable journal, or
-/// a partially read one all leave the row alone (see
-/// `session_has_messages`), and a thread created within
+/// Only threads that never produced a run and never recorded message activity
+/// are candidates — a thread with either always had something to show — and
+/// only when the Agent itself answers that the session holds no message. An
+/// unreachable Agent, an unreadable journal, or a partially read one all leave
+/// the row alone (see `session_has_messages`), and a thread created within
 /// the existing grace interval is skipped so a conversation being started
-/// right now is never caught mid-bind. Returns the number of threads deleted.
+/// right now is never caught mid-bind. An answer of "it has messages" is
+/// recorded on the row, so the question is asked once per conversation rather
+/// than once per pass. Returns the number of threads deleted.
 pub async fn reconcile_empty_conversations() -> Result<usize, crate::Error> {
     let candidates = super::empty_conversation_candidates()?;
     let mut removed = 0;
+    let mut settled = 0;
     for (thread_id, session_id) in candidates {
         if super::has_legacy_history(&thread_id)? {
             continue;
         }
         match crate::agent_bridge::session_has_messages(&session_id).await {
-            Ok(true) => {}
+            Ok(true) => {
+                // Record what the probe just proved, or every later pass asks
+                // the Agent the same question again (see
+                // `empty_conversation_candidates`). A session that is merely
+                // slow to answer keeps its NULL and is re-asked next pass.
+                match super::record_thread_has_messages(&thread_id) {
+                    Ok(true) => settled += 1,
+                    Ok(false) => {}
+                    Err(error) => {
+                        tracing::warn!(event = "reconcile_empty_conversations", thread_id = %thread_id, error = %error,
+                            "FutureOS: could not record message activity for {thread_id}: {error}"
+                        )
+                    }
+                }
+            }
             Ok(false) => {
                 // The Agent keeps the session: this drops only the local
                 // projection, without queuing an Agent delete or tombstoning
@@ -171,6 +188,16 @@ pub async fn reconcile_empty_conversations() -> Result<usize, crate::Error> {
                 )
             }
         }
+    }
+    if settled > 0 {
+        // Only a settlement is worth a line: it is a one-time transition that
+        // retires a candidate, and the next pass must not show these threads at
+        // all. Deletions are already reported by the caller's own summary.
+        tracing::info!(
+            event = "reconcile_empty_conversations",
+            settled = settled,
+            "FutureOS: settled {settled} conversation(s) as holding messages"
+        );
     }
     Ok(removed)
 }
@@ -459,7 +486,22 @@ mod tests {
         );
 
         assert_eq!(reconcile_empty_conversations().await.expect("reconcile"), 0);
-        assert!(crate::store::get_thread("t_full").expect("get").is_some());
+        let kept = crate::store::get_thread("t_full")
+            .expect("get")
+            .expect("a conversation with a message stays");
+        // The answer is recorded on the row, so the next discovery pass has
+        // nothing left to ask the Agent about this conversation.
+        assert_eq!(kept.last_message_at, Some(kept.updated_at));
+        assert!(
+            crate::store::empty_conversation_candidates()
+                .expect("candidates")
+                .is_empty(),
+            "a conversation proven to hold messages must leave the probe set"
+        );
+
+        // A second pass reads nothing: the mock would have no reply to give and
+        // the reconcile would fail rather than silently re-ask.
+        assert_eq!(reconcile_empty_conversations().await.expect("reconcile"), 0);
     }
 
     /// A page that stops mid-journal proves nothing about the entries it left

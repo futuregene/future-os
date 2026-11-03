@@ -100,6 +100,16 @@ struct Runtime {
     /// was still blocked, so a host that had merely dropped looked removed
     /// rather than offline.
     live: HashMap<String, std::sync::Arc<PeerSession>>,
+    /// Whether any host has been served in this process.
+    ///
+    /// The grant-renewal pass for *offline* pairings is gated on this. Before
+    /// the first connection there is nothing a background mint can protect: every
+    /// connect attempt renews a lapsed grant on its own (`PeerCreds
+    /// ::needs_refresh`), so a start-up scan of the book would only spend mints
+    /// for machines this process has never spoken to — and, worse, would ask the
+    /// credential store on every tick of the rotation worker, which is a load the
+    /// supervisor's own recovery path already pays for its attempts.
+    ever_connected: bool,
     epochs: HashMap<String, u64>,
     /// The subscription task per host, aborted on disconnect so a host the user
     /// removed cannot keep emitting into a UI that has forgotten it.
@@ -387,15 +397,35 @@ struct ReconnectLog {
 impl ReconnectLog {
     /// Report one failed attempt: the failure itself when it is new (after the
     /// folded count of the run before it), nothing while it repeats.
+    #[cfg(test)]
     fn note(&mut self, desktop_id: &str, message: &str) -> Vec<String> {
+        self.note_with(desktop_id, message, None)
+    }
+
+    /// [`ReconnectLog::note`] with the state the failure was read in.
+    ///
+    /// The message alone cannot say *which* attempt failed. Measured 2026-11-03:
+    /// a burst of `User Authentication Expired` / `authorization violation`
+    /// lines in the desktop log could not be attributed to a generation, so
+    /// telling "a retired connection rattling as it was replaced" from "a live
+    /// attempt that really failed" cost two rounds of elimination instead of one
+    /// log read. `superseded` answers exactly that: a successor already owns the
+    /// host, so this failure belongs to a generation that no longer serves it.
+    ///
+    /// Context only: nothing about the retry policy, the budget or the attempt
+    /// changes here.
+    fn note_with(&mut self, desktop_id: &str, message: &str, context: Option<&str>) -> Vec<String> {
         if self.last.as_deref() == Some(message) {
             self.folded += 1;
             return Vec::new();
         }
         let mut lines: Vec<String> = self.close(desktop_id).into_iter().collect();
-        lines.push(format!(
-            "remote_peer: reconnect attempt for {desktop_id} failed: {message}"
-        ));
+        lines.push(match context {
+            Some(context) => format!(
+                "remote_peer: reconnect attempt for {desktop_id} failed ({context}): {message}"
+            ),
+            None => format!("remote_peer: reconnect attempt for {desktop_id} failed: {message}"),
+        });
         self.last = Some(message.to_owned());
         lines
     }
@@ -1890,6 +1920,7 @@ impl Client {
                     ),
                 );
             }
+            live.ever_connected = true;
             let previous = live
                 .live
                 .insert(desktop_id.to_string(), peer_session.clone());
@@ -2008,6 +2039,10 @@ impl Client {
                         );
                     }
                 }
+                // The pass above owns every *live* generation. A host that is
+                // merely offline has none, so its grant is the part nobody
+                // renews; see the method for what that costs on the way back.
+                client.renew_lapsed_offline_grants().await;
             }
         });
         // Registered with the client's own tasks, so shutdown waits for it; the
@@ -2082,6 +2117,142 @@ impl Client {
                     None => wait.min(rotation_wait(record.creds.jwt_expires_at, now)),
                 }
             })
+    }
+
+    /// Renew a lapsed grant on a host this client is not connected to.
+    ///
+    /// [`Self::hosts_due_for_rotation`] walks `live`, because rotating a
+    /// generation means replacing its socket. A host that is only *offline* has
+    /// no generation, and so its grant was never renewed at all: it lapses while
+    /// the peer is away, and the first attempt after the peer comes back presents
+    /// the lapsed one. The relay answers `Authorization Violation`, which this
+    /// client reads as a *refused* pairing rather than an expired grant, and the
+    /// attempt that follows it spends a mint to recover. Measured 2026-11-03, the
+    /// exact shape: the offline peer's grant lapsed at 08:04:12, the reconnect one
+    /// second later was refused, and the renewal it triggered at 08:04:14 was the
+    /// first usable grant (`jwt_expires_at` 08:04 → 08:19 in `remote_peers.json`).
+    ///
+    /// Renewal only: nothing is connected and no socket is touched. A failure is
+    /// deferred on the same backoff the live pass uses, so an unavailable platform
+    /// cannot turn into a mint per tick, and a host that is live is skipped
+    /// outright — its own generation owns that decision.
+    async fn renew_lapsed_offline_grants(&self) {
+        if self.is_stopped() {
+            return;
+        }
+        if !self.inner.state.lock().await.ever_connected {
+            return;
+        }
+        let Ok(book) = self.inner.host.load() else {
+            return;
+        };
+        let now = self.now_secs();
+        for record in book.peers {
+            let desktop_id = record.creds.desktop_id.clone();
+            let expires_at = record.creds.jwt_expires_at;
+            // An unreadable expiry says nothing about having lapsed, and a grant
+            // still inside its lifetime is not this pass's business.
+            if expires_at <= 0 || expires_at > now {
+                continue;
+            }
+            if self.inner.state.lock().await.live.contains_key(&desktop_id) {
+                continue;
+            }
+            let now_instant = tokio::time::Instant::now();
+            {
+                let mut attempted = self
+                    .inner
+                    .rotated_for
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let previous = attempted
+                    .get(&desktop_id)
+                    .filter(|attempt| attempt.expires_at == expires_at)
+                    .copied();
+                if !rotation_due(previous.as_ref(), expires_at, now, now_instant) {
+                    continue;
+                }
+                // Marked before the mint, like the live pass: a platform that is
+                // slow to answer must not have the next tick start a second one
+                // for the same grant.
+                attempted.insert(
+                    desktop_id.clone(),
+                    RotationAttempt {
+                        expires_at,
+                        retry_at: None,
+                        failures: previous.map_or(0, |attempt| attempt.failures),
+                    },
+                );
+            }
+            let fresh = match self
+                .while_running(self.inner.host.refresh(&record.creds))
+                .await
+            {
+                Ok(fresh) => fresh,
+                Err(error) => {
+                    let delay = self.defer_rotation(&desktop_id);
+                    future_remote_protocol::remote_log!(
+                        "remote_peer: could not renew the lapsed grant of the offline host \
+                         {desktop_id} (retrying in {}s): {error}",
+                        delay.as_secs()
+                    );
+                    continue;
+                }
+            };
+            let renewed_expires_at = fresh.jwt_expires_at;
+            // The store decides: a concurrent connect or another writer may have
+            // already replaced this exact grant, and then this pass adds nothing.
+            match self.inner.host.update_credentials(&record.creds, &fresh) {
+                Ok(true) if renewed_expires_at <= self.now_secs() => {
+                    // A mint that arrived already lapsed would otherwise be asked
+                    // for again on every tick until the platform answers with a
+                    // usable one. Hold it on the retry rung instead.
+                    let mut attempted = self
+                        .inner
+                        .rotated_for
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    attempted.insert(
+                        desktop_id.clone(),
+                        RotationAttempt {
+                            expires_at: renewed_expires_at,
+                            retry_at: Some(tokio::time::Instant::now() + rotation_retry_delay(1)),
+                            failures: 1,
+                        },
+                    );
+                    future_remote_protocol::remote_log!(
+                        "remote_peer: the renewed grant for the offline host {desktop_id} \
+                         had already lapsed"
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    let delay = self.defer_rotation(&desktop_id);
+                    future_remote_protocol::remote_log!(
+                        "remote_peer: could not store the renewed grant of {desktop_id} \
+                         (retrying in {}s): {error}",
+                        delay.as_secs()
+                    );
+                }
+            }
+        }
+    }
+
+    /// The state one failed reconnect attempt is reported in (log context only).
+    ///
+    /// `superseded` is the discriminator the 2026-11-03 incident lacked: a
+    /// successor already owns the host, so this failure belongs to a generation
+    /// that has been retired rather than to the link the user is waiting on. Two
+    /// `User Authentication Expired` / `authorization violation` lines in the
+    /// desktop log could not be told apart for exactly this reason, and telling
+    /// them apart cost two rounds of elimination instead of one log read.
+    ///
+    /// Read from memory rather than the credential store: this runs on the
+    /// recovery path, where an extra `load()` per attempt would be charged to the
+    /// supervisor's attempt budget.
+    async fn failure_context(&self, desktop_id: &str, attempt: usize) -> String {
+        let superseded = self.inner.state.lock().await.live.contains_key(desktop_id);
+        format!("attempt={attempt} superseded={superseded}")
     }
 
     /// The live hosts whose stored grant has entered the rotation window.
@@ -2245,7 +2416,8 @@ impl Client {
                         return;
                     }
                     Err(error) => {
-                        for line in log.note(&desktop_id, &error.to_string()) {
+                        let context = client.failure_context(&desktop_id, attempt).await;
+                        for line in log.note_with(&desktop_id, &error.to_string(), Some(&context)) {
                             future_remote_protocol::remote_log!("{line}");
                         }
                         // A refused credential is not a network fault. The same
@@ -3400,6 +3572,29 @@ mod tests {
         );
         assert!(lines[1].contains("failed: connection refused"), "{lines:?}");
     }
+    /// A failure line carries the state it was read in, so a burst of them can be
+    /// attributed without a second round of elimination.
+    #[test]
+    fn a_failure_line_names_the_attempt_it_belongs_to() {
+        let mut log = ReconnectLog::default();
+        let lines = log.note_with(
+            "desk",
+            "nats: authorization violation",
+            Some("attempt=3 superseded=true"),
+        );
+        assert_eq!(lines.len(), 1);
+        assert!(
+            lines[0].contains("(attempt=3 superseded=true)"),
+            "{lines:?}"
+        );
+        // Without context the line keeps the shape it had before.
+        let mut plain = ReconnectLog::default();
+        assert_eq!(
+            plain.note("desk", "no responders")[0],
+            "remote_peer: reconnect attempt for desk failed: no responders"
+        );
+    }
+
     /// One failure is not a folded run, and closing an empty log says nothing.
     #[test]
     fn closing_a_log_reports_nothing_without_a_folded_repeat() {

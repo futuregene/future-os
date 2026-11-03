@@ -220,6 +220,25 @@ struct StageOutcome {
     ignored: usize,
 }
 
+/// Why one `git add` of a candidate set failed.
+#[derive(Debug)]
+enum StageFailure {
+    /// git refused the named candidates as ignored. That is an exclusion the
+    /// caller can absorb by staging the rest, not a snapshot failure.
+    Ignored { paths: Vec<String>, message: String },
+    /// Anything else: the tree cannot be captured.
+    Other(Error),
+}
+
+impl StageFailure {
+    fn into_error(self) -> Error {
+        match self {
+            StageFailure::Ignored { message, .. } => message.into(),
+            StageFailure::Other(error) => error,
+        }
+    }
+}
+
 /// Stage only the given candidate paths (`--all` so deletions are recorded).
 /// If an untracked path becomes ignored after candidate discovery, drop it and
 /// retry once so one expected exclusion cannot fail the entire snapshot.
@@ -230,27 +249,53 @@ fn stage(repo: &ShadowRepo, index: &Path, paths: &[String]) -> Result<StageOutco
     }
     match try_stage(repo, index, &paths) {
         Ok(()) => Ok(StageOutcome { paths, ignored }),
-        Err(first_error) => {
-            let (retry_paths, newly_ignored) = filter_ignored(repo, index, &paths)?;
-            if newly_ignored == 0 {
-                return Err(first_error);
+        Err(failure) => {
+            // Two shapes reach here and both are exclusions: the ignore rules
+            // changed between discovery and staging (the re-check below finds
+            // them), or git refuses a path our own check-ignore pass did not
+            // report — measured 2026-11-03, a Workspace whose `.git/info/exclude`
+            // hid `bugfind/` failed every before-snapshot this way. git's own
+            // list of refused paths is authoritative, so it is what gets dropped.
+            let (visible, _rechecked) = filter_ignored(repo, index, &paths)?;
+            let mut dropped: Vec<String> = paths
+                .iter()
+                .filter(|path| !visible.contains(path))
+                .cloned()
+                .collect();
+            if let StageFailure::Ignored { paths: named, .. } = &failure {
+                for path in named {
+                    if !dropped.contains(path) {
+                        dropped.push(path.clone());
+                    }
+                }
             }
+            if dropped.is_empty() {
+                return Err(failure.into_error());
+            }
+            let retry_paths: Vec<String> = paths
+                .iter()
+                .filter(|path| !dropped.contains(path))
+                .cloned()
+                .collect();
+            let ignored = ignored + dropped.len();
             if retry_paths.is_empty() {
                 return Ok(StageOutcome {
                     paths: retry_paths,
-                    ignored: ignored + newly_ignored,
+                    ignored,
                 });
             }
-            try_stage(repo, index, &retry_paths)?;
+            // A second refusal is no longer a rule change: report it rather than
+            // looping over a set that keeps shrinking without converging.
+            try_stage(repo, index, &retry_paths).map_err(StageFailure::into_error)?;
             Ok(StageOutcome {
                 paths: retry_paths,
-                ignored: ignored + newly_ignored,
+                ignored,
             })
         }
     }
 }
 
-fn try_stage(repo: &ShadowRepo, index: &Path, paths: &[String]) -> Result<(), Error> {
+fn try_stage(repo: &ShadowRepo, index: &Path, paths: &[String]) -> Result<(), StageFailure> {
     let stdin = paths.join("\0").into_bytes();
     let add_args: &[&str] = &[
         "add",
@@ -258,7 +303,10 @@ fn try_stage(repo: &ShadowRepo, index: &Path, paths: &[String]) -> Result<(), Er
         "--pathspec-from-file=-",
         "--pathspec-file-nul",
     ];
-    let output = repo.run(add_args, Some(index), Some(&stdin))?;
+    // A spawn failure is not about the paths: it is the same error in both arms.
+    let output = repo
+        .run(add_args, Some(index), Some(&stdin))
+        .map_err(StageFailure::Other)?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         // A pathspec that matches nothing (deleted file no longer tracked)
@@ -271,9 +319,68 @@ fn try_stage(repo: &ShadowRepo, index: &Path, paths: &[String]) -> Result<(), Er
             );
             return Ok(());
         }
-        return Err(format!("shadow git add failed: {}", stderr.trim()).into());
+        let message = format!("shadow git add failed: {}", stderr.trim());
+        let named = ignored_paths_in(&stderr, &repo.workspace_path, paths);
+        if !named.is_empty() {
+            return Err(StageFailure::Ignored {
+                paths: named,
+                message,
+            });
+        }
+        return Err(StageFailure::Other(message.into()));
     }
     Ok(())
+}
+
+/// The candidate paths git itself named as ignored in a `git add` refusal.
+///
+/// git prints the deepest ignored *directory* it refused (`bugfind`, measured
+/// 2026-11-03) while the candidate we sent is a file below it (`bugfind/h1`),
+/// so a candidate counts as named when git's line is the path itself or one of
+/// its ancestors. git quotes a path that needs it and never prints one per hint
+/// line, so the message is matched against the candidates we sent instead of
+/// being re-parsed on its own. An empty result means the refusal was about
+/// something else and must stay a failure.
+fn ignored_paths_in(stderr: &str, workspace: &Path, paths: &[String]) -> Vec<String> {
+    const REFUSALS: [&str; 2] = [
+        "are ignored by one of your .gitignore files",
+        "is ignored by one of your .gitignore files",
+    ];
+    if !REFUSALS.iter().any(|marker| stderr.contains(marker)) {
+        return Vec::new();
+    }
+    let named: Vec<&str> = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("hint:"))
+        .filter(|line| !REFUSALS.iter().any(|marker| line.contains(marker)))
+        .map(|line| line.trim_end_matches('/'))
+        .collect();
+    paths
+        .iter()
+        .filter(|path| {
+            // Candidates are workspace-relative; a caller that passed an
+            // absolute path gets the same match through the stripped form.
+            let relative = Path::new(path.as_str())
+                .strip_prefix(workspace)
+                .ok()
+                .map(|rest| rest.to_string_lossy().into_owned());
+            let matches = [Some(path.as_str()), relative.as_deref()]
+                .into_iter()
+                .flatten()
+                .any(|candidate| {
+                    let candidate = candidate.trim_start_matches("./");
+                    named.iter().any(|line| {
+                        *line == candidate
+                            || candidate
+                                .strip_prefix(line)
+                                .is_some_and(|rest| rest.starts_with('/'))
+                    })
+                });
+            matches
+        })
+        .cloned()
+        .collect()
 }
 
 /// When capturing `after`, reuse the `before` commit if the trees match.
@@ -498,8 +605,53 @@ mod tests {
         // non-pathspec failure that must be surfaced as an error.
         let index = s.repo.prepare_temp_index("stage-err").unwrap();
         std::fs::create_dir_all(&index).unwrap();
-        let err = try_stage(&s.repo, &index, &["some-file.txt".to_string()]).unwrap_err();
-        assert!(err.to_string().contains("shadow git add failed"));
+        let failure = try_stage(&s.repo, &index, &["some-file.txt".to_string()]).unwrap_err();
+        let StageFailure::Other(error) = failure else {
+            panic!("an unusable index is not an ignored-path refusal: {failure:?}");
+        };
+        assert!(error.to_string().contains("shadow git add failed"));
+    }
+
+    /// git names the ignored directory it refused (`bugfind`), while the
+    /// candidate we offered is a file below it (`bugfind/h1`). Reading the
+    /// refusal as "named candidates" is what lets `stage` drop the file and
+    /// capture the rest; matching exact strings would leave the snapshot
+    /// failing on every run that touches that Workspace (measured 2026-11-03:
+    /// 40 before-snapshots a day).
+    #[test]
+    fn ignored_paths_in_reads_a_directory_refusal_as_the_files_below_it() {
+        let stderr = "The following paths are ignored by one of your .gitignore files:\n\
+                      bugfind\n\
+                      hint: Use -f if you really want to add them.\n\
+                      hint: Disable this message with \"git config set advice.addIgnoredFile false\"";
+        let workspace = Path::new("/work/ws");
+        assert_eq!(
+            ignored_paths_in(
+                stderr,
+                workspace,
+                &["bugfind/h1".to_string(), "keep.txt".to_string()]
+            ),
+            vec!["bugfind/h1".to_string()]
+        );
+        // The same refusal reaches a caller that passed absolute paths.
+        assert_eq!(
+            ignored_paths_in(stderr, workspace, &["/work/ws/bugfind/h2".to_string()]),
+            vec!["/work/ws/bugfind/h2".to_string()]
+        );
+    }
+
+    #[test]
+    fn ignored_paths_in_stays_empty_for_any_other_failure() {
+        let workspace = Path::new("/work/ws");
+        assert!(
+            ignored_paths_in("fatal: not a git repository", workspace, &["a".to_string()])
+                .is_empty()
+        );
+        // Naming a path we did not offer is not an exclusion we can absorb.
+        let stderr = "The following paths are ignored by one of your .gitignore files:\n\
+                      other\n\
+                      hint: Use -f if you really want to add them.";
+        assert!(ignored_paths_in(stderr, workspace, &["bugfind/h1".to_string()]).is_empty());
     }
 
     #[test]

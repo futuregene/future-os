@@ -322,7 +322,17 @@ fn orphan_thread_ids(
 const EMPTY_CONVERSATION_GRACE_MS: i64 = 10 * 60 * 1000;
 
 /// The `(thread, agent session)` pairs worth probing for emptiness: threads
-/// bound to a session that never produced a run and are past the bind grace.
+/// bound to a session that never produced a run, never recorded message
+/// activity, and are past the bind grace.
+///
+/// `last_message_at IS NULL` is what stops the probe from repeating forever. A
+/// conversation imported from outside the GUI (a TUI, channel or task session)
+/// never gets a `runs` row, so "produced no run" alone selects it on every pass:
+/// measured 2026-11-03, 148 such threads were re-probed every 60 s — 73k page
+/// reads and 62 MB of log a day for an answer that never changed. The column is
+/// written from Agent event time, so NULL is the one state where the Agent still
+/// has to be asked, and [`record_thread_has_messages`] settles it the single
+/// time the answer is "this session has messages".
 fn empty_thread_candidates(
     conn: &Connection,
     created_before: i64,
@@ -332,6 +342,7 @@ fn empty_thread_candidates(
           WHERE status != 'deleted'
             AND COALESCE(TRIM(agent_session_id), '') != ''
             AND created_at < ?1
+            AND last_message_at IS NULL
             AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.thread_id = threads.id)",
     )?;
     let rows = stmt.query_map([created_before], |row| {
@@ -561,6 +572,27 @@ pub fn session_reconcile_candidates(
 pub fn empty_conversation_candidates() -> Result<Vec<(String, String)>, crate::Error> {
     let conn = connect()?;
     empty_thread_candidates(&conn, now_millis() - EMPTY_CONVERSATION_GRACE_MS)
+}
+
+/// Settle a conversation that the emptiness probe found to hold messages.
+///
+/// Stamps `last_message_at` with the row's own `updated_at` while it is still
+/// NULL. The rail orders by `COALESCE(last_message_at, updated_at, created_at)`,
+/// so the date the conversation sorts by does not move; what changes is that the
+/// thread leaves [`empty_conversation_candidates`] for good instead of being
+/// re-probed with the same Agent question on every discovery pass. A later real
+/// message still advances the stamp, because that write only ever moves it
+/// forward.
+///
+/// Returns whether a row was written: `false` means the thread is gone or its
+/// activity is already recorded, both of which need no settlement.
+pub fn record_thread_has_messages(thread_id: &str) -> Result<bool, crate::Error> {
+    let conn = connect()?;
+    Ok(conn.execute(
+        "UPDATE threads SET last_message_at = COALESCE(updated_at, created_at)
+          WHERE id = ?1 AND status != 'deleted' AND last_message_at IS NULL",
+        params![thread_id],
+    )? > 0)
 }
 
 #[cfg(test)]
@@ -1302,7 +1334,13 @@ mod tests {
              ) VALUES ('t_old2', 'ws_empty', 'chat', 'T', 'sess_run', 1, 1);
              INSERT INTO runs (
                  id, thread_id, status, created_at, updated_at
-             ) VALUES ('r_any', 't_old2', 'completed', 1, 1);",
+             ) VALUES ('r_any', 't_old2', 'completed', 1, 1);
+             -- A conversation imported from outside the GUI: no run row, but its
+             -- message activity is recorded, so the probe already had its answer.
+             INSERT INTO threads (
+                 id, workspace_id, mode, title, agent_session_id, created_at,
+                 updated_at, last_message_at
+             ) VALUES ('t_seen', 'ws_empty', 'chat', 'T', 'sess_seen', 1, 1, 2);",
         )
         .expect("seed filtered shapes");
 
@@ -1310,6 +1348,39 @@ mod tests {
         assert_eq!(
             candidates,
             vec![("t_old".to_string(), "sess_old".to_string())]
+        );
+    }
+
+    /// The probe's "this session has messages" answer retires the candidate.
+    /// Without this the same imported conversation is re-read from the Agent on
+    /// every discovery pass, forever (the measured 148-thread sweep).
+    #[test]
+    fn record_thread_has_messages_settles_a_candidate_once() {
+        let (_home, conn) = guarded_conn("reconcile_record_messages");
+        seed_message_less_threads(&conn, &[("t_seen", "sess_seen", 7)]);
+        assert_eq!(
+            empty_conversation_candidates().expect("candidates"),
+            vec![("t_seen".to_string(), "sess_seen".to_string())]
+        );
+
+        assert!(record_thread_has_messages("t_seen").expect("settle"));
+        let stored = crate::store::get_thread("t_seen")
+            .expect("get")
+            .expect("some");
+        assert_eq!(
+            stored.last_message_at,
+            Some(stored.updated_at),
+            "the stamp must be the row's own date, so the recency order cannot move"
+        );
+        assert!(
+            empty_conversation_candidates()
+                .expect("candidates")
+                .is_empty(),
+            "a settled conversation must not be probed again"
+        );
+        assert!(
+            !record_thread_has_messages("t_seen").expect("second settle"),
+            "an already-stamped row needs no second write"
         );
     }
 }
