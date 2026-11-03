@@ -53,6 +53,15 @@ export interface RemotePeersState {
   error: string | null;
   refresh: () => Promise<void>;
   /**
+   * Re-read the paired machines alone, without asking any host for its catalogue.
+   *
+   * For a change this machine made to its own record of a host — a local name or
+   * icon — which the hosts know nothing about. `refresh` would also read every
+   * connected host's conversations over the network, so a label save that waited
+   * for it looked like it was taking seconds.
+   */
+  refreshPeers: () => Promise<void>;
+  /**
    * Bring every paired host up, including one the user had turned off.
    *
    * The user's own "reconnect all", not the automatic pass: both mean "every
@@ -126,28 +135,67 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
     forgetHostCatalogue(peer.desktopId);
   }, []);
 
+  /**
+   * Read the paired machines, and nothing about their conversations.
+   *
+   * This is the whole of what a *local* change to a machine can move: its name,
+   * its icon, whether it is still paired. Those live in this machine's
+   * credential book and reach the screen through this list alone, whereas
+   * everything `refresh` reads after this point belongs to the *host* — its
+   * conversations and folders. So a name that never left this computer has no
+   * answer to wait for on the host, which is why the two halves are separable
+   * (see `refreshPeers`).
+   *
+   * Throws: the list read can fail, and both callers report it the same way.
+   */
+  const readPeers = useCallback(async (): Promise<RemotePeer[]> => {
+    const next = await listRemotePeers();
+    peersRef.current = next;
+    setPeers(next);
+    setError(null);
+    // A host whose pairing the platform refuses is not a paired host any more,
+    // whatever this machine still has on file. The failed read is the
+    // platform's own answer, so it is acted on rather than drawn: the row and
+    // its registration go, and the list read below works from what is left.
+    let peers = next;
+    const detached = next.filter(peer => peerRevoked(peer));
+    if (detached.length > 0) {
+      await Promise.all(detached.map(peer => forgetDetached(peer)));
+      peers = await listRemotePeers();
+      peersRef.current = peers;
+      setPeers(peers);
+    }
+    // A host that left is not a host whose catalogue is worth keeping, and its
+    // rows must leave the merged list with it.
+    if (detached.length > 0)
+      setCatalogs(current => current.filter(catalog => peers.some(peer => peer.desktopId === catalog.desktopId)));
+    return peers;
+  }, [forgetDetached]);
+
+  /**
+   * Re-read the paired machines alone — no host is asked anything.
+   *
+   * For a write that changed this machine's own record of a host: a local name
+   * or icon (`remote_peer_set_label`). The rows are this list, so it is the one
+   * read that makes the change visible, and it costs one local command. The
+   * catalogue half of `refresh` costs a round trip per connected host — each
+   * bounded by the client's command timeout, retried up to three times on a host
+   * that is connected but slow to answer — and none of it can describe a name
+   * that was never sent to that host. Saving a label through the full `refresh`
+   * therefore sat on the network for a write that never left this computer.
+   */
+  const refreshPeers = useCallback(async () => {
+    try {
+      await readPeers();
+    }
+    catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [readPeers]);
+
   const refresh = useCallback(async () => {
     try {
-      const next = await listRemotePeers();
-      peersRef.current = next;
-      setPeers(next);
-      setError(null);
-      // A host whose pairing the platform refuses is not a paired host any more,
-      // whatever this machine still has on file. The failed read is the
-      // platform's own answer, so it is acted on rather than drawn: the row and
-      // its registration go, and the list read below works from what is left.
-      let peers = next;
-      const detached = next.filter(peer => peerRevoked(peer));
-      if (detached.length > 0) {
-        await Promise.all(detached.map(peer => forgetDetached(peer)));
-        peers = await listRemotePeers();
-        peersRef.current = peers;
-        setPeers(peers);
-      }
-      // A host that left is not a host whose catalogue is worth keeping, and its
-      // rows must leave the merged list with it.
-      if (detached.length > 0)
-        setCatalogs(current => current.filter(catalog => peers.some(peer => peer.desktopId === catalog.desktopId)));
+      const peers = await readPeers();
       // Only connected hosts are asked for a catalogue: a request to a
       // disconnected host would open a connection as a side effect, which is
       // not what a background poll should do.
@@ -215,7 +263,7 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
     catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [forgetDetached]);
+  }, [readPeers]);
 
   /**
    * Ask for the hosts that should already be live.
@@ -451,8 +499,8 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
   }, [enabled, forgetDetached, refresh]);
 
   return useMemo(
-    () => ({ peers, catalogs, loading, error, refresh, reconnectAll }),
-    [peers, catalogs, loading, error, refresh, reconnectAll],
+    () => ({ peers, catalogs, loading, error, refresh, refreshPeers, reconnectAll }),
+    [peers, catalogs, loading, error, refresh, refreshPeers, reconnectAll],
   );
 }
 
