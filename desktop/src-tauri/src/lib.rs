@@ -1213,11 +1213,9 @@ mod gui {
             retire_logging(&app);
             return Err(error);
         }
-        // Keep the Windows console attached until startup errors can be reported.
-        #[cfg(target_os = "windows")]
-        unsafe {
-            let _ = windows::Win32::System::Console::FreeConsole();
-        }
+        // Keep inherited terminal handles valid for the process lifetime. GUI
+        // launches have already redirected missing streams during preparation;
+        // detaching here would invalidate handles we deliberately preserved.
         startup.enter("event loop");
         app.run(dispatch_run_event);
         // Returning here means the loop ended without a panic, which is the
@@ -1451,9 +1449,8 @@ mod gui {
             // the same conversation two continuation prompts.
             agent_bridge::reconcile_pending_approvals().await;
         });
-        // Shadow-review maintenance (consistency check + crash recovery) runs
-        // off the launch path so it never delays the window.
-        crate::runtime::spawn_native(shadow_review::run_startup_maintenance);
+        // Historical review is loaded only for the conversation being viewed.
+        // Startup must not walk every snapshot or recapture old workspaces.
         // `future remote devices add` asks this process for an invitation, because
         // only a process that can serve the new pairing may mint one. Started here,
         // with the rest of the window's background work, so it is up as soon as the
@@ -2338,6 +2335,12 @@ mod gui {
         /// does not invalidate this fixture.
         #[tokio::test]
         async fn an_auto_connect_that_connects_is_reported_as_connected() {
+            // This asserts a fresh launch. Other entry fixtures install
+            // process-lifetime services which changing HOME cannot reset;
+            // keep the startup body in its own process, with all assertions.
+            if future_host::test_support::reexec_test() {
+                return;
+            }
             use crate::remote::{test_support::MockPlatform, RemotePhase};
 
             let _home = crate::auth_store::test_support::HomeGuard::new("auto-connect-ready");
@@ -2391,8 +2394,9 @@ mod gui {
                     break;
                 }
                 let message = format!(
-                    "the ready arm never ran; last status {status:?}, last error {:?}",
-                    status.reason
+                    "the ready arm never ran; last status {status:?}, last error {:?}, platform requests {:?}",
+                    status.reason,
+                    platform.requests()
                 );
                 assert!(std::time::Instant::now() < deadline, "{message}");
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;

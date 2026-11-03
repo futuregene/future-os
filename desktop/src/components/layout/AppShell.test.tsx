@@ -696,12 +696,13 @@ describe("app shell readiness gate", () => {
   it("shows the status page while startup is pending and when it fails", () => {
     mocks.store.startup = { phase: "pending" };
     const pending = mount(<AppShell />);
-    expect(pending.container.querySelector("[data-child=\"agent-status-gate\"]")!.getAttribute("data-phase")).toBe("starting");
+    expect(pending.container.textContent).toContain("Loading account and provider settings");
     pending.unmount();
 
-    mocks.store.startup = { phase: "failed" };
+    mocks.store.startup = { phase: "failed", reason: "providersTimeout" };
     const failed = mount(<AppShell />);
-    expect(failed.container.querySelector("[data-child=\"agent-status-gate\"]")!.getAttribute("data-phase")).toBe("unavailable");
+    expect(failed.container.textContent).toContain("provider settings did not respond");
+    expect(failed.container.querySelector("button")?.textContent).toContain("Try again");
     failed.unmount();
   });
 

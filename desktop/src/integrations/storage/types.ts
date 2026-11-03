@@ -191,7 +191,7 @@ export interface LastRunReviewData {
   files: StoredReviewFileChange[];
   run?: StoredRun | null;
   snapshotStatus: "complete" | "partial" | "incomplete" | "unavailable";
-  confidence: "normal" | "recovered";
+  confidence: "normal" | "recovered" | "incomplete";
   overlapped: boolean;
 }
 

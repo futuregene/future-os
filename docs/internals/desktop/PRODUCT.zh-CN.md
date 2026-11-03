@@ -186,6 +186,8 @@ Review 覆盖所有 Workspace 对话（`mode = workspace`），无论目录是�
 
 「上一轮变更」由 FutureOS 在每轮 Run 前后对 workspace 拍快照并求 diff 得到，全程只读：不向用户真实 Git 仓库写入任何 commit / index / ref / object，也不在非 Git 目录里创建 `.git`（实现见 ER.md §4.10、§6.8）。
 
+历史审阅仅加载正在查看的对话，应用启动不检查全部对话的快照。已保存的 diff 直接展示；生成中断时，可用已保存的 before/after 补算。缺少执行边界则保持不完整，明确说明无法还原准确变更；不会用当前工作区补成旧 Run 的 after，也不提供无法修复该缺失的重试。
+
 「上一轮变更」顶部按情况叠加状态提示：
 
 - **并发**：本轮运行期间该 workspace 有其他 Run 并发，部分变更可能来自并发运行，仍展示 diff。

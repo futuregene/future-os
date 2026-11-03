@@ -230,56 +230,63 @@ const STDIO_LOG_LIMIT: u64 = 4 * 1024 * 1024;
 /// Must run before the first write to a standard stream: std may cache the
 /// handle it found on first use.
 ///
-/// Returns whether the handles were redirected.
+/// Returns whether the handles were redirected. If opening the log fails,
+/// missing streams are still redirected to NUL and that opening error is
+/// returned for the host's structured diagnostic.
 #[cfg(windows)]
 pub fn redirect_windowless_standard_streams(path: &std::path::Path) -> std::io::Result<bool> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-    use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_APPEND_DATA, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_ALWAYS,
-    };
+    use std::os::windows::io::{AsRawHandle, IntoRawHandle};
     use windows_sys::Win32::System::Console::{SetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE};
 
-    // Decided before the file is opened: a launch whose caller captured both
-    // streams has no use for a log of its own and must leave none behind.
     let stderr_missing = !stream_has_a_destination(STD_ERROR_HANDLE);
     let stdout_missing = !stream_has_a_destination(STD_OUTPUT_HANDLE);
     if !stderr_missing && !stdout_missing {
         return Ok(false);
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    rotate_stdio_log(path);
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0u16]).collect();
-    let handle = unsafe {
-        CreateFileW(
-            wide.as_ptr(),
-            FILE_APPEND_DATA,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
-            std::ptr::null(),
-            OPEN_ALWAYS,
-            0,
-            std::ptr::null_mut(),
-        )
+    let opened = (|| {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        rotate_stdio_log(path);
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+    })();
+    let (file, log_error) = match opened {
+        Ok(file) => (file, None),
+        // Full/read-only data directories must not turn a third-party
+        // diagnostic into a panic. Keep structured logging independent and
+        // report the failed file destination after its subscriber is installed.
+        Err(error) => (
+            std::fs::OpenOptions::new().write(true).open("NUL")?,
+            Some(error),
+        ),
     };
-    if handle == INVALID_HANDLE_VALUE {
-        return Err(std::io::Error::last_os_error());
-    }
-    // Both streams share one file, so the interleaving a reader can follow is
-    // the one the process produced — but only the streams that were missing a
-    // destination are moved.
-    if stderr_missing {
-        unsafe {
-            SetStdHandle(STD_ERROR_HANDLE, handle);
+    let handle = file.as_raw_handle();
+    let mut installed = false;
+    let mut install_error = None;
+    for (missing, stream) in [
+        (stderr_missing, STD_ERROR_HANDLE),
+        (stdout_missing, STD_OUTPUT_HANDLE),
+    ] {
+        if missing {
+            if unsafe { SetStdHandle(stream, handle) } == 0 {
+                install_error = Some(std::io::Error::last_os_error());
+            } else {
+                installed = true;
+            }
         }
     }
-    if stdout_missing {
-        unsafe {
-            SetStdHandle(STD_OUTPUT_HANDLE, handle);
-        }
+    if installed {
+        // Standard handles remain valid for the process lifetime, including
+        // when only one of the two SetStdHandle calls succeeded.
+        let _ = file.into_raw_handle();
     }
-    Ok(true)
+    match install_error.or(log_error) {
+        Some(error) => Err(error),
+        None => Ok(true),
+    }
 }
 
 /// Whether `stream` already writes somewhere its caller chose.
@@ -314,17 +321,19 @@ fn stream_has_a_destination(stream: u32) -> bool {
     if handle.is_null() || handle == INVALID_HANDLE_VALUE {
         return false;
     }
-    let shaped_like_one = match unsafe { GetFileType(handle) } {
-        FILE_TYPE_DISK | FILE_TYPE_PIPE => true,
-        FILE_TYPE_CHAR => !unsafe { GetConsoleWindow() }.is_null(),
+    // The shape says where the handle *would* write; a handle of the right
+    // shape can still refuse every write, which is why a disk or console
+    // destination is probed. Pipe destinations stay authoritative without a
+    // probe: they were redirected by the caller, and a zero-length write into a
+    // message-mode pipe must not become a message that caller can observe.
+    match unsafe { GetFileType(handle) } {
+        FILE_TYPE_PIPE => true,
+        FILE_TYPE_DISK => handle_accepts_a_write(handle),
+        FILE_TYPE_CHAR => !unsafe { GetConsoleWindow() }.is_null() && handle_accepts_a_write(handle),
         // `FILE_TYPE_UNKNOWN`, which is also the answer of a failed call: a
         // handle that cannot be classified is no better than having none.
         _ => false,
-    };
-    // The shape only says where the handle *would* write. A handle opened
-    // without write access has the same shape and takes no output at all, so
-    // the decision is completed by asking the stream itself.
-    shaped_like_one && handle_accepts_a_write(handle)
+    }
 }
 
 /// Whether `handle` takes a write at all.
@@ -676,6 +685,87 @@ mod tests {
         let redirected = redirect_windowless_standard_streams(&path).expect("inspect the streams");
         assert!(!redirected, "a captured stream must keep its destination");
         ::std::eprintln!("the caller still sees this line");
+    }
+
+    /// An unwritable log directory must still give dependencies a safe stderr.
+    #[cfg(windows)]
+    #[test]
+    fn a_windowless_launch_with_no_log_directory_falls_back_to_nul() {
+        use std::os::windows::process::CommandExt;
+        let directory = tempfile::tempdir().unwrap();
+        let blocked = directory.path().join("not-a-directory");
+        std::fs::write(&blocked, "file").unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "console::tests::the_failed_log_fixture",
+                "--nocapture",
+            ])
+            .env("FUTURE_FAILED_STDIO_LOG_FIXTURE", blocked.join("stdio.log"))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(0x0800_0000)
+            .status()
+            .unwrap();
+        assert!(status.success(), "{status:?}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_failed_log_fixture() {
+        let Some(path) = std::env::var_os("FUTURE_FAILED_STDIO_LOG_FIXTURE") else {
+            return;
+        };
+        assert!(redirect_windowless_standard_streams(std::path::Path::new(&path)).is_err());
+        // Deliberately std macros: a failed log open cannot make these panic.
+        ::std::eprintln!("stderr survives a failed log open");
+        ::std::println!("stdout survives a failed log open");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_read_only_standard_file_is_repaired_without_a_console() {
+        use std::os::windows::process::CommandExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("stdio.log");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "console::tests::the_read_only_stream_fixture",
+                "--nocapture",
+            ])
+            .env("FUTURE_READ_ONLY_STREAM_FIXTURE", &path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(0x0800_0000)
+            .status()
+            .unwrap();
+        assert!(status.success(), "{status:?}");
+        assert!(std::fs::read_to_string(path)
+            .unwrap()
+            .contains("repaired read-only stderr"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_read_only_stream_fixture() {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::Console::{SetStdHandle, STD_ERROR_HANDLE};
+        let Some(path) = std::env::var_os("FUTURE_READ_ONLY_STREAM_FIXTURE") else {
+            return;
+        };
+        let path = std::path::PathBuf::from(path);
+        let input = path.with_extension("input");
+        std::fs::write(&input, "read-only destination").unwrap();
+        let file = std::fs::File::open(input).unwrap();
+        assert_ne!(
+            unsafe { SetStdHandle(STD_ERROR_HANDLE, file.as_raw_handle()) },
+            0
+        );
+        assert!(redirect_windowless_standard_streams(&path).unwrap());
+        ::std::eprintln!("repaired read-only stderr");
     }
 
     /// Counts the bytes a `tracing` subscriber writes, so a test can tell "the
