@@ -286,11 +286,20 @@ export async function recoverRemoteOutbox(desktopId: string, sessionId: string):
   if (!outbox.prompt && !outbox.continuation)
     return;
 
+  // Delivery is not atomic: it awaits the host's receipt round trip while the
+  // composer stays live, so a send that fails inside that window replaces the
+  // queued entry. The clear therefore belongs to the entry this recovery took,
+  // not to whatever the queue holds by the time the round trip answers — the
+  // same ownership check the first-delivery paths make. Clearing it blind would
+  // delete the newer prompt (and tell the reader, through the composer, that it
+  // is still queued).
   if (outbox.prompt) {
+    const recovering = outbox.prompt;
     try {
-      await deliverPrompt(desktopId, sessionId, outbox.prompt, true);
+      await deliverPrompt(desktopId, sessionId, recovering, true);
       const updated = getState(desktopId, sessionId);
-      setState(desktopId, sessionId, { ...updated, prompt: null });
+      if (updated.prompt?.commandId === recovering.commandId)
+        setState(desktopId, sessionId, { ...updated, prompt: null });
     }
     catch {
       // Leave it for the next recovery attempt.
@@ -298,10 +307,12 @@ export async function recoverRemoteOutbox(desktopId: string, sessionId: string):
   }
 
   if (outbox.continuation) {
+    const recovering = outbox.continuation;
     try {
-      await deliverContinuation(desktopId, sessionId, outbox.continuation, true);
+      await deliverContinuation(desktopId, sessionId, recovering, true);
       const updated = getState(desktopId, sessionId);
-      setState(desktopId, sessionId, { ...updated, continuation: null });
+      if (updated.continuation?.commandId === recovering.commandId)
+        setState(desktopId, sessionId, { ...updated, continuation: null });
     }
     catch {
       // Leave it for the next recovery attempt.

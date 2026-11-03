@@ -453,7 +453,13 @@ impl TerminalServer {
         // while the exit path below reads its metadata.
         let replay = std::mem::take(&mut attachment.replay);
         for chunk in replay {
-            if sink.send(Message::Binary(chunk.into())).await.is_err() {
+            // Output is always typed: a chunk whose first byte is NUL is still
+            // output, and the client's only discriminator is this byte.
+            if sink
+                .send(Message::Binary(protocol::data_frame(&chunk).into()))
+                .await
+                .is_err()
+            {
                 attachment.detach();
                 return;
             }
@@ -502,7 +508,11 @@ impl TerminalServer {
                 event = events.recv() => {
                     match event {
                         Some(SessionEvent::Data(bytes)) => {
-                            if sink.send(Message::Binary(bytes.into())).await.is_err() {
+                            if sink
+                                .send(Message::Binary(protocol::data_frame(&bytes).into()))
+                                .await
+                                .is_err()
+                            {
                                 break;
                             }
                         }
@@ -985,6 +995,17 @@ mod end_to_end {
     use super::*;
     use crate::terminal::test_support;
 
+    /// The payload of an output frame, or `None` for any other frame.
+    ///
+    /// Every server frame is one type byte plus a payload: output carries
+    /// [`protocol::DATA_PREFIX`] and the PTY's bytes verbatim, control carries
+    /// [`protocol::CONTROL_PREFIX`] and JSON. Decoding the type byte is what a
+    /// client does, so a test that skipped it would compare the screen against
+    /// its own framing.
+    fn output_payload(frame: &[u8]) -> Option<&[u8]> {
+        (frame.first() == Some(&protocol::DATA_PREFIX)).then(|| &frame[1..])
+    }
+
     /// A server with its own manager, so a test can create the exact child it
     /// needs without the store, the shared listener or another test's sessions.
     ///
@@ -1352,8 +1373,8 @@ mod end_to_end {
                 Ok(Some(Ok(Message::Binary(bytes)))) => {
                     if bytes.first() == Some(&protocol::CONTROL_PREFIX) {
                         meta = serde_json::from_slice(&bytes[1..]).ok();
-                    } else {
-                        output.push_str(&String::from_utf8_lossy(&bytes));
+                    } else if let Some(payload) = output_payload(&bytes) {
+                        output.push_str(&String::from_utf8_lossy(payload));
                     }
                 }
                 Ok(Some(Ok(Message::Text(text)))) => output.push_str(&text),
@@ -1971,8 +1992,8 @@ mod end_to_end {
             match tokio::time::timeout(escape(Duration::from_secs(5)), socket.next()).await {
                 Ok(Some(Ok(Message::Pong(payload)))) => pong = Some(payload.to_vec()),
                 Ok(Some(Ok(Message::Binary(bytes)))) => {
-                    if bytes.first() != Some(&protocol::CONTROL_PREFIX) {
-                        echoed.push_str(&String::from_utf8_lossy(&bytes));
+                    if let Some(payload) = output_payload(&bytes) {
+                        echoed.push_str(&String::from_utf8_lossy(payload));
                     }
                 }
                 Ok(Some(Ok(_))) => {}
@@ -2004,8 +2025,8 @@ mod end_to_end {
         while Instant::now() < deadline && !echoed.contains("pump-marker") {
             match tokio::time::timeout(escape(Duration::from_secs(5)), socket.next()).await {
                 Ok(Some(Ok(Message::Binary(bytes)))) => {
-                    if bytes.first() != Some(&protocol::CONTROL_PREFIX) {
-                        echoed.push_str(&String::from_utf8_lossy(&bytes));
+                    if let Some(payload) = output_payload(&bytes) {
+                        echoed.push_str(&String::from_utf8_lossy(payload));
                     }
                 }
                 Ok(Some(Ok(_))) => {}
@@ -2645,6 +2666,115 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("the pump never wrote the control frame");
+    }
+
+    /// Split a server's outbound tunnel into `(opcode, payload)` pairs.
+    ///
+    /// `FakeSocket::sent` is the raw byte stream, so a test that is about the
+    /// *payload* has to walk the RFC 6455 framing first (server frames are
+    /// never masked, and every length form is accepted).
+    fn sent_frames(bytes: &[u8]) -> Vec<(u8, Vec<u8>)> {
+        let mut frames = Vec::new();
+        let mut at = 0;
+        while at + 2 <= bytes.len() {
+            let opcode = bytes[at] & 0x0f;
+            let marker = bytes[at + 1] & 0x7f;
+            let (len, header) = match marker {
+                126 if at + 4 <= bytes.len() => (
+                    u16::from_be_bytes([bytes[at + 2], bytes[at + 3]]) as usize,
+                    4,
+                ),
+                127 if at + 10 <= bytes.len() => (
+                    u64::from_be_bytes(bytes[at + 2..at + 10].try_into().expect("8 bytes"))
+                        as usize,
+                    10,
+                ),
+                _ => (marker as usize, 2),
+            };
+            let start = at + header;
+            let end = start + len;
+            if end > bytes.len() {
+                break;
+            }
+            frames.push((opcode, bytes[start..end].to_vec()));
+            at = end;
+        }
+        frames
+    }
+
+    /// A PTY read that begins with NUL is output, and only the frame's type byte
+    /// says so.
+    ///
+    /// `printf '\0hello'` (or `cat` of any binary file) makes the reader hand
+    /// the session a read whose first byte is `0x00` — valid UTF-8, U+0000. With
+    /// the payload's first byte as the discriminator, a client read that frame
+    /// as a control one, failed to parse it as JSON and dropped it whole: up to
+    /// an 8 KiB live read or a 64 KiB replay chunk lost, cursor included. Both
+    /// paths — replay and live — are asserted here because they are two separate
+    /// sends in `pump`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn output_that_begins_with_nul_is_framed_as_data() {
+        let server = Arc::new(isolated_server());
+        let id = isolated_session(&server, "thread-nul", test_support::idle_command());
+        let live = server.manager.session_for_test(&id).expect("session");
+        // Retained output: what the next viewer is replayed.
+        live.on_data(b"\0replayed");
+
+        let socket = FakeSocket::new();
+        let pump = {
+            let server = Arc::clone(&server);
+            let socket = socket.clone();
+            let id = id.clone();
+            // `None` asks for the retained output from offset 0.
+            tokio::spawn(async move { server.pump(pump_socket(socket).await, id, None).await })
+        };
+        await_first_write(&socket).await;
+        live.on_data(b"\0live");
+
+        let deadline = Instant::now() + escape(Duration::from_secs(20));
+        let mut frames = sent_frames(&socket.sent());
+        while Instant::now() < deadline
+            && !frames.iter().any(|(_, payload)| payload.ends_with(b"live"))
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            frames = sent_frames(&socket.sent());
+        }
+        pump.abort();
+
+        let replay = frames
+            .iter()
+            .find(|(_, payload)| payload.ends_with(b"replayed"))
+            .expect("the replay frame must arrive");
+        assert_eq!(
+            replay.1[0],
+            protocol::DATA_PREFIX,
+            "replay is typed as data"
+        );
+        assert_eq!(
+            &replay.1[1..],
+            b"\0replayed",
+            "the replayed bytes are forwarded verbatim, NUL included"
+        );
+
+        let meta = frames
+            .iter()
+            .find(|(_, payload)| payload.first() == Some(&protocol::CONTROL_PREFIX))
+            .expect("the control frame must follow the replay");
+        assert!(
+            serde_json::from_slice::<Meta>(&meta.1[1..]).is_ok(),
+            "the control frame is still JSON behind its type byte"
+        );
+
+        let data = frames
+            .iter()
+            .find(|(_, payload)| payload.ends_with(b"live"))
+            .expect("the live frame must arrive");
+        assert_eq!(
+            data.1[0],
+            protocol::DATA_PREFIX,
+            "live output is typed as data"
+        );
+        assert_eq!(&data.1[1..], b"\0live");
     }
 
     /// Every way the pump can end because the *client* cannot be written to.
