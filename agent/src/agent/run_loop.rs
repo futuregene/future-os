@@ -1212,6 +1212,15 @@ impl Loop {
             // Charge the compaction summary once, the same way a model call is
             // charged: from the final usage chunk, never per progressive chunk.
             if let Some(summary_usage) = compaction_summary_usage.lock().clone() {
+                // Journal it as the request it is, through the same channel a
+                // model call uses. The session's per-category split is rebuilt
+                // from the journal for any record that lacks one, and
+                // `pricing_event_payloads` only prices `usage`/`model_changed`
+                // rows: a summary charged here but never journaled would leave
+                // that rebuilt split short by a whole request (h1-C2).
+                on_event(RunEvent::Model(ModelStreamEvent::Usage(
+                    summary_usage.clone(),
+                )));
                 let cost = summary_usage
                     .credit_cost
                     .unwrap_or_else(|| self.estimate_usage_cost(&summary_usage));
@@ -6712,6 +6721,63 @@ mod tests {
         // The provider's own `credit_cost` is authoritative and is charged once,
         // never per progressive chunk.
         assert_eq!(*loop_.cumulative_cost.lock(), 0.5);
+    }
+
+    /// A handoff summary is a billed model call, so it has to reach the run's
+    /// journal as a `usage` event exactly like a normal request.
+    ///
+    /// The session's per-category cost split is rebuilt from the journal
+    /// (`RpcSession::replay_cost_split` → `pricing_event_payloads`, which reads
+    /// only `usage`/`model_changed` rows), and for a record written before the
+    /// split was persisted that replay is the only source of the breakdown. A
+    /// summary charged to the counters but never journaled therefore leaves the
+    /// rebuilt split short by a whole request, and it is then cached with
+    /// `cost_split_complete = true`, so the understatement is permanent (h1-C2).
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_compaction_summary_is_journaled_as_a_usage_event() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
+        provider
+            .summary_usage
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        provider
+            .summary_unpriced
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut loop_ = Loop::new(provider.clone(), "mock");
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: true,
+            reserve_tokens: 2000,
+            keep_recent_tokens: 1,
+            context_window: 8192,
+            model: "mock".into(),
+        });
+        // The main call reports no usage, so every journaled `usage` event in
+        // this run can only come from the summary the compaction requested.
+        let journaled = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let record = journaled.clone();
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                compactable_messages(26_000),
+                &StreamContext::default(),
+                noop_on_text,
+                move |event| {
+                    if let RunEvent::Model(ModelStreamEvent::Usage(usage)) = &event {
+                        record
+                            .lock()
+                            .push((usage.prompt_tokens, usage.completion_tokens));
+                    }
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(text, "ok");
+        let recorded = journaled.lock().clone();
+        assert_eq!(
+            recorded,
+            vec![(1_000_000, 500_000)],
+            "the summary request must be journaled once, with the usage it charged"
+        );
     }
 
     /// A summary whose provider reports usage *without* a price still has to be

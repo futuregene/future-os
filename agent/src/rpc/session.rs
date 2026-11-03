@@ -1318,6 +1318,18 @@ impl ServerSession {
         // model, or a provider that reports no credit_cost), so the request is never
         // invisible; only the cost is conditional.
         if let Some(usage) = summary_usage.lock().clone() {
+            // Journal the summary as the billed request it is, through the same
+            // `usage` event a model call produces: the session's per-category
+            // split is rebuilt from the journal for a record that has none, and
+            // the replay prices only `usage`/`model_changed` rows — a summary
+            // charged here but never journaled would leave that rebuilt split
+            // short by a whole request (h1-C2).
+            self.broadcast_compaction_event(
+                phase,
+                crate::agent::RunEvent::Model(crate::llm::schema::ModelStreamEvent::Usage(
+                    usage.clone(),
+                )),
+            );
             let cost = usage.credit_cost.unwrap_or_else(|| {
                 crate::agent::estimate_usage_cost_with(
                     Some(&self.model_registry),
@@ -6228,6 +6240,140 @@ mod tests {
         assert!(
             (info["total_cost"].as_f64().unwrap() - expected).abs() < 1e-12,
             "the estimate must be what the session persisted: {info}"
+        );
+    }
+
+    /// A session recorded before the split was persisted rebuilds it from the
+    /// journal on load, and the rebuilt split must add up to what the session
+    /// was actually charged — including the compaction summary, which is a
+    /// billed request of its own.
+    ///
+    /// The summary is charged from an observer (`record_summary_usage`) and used
+    /// to reach the counters only through it; if it never reaches the journal,
+    /// `replay_cost_split` cannot price it, and the result is cached with
+    /// `cost_split_complete = true`, so the understatement never heals (h1-C2).
+    #[test]
+    fn a_replayed_cost_split_accounts_for_a_compaction_summary() {
+        assert_replayed_split_includes_a_compaction_summary("replayed-summary-split", false);
+    }
+
+    /// The records that need the replay are the older ones, which also exist in
+    /// the legacy (pre-canonical) journal layout — the repair must hold there too.
+    #[test]
+    fn a_replayed_legacy_cost_split_accounts_for_a_compaction_summary() {
+        assert_replayed_split_includes_a_compaction_summary("replayed-summary-split-legacy", true);
+    }
+
+    fn assert_replayed_split_includes_a_compaction_summary(id: &str, legacy: bool) {
+        let mut session = make_test_session_with_format(id, legacy);
+        {
+            let mut registry = session.model_registry.write();
+            registry.test_insert(crate::models::Model {
+                id: "priced".to_string(),
+                name: "priced".to_string(),
+                provider: "test".to_string(),
+                api: "openai-completions".to_string(),
+                base_url: "http://127.0.0.1:1/v1".to_string(),
+                input: vec!["text".to_string()],
+                output: vec!["text".to_string()],
+                context_window: 1_000_000,
+                max_tokens: 4_096,
+                cost: crate::models::Cost {
+                    input: 1_000.0,
+                    output: 2_000.0,
+                    cache_read: 500.0,
+                    cache_write: 250.0,
+                },
+                ..Default::default()
+            });
+        }
+        session.model = "test/priced".to_string();
+        // Reports 100 in / 20 out / 80 cache-read / 10 cache-write and no
+        // `credit_cost`, so the session's own total is exactly the sum of the
+        // per-category split: any gap between them is a request the split lost.
+        session.agent_loop.try_write().unwrap().provider = Arc::new(EstimatedCostSummaryProvider);
+        {
+            let mut messages = session.messages.write();
+            for i in 0..5 {
+                messages.push(crate::types::AgentMessage::new_user(
+                    "user",
+                    serde_json::json!(format!("question {i}")),
+                ));
+                messages.push(crate::types::AgentMessage {
+                    role: "assistant".into(),
+                    content: vec![
+                        crate::types::ContentBlock::text(format!("answer {i}")),
+                        crate::types::ContentBlock::tool_call(
+                            format!("read-{i}"),
+                            "read",
+                            serde_json::json!({"path":"large.rs"}),
+                            Default::default(),
+                        ),
+                    ],
+                    ..Default::default()
+                });
+                messages.push(crate::types::AgentMessage {
+                    role: "tool".into(),
+                    content: vec![crate::types::ContentBlock::tool_result(
+                        format!("read-{i}"),
+                        format!("tool result {i} ").repeat(2000),
+                        false,
+                    )],
+                    ..Default::default()
+                });
+            }
+            for message in messages.iter_mut() {
+                message.ensure_journal_entry_id();
+            }
+        }
+        persist_transcript(&session);
+        session.compact("").unwrap();
+
+        let total = |split: crate::models::CostSplit| {
+            split.input + split.output + split.cache_read + split.cache_write
+        };
+        let charged = *session.cumulative_cost.lock();
+        let live = *session.cumulative_cost_split.lock();
+        assert!(
+            charged > 0.0,
+            "the summary request must be charged to the session: {live:?}"
+        );
+        assert!(
+            (total(live) - charged).abs() < 1e-12,
+            "the live split must add up to the charge: {live:?} against {charged}"
+        );
+
+        // The record the replay exists for: same counters, no persisted split —
+        // what an agent older than the per-request split wrote.
+        let mut stored = session.session_manager.load(&session.session_id).unwrap();
+        for entry in stored
+            .entries
+            .iter_mut()
+            .filter(|entry| entry.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO)
+        {
+            if let Some(object) = entry
+                .content
+                .as_mut()
+                .and_then(|content| content.as_object_mut())
+            {
+                object.remove("cost_split");
+                object.remove("cost_split_complete");
+            }
+        }
+        session.session_manager.save(&stored).unwrap();
+
+        let id = session.session_id.clone();
+        session.switch_session(&id).unwrap();
+        let replayed = *session.cumulative_cost_split.lock();
+        assert_eq!(
+            *session.cumulative_cost.lock(),
+            charged,
+            "the total is authoritative and must survive the reload"
+        );
+        assert!(
+            (total(replayed) - charged).abs() < 1e-12,
+            "the replayed split must cover every request the session paid for, \
+             the compaction summary included: {replayed:?} against {charged}"
         );
     }
 
