@@ -95,7 +95,7 @@ impl SqliteStore {
     /// and a fold taken before that is not this run's projection any more.
     pub(crate) fn run_epoch(&self, session: &str, run: &str) -> Result<Option<i64>> {
         let (session, run) = (session.to_owned(), run.to_owned());
-        Ok(self.db.read(move |db| {
+        self.db.read(move |db| {
             Ok(db
                 .query_row(
                     "SELECT epoch FROM run_events WHERE session_id=?1 AND run_id=?2
@@ -104,7 +104,7 @@ impl SqliteStore {
                     |row| row.get::<_, i64>(0),
                 )
                 .optional()?)
-        })?)
+        })
     }
 
     /// A fold kept for this exact run and epoch, if one is cached and valid.
