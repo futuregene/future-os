@@ -136,7 +136,7 @@ impl Manager {
 }
 impl SqliteStore {
     pub(crate) fn storage_identity(&self) -> Result<StorageIdentity> {
-        self.db.read(|db| storage_identity(db))
+        self.db.fence(|db| storage_identity(db))
     }
 
     pub(crate) fn event_content_range(

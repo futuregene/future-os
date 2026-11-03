@@ -1,13 +1,14 @@
 //! Control-plane events and revision belong to one Agent service instance.
 use super::{SseBroadcaster, SseEvent};
 use std::sync::{
-    atomic::{AtomicI64, Ordering},
+    atomic::{AtomicBool, AtomicI64, Ordering},
     Arc,
 };
 
 pub struct ControlPlane {
     broadcaster: Arc<SseBroadcaster>,
     revision: AtomicI64,
+    streaming: parking_lot::RwLock<std::collections::HashMap<String, std::sync::Weak<AtomicBool>>>,
     pub(crate) provider_command_lock: std::sync::Mutex<()>,
 }
 impl Default for ControlPlane {
@@ -15,11 +16,29 @@ impl Default for ControlPlane {
         Self {
             broadcaster: Arc::new(SseBroadcaster::new()),
             revision: AtomicI64::new(0),
+            streaming: Default::default(),
             provider_command_lock: std::sync::Mutex::new(()),
         }
     }
 }
 impl ControlPlane {
+    /// Keep list reads independent of a session command holding its write lock.
+    pub(crate) fn register_streaming(&self, id: &str, flag: &Arc<AtomicBool>) {
+        let mut flags = self.streaming.write();
+        flags.insert(id.to_owned(), Arc::downgrade(flag));
+    }
+
+    pub(crate) fn streaming_snapshot(&self) -> std::collections::HashMap<String, bool> {
+        self.streaming
+            .read()
+            .iter()
+            .filter_map(|(id, flag)| {
+                flag.upgrade()
+                    .map(|flag| (id.clone(), flag.load(Ordering::Relaxed)))
+            })
+            .collect()
+    }
+
     pub fn global_events_broadcaster(&self) -> Arc<SseBroadcaster> {
         self.broadcaster.clone()
     }
@@ -92,6 +111,7 @@ impl ControlPlane {
     /// there is nothing to reconcile against afterwards, so the payload carries
     /// just the identity.
     pub fn publish_session_deleted(&self, session_id: &str, database_id: Option<&str>) {
+        self.streaming.write().remove(session_id);
         self.broadcaster.broadcast(SseEvent::new(
             "session_deleted",
             serde_json::json!({"sessionId": session_id,"databaseId":database_id}),

@@ -113,6 +113,8 @@ fn make_app_state_with_format(
         model_registry.clone(),
         queue_budget.clone(),
     );
+    let control_plane = Arc::new(crate::rpc::ControlPlane::default());
+    control_plane.register_streaming("default", &session.is_streaming);
     let sessions: HashMap<String, Arc<parking_lot::RwLock<ServerSession>>> = [(
         "default".to_string(),
         Arc::new(parking_lot::RwLock::new(session)),
@@ -121,7 +123,7 @@ fn make_app_state_with_format(
     .collect();
     AppState {
         agent_instance_id: "agent-test-instance".to_string(),
-        control_plane: std::sync::Arc::new(crate::rpc::ControlPlane::default()),
+        control_plane,
         data_root_id: "0".repeat(64),
         sessions: Arc::new(parking_lot::RwLock::new(sessions)),
         queue_budget,

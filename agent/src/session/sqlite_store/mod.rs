@@ -17,7 +17,7 @@ impl SqliteStore {
     /// A transcript can be absent while its session-scoped events exist.
     pub fn contains(&self, session: &str) -> Result<bool> {
         let session = session.to_owned();
-        self.db.read(move |db| {
+        self.db.fence(move |db| {
             let session=super::identity::BoundIdentity::session(db,&session)?;
             Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND revision>=0) OR EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')", [session], |r| r.get(0))?)
         })
@@ -44,7 +44,7 @@ impl SqliteStore {
     pub(crate) fn storage_format(&self, session: &str) -> Result<i64> {
         let session = session.to_owned();
         self.db
-            .read(move |db| crate::session::content::format(db, &session))
+            .fence(move |db| crate::session::content::format(db, &session))
     }
 
     pub fn open(path: &Path) -> Result<Self> {
@@ -138,7 +138,7 @@ impl SqliteStore {
 
     pub fn revision(&self, session: &str) -> Result<Option<i64>> {
         let session = session.to_owned();
-        self.db.read(move |db| {
+        self.db.fence(move |db| {
             let session = super::identity::BoundIdentity::session(db, &session)?;
             Ok(db
                 .query_row(

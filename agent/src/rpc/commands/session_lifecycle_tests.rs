@@ -2910,3 +2910,46 @@ fn new_session_reports_an_unopenable_store_instead_of_minting_one() {
     // Nothing was created: the id is still free.
     assert!(!state.sessions.read().contains_key("wanted"));
 }
+
+#[test]
+fn session_lists_do_not_wait_for_a_busy_session_command_lock() {
+    let state = make_app_state();
+    let mut persisted = crate::session::Session::new("/tmp", "mock");
+    persisted.id = "default".into();
+    persisted
+        .entries
+        .push(crate::session::SessionEntry::new_user(
+            "user",
+            serde_json::json!("hello"),
+        ));
+    state.session_manager.save(&persisted).unwrap();
+    let session = state.sessions.read()["default"].clone();
+    session
+        .read()
+        .is_streaming
+        .store(true, std::sync::atomic::Ordering::Release);
+    let busy = session.write();
+    let (send, receive) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let list = parse_response(&handle_command_internal(&state, make_cmd("list_sessions")));
+        let streaming = parse_response(&handle_command_internal(
+            &state,
+            make_cmd("list_streaming_sessions"),
+        ));
+        send.send((list, streaming)).unwrap();
+    });
+    let response = receive.recv_timeout(std::time::Duration::from_secs(2));
+    drop(busy);
+    worker.join().unwrap();
+    let (list, streaming) = response.expect("lists must not wait for a session write guard");
+    assert_eq!(list["success"], true);
+    assert!(list["data"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["id"] == "default" && row["isStreaming"] == true));
+    assert_eq!(
+        streaming["data"]["sessionIds"],
+        serde_json::json!(["default"])
+    );
+}

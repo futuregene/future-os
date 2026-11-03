@@ -90,3 +90,23 @@ Agent、Host 和 Desktop，覆盖各平台条件分支和 `tokio::select!` 等�
 `packages/logging/tests/support/output_boundaries.json` 用源码位置、调用内容及数量固定保留
 输出；新增裸打印或改动保留输出会使检查失败。CI 的集成测试复用此检查，并验证审计器能发现
 宏内遗漏。该命令只解析源码，不启动应用，也不运行单元测试。
+
+
+存储工作线程把排队和执行分别计时：任一阶段达到一秒都会输出
+`storage_job_slow`，包含 `job_id`、`lane`（`writer`、`reader`、`fence`、`snapshot` 或 `checkpoint`）、
+`job`、Rust 调用位置 `operation`、`queued_ms`、`elapsed_ms`、`total_ms`、
+`success`，以及可用的来源 RPC `command` / `session_id`，不记录 SQL 和对话正文。
+任务等待一秒后会输出 `storage_job_waiting`，之后每三十秒报告一次，
+`phase=queued` 或 `running` 区分尚未执行和执行未返回。
+升级备份另外用 `database_backup_step_started` / `database_backup_step_completed`
+分别记录原库校验、复制、备份校验和持久化发布。
+
+只读 RPC 的取消和截止时间会传递到读取队列及 SQLite 进度回调：过期的排队读取
+直接跳过，正在执行的查询协作式中断。已接收的写入仍保留原有持久化完成语义。
+SQLite 进度回调无法中断操作系统内阻塞的 I/O。
+
+
+首条消息启动单独记录：`new_session_stage` 区分存储检查、日志绑定、配置和发布，
+`prompt_start_stage` 区分 Host 会话准备与工作区 review 快照。
+Host 到 Agent 的单次 RPC 达到一秒会输出 `agent_command_slow`，包含命令和会话。
+新会话在创建请求中一次携带模型与思考级别，首条消息不再重复执行这两项配置写入。

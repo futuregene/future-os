@@ -117,3 +117,28 @@ output's source location, tokens and count. New raw diagnostics or changes to
 preserved output fail the check. CI integration tests reuse the audit and check
 its ability to find nested calls. This command only parses source: it starts no
 application and runs no unit tests.
+
+
+Storage worker diagnostics separate queue time from execution time. A
+`storage_job_slow` row is emitted when either exceeds one second and includes
+`job_id`, `lane` (`writer`, `reader`, `fence`, `snapshot`, or `checkpoint`), `job`, the Rust source
+`operation` location, `queued_ms`, `elapsed_ms`, `total_ms`, `success`, and the
+originating RPC `command` / `session_id` when available. SQL and conversation
+bodies are not logged. `storage_job_waiting` reports work still pending after
+one second (then every thirty seconds), with `phase=queued` or `running`.
+Upgrade backups additionally emit `database_backup_step_started` /
+`database_backup_step_completed` for source validation, copying, backup
+validation and durable publication.
+
+Read-only RPC cancellation and deadlines follow queued reads into SQLite's
+progress handler. An expired queued read is skipped; an executing query is
+interrupted cooperatively. Writes still complete their admitted durable work.
+OS-level blocking I/O cannot be interrupted by the SQLite progress callback.
+
+
+First-prompt startup is reported separately: `new_session_stage` splits storage
+inspection, journal binding, configuration and publication; `prompt_start_stage`
+splits Host session setup and the workspace review snapshot. `agent_command_slow`
+records the command and session when one Host-to-Agent RPC takes at least a
+second. A new session receives model/thinking selection in its creation request;
+its first prompt does not repeat those configuration mutations.

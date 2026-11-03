@@ -212,7 +212,7 @@ impl SqliteStore {
     /// Restore sequence counters without decoding the session event history.
     pub(crate) fn event_cursors(&self, session: &str) -> Result<(i64, i64)> {
         let session = session.to_owned();
-        self.db.read(move |db| {
+        self.db.fence(move |db| {
             let sql = if crate::session::content::format(db,&session)? == crate::session::content::FORMAT_VERSION {
                 "SELECT COALESCE(MAX(CASE WHEN epoch=-1 THEN durable_cursor END),-1),COALESCE(MAX(CASE WHEN epoch>=0 THEN durable_cursor END),-1) FROM stream_runs WHERE session_id=?1 AND run_id='' AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=stream_runs.id)"
             } else {
@@ -326,7 +326,7 @@ impl SqliteStore {
 
     pub(crate) fn has_events(&self, session: &str, run: &str) -> Result<bool> {
         let (session, run) = (session.to_owned(), run.to_owned());
-        self.db.call(move |db| {
+        self.db.fence(move |db| {
             Ok(db.query_row(
                 "SELECT EXISTS(SELECT 1 FROM run_events WHERE session_id=?1 AND run_id=?2) OR EXISTS(SELECT 1 FROM run_snapshots WHERE session_id=?1 AND run_id=?2) OR EXISTS(SELECT 1 FROM stream_runs WHERE session_id=?1 AND run_id=?2 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=stream_runs.id))",
                 params![session, run],

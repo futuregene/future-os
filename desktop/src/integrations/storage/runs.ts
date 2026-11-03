@@ -18,8 +18,8 @@ export async function createRun(input: {
   return invokeCommand<StoredRun>("create_run", { input });
 }
 
-export async function listRuns(threadId: string) {
-  return invokeCommand<StoredRun[]>("list_runs", { threadId });
+export async function listRuns(threadId: string, window?: { after?: number; before?: number }) {
+  return invokeCommand<StoredRun[]>("list_runs", { threadId, ...window });
 }
 
 /** The thread's most recent run, or null. */
