@@ -15,7 +15,7 @@ import type {
   SnapshotVersion,
   StreamEvent,
 } from "../types";
-import { useDesktopConnection } from "../useDesktopConnection";
+import { useDesktopConnection, FIRST_ANSWER_BUDGET_MS } from "../useDesktopConnection";
 
 jest.mock("../storage", () => ({
   __esModule: true,
@@ -33,6 +33,14 @@ jest.mock("../pendingContinuationStorage", () => ({
   discardPendingContinuation: jest.fn(async () => {}),
 }));
 
+/**
+ * Whether the mocked client's `open()` reaches the desktop at all.
+ *
+ * Declared with the `mock` prefix so the (hoisted) factory above may close over
+ * it: it is only read when `open()` runs, long after this module is evaluated.
+ */
+let mockOpenNeverAnswers = false;
+
 jest.mock("../client", () => {
   class MockRemoteClient {
     credentials: unknown;
@@ -47,6 +55,10 @@ jest.mock("../client", () => {
     setAppActive = jest.fn();
     setVisibleSession = jest.fn();
     open = jest.fn(async () => {
+      // A desktop nothing has ever answered: the attempt runs and comes back
+      // with no handshake, which is what the real client does when its
+      // requests go unanswered (it retries behind its own timers).
+      if (mockOpenNeverAnswers) return;
       this.callbacks.onConnectionState?.("ready" as never);
       this.callbacks.onReconnected?.();
     });
@@ -217,6 +229,7 @@ describe("useDesktopConnection", () => {
   beforeEach(() => {
     consoleError = jest.spyOn(console, "error");
     jest.clearAllMocks();
+    mockOpenNeverAnswers = false;
     options = makeOptions();
     result = { current: undefined as unknown as Result };
     renderer = null;
@@ -811,6 +824,81 @@ describe("useDesktopConnection", () => {
       act(() => client().callbacks.onConnectionState("reconnecting"));
       act(() => { jest.advanceTimersByTime(11_000); });
       expect(result.current.desktopOnline).toBe(false);
+    });
+  });
+
+  /**
+   * A phone that has never reached its desktop.
+   *
+   * The transport has two words for it — `connecting` while an attempt is in
+   * flight, `reconnecting` between them — and both are also its words for a
+   * healthy connection on its way back, so the screen had nothing to say but
+   * "connecting" for as long as the pairing was left alone, while the client
+   * quietly retried behind its own timers. This is the clock that ends it, and
+   * the two ordinary paths, which must not change.
+   */
+  describe("a desktop that never answers", () => {
+    beforeEach(() => { jest.useFakeTimers(); });
+    afterEach(() => { jest.useRealTimers(); });
+
+    test("nothing answered for the whole budget, so the wait ends as a terminal", async () => {
+      mockOpenNeverAnswers = true;
+      await mountConnected();
+      expect(result.current.phase).toBe("connecting");
+      expect(result.current.desktopUnanswered).toBe(false);
+      act(() => { jest.advanceTimersByTime(FIRST_ANSWER_BUDGET_MS - 1); });
+      expect(result.current.desktopUnanswered).toBe(false);
+      act(() => { jest.advanceTimersByTime(1); });
+      expect(result.current.desktopUnanswered).toBe(true);
+    });
+
+    // Ordinary path one: a connection that answers is never one that waited.
+    test("a connection that answers never reaches that state", async () => {
+      await mountConnected();
+      expect(result.current.phase).toBe("ready");
+      expect(result.current.hasConnectedContent).toBe(true);
+      act(() => { jest.advanceTimersByTime(FIRST_ANSWER_BUDGET_MS * 3); });
+      expect(result.current.desktopUnanswered).toBe(false);
+    });
+
+    // Ordinary path two: connected and then lost. This desktop has answered
+    // before, so the ordinary reconnect is still the true story — however long
+    // it takes to come back.
+    test("a connection that was up and dropped keeps the reconnect story", async () => {
+      await mountConnected();
+      act(() => client().callbacks.onConnectionState("reconnecting"));
+      act(() => { jest.advanceTimersByTime(FIRST_ANSWER_BUDGET_MS * 3); });
+      expect(result.current.phase).toBe("reconnecting");
+      expect(result.current.desktopUnanswered).toBe(false);
+    });
+
+    // Nothing is attempted while the app is away, so time spent there is not
+    // evidence that the desktop is silent.
+    test("a backgrounded phone does not run down the budget", async () => {
+      mockOpenNeverAnswers = true;
+      await mountConnected();
+      act(() => { result.current.setAppActive(false); });
+      act(() => { jest.advanceTimersByTime(FIRST_ANSWER_BUDGET_MS * 3); });
+      expect(result.current.desktopUnanswered).toBe(false);
+      act(() => { result.current.setAppActive(true); });
+      act(() => { jest.advanceTimersByTime(FIRST_ANSWER_BUDGET_MS); });
+      expect(result.current.desktopUnanswered).toBe(true);
+    });
+
+    // The retry on that page asks for a new attempt, so it gets a new window
+    // rather than the same verdict on the same frame.
+    test("a manual retry gets a fresh budget", async () => {
+      mockOpenNeverAnswers = true;
+      await mountConnected();
+      act(() => { jest.advanceTimersByTime(FIRST_ANSWER_BUDGET_MS); });
+      expect(result.current.desktopUnanswered).toBe(true);
+      await act(async () => {
+        await result.current.recover("request-failure");
+        await drain();
+      });
+      expect(result.current.desktopUnanswered).toBe(false);
+      act(() => { jest.advanceTimersByTime(FIRST_ANSWER_BUDGET_MS); });
+      expect(result.current.desktopUnanswered).toBe(true);
     });
   });
 

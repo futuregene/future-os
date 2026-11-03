@@ -329,6 +329,7 @@ function samePublishedData(previous: RuntimeEntry | undefined, next: RuntimeEntr
     && a.credentials === b.credentials
     && a.desktopOnline === b.desktopOnline
     && a.hasConnectedContent === b.hasConnectedContent
+    && a.desktopUnanswered === b.desktopUnanswered
     && a.presence === b.presence
     && a.capabilities === b.capabilities
     && previous.catalog.sessions === next.catalog.sessions
@@ -513,6 +514,7 @@ function machineSurface(
       agentAvailable,
       desktopDisconnected: presence?.disconnected,
       desktopDisconnectReason: presence?.reason,
+      desktopUnanswered: connection?.desktopUnanswered ?? false,
       error: connection?.error ?? app.error,
     }),
     sessions: runtime?.catalog.sessions ?? [],

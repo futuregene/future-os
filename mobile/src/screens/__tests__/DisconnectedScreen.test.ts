@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { ActivityIndicator } from "react-native";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { Button } from "../../components/Button";
+import { connectionPresentation } from "../../remote/connectionPresentation";
 import { useRemote } from "../../remote/RemoteContext";
 import { DisconnectedScreen } from "../DisconnectedScreen";
 import i18n from "../../i18n";
@@ -143,4 +144,37 @@ test("a reconnecting screen never offers the destructive unpair, even for a revo
   expect(action(i18n.t("connection.reconnect")).props.label).toBe(i18n.t("connection.reconnect"));
   expect(painted()).toContain(i18n.t("connection.connecting"));
   expect(painted()).not.toContain(i18n.t("connection.pairingExpired"));
+});
+
+/**
+ * The reported case: a phone that has never reached its desktop, which used to
+ * sit on the yellow "connecting" page for as long as it was left alone — no
+ * error, no timeout, nothing to act on, and no way to tell it apart from a
+ * connection that was nearly there.
+ */
+test("a desktop that never answered says so instead of waiting for one", () => {
+  const onReconnect = jest.fn();
+  useRemoteMock.mockReturnValue(remoteFor({
+    connectionPresentation: connectionPresentation({
+      phase: "reconnecting",
+      desktopOnline: false,
+      desktopUnanswered: true,
+    }),
+  }));
+  render({ onReconnect });
+
+  // A terminal page, not the wait: 已断开 rather than 正在连接, with the reason
+  // saying the desktop is not serving this phone, and a code to quote.
+  expect(painted()).toContain(i18n.t("connection.disconnected"));
+  expect(painted()).not.toContain(i18n.t("connection.connecting"));
+  expect(painted()).not.toContain(i18n.t("connection.statusDetails.connecting.reason"));
+  expect(painted()).toContain(`${i18n.t("connection.disconnectDetails.notServing.reason")} (RT007)`);
+  expect(painted()).toContain(i18n.t("connection.disconnectDetails.notServing.solution"));
+  // And the ways out are the same ones every red page offers: try again, or
+  // drop the pairing from here.
+  const retry = action(i18n.t("connection.reconnect"));
+  expect(retry.props.loading).toBe(false);
+  act(() => retry.props.onPress());
+  expect(onReconnect).toHaveBeenCalledTimes(1);
+  expect(action(i18n.t("sessions.unpair"))).toBeDefined();
 });

@@ -302,6 +302,11 @@ export const resources = {
             reason: "Could not connect to the desktop",
             solution: "Make sure the desktop is online, then reconnect",
           },
+          notServing: {
+            reason: "The desktop never answered this phone",
+            solution:
+              "Check that the desktop app is open and allows phone control; if that computer was reinstalled or paired with other devices, add this phone to it again",
+          },
         },
         notConnected: "Not connected",
         manuallyDisconnectedHint:
@@ -315,6 +320,8 @@ export const resources = {
         revoked: "Connection disconnected. Pair again. (PA001)",
         offlineHint:
           "The desktop may be sleeping or disconnected. Wake the computer and keep FutureOS running.",
+        notServingHint:
+          "The desktop is not answering this phone. It may have been reinstalled or paired with other devices — add this phone to that computer again.",
         noModels: "No models available",
         noModelsHint:
           "The desktop is connected, but no model is configured. Set one up in FutureOS Desktop.",
@@ -1439,6 +1446,11 @@ export const resources = {
             reason: "未能连接到桌面端",
             solution: "请确认桌面端在线后重新连接",
           },
+          notServing: {
+            reason: "桌面端始终没有应答这台手机",
+            solution:
+              "请确认桌面端已打开并允许手机遥控；若该电脑重装过或改用其他设备配对，请在其上重新添加这台手机",
+          },
         },
         notConnected: "未连接",
         manuallyDisconnectedHint:
@@ -1451,6 +1463,8 @@ export const resources = {
         reconnect: "重新连接",
         revoked: "连接已断开，请重新配对（PA001）",
         offlineHint: "桌面端可能正在休眠或断网，请唤醒电脑并保持桌面端运行",
+        notServingHint:
+          "桌面端没有响应这台手机，可能已重装或改用其他设备配对。请在该电脑上重新添加这台手机。",
         noModels: "没有可用模型",
         noModelsHint:
           "已连接桌面端，但还没有配置模型。请在桌面端配置模型后再回来。",

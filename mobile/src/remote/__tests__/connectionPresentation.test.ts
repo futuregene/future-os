@@ -85,3 +85,61 @@ test.each([
   expect(shown.hintKey).toBe("connection.failedHint");
   expect(shown.level).toBe("disconnected");
 });
+
+/**
+ * The one state the transport cannot express.
+ *
+ * `connecting` and `reconnecting` are the client's words both for an attempt in
+ * flight and for a pairing nothing has ever answered; a phone that has never
+ * reached the desktop therefore sat on "connecting" with no end, which reads
+ * exactly like "nearly there". The connection measures the silence and hands
+ * the fact here, and here it becomes a terminal the user can act on.
+ */
+test("a desktop that never answered is a terminal, not another wait", () => {
+  const shown = connectionPresentation({
+    phase: "reconnecting",
+    desktopOnline: false,
+    desktopUnanswered: true,
+  });
+  expect(shown).toMatchObject({
+    level: "disconnected",
+    customerState: "desktopNotServing",
+    action: "reconnect",
+    supportCode: "RT007",
+    titleKey: "connection.disconnected",
+    hintKey: "connection.notServingHint",
+  });
+  // The same phone, one fact earlier: still a wait, so the two cannot collapse
+  // into one reading.
+  expect(connectionPresentation({ phase: "reconnecting", desktopOnline: false })).toMatchObject({
+    level: "connecting",
+    customerState: "connecting",
+    supportCode: null,
+  });
+});
+
+test.each<ConnectionPhase>(["booting", "claiming", "connecting", "reconnecting", "refreshing"])(
+  "a %s phone with no answer at all is that same terminal",
+  (phase) => {
+    expect(connectionPresentation({ phase, desktopOnline: false, desktopUnanswered: true }))
+      .toMatchObject({ customerState: "desktopNotServing", level: "disconnected" });
+  },
+);
+
+test("an answer, a stated cause or a failure all outrank the unanswered flag", () => {
+  // The desktop did answer: nothing about silence applies any more.
+  expect(
+    connectionPresentation({ phase: "ready", desktopOnline: true, desktopUnanswered: true }),
+  ).toMatchObject({ level: "connected", customerState: "connected" });
+  expect(
+    connectionPresentation({ phase: "ready", desktopOnline: false, desktopUnanswered: true }),
+  ).toMatchObject({ customerState: "waitingDesktop" });
+  // The desktop said it was going away — a cause of its own.
+  expect(
+    connectionPresentation({ phase: "stopped", desktopOnline: false, desktopUnanswered: true }),
+  ).toMatchObject({ customerState: "disconnected", supportCode: null });
+  // The client gave up with an error the phone can classify.
+  expect(
+    connectionPresentation({ phase: "failed", desktopOnline: false, desktopUnanswered: true, error: "503" }),
+  ).toMatchObject({ customerState: "serviceUnavailable", supportCode: "SV001" });
+});
