@@ -10,6 +10,14 @@ pub fn list_runs(thread_id: String) -> Result<Vec<store::RunRecord>, crate::Erro
     store::list_runs(&thread_id)
 }
 
+pub fn list_runs_in_window(
+    thread_id: String,
+    after: Option<i64>,
+    before: Option<i64>,
+) -> Result<Vec<store::RunRecord>, crate::Error> {
+    store::list_runs_in_window(&thread_id, after, before)
+}
+
 /// The thread's most recent run, or None. Used for initial load and pushed
 /// terminal reconciliation without decoding the thread's full run history.
 pub fn get_latest_run(thread_id: String) -> Result<Option<store::RunRecord>, crate::Error> {

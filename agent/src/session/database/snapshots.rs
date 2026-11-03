@@ -41,10 +41,16 @@ impl Readers {
         })))
     }
 
+    #[track_caller]
     pub(super) fn acquire(&self) -> Result<ReadSnapshot> {
-        let deadline = Instant::now() + WAIT;
+        let started = Instant::now();
+        let request = super::request::Context::current();
+        let deadline = started + WAIT;
         let mut state = self.0.state.lock();
         loop {
+            if let Some(request) = &request {
+                request.check()?;
+            }
             ensure!(!state.closed, "history snapshot readers are closed");
             if let Some(connection) = state.idle.pop() {
                 // The guard owns the connection before BEGIN, so a failed
@@ -57,6 +63,12 @@ impl Readers {
                 state.active.retain(|lease| lease.strong_count() != 0);
                 state.active.push(Arc::downgrade(&snapshot.0));
                 drop(state);
+                super::slow::Job::new("snapshot", "snapshot_admission").report(
+                    Duration::ZERO,
+                    started.elapsed(),
+                    true,
+                    request.as_ref(),
+                );
                 snapshot.read(|db| {
                     db.execute_batch("BEGIN DEFERRED")?;
                     Ok(())
@@ -67,7 +79,10 @@ impl Readers {
                 Instant::now() < deadline,
                 "history snapshot read admission timed out"
             );
-            self.0.available.wait_until(&mut state, deadline);
+            self.0.available.wait_until(
+                &mut state,
+                deadline.min(Instant::now() + Duration::from_millis(50)),
+            );
         }
     }
 
@@ -108,6 +123,7 @@ struct Lease {
     deadline: Instant,
 }
 impl ReadSnapshot {
+    #[track_caller]
     pub(crate) fn read<T>(&self, read: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
         ensure!(
             Instant::now() < self.0.deadline,
@@ -125,7 +141,23 @@ impl ReadSnapshot {
             .reader_queue
             .record(queued.elapsed(), true);
         let started = Instant::now();
-        let result = read(connection.as_mut().context("history snapshot is closed")?);
+        let request = super::request::Context::current();
+        let budget = request
+            .clone()
+            .unwrap_or_else(|| {
+                super::request::Context::new("history_snapshot".into(), String::new(), None)
+            })
+            .bounded(self.0.deadline);
+        let result = budget.run(
+            connection.as_mut().context("history snapshot is closed")?,
+            read,
+        );
+        super::slow::Job::new("snapshot", "history_page").report(
+            started.elapsed(),
+            started.duration_since(queued),
+            result.is_ok(),
+            request.as_ref(),
+        );
         self.0
             .pool
             .metrics

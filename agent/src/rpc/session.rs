@@ -106,6 +106,7 @@ pub struct ServerSession {
     /// Full message history as persisted to/loaded from the session JSONL.
     pub messages: Arc<parking_lot::RwLock<Vec<crate::types::AgentMessage>>>,
     pub(crate) history_loaded: bool,
+    history_loading: Arc<parking_lot::Mutex<()>>,
     /// Latest compaction checkpoint, shared by the session's control-plane loop
     /// and every run snapshot minted from it. A run that commits a checkpoint
     /// updates this cell directly, so the next prompt never has to reload the
@@ -333,6 +334,7 @@ impl ServerSession {
             agent_loop,
             messages: Arc::new(parking_lot::RwLock::new(vec![])),
             history_loaded: true,
+            history_loading: Default::default(),
             active_checkpoint,
             checkpoint_loaded: std::sync::atomic::AtomicBool::new(true),
             model: String::new(),
@@ -1860,6 +1862,64 @@ impl ServerSession {
         self.restore_session(id, false)
     }
 
+    /// Load and project cold history without holding the command lock. Only
+    /// publication takes the write guard; another prompt can then reuse it.
+    pub(crate) fn ensure_history_loaded_unlocked(
+        session: &Arc<parking_lot::RwLock<Self>>,
+    ) -> Result<()> {
+        let loading = session.read().history_loading.clone();
+        let _loading = loading.lock();
+        loop {
+            let (manager, id, model, supports_images) = {
+                let current = session.read();
+                if current.history_loaded {
+                    return Ok(());
+                }
+                let supports_images = current
+                    .model_registry
+                    .read()
+                    .request_model_accepts_images(&current.model);
+                (
+                    current.session_manager.clone(),
+                    current.session_id.clone(),
+                    current.model.clone(),
+                    supports_images,
+                )
+            };
+            let started = std::time::Instant::now();
+            let loaded = manager.load(&id)?;
+            let messages =
+                crate::session::entries_to_agent_messages(&loaded.entries, supports_images);
+            let checkpoint = crate::session::latest_context_checkpoint(&loaded.entries);
+            let mut current = session.write();
+            if current.history_loaded {
+                return Ok(());
+            }
+            anyhow::ensure!(
+                !current
+                    .history_reset_in_progress
+                    .load(std::sync::atomic::Ordering::Acquire),
+                "session history reset is in progress"
+            );
+            if current.session_id != id || current.model != model {
+                continue;
+            }
+            *current.messages.write() = messages;
+            *current.active_checkpoint.lock() = checkpoint;
+            current.history_loaded = true;
+            current
+                .checkpoint_loaded
+                .store(true, std::sync::atomic::Ordering::Release);
+            tracing::debug!(
+                event = "session_context_loaded",
+                session_id = id,
+                entries = loaded.entries.len(),
+                elapsed_ms = started.elapsed().as_millis() as u64
+            );
+            return Ok(());
+        }
+    }
+
     pub(crate) fn ensure_history_loaded(&mut self) -> Result<()> {
         if !self.history_loaded {
             self.load_history()?;
@@ -2098,7 +2158,11 @@ impl ServerSession {
             self.session_id = id.to_string();
             self.scheduler = Arc::new(crate::runtime::InMemoryRunQueue::with_limits_and_global(
                 id,
-                crate::session::next_run_sequence(&session.entries),
+                if load_history {
+                    crate::session::next_run_sequence(&session.entries)
+                } else {
+                    self.session_manager.next_sequence(id)?
+                },
                 crate::runtime::DEFAULT_SESSION_QUEUE_CAPACITY,
                 crate::runtime::DEFAULT_SESSION_QUEUE_BYTES,
                 crate::runtime::DEFAULT_REQUEST_BYTES,

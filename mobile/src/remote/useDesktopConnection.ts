@@ -131,6 +131,45 @@ export interface DesktopConnectionOptions {
   resetTimeline(): void;
 }
 
+/**
+ * How long a phone waits for the first answer from a desktop it has never
+ * reached before saying that no answer is coming.
+ *
+ * The transport's own numbers set the floor. A client that has never been ready
+ * gives one attempt 20 s (`connection_timeout`, `packages/remote-client`), of
+ * which a single socket connect is 10 s and a single handshake request 10 s;
+ * between attempts it backs off from 1 s to 30 s, and once that window is spent
+ * it goes quiet for five minutes before trying again. A network slow enough to
+ * fail all of that has already been given up on by the client, so three full
+ * windows — 60 s — judges nothing early, while still ending the wait long
+ * before the client's own five-minute silence does.
+ *
+ * Raise it if users on genuinely slow networks are told this while a
+ * connection would still have arrived; the only cost of raising it is a longer
+ * wait before the phone admits that nothing is answering.
+ */
+export const FIRST_ANSWER_BUDGET_MS = 60_000;
+
+/**
+ * Whether this connection is still waiting for its very first answer.
+ *
+ * `hasConnectedContent` is the phone's own record that this pairing has been
+ * usable at least once; the phases are the ones the transport uses both for a
+ * first connection and for a connection coming back (`refreshing` is a
+ * credential rotation, which a first attempt can also enter — and leave —
+ * without anything ever having answered). A pairing that has answered before is
+ * never in this state: whatever took it down, this desktop is a machine that
+ * has served this phone, and the ordinary reconnect already explains that.
+ */
+export function awaitingFirstAnswer(
+  phase: ConnectionPhase,
+  hasConnectedContent: boolean,
+): boolean {
+  if (hasConnectedContent) return false;
+  return phase === "booting" || phase === "claiming" || phase === "connecting"
+    || phase === "reconnecting" || phase === "refreshing";
+}
+
 export interface DesktopConnection {
   /**
    * The live client, or null while this desktop has no usable connection. The
@@ -144,6 +183,17 @@ export interface DesktopConnection {
   /** The desktop is reachable and its agent is up, judged from presence. */
   desktopOnline: boolean;
   hasConnectedContent: boolean;
+  /**
+   * Whether this pairing has stopped answering altogether.
+   *
+   * Reported once the first-answer budget (`FIRST_ANSWER_BUDGET_MS`) has passed
+   * with not one answer from the desktop, and only while the connection is
+   * still waiting for one. The transport has no word for it — it says
+   * `connecting`, and keeps saying it while it retries behind its own timer —
+   * so this is the fact that lets the phone end that wait instead of pretending
+   * it is nearly over.
+   */
+  desktopUnanswered: boolean;
   capabilities: Set<string>;
   fileTransferSupported: boolean;
   promptReceiptSupported: boolean;
@@ -219,6 +269,12 @@ export function useDesktopConnection({
   const [capabilities, setCapabilities] = useState<Set<string>>(() => new Set());
   const [desktopOnline, setDesktopOnline] = useState(false);
   const [hasConnectedContent, setHasConnectedContent] = useState(false);
+  /** The first-answer budget has run out on this attempt (see the clock below). */
+  const [firstAnswerSpent, setFirstAnswerSpent] = useState(false);
+  // The app's own lifecycle, mirrored for the clock below. The ref version is
+  // what the connection reads synchronously; the state is what lets a timer be
+  // armed and disarmed as the app comes and goes.
+  const [appActive, setAppActiveState] = useState(true);
   // Generations fence late callbacks: a timer or a promise armed against one
   // connection generation must not write into the next one.
   const accessRef = useRef(0);
@@ -341,6 +397,9 @@ export function useDesktopConnection({
       setError(null);
       setPresence(null);
       setDesktopOnline(false);
+      // A new attempt is a new window: whatever the previous one was told, this
+      // one has not been given its budget yet.
+      setFirstAnswerSpent(false);
       setPhase("connecting");
       // A pairing change means a different desktop's conversations: everything
       // mirrored from the old one is not this one's.
@@ -526,6 +585,9 @@ export function useDesktopConnection({
           connectionReadyRef.current = state === "ready";
           if (state === "ready") {
             setHasConnectedContent(true);
+            // An answer arrived, so this pairing is not a silent one — whatever
+            // the next disconnection turns out to be, it is not this.
+            setFirstAnswerSpent(false);
             setPhase("ready");
             setError(null);
             // Handshake presence arrives before ready; evaluate it now rather
@@ -641,6 +703,11 @@ export function useDesktopConnection({
    */
   const recover = useCallback(
     async (reason: RecoveryReason) => {
+      // A recovery is a fresh attempt at the same desktop, so the answer it is
+      // waiting for has not been withheld yet: the clock starts again. Without
+      // this, pressing the retry on the "not serving" page would leave that
+      // page up for the whole of the attempt it asked for.
+      setFirstAnswerSpent(false);
       const client = clientRef.current;
       if (AppState.currentState !== "active") {
         // A recovery that never happened is the wedge an app restart used to be
@@ -688,6 +755,7 @@ export function useDesktopConnection({
 
   const setAppActive = useCallback((next: boolean) => {
     appActiveRef.current = next;
+    setAppActiveState(next);
     clientRef.current?.setAppActive(next);
   }, [clientRef]);
 
@@ -765,6 +833,28 @@ export function useDesktopConnection({
     });
   }, [credentialsRef, onUnpaired, phase, verifyPairing]);
 
+  // The clock that ends "connecting".
+  //
+  // Neither phase says whether anything answered: the transport reports
+  // `connecting` while an attempt is in flight and `reconnecting` between
+  // them, and it keeps retrying a desktop that never answers for as long as
+  // the pairing lasts — with a five-minute silence once the first attempt
+  // budget is spent. So a phone that has never reached this pairing has no word
+  // but "connecting", indefinitely, which is exactly what "nearly there" looks
+  // like. Nothing is attempted while the app is in the background either, so
+  // the clock only runs in front — and starts over on the way back rather than
+  // counting time in which the phone was not trying at all.
+  const waitingForFirstAnswer = awaitingFirstAnswer(phase, hasConnectedContent);
+  useEffect(() => {
+    if (!waitingForFirstAnswer || !appActive || firstAnswerSpent) return;
+    const timer = setTimeout(() => setFirstAnswerSpent(true), FIRST_ANSWER_BUDGET_MS);
+    return () => clearTimeout(timer);
+  }, [appActive, firstAnswerSpent, waitingForFirstAnswer]);
+  // Only ever reported while the phone is in fact still waiting: an answer, a
+  // disconnect the desktop stated, or a failure the phone can classify all end
+  // the wait, and none of them may inherit the previous attempt's verdict.
+  const desktopUnanswered = firstAnswerSpent && waitingForFirstAnswer;
+
   // A heartbeat that stopped is only visible against the clock. Judging it here
   // (rather than on a push) is what makes a silently dead desktop read as
   // offline instead of as "the last packet said it was fine".
@@ -794,6 +884,7 @@ export function useDesktopConnection({
     presence,
     desktopOnline,
     hasConnectedContent,
+    desktopUnanswered,
     capabilities,
     fileTransferSupported: capabilities.has("file_transfer_v1"),
     promptReceiptSupported: capabilities.has("prompt_receipt_v1"),

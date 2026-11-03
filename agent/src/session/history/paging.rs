@@ -355,6 +355,33 @@ fn materialize_display_page(
     let mut next = page.next_offset;
     let mut more = page.has_more;
     let row_count = page.rows.len();
+    // Every canonical row this page will materialise, in one database read
+    // instead of one per entry (see `Snapshot::display_page`). Rows whose body
+    // the fragment cache already holds are left out, so a warm page still costs
+    // no database round trip at all.
+    let mut materialised = std::collections::HashMap::new();
+    if let Some(snapshot) = &page.snapshot {
+        let mut missing: Vec<reader::Entry> = Vec::new();
+        for row in &page.rows {
+            let Some(entry) = row.canonical_entry.as_ref() else {
+                continue;
+            };
+            let key = snapshot.render_key(entry, &row.index_payload);
+            if cache.is_some_and(|cache| cache.lock().get(&key).is_some()) {
+                continue;
+            }
+            missing.push(entry.clone());
+        }
+        if !missing.is_empty() {
+            let values = snapshot.display_page(
+                store.ok_or_else(|| anyhow::anyhow!("canonical page has no reader"))?,
+                &missing,
+            )?;
+            for (entry, value) in missing.iter().zip(values) {
+                materialised.insert(entry.position, value);
+            }
+        }
+    }
     for DisplayPageRow {
         ordinal,
         index_payload: overlay,
@@ -378,13 +405,9 @@ fn materialize_display_page(
             let canonical = canonical_entry.is_some();
             let entry = if let Some(locator) = canonical_entry {
                 Some(serde_json::from_value(
-                    page.snapshot
-                        .as_ref()
-                        .ok_or_else(|| anyhow::anyhow!("canonical page has no snapshot"))?
-                        .display(
-                            store.ok_or_else(|| anyhow::anyhow!("canonical page has no reader"))?,
-                            &locator,
-                        )?,
+                    materialised.remove(&locator.position).ok_or_else(|| {
+                        anyhow::anyhow!("page row was not materialised with its page")
+                    })?,
                 )?)
             } else if overlay["kind"] == "session_info" {
                 None
@@ -486,6 +509,9 @@ impl Manager {
         let started = std::time::Instant::now();
         let mut cache_hit = false;
         let mut index_rebuilt = false;
+        // One page's round trips, counted so "this read is slow" can be split into
+        // "the database work was slow" and "we spent the time handing work to it".
+        let tally = std::sync::Arc::new(crate::session::content::reader::ReadTally::default());
         tracing::debug!(
             event = "history_page_read_started",
             session_id = id,
@@ -502,7 +528,7 @@ impl Manager {
             // being repaired is not cacheable — that repair is what the caller is
             // owed, and it runs below.
             let owned = id.to_owned();
-            let (revision, ready) = store.db.read(move |db| {
+            let (revision, ready) = store.db.fence(move |db| {
                 // The stored key is not always the wire id (native sessions are a
                 // binary identity), so it is resolved the way every other reader
                 // resolves it.
@@ -542,10 +568,7 @@ impl Manager {
                 // Rebuild disposable projections before capturing the page. No
                 // page or body has been read yet, and this is not a failed-read retry.
                 drop(snapshot);
-                let owned = id.to_owned();
-                store
-                    .db
-                    .call(move |db| super::with_history_index(db, &owned, |_| Ok(())))?;
+                self.rebuild_history_index(id)?;
                 tracing::debug!(
                     event = "history_projection_rebuild_completed",
                     session_id = id
@@ -565,6 +588,7 @@ impl Manager {
         })?;
             if let Some(scope) = &mut page.snapshot {
                 scope.use_read_snapshot(snapshot);
+                scope.share_tally(tally.clone());
             }
             let (value, bytes) = materialize_display_page(
                 page,
@@ -584,19 +608,28 @@ impl Manager {
             Ok(value)
         })();
         let elapsed_ms = started.elapsed().as_millis() as u64;
+        let cost = tally.cost();
         match &result {
             Ok(value) => {
                 let entries = value
                     .get("entries")
                     .and_then(serde_json::Value::as_array)
                     .map_or(0, Vec::len);
+                // `db_reads` is how many round trips the page made to the database
+                // and `db_handoff_ms` is the part of them that was not database
+                // work (pool wait, handoff into the blocking pool, wake-up).
+                // `db_job_ms` is the work itself; the two together are the whole
+                // cost of talking to the database for this page.
                 tracing::debug!(
                     event = "history_page_read_completed",
                     session_id = id,
                     elapsed_ms,
                     entries,
                     cache_hit,
-                    index_rebuilt
+                    index_rebuilt,
+                    db_reads = cost.closures,
+                    db_job_ms = cost.job_micros / 1000,
+                    db_handoff_ms = cost.handoff_micros() / 1000
                 );
                 if elapsed_ms >= 1000 {
                     tracing::warn!(
@@ -605,7 +638,10 @@ impl Manager {
                         elapsed_ms,
                         entries,
                         cache_hit,
-                        index_rebuilt
+                        index_rebuilt,
+                        db_reads = cost.closures,
+                        db_job_ms = cost.job_micros / 1000,
+                        db_handoff_ms = cost.handoff_micros() / 1000
                     );
                 }
             }

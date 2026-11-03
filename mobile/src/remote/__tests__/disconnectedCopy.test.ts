@@ -68,6 +68,22 @@ describe("the disconnected page names one cause and one next step", () => {
   test("a null error is not mistaken for a recovery timeout", () => {
     expect(disconnectedCopy(presentation({}), "app_exit", null)).toBe("exit");
   });
+
+  /**
+   * Nothing answered, so nothing about the *connection* explains it: the
+   * desktop's own silence is the cause, and it outranks every error string that
+   * the last failed attempt happened to leave behind.
+   */
+  test("a desktop that never answered is named as that, ahead of any error", () => {
+    const shown = connectionPresentation({
+      phase: "reconnecting",
+      desktopOnline: false,
+      desktopUnanswered: true,
+    });
+    expect(disconnectedCopy(shown)).toBe("notServing");
+    expect(disconnectedCopy(shown, "system_sleep", "request timed out")).toBe("notServing");
+    expect(disconnectedCopy(shown, "user_disconnect", "recovery_timeout")).toBe("notServing");
+  });
 });
 
 describe("raw transport detail is classified into a customer category", () => {

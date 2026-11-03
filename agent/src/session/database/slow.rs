@@ -1,22 +1,6 @@
-//! One line of evidence when a job holds a storage lane long enough to explain
-//! a caller that will not come back.
-//!
-//! A remote command that times out is answered by a *different* process: the
-//! desktop logs only its own wait (`remote command slow: type=… elapsed=…`),
-//! which says the caller waited but not what it waited for. The writer and the
-//! checkpoint share no clock with it, so this is the other half: the lane's own
-//! row, naming the job and separating the two worlds a long wait can come from —
-//! `elapsed` (the job itself ran that long) versus `queued` (the job started
-//! immediately and the thread was not running). Measured 2026-10-29: six remote
-//! commands released within 400 ms of each other after 18–30 s, which is one
-//! blocking job; which one, and whether the process was merely descheduled, was
-//! not answerable from the desktop log.
-//!
-//! Same cut as the command-side diagnostics (`SLOW_COMMAND_MS` in
-//! `host/src/remote_host/command_diagnostics.rs`, 1 s): both sides answer the
-//! same question about the same incident, so a reader comparing the two files
-//! must not have to convert between two thresholds. A row is formatted only
-//! when the cut is crossed, so the ordinary job pays one comparison.
+//! Storage latency evidence without SQL or transcript payloads. Both queue-only
+//! stalls and executing jobs are reported, including work still pending. All
+//! durations are wall time: I/O, lock waits and process suspension can contribute.
 use std::time::Duration;
 
 /// Below this a job is ordinary traffic and is not worth a log row.
@@ -24,12 +8,10 @@ pub(super) const SLOW_JOB_MS: u128 = 1_000;
 
 /// The log row for one lane job, or `None` when it was ordinary traffic.
 ///
-/// `elapsed` is the work; `queued` is how long it waited for its turn. The two
-/// together are the point: a long `elapsed` names a job that must be split, a
-/// long `queued` with a short `elapsed` names a process that was not scheduled
-/// (sleep, app-nap, paging) or a lane held by an earlier job.
+/// `elapsed` measures execution wall time; `queued` measures the wait before
+/// execution. Neither alone identifies the cause of an OS or disk stall.
 pub(super) fn slow_line(job: &str, elapsed: Duration, queued: Duration) -> Option<String> {
-    (elapsed.as_millis() >= SLOW_JOB_MS).then(|| {
+    (elapsed.as_millis() >= SLOW_JOB_MS || queued.as_millis() >= SLOW_JOB_MS).then(|| {
         format!(
             "storage job slow: job={job} elapsed={}ms queued={}ms",
             elapsed.as_millis(),
@@ -39,15 +21,74 @@ pub(super) fn slow_line(job: &str, elapsed: Duration, queued: Duration) -> Optio
 }
 
 /// Write that row into the agent's log, when the cut is crossed.
-pub(super) fn report(job: &str, elapsed: Duration, queued: Duration) {
-    if let Some(line) = slow_line(job, elapsed, queued) {
-        tracing::warn!(
-            event = "storage_job_slow",
-            job,
-            elapsed_ms = elapsed.as_millis() as u64,
-            queued_ms = queued.as_millis() as u64,
-            "{line}"
-        );
+static NEXT_JOB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// One identity joins pending and completed rows, even for concurrent requests
+/// from the same session and source location.
+#[derive(Clone, Copy)]
+pub(super) struct Job {
+    id: u64,
+    lane: &'static str,
+    name: &'static str,
+    caller: &'static std::panic::Location<'static>,
+}
+impl Job {
+    #[track_caller]
+    pub(super) fn new(lane: &'static str, name: &'static str) -> Self {
+        Self {
+            id: NEXT_JOB.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            lane,
+            name,
+            caller: std::panic::Location::caller(),
+        }
+    }
+    pub(super) fn report(
+        &self,
+        elapsed: Duration,
+        queued: Duration,
+        success: bool,
+        request: Option<&super::request::Context>,
+    ) {
+        if slow_line(self.name, elapsed, queued).is_some() {
+            tracing::warn!(event = "storage_job_slow", job_id = self.id, lane = self.lane, job = self.name,
+                operation = %self.caller, elapsed_ms = elapsed.as_millis() as u64,
+                queued_ms = queued.as_millis() as u64, total_ms = (elapsed + queued).as_millis() as u64, success,
+                command = request.map_or("", |request| request.command.as_str()),
+                session_id = request.map_or("", |request| request.session.as_str()),
+                "storage operation exceeded its latency budget");
+        }
+    }
+    /// Emit evidence while work is still stuck, not only after it returns.
+    pub(super) fn wait<T>(
+        &self,
+        reply: &std::sync::mpsc::Receiver<anyhow::Result<T>>,
+        running: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        request: Option<&super::request::Context>,
+    ) -> anyhow::Result<T> {
+        let started = std::time::Instant::now();
+        let mut next_report = Duration::from_secs(1);
+        loop {
+            if let Some(request) = request {
+                request.check()?;
+            }
+            match reply.recv_timeout(Duration::from_millis(50)) {
+                Ok(result) => return result,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    anyhow::bail!("SQLite operation interrupted")
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            let elapsed = started.elapsed();
+            if elapsed >= next_report {
+                tracing::warn!(event = "storage_job_waiting", job_id = self.id, lane = self.lane, job = self.name, operation = %self.caller,
+                    phase = if running.load(std::sync::atomic::Ordering::Acquire) { "running" } else { "queued" },
+                    waited_ms = elapsed.as_millis() as u64,
+                    command = request.map_or("", |request| request.command.as_str()),
+                    session_id = request.map_or("", |request| request.session.as_str()),
+                    "still waiting for storage operation");
+                next_report = elapsed + Duration::from_secs(30);
+            }
+        }
     }
 }
 
@@ -64,15 +105,64 @@ mod tests {
     }
 
     #[test]
+    fn queued_stall_records_identity_source_and_request_without_sql() {
+        #[derive(Clone)]
+        struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer = bytes.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || Capture(writer.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let request = crate::session::database::request::Context::new(
+                "list_sessions".into(),
+                "diagnostic-session".into(),
+                None,
+            );
+            Job::new("reader", "session_summaries").report(
+                Duration::from_millis(2),
+                Duration::from_millis(1500),
+                true,
+                Some(&request),
+            );
+        });
+        let text = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        for field in [
+            "storage_job_slow",
+            "job_id=",
+            "session_summaries",
+            "operation=",
+            "slow.rs:",
+            "queued_ms=1500",
+            "elapsed_ms=2",
+            "total_ms=1502",
+            "list_sessions",
+            "diagnostic-session",
+        ] {
+            assert!(text.contains(field), "missing {field}: {text}");
+        }
+    }
+
+    #[test]
     fn only_jobs_at_or_above_the_cut_are_reported() {
         assert!(line("commit", 20, 0).is_none());
         assert!(line("commit", 999, 0).is_none());
         assert!(line("commit", 1_000, 0).is_some());
         assert!(line("commit", 38_120, 0).is_some());
-        // The cut is on the work, not on the combined wait: a job that queued
-        // two minutes and then ran for 5 ms is a descheduled process, and it is
-        // reported by the *lane* that was waiting, not by this row.
-        assert!(line("commit", 5, 120_000).is_none());
+        // Queue-only stalls were previously invisible.
+        assert!(line("commit", 5, 120_000).is_some());
+        assert!(line("commit", 0, 1_000).is_some());
     }
 
     #[test]

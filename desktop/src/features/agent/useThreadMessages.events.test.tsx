@@ -608,7 +608,7 @@ describe("useThreadMessages page guards", () => {
     ]);
     await mount();
 
-    expect(storage.listRuns).toHaveBeenCalledWith("T1");
+    expect(storage.listRuns).toHaveBeenCalledWith("T1", expect.any(Object));
     expect(current.messages.map(message => message.content)).toEqual(["u1"]);
     expect(current.historyError).toBeNull();
   });

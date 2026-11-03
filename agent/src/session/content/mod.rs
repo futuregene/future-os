@@ -538,8 +538,15 @@ pub(crate) fn collect(tx: &Transaction<'_>, candidates: &[i64]) -> Result<usize>
 /// One idle slice processes only explicitly queued candidates. It does not scan
 /// bodies, and frees at most 64 KiB of segment payload per transaction.
 pub(crate) fn reclaim(db: &mut Connection) -> Result<bool> {
+    let started = std::time::Instant::now();
     let retired_done = reset::reclaim_retired(db)?;
+    if started.elapsed() >= std::time::Duration::from_millis(10) {
+        return Ok(false);
+    }
     let checkpoints_done = checkpoint_retirement::reclaim(db)?;
+    if started.elapsed() >= std::time::Duration::from_millis(10) {
+        return Ok(false);
+    }
     let ids = {
         let mut stmt =
             db.prepare("SELECT content_id FROM content_collection ORDER BY content_id LIMIT 16")?;

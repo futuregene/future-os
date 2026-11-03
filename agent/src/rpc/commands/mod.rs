@@ -37,7 +37,7 @@ mod settings_tests;
 #[cfg(test)]
 mod skills_tests;
 
-use super::{AppState, RpcCommand, RpcResponse};
+use super::{AppState, RpcCommand, RpcResponse, ServerSession};
 use future_rpc::session_errors::SESSION_NOT_FOUND_CODE;
 
 pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
@@ -443,8 +443,19 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             | "release_queued_run"
             | "approval_decision"
             | "prune_run_events"
+            | "set_session_name"
+            | "set_cwd"
+            | "set_permission_level"
+            | "set_sandbox_policy"
+            | "set_auto_retry"
+            | "set_auto_compaction"
+            | "set_thinking_level"
+            | "cycle_thinking_level"
+            | "set_tools"
+            | "disable_tools"
+            | "disable_builtin_tools"
     ) {
-        if let Err(error) = session.write().ensure_history_loaded() {
+        if let Err(error) = ServerSession::ensure_history_loaded_unlocked(&session) {
             return RpcResponse::build_fail(
                 id,
                 cmd_type,

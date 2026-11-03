@@ -309,3 +309,44 @@ fn a_metadata_update_for_a_missing_session_row_names_that_cause() {
         "the real cause is named instead of a foreign-key violation: {message}"
     );
 }
+
+#[test]
+fn cold_metadata_is_bounded_and_restores_sequence_without_message_headers() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = Manager::new(dir.path().join("sessions"));
+    let store = manager.storage().unwrap();
+    store.reserve_segmented("bounded-meta").unwrap();
+    let mut entries = vec![
+        serde_json::json!({"id":"info","type":"session_info","content":{"cwd":"/workspace","model":"mock","session_name":"kept","system_prompt":"large prompt".repeat(1000)}}),
+    ];
+    for index in 0..256 {
+        entries.push(serde_json::json!({"id":format!("u-{index}"),"type":"user","role":"user","content":"message"}));
+    }
+    entries.push(serde_json::json!({"id":"start","type":"run_started","content":{"run_id":"r","run_sequence":42}}));
+    store.replace("bounded-meta", entries).unwrap();
+    // Invalid unused historical metadata would fail the former header-per-entry scan.
+    store
+        .db
+        .call(|db| {
+            db.execute(
+                "UPDATE entries SET metadata_json='42' WHERE entry_type='user'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let before = store.db.metrics()["readerJob"]["count"].as_u64().unwrap();
+    let loaded = manager.load_metadata("bounded-meta").unwrap();
+    let after = store.db.metrics()["readerJob"]["count"].as_u64().unwrap();
+    assert_eq!(loaded.name, "kept");
+    assert_eq!(
+        loaded.get_session_info().unwrap()["system_prompt"],
+        "large prompt".repeat(1000)
+    );
+    assert!(loaded.entries.len() <= 3);
+    assert!(
+        after - before < 100,
+        "metadata must not issue one job per historical entry"
+    );
+    assert_eq!(manager.next_sequence("bounded-meta").unwrap(), 43);
+}

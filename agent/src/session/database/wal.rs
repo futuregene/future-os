@@ -50,6 +50,7 @@ impl Checkpointer {
                 };
                 let start=Instant::now();
                 let sql=if truncate {"PRAGMA wal_checkpoint(TRUNCATE)"} else {"PRAGMA wal_checkpoint(PASSIVE)"};
+                let job = super::slow::Job::new("checkpoint", if truncate { "wal_checkpoint_truncate" } else { "wal_checkpoint_passive" });
                 let result=connection.query_row(sql,[],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?,row.get::<_,i64>(2)?)));
                 let elapsed=start.elapsed();
                 metrics.checkpoint.record(elapsed,result.is_ok());
@@ -58,7 +59,7 @@ impl Checkpointer {
                 // for — unless it holds a lock the writer itself needs, which
                 // then shows up as that job's `elapsed`. Logged separately so the
                 // two possibilities are never confused again.
-                super::slow::report("wal_checkpoint", elapsed, Duration::ZERO);
+                job.report(elapsed, Duration::ZERO, result.is_ok(), None);
                 let observed=result.as_ref().copied().map_err(ToString::to_string);
                 match result {
                     Ok((busy,frames,copied))=> {

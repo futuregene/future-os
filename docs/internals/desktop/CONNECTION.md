@@ -606,11 +606,37 @@ runtime, and a disconnection leaves nothing behind to inspect later.
 step that failed, not who spent the time. So the desktop measures every business
 command it executes and appends a row to `~/.future/app/logs/desktop.log` when a
 command takes at least one second or fails: `remote command slow:
-type=get_session_entries session=… elapsed=…ms`, with the reply's byte count on
-binary pages and the error string when there is one (heartbeat commands never
-report). A phone that times out while no slow row appears here is a transport
-symptom; a slow row names the exact read that was expensive. The row identifies
-the command, never the content it returned.
+type=get_session_entries session=… elapsed=…ms exec=…ms send=…ms`, with the
+reply's byte count on binary pages and the error string when there is one
+(heartbeat commands never report). `elapsed` spans the handler *and* the reply's
+publish+flush, which is why it is split: `exec` ends where the handler first
+handed bytes to the sink, and `send` is the remainder — the transport. A phone
+that times out while no slow row appears here is a transport symptom; a row
+that is slow in `send` is the same conclusion with the evidence attached; only a
+slow `exec` names an expensive read. The row identifies the command, never the
+content it returned. A command that never replied carries neither half: there is
+no boundary to measure.
+
+**Whether the page read was the database, or the handoff to it.** The Agent logs
+one row per history page read — `history_page_read_completed` at `debug`, and
+`history_page_read_slow` when it takes a second or more — carrying three fields
+beyond `elapsed_ms`: `db_reads`, `db_job_ms`, `db_handoff_ms`. `db_reads` counts
+the round trips the page made to the database, which is what turned the last of
+them into a bug report: a page used to open one round trip per field, block and
+content body — 1,426 of them for 109 entries — because every piece was read,
+bounded and checked on its own. A page is now **one** read (`db_reads = 1`):
+headers, blocks, references and bodies come back in four statements inside the
+lease the page already held, and the values are assembled in Rust outside it.
+That took a 109-entry page from 39–56 ms to 5 ms on the desktop process, with the
+JSON unchanged byte for byte (two conversations, 11–399 entries, canonical
+hash). `db_job_ms` is the work inside that read; `db_handoff_ms` is the rest of
+the round trip — pool wait, handoff, wake-up — and both are now single-digit.
+
+A page read is also **all or nothing**: the four statements share one savepoint,
+so an entry that disappeared between locating the page and reading it fails the
+whole read instead of shortening the page. A page that quietly dropped an entry
+would read as history that never existed, which is the one outcome a reader must
+not invent; `a_page_read_fails_as_a_whole_when_one_entry_disappeared` pins it.
 
 **Credentials and ownership.** The client's credential book is entirely
 separate from the host's: `~/.future/remote_peers.json` (new; the host side's
@@ -969,6 +995,7 @@ sessions (whole-session payloads, `scripts/measure/measure-lean-history.py`):
 | reasoning body | 25.6-32.2% |
 | tool-result body | 22.0-26.5% |
 | tool-call arguments beyond the four a target can come from | 12.3-17.8% |
+| shell facts repeated in `metadata` | 37-42% of what the three above leave |
 
 Together 67.1% / 72.7% / 68.4% of a whole session. `targetFromArgs` derives a tool
 row's text from `command`, `path`, `file_path` or `filePath` and reads **no other**
@@ -976,6 +1003,34 @@ argument key for any tool name, so keeping exactly those four is
 behaviour-preserving; `foldToolEntry` reads a result block's `toolCallId` and
 `isError` and nothing else; a reasoning body is only rendered when its row is
 expanded.
+
+The fourth row is the one that outlived the first three: a finished shell call
+appears *twice* on one entry — once as the tool-result block's `text` (dropped
+above) and again as `metadata.shell_result` — so dropping the block body left the
+same output on the page. Measured on a real three-exchange page (109 entries, 39
+shell calls): 116,102 bytes of lean JSON, of which `attempts[].output` was 39,280,
+`command` 9,459 and `cwd` 1,170 — the largest single survivor. Those three are
+now emptied (the command is a shell row's label and is fetched by identity when
+the row is opened; `cwd` already rides the entry as `metadata.execution_cwd`),
+which takes that page to **64,540 bytes** and its gzipped reply from 37,364 to
+**15,227 bytes**. The values are emptied rather than removed because the client
+validates this envelope and falls the row back to `isError`-only if a string is
+missing; a `shell_result` whose `status` is not a string is not this trim's to
+reshape and is forwarded byte-for-byte.
+
+What survives that is mostly the envelope's own key names — 257 bytes for an
+ordinary result once the bodies are gone, of which the facts are about 40 — so
+the envelope now goes whole whenever it cannot change the row. The client's own
+rule decides that: a present envelope sets `failed`/`completed` from `is_error`,
+and an absent one falls back to the result block's `isError`, so the two agree
+exactly when neither says failed. Alongside it, `metadata.execution_cwd` goes
+from every entry: the only metadata keys any client reads are `attachments` (a
+user message's files) and `shell_result` (a tool row's status). Same page,
+measured through the same shipping path: **48,797 bytes** trimmed (from 64,540)
+and **14,328** gzipped (from 15,227) — the pre-gzip figure moves six times more
+than the wire one because key names are what gzip already handled best. The
+pre-gzip bytes are still what the reply budget and the phone's parse are spent
+on.
 
 What a phone actually pays is smaller than the whole session, and it is measured
 on **the page the phone asks for** (the newest `HISTORY_PAGE_USER_EXCHANGES`
@@ -1638,6 +1693,7 @@ Support codes are used uniformly for logs and user-understandable error hints;
 | File-transfer subscription invalid (`transfer_subscription`) | `RT004` |
 | Event publish failure (`event_publish`) | `RT005` |
 | Heartbeat or state publish failure (`heartbeat_publish`, `state_publish`) | `RT006` |
+| No answer at all from the desktop within the first-connection budget (`no_first_answer`, the phone's own measurement; see 7.1) | `RT007` |
 | System sleep (`system_sleep`) | `PW001` |
 | Requested content does not exist | `DT001` |
 | Local web service bind failure (`web_bind`) | `LC002` |
@@ -1662,6 +1718,21 @@ phases must not be displayed to customers directly:
 | Connected | green success | the current connection is usable. On Desktop it means the remote entry is usable; the phone must also confirm the desktop is online and local services are usable; it does not mean all history is synced |
 | Connecting | yellow warning | temporarily unusable with a connection or auto-recovery action actually running; merges first connection, waiting for desktop, reconnect, renewal, and local service recovery. Customers need not understand the differences |
 | Disconnected | red danger | actively stopped, an explicit Desktop-disconnect notice received, pairing invalid, first-connection failure, or auto-recovery terminated. Ordinary disconnects offer reconnect; pairing-invalid offers only explicit unpair |
+
+A first connection that is never answered is the Disconnected row, not the
+Connecting one. The transport says `connecting` while an attempt is in flight
+and `reconnecting` between them, which are also its words for a healthy
+connection on its way back; a pairing that has never been answered therefore
+had no wording of its own, and the phone sat on yellow "connecting" while the
+client retried behind a five-minute timer — a state the yellow rule above
+forbids, because no action is running. The phone measures the silence itself
+(`mobile/src/remote/useDesktopConnection.ts`, `FIRST_ANSWER_BUDGET_MS`): one
+full minute in front with not one answer, three times the 20 s an unready
+client gives an attempt and well inside its five-minute silence, after which
+the page turns red and says the desktop is not serving this device, quoting
+`RT007`. The clock runs only while the app is in front and starts over on an
+explicit retry, and a pairing that has answered even once never enters this
+state — its disconnections keep the ordinary reconnect story.
 
 The display model is fixed as three layers; components must not assemble
 wording from low-level phases themselves:
