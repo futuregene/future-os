@@ -48,10 +48,15 @@ interface ScopeState {
   loading: boolean;
 }
 
-/** How many roots one request asks for (the rail's page size). */
-const PAGE_ROOTS = 50;
-/** Workspace list page size (groups are few, but paging is paging). */
-const PAGE_WORKSPACES = 50;
+/**
+ * How many roots one request asks for (the rail's page size).
+ *
+ * Ten, not fifty: a page is a screenful plus a little, and "load more" one
+ * click away is cheaper than scrolling past rows the reader did not ask for.
+ */
+const PAGE_ROOTS = 10;
+/** Workspace list page size — the same ten, for the same reason. */
+const PAGE_WORKSPACES = 10;
 
 export function reduceThreadRunStatus(
   previous: ThreadRunStatuses,

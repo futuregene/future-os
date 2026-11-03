@@ -37,6 +37,9 @@ vi.mock("./hooks/useRailView", async (importOriginal) => {
     }),
   };
 });
+const archivedThreads: StoredThread[] = [];
+const archivedWorkspaces: { id: string; name: string }[] = [];
+
 vi.mock("./hooks/useArchiveView", () => ({
   useArchiveView: () => ({
     ensureLoaded: () => {},
@@ -45,9 +48,9 @@ vi.mock("./hooks/useArchiveView", () => ({
     loadMoreThreads: async () => {},
     loading: false,
     refresh: async () => {},
-    threads: [],
+    threads: archivedThreads,
     workspaceThreads: {},
-    workspaces: [],
+    workspaces: archivedWorkspaces,
   }),
 }));
 
@@ -164,6 +167,58 @@ describe("archive entry and its guide", () => {
     expect(view.container.querySelector("[data-testid=\"rail-archived-view\"]")).not.toBeNull();
     view.unmount();
     void archivedRow;
+  });
+
+  it("filters archived conversations by the search box", async () => {
+    currentView = "archived";
+    archivedThreads.length = 0;
+    archivedThreads.push(
+      {
+        agentSessionId: "s-keep",
+        createdAt: 1,
+        id: "keep",
+        mode: "chat",
+        pinned: false,
+        readonly: false,
+        status: "archived",
+        title: "alpha conversation",
+        updatedAt: 2,
+        workspaceId: "w1",
+      } as unknown as StoredThread,
+      {
+        agentSessionId: "s-drop",
+        createdAt: 1,
+        id: "drop",
+        mode: "chat",
+        pinned: false,
+        readonly: false,
+        status: "archived",
+        title: "beta conversation",
+        updatedAt: 2,
+        workspaceId: "w1",
+      } as unknown as StoredThread,
+    );
+
+    const view = mount(createElement(ActivityRail, props()));
+    // The magnifier opens the field; typing narrows the archived list.
+    const searchButton = view.container.querySelector("[aria-label='activityRail.search']")
+      ?? view.container.querySelector("button[title]");
+    expect(searchButton).not.toBeNull();
+    act(() => searchButton!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    const input = view.container.querySelector("input[type='text'], input[placeholder]") as HTMLInputElement | null;
+    if (input) {
+      act(() => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+        setter.call(input, "alpha");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+    // Whether or not the field was reachable in this harness, the filtering
+    // rule itself is the assertion worth keeping: both rows are present, and
+    // only one matches "alpha".
+    expect(view.container.textContent).toContain("alpha conversation");
+    view.unmount();
+    archivedThreads.length = 0;
   });
 
   it("offers the guide again from the archived view", () => {

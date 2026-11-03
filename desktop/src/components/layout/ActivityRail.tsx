@@ -99,6 +99,8 @@ interface ActivityRailProps {
   onTogglePinWorkspace: (workspace: StoredWorkspace) => void;
   onDeleteWorkspace: (workspace: StoredWorkspace) => void;
   onRestoreThread: (thread: StoredThread) => void;
+  /** The workspace whose conversations are on screen; its heading reads as selected. */
+  activeWorkspaceId?: string | null;
   onSelectWorkspace: (workspace: StoredWorkspace, threads: StoredThread[]) => void;
   onSelectThread: (thread: StoredThread) => void;
   onTogglePinThread: (thread: StoredThread) => void;
@@ -257,6 +259,7 @@ export function ActivityRail({
   threadScopeLoading,
   workspacesHasMore,
   onLoadMoreWorkspaces,
+  activeWorkspaceId,
   onSelectWorkspace,
   onSelectThread,
   onTogglePinThread,
@@ -764,6 +767,37 @@ export function ActivityRail({
     for (const node of nodes) tag([node], node.item);
     return { meta, roots, rows: visible.map(row => row.item) };
   }, [expandedRemoteThreads, expandedThreads, filteredRemoteRows]);
+
+  /**
+   * The archived view, filtered by the search box.
+   *
+   * Its rows do not come from the store's pages, so the rail's client-side
+   * filter never saw them: typing a title while looking at the archive did
+   * nothing. Both kinds of shelf are matched — a conversation by its title or
+   * its workspace's name, a workspace by its own name or any conversation in it.
+   */
+  const archivedQuery = normalizedQuery;
+  const archivedMatches = useCallback((thread: StoredThread, workspaceName?: string | null): boolean => {
+    if (archivedQuery.length === 0)
+      return true;
+    if (thread.title.toLowerCase().includes(archivedQuery))
+      return true;
+    return Boolean(workspaceName && workspaceName.toLowerCase().includes(archivedQuery));
+  }, [archivedQuery]);
+  const filteredArchivedThreads = useMemo(
+    () => archiveView.threads.filter(thread => archivedMatches(thread, null)),
+    [archiveView.threads, archivedMatches],
+  );
+  const filteredArchivedWorkspaces = useMemo(
+    () => archiveView.workspaces.filter((workspace) => {
+      if (archivedQuery.length === 0)
+        return true;
+      if (workspace.name.toLowerCase().includes(archivedQuery))
+        return true;
+      return (archiveView.workspaceThreads[workspace.id] ?? []).some(thread => archivedMatches(thread, workspace.name));
+    }),
+    [archiveView.workspaces, archiveView.workspaceThreads, archivedMatches, archivedQuery],
+  );
 
   const threadMatchesQuery = useCallback((thread: StoredThread): boolean => {
     if (!queryActive)
@@ -1355,6 +1389,7 @@ export function ActivityRail({
    */
   function renderWorkspaceHeader(workspace: StoredWorkspace, groupThreads: StoredThread[]): React.ReactNode {
     const collapsed = collapsedWorkspaces.has(workspace.id);
+    const selected = activeWorkspaceId === workspace.id;
     return (
       // Right-click anywhere on the heading opens the same actions menu as the
       // `...` button.
@@ -1364,7 +1399,16 @@ export function ActivityRail({
         // list area is itself an unnamed `group` — what the floating scrollbar
         // reveals on — so naming this one is what keeps the pointer anywhere
         // over the list from revealing every heading's controls at once.
-        className="group/workspace flex h-7 w-full items-center gap-1 rounded-md px-2 text-left transition-colors hover:bg-surface-subtle"
+        //
+        // A selected heading is filled *and* ringed: the rail's hover is a pale
+        // fill, so a fill alone left the reader unable to tell "this is the one
+        // I opened" from "the pointer happens to be here".
+        className={cn(
+          "group/workspace flex h-7 w-full items-center gap-1 rounded-md px-2 text-left transition-colors hover:bg-surface-subtle",
+          selected && "bg-surface-subtle ring-1 ring-inset ring-accent/40",
+        )}
+        aria-current={selected ? "true" : undefined}
+        data-selected={selected ? "true" : undefined}
         onContextMenu={(event) => {
           event.preventDefault();
           setOpenWorkspaceMenuId(workspace.id);
@@ -1659,9 +1703,15 @@ export function ActivityRail({
                                     icon={<Folder className="size-3.5" />}
                                     label={t("activityRail.archivedWorkspacesHeader")}
                                   />
-                                  {archiveView.workspaces.length === 0
-                                    ? <ArchivedEmpty label={t("activityRail.archivedWorkspacesEmpty")} />
-                                    : archiveView.workspaces.map(workspace => (
+                                  {filteredArchivedWorkspaces.length === 0
+                                    ? (
+                                        <ArchivedEmpty
+                                          label={archivedQuery.length > 0
+                                            ? noMatchesText
+                                            : t("activityRail.archivedWorkspacesEmpty")}
+                                        />
+                                      )
+                                    : filteredArchivedWorkspaces.map(workspace => (
                                         <ArchivedWorkspaceGroup
                                           count={null}
                                           expanded={expandedArchivedWorkspaces.has(workspace.id)}
@@ -1713,9 +1763,15 @@ export function ActivityRail({
                                     icon={<MessageSquare className="size-3.5" />}
                                     label={t("activityRail.archivedThreadsHeader")}
                                   />
-                                  {archiveView.threads.length === 0
-                                    ? <ArchivedEmpty label={t("activityRail.archivedThreadsEmpty")} />
-                                    : archiveView.threads.map(thread => (
+                                  {filteredArchivedThreads.length === 0
+                                    ? (
+                                        <ArchivedEmpty
+                                          label={archivedQuery.length > 0
+                                            ? noMatchesText
+                                            : t("activityRail.archivedThreadsEmpty")}
+                                        />
+                                      )
+                                    : filteredArchivedThreads.map(thread => (
                                         <ArchivedThreadRow
                                           active={thread.id === activeThreadId}
                                           key={thread.id}
@@ -1935,7 +1991,7 @@ export function ActivityRail({
                                     );
                                   })}
                                 </div>
-                                {workspacesHasMore
+                                {workspacesHasMore && !workspaceSectionCollapsed
                                   ? (
                                       <button
                                         className="mb-2 w-full rounded-md px-2 py-1 text-left text-xs text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
