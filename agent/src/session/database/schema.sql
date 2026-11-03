@@ -113,6 +113,22 @@ CREATE TABLE IF NOT EXISTS run_snapshots (
     PRIMARY KEY(session_id,run_id)
 );
 DROP INDEX IF EXISTS run_snapshots_cleanup;
+-- A fold kept *beside* the raw journal, not instead of it.
+--
+-- `run_snapshots` above is the reclaim row: writing one marks the run
+-- compacted, and the sweep then deletes its raw events. That makes it the wrong
+-- place for a replay cache — a cached fold must not stop the operator from
+-- reclaiming a journal. This table holds the same fold, keyed and versioned so
+-- a miss is always safe: the reader falls back to folding the journal.
+CREATE TABLE IF NOT EXISTS run_snapshot_cache (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    epoch INTEGER NOT NULL,
+    cursor INTEGER NOT NULL CHECK(cursor>=0),
+    payload TEXT NOT NULL CHECK(json_valid(payload)),
+    PRIMARY KEY(session_id,run_id)
+);
 CREATE TABLE IF NOT EXISTS legacy_imports (
     session_id TEXT PRIMARY KEY NOT NULL,
     status TEXT NOT NULL CHECK(status IN ('imported', 'skipped', 'deleted')),

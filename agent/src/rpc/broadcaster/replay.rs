@@ -390,6 +390,28 @@ impl SseBroadcaster {
         // Historical reads must not block active broadcasts while decoding or
         // folding a long journal. The DB read itself is transaction-scoped.
         drop(run);
+        let (store, session_id) = {
+            let journal = self.journal.lock();
+            (journal.store.clone(), journal.session_id.clone())
+        };
+        // A fold kept beside the journal saves the whole replay. It is keyed by
+        // (session, run) and versioned by ([`SNAPSHOT_CACHE_VERSION`], epoch), so
+        // a run that restarted (new epoch) or a fold algorithm that changed
+        // (new version) is a miss — never a stale projection handed to a client.
+        // A miss costs exactly what this read cost before the cache existed.
+        if let Some(store) = store.as_ref() {
+            if let Some(epoch) = store.run_epoch(&session_id, run_id)? {
+                if let Some(cached) = store.cached_run_snapshot(&session_id, run_id, epoch)? {
+                    return Ok(RunProjectionSnapshot {
+                        run_id: cached.run_id,
+                        epoch: cached.epoch,
+                        run_sequence: cached.run_sequence,
+                        cursor: cached.cursor,
+                        events: cached.events,
+                    });
+                }
+            }
+        }
         let (known, events, snapshot) = self.read_journal_page(run_id, -1, false, None)?;
         anyhow::ensure!(known, "run `{run_id}` is not known by this session");
         if let Some(snapshot) = snapshot {
@@ -402,13 +424,33 @@ impl SseBroadcaster {
         let last = events
             .last()
             .ok_or_else(|| anyhow::anyhow!("run snapshot is empty"))?;
-        Ok(RunProjectionSnapshot {
+        let snapshot = RunProjectionSnapshot {
             run_id: run_id.to_owned(),
             epoch: last.epoch,
             run_sequence: last.run_sequence,
             cursor: last.idx,
             events: crate::rpc::run_snapshot::fold_events(events),
-        })
+        };
+        // Keep the fold for the next open, off this request: the write is a
+        // ~260 KB row and the reply must not wait for it.
+        if let Some(store) = store {
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let keep = crate::session::journal_compaction::RunJournalSnapshot {
+                    run_id: snapshot.run_id.clone(),
+                    epoch: snapshot.epoch,
+                    run_sequence: snapshot.run_sequence,
+                    cursor: snapshot.cursor,
+                    events: snapshot.events.clone(),
+                };
+                let session = session_id.clone();
+                handle.spawn_blocking(move || {
+                    if let Err(error) = store.store_run_snapshot_cache(&session, &keep) {
+                        tracing::debug!(%error, run = %keep.run_id, "run snapshot cache write failed");
+                    }
+                });
+            }
+        }
+        Ok(snapshot)
     }
 }
 
