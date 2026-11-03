@@ -208,6 +208,40 @@ describe("promptRemoteConversation", () => {
     expect(lastCall().args.command).not.toHaveProperty("attachments");
   });
 
+  /**
+   * A send made while the conversation is still answering names what it means.
+   *
+   * The host refuses an unnamed second prompt with `session_busy`; naming
+   * `enqueue_coalescing` is what makes it hold the message in the session's own
+   * queue and fold it into the next turn. Absent, on the other hand, is the
+   * legacy client, whose message must be refused rather than silently parked.
+   */
+  it("names a busy policy only when it has one", async () => {
+    invokeMock.mockResolvedValue({ sessionId: "sess_1", threadId: "thread_1" });
+
+    await promptRemoteConversation(
+      "desktop_a",
+      "sess_1",
+      "behind the reply",
+      [],
+      null,
+      { modelId: null, thinkingLevel: null },
+      "cmd_1",
+      "enqueue_coalescing",
+    );
+
+    expect(lastCall().args.command).toEqual({
+      type: "prompt",
+      id: "cmd_1",
+      sessionId: "sess_1",
+      message: "behind the reply",
+      busyPolicy: "enqueue_coalescing",
+    });
+
+    await promptRemoteConversation("desktop_a", "sess_1", "just words");
+    expect(lastCall().args.command).not.toHaveProperty("busyPolicy");
+  });
+
   /** A host that omits the thread id answers with an empty one, not `undefined`. */
   it("tolerates a host that reports no thread id", async () => {
     invokeMock.mockResolvedValue({ sessionId: "sess_new" });
