@@ -11,7 +11,7 @@ The settings you'll use day-to-day are **General**, **Providers**, and **Models*
 Desktop-level options for the app:
 
 - **Language** — 中文 or English; it follows the system language until you pick one.
-- **Appearance** — light, dark, or follow the system appearance. **Color theme** picks the palette (FutureOS, Ayu, Catppuccin, Dracula, Everforest and others), each with its own light and dark rendition; **Font size** scales text without changing the layout.
+- **Appearance** — light, dark, or follow the system appearance. **Color theme** picks the palette (FutureOS, Ayu, Catppuccin, Dracula, Everforest and others), each with its own light and dark rendition; the row shows the active theme as a small swatch, and **Show all 14 color themes** opens the catalogue to switch. **Font size** scales text without changing the layout.
 - **Approval mode** — how much the agent asks before acting:
   - **Manual** — file access follows Allow/Ask/Deny path rules; shell commands ask except for the read-only allowlist.
   - **Sandboxed** — uses macOS Seatbelt, Linux system Bubblewrap, or Windows restricted-token write protection when available; file access still follows path rules. Guarantees differ by platform.

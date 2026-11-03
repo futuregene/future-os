@@ -1,8 +1,11 @@
 import type { ThemePalette } from "../../lib/theme";
 import { Check } from "lucide-react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Button } from "../../components/ui/Button";
 import { cn } from "../../lib/cn";
 import { setThemePalette, THEME_PALETTES, useThemePalette } from "../../lib/theme";
+import { SettingsRow } from "./SettingsPrimitives";
 
 /**
  * The color-theme picker.
@@ -13,44 +16,88 @@ import { setThemePalette, THEME_PALETTES, useThemePalette } from "../../lib/them
  * people compare us to do it (VS Code, Slack, Linear) — a preview you recognize
  * beats a list you have to try one by one.
  *
- * Each card carries its own `data-palette`, which is why the palette rules in
+ * **Collapsed by default.** Fourteen cards are a wall of previews for a setting
+ * most users touch once, and they push every row below them off the page. So
+ * the row normally costs what any other setting costs — the active palette as a
+ * small swatch, the same way the neighbouring rows show one value — and the
+ * catalogue opens on request. The choice is unchanged: picking a card in the
+ * open grid applies it at once, which is why the grid stays open afterwards
+ * (nobody compares themes one reopening at a time).
+ *
+ * The component owns its whole row, because the row's *shape* follows the state:
+ * beside the label while collapsed (a compact control, like a Select) and below
+ * it once expanded (a grid as wide as the column).
+ *
+ * Each preview carries its own `data-palette`, which is why the palette rules in
  * `styles/globals.css` match a nested preview element as well as the root: the
- * card paints itself in the palette it offers while the app keeps the one that
- * is actually active. The card inherits whichever rendition (`.dark`) the window
- * is in, so in a dark window every preview shows that palette's dark self.
+ * preview paints itself in the palette it shows while the app keeps the one that
+ * is actually active. The preview inherits whichever rendition (`.dark`) the
+ * window is in, so in a dark window it shows that palette's dark self.
  */
 export function ThemePalettePicker() {
   const { t } = useTranslation("settings");
   const active = useThemePalette();
+  const [expanded, setExpanded] = useState(false);
+
+  const toggle = (
+    <Button
+      aria-expanded={expanded}
+      onClick={() => setExpanded(value => !value)}
+      size="sm"
+      variant="secondary"
+    >
+      {expanded
+        ? t("theme.collapse")
+        : t("theme.showAll", { count: THEME_PALETTES.length })}
+    </Button>
+  );
 
   return (
-    <div
-      aria-label={t("theme.title")}
-      className="grid w-full grid-cols-3 gap-2.5"
-      role="radiogroup"
+    <SettingsRow
+      description={t("theme.description")}
+      stacked={expanded}
+      title={t("theme.title")}
     >
-      {THEME_PALETTES.map(palette => (
-        <PaletteCard
-          active={active === palette}
-          key={palette}
-          label={t(`theme.palettes.${palette}.name`)}
-          onSelect={() => setThemePalette(palette)}
-          description={t(`theme.palettes.${palette}.description`)}
-          palette={palette}
-        />
-      ))}
-    </div>
+      {expanded
+        ? (
+            <div className="flex w-full flex-col gap-2.5">
+              <div
+                aria-label={t("theme.title")}
+                className="grid w-full grid-cols-3 gap-2.5"
+                role="radiogroup"
+              >
+                {THEME_PALETTES.map(palette => (
+                  <PaletteCard
+                    active={active === palette}
+                    key={palette}
+                    label={t(`theme.palettes.${palette}.name`)}
+                    onSelect={() => setThemePalette(palette)}
+                    description={t(`theme.palettes.${palette}.description`)}
+                    palette={palette}
+                  />
+                ))}
+              </div>
+              {toggle}
+            </div>
+          )
+        : (
+            <div className="flex items-center gap-3">
+              {/* The active palette, as the swatch the row reads at a glance —
+                  the value of this setting, next to the way out of it. */}
+              <span className="flex items-center gap-2" title={t(`theme.palettes.${active}.description`)}>
+                <span data-palette={active}>
+                  <PaletteSwatch />
+                </span>
+                <span className="text-sm text-ink">{t(`theme.palettes.${active}.name`)}</span>
+              </span>
+              {toggle}
+            </div>
+          )}
+    </SettingsRow>
   );
 }
 
-/**
- * One palette: a tiny window in that palette plus its name.
- *
- * The preview is drawn from the real tokens (`canvas` behind, a `surface` card,
- * `ink` / `ink-muted` text bars and an `accent` dot), not from hard-coded
- * colors — so it cannot drift from what the theme actually looks like, and the
- * light/dark flip applies here the same way it does everywhere else.
- */
+/** One palette as a selectable card: the preview plus its name and check mark. */
 function PaletteCard({
   active,
   description,
@@ -105,5 +152,32 @@ function PaletteCard({
         {active ? <Check aria-hidden className="size-3 shrink-0 text-accent" /> : null}
       </span>
     </button>
+  );
+}
+
+/**
+ * The same miniature at the size a settings row can afford.
+ *
+ * Drawn from the real tokens (`canvas` behind, `surface` card, `accent` dot and
+ * pill), so it cannot drift from what the theme actually looks like. It reads
+ * its colors from the `data-palette` its caller puts on the wrapper. Sized to
+ * stay shorter than the label beside it, so the row keeps the height every other
+ * setting has.
+ */
+function PaletteSwatch() {
+  return (
+    <span
+      aria-hidden
+      className="flex h-6 w-9 shrink-0 flex-col justify-between rounded border border-line bg-canvas p-1"
+    >
+      <span className="flex items-center gap-1">
+        <span className="size-1 rounded-full bg-accent" />
+        <span className="h-0.5 w-2.5 rounded-full bg-ink" />
+      </span>
+      <span className="flex items-center gap-0.5">
+        <span className="h-1 w-3 rounded-sm bg-accent-fill" />
+        <span className="h-1 w-1.5 rounded-sm bg-surface-subtle" />
+      </span>
+    </span>
   );
 }

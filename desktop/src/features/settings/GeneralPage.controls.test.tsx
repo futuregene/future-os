@@ -155,24 +155,52 @@ describe("generalPage appearance picker", () => {
 });
 
 describe("generalPage color theme picker", () => {
+  const cards = (container: HTMLElement) =>
+    [...container.querySelectorAll<HTMLButtonElement>("[role=radiogroup][aria-label='Color theme'] [role=radio]")];
+
+  const toggle = (container: HTMLElement) =>
+    container.querySelector<HTMLButtonElement>("button[aria-expanded]")!;
+
+  const expand = (container: HTMLElement) => {
+    act(() => toggle(container).click());
+  };
+
+  /** The one-window preview the row shows while it is collapsed. */
+  const collapsedPreview = (container: HTMLElement) =>
+    container.querySelector<HTMLElement>("[data-palette]");
+
+  it("shows only the active palette until the catalogue is asked for", () => {
+    const { container } = mount();
+
+    expect(toggle(container).getAttribute("aria-expanded")).toBe("false");
+    // Collapsed, there is nothing to choose between: no radio, one preview.
+    expect(cards(container)).toHaveLength(0);
+    expect(collapsedPreview(container)?.dataset.palette).toBe("futureos");
+    expect(container.querySelector("[role=radiogroup]")).toBeNull();
+    // The count is in the label, so the size of what is hidden is not a surprise.
+    expect(toggle(container).textContent).toBe("Show all 14 color themes");
+  });
+
   it("offers every palette as a named radio, with the active one checked", () => {
     const { container } = mount();
-    const group = container.querySelector("[role=radiogroup][aria-label='Color theme']")!;
-    const cards = [...group.querySelectorAll<HTMLButtonElement>("[role=radio]")];
 
-    expect(cards.map(card => card.getAttribute("aria-label")))
+    expand(container);
+
+    expect(cards(container).map(card => card.getAttribute("aria-label")))
       .toEqual(["FutureOS", "Ayu", "Catppuccin", "Dracula", "Everforest", "Gruvbox", "Kanagawa", "Nightfox", "Nord", "One Dark", "Rosé Pine", "Solarized", "Tokyo Night", "Vesper"]);
-    expect(cards.map(card => card.getAttribute("aria-checked")))
-      .toEqual(cards.map((_, index) => String(index === 0)));
+    expect(cards(container).map(card => card.getAttribute("aria-checked")))
+      .toEqual(cards(container).map((_, index) => String(index === 0)));
+    expect(toggle(container).textContent).toBe("Show the current theme only");
   });
 
   it("paints each preview in its own palette while the app keeps the active one", () => {
     const { container } = mount();
-    const cards = [...container.querySelectorAll<HTMLButtonElement>("[role=radio]")];
+
+    expand(container);
 
     // A card previews a palette by carrying its `data-palette`: the CSS blocks
     // match a nested preview as well as the root.
-    expect(cards.map(card => card.dataset.palette))
+    expect(cards(container).map(card => card.dataset.palette))
       .toEqual(["futureos", "ayu", "catppuccin", "dracula", "everforest", "gruvbox", "kanagawa", "nightfox", "nord", "one-dark", "rose-pine", "solarized", "tokyo-night", "vesper"]);
     // ...and the app itself is still on the default.
     expect(document.documentElement.dataset.palette).toBe("futureos");
@@ -180,13 +208,16 @@ describe("generalPage color theme picker", () => {
 
   it("switches the palette and remembers it", () => {
     const { container } = mount();
-    const nord = container.querySelector<HTMLButtonElement>("[role=radio][aria-label='Nord']")!;
 
+    expand(container);
+    const nord = container.querySelector<HTMLButtonElement>("[role=radio][aria-label='Nord']")!;
     act(() => nord.click());
 
     expect(document.documentElement.dataset.palette).toBe("nord");
     expect(localStorage.getItem("future.palette")).toBe("nord");
     expect(nord.getAttribute("aria-checked")).toBe("true");
+    // Comparing themes means picking a few in a row: the catalogue stays open.
+    expect(toggle(container).getAttribute("aria-expanded")).toBe("true");
     // The appearance choice is a separate axis and stays where it was.
     expect(localStorage.getItem("future.theme")).toBe("system");
     expect(select(container, 1).value).toBe("system");
@@ -194,20 +225,34 @@ describe("generalPage color theme picker", () => {
 
   it("leaves the light/dark palette alone when only the color theme changes", () => {
     const { container } = mount();
-    const dark = container.querySelector<HTMLButtonElement>("[role=radio][aria-label='Catppuccin']")!;
 
+    expand(container);
+    const dark = container.querySelector<HTMLButtonElement>("[role=radio][aria-label='Catppuccin']")!;
     act(() => dark.click());
 
     expect(container.ownerDocument.documentElement.classList.contains("dark")).toBe(false);
     expect(localStorage.getItem("future.palette")).toBe("catppuccin");
   });
 
-  it("restores the stored palette on mount", () => {
+  it("collapses back onto the palette that is now active", () => {
+    const { container } = mount();
+
+    expand(container);
+    act(() => container.querySelector<HTMLButtonElement>("[role=radio][aria-label='Nord']")!.click());
+    act(() => toggle(container).click());
+
+    expect(cards(container)).toHaveLength(0);
+    expect(collapsedPreview(container)?.dataset.palette).toBe("nord");
+    expect(container.textContent).toContain("Nord");
+  });
+
+  it("restores the stored palette on mount, collapsed onto that palette", () => {
     setThemePalette("gruvbox");
     const { container } = mount();
-    const checked = container.querySelector("[role=radio][aria-checked='true']")!;
 
-    expect(checked.getAttribute("aria-label")).toBe("Gruvbox");
+    expect(collapsedPreview(container)?.dataset.palette).toBe("gruvbox");
+    expect(container.textContent).toContain("Gruvbox");
+    expect(document.documentElement.dataset.palette).toBe("gruvbox");
   });
 });
 

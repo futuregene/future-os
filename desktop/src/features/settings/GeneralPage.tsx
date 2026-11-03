@@ -88,14 +88,11 @@ export function GeneralPage({
           </Select>
         </SettingsRow>
         {/* The palette is a second, independent axis: it works in both
-            renditions, so it gets its own row instead of a combined list. */}
-        <SettingsRow
-          description={t("theme.description")}
-          stacked
-          title={t("theme.title")}
-        >
-          <ThemePalettePicker />
-        </SettingsRow>
+            renditions, so it gets its own row instead of a combined list. The
+            picker owns that row itself — it is the one setting whose shape
+            changes with its own state (compact value beside the label until the
+            catalogue opens, then a grid under it). */}
+        <ThemePalettePicker />
         <SettingsRow
           title={t("fontSize.title")}
           description={t("fontSize.description")}
