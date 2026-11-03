@@ -59,6 +59,7 @@ describe("sendPromptToFutureAgent", () => {
       runId: "r1",
       sessionId: "s1",
       thinkingLevel: "high",
+      busyPolicy: "enqueue_coalescing",
     });
 
     expect(mocks.invokeCommand).toHaveBeenCalledExactlyOnceWith("agent_prompt", {
@@ -71,6 +72,7 @@ describe("sendPromptToFutureAgent", () => {
         runId: "r1",
         modelId: "future/gpt-5",
         thinkingLevel: "high",
+        busyPolicy: "enqueue_coalescing",
       },
     });
     // An absent `complete` means the stream ended cleanly.
@@ -108,6 +110,7 @@ describe("sendPromptToFutureAgent", () => {
         runId: null,
         modelId: null,
         thinkingLevel: null,
+        busyPolicy: "",
       },
     });
   });

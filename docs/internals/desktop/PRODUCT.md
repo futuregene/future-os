@@ -846,18 +846,19 @@ display, and approval store — never a second copy of conversation bodies.
 While a reply streams, the send control offers what "send" can mean instead of
 refusing it — the Agent answers one prompt at a time. With nothing typed it is
 the interrupt control; with a draft it offers **Add to the send queue** or
-**Interrupt and send**. Queued messages wait above the input box — readable,
-editable and removable until they leave — and go out by themselves as **one**
-message (their texts joined in order, one paragraph each, their attachments
-together) the moment the run ends. Interrupting while a queue waits ends the run
-and sends that same joined message; interrupting with a draft queues the draft
-first, so the flush carries the queue and the draft together. The queue belongs
-to its conversation: switching conversations keeps it, and the phone writes it to
-local storage too, so a restart still holds it (attachments the OS has cleaned up
-are dropped on the way back). An uninstall takes it with everything else — only a
-queue held on the desktop could outlive that — and the desktop app, including its
-view of another computer's conversation, keeps its queue in memory. The terminal
-has no send queue, and the Vibe
+**Interrupt and send**. A queued message is not held by the window: it leaves at
+once and the Agent holds it (`enqueue_coalescing`), so a burst of queued messages
+folds into **one** turn (their texts joined in order, one paragraph each, their
+attachments together) at the run boundary, and the row is the session's — the
+same row every other client on that conversation reads from `get_state`'s
+`queuedRuns`. It therefore outlives the window that wrote it (a reload, a
+renderer crash, a second client), and waiting rows longer than ten minutes are
+parked for the reader to start rather than spent automatically. Interrupting
+sends the draft as its own turn. The phone still keeps its queue in local
+storage, so a restart holds it (attachments the OS has cleaned up are dropped on
+the way back) and an uninstall takes it with everything else; the desktop app's
+view of another computer's conversation still queues in that app's memory. The
+terminal has no send queue, and the Vibe
 panel's input layer keeps its own hand-back queue (see `VIBE.md` §5.4).
 
 History display and persistence rules:

@@ -10,7 +10,7 @@ import { useCommittedRef } from "../../lib/useCommittedRef";
 import { usePolling } from "../../lib/usePolling";
 import { loadComposerDraft, saveComposerDraft } from "./composerDraft";
 import { useRunReattach } from "./useRunReattach";
-import { useSendMessage } from "./useSendMessage";
+import { useQueuedSend, useSendMessage } from "./useSendMessage";
 import { useThreadMessages } from "./useThreadMessages";
 
 interface UseAgentThreadStateInput {
@@ -136,6 +136,16 @@ export function useAgentThreadState({
     sendingRef,
     setMessages,
     setRecentRun,
+    refreshRecentRun,
+    onThreadActivity,
+  });
+  // The message a reader writes while the reply still streams: it leaves for the
+  // Agent's own queue instead of waiting in this window (`useQueuedSend`).
+  const handleQueuedSend = useQueuedSend({
+    thread,
+    modelId,
+    thinkingLevel,
+    setMessages,
     refreshRecentRun,
     onThreadActivity,
   });
@@ -291,6 +301,7 @@ export function useAgentThreadState({
     activeRunId,
     handleAbort,
     handleSend,
+    handleQueuedSend,
     loadingThread,
     loadingIndicator,
     hasOlderHistory,

@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { renderHook } from "../../test/renderHook";
 import { runSendPipeline } from "./sendPipeline";
-import { useSendMessage } from "./useSendMessage";
+import { useQueuedSend, useSendMessage } from "./useSendMessage";
 
 vi.mock("./sendPipeline", () => ({ runSendPipeline: vi.fn() }));
 
@@ -291,6 +291,63 @@ describe("useSendMessage", () => {
     release();
     await pending;
     expect(sendingRef().current).toBe(false);
+    harness.unmount();
+  });
+});
+
+describe("useQueuedSend", () => {
+  function setupQueued(options: { thread?: StoredThread | null } = {}) {
+    const calls = { activity: 0, refreshes: [] as unknown[][] };
+    const harness = renderHook(() => useQueuedSend({
+      thread: options.thread === undefined ? thread : options.thread,
+      modelId: "model-1",
+      thinkingLevel: "high",
+      setMessages: () => {},
+      refreshRecentRun: async (threadId) => {
+        calls.refreshes.push([threadId]);
+      },
+      onThreadActivity: () => void (calls.activity += 1),
+    }));
+    return { harness, calls };
+  }
+
+  it("asks the Agent to hold the prompt instead of keeping a queue here", async () => {
+    // The message leaves while the run streams; the Agent's own queue is what
+    // makes it survive this window, so the policy must travel with the prompt.
+    const { harness, calls } = setupQueued();
+
+    await expect(harness.current(payload)).resolves.toBe(true);
+
+    expect(pipeline).toHaveBeenCalledTimes(1);
+    const [deps, sent] = pipeline.mock.calls[0]!;
+    expect(sent).toEqual(payload);
+    expect(deps.busyPolicy).toBe("enqueue_coalescing");
+    // Handed over, not held: the row is the Agent's, so nothing here claims it
+    // as this view's executing run.
+    expect(deps.isCurrentSend()).toBe(true);
+    expect(deps.thread).toBe(thread);
+    // The conversation list learns the run exists (status `queued`).
+    expect(calls.refreshes).toEqual([["thread-1"]]);
+    harness.unmount();
+  });
+
+  it("reports a refused queued send instead of dropping it silently", async () => {
+    const { harness } = setupQueued();
+    const { toasts, off } = collectToasts();
+    pipeline.mockRejectedValueOnce(new Error("transport down"));
+
+    await expect(harness.current(payload)).resolves.toBe(true);
+    expect(toasts).toEqual([{ message: "transport down", tone: "error" }]);
+
+    off();
+    harness.unmount();
+  });
+
+  it("does nothing without a conversation", async () => {
+    const { harness } = setupQueued({ thread: null });
+
+    await expect(harness.current(payload)).resolves.toBe(false);
+    expect(pipeline).not.toHaveBeenCalled();
     harness.unmount();
   });
 });
