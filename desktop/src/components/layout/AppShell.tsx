@@ -60,11 +60,13 @@ import { getFutureEnvironment } from "../../integrations/agent/providers";
 import { refreshSkills } from "../../integrations/skills/skillsClient";
 import { openExternalUrl } from "../../integrations/storage/files";
 import {
+  archiveWorkspace,
   createWorkspace,
   markThreadOpened,
   pinThread,
   pinWorkspace,
-  restoreThread,
+  restoreThreadTree,
+  restoreWorkspace,
 } from "../../integrations/storage/threadStore";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { errorMessage } from "../../lib/errors";
@@ -156,6 +158,10 @@ function ReadyAppShell({
   const { t: tAgent } = useTranslation("agent");
   const [section, setSection] = useState<ActivitySection>("chat");
   const [centerMode, setCenterMode] = useState<"thread" | "new-chat">("thread");
+  /** The first-archive coachmark is on screen (one archive per installation). */
+  const [archiveGuideVisible, setArchiveGuideVisible] = useState(false);
+  /** The archive entry is pulsing: the row just left, and this says where it went. */
+  const [archivePulse, setArchivePulse] = useState(false);
   /**
    * Whether the Vibe panel has the screen.
    *
@@ -375,11 +381,18 @@ function ReadyAppShell({
     activeWorkspace,
     activeThreadId,
     setActiveThreadId,
+    selectThread,
     threadRunStatuses,
     threadStreamingStatuses,
     loadingStore,
     storeError,
     refreshStore,
+    ensureScope,
+    loadMore,
+    loadMoreWorkspaces,
+    scopeHasMore,
+    scopeLoading,
+    workspacesHasMore,
   } = useThreadStore();
 
   // Start observing the active thread's agent session for real-time
@@ -580,9 +593,11 @@ function ReadyAppShell({
     renameDialog,
     deleteDialog,
     batchDeleteDialog,
+    archiveDialog,
     setRenameDialog,
     setDeleteDialog,
     setBatchDeleteDialog,
+    setArchiveDialog,
     openRename,
     confirmRename,
     generateTitle,
@@ -590,7 +605,10 @@ function ReadyAppShell({
     confirmDelete,
     openBatchDelete,
     confirmBatchDelete,
-  } = useThreadDialogs({ activeThreadId, refreshStore });
+    requestArchive,
+    confirmArchive,
+    archiveThreads,
+  } = useThreadDialogs({ activeThreadId, onArchived: handleFirstArchive, refreshStore, threads });
   const {
     renameDialog: workspaceRenameDialog,
     deleteDialog: workspaceDeleteDialog,
@@ -1038,10 +1056,63 @@ function ReadyAppShell({
   }
 
   async function handleRestoreThread(thread: StoredThread) {
-    const restoredThread = await restoreThread(thread.id);
+    const restoredThread = await restoreThreadTree(thread.id);
+    // Re-read the archived view too: a restored row leaves it.
+    emitFutureEvent("archive-changed", undefined);
     await refreshStore(restoredThread.id);
     setSection(restoredThread.mode === "workspace" ? "workspace" : "chat");
     setCenterMode("thread");
+  }
+
+  /**
+   * The first-archive guide's trigger.
+   *
+   * The pulse and the coachmark appear once per installation: the flag is app
+   * settings (the same path `skillIntroDismissed` uses), written when the guide
+   * is shown rather than when it is dismissed, so a crash mid-bubble cannot
+   * teach it twice.
+   */
+  function handleFirstArchive() {
+    if (appSettings.archiveGuideSeen)
+      return;
+    setArchiveGuideVisible(true);
+    setArchivePulse(true);
+    window.setTimeout(setArchivePulse, 2900, false);
+    window.setTimeout(() => {
+      setArchiveGuideVisible(false);
+      void changeSettings({ archiveGuideSeen: true });
+    }, 8000);
+  }
+
+  async function handleArchiveWorkspace(workspace: StoredWorkspace) {
+    try {
+      await archiveWorkspace(workspace.id);
+      handleFirstArchive();
+      emitFutureEvent("archive-changed", undefined);
+      await refreshStore();
+    }
+    catch (error) {
+      emitFutureEvent("toast", { message: errorMessage(error), tone: "error" });
+    }
+  }
+
+  async function handleRestoreWorkspace(workspace: StoredWorkspace) {
+    try {
+      await restoreWorkspace(workspace.id);
+      emitFutureEvent("archive-changed", undefined);
+      await refreshStore();
+    }
+    catch (error) {
+      emitFutureEvent("toast", { message: errorMessage(error), tone: "error" });
+    }
+  }
+
+  /** Open a shelved conversation read-only (its banner carries the restore). */
+  function handleOpenArchivedThread(thread: StoredThread) {
+    selectThread(thread);
+    setSection(thread.mode === "workspace" ? "workspace" : "chat");
+    setCenterMode("thread");
+    setActiveRemote(null);
   }
 
   function handleToggleLeftPanel() {
@@ -1515,6 +1586,30 @@ function ReadyAppShell({
     onRenameWorkspace: openWorkspaceRename,
     onTogglePinWorkspace: handleTogglePinWorkspace,
     onRestoreThread: handleRestoreThread,
+    onArchiveThread: requestArchive,
+    onArchiveWorkspace: handleArchiveWorkspace,
+    onRestoreWorkspace: handleRestoreWorkspace,
+    onOpenArchivedThread: handleOpenArchivedThread,
+    onBatchArchiveThreads: archiveThreads,
+    archiveGuide: {
+      visible: archiveGuideVisible,
+      onDismiss: () => {
+        setArchiveGuideVisible(false);
+        void changeSettings({ archiveGuideSeen: true });
+      },
+      onView: () => {
+        setArchiveGuideVisible(false);
+        void changeSettings({ archiveGuideSeen: true });
+        setSection("chat");
+      },
+    },
+    archivePulse,
+    ensureThreadScope: ensureScope,
+    loadMoreThreadScope: loadMore,
+    threadScopeHasMore: scopeHasMore,
+    threadScopeLoading: scopeLoading,
+    workspacesHasMore,
+    onLoadMoreWorkspaces: loadMoreWorkspaces,
     onSelectWorkspace: handleSelectWorkspace,
     onSelectThread: handleSelectThread,
     onTogglePinThread: handleTogglePinThread,
@@ -1900,6 +1995,7 @@ function ReadyAppShell({
                                       onThreadActivity={() => {
                                         void refreshStore(activeThread?.id ?? undefined);
                                       }}
+                                      onRestoreArchived={handleRestoreThread}
                                     />
                                   )}
                   </main>
@@ -1959,12 +2055,15 @@ function ReadyAppShell({
             </>
           )}
       <AppShellDialogs
+        archiveDialog={archiveDialog}
         batchDeleteDialog={batchDeleteDialog}
         deleteDialog={deleteDialog}
         renameDialog={renameDialog}
+        setArchiveDialog={setArchiveDialog}
         setBatchDeleteDialog={setBatchDeleteDialog}
         setDeleteDialog={setDeleteDialog}
         setRenameDialog={setRenameDialog}
+        onConfirmArchiveThread={() => void confirmArchive()}
         onConfirmBatchDeleteThread={() => void confirmBatchDelete()}
         onConfirmDeleteThread={() => void confirmDelete()}
         onConfirmRenameThread={() => void confirmRename()}

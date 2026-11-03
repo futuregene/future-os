@@ -72,7 +72,21 @@
     "recentEarlier": "Earlier",
     "recentShowMore": "Show {{count}} more",
     "recentJustNow": "just now",
-    "recentActions": "Recent list actions"
+    "recentActions": "Recent list actions",
+    "archive": "Archive",
+    "archiveWorkspace": "Archive workspace",
+    "restoreWorkspace": "Restore workspace",
+    "viewArchived": "Archived conversations",
+    "archivedTreeMembers": "{{count}} conversations",
+    "loadMore": "Load more",
+    "archivePinnedCleared": "Archiving clears the pin",
+    "archivedWorkspacesHeader": "Archived workspaces",
+    "archivedWorkspacesEmpty": "No archived workspaces.",
+    "archivedThreadsHeader": "Archived conversations",
+    "archivedThreadsEmpty": "No archived conversations.",
+    "loadMoreWorkspaces": "Load more workspaces",
+    "archiveSelected": "Archive",
+    "loading": "Loading…"
   },
   "appShell": {
     "storeInitFailed": "FutureOS local storage failed to initialize: ",
@@ -121,7 +135,10 @@
     "rejectedInGui": "Rejected in GUI."
   },
   "threadDialogs": {
-    "titleEmpty": "Title cannot be empty."
+    "titleEmpty": "Title cannot be empty.",
+    "archiveSkipped": "{{names}}{{more}} still running; finish or stop them before archiving.",
+    "archiveTitle": "Archive this conversation?",
+    "archiveDescription": "The conversation and its {{count}} forked conversations will be archived together. You can restore them later."
   },
   "workspaceDialogs": {
     "renameTitle": "Rename workspace",
@@ -204,6 +221,12 @@
     "titleEmpty": "No skills installed yet",
     "body": "Skills let AI make PPTs, run deep research, and analyze data for you… Click here to see what you can use.",
     "go": "Take a look",
+    "dismiss": "Got it"
+  },
+  "archiveGuide": {
+    "title": "Archived conversations live here",
+    "body": "View a shelved conversation's full history, or restore it to keep talking.",
+    "viewArchived": "View archived",
     "dismiss": "Got it"
   }
 }

@@ -48,6 +48,42 @@ pub fn pin_workspace(
     store::pin_workspace(input)
 }
 
+/// Shelf a user workspace: it and every conversation it holds leave the default
+/// lists without any conversation changing its own status. Refused while any
+/// conversation inside is still running.
+pub async fn archive_workspace(
+    workspace_id: String,
+) -> Result<store::WorkspaceRecord, crate::Error> {
+    // A run another client started has no local `runs` row; the Agent's
+    // resident streaming set is what makes the refusal complete. Unreachable
+    // agent answers empty, matching the sidebar's own tolerance.
+    let streaming = crate::agent_bridge::reconcile_streaming_observers()
+        .await
+        .unwrap_or_default();
+    store::archive_workspace(&workspace_id, &streaming)
+}
+
+/// Bring a shelved workspace (and the conversations it was hiding) back.
+pub fn restore_workspace(workspace_id: String) -> Result<store::WorkspaceRecord, crate::Error> {
+    store::restore_workspace(&workspace_id)
+}
+
+/// One page of the workspace list: `archived = false` is the default list
+/// (pinned excluded — they lead, see `list_pinned_workspaces`), `true` is the
+/// archived view.
+pub fn list_workspaces_page(
+    archived: bool,
+    cursor: Option<String>,
+    limit: i64,
+) -> Result<store::WorkspacesPage, crate::Error> {
+    store::list_workspaces_page(archived, cursor.as_deref(), limit)
+}
+
+/// The pinned user workspaces, whole.
+pub fn list_pinned_workspaces() -> Result<Vec<store::WorkspaceRecord>, crate::Error> {
+    store::list_pinned_workspaces()
+}
+
 pub async fn delete_workspace(
     workspace_id: String,
 ) -> Result<store::WorkspaceRecord, crate::Error> {

@@ -59,6 +59,7 @@ export function RailViewSwitch({
   const [dragging, setDragging] = useState<RailView | null>(null);
 
   const labels: Record<RailView, string> = {
+    archived: t("activityRail.viewArchived"),
     recent: t("activityRail.viewRecent"),
     workspace: t("activityRail.viewWorkspace"),
   };

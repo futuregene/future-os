@@ -13,6 +13,7 @@ import { useDropUpMenu } from "./hooks/useDropUpMenu";
 /** Per-thread actions dropdown (rename / pin / delete, or restore when archived). */
 export function ThreadItemMenu({
   archived,
+  onArchive,
   pinned,
   onClose,
   onDelete,
@@ -21,6 +22,8 @@ export function ThreadItemMenu({
   onTogglePin,
 }: {
   archived?: boolean;
+  /** Absent in a list that offers no archive action. */
+  onArchive?: () => void;
   pinned: boolean;
   onClose: () => void;
   onDelete: () => void;
@@ -58,6 +61,13 @@ export function ThreadItemMenu({
               <ThreadMenuItem icon={<Pin className="size-3.5" />} onClick={onTogglePin} onClose={onClose}>
                 {pinned ? t("activityRail.unpin") : t("activityRail.pin")}
               </ThreadMenuItem>
+              {onArchive
+                ? (
+                    <ThreadMenuItem icon={<Archive className="size-3.5" />} onClick={onArchive} onClose={onClose}>
+                      {t("activityRail.archive")}
+                    </ThreadMenuItem>
+                  )
+                : null}
             </>
           )}
       <ThreadMenuItem danger icon={<Trash2 className="size-3.5" />} onClick={onDelete} onClose={onClose}>
@@ -74,6 +84,7 @@ export function ThreadItemMenu({
 export function WorkspaceHeaderMenu({
   workspace,
   open,
+  onArchive,
   onDelete,
   onOpenChange,
   onRename,
@@ -82,6 +93,8 @@ export function WorkspaceHeaderMenu({
 }: {
   workspace: StoredWorkspace;
   open: boolean;
+  /** Absent for a workspace that cannot be shelved (only `kind='user'` can). */
+  onArchive?: (workspace: StoredWorkspace) => void;
   onDelete: (workspace: StoredWorkspace) => void;
   onOpenChange: (open: boolean) => void;
   onRename: (workspace: StoredWorkspace) => void;
@@ -150,6 +163,13 @@ export function WorkspaceHeaderMenu({
                 ? (
                     <ThreadMenuItem icon={<CheckSquare className="size-3.5" />} onClick={onSelect} onClose={() => onOpenChange(false)}>
                       {t("activityRail.selectThreads")}
+                    </ThreadMenuItem>
+                  )
+                : null}
+              {onArchive && workspace.kind === "user"
+                ? (
+                    <ThreadMenuItem icon={<Archive className="size-3.5" />} onClick={() => onArchive(workspace)} onClose={() => onOpenChange(false)}>
+                      {t("activityRail.archiveWorkspace")}
                     </ThreadMenuItem>
                   )
                 : null}
