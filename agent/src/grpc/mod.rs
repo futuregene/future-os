@@ -258,7 +258,23 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         if request.get_ref().r#type != "get_agent_readiness" {
             validate_expected_instance(request.metadata(), &self.state)?;
         }
+        let transport_timeout = request
+            .metadata()
+            .get("grpc-timeout")
+            .and_then(|value| value.to_str().ok())
+            .and_then(crate::session::database::request::timeout);
         let cmd = request.into_inner();
+        let read_timeout = future_rpc::command_policy::command_policy(&cmd.r#type)
+            .filter(|policy| policy.retry == future_rpc::command_policy::RetryPolicy::SafeRead)
+            .map(|policy| {
+                transport_timeout.map_or(policy.timeout, |timeout| timeout.min(policy.timeout))
+            });
+        let storage_request = crate::session::database::request::Context::new(
+            cmd.r#type.clone(),
+            cmd.session_id.clone(),
+            read_timeout,
+        );
+        let _cancel_reads = storage_request.cancel_on_drop();
         if cmd.sandbox_policy.as_ref().is_some_and(|policy| {
             !matches!(policy.tier.as_str(), "off" | "manual" | "sandbox")
                 || !matches!(policy.reviewer.as_str(), "" | "user" | "model")
@@ -489,6 +505,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         let command_state = self.state.clone();
         let (resp_str, _read_admitted) = tokio::task::spawn_blocking(move || {
             let _admitted = admitted;
+            let _storage_request = storage_request.enter();
             #[cfg(test)]
             if let Some(override_resp) = execute_command_test_override(&internal_cmd.cmd_type) {
                 return (override_resp, read_admitted);

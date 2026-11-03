@@ -636,6 +636,12 @@ fn run_worker(
 }
 
 fn execute(state: &PersistenceInner, command: PersistenceCommand) {
+    let _storage_context = super::database::request::Context::new(
+        "session_persistence".into(),
+        state.session_id.clone(),
+        None,
+    )
+    .enter();
     match command {
         PersistenceCommand::Recover { entries, ack } => {
             let result = state

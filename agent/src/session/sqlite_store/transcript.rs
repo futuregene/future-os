@@ -9,7 +9,7 @@ impl SqliteStore {
     /// not hydrate every message merely to discover an earlier run marker.
     pub(crate) fn has_transcript_run(&self, session: &str, run: &str) -> Result<bool> {
         let (session, run) = (session.to_owned(), run.to_owned());
-        self.db.read(move |db| {
+        self.db.fence(move |db| {
             let run = crate::session::identity::BoundIdentity::run(db, &session, &run)?;
             let session = crate::session::identity::BoundIdentity::session(db, &session)?;
             Ok(db.query_row(
@@ -90,7 +90,7 @@ impl SqliteStore {
         let mut prepared = crate::session::content::entries::prepare(self, session, entries)?;
         let entries = prepared.take();
         let session = session.to_owned();
-        let result = self.db.call(move |db| {
+        let result = self.db.call_as("transcript_replace", move |db| {
             // Reads `legacy_imports` before writing, so the transaction must own
             // the write lock from the start: a deferred read-then-upgrade fails
             // instantly (SQLITE_BUSY_SNAPSHOT) when another connection commits

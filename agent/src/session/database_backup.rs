@@ -25,7 +25,19 @@ pub(crate) fn create_database_snapshot_cancellable(
     }
     let result: Result<PathBuf> = (|| {
         cancellation.check()?;
+        let step = std::time::Instant::now();
+        tracing::info!(
+            event = "database_backup_step_started",
+            kind = prefix,
+            step = "source_quick_check"
+        );
         let check: String = connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+        tracing::info!(
+            event = "database_backup_step_completed",
+            kind = prefix,
+            step = "source_quick_check",
+            elapsed_ms = step.elapsed().as_millis() as u64
+        );
         ensure!(
             check == "ok",
             "database integrity check failed; preserve the original database and WAL"
@@ -38,6 +50,12 @@ pub(crate) fn create_database_snapshot_cancellable(
             .prefix(".sqlite-upgrade-")
             .tempfile_in(directory)?
             .into_temp_path();
+        let step = std::time::Instant::now();
+        tracing::info!(
+            event = "database_backup_step_started",
+            kind = prefix,
+            step = "copy"
+        );
         connection.execute(
             "VACUUM main INTO ?1",
             [temporary
@@ -45,6 +63,18 @@ pub(crate) fn create_database_snapshot_cancellable(
                 .context("database snapshot path is not valid UTF-8")?],
         )?;
         cancellation.check()?;
+        tracing::info!(
+            event = "database_backup_step_completed",
+            kind = prefix,
+            step = "copy",
+            elapsed_ms = step.elapsed().as_millis() as u64
+        );
+        let step = std::time::Instant::now();
+        tracing::info!(
+            event = "database_backup_step_started",
+            kind = prefix,
+            step = "snapshot_quick_check"
+        );
         let snapshot = Connection::open_with_flags(&temporary, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         cancellation.monitor_sqlite(&snapshot)?;
         let checked = snapshot.query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0));
@@ -52,6 +82,18 @@ pub(crate) fn create_database_snapshot_cancellable(
         let check = checked?;
         ensure!(check == "ok", "database snapshot integrity check failed");
         drop(snapshot);
+        tracing::info!(
+            event = "database_backup_step_completed",
+            kind = prefix,
+            step = "snapshot_quick_check",
+            elapsed_ms = step.elapsed().as_millis() as u64
+        );
+        let step = std::time::Instant::now();
+        tracing::info!(
+            event = "database_backup_step_started",
+            kind = prefix,
+            step = "sync_and_publish"
+        );
         std::fs::OpenOptions::new()
             .write(true)
             .open(&temporary)?
@@ -72,6 +114,12 @@ pub(crate) fn create_database_snapshot_cancellable(
                 .sync_all()?;
             }
         }
+        tracing::info!(
+            event = "database_backup_step_completed",
+            kind = prefix,
+            step = "sync_and_publish",
+            elapsed_ms = step.elapsed().as_millis() as u64
+        );
         Ok(destination)
     })();
     match &result {

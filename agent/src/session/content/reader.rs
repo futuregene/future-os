@@ -159,6 +159,7 @@ impl Snapshot {
         self.tally = tally;
     }
 
+    #[track_caller]
     fn read<T: Send + 'static>(
         &self,
         store: &SqliteStore,
@@ -198,7 +199,7 @@ impl Snapshot {
         // deliberately `check_now`: the lease-wide memo below belongs to the
         // snapshot this read was served from, and would answer for it.
         let scope = self.clone();
-        store.db.read(move |db| scope.check_now(db))
+        store.db.fence(move |db| scope.check_now(db))
     }
 
     /// Immutable entry identity plus the page's current derived annotations.
