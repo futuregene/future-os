@@ -78,33 +78,72 @@ fn a_database_that_answers_to_our_id_without_a_schema_version_is_preserved() {
     assert_eq!(entries, 1, "the refusal must not rewrite the file");
 }
 
+/// Pages a startup may move in or out of the freelist when the schema it opens is
+/// already current.
+///
+/// A startup does write, even with nothing to migrate: `initialize_schema`
+/// re-creates the derived views (`entries::RESOLVED_BLOCKS_SQL`,
+/// `entry_records::entry_record_views_sql`, `entries::header_views_sql`) so a code
+/// change to them takes effect, and every `DROP VIEW IF EXISTS` + `CREATE VIEW`
+/// pair deletes and re-inserts that view's `sqlite_schema` row. The re-insert
+/// lands where the cell fits rather than in the hole it just left, so the
+/// `sqlite_schema` btree comes out fragmented: 12 pages as the file is created,
+/// 13 after the first reopen, and that extra leaf is allocated from the freelist
+/// (measured: 20500 free pages before the reopen, 20499 after, `page_count`
+/// unchanged at 20642).
+///
+/// Whether the fragmented btree still fits is a boundary decided by the whole
+/// schema, not by anything the reopen does differently: take `run_snapshot_cache`
+/// — the table the replay cache added — out of `schema.sql` and this reopen leaves
+/// the freelist exactly as it found it (`dbstat`: `sqlite_schema` stays at 12
+/// pages); with the table there it needs one more leaf. So the exact freelist
+/// equality this test used to assert was describing the schema's size, not the
+/// startup's behaviour, and it stopped holding the moment the schema grew past
+/// it. `page_count` below stays exact, and a second opening must reuse the holes
+/// the first one left, so what the startup may cost is one page, once per file,
+/// rather than one per start.
+const REOPEN_SCHEMA_PAGES: i64 = 1;
+
 #[test]
 fn opening_bloated_incremental_database_does_not_rewrite_it() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("agent.db");
     let connection = open_connection(&path).unwrap();
     connection.execute_batch("CREATE TABLE bloat(payload BLOB); INSERT INTO bloat VALUES(zeroblob(80*1024*1024)); DELETE FROM bloat;").unwrap();
-    let pages: i64 = connection
-        .pragma_query_value(None, "page_count", |r| r.get(0))
-        .unwrap();
-    let free: i64 = connection
-        .pragma_query_value(None, "freelist_count", |r| r.get(0))
-        .unwrap();
+    let layout = |connection: &Connection| -> (i64, i64) {
+        (
+            connection
+                .pragma_query_value(None, "page_count", |r| r.get(0))
+                .unwrap(),
+            connection
+                .pragma_query_value(None, "freelist_count", |r| r.get(0))
+                .unwrap(),
+        )
+    };
+    let (pages, free) = layout(&connection);
     assert!(free * 4096 > 64 * 1024 * 1024);
     drop(connection);
     // No idle worker is started here: this isolates the startup path.
     let reopened = open_connection(&path).unwrap();
-    assert_eq!(
-        reopened
-            .pragma_query_value(None, "page_count", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        pages
+    let (reopened_pages, reopened_free) = layout(&reopened);
+    // The rewrite this guards against — a `VACUUM`, or the whole auto-vacuum
+    // pass `PRAGMA incremental_vacuum` would run — shows up on both counters: it
+    // rewrites the file down to the ~116 pages the schema occupies and empties
+    // the freelist. Nothing here may shrink the file or reclaim its free pages.
+    assert_eq!(reopened_pages, pages, "opening must not resize the file");
+    assert!(
+        (free - reopened_free).abs() <= REOPEN_SCHEMA_PAGES,
+        "opening must not claim the freelist: {free} free pages before, {reopened_free} after"
     );
+    drop(reopened);
+    // The schema bootstrap converges, so it is a one-time cost: opening again
+    // has to land on exactly the layout the previous open left behind. A page
+    // per start would be unbounded growth of the file.
+    let again = open_connection(&path).unwrap();
     assert_eq!(
-        reopened
-            .pragma_query_value(None, "freelist_count", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        free
+        layout(&again),
+        (reopened_pages, reopened_free),
+        "a second opening must leave the layout where the first one put it"
     );
 }
 
