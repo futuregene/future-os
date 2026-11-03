@@ -20,8 +20,9 @@ import type { TimelineCardProps } from "../messages/types";
 import { FloatingTimelineButton } from "../components/FloatingTimelineButton";
 import type { TimelineSyncStatus } from "@future-os/remote-client/syncEngine";
 import type { RemoteSession, RemoteSessionUsage, RemoteWorkspace, TimelineItem } from "../../../remote/types";
-import { sendQueue } from "../sendQueue";
-import { QUEUE_RETRY_DELAY_MS, QUEUE_RETRY_LIMIT } from "../queueDelivery";
+import { QUEUE_POLL_MS, type SessionQueueRow, type SessionQueueSnapshot } from "../../../remote/sessionQueue";
+import { QUEUED_SEND_POLICY } from "../useSendMessage";
+import * as chatUtils from "../utils";
 
 const mockRemote = {
   credentials: { expectedDesktopId: "desktop" },
@@ -84,6 +85,11 @@ const mockRemote = {
   takeControl: jest.fn(async () => {}),
   // The send queue's flush delivers through this, as `useSendMessage` does.
   sendMessage: jest.fn<Promise<void>, [string, unknown[]?]>(async () => {}),
+  // The conversation's queue, which lives on the desktop: the panel reads it and
+  // the two verbs address the session's own run ids.
+  getQueue: jest.fn<Promise<SessionQueueSnapshot>, [string]>(async () => ({ acks: [], rows: [] })),
+  cancelQueuedRun: jest.fn<Promise<void>, [string, string]>(async () => {}),
+  releaseQueuedRun: jest.fn<Promise<void>, [string, string]>(async () => {}),
 };
 jest.mock("../../../remote/RemoteContext", () => ({
   useRemote: () => mockRemote,
@@ -215,7 +221,7 @@ jest.mock("../components/NativeFileActionSheet", () => ({
 
 let tree: ReactTestRenderer;
 const removeBack = jest.fn();
-beforeEach(() => {
+beforeEach(async () => {
   jest.clearAllMocks();
   jest
     .spyOn(BackHandler, "addEventListener")
@@ -240,6 +246,9 @@ beforeEach(() => {
   mockRemote.workspaces = [];
   mockRemote.sessionUsage = null;
   mockRemote.sendMessage.mockReset().mockResolvedValue(undefined);
+  mockRemote.getQueue.mockReset().mockResolvedValue({ acks: [], rows: [] });
+  mockRemote.cancelQueuedRun.mockReset().mockResolvedValue(undefined);
+  mockRemote.releaseQueuedRun.mockReset().mockResolvedValue(undefined);
   mockRemote.loadOlderTimeline.mockReset().mockResolvedValue([]);
   mockDraft.message = "";
   mockDraft.attachments = [];
@@ -249,8 +258,15 @@ beforeEach(() => {
   act(() => {
     tree = create(createElement(ChatScreen));
   });
+  // Let the panel's opening queue read land inside this setup, so no test has to
+  // remember to flush it before asserting.
+  await act(async () => { await Promise.resolve(); });
 });
-afterEach(() => {
+afterEach(async () => {
+  // A read started by the last render is still in flight: let it land while the
+  // screen is mounted, so its state update happens inside `act` rather than
+  // after the teardown.
+  await act(async () => { await Promise.resolve(); });
   act(() => tree.unmount());
   jest.useRealTimers();
   jest.restoreAllMocks();
@@ -271,7 +287,7 @@ const olderCollision = () => {
   }));
 };
 
-test("a desktop another device took over says so where the user is typing", () => {
+test("a desktop another device took over says so where the user is typing", async () => {
   // The status dot explains the refusal, but a user composing here will not tap
   // a small dot to find out why sending does nothing.
   // A fresh mount: `ChatScreen` takes no props, so `update` with an identical
@@ -279,6 +295,8 @@ test("a desktop another device took over says so where the user is typing", () =
   act(() => tree.unmount());
   mockRemote.presence = { control: "standby", holder: { name: "Lab MacBook Air" } };
   act(() => { tree = create(createElement(ChatScreen)); });
+  // The panel's opening queue read lands inside the mount.
+  await act(async () => { await Promise.resolve(); });
 
   const notice = () => tree.root.findAll(n => typeof n.type === "function" && n.type.name === "StandbyNotice");
   expect(notice()).toHaveLength(1);
@@ -289,6 +307,7 @@ test("a desktop another device took over says so where the user is typing", () =
   act(() => tree.unmount());
   mockRemote.presence = { control: "active", holder: null };
   act(() => { tree = create(createElement(ChatScreen)); });
+  await act(async () => { await Promise.resolve(); });
   expect(notice()).toHaveLength(0);
 });
 
@@ -779,7 +798,7 @@ describe("ChatScreen wiring", () => {
   let screen!: ReactTestRenderer;
   const keyHandlers: ((event: { endCoordinates: { height: number } }) => void)[] = [];
   let keySpy!: jest.SpyInstance;
-  beforeEach(() => {
+  beforeEach(async () => {
     keyHandlers.length = 0;
     keySpy = jest.spyOn(Keyboard, "addListener").mockImplementation(((
       _name: string,
@@ -789,6 +808,8 @@ describe("ChatScreen wiring", () => {
       return { remove: jest.fn() };
     }) as never);
     act(() => { screen = create(createElement(ChatScreen)); });
+    // The panel's opening queue read is in flight; let it land inside the setup.
+    await act(async () => { await Promise.resolve(); });
   });
   afterEach(() => {
     act(() => screen.unmount());
@@ -1113,7 +1134,7 @@ test("Fusion details preserve step and byte offset through the stable timeline c
 });
 
 
-test("conversation navigation removes outgoing transfer progress and rejects late callbacks", () => {
+test("conversation navigation removes outgoing transfer progress and rejects late callbacks", async () => {
   const progressWidth = (value: string) => tree.root.findAll(node =>
     node.props.style && StyleSheet.flatten(node.props.style)?.width === value);
   const reportA = mockSendOptions.current!.setTransferProgress;
@@ -1121,6 +1142,8 @@ test("conversation navigation removes outgoing transfer progress and rejects lat
   expect(progressWidth("25%").length).toBeGreaterThan(0);
   mockRemote.selectedSessionId = "B";
   act(() => tree.update(createElement(ChatScreen)));
+  // The panel re-reads the queue for the conversation it now shows.
+  await act(async () => { await Promise.resolve(); });
   expect(progressWidth("25%")).toHaveLength(0);
   act(() => mockSendOptions.current!.setTransferProgress(0.5));
   act(() => reportA(0.75));
@@ -1173,290 +1196,232 @@ test("the image viewer is the last surface, and its dismissal leaves the convers
   expect(viewer().props.target).toBeNull();
 });
 
-test("a queued message leaves as one message once the desktop reports the run over", async () => {
-  const key = "desktop:history";
-  sendQueue.clear(key);
-  mockRemote.streaming = true;
-  act(() => tree.update(createElement(ChatScreen)));
-  act(() => {
-    sendQueue.enqueue(key, { attachments: [], content: "queued one" });
-    sendQueue.enqueue(key, { attachments: [], content: "queued two" });
-  });
-  act(() => tree.update(createElement(ChatScreen)));
-  expect(mockRemote.sendMessage).not.toHaveBeenCalled();
-  expect(tree.root.findByType(ComposerDock).props.queueItems.map((item: { content: string }) => item.content))
-    .toEqual(["queued one", "queued two"]);
+// ── Send queue: the session's, read from the desktop ───────────────────────
+// Nothing below is held by this phone. A message sent while the reply streams
+// goes to the desktop at once with a queueing policy; the panel draws the rows
+// the session reports (`get_queue`), and the three verbs address the session's
+// own run ids.
 
-  // The desktop owns the truth: not streaming is what makes the conversation
-  // free, and only then does the queue leave.
-  mockRemote.streaming = false;
-  await act(async () => {
-    tree.update(createElement(ChatScreen));
-  });
-  expect(mockRemote.sendMessage).toHaveBeenCalledWith("queued one\n\nqueued two", []);
-  expect(sendQueue.snapshot(key).items).toEqual([]);
-  expect(tree.root.findByType(ComposerDock).props.queueItems).toEqual([]);
+const queueRow = (fields: Partial<SessionQueueRow> & { runId: string }): SessionQueueRow => ({
+  acceptedAt: "2026-01-01T00:00:00Z",
+  position: 1,
+  state: "queued",
+  text: "waiting",
+  ...fields,
 });
 
-test("a whole queue plus the field's draft leaves as one message when interrupted", async () => {
-  const key = "desktop:history";
-  sendQueue.clear(key);
-  mockRemote.streaming = true;
-  act(() => tree.update(createElement(ChatScreen)));
-  const dock = () => tree.root.findByType(ComposerDock).props;
+/** One answer from the desktop: the rows it holds and what recently left them. */
+const queueReply = (
+  rows: SessionQueueRow[],
+  acks: SessionQueueSnapshot["acks"] = [],
+): SessionQueueSnapshot => ({ acks, rows });
 
-  // Two rounds of typing and holding, through the composer's own entry point.
-  for (const text of ["顺手把图例移到右下角", "再把图注也改成中文"]) {
-    mockDraft.message = text;
-    act(() => tree.update(createElement(ChatScreen)));
-    let queued = false;
-    act(() => {
-      queued = dock().enqueueDraft();
-    });
-    expect(queued).toBe(true);
-    expect(mockDraft.message).toBe("");
-  }
-
-  // The third one is in the field when the reader interrupts: the composer hands
-  // it over first, then ends the run — which is what `打断并全部发送` does.
-  mockDraft.message = "最后把配色换成低饱和";
-  act(() => tree.update(createElement(ChatScreen)));
-  act(() => {
-    dock().enqueueDraft();
-  });
-  expect(dock().queueItems.map((item: { content: string }) => item.content))
-    .toEqual(["顺手把图例移到右下角", "再把图注也改成中文", "最后把配色换成低饱和"]);
-  expect(mockRemote.sendMessage).not.toHaveBeenCalled();
-
-  // The run is over, so the queue leaves — once, as one message.
-  mockRemote.streaming = false;
-  await act(async () => {
-    tree.update(createElement(ChatScreen));
-  });
-  expect(mockRemote.sendMessage).toHaveBeenCalledTimes(1);
-  expect(mockRemote.sendMessage.mock.calls[0]![0])
-    .toBe("顺手把图例移到右下角\n\n再把图注也改成中文\n\n最后把配色换成低饱和");
-  expect(sendQueue.snapshot(key).items).toEqual([]);
-});
-
-test("a queue held at an interrupt leaves as soon as the stop is acknowledged", async () => {
-  const key = "desktop:history";
-  sendQueue.clear(key);
-  // The desktop is still finishing: its first answers are "not yet", which is what
-  // an interrupt looks like from the phone for a beat (the run settles a moment
-  // after the abort is acknowledged).
-  mockRemote.streaming = true;
-  mockRemote.sendMessage
-    .mockRejectedValueOnce(new Error("session_busy"))
-    .mockRejectedValueOnce(new Error("session_busy"))
-    .mockResolvedValue(undefined);
-  act(() => tree.update(createElement(ChatScreen)));
-  act(() => {
-    sendQueue.enqueue(key, { attachments: [], content: "held while it ran" });
-  });
-  act(() => tree.update(createElement(ChatScreen)));
-  expect(mockRemote.sendMessage).not.toHaveBeenCalled();
-
-  // The reader stopped the run. The screen sends now — its own streaming flag has
-  // not caught up yet, and waiting for it was the delay this test exists for.
-  act(() => tree.root.findByType(ComposerDock).props.onStopped());
+/** Let the panel's read land. */
+const settleQueue = async () => {
   await act(async () => { await Promise.resolve(); });
-  expect(mockRemote.sendMessage).toHaveBeenCalledTimes(1);
-  expect(mockRemote.streaming).toBe(true);
+};
 
-  // "Not yet" is not a failure: the row goes back without the brake, and the next
-  // attempt is scheduled rather than left for the reader to press.
-  expect(sendQueue.snapshot(key).items.map(item => item.content)).toEqual(["held while it ran"]);
-  expect(sendQueue.snapshot(key).failed).toBe(false);
+/**
+ * Mount the screen with the session already answering this queue.
+ *
+ * The panel reads when it opens, so a fixture set after the mount would only
+ * arrive on the next tick — which is a different thing from what is queued now.
+ */
+const mountWithQueue = async (
+  rows: SessionQueueRow[],
+  options: { streaming?: boolean; acks?: SessionQueueSnapshot["acks"] } = {},
+) => {
+  act(() => tree.unmount());
+  mockRemote.getQueue.mockResolvedValue(queueReply(rows, options.acks ?? []));
+  mockRemote.streaming = options.streaming ?? false;
+  act(() => { tree = create(createElement(ChatScreen)); });
+  await settleQueue();
+};
 
-  await act(async () => {
-    jest.advanceTimersByTime(400);
-    await Promise.resolve();
-  });
-  expect(mockRemote.sendMessage).toHaveBeenCalledTimes(2);
-  await act(async () => {
-    jest.advanceTimersByTime(400);
-    await Promise.resolve();
-  });
-  expect(mockRemote.sendMessage).toHaveBeenCalledTimes(3);
-  expect(mockRemote.sendMessage.mock.calls[2]![0]).toBe("held while it ran");
-  expect(sendQueue.snapshot(key).items).toEqual([]);
-  expect(sendQueue.snapshot(key).failed).toBe(false);
+const queueContents = () =>
+  tree.root.findByType(ComposerDock).props.queueItems.map((item: { content: string }) => item.content);
+
+test("the panel draws the rows the session queued, and the screen sends nothing on its own", async () => {
+  await mountWithQueue(
+    [
+      queueRow({ runId: "run_a", text: "queued one" }),
+      queueRow({ position: 2, runId: "run_b", text: "queued two" }),
+    ],
+    { streaming: true },
+  );
+
+  expect(mockRemote.getQueue).toHaveBeenCalledWith("history");
+  expect(queueContents()).toEqual(["queued one", "queued two"]);
+  // The run ending is the session's business: it starts the row itself.
+  mockRemote.streaming = false;
+  await act(async () => { tree.update(createElement(ChatScreen)); });
+  expect(mockRemote.sendMessage).not.toHaveBeenCalled();
 });
 
-test("a refused queue stays on screen, flagged, and retries only when asked", async () => {
-  const key = "desktop:history";
-  sendQueue.clear(key);
-  // Not a "not yet": this one will not pass by itself, so the reader is handed the
-  // decision instead of the screen retrying behind their back.
-  mockRemote.sendMessage.mockRejectedValueOnce(new Error("prompt_too_large"));
-  act(() => {
-    sendQueue.enqueue(key, { attachments: [], content: "keep me" });
-  });
-  await act(async () => {
-    tree.update(createElement(ChatScreen));
-  });
-  expect(mockRemote.sendMessage).toHaveBeenCalledTimes(1);
+test("delete cancels that row's own run id on the session", async () => {
+  await mountWithQueue([queueRow({ runId: "run_a", text: "take me back" })]);
   const dock = () => tree.root.findByType(ComposerDock).props;
-  expect(dock().queueItems.map((item: { content: string }) => item.content)).toEqual(["keep me"]);
-  expect(dock().queueFailed).toBe(true);
+  const readsBefore = mockRemote.getQueue.mock.calls.length;
 
-  // A re-render must not retry by itself.
-  await act(async () => {
-    tree.update(createElement(ChatScreen));
-  });
-  expect(mockRemote.sendMessage).toHaveBeenCalledTimes(1);
-
-  await act(async () => {
-    dock().onQueueRetry();
-  });
-  expect(mockRemote.sendMessage).toHaveBeenCalledTimes(2);
-  expect(sendQueue.snapshot(key).items).toEqual([]);
+  await act(async () => { dock().onQueueRemove("run_a"); });
+  expect(mockRemote.cancelQueuedRun).toHaveBeenCalledWith("history", "run_a");
+  // The panel is re-read whatever the answer was, so the row goes when the
+  // session says it went rather than when this screen assumes it did.
+  expect(mockRemote.getQueue.mock.calls.length).toBeGreaterThan(readsBefore);
 });
 
-test("a queue the desktop keeps saying 'not yet' to is handed back after the budget", async () => {
-  const key = "desktop:history";
-  sendQueue.clear(key);
-  mockRemote.sendMessage.mockRejectedValue(new Error("session_busy"));
-  act(() => {
-    sendQueue.enqueue(key, { attachments: [], content: "keep me" });
-  });
+test("editing a waiting message takes the row back and queues the new words", async () => {
+  await mountWithQueue([queueRow({ runId: "run_a", text: "typo" })]);
+
   await act(async () => {
-    tree.update(createElement(ChatScreen));
+    tree.root.findByType(ComposerDock).props.onQueueUpdate("run_a", "  fixed  ");
   });
-  // It rides out the settle, then stops asking and flags the row so the reader can
-  // decide — a refusal loop that never ends would be worse than the wait. Each
-  // retry is scheduled from the previous attempt's rejection, so the chain needs a
-  // tick per attempt rather than one big jump.
-  for (let attempt = 0; attempt < QUEUE_RETRY_LIMIT + 2; attempt += 1) {
-    await act(async () => {
-      jest.advanceTimersByTime(QUEUE_RETRY_DELAY_MS);
-      await Promise.resolve();
-    });
-  }
-  const dock = () => tree.root.findByType(ComposerDock).props;
-  expect(dock().queueItems.map((item: { content: string }) => item.content)).toEqual(["keep me"]);
-  expect(dock().queueFailed).toBe(true);
-  expect(mockRemote.sendMessage.mock.calls.length).toBeLessThanOrEqual(QUEUE_RETRY_LIMIT + 1);
+  // A queued prompt has no editable text on the session: cancel, then send.
+  expect(mockRemote.cancelQueuedRun).toHaveBeenCalledWith("history", "run_a");
+  expect(mockRemote.sendMessage).toHaveBeenCalledWith(
+    "fixed", [], undefined, { busyPolicy: QUEUED_SEND_POLICY },
+  );
+  expect(mockRemote.cancelQueuedRun.mock.invocationCallOrder[0]!)
+    .toBeLessThan(mockRemote.sendMessage.mock.invocationCallOrder[0]!);
 });
 
-test("the dock's enqueue stores the draft against this conversation and clears the box", () => {
-  const key = "desktop:history";
-  sendQueue.clear(key);
-  // A send while the desktop answers is where the queue comes from; an idle
-  // conversation would send it straight away instead.
-  mockRemote.streaming = true;
-  mockDraft.message = "  hold this  ";
-  act(() => tree.update(createElement(ChatScreen)));
-  const dock = () => tree.root.findByType(ComposerDock).props;
-  let queued = false;
-  act(() => {
-    queued = dock().enqueueDraft();
+test("an edit that empties the row is not a message, so nothing is sent", async () => {
+  await mountWithQueue([queueRow({ runId: "run_a", text: "typo" })]);
+
+  await act(async () => {
+    tree.root.findByType(ComposerDock).props.onQueueUpdate("run_a", "   ");
   });
-  expect(queued).toBe(true);
-  expect(sendQueue.snapshot(key).items.map(item => item.content)).toEqual(["hold this"]);
-  expect(dock().queueItems.map((item: { content: string }) => item.content)).toEqual(["hold this"]);
-  expect(mockDraft.setMessage).toHaveBeenCalledWith("");
-  act(() => sendQueue.clear(key));
+  expect(mockRemote.cancelQueuedRun).not.toHaveBeenCalled();
+  expect(mockRemote.sendMessage).not.toHaveBeenCalled();
+});
+
+test("a parked row offers 'send now', and pressing it releases that run", async () => {
+  await mountWithQueue([
+    queueRow({ runId: "run_parked", state: "stale:stale", text: "waited too long" }),
+  ]);
+  const items = tree.root.findByType(ComposerDock).props.queueItems;
+  expect(items[0].parked).toBe(true);
+
+  await act(async () => {
+    tree.root.findByType(ComposerDock).props.onQueueRelease("run_parked");
+  });
+  expect(mockRemote.releaseQueuedRun).toHaveBeenCalledWith("history", "run_parked");
+});
+
+test("a row about to run at the boundary is not offered as a manual send", async () => {
+  await mountWithQueue([queueRow({ runId: "run_a" })]);
+  expect(tree.root.findByType(ComposerDock).props.queueItems[0].parked).toBe(false);
+});
+
+test("a refused cancel is told to the reader instead of silently keeping the row", async () => {
+  const toast = jest.spyOn(chatUtils, "showToast").mockImplementation(() => {});
+  await mountWithQueue([queueRow({ runId: "run_a" })]);
+  mockRemote.cancelQueuedRun.mockRejectedValueOnce(new Error("not_connected"));
+
+  await act(async () => {
+    tree.root.findByType(ComposerDock).props.onQueueRemove("run_a");
+  });
+  expect(toast).toHaveBeenCalled();
 });
 
 /**
- * The desktop and the phone's durable outbox, at the one rule they share: a prompt
- * is deduped by its command id and by nothing else.
- *
- * `sendMessage` behaves like `usePromptOutbox.sendMessage` — it keeps the command
- * id it is handed, mints one when it was not, keeps its record when the failure is
- * one the link recovers from, and reports that id with the failure. `prompt`
- * behaves like the host's, which answers with the receipt of an id it already
- * accepted instead of running the same message again.
+ * A row can leave the desktop's queue without this screen asking — folded into
+ * the turn ahead, taken back on the desktop, lost with a deleted conversation.
+ * Without its terminal ack the row simply disappears, and the reader believes the
+ * message went out.
  */
-function promptHost() {
-  const accepted: string[] = [];
-  let record: { commandId: string; text: string } | null = null;
-  let unreachable = true;
-  let minted = 0;
-  const sendMessage = jest.fn(async (
-    text: string,
-    _attachments?: unknown[],
-    _onUploadProgress?: unknown,
-    options?: { commandId?: string },
-  ) => {
-    const commandId = options?.commandId ?? `prompt_minted_${minted += 1}`;
-    if (accepted.includes(commandId)) {
-      record = null;
-      return;
-    }
-    if (unreachable) {
-      record = { commandId, text };
-      throw Object.assign(new Error("not_connected"), { commandId });
-    }
-    record = null;
-    accepted.push(commandId);
-  });
-  return {
-    accepted: () => accepted,
-    record: () => record,
-    sendMessage: sendMessage as unknown as typeof mockRemote.sendMessage,
-    /** The outbox's own readiness recovery: deliver the record it kept. */
-    recover() {
-      const kept = record;
-      if (!kept || unreachable)
-        return;
-      if (!accepted.includes(kept.commandId))
-        accepted.push(kept.commandId);
-      record = null;
-    },
-    reachable() { unreachable = false; },
-  };
-}
+test("says why a row left the queue, even with the panel already empty", async () => {
+  await mountWithQueue([queueRow({ runId: "run_a" })], { streaming: true });
+  expect(tree.root.findByType(ComposerDock).props.queueNotice).toBeUndefined();
 
-test("a delivery the outbox kept is not sent again by the queue's retry", async () => {
-  const key = "desktop:history";
-  sendQueue.clear(key);
-  const host = promptHost();
-  mockRemote.sendMessage = host.sendMessage;
-  act(() => { sendQueue.enqueue(key, { attachments: [], content: "still mine?" }); });
-  await act(async () => { tree.update(createElement(ChatScreen)); });
+  mockRemote.getQueue.mockResolvedValue(
+    queueReply([], [{ reason: "merged", runId: "run_a", state: "terminal" }]),
+  );
+  await act(async () => { jest.advanceTimersByTime(QUEUE_POLL_MS); });
 
-  // The link dropped between the composer's gate and the request. The message now
-  // lives in the durable outbox — the record the phone replays after a restart —
-  // and the panel still holds the row, because it has not gone anywhere.
-  expect(host.record()).toEqual({ commandId: expect.any(String), text: "still mine?" });
-  expect(host.accepted()).toEqual([]);
-  const dock = () => tree.root.findByType(ComposerDock).props;
-  expect(dock().queueItems.map((item: { content: string }) => item.content)).toEqual(["still mine?"]);
-
-  // The link is back and the outbox delivers the record it kept.
-  host.reachable();
-  act(() => { host.recover(); });
-  expect(host.accepted()).toHaveLength(1);
-
-  // The reader presses the panel's retry. That message is already a prompt, and a
-  // second command id would be a second run of the same words, charged again.
-  await act(async () => { dock().onQueueRetry(); await Promise.resolve(); });
-  expect(host.accepted()).toHaveLength(1);
-  expect(sendQueue.snapshot(key).items).toEqual([]);
+  // The rows are gone; the sentence is what is left to read, and it is drawn by
+  // the dock rather than inside the panel that just unmounted.
+  expect(tree.root.findByType(ComposerDock).props.queueItems).toEqual([]);
+  expect(tree.root.findByType(ComposerDock).props.queueNotice).toBe("chat.queue.notice.merged");
 });
 
-test("a row the outbox already delivered leaves the panel on the next idle look", async () => {
-  const key = "desktop:history";
-  sendQueue.clear(key);
-  const host = promptHost();
-  mockRemote.sendMessage = host.sendMessage;
-  act(() => { sendQueue.enqueue(key, { attachments: [], content: "went already" }); });
-  await act(async () => { tree.update(createElement(ChatScreen)); });
-  host.reachable();
-  act(() => { host.recover(); });
-  expect(host.accepted()).toHaveLength(1);
-  expect(tree.root.findByType(ComposerDock).props.queueItems).toHaveLength(1);
+/** Deleting a row here is this screen's own act: its ack would read as a fault. */
+test("does not announce the removal the reader just made", async () => {
+  await mountWithQueue([queueRow({ runId: "run_a" })], { streaming: true });
 
-  // A screen that comes back to an idle conversation settles what is left: the row
-  // carries the id the delivery happened under, the desktop answers with that
-  // receipt, and the row goes without a send.
-  act(() => tree.unmount());
-  act(() => { tree = create(createElement(ChatScreen)); });
-  await act(async () => { await Promise.resolve(); });
-  expect(host.accepted()).toHaveLength(1);
-  expect(sendQueue.snapshot(key).items).toEqual([]);
+  await act(async () => {
+    tree.root.findByType(ComposerDock).props.onQueueRemove("run_a");
+  });
+  mockRemote.getQueue.mockResolvedValue(
+    queueReply([], [{ reason: "cancelled", runId: "run_a", state: "terminal" }]),
+  );
+  await act(async () => { jest.advanceTimersByTime(QUEUE_POLL_MS); });
+
   expect(tree.root.findByType(ComposerDock).props.queueItems).toEqual([]);
+  expect(tree.root.findByType(ComposerDock).props.queueNotice).toBeUndefined();
+});
+
+/**
+ * An edit is a cancel and a re-send, so the row is gone on the desktop before the
+ * new words leave. A refusal must put them back in the box rather than cost the
+ * reader both the row and the correction.
+ */
+test("keeps the corrected words when the desktop refuses the re-send", async () => {
+  await mountWithQueue([queueRow({ runId: "run_a", text: "typo" })], { streaming: true });
+  mockRemote.sendMessage.mockRejectedValueOnce(new Error("session_busy"));
+
+  await act(async () => {
+    tree.root.findByType(ComposerDock).props.onQueueUpdate("run_a", "  fixed  ");
+  });
+
+  expect(mockRemote.cancelQueuedRun).toHaveBeenCalledWith("history", "run_a");
+  // The draft is restored through the composer's own setter (an updater, so a
+  // half-written draft is not overwritten).
+  const restore = mockDraft.setMessage.mock.calls.at(-1)![0] as (current: string) => string;
+  expect(restore("")).toBe("fixed");
+  expect(restore("half-written")).toBe("half-written");
+});
+
+test("another conversation's rows are never drawn under this one's box", async () => {
+  await mountWithQueue([queueRow({ runId: "run_a", text: "for history" })]);
+  expect(queueContents()).toEqual(["for history"]);
+
+  // The reader moves on: the rows they were shown belong to the conversation
+  // they left, and whatever that session answers next must not draw here.
+  mockRemote.selectedSessionId = "other";
+  mockRemote.getQueue.mockImplementation(() => new Promise(() => {}));
+  act(() => tree.update(createElement(ChatScreen)));
+  expect(queueContents()).toEqual([]);
+});
+
+test("an idle conversation reads the queue once, and keeps reading only while rows wait", async () => {
+  act(() => tree.unmount());
+  mockRemote.getQueue.mockResolvedValue(queueReply([]));
+  act(() => { tree = create(createElement(ChatScreen)); });
+  await settleQueue();
+  const idleReads = mockRemote.getQueue.mock.calls.length;
+  expect(idleReads).toBeGreaterThan(0);
+
+  // Nothing streaming and nothing waiting: no timer spends the pairing on reads.
+  await act(async () => { jest.advanceTimersByTime(QUEUE_POLL_MS * 3); });
+  expect(mockRemote.getQueue.mock.calls.length).toBe(idleReads);
+
+  // A run starts (somebody sent): the panel reads now, then keeps following it.
+  mockRemote.getQueue.mockResolvedValue(queueReply([queueRow({ runId: "run_a", text: "from the desktop" })]));
+  mockRemote.streaming = true;
+  await act(async () => { tree.update(createElement(ChatScreen)); });
+  await settleQueue();
+  expect(queueContents()).toEqual(["from the desktop"]);
+  const liveReads = mockRemote.getQueue.mock.calls.length;
+  await act(async () => { jest.advanceTimersByTime(QUEUE_POLL_MS); });
+  expect(mockRemote.getQueue.mock.calls.length).toBeGreaterThan(liveReads);
+});
+
+test("a queue that cannot be read leaves the panel empty rather than failing the screen", async () => {
+  act(() => tree.unmount());
+  mockRemote.getQueue.mockRejectedValue(new Error("not_connected"));
+  act(() => { tree = create(createElement(ChatScreen)); });
+  await settleQueue();
+  expect(queueContents()).toEqual([]);
+  expect(mockRemote.getQueue).toHaveBeenCalled();
 });

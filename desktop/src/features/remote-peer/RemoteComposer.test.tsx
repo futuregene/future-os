@@ -1,14 +1,13 @@
 // @vitest-environment jsdom
 import type { RemotePeer } from "./remotePeerClient";
+import type { RemoteQueueRow } from "./remoteQueue";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { emitFutureEvent } from "../../lib/futureEvents";
-import { QUEUE_RETRY_DELAY_MS, QUEUE_RETRY_LIMIT } from "./queueDelivery";
 import { RemoteComposer } from "./RemoteComposer";
 import { clearRemoteComposerDraft } from "./remoteComposerDraft";
 import { getRemoteOutbox, resetRemoteOutbox } from "./remotePromptOutbox";
-import { remoteSendQueue } from "./sendQueue";
 
 /**
  * The composer's contract is about *which machine* a prompt or a stop goes to,
@@ -24,6 +23,7 @@ const prompt = vi.fn<(
   workspaceId?: string | null,
   fresh?: { modelId?: string | null; thinkingLevel?: string | null } | null,
   commandId?: string,
+  busyPolicy?: string,
 ) => Promise<{ sessionId: string; threadId: string }>>();
 const abort = vi.fn<(desktopId: string, sessionId: string) => Promise<unknown>>();
 const upload = vi.fn<(input: { desktopId: string; path: string }) => Promise<{ uploadId: string; name: string; contentHash: string }>>();
@@ -41,6 +41,34 @@ vi.mock("./remotePeerClient", () => ({
   // cannot is a host the composer draws the other controls without.
   getRemoteApprovalSettings: async () => ({ approvalTier: "manual", sandboxAvailable: false }),
   setRemoteApprovalTier: async (_desktopId: string, tier: string) => tier,
+}));
+
+/**
+ * The host's queue, as the composer reads it.
+ *
+ * The hook is replaced by a mutable list so a test says what that host holds and
+ * re-renders into it: what must be drawn is the host's rows, never a copy the
+ * composer made. The two commands are asserted as commands — what the panel's
+ * controls ask the host to do — and their wire shapes are covered by
+ * `remoteQueue.test.ts`.
+ */
+let queueRows: RemoteQueueRow[] = [];
+let queueNotice: { reason: string; count: number } | null = null;
+const refreshQueue = vi.fn<() => void>();
+const forgetQueued = vi.fn<(runId: string) => void>();
+const cancelQueued = vi.fn<(desktopId: string, sessionId: string, runId: string) => Promise<void>>();
+const releaseQueued = vi.fn<(desktopId: string, sessionId: string, runId: string) => Promise<void>>();
+vi.mock("./remoteQueue", () => ({
+  // The value the real module defines (`remoteQueue.test.ts` holds it to this).
+  QUEUED_SEND_POLICY: "enqueue_coalescing",
+  isParkedRemoteQueueRow: (row: { state: string }) => row.state.startsWith("stale"),
+  // The real reason mapping: a test asserting the sentence wants the mapping the
+  // composer uses, not a stub of it.
+  remoteQueueNoticeReason: (reason: string) =>
+    ["merged", "cancelled", "superseded", "session_deleted"].includes(reason) ? reason : "other",
+  useRemoteQueue: () => ({ forget: forgetQueued, notice: queueNotice, refresh: refreshQueue, rows: queueRows }),
+  cancelRemoteQueuedRun: (...args: Parameters<typeof cancelQueued>) => cancelQueued(...args),
+  releaseRemoteQueuedRun: (...args: Parameters<typeof releaseQueued>) => releaseQueued(...args),
 }));
 
 const openDialog = vi.fn<(options: Record<string, unknown>) => Promise<string | null>>();
@@ -205,6 +233,13 @@ beforeEach(() => {
   abort.mockReset().mockResolvedValue(undefined);
   upload.mockReset().mockResolvedValue({ uploadId: "upload_1", name: "notes.txt", contentHash: "abc" });
   openDialog.mockReset().mockResolvedValue("/local/notes.txt");
+  // The host's queue: empty unless a test says what that machine holds.
+  queueRows = [];
+  queueNotice = null;
+  refreshQueue.mockReset();
+  forgetQueued.mockReset();
+  cancelQueued.mockReset().mockResolvedValue(undefined);
+  releaseQueued.mockReset().mockResolvedValue(undefined);
 });
 
 it("prompts the conversation it belongs to and clears only on success", async () => {
@@ -369,9 +404,10 @@ it("stops a run in flight instead of sending", async () => {
  * A draft typed during a run used to wait in the field, because the host refuses
  * a second prompt while it is answering the first ("This session is still
  * running; wait for it to finish or abort it first"). It now has somewhere to
- * go: the send button asks whether to hold the draft in this conversation's send
- * queue or to interrupt the run and send it now (see `lib/sendQueue`). Enter asks
- * the same question, and the draft is never taken without a choice.
+ * go: the send button asks whether to hand the draft to the conversation's
+ * session — which queues it on the host — or to interrupt the run and send it
+ * now. Enter asks the same question, and the draft is never taken without a
+ * choice.
  */
 it("asks what a send means while a run is in flight, however much is drafted", async () => {
   const view = await mount({ streaming: true });
@@ -1584,183 +1620,256 @@ it("leaves compact out of the `/` menu while another device holds the machine", 
   await view.unmount();
 });
 
-describe("the send queue", () => {
-  const queueKey = "desktop_a:sess_1";
+describe("a send made behind a running reply", () => {
   /** A menu row, whose label is a title plus a hint inside one button. */
   const menuRow = (view: { container: HTMLElement }, text: string) =>
     [...view.container.querySelectorAll("button")].find(node => node.textContent?.includes(text));
-
-  beforeEach(() => {
-    remoteSendQueue.clear(queueKey);
+  /** One row as that host reports it (`get_queue`'s `queued`). */
+  const hostRow = (patch: Partial<RemoteQueueRow> = {}): RemoteQueueRow => ({
+    acceptedAt: "2026-11-03T10:00:00Z",
+    position: 1,
+    runId: "run_9",
+    state: "queued",
+    text: "held while it runs",
+    ...patch,
   });
 
-  it("asks what a send means while that host is answering, and flushes when it settles", async () => {
+  it("hands the message to the host's session instead of holding it here", async () => {
     const view = await mount({ streaming: true });
     await view.type("and then this");
     // Stop is not the only control in the slot: with a draft, the button asks.
     expect(view.button("Stop")).toBeUndefined();
-    const choose = view.button("Choose what to do with this message")!;
-    await act(async () => choose.click());
+    await act(async () => view.button("Choose what to do with this message")!.click());
     expect(view.text()).toContain("Add to the send queue");
     expect(view.text()).toContain("Interrupt and send");
 
     await act(async () => menuRow(view, "Add to the send queue")!.click());
     await settle();
-    expect(prompt).not.toHaveBeenCalled();
-    expect(abort).not.toHaveBeenCalled();
-    // Handed over: the field gives it up, and the queue shows what is waiting.
-    expect(view.input.value).toBe("");
-    expect(view.container.querySelector("[data-send-queue]")).not.toBeNull();
 
-    // The host's run settles; the queue leaves as one message, by itself.
-    await view.rerender({ streaming: false });
-    await settle();
-    expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "and then this", [], null, { modelId: null, thinkingLevel: null }, expect.any(String));
+    // The point of the change: one prompt, naming the policy that makes the
+    // *session* hold it. Nothing is kept in this window's memory.
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(prompt).toHaveBeenCalledWith(
+      "desktop_a",
+      "sess_1",
+      "and then this",
+      [],
+      null,
+      { modelId: null, thinkingLevel: null },
+      expect.any(String),
+      "enqueue_coalescing",
+    );
+    // Queueing is not interrupting: the reply goes on.
+    expect(abort).not.toHaveBeenCalled();
     expect(view.onSent).toHaveBeenCalled();
-    expect(view.container.querySelector("[data-send-queue]")).toBeNull();
+    // Handed over: the field gives it up, and the panel is asked for the host's
+    // rows rather than handed a row of this client's own making.
+    expect(view.input.value).toBe("");
+    expect(refreshQueue).toHaveBeenCalled();
     await view.unmount();
   });
 
-  it("interrupts the run on request, with the draft already queued", async () => {
+  it("interrupts the reply only after the message was handed over", async () => {
     const view = await mount({ streaming: true });
     await view.type("send this now");
     await act(async () => view.button("Choose what to do with this message")!.click());
     await act(async () => menuRow(view, "Interrupt and send")!.click());
     await settle();
+
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(prompt.mock.calls[0]![7]).toBe("enqueue_coalescing");
     expect(abort).toHaveBeenCalledWith("desktop_a", "sess_1");
-    expect(prompt).not.toHaveBeenCalled();
-    expect(remoteSendQueue.snapshot(queueKey).items.map(item => item.content)).toEqual(["send this now"]);
+    // Sent first, stopped second: the paragraph is on the host before anything
+    // ends the run it was waiting behind.
+    expect(prompt.mock.invocationCallOrder[0]!).toBeLessThan(abort.mock.invocationCallOrder[0]!);
     await view.unmount();
   });
 
-  it("stops from an empty field and says the queue goes with it", async () => {
-    remoteSendQueue.enqueue(queueKey, { content: "held while it runs", attachments: [] });
+  it("draws the rows the host reports and cancels one there", async () => {
+    queueRows = [hostRow()];
     const view = await mount({ streaming: true });
-    const stop = view.button("Stop and send the queued messages")!;
-    expect(stop).toBeDefined();
-    await act(async () => stop.click());
-    await settle();
-    expect(abort).toHaveBeenCalledTimes(1);
-    // The flush waits for the host to report the run over.
-    expect(prompt).not.toHaveBeenCalled();
-    await view.rerender({ streaming: false });
-    await settle();
-    expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "held while it runs", [], null, { modelId: null, thinkingLevel: null }, expect.any(String));
-    await view.unmount();
-  });
-
-  it("sends a whole queue and the draft in the field as one message", async () => {
-    // The case the queue exists for: two sentences already held, a third still
-    // being typed, then "interrupt and send all". They leave as ONE prompt — the
-    // host takes one at a time, so two prompts would be one refusal and a lost
-    // message, and the reader who interrupted meant the whole thing.
-    const view = await mount({ streaming: true });
-    const queue = async (text: string) => {
-      await view.type(text);
-      await act(async () => view.button("Choose what to do with this message")!.click());
-      await act(async () => menuRow(view, "Add to the send queue")!.click());
-      await settle();
-    };
-    await queue("first held");
-    await queue("second held");
-    expect(remoteSendQueue.snapshot(queueKey).items.map(item => item.content)).toEqual(["first held", "second held"]);
-
-    await view.type("still in the field");
-    await act(async () => view.button("Choose what to do with this message")!.click());
-    await act(async () => menuRow(view, "Interrupt and send all")!.click());
-    await settle();
-    // Queued before the interrupt, so the flush that follows the run carries it.
-    expect(abort).toHaveBeenCalledTimes(1);
-    expect(remoteSendQueue.snapshot(queueKey).items.map(item => item.content))
-      .toEqual(["first held", "second held", "still in the field"]);
-
-    await view.rerender({ streaming: false });
-    await settle();
-    expect(prompt).toHaveBeenCalledTimes(1);
-    expect(prompt.mock.calls[0]![2]).toBe("first held\n\nsecond held\n\nstill in the field");
-    expect(view.container.querySelector("[data-send-queue]")).toBeNull();
-    expect(view.input.value).toBe("");
-    await view.unmount();
-  });
-
-  it("keeps a refused queue visible and retries it only when asked", async () => {
-    // A refusal that will not pass by itself (the prompt is too large): the reader
-    // is handed the decision instead of the screen retrying behind their back.
-    prompt.mockRejectedValueOnce(new Error("prompt_too_large"));
-    remoteSendQueue.enqueue(queueKey, { content: "try me", attachments: [] });
-    const view = await mount({ streaming: false });
-    await settle();
-    expect(prompt).toHaveBeenCalledTimes(1);
     expect(view.container.querySelector("[data-send-queue]")).not.toBeNull();
-    const retry = view.container.querySelector<HTMLButtonElement>("[data-queue-retry]");
-    expect(retry).not.toBeNull();
-    // No retry from a re-render: that would hammer a host that keeps refusing.
-    await view.rerender({ streaming: false });
+    expect(view.text()).toContain("held while it runs");
+    // A queued row runs by itself, so there is no "start it now" to offer — and
+    // the empty-field control says the rows go with the run it stops.
+    expect(view.container.querySelector("[data-queue-release]")).toBeNull();
+    expect(view.button("Stop and send the queued messages")).toBeDefined();
+
+    await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-remove]")!.click());
     await settle();
-    expect(prompt).toHaveBeenCalledTimes(1);
-    await act(async () => retry!.click());
-    await settle();
-    expect(prompt).toHaveBeenCalledTimes(2);
-    expect(view.container.querySelector("[data-send-queue]")).toBeNull();
+    // The bin is the host's command, and the panel is re-read rather than edited
+    // here: this client holds no copy to edit.
+    expect(cancelQueued).toHaveBeenCalledWith("desktop_a", "sess_1", "run_9");
+    expect(refreshQueue).toHaveBeenCalled();
     await view.unmount();
   });
 
-  it("rides out a host that has not finished the run yet, instead of showing a retry", async () => {
-    vi.useFakeTimers();
-    try {
-      // The host's answer while the run it is settling has not cleared: the same
-      // message the phone sees. `Error` and a bare string are both shapes a Tauri
-      // rejection arrives in.
-      const busy = "session_busy: this session is still running; wait for it to finish or abort it first.";
-      prompt
-        .mockRejectedValueOnce(new Error(busy))
-        .mockRejectedValueOnce(busy)
-        .mockResolvedValue({ sessionId: "sess_1", threadId: "thread_1" });
-      remoteSendQueue.enqueue(queueKey, { content: "held while it ran", attachments: [] });
-      const view = await mount({ streaming: false });
-      await settle();
-      expect(prompt).toHaveBeenCalledTimes(1);
-      // Still waiting, not failed: the row stays and offers no retry.
-      expect(view.container.querySelector("[data-send-queue]")).not.toBeNull();
-      expect(view.container.querySelector("[data-queue-retry]")).toBeNull();
+  it("edits a waiting message by cancelling it and sending the new text", async () => {
+    queueRows = [hostRow()];
+    const view = await mount({ streaming: true });
+    await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
+    const box = view.container.querySelector<HTMLTextAreaElement>("[data-queue-item] textarea")!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "  fixed text  ");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-save]")!.click());
+    await settle();
 
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(QUEUE_RETRY_DELAY_MS + 20);
-      });
-      expect(prompt).toHaveBeenCalledTimes(2);
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(QUEUE_RETRY_DELAY_MS + 20);
-      });
-      expect(prompt).toHaveBeenCalledTimes(3);
-      // Accepted on the third ask: one message, queue empty.
-      expect(prompt.mock.calls[2]![2]).toBe("held while it ran");
+    // The host has no "change this row" command: an edit is a removal and a
+    // re-send, and the re-send names the same queueing policy as any other.
+    expect(cancelQueued).toHaveBeenCalledWith("desktop_a", "sess_1", "run_9");
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(prompt.mock.calls[0]![2]).toBe("fixed text");
+    expect(prompt.mock.calls[0]![7]).toBe("enqueue_coalescing");
+    await view.unmount();
+  });
+
+  it("treats a row edited down to nothing as a removal", async () => {
+    queueRows = [hostRow()];
+    const view = await mount({ streaming: true });
+    await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
+    const box = view.container.querySelector<HTMLTextAreaElement>("[data-queue-item] textarea")!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "   ");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-save]")!.click());
+    await settle();
+    expect(cancelQueued).toHaveBeenCalledWith("desktop_a", "sess_1", "run_9");
+    // An empty message is not a message: nothing is re-sent.
+    expect(prompt).not.toHaveBeenCalled();
+    await view.unmount();
+  });
+
+  it("starts a parked row now, on the host that parked it", async () => {
+    queueRows = [hostRow({ state: "stale:stale", text: "waited too long" })];
+    const view = await mount({ streaming: true });
+    const release = view.container.querySelector<HTMLButtonElement>("[data-queue-release]");
+    expect(release).not.toBeNull();
+    await act(async () => release!.click());
+    await settle();
+    // Parked is the host's decision, and only a person undoes it: the row starts
+    // at the next turn boundary, not here.
+    expect(releaseQueued).toHaveBeenCalledWith("desktop_a", "sess_1", "run_9");
+    await view.unmount();
+  });
+
+  /**
+   * A row can leave the host's queue without this window asking — folded into the
+   * turn ahead, taken back on the phone, lost with a deleted conversation. Without
+   * its terminal ack the row just disappears, and the reader believes the message
+   * went out.
+   */
+  it("says why a row left the queue, even when the panel is empty again", async () => {
+    queueRows = [];
+    queueNotice = { count: 1, reason: "merged" };
+    const view = await mount({ streaming: true });
+    try {
+      const notice = view.container.querySelector("[data-queue-notice]");
+      expect(notice).not.toBeNull();
+      expect(notice!.textContent).toContain("folded into the turn");
+      // The rows are gone; the sentence is the only thing left to read.
       expect(view.container.querySelector("[data-send-queue]")).toBeNull();
-      expect(view.onSent).toHaveBeenCalled();
-      await view.unmount();
     }
     finally {
-      vi.useRealTimers();
+      await view.unmount();
     }
   });
 
-  it("gives a queue the host keeps refusing back to the reader after the budget", async () => {
-    vi.useFakeTimers();
+  it("names the count when a burst left the queue together", async () => {
+    queueNotice = { count: 3, reason: "session_deleted" };
+    const view = await mount({ streaming: true });
     try {
-      prompt.mockRejectedValue(new Error("session_busy: this session is still running."));
-      remoteSendQueue.enqueue(queueKey, { content: "never accepted", attachments: [] });
-      const view = await mount({ streaming: false });
-      await settle();
-      for (let attempt = 0; attempt < QUEUE_RETRY_LIMIT + 2; attempt += 1) {
-        await act(async () => {
-          await vi.advanceTimersByTimeAsync(QUEUE_RETRY_DELAY_MS + 20);
-        });
-      }
-      expect(view.container.querySelector("[data-queue-retry]")).not.toBeNull();
-      expect(prompt.mock.calls.length).toBeLessThanOrEqual(QUEUE_RETRY_LIMIT + 1);
-      await view.unmount();
+      const notice = view.container.querySelector("[data-queue-notice]")!.textContent;
+      expect(notice).toContain("went with the conversation");
+      expect(notice).toContain("3 messages left the queue");
     }
     finally {
-      vi.useRealTimers();
+      await view.unmount();
     }
+  });
+
+  /**
+   * The bin is this window's own act. Its ack would otherwise come back as
+   * "a waiting message was taken out of the queue" right after the reader took it
+   * out, which reads as a fault rather than as confirmation.
+   */
+  it("does not treat its own removal as news", async () => {
+    queueRows = [hostRow()];
+    const view = await mount({ streaming: true });
+    await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-remove]")!.click());
+    await settle();
+    expect(forgetQueued).toHaveBeenCalledWith("run_9");
+    await view.unmount();
+  });
+
+  /**
+   * The host's queue reports a message's text, never the files it was sent with,
+   * so the panel says that where an edit would drop them instead of printing a
+   * count it would have had to invent.
+   */
+  it("does not claim a file count the host never reported, and warns on edit", async () => {
+    queueRows = [hostRow()];
+    const view = await mount({ streaming: true });
+    try {
+      expect(view.container.querySelector("[data-send-queue]")!.textContent).not.toContain("Attachments:");
+      await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
+      expect(view.container.querySelector("[data-send-queue]")!.textContent)
+        .toContain("Saving sends the new text only");
+    }
+    finally {
+      await view.unmount();
+    }
+  });
+
+  /**
+   * The row is gone on the host once the cancel lands. A refusal of the re-send
+   * must not take the reader's corrected words with it.
+   */
+  it("keeps the corrected text when the host refuses the re-send", async () => {
+    queueRows = [hostRow()];
+    prompt.mockRejectedValue(new Error("prompt_too_large"));
+    const view = await mount({ streaming: true });
+    try {
+      await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
+      const box = view.container.querySelector<HTMLTextAreaElement>("[data-queue-item] textarea")!;
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+        setter.call(box, "fixed text");
+        box.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-save]")!.click());
+      await settle();
+
+      expect(cancelQueued).toHaveBeenCalledWith("desktop_a", "sess_1", "run_9");
+      expect(view.text()).toContain("prompt_too_large");
+      expect(view.input.value).toBe("fixed text");
+    }
+    finally {
+      await view.unmount();
+    }
+  });
+
+  it("keeps the draft, the reply and the error when the host refuses", async () => {
+    prompt.mockRejectedValue(new Error("prompt_too_large"));
+    const view = await mount({ streaming: true });
+    await view.type("too big");
+    await act(async () => view.button("Choose what to do with this message")!.click());
+    await act(async () => menuRow(view, "Interrupt and send")!.click());
+    await settle();
+
+    // The reader is told, and nothing is retried behind their back.
+    expect(view.text()).toContain("prompt_too_large");
+    expect(view.input.value).toBe("too big");
+    // And the reply they were waiting for is not ended for a message that never
+    // left.
+    expect(abort).not.toHaveBeenCalled();
+    await view.rerender({ streaming: true });
+    await settle();
+    expect(prompt).toHaveBeenCalledTimes(1);
+    await view.unmount();
   });
 });

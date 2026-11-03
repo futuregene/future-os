@@ -14,6 +14,106 @@ fn store() -> (tempfile::TempDir, SqliteStore) {
     (root, store)
 }
 
+/// A seal whose digest disagrees with the durable body is a fact about this
+/// batch, not a storage failure: every retry reproduces it. Reported as a plain
+/// error it held every later batch behind it — and every cancel, which must
+/// commit a run terminal through the same journal — until the agent restarted.
+#[test]
+fn a_seal_over_different_bytes_is_a_permanent_refusal() {
+    let (_root, store) = store();
+    let text = event(
+        0,
+        "text_chunk",
+        json!({"entry_id":"m","content_key":"m:text:0","content_offset":0,"content_bytes":3,"text":"one"}),
+    );
+    let seal = event(
+        1,
+        "text_end",
+        json!({"entry_id":"m","content_key":"m:text:0","content_offset":3,"content_bytes":0,"content_seal":true}),
+    );
+    let mut writer = Writer::default();
+    writer.persist(&store, "s", [&text]).unwrap();
+    store
+        .db
+        .call(|db| {
+            db.execute("UPDATE content_objects SET byte_length=byte_length+1", [])?;
+            Ok(())
+        })
+        .unwrap();
+    let error = writer.persist(&store, "s", [&seal]).unwrap_err();
+    assert!(
+        crate::session::sqlite_store::is_event_rejected(&error),
+        "a conflicting seal must not be retried forever: {error:#}"
+    );
+}
+
+/// The other side of that rule: a storage failure is what a retry can clear, so
+/// it must keep its place in the batch instead of being dropped as a refusal.
+#[test]
+fn a_storage_failure_stays_retryable() {
+    let (_root, store) = store();
+    let text = event(
+        0,
+        "text_chunk",
+        json!({"entry_id":"m","content_key":"m:text:0","content_offset":0,"content_bytes":3,"text":"one"}),
+    );
+    store
+        .db
+        .call(|db| {
+            db.execute_batch(
+                "CREATE TRIGGER reject_change BEFORE INSERT ON stream_changes BEGIN SELECT RAISE(ABORT,'injected'); END;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let mut writer = Writer::default();
+    let error = writer.persist(&store, "s", [&text]).unwrap_err();
+    assert!(
+        !crate::session::sqlite_store::is_event_rejected(&error),
+        "a storage failure must stay retryable: {error:#}"
+    );
+}
+
+/// The lane dying is that same case, not a refusal: nothing about this batch's
+/// content made it fail, and a restarted worker would take it. Measured
+/// 2026-11-03: with only `rusqlite`/`io` errors read as storage, a killed SQLite
+/// worker was reported as a permanent refusal, so the writer dropped a durable
+/// event and shutdown reported the journal as cleanly flushed.
+#[test]
+fn a_dead_storage_worker_stays_retryable() {
+    let (_root, store) = store();
+    let text = event(
+        0,
+        "text_chunk",
+        json!({"entry_id":"m","content_key":"m:text:0","content_offset":0,"content_bytes":3,"text":"one"}),
+    );
+    // Panic inside a job so the worker thread dies; this thread only observes a
+    // dead connection, exactly as the service sees a poisoned storage worker.
+    let killed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = store
+            .db
+            .call(|_| -> anyhow::Result<()> { panic!("injected worker panic") });
+    }));
+    assert!(killed.is_ok(), "the panic happens on the worker thread");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let probe = store.db.call(|_| Ok(()));
+        match probe {
+            Err(error) if error.to_string().contains("SQLite worker is unavailable") => break,
+            _ if std::time::Instant::now() >= deadline => {
+                panic!("the dead worker was never reported as unavailable: {probe:?}")
+            }
+            _ => std::thread::sleep(std::time::Duration::from_millis(20)),
+        }
+    }
+    let mut writer = Writer::default();
+    let error = writer.persist(&store, "s", [&text]).unwrap_err();
+    assert!(
+        !crate::session::sqlite_store::is_event_rejected(&error),
+        "a dead storage worker must stay retryable, not refuse the event: {error:#}"
+    );
+}
+
 #[test]
 fn metadata_byte_admission_counts_escaping_unicode_and_numeric_boundaries() {
     let controls: String = (0u8..=31).map(char::from).collect();

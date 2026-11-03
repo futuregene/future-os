@@ -198,6 +198,7 @@ mod transcript;
 pub(crate) use events::read_compaction_event_rows;
 pub(crate) use events::{
     decode_event_row, insert_event_record, is_event_rejected, read_replay_event_rows,
+    refusal_unless_storage,
 };
 pub(crate) use transcript::{
     insert_transcript_entries, read_run_marker_headers, rewrite_transcript_rows,

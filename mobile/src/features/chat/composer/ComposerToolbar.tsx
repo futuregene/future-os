@@ -25,13 +25,11 @@ interface Props {
   send: () => Promise<void>;
   /** Something is in the field: a send while a run streams becomes a choice. */
   hasDraft: boolean;
-  /** What the send queue already holds, which an interrupt sends as well. */
-  queueCount: number;
-  /** Open the "hold it, or interrupt and send" sheet. */
+  /** Open the "hand it to the session, or interrupt and send" sheet. */
   onOpenQueueChoice: () => void;
 }
 
-export function ComposerToolbar({ remote, t, compactToolbar, compacting, activeModelLabel, selector, setSelector, completion, editable, openAttachmentMenu, stopRequest, skillEvaluating, canSend, send, hasDraft, queueCount, onOpenQueueChoice }: Props) {
+export function ComposerToolbar({ remote, t, compactToolbar, compacting, activeModelLabel, selector, setSelector, completion, editable, openAttachmentMenu, stopRequest, skillEvaluating, canSend, send, hasDraft, onOpenQueueChoice }: Props) {
   const styles = useStyles();
   const { colors } = useTheme();
   // The effort this conversation actually runs at on the selected model. A level
@@ -155,8 +153,9 @@ export function ComposerToolbar({ remote, t, compactToolbar, compacting, activeM
       {remote.streaming ? (
         hasDraft && remote.presence?.control !== "standby" ? (
           /* A draft while the run streams: the slot asks what "send" means —
-             hold the draft in the queue, or interrupt and send it. Stop is not
-             the only thing this button can be once there is something to send. */
+             hand it to the session (which holds it for the turn boundary), or
+             interrupt and send it. Stop is not the only thing this button can
+             be once there is something to send. */
           <Pressable
             accessibilityLabel={t("chat.chooseSend")}
             accessibilityRole="button"
@@ -173,7 +172,7 @@ export function ComposerToolbar({ remote, t, compactToolbar, compacting, activeM
             accessibilityLabel={t(
               stopRequest.status === "requesting"
                 ? "chat.stopping"
-                : queueCount > 0 ? "chat.stopAndSendQueue" : "chat.stop",
+                : "chat.stop",
             )}
             accessibilityRole="button"
             accessibilityState={{

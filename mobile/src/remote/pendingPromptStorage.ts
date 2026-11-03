@@ -11,6 +11,15 @@ export interface PendingPrompt {
   draftKey: string;
   sessionId: string;
   text: string;
+  /**
+   * What this send meant while the conversation was still running
+   * (`enqueue_coalescing`), when the sender said so.
+   *
+   * Kept with the record because a delivery the link dropped is retried as the
+   * same send: a message that was meant to wait behind the run must not come
+   * back as one that gets refused by it.
+   */
+  busyPolicy?: string;
   attachments: MobileAttachment[];
   modelId: string;
   thinkingLevel: ThinkingLevel;
@@ -49,6 +58,7 @@ async function loadPendingPromptDirect(pairId?: string): Promise<PendingPrompt |
       typeof value.thinkingLevel !== "string" ||
       (value.mode !== "chat" && value.mode !== "workspace") ||
       typeof value.workspaceId !== "string" ||
+      (value.busyPolicy !== undefined && typeof value.busyPolicy !== "string") ||
       typeof value.createdAt !== "number"
     ) {
       return null;

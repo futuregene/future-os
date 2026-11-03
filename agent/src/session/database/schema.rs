@@ -49,6 +49,16 @@ pub(super) fn initialize_schema(
         "CREATE UNIQUE INDEX IF NOT EXISTS run_events_custom_id
          ON run_events(session_id,event_id) WHERE event_id IS NOT NULL;",
     )?;
+    // Replay reads walk a run epoch by epoch (`read_replay_event_rows`). Without
+    // this index `ORDER BY epoch,idx` falls back to the (session_id,run_id,idx,
+    // epoch) unique index plus a temp b-tree over every matching row: 23 ms for
+    // one 1001-event page of a 136 k-event run, against 0.98 ms with it. Created
+    // here (idempotent, every open) rather than in a versioned migration because
+    // no data changes — the cost is a one-time build on an existing database.
+    tx.execute_batch(
+        "CREATE INDEX IF NOT EXISTS run_events_replay_order
+         ON run_events(session_id,run_id,epoch,idx);",
+    )?;
     // One-time recovery of the activity stamps older builds let a metadata
     // snapshot push forward (see `entry_records::repair_activity_stamps`). The
     // marker keeps it off the startup path after the first pass: the pass

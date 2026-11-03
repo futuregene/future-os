@@ -450,6 +450,14 @@ impl SseBroadcaster {
             run.idx += 1;
             run.record_event(&event, bounded);
         }
+        // Captured before the event is published: a refused durable write is
+        // reported after `send` has already moved it.
+        let (event_session, event_run, event_idx, event_type) = (
+            event.session_id.clone(),
+            event.run_id.clone(),
+            event.idx,
+            event.event_type.clone(),
+        );
         // tokio broadcast semantics: send() only fails when there are NO
         // active receivers — normal for ephemeral sessions before a client
         // subscribes, so the error is ignored.  When the ring buffer is
@@ -464,6 +472,19 @@ impl SseBroadcaster {
         if let Some(receipt) = receipt.filter(|_| wait) {
             match receipt.recv() {
                 Ok(Ok(())) => {}
+                // A durable event the journal refuses for good is dropped, not a
+                // session-wide outage: recording it as one is what left every
+                // later prompt failing at the flush barrier until a restart.
+                Ok(Err(AppendFailure::Rejected(reason))) => {
+                    tracing::warn!(
+                        session = %event_session,
+                        run_id = %event_run,
+                        idx = event_idx,
+                        %event_type,
+                        %reason,
+                        "dropping a durable event this journal refuses; the session's journal stays live"
+                    );
+                }
                 Ok(Err(error)) => self
                     .journal_health
                     .fail(format!("event commit failed: {error}")),

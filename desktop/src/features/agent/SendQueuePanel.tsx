@@ -1,4 +1,4 @@
-import { Check, Pencil, RotateCcw, Trash2 } from "lucide-react";
+import { Check, Pencil, Play, RotateCcw, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/cn";
@@ -8,7 +8,23 @@ export interface SendQueuePanelItem {
   id: string;
   /** The text as it will be sent (empty for an attachment-only message). */
   content: string;
-  attachmentCount: number;
+  /**
+   * How many files travel with it — `undefined` when the queue that holds the
+   * row does not report it.
+   *
+   * A row read back from the Agent's own queue has no count to show: `get_state`
+   * answers with a message's text and its acceptance time, never the uploads it
+   * was sent with. Zero used to be hard-coded for those rows, which claimed a
+   * message carried no files when it may well have carried several, so the
+   * absence is now spelled as absence.
+   */
+  attachmentCount?: number;
+  /**
+   * Parked by the Agent: it waited too long to run by itself and now starts only
+   * when the reader says so. Undefined means "will run at the next turn
+   * boundary", which is what every row is on a host without that rule.
+   */
+  parked?: boolean;
 }
 
 /**
@@ -25,15 +41,26 @@ export interface SendQueuePanelItem {
  * differs.
  */
 export function SendQueuePanel({
+  attachmentsUnreported,
   failed,
   items,
+  onRelease,
   onRemove,
   onRetry,
   onUpdate,
 }: {
+  /**
+   * The queue behind these rows does not say which files a message carries, so
+   * an edit — a removal and a re-send, the only kind there is — sends the new
+   * text and leaves those files behind. Said in the editor, where the reader is
+   * about to make that trade, rather than as a number the panel cannot know.
+   */
+  attachmentsUnreported?: boolean;
   /** The last automatic delivery failed; offer a retry instead of the hint. */
   failed?: boolean;
   items: readonly SendQueuePanelItem[];
+  /** Start a parked row now. Offered only when the queue can hold one (Agent-side queues). */
+  onRelease?: (id: string) => void;
   onRemove: (id: string) => void;
   onRetry?: () => void;
   onUpdate: (id: string, content: string) => void;
@@ -108,6 +135,13 @@ export function SendQueuePanel({
               {editing
                 ? (
                     <div className="min-w-0 flex-1">
+                      {attachmentsUnreported
+                        ? (
+                            <p className="mb-1 text-[11px] leading-4 text-ink-muted">
+                              {t("composer.queue.editDropsFiles")}
+                            </p>
+                          )
+                        : null}
                       <textarea
                         aria-label={t("composer.queue.editLabel")}
                         autoFocus
@@ -156,27 +190,49 @@ export function SendQueuePanel({
                                 {t("composer.queue.attachmentsOnly")}
                               </p>
                             )}
-                        {item.attachmentCount > 0
+                        {item.attachmentCount !== undefined && item.attachmentCount > 0
                           ? (
                               <p className="text-[11px] leading-4 text-ink-muted">
                                 {t("composer.queue.attachments", { count: item.attachmentCount })}
                               </p>
                             )
                           : null}
+                        {item.parked && onRelease
+                          ? (
+                              <button
+                                className="mt-0.5 inline-flex items-center gap-1 rounded px-1 py-0.5 text-[11px] font-medium text-warning transition-colors hover:bg-warning-soft"
+                                data-queue-release=""
+                                onClick={() => onRelease(item.id)}
+                                type="button"
+                              >
+                                <Play className="size-3" />
+                                {t("composer.queue.release")}
+                              </button>
+                            )
+                          : null}
                       </div>
-                      <button
-                        aria-label={t("composer.queue.edit")}
-                        className={cn(
-                          "inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors",
-                          "hover:bg-surface-subtle hover:text-ink",
-                        )}
-                        data-queue-edit=""
-                        onClick={() => startEditing(item)}
-                        title={t("composer.queue.edit")}
-                        type="button"
-                      >
-                        <Pencil className="size-3" />
-                      </button>
+                      {/* Nothing to edit in a message that is only files: an
+                          empty save is a removal, and the bin beside it says so
+                          plainly. The control is left out rather than shown
+                          dead, so the row never offers an edit that cannot
+                          express what the message is. */}
+                      {item.content
+                        ? (
+                            <button
+                              aria-label={t("composer.queue.edit")}
+                              className={cn(
+                                "inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors",
+                                "hover:bg-surface-subtle hover:text-ink",
+                              )}
+                              data-queue-edit=""
+                              onClick={() => startEditing(item)}
+                              title={t("composer.queue.edit")}
+                              type="button"
+                            >
+                              <Pencil className="size-3" />
+                            </button>
+                          )
+                        : null}
                       <button
                         aria-label={t("composer.queue.remove")}
                         className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-danger"

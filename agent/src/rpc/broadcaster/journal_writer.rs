@@ -581,7 +581,15 @@ fn flush_event_batch(
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("")
                     .to_owned();
-                match store.append_events(session_id, vec![item.event.clone()]) {
+                // A canonical conversation's raw append refuses every event
+                // (it has no raw journal), so the retry has to keep going
+                // through the semantic writer it just used — otherwise a single
+                // refusal would drop the whole batch instead of one event.
+                let appended = match canonical.as_mut() {
+                    Some(writer) => writer.persist(store, session_id, std::iter::once(&item.event)),
+                    None => store.append_events(session_id, vec![item.event.clone()]),
+                };
+                match appended {
                     Ok(()) => {
                         #[cfg(test)]
                         commits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

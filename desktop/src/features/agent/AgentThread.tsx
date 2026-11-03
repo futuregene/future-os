@@ -11,6 +11,7 @@ import type {
   StoredThread,
 } from "../../integrations/storage/threadStore";
 import type { ComposerSendPayload } from "./Composer";
+import type { ApprovalChipTier } from "./composer/ComposerControls";
 import type { SessionMentionOption } from "./sessionMention";
 import { ArrowDown, History } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef } from "react";
@@ -23,11 +24,11 @@ import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
 import { foldsSettledReply, useReplyDetail } from "../../lib/replyDisplay";
-import { collectQueuedAttachments, joinQueuedContent } from "../../lib/sendQueue";
 import { useCommittedRef } from "../../lib/useCommittedRef";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { useCommand } from "../keyboard/commands";
 import { installRecommendedSkill } from "../skills/installRecommendedSkill";
+import { agentQueueNoticeReason, cancelAgentQueuedRun, isParkedRow, releaseAgentQueuedRun, useAgentQueue } from "./agentQueue";
 import { ApprovalPrompt } from "./ApprovalPrompt";
 import {
   buildContinuePrompt,
@@ -40,7 +41,6 @@ import { MessageList } from "./MessageList";
 import { QuestionNavControl } from "./QuestionNavControl";
 import { replyCopyText } from "./replyBlocks";
 import { useThreadCompaction } from "./runtime/useThreadCompaction";
-import { localSendQueue, useLocalSendQueue } from "./sendQueue";
 import { SendQueuePanel } from "./SendQueuePanel";
 import { ThreadHeader } from "./ThreadHeader";
 import { ThreadSearch } from "./ThreadSearch";
@@ -81,7 +81,7 @@ export interface AgentThreadProps {
   onModelChange: (modelId: string) => void;
   thinkingLevel: string;
   onThinkingLevelChange: (thinkingLevel: string) => void;
-  approvalTier: ApprovalTier;
+  approvalTier: ApprovalChipTier;
   onChangeApprovalTier: (value: ApprovalTier) => void;
   pendingPrompt: {
     attachments?: MessageAttachment[];
@@ -210,8 +210,8 @@ export function AgentThread({
   const { t } = useTranslation("agent");
   const agentState = useCachedAgentState(thread?.id);
   const {
-    activeRunId,
     handleAbort,
+    handleQueuedSend,
     handleSend,
     loadingThread,
     loadingIndicator,
@@ -327,64 +327,46 @@ export function AgentThread({
   // queue can never fire into a conversation that refuses to be written to.
   const composerDisabled = !thread || loadingThread || loadingStore || historyStatus?.canContinue === false;
 
-  // ── Send queue ────────────────────────────────────────────────────────────
-  // A message queued while a reply streamed leaves the moment that reply is
-  // over, joined with whatever else was queued into one message (see
-  // `lib/sendQueue`). The gate is the same "idle" the composer unlocks on — the
-  // stream is gone *and* the run row is settled — so the flush cannot race the
-  // prompt the Agent is still finishing, which it would refuse.
-  const sendQueue = useLocalSendQueue(thread?.id ?? null);
-  const queueFlushingRef = useRef(false);
-  const queueIdle = !isReplyStreaming && !activeRunId && !composerDisabled;
-  useEffect(() => {
-    const threadId = thread?.id;
-    if (!threadId || !queueIdle || sendQueue.failed || queueFlushingRef.current)
-      return;
-    if (sendQueue.items.length === 0)
-      return;
-    // Taken, not read: the effect runs again on every render this view makes,
-    // and the queue must leave exactly once per wait.
-    const taken = localSendQueue.take(threadId);
-    if (taken.length === 0)
-      return;
-    queueFlushingRef.current = true;
-    void handleSend({
-      attachments: collectQueuedAttachments(taken),
-      content: joinQueuedContent(taken),
-    })
-      .catch(() => {
-        // Not delivered (the Agent refused, or the run was not settled yet):
-        // put the messages back where the reader can see, fix and resend them.
-        // `restore` marks the queue failed, which is what stops this effect from
-        // retrying on every render.
-        localSendQueue.restore(threadId, taken);
-      })
-      .finally(() => {
-        queueFlushingRef.current = false;
-      });
-  }, [handleSend, queueIdle, sendQueue.failed, sendQueue.items.length, thread?.id]);
-
+  // ── Send while the reply streams ─────────────────────────────────────────
+  // A message written while a reply is streaming leaves immediately and the
+  // AGENT holds it (`handleQueuedSend`, `enqueue_coalescing`): a burst folds into
+  // one run at the turn boundary, and the row lives in the Agent's own queue, so
+  // it survives this window and is visible to every other client on the
+  // conversation. Nothing is held here any more — the old in-memory queue could
+  // only ever be flushed by the window that filled it.
+  // The rows are read back from the Agent (`agentQueue`), which is also where
+  // "take it back" and "start it now" go; the panel is a view of that queue, not
+  // a second copy of it.
+  const agentQueue = useAgentQueue(thread?.id ?? null, isReplyStreaming);
   const handleEnqueueDraft = useCallback((payload: ComposerSendPayload) => {
     if (!thread?.id)
       return false;
-    if (!localSendQueue.enqueue(thread.id, payload)) {
-      emitFutureEvent("toast", { message: t("composer.queue.full"), tone: "info" });
-      return false;
-    }
+    void handleQueuedSend(payload).finally(() => agentQueue.refresh());
     return true;
-  }, [thread?.id, t]);
-  const handleQueueUpdate = useCallback((id: string, content: string) => {
-    if (thread?.id)
-      localSendQueue.update(thread.id, id, content);
-  }, [thread?.id]);
-  const handleQueueRemove = useCallback((id: string) => {
-    if (thread?.id)
-      localSendQueue.remove(thread.id, id);
-  }, [thread?.id]);
-  const handleQueueRetry = useCallback(() => {
-    if (thread?.id)
-      localSendQueue.clearFailure(thread.id);
-  }, [thread?.id]);
+  }, [agentQueue, handleQueuedSend, thread?.id]);
+  const handleQueueRemove = useCallback((runId: string) => {
+    agentQueue.forget(runId);
+    void cancelAgentQueuedRun(runId).catch(() => {}).finally(() => agentQueue.refresh());
+  }, [agentQueue]);
+  const handleQueueRelease = useCallback((runId: string) => {
+    void releaseAgentQueuedRun(runId).catch(() => {}).finally(() => agentQueue.refresh());
+  }, [agentQueue]);
+  // Editing a waiting message: the Agent has no "update this row" command, so
+  // the corrected text is a new prompt behind the same run boundary — take the
+  // old row back first, or both would run. Attachments cannot be recovered from
+  // the queue row (it carries text only), which is why the panel edits words and
+  // says so in the editor rather than claiming a count of zero. A re-send that
+  // the Agent refuses is not a lost message: the send pipeline puts the words in
+  // the thread as a failed bubble, which is where the retry lives.
+  const handleQueueUpdate = useCallback((runId: string, content: string) => {
+    void (async () => {
+      agentQueue.forget(runId);
+      await cancelAgentQueuedRun(runId).catch(() => {});
+      if (content.trim())
+        await handleQueuedSend({ attachments: [], content });
+      agentQueue.refresh();
+    })();
+  }, [agentQueue, handleQueuedSend]);
 
   // Settings → Keyboard: the same interrupt the send button turns into while a
   // reply streams. Registered only then, so the key is unclaimed whenever there
@@ -594,10 +576,10 @@ export function AgentThread({
   // `input` is the panel's dictation layer.
   const isRead = chrome === "read";
   const isInput = chrome === "input";
-  // Whether this composer keeps a send queue. The panel's input layer keeps its
-  // own hand-back queue instead (`onQueue`, VIBE.md §5.4), and a reading cell has
-  // no composer at all — everything else (the main window, and this app's view of
-  // another computer's conversation) queues while its run streams.
+  // Whether this composer keeps a send gate at all. The panel's input layer keeps
+  // its own hand-back queue instead (`onQueue`, VIBE.md §5.4), and a reading cell
+  // has no composer: everything else sends into the Agent's queue while its run
+  // streams. Kept for the composer's own `onEnqueue` wiring below.
   const queueEnabled = !isInput && !isRead && !onQueue;
   // The input layer shows only the tail of the conversation: the two messages a
   // speaker needs to remember what they were talking about, dimmed so the draft
@@ -672,21 +654,47 @@ export function AgentThread({
             onPrevious={goToPreviousQuestion}
           />
         </div>
-        {/* What is waiting for this reply to end, directly above the box that
-            filled it: a queued message is not yet gone, so it is looked at,
-            fixed and taken back here rather than in the transcript. */}
-        {queueEnabled && sendQueue.items.length > 0
+        {/* A message written while this reply streams is already the Agent's
+            (see `handleEnqueueDraft`): it waits above the transcript as its own
+            turn, so nothing is mirrored here. */}
+        {/* What the Agent is holding for this conversation, above the box that
+            filled it: a queued message is not yet gone, so it is looked at, fixed
+            and taken back here. The rows are the Agent's (`agentQueue`), so this
+            panel disappears with the window and the message does not. */}
+        {/* A row that left the queue without running — folded into the turn
+            ahead, taken back elsewhere, or lost with a deleted conversation —
+            has no event of its own; its terminal ack is the only trace. Said
+            outside the panel because it matters most once the panel is empty. */}
+        {queueEnabled && agentQueue.notice
+          ? (
+              <p
+                className="pointer-events-auto mx-auto mb-2 w-full max-w-3xl text-xs text-ink-muted"
+                data-queue-notice=""
+              >
+                {t(`composer.queue.notice.${agentQueueNoticeReason(agentQueue.notice.reason)}`, {
+                  reason: agentQueue.notice.reason,
+                })}
+                {agentQueue.notice.count > 1
+                  ? ` · ${t("composer.queue.notice.more", { count: agentQueue.notice.count })}`
+                  : ""}
+              </p>
+            )
+          : null}
+        {queueEnabled && agentQueue.rows.length > 0
           ? (
               <div className="pointer-events-auto mx-auto w-full max-w-3xl">
                 <SendQueuePanel
-                  failed={sendQueue.failed}
-                  items={sendQueue.items.map(item => ({
-                    attachmentCount: item.attachments.length,
-                    content: item.content,
-                    id: item.id,
+                  // The Agent's queue carries a message's text and its acceptance
+                  // time, never the files it was sent with: the panel says that
+                  // rather than being handed a count of zero it would have made up.
+                  attachmentsUnreported
+                  items={agentQueue.rows.map(row => ({
+                    content: row.text,
+                    id: row.runId,
+                    parked: isParkedRow(row),
                   }))}
+                  onRelease={handleQueueRelease}
                   onRemove={handleQueueRemove}
-                  onRetry={handleQueueRetry}
                   onUpdate={handleQueueUpdate}
                 />
               </div>
@@ -724,7 +732,6 @@ export function AgentThread({
           controls={composerControls}
           onQueue={onQueue}
           onEnqueue={queueEnabled ? handleEnqueueDraft : undefined}
-          queueCount={queueEnabled ? sendQueue.items.length : 0}
           onSend={handleComposerSend}
           workspaceId={thread?.workspaceId}
           sessionMentions={sessionMentions}

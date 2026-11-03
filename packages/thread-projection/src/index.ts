@@ -5,6 +5,7 @@ export type {
   MessageAttachment,
   MessageRole,
   MessageSegment,
+  PreviewSyncStall,
   StreamRetryState,
 } from "./model";
 export type { RunEvent, SessionEntry } from "./events";

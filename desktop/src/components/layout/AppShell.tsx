@@ -1,3 +1,4 @@
+import type { ApprovalChipTier } from "../../features/agent/composer/ComposerControls";
 import type { PaletteCommand, PaletteTarget } from "../../features/palette/paletteItems";
 import type { DeviceFilter, MergedConversation, RemoteWorkspaceTarget } from "../../features/remote-peer/mergeConversations";
 import type { RemoteIdentityMemory } from "../../features/remote-peer/remoteConversationIdentity";
@@ -544,6 +545,7 @@ function ReadyAppShell({
     changeDraftModel,
     changeDraftThinkingLevel,
     changeThinkingLevel,
+    sessionApprovalTier,
     syncSelection,
   } = useModelSelection({
     activeThread,
@@ -553,6 +555,24 @@ function ReadyAppShell({
     visibleModelOptions,
     refreshStore,
   });
+  /**
+   * What the composer's approval badge renders for the open conversation.
+   *
+   * The app-wide `approvalTier` is only the default a *new* conversation starts
+   * from: it reaches an agent session when this app sends a prompt. A session
+   * another client created or drives (a CLI, another agent) keeps its own tier,
+   * so rendering the default claimed 完全访问 at a conversation whose gate kept
+   * asking for approval. Render the session's own tier instead, and say
+   * "unknown" when the agent reports none — falling back to the default there
+   * would repeat the very claim this reads.
+   *
+   * A thread with no agent session yet (`agentSessionId` unset) has nothing to
+   * read, and the default IS what its session will be created with, so it shows
+   * that.
+   */
+  const approvalChipTier: ApprovalChipTier
+    = sessionApprovalTier
+      ?? (activeThread?.agentSessionId ? "unknown" : appSettings.approvalTier);
   /**
    * Set by the Vibe panel's add tile right before it opens the new-conversation screen.
    *
@@ -1868,7 +1888,7 @@ function ReadyAppShell({
                                       key={activeThread?.id ?? "__none"}
                                       activeApproval={activeApproval}
                                       agentConnection={agentConnection}
-                                      approvalTier={appSettings.approvalTier}
+                                      approvalTier={approvalChipTier}
                                       loadingStore={loadingStore}
                                       modelId={activeThreadModelId}
                                       modelOptions={visibleModelOptions}

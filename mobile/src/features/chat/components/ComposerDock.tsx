@@ -61,12 +61,10 @@ function ComposerDockView({
   onInstallSkill,
   onDismissSkill,
   queueItems = [],
-  queueFailed = false,
+  queueNotice,
   onQueueUpdate,
   onQueueRemove,
-  onQueueRetry,
-  enqueueDraft,
-  onStopped,
+  onQueueRelease,
 }: {
   message: string;
   setMessage: Dispatch<SetStateAction<string>>;
@@ -108,26 +106,24 @@ function ComposerDockView({
   onInstallSkill?: () => void;
   onDismissSkill?: () => void;
   /**
-   * This conversation's send queue (see `features/chat/sendQueue`): what is
-   * waiting for the run to end, shown above the box so it can be read, fixed or
-   * taken back before it leaves.
+   * This conversation's send queue (see `remote/sessionQueue`): what the session
+   * is holding behind its running turn, shown above the box so it can be read,
+   * fixed or taken back before it leaves.
    */
   queueItems?: readonly SendQueuePanelItem[];
-  queueFailed?: boolean;
-  onQueueUpdate?: (id: string, content: string) => void;
+  /**
+   * One sentence about a row that left the queue without running.
+   *
+   * Drawn outside the panel because it matters most when the panel is empty: the
+   * row it is about is the one that is no longer there.
+   */
+  queueNotice?: string;
+  /** Take one waiting message back out (a cancel of the session's run id). */
   onQueueRemove?: (id: string) => void;
-  onQueueRetry?: () => void;
-  /**
-   * Hand the field's draft to the queue. Returns false when there was nothing to
-   * queue, so the sheet stays open instead of pretending something happened.
-   */
-  enqueueDraft?: () => boolean;
-  /**
-   * Called once the desktop has acknowledged a stop request, so the screen can
-   * send whatever the reader was holding without waiting for its own reading of
-   * the conversation to catch up.
-   */
-  onStopped?: () => void;
+  /** Replace one waiting message: the session has no rename, so cancel + send. */
+  onQueueUpdate?: (id: string, content: string) => void;
+  /** Start a parked row now. */
+  onQueueRelease?: (id: string) => void;
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -139,13 +135,15 @@ function ComposerDockView({
   const [queueChoiceOpen, setQueueChoiceOpen] = useState(false);
   const { width, height, fontScale } = useWindowDimensions();
   const compactToolbar = width < 380 || fontScale > 1.2;
-  // A running reply blocks sending, not drafting the next message. Keep the
-  // short send/upload busy phase locked so its acknowledgement cannot clear edits.
+  // A running reply now blocks neither drafting nor sending: a message sent
+  // while the turn streams is handed to the session, which holds it and runs it
+  // at the boundary. Keep the short send/upload busy phase locked so its
+  // acknowledgement cannot clear edits.
   // The recommendation wait locks drafting too (see `skillEvaluating`): the
   // message that goes out must be the one the recommender was asked about.
   const editable = !remote.busy && !skillEvaluating && !skillInstalling && !draftRestoring;
   const compacting = compactionPending || remote.compacting;
-  const canSend = !skillInstalling && !draftRestoring && !skillEvaluating && !remote.streaming && !compacting && !remote.busy && remote.desktopOnline &&
+  const canSend = !skillInstalling && !draftRestoring && !skillEvaluating && !compacting && !remote.busy && remote.desktopOnline &&
     (!!message.trim() || attachments.length > 0);
   // A run in flight rejects compaction, so the tool stays hidden rather than
   // offering an action the Agent will refuse (desktop parity).
@@ -200,38 +198,21 @@ function ComposerDockView({
   );
   const hasDraft = !!message.trim() || attachments.length > 0;
   /**
-   * Stop the run, and tell the screen once the desktop has taken the request.
+   * "Interrupt and send": end the run, then hand the message over.
    *
-   * The acknowledgement is the moment a held queue may go: the reader has already
-   * decided ("stop, and send what I was holding"), and waiting for this screen to
-   * read the conversation as over adds a round-trip of its own. The desktop still
-   * refuses a send that arrives before the run has settled — that answer is
-   * retried by the screen (`isTransientQueueRefusal`).
+   * The send does not wait on this phone reading the run as over — it goes out
+   * with the queueing policy either way, so the session holds it for the boundary
+   * the interrupt is about to reach.
    */
-  const stopRun = useCallback(async () => {
-    const stopped = await stopRequest.stop();
-    if (stopped)
-      onStopped?.();
-    return stopped;
-  }, [onStopped, stopRequest]);
-  // The toolbar's own stop control goes through the same door, so a press there
-  // hands the held queue over too — it is the same decision from a different button.
-  const queueAwareStopRequest = useMemo(
-    () => ({ ...stopRequest, stop: stopRun }),
-    [stopRequest, stopRun],
-  );
-  const handleChooseQueue = useCallback(() => {
-    if (enqueueDraft?.())
-      setQueueChoiceOpen(false);
-  }, [enqueueDraft]);
-  const handleChooseInterrupt = useCallback(() => {
-    // Queued first, interrupted second: the flush that follows sends what was on
-    // screen, joined with the queue.
-    if (!enqueueDraft?.())
-      return;
+  const interruptAndSend = useCallback(async () => {
     setQueueChoiceOpen(false);
-    void stopRun();
-  }, [enqueueDraft, stopRun]);
+    await stopRequest.stop();
+    await send();
+  }, [send, stopRequest]);
+  const sendQueued = useCallback(() => {
+    setQueueChoiceOpen(false);
+    void send();
+  }, [send]);
   const inputRef = useRef<TextInputInstance>(null);
   const completion = useComposerCompletion(
     message,
@@ -323,12 +304,18 @@ function ComposerDockView({
           t={t}
         />
       ) : null}
+      {queueNotice ? (
+        <Text style={styles.queueNotice} testID="send-queue-notice">{queueNotice}</Text>
+      ) : null}
       {queueItems.length > 0 && (
         <SendQueuePanel
-          failed={queueFailed}
+          // The desktop's queue reports a message's text, never the files it was
+          // sent with, so the panel is told that rather than handed a count of
+          // zero the phone would have invented.
+          attachmentsUnreported
           items={queueItems}
+          onRelease={id => onQueueRelease?.(id)}
           onRemove={id => onQueueRemove?.(id)}
-          onRetry={onQueueRetry}
           onUpdate={(id, content) => onQueueUpdate?.(id, content)}
         />
       )}
@@ -466,12 +453,11 @@ function ComposerDockView({
             completion={completion}
             editable={editable}
             openAttachmentMenu={openAttachmentMenu}
-            stopRequest={queueAwareStopRequest}
+            stopRequest={stopRequest}
             skillEvaluating={skillEvaluating}
             canSend={canSend}
             send={send}
             hasDraft={hasDraft}
-            queueCount={queueItems.length}
             onOpenQueueChoice={() => setQueueChoiceOpen(true)}
           />
           {remote.streaming && stopRequest.status !== "idle" && (
@@ -490,11 +476,10 @@ function ComposerDockView({
       <SkillDetailsDialog onClose={() => setSkillDetails(null)} skill={skillDetails} />
       <SendChoiceSheet
         open={queueChoiceOpen}
-        queueCount={queueItems.length}
         t={t}
         onClose={() => setQueueChoiceOpen(false)}
-        onInterruptAndSend={handleChooseInterrupt}
-        onQueue={handleChooseQueue}
+        onInterruptAndSend={() => void interruptAndSend()}
+        onSend={sendQueued}
       />
     </View>
   );

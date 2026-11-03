@@ -94,6 +94,23 @@ export interface StreamRetryState {
   delayMs: number;
 }
 
+/**
+ * The client cannot read this run's events right now, so the reply on screen is
+ * the last projection it managed to build — the text has not stopped because the
+ * model stopped. Presentation only: it says "paused", never "failed", and it is
+ * dropped as soon as a read succeeds.
+ */
+export interface PreviewSyncStall {
+  /** Which stage of the preview gave up: reading the events, or projecting them. */
+  stage: "read" | "projection";
+  /** Raw diagnostic for the reader who opens the note (not localized copy). */
+  reason: string;
+  /** Consecutive failed attempts in this streak. */
+  attempts: number;
+  /** Epoch ms of the first failure in this streak. */
+  since: number;
+}
+
 export interface AgentMessage {
   id: string;
   /** Canonical persisted Agent journal identity; never replaced by optimistic UI ids. */
@@ -160,4 +177,10 @@ export interface AgentMessage {
   thinkingActive?: boolean;
   /** Transient upstream reconnect state, never assistant content. */
   reconnecting?: StreamRetryState;
+  /**
+   * The live preview has been unable to read this run's events for long enough
+   * that the reply on screen is no longer growing. Set only while streaming and
+   * cleared by the first successful read (see `PREVIEW_STALL_AFTER_MS`).
+   */
+  previewStalled?: PreviewSyncStall;
 }

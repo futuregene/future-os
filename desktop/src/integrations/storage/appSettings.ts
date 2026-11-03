@@ -3,6 +3,17 @@ import { invokeCommand } from "../tauri/invoke";
 /** Approval tier: fully open (default), ask everything, or use the available OS sandbox. */
 export type ApprovalTier = "off" | "manual" | "sandbox" | "auto";
 
+/**
+ * Whether an agent-reported tier is one this UI can render.
+ *
+ * The agent reports the session's own mode (`get_state.sandboxTier`,
+ * `sandbox_policy_changed`); an unknown or absent value must fall back to the
+ * app default rather than invent a tier.
+ */
+export function isApprovalTier(value: string | null | undefined): value is ApprovalTier {
+  return value === "off" || value === "manual" || value === "sandbox" || value === "auto";
+}
+
 export interface AppSettings {
   approvalTier: ApprovalTier;
   hiddenModels: string[];

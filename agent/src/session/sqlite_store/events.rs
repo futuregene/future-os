@@ -27,8 +27,35 @@ pub(crate) fn is_event_rejected(error: &anyhow::Error) -> bool {
 
 /// `bail!` for the deterministic refusals below, so the writer can tell them
 /// apart from a transient SQLite failure without matching on message text.
-fn reject(message: &str) -> anyhow::Error {
+pub(crate) fn reject(message: &str) -> anyhow::Error {
     anyhow::Error::new(EventRejected(message.to_owned()))
+}
+
+/// A canonical batch's only retryable failure is a storage one. Everything else
+/// a batch can fail with — a content gap, a divergent retry, a seal over
+/// different bytes — describes *this* batch's content and reproduces exactly on
+/// every retry. Naming it a refusal is what lets the writer drop that one event
+/// and keep the session's journal live, instead of leaving every later batch
+/// queued behind a poisoned one until the agent restarts.
+///
+/// The storage side is not only SQLite's own errors: a lane whose worker died
+/// reports its own typed `StorageUnavailable`, and a dead worker is a storage
+/// failure by every definition. Matching only `rusqlite`/`io` errors classified
+/// that as a refusal, so the writer dropped a durable event and a dead database
+/// shut down as if its journal had flushed.
+pub(crate) fn refusal_unless_storage(error: anyhow::Error) -> anyhow::Error {
+    let storage = error.chain().any(|cause| {
+        cause.downcast_ref::<rusqlite::Error>().is_some()
+            || cause.downcast_ref::<std::io::Error>().is_some()
+            || cause
+                .downcast_ref::<crate::session::database::StorageUnavailable>()
+                .is_some()
+    });
+    if storage || is_event_rejected(&error) {
+        error
+    } else {
+        reject(&format!("{error:#}"))
+    }
 }
 
 pub(crate) struct StoredEventRow {
@@ -450,20 +477,83 @@ pub(crate) fn read_replay_event_rows(
     session_scope: bool,
     limit: Option<usize>,
 ) -> Result<Vec<StoredEventRow>> {
-    let sql = if session_scope && since >= -1 {
-        "SELECT session_id,run_id,epoch,idx,event_id,payload,sequence FROM run_events WHERE session_id=?1 AND run_id=?2 AND epoch=-1 AND idx>?3 ORDER BY sequence"
-    } else if session_scope {
-        "SELECT session_id,run_id,epoch,idx,event_id,payload,sequence FROM run_events WHERE session_id=?1 AND run_id=?2 AND ((epoch=-1 AND idx>?3) OR (epoch>=0 AND ?3 < -1)) ORDER BY sequence"
-    } else {
-        "SELECT session_id,run_id,epoch,idx,event_id,payload,sequence FROM run_events WHERE session_id=?1 AND run_id=?2 AND idx>?3 ORDER BY epoch,idx"
-    };
-    let mut statement = db.prepare_cached(&format!("{sql} LIMIT ?4"))?;
     let limit = limit
         .map(|n| i64::try_from(n).unwrap_or(i64::MAX))
         .unwrap_or(-1);
+    if !session_scope {
+        // `ORDER BY epoch,idx` cannot be answered in index order: the unique
+        // index is (session_id,run_id,idx,epoch), so SQLite applies the `idx>`
+        // range there and then sorts whatever matched — for `since=-1` that is
+        // every row of the run (136 k rows, 23 ms measured on the 136 k-event
+        // run) instead of the page it was asked for.
+        //
+        // The same rows in the same order come out of `run_events_replay_order
+        // (session_id,run_id,epoch,idx)`: walk the epochs in ascending order and
+        // read each one with `idx >` as a real range, filling the page across
+        // epochs. Ordering is unchanged by construction — epoch-major, then idx
+        // — and the per-epoch read is a pure index range (0.98 ms vs 20.4 ms,
+        // same 1001 rows, same order; `read_replay_event_rows_matches_the_sort`).
+        return read_replay_event_rows_by_epoch(db, session, run, since, limit);
+    }
+    let sql = if since >= -1 {
+        "SELECT session_id,run_id,epoch,idx,event_id,payload,sequence FROM run_events WHERE session_id=?1 AND run_id=?2 AND epoch=-1 AND idx>?3 ORDER BY sequence"
+    } else {
+        "SELECT session_id,run_id,epoch,idx,event_id,payload,sequence FROM run_events WHERE session_id=?1 AND run_id=?2 AND ((epoch=-1 AND idx>?3) OR (epoch>=0 AND ?3 < -1)) ORDER BY sequence"
+    };
+    let mut statement = db.prepare_cached(&format!("{sql} LIMIT ?4"))?;
     let rows = statement
         .query_map(params![session, run, since, limit], stored_event)?
         .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
+
+/// `ORDER BY epoch,idx` over an epoch-major index, one epoch at a time.
+///
+/// Each statement is a single index range on `run_events_replay_order`, so the
+/// work is the page, not the run. The epoch list is two seeks (the first epoch,
+/// then the next above the cursor), never a `DISTINCT` over every row: that scan
+/// cost 15 ms on the same run and would have eaten the gain.
+fn read_replay_event_rows_by_epoch(
+    db: &Connection,
+    session: &str,
+    run: &str,
+    since: i64,
+    limit: i64,
+) -> Result<Vec<StoredEventRow>> {
+    const FIRST_EPOCH: &str =
+        "SELECT epoch FROM run_events WHERE session_id=?1 AND run_id=?2 ORDER BY epoch LIMIT 1";
+    const NEXT_EPOCH: &str =
+        "SELECT epoch FROM run_events WHERE session_id=?1 AND run_id=?2 AND epoch>?3 \
+         ORDER BY epoch LIMIT 1";
+    const PAGE: &str =
+        "SELECT session_id,run_id,epoch,idx,event_id,payload,sequence FROM run_events \
+         WHERE session_id=?1 AND run_id=?2 AND epoch=?3 AND idx>?4 ORDER BY idx LIMIT ?5";
+    let mut first = db.prepare_cached(FIRST_EPOCH)?;
+    let mut next = db.prepare_cached(NEXT_EPOCH)?;
+    let mut page = db.prepare_cached(PAGE)?;
+    let mut rows = Vec::new();
+    let mut remaining = limit;
+    let mut epoch = first
+        .query_row(params![session, run], |row| row.get::<_, i64>(0))
+        .optional()?;
+    while let Some(current) = epoch {
+        if remaining == 0 {
+            break;
+        }
+        rows.extend(
+            page.query_map(
+                params![session, run, current, since, remaining],
+                stored_event,
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+        );
+        epoch = next
+            .query_row(params![session, run, current], |row| row.get::<_, i64>(0))
+            .optional()?;
+        if limit > 0 {
+            remaining = limit.saturating_sub(rows.len() as i64);
+        }
+    }
     Ok(rows)
 }
 
@@ -546,4 +636,140 @@ pub(crate) fn decode_event_row<T: serde::de::DeserializeOwned>(row: StoredEventR
         Value::String(row.event_id.unwrap_or(identity)),
     );
     Ok(serde_json::from_value(value)?)
+}
+
+#[cfg(test)]
+mod replay_order_tests {
+    use super::*;
+
+    /// The walk must answer with exactly the rows `ORDER BY epoch,idx` answers,
+    /// for every page shape a caller can ask for. Multi-epoch on purpose: a
+    /// single-epoch fixture would pass even if the walk crossed the epochs in
+    /// the wrong order.
+    fn fixture() -> Connection {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE run_events (
+                 sequence INTEGER PRIMARY KEY,
+                 session_id TEXT NOT NULL,
+                 run_id TEXT NOT NULL,
+                 epoch INTEGER NOT NULL,
+                 idx INTEGER NOT NULL,
+                 event_id TEXT,
+                 payload TEXT NOT NULL,
+                 UNIQUE(session_id, run_id, idx, epoch));
+             CREATE INDEX run_events_replay_order
+                 ON run_events(session_id, run_id, epoch, idx);",
+        )
+        .unwrap();
+        let mut sequence = 0;
+        for (epoch, count) in [(1, 40), (0, 5), (2, 7)] {
+            for idx in 0..count {
+                sequence += 1;
+                db.execute(
+                    "INSERT INTO run_events VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                    params![
+                        sequence,
+                        "s",
+                        "r",
+                        epoch,
+                        idx,
+                        format!("e{epoch}-{idx}"),
+                        serde_json::json!({"idx": idx, "epoch": epoch}).to_string()
+                    ],
+                )
+                .unwrap();
+            }
+        }
+        db
+    }
+
+    fn sorted(db: &Connection, since: i64, limit: i64) -> Vec<(i64, i64, String, i64)> {
+        let mut statement = db
+            .prepare(
+                "SELECT session_id,run_id,epoch,idx,event_id,payload,sequence FROM run_events
+                 WHERE session_id='s' AND run_id='r' AND idx>?1 ORDER BY epoch,idx LIMIT ?2",
+            )
+            .unwrap();
+        statement
+            .query_map(params![since, limit], |row| {
+                Ok((
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get(6)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    }
+
+    fn walked(db: &Connection, since: i64, limit: Option<usize>) -> Vec<(i64, i64, String, i64)> {
+        read_replay_event_rows(db, "s", "r", since, false, limit)
+            .unwrap()
+            .into_iter()
+            .map(|row| {
+                (
+                    row.epoch,
+                    row.idx,
+                    row.event_id.unwrap_or_default(),
+                    row.sequence,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_epoch_walk_answers_exactly_the_sorted_rows() {
+        let db = fixture();
+        for since in [-1, 0, 3, 5, 39, 40, 100] {
+            for limit in [1usize, 5, 40, 1000] {
+                let expected = sorted(&db, since, limit as i64);
+                assert_eq!(
+                    walked(&db, since, Some(limit)),
+                    expected,
+                    "since={since} limit={limit}"
+                );
+            }
+        }
+    }
+
+    /// `limit=None` is the whole-run read (snapshot bootstrap): it must still
+    /// return every row, epoch-major.
+    #[test]
+    fn an_unbounded_read_returns_every_row_in_epoch_order() {
+        let db = fixture();
+        assert_eq!(walked(&db, -1, None), sorted(&db, -1, i64::MAX));
+        assert_eq!(walked(&db, -1, None).len(), 52);
+    }
+
+    /// The index is what makes the walk cheap; without it SQLite plans a temp
+    /// b-tree. This fails loudly if the schema ever stops creating it.
+    #[test]
+    fn the_epoch_page_is_an_index_range_without_a_sort() {
+        let db = fixture();
+        let plan: Vec<String> = db
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT session_id,run_id,epoch,idx,event_id,payload,sequence
+                 FROM run_events WHERE session_id=?1 AND run_id=?2 AND epoch=?3 AND idx>?4
+                 ORDER BY idx LIMIT ?5",
+            )
+            .unwrap()
+            .query_map(params!["s", "r", 1, -1, 1001], |row| {
+                row.get::<_, String>(3)
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            plan.iter()
+                .any(|step| step.contains("run_events_replay_order")),
+            "{plan:?}"
+        );
+        assert!(
+            !plan.iter().any(|step| step.contains("TEMP B-TREE")),
+            "{plan:?}"
+        );
+    }
 }

@@ -15,6 +15,12 @@ struct AccumulatedReasoningBlock {
     id: String,
     text: String,
     provider_metadata: crate::types::ProviderMetadata,
+    /// A `ReasoningEnd` for this block has already gone downstream. The
+    /// provider layer closes an open block when a stream ends without a
+    /// terminal frame, and a second close would be journaled as a new empty
+    /// block under an identity that is already sealed (`block_id` repeats per
+    /// message), which the durable journal refuses.
+    closed: bool,
 }
 
 #[derive(Debug, Default)]
@@ -964,8 +970,9 @@ impl Loop {
                         id,
                         provider_metadata,
                     } => {
-                        reasoning_block_mut(&mut reasoning_blocks, &id).provider_metadata =
-                            provider_metadata;
+                        let block = reasoning_block_mut(&mut reasoning_blocks, &id);
+                        block.provider_metadata = provider_metadata;
+                        block.closed = true;
                         record_assistant_block(
                             &mut assistant_block_order,
                             AssistantBlockOrder::Reasoning(id),
@@ -1367,7 +1374,15 @@ impl Loop {
                 }
                 // Close a possibly unfinished reasoning display before the
                 // next attempt. No synthetic reasoning metadata is persisted.
-                for block in &reasoning_blocks {
+                //
+                // Only blocks still open: a stream that ended without a
+                // terminal frame has already been closed by the provider layer
+                // (`finish_stream`), and closing it twice would seal an empty
+                // body under a content identity that already holds the first
+                // attempt's bytes — a contradiction the journal refuses, which
+                // then fails every later batch of this session.
+                for block in reasoning_blocks.iter_mut().filter(|block| !block.closed) {
+                    block.closed = true;
                     on_event(RunEvent::Model(ModelStreamEvent::ReasoningEnd {
                         id: block.id.clone(),
                         provider_metadata: block.provider_metadata.clone(),
@@ -3410,6 +3425,66 @@ mod tests {
             events.last(),
             Some(RunEvent::Model(ModelStreamEvent::Error { .. }))
         ));
+    }
+
+    /// One close per reasoning display, however the stream ended.
+    ///
+    /// A stream that runs out before its terminal frame is closed by the
+    /// provider layer (`finish_stream`), and the retry then used to close the
+    /// same display again. The duplicate reaches the journal as a *new* block
+    /// at offset zero under an identity (`{message}:thinking:{block_id}`) that
+    /// already holds the first attempt's bytes, so the durable journal refuses
+    /// the batch — and, because that refusal is not a per-event one, it takes
+    /// the session's journal health with it and every remote replay of the
+    /// conversation with it.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn stream_retry_closes_a_reasoning_display_once() {
+        let started = || ModelStreamEvent::ReasoningStart {
+            id: "reasoning".to_string(),
+        };
+        let delta = |text: &str| ModelStreamEvent::ReasoningDelta {
+            id: "reasoning".to_string(),
+            text: text.to_string(),
+        };
+        let closed = || ModelStreamEvent::ReasoningEnd {
+            id: "reasoning".to_string(),
+            provider_metadata: Default::default(),
+        };
+        let provider = ScriptedProvider::new(vec![
+            // The provider layer already closed this display before the
+            // disconnect surfaced, so the retry owns no close.
+            Script::Events(vec![started(), delta("first"), closed(), ev_disconnect()]),
+            // This one is still open: the retry is its only closer.
+            Script::Events(vec![started(), delta("second"), ev_disconnect()]),
+            Script::Events(vec![ev_text("done"), ev_stop()]),
+        ]);
+        let loop_ = Loop::new(provider, "mock");
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                {
+                    let events = events.clone();
+                    move |event| events.lock().push(event)
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let events = events.lock();
+        let closes = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    RunEvent::Model(ModelStreamEvent::ReasoningEnd { id, .. })
+                        if id == "reasoning"
+                )
+            })
+            .count();
+        assert_eq!(closes, 2, "one close per display: {events:?}");
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]

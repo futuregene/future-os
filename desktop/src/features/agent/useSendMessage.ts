@@ -8,6 +8,13 @@ import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { runSendPipeline } from "./sendPipeline";
 
+/**
+ * The policy a queued send asks for: the Agent holds the prompt and folds a
+ * burst of such sends into ONE run at the turn boundary — the `enqueue_if_busy`
+ * follow-up semantics a chat composer wants, without a second turn per message.
+ */
+export const QUEUED_SEND_POLICY = "enqueue_coalescing";
+
 interface UseSendMessageInput {
   thread: StoredThread | null;
   modelId: string;
@@ -22,6 +29,71 @@ interface UseSendMessageInput {
   setRecentRun: (run: StoredRun) => void;
   refreshRecentRun: (threadId: string) => Promise<void>;
   onThreadActivity: () => void;
+}
+
+/**
+ * The queued-send entry point: a message the reader wrote while the reply was
+ * still streaming.
+ *
+ * It leaves NOW and the Agent holds it — `enqueue_coalescing` makes a burst of
+ * such messages fold into ONE run at the turn boundary, which is what the old
+ * client-side queue used to do by joining the texts itself. Keeping it on the
+ * Agent is what makes the message survive this window: a reload, a renderer
+ * crash, or a second client on the same conversation all still see the row in
+ * `get_state`'s `queuedRuns`, and the run happens whether or not this view is
+ * still around to flush it.
+ *
+ * The queued ack comes back as `run_queued`, which the pipeline already reads as
+ * "accepted and alive" — so the optimistic bubble stays, waiting for its turn,
+ * instead of being settled as a cut-off reply.
+ */
+export function useQueuedSend({
+  thread,
+  modelId,
+  thinkingLevel,
+  setMessages,
+  refreshRecentRun,
+  onThreadActivity,
+}: Omit<UseSendMessageInput, "activeRunId" | "sendingRef" | "setRecentRun">) {
+  return useCallback(async (payload: ComposerSendPayload) => {
+    if (!thread)
+      return false;
+    try {
+      // Deliberately outside the one-send-at-a-time lock: the run it queues
+      // behind is exactly the one holding `sendingRef`, and bumping the send
+      // generation would cut that run's pipeline off from this view. Every view
+      // write below is guarded by the pipeline's own optimistic ids, so the two
+      // sends cannot overwrite each other's rows.
+      await runSendPipeline(
+        {
+          busyPolicy: QUEUED_SEND_POLICY,
+          isCurrentSend: () => true,
+          modelId,
+          onThreadActivity,
+          refreshRecentRun,
+          setMessages,
+          thinkingLevel,
+          thread,
+          // NOT into `recentRun`: that is "the run this view is executing", and
+          // the queued one has not started. Letting it in would point the
+          // re-attach path at a run with no events instead of the one still
+          // streaming. The rail learns about it from the refresh below.
+          setRecentRun: () => {},
+        },
+        payload,
+      );
+      // The row exists now (`queued`), so the conversation list and this view's
+      // status line should say so before the run even starts.
+      await refreshRecentRun(thread.id).catch(() => {});
+    }
+    catch (error) {
+      // The pipeline has already put the failure in the thread (a failed bubble,
+      // as a plain send would); this is the extra sentence for the case where it
+      // refused before that, so a queued message never disappears silently.
+      emitFutureEvent("toast", { message: errorMessage(error), tone: "error" });
+    }
+    return true;
+  }, [modelId, onThreadActivity, refreshRecentRun, setMessages, thinkingLevel, thread]);
 }
 
 /** The identity of one send, held from before `createRun` answers. */

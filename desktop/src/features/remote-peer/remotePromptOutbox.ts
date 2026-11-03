@@ -26,6 +26,17 @@ export interface PendingPrompt {
   workspaceId: string | null;
   freshModelId: string | null;
   freshThinkingLevel: string | null;
+  /**
+   * What the send meant while the conversation was busy, as an Agent policy
+   * name.
+   *
+   * Absent on the entries written before a send could carry one, and for a send
+   * that had nothing to say — in which case the host keeps its own reading. It
+   * travels with the entry so a delivery retried after a reconnect still means
+   * what the reader asked for: a queue entry does not become "refuse me" by
+   * waiting out a dropped link.
+   */
+  busyPolicy?: string;
   createdAt: number;
 }
 
@@ -111,6 +122,8 @@ export interface RemotePromptOutbox {
     workspaceId: string | null;
     freshModelId: string | null;
     freshThinkingLevel: string | null;
+    /** See `PendingPrompt.busyPolicy`: absent keeps the host's legacy refusal. */
+    busyPolicy?: string;
   }) => Promise<PromptResult>;
   /** Queue a continuation for delivery. If the host is reachable it is sent now. */
   sendContinuation: (desktopId: string, sessionId: string, runId: string) => Promise<unknown>;
@@ -170,6 +183,10 @@ async function deliverPrompt(
     pending.workspaceId,
     { modelId: pending.freshModelId, thinkingLevel: pending.freshThinkingLevel },
     pending.commandId,
+    // Spread rather than passed as `undefined`: the argument is optional on the
+    // wire, and an explicit `undefined` would still be a policy argument this
+    // send never decided on. An entry from before the field existed sends none.
+    ...(pending.busyPolicy ? [pending.busyPolicy] : []),
   );
   return result;
 }
@@ -210,6 +227,13 @@ export async function sendRemotePrompt(
     workspaceId: string | null;
     freshModelId: string | null;
     freshThinkingLevel: string | null;
+    /**
+     * What this send means while the conversation already runs something (an
+     * Agent policy name). A send made behind a streaming reply names
+     * `enqueue_coalescing`, which is how the message is handed to the session
+     * instead of being held in this client.
+     */
+    busyPolicy?: string;
   },
 ): Promise<PromptResult> {
   const commandId = randomId("prompt");
@@ -222,6 +246,7 @@ export async function sendRemotePrompt(
     workspaceId: input.workspaceId,
     freshModelId: input.freshModelId,
     freshThinkingLevel: input.freshThinkingLevel,
+    ...(input.busyPolicy ? { busyPolicy: input.busyPolicy } : {}),
     createdAt: Date.now(),
   };
   const outbox = getState(desktopId, sessionId);

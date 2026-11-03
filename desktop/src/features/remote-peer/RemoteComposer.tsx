@@ -16,17 +16,23 @@ import { cn } from "../../lib/cn";
 import { EMPTY_EDITOR_ATTR } from "../../lib/editableTarget";
 import { errorMessage } from "../../lib/errors";
 import { onFutureEvent } from "../../lib/futureEvents";
-import { collectQueuedAttachments, joinQueuedContent } from "../../lib/sendQueue";
 import { useImeEnterGuard } from "../../lib/useImeEnterGuard";
 import { imageExtensionFromMime, splitFileName } from "../agent/attachments";
 import { SendQueuePanel } from "../agent/SendQueuePanel";
 import { SkillRecommendCard } from "../agent/SkillRecommendCard";
-import { isTransientQueueRefusal, QUEUE_RETRY_DELAY_MS, QUEUE_RETRY_LIMIT } from "./queueDelivery";
 import { RemoteApprovalMenu } from "./RemoteApprovalMenu";
 import { buildRemoteSlashMenu, insertRemoteSkill, remoteSlashItems, slashQuery, withoutSlashWord } from "./remoteCommands";
 import { clearRemoteComposerDraft, loadRemoteComposerDraft, saveRemoteComposerDraft } from "./remoteComposerDraft";
 import { abortRemoteRun, listRemoteInstalledSkills, uploadRemoteFile } from "./remotePeerClient";
 import { getRemoteOutbox, isRecoverableSendError, recoverRemoteOutbox, sendRemotePrompt } from "./remotePromptOutbox";
+import {
+  cancelRemoteQueuedRun,
+  isParkedRemoteQueueRow,
+  QUEUED_SEND_POLICY,
+  releaseRemoteQueuedRun,
+  remoteQueueNoticeReason,
+  useRemoteQueue,
+} from "./remoteQueue";
 import { RemoteSessionMenu } from "./RemoteSessionMenu";
 import {
   completeRemoteReference,
@@ -37,7 +43,6 @@ import {
   sessionReferenceQuery,
 } from "./remoteSessionReference";
 import { RemoteSlashMenu } from "./RemoteSlashMenu";
-import { remoteSendQueue, remoteSendQueueKey, useRemoteSendQueue } from "./sendQueue";
 import { useRemoteFusionAvailability } from "./useRemoteFusionAvailability";
 
 /** How many files one paste may stage. The rest are reported, not silently dropped. */
@@ -312,15 +317,18 @@ export function RemoteComposer({
    */
   const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(null);
   /**
-   * The messages held for this conversation's run to finish (see
-   * `lib/sendQueue`), and whether the send button's menu is asking what a send
-   * means while it streams.
+   * The messages this conversation's run has behind it, read from the host that
+   * holds them, and whether the send button's menu is asking what a send means
+   * while it streams.
+   *
+   * The rows are the session's own: a send made behind a streaming reply is
+   * handed over with `QUEUED_SEND_POLICY` (see `sendNow`) and the host queues it,
+   * so nothing here is a copy of this window's memory. Removing a row cancels it
+   * on the host, editing one cancels and re-sends it, and a parked row is started
+   * by `release`.
    */
-  const queueKey = remoteSendQueueKey(desktopId, sessionId);
-  const queue = useRemoteSendQueue(desktopId, sessionId);
+  const queue = useRemoteQueue(desktopId, sessionId, streaming);
   const [queueChoiceOpen, setQueueChoiceOpen] = useState(false);
-  const queueSendingRef = useRef(false);
-  const queueRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /**
    * The conversations this draft points at, keyed by the token standing in for
    * each one (`remoteSessionReference`). The draft shows `#title`; this is the
@@ -416,81 +424,6 @@ export function RemoteComposer({
       active = false;
     };
   }, [peer?.connected, desktopId, sessionId]);
-
-  /**
-   * Send whatever the queue holds, the moment this conversation is free again.
-   *
-   * "Free" is the host's own condition — not streaming, not in another command,
-   * and this device still in control — because the host answers one prompt at a
-   * time and refuses one that arrives early. The queue is taken before the send
-   * so a re-render cannot send it twice, and a refusal puts it back.
-   *
-   * A refusal is not always a "no": `session_busy` is the host saying the run it is
-   * finishing has not settled yet, which is exactly the state an interrupt leaves
-   * behind for a moment. Those are retried on a short clock instead of being marked
-   * failed — the same rule the phone applies — so a queue the reader already asked
-   * to send does not wait for them to press 重试. Anything else keeps the old
-   * behaviour: back into the panel, flagged, attempted again only on request.
-   */
-  useEffect(() => {
-    if (streaming || busy || held || !peer?.connected || queue.failed || queueSendingRef.current)
-      return;
-    if (queue.items.length === 0)
-      return;
-    queueSendingRef.current = true;
-
-    /**
-     * One delivery and the retries that belong to it.
-     *
-     * The rows are taken per attempt, not carried in a closure: a refused attempt
-     * puts them back into the panel (so the reader keeps seeing what is waiting)
-     * and the next attempt takes them again. Restoring one array twice would
-     * duplicate it.
-     */
-    const deliver = async (attempt: number): Promise<void> => {
-      const taken = remoteSendQueue.take(queueKey);
-      if (taken.length === 0) {
-        queueSendingRef.current = false;
-        return;
-      }
-      try {
-        await sendRemotePrompt(desktopId, sessionId, {
-          text: joinQueuedContent(taken),
-          attachments: collectQueuedAttachments(taken),
-          workspaceId,
-          freshModelId,
-          freshThinkingLevel,
-        });
-        onSent();
-        queueSendingRef.current = false;
-      }
-      catch (err) {
-        remoteSendQueue.restore(queueKey, taken);
-        if (isTransientQueueRefusal(err) && attempt < QUEUE_RETRY_LIMIT) {
-          // Not a failure: the rows go back without the brake, and the chain keeps
-          // ownership of the queue until it succeeds or gives up.
-          remoteSendQueue.clearFailure(queueKey);
-          queueRetryTimerRef.current = setTimeout(() => {
-            queueRetryTimerRef.current = null;
-            void deliver(attempt + 1);
-          }, QUEUE_RETRY_DELAY_MS);
-          return;
-        }
-        queueSendingRef.current = false;
-        setError(isRecoverableSendError(err) ? t("promptQueued") : errorMessage(err));
-      }
-    };
-    void deliver(0);
-  }, [busy, desktopId, freshModelId, freshThinkingLevel, held, onSent, peer?.connected, queue.failed, queue.items.length, queueKey, sessionId, streaming, t, workspaceId]);
-
-  // Switching conversations (or closing the composer) drops the timer, not the
-  // queue: the rows live in the store, and the next mount picks them up again.
-  useEffect(() => () => {
-    if (queueRetryTimerRef.current) {
-      clearTimeout(queueRetryTimerRef.current);
-      queueRetryTimerRef.current = null;
-    }
-  }, []);
 
   /**
    * Stage a file on the host.
@@ -620,8 +553,23 @@ export function RemoteComposer({
    *
    * `override` carries the text after a skill was installed and used
    * (`/name …`); the state update that follows is only so the field shows it.
+   *
+   * `busyPolicy` is what this send means if the host's session still has a run in
+   * flight. A send behind a streaming reply names `QUEUED_SEND_POLICY`: the
+   * message is handed to the session there and then, and the panel above reads
+   * it back from the host's own queue. Everything else leaves the host's legacy
+   * refusal in place, which is the honest answer for a send that arrived while a
+   * reply was still on screen from this window's point of view only.
+   *
+   * Answers whether the host took it, so a caller that also stops the run (an
+   * interrupt) can leave a refused draft alone instead of ending the reply for a
+   * message that never left.
    */
-  async function sendNow(message: string, uploadsForSend: RemoteUpload[]) {
+  async function sendNow(
+    message: string,
+    uploadsForSend: RemoteUpload[],
+    busyPolicy?: string,
+  ): Promise<boolean> {
     setBusy(true);
     setError(null);
     try {
@@ -637,6 +585,7 @@ export function RemoteComposer({
         workspaceId,
         freshModelId,
         freshThinkingLevel,
+        ...(busyPolicy ? { busyPolicy } : {}),
       });
       // Cleared only after the host accepted it: a prompt that failed on the
       // wire must not cost the user the paragraph they wrote or the file they
@@ -649,6 +598,11 @@ export function RemoteComposer({
       if (!sessionId)
         onCreated?.(ack.sessionId);
       onSent();
+      // Accepted into the queue rather than run: the panel is the host's, so it
+      // is asked for its rows instead of being handed this one.
+      if (busyPolicy)
+        queue.refresh();
+      return true;
     }
     catch (err) {
       if (isRecoverableSendError(err)) {
@@ -657,11 +611,109 @@ export function RemoteComposer({
         setError(t("promptQueued"));
       }
       else {
+        // A refusal the reader has to see: `session_busy` here means this client
+        // sent without naming what a send means (or the host is older than the
+        // policy), and anything else is the host saying no to this message.
         setError(err instanceof Error ? err.message : String(err));
       }
+      return false;
     }
     finally {
       setBusy(false);
+    }
+  }
+
+  /**
+   * Take one waiting message back out of the host's queue.
+   *
+   * The panel's bin, and the first half of an edit: the host has no "change this
+   * row's text" command, so what a reader considers an edit is a removal and a
+   * re-send (`replaceQueued`).
+   */
+  async function cancelQueued(runId: string) {
+    setError(null);
+    try {
+      await cancelRemoteQueuedRun(desktopId, sessionId, runId);
+      // The reader's own bin: its terminal ack is confirmation, not news.
+      queue.forget(runId);
+    }
+    catch (err) {
+      setError(errorMessage(err));
+    }
+    finally {
+      queue.refresh();
+    }
+  }
+
+  /**
+   * Start a parked row now, because the reader asked for it.
+   *
+   * The host parks a row that waited too long rather than spend credits on a
+   * message the conversation has moved past, and only a person can start it
+   * again — which is why this is a control and not a retry.
+   */
+  async function releaseQueued(runId: string) {
+    setError(null);
+    try {
+      await releaseRemoteQueuedRun(desktopId, sessionId, runId);
+    }
+    catch (err) {
+      setError(errorMessage(err));
+    }
+    finally {
+      queue.refresh();
+    }
+  }
+
+  /**
+   * Change a waiting message: remove it from the host's queue, then send the new
+   * text behind the same running turn.
+   *
+   * Removed first, deliberately: a re-send that failed while the old row was
+   * still queued would leave the reader with two copies of one message and no way
+   * to tell which will run. An emptied row is not an edit — the panel's own rule
+   * — so it is only removed.
+   *
+   * The row's files do not travel with the new text: the host's queue reports a
+   * message's text and its acceptance time, never the upload ids it was sent with,
+   * so this client cannot name them again. The panel says so in the editor, where
+   * the reader is about to make that trade, instead of showing a count it would
+   * have had to invent.
+   *
+   * If the re-send is refused after the removal, the words are put back in the
+   * box: the row is gone on the host, and losing the text as well would leave the
+   * reader nothing to retry with.
+   */
+  async function replaceQueued(runId: string, content: string) {
+    const next = content.trim();
+    if (!next) {
+      await cancelQueued(runId);
+      return;
+    }
+    setError(null);
+    try {
+      await cancelRemoteQueuedRun(desktopId, sessionId, runId);
+      queue.forget(runId);
+      await sendRemotePrompt(desktopId, sessionId, {
+        text: next,
+        attachments: [],
+        workspaceId,
+        freshModelId,
+        freshThinkingLevel,
+        busyPolicy: QUEUED_SEND_POLICY,
+      });
+      onSent();
+    }
+    catch (err) {
+      setError(errorMessage(err));
+      // The row is gone from the host by now. A link failure left the prompt in
+      // the outbox, which will send it when the link returns; a refusal left it
+      // nowhere, so the words go back in the box instead of being lost.
+      if (!isRecoverableSendError(err))
+        setText(current => current.trim() ? current : next);
+    }
+    finally {
+      queue.refresh();
     }
   }
 
@@ -672,13 +724,12 @@ export function RemoteComposer({
     //
     // A run in flight is the other thing that holds the send here: the host
     // answers one prompt at a time and refuses a second with "This session is
-    // still running; wait for it to finish or abort it first" — and it refuses
-    // it *after* the prompt was written down, which is what turned a press into
-    // an error over a message the reader had every reason to expect to go. So a
-    // send while it streams is a choice instead: the send button's menu holds
-    // the draft in the queue, or interrupts the run and sends it now
-    // (`queueDraft`). Enter reaches this function too, so the choice is asked
-    // here, where both paths meet.
+    // still running; wait for it to finish or abort it first". It no longer has
+    // to: a send can name what it means (`busy_policy`), and `handOff` names it.
+    // So a send while it streams is a choice — queue behind the reply, or stop
+    // the reply and let the queue start — and the send button's menu asks it.
+    // Enter reaches this function too, so the choice is asked here, where both
+    // paths meet.
     if ((!message && uploads.length === 0) || busy || evaluating || held)
       return;
     if (streaming) {
@@ -758,31 +809,38 @@ export function RemoteComposer({
   }
 
   /**
-   * Hold the draft for this conversation's run, and optionally end that run.
+   * Hand the draft to the conversation's session, and optionally end the run it
+   * is waiting behind.
    *
-   * The queue takes the message *before* the interrupt, so the flush that runs
-   * once the run settles sends exactly what was on screen — the queue joined
-   * with this message, as one message. The tokens the draft spells are expanded
-   * here, on the way into the queue, for the same reason `sendNow` expands them:
-   * a `#title` is a stand-in for a link, and only the link means anything to the
-   * host.
+   * The message is sent *now*, with `QUEUED_SEND_POLICY`, so what the reader
+   * wrote is on the host before anything else happens to the run — an interrupt
+   * that raced the text would otherwise be a lost paragraph. Its references are
+   * expanded here exactly as `sendNow` expands them: a `#title` is a stand-in for
+   * a link, and only the link means anything to the host.
+   *
+   * "Interrupt" is the reader's other answer to a send made behind a running
+   * reply: stop that run, which is what makes the rows behind it start. The
+   * interrupt comes second on purpose — the queued prompt is safe either way, and
+   * a send that failed must still leave the draft in the field.
+   *
+   * This used to be the client's own queue: the draft went into this window's
+   * store and was flushed as one joined message when the host reported the run
+   * over. That flush existed only because a prompt could not be queued remotely;
+   * now it can, so the session holds the row (and folds the consecutive ones into
+   * one turn) and this window merely reads it back.
    */
-  function queueDraft(interrupt: boolean) {
+  async function handOff(interrupt: boolean) {
     setQueueChoiceOpen(false);
     if (busy || held || evaluating)
       return;
     const message = text.trim();
     if (!message && uploads.length === 0)
       return;
-    remoteSendQueue.enqueue(queueKey, {
-      content: expandRemoteReferences(message, references),
-      attachments: uploads,
-    });
-    setText("");
-    setUploads([]);
-    setReferences({});
-    clearRemoteComposerDraft(desktopId, sessionId);
-    if (interrupt)
+    const handedOver = await sendNow(message, uploads, QUEUED_SEND_POLICY);
+    // Only a message that actually left is worth ending the reply for: a refusal
+    // leaves the draft in the field, and stopping the run on top of it would cost
+    // the reader both the paragraph and the answer they were waiting for.
+    if (interrupt && handedOver)
       void stop();
   }
 
@@ -1011,23 +1069,48 @@ export function RemoteComposer({
             </p>
           )
         : null}
-      {/* What is waiting for this conversation's run to end: the messages the
-          send button held, in the order they will leave. Above the box and below
-          the notices, because it is the next thing to be sent, not something
-          already in the transcript. */}
-      {queue.items.length > 0
+      {/* A row that left the queue without running — folded into the turn ahead,
+          taken back on another device, or lost with a deleted conversation — is
+          not an event the host announces. Its terminal ack is the only trace, so
+          it is said here; without it the row would simply disappear and the
+          reader would believe the message had been sent. It lives outside the
+          panel because it matters most when the panel is empty. */}
+      {queue.notice
+        ? (
+            <p className="mb-2 text-xs text-ink-muted" data-queue-notice="">
+              {fusionT(`composer.queue.notice.${remoteQueueNoticeReason(queue.notice.reason)}`, {
+                reason: queue.notice.reason,
+              })}
+              {queue.notice.count > 1
+                ? ` · ${fusionT("composer.queue.notice.more", { count: queue.notice.count })}`
+                : ""}
+            </p>
+          )
+        : null}
+      {/* What is waiting behind this conversation's run on that host, in its own
+          order. Above the box and below the notices, because it is the next thing
+          to be sent, not something already in the transcript.
+          The rows are the host's (`get_queue`), not this window's: the bin cancels
+          one there, an edit is a cancel plus a re-send, and a parked row gets the
+          "start it now" control only because the host parked it — a queue this
+          client still held could not offer that, which is why `failed`/`onRetry`
+          are not passed: there is no delivery of this client's to retry. */}
+      {queue.rows.length > 0
         ? (
             <div className="mb-2">
               <SendQueuePanel
-                failed={queue.failed}
-                items={queue.items.map(item => ({
-                  attachmentCount: item.attachments.length,
-                  content: item.content,
-                  id: item.id,
+                // The host's queue reports a message's text and its acceptance
+                // time, never the uploads it was sent with, so the panel is told
+                // that rather than handed a count of zero it would have invented.
+                attachmentsUnreported
+                items={queue.rows.map(row => ({
+                  content: row.text,
+                  id: row.runId,
+                  parked: isParkedRemoteQueueRow(row),
                 }))}
-                onRemove={id => remoteSendQueue.remove(queueKey, id)}
-                onRetry={() => remoteSendQueue.clearFailure(queueKey)}
-                onUpdate={(id, content) => remoteSendQueue.update(queueKey, id, content)}
+                onRelease={id => void releaseQueued(id)}
+                onRemove={id => void cancelQueued(id)}
+                onUpdate={(id, content) => void replaceQueued(id, content)}
               />
             </div>
           )
@@ -1245,7 +1328,7 @@ export function RemoteComposer({
                         </button>
                       )}
                     >
-                      <SelectMenuItem className="py-1.5" selected={false} onSelect={() => queueDraft(false)}>
+                      <SelectMenuItem className="py-1.5" selected={false} onSelect={() => void handOff(false)}>
                         <span className="min-w-0 flex-1 space-y-0.5">
                           <span className="block truncate font-medium leading-tight text-ink">
                             {t("queueAdd")}
@@ -1255,13 +1338,13 @@ export function RemoteComposer({
                           </span>
                         </span>
                       </SelectMenuItem>
-                      <SelectMenuItem className="py-1.5" selected={false} onSelect={() => queueDraft(true)}>
+                      <SelectMenuItem className="py-1.5" selected={false} onSelect={() => void handOff(true)}>
                         <span className="min-w-0 flex-1 space-y-0.5">
                           <span className="block truncate font-medium leading-tight text-ink">
-                            {t(queue.items.length > 0 ? "queueInterruptAll" : "queueInterrupt")}
+                            {t(queue.rows.length > 0 ? "queueInterruptAll" : "queueInterrupt")}
                           </span>
                           <span className="block text-xs leading-tight text-ink-muted">
-                            {t(queue.items.length > 0 ? "queueInterruptAllHint" : "queueInterruptHint")}
+                            {t(queue.rows.length > 0 ? "queueInterruptAllHint" : "queueInterruptHint")}
                           </span>
                         </span>
                       </SelectMenuItem>
@@ -1271,13 +1354,13 @@ export function RemoteComposer({
                     <button
                       aria-label={stopping
                         ? t("stopping")
-                        : queue.items.length > 0 ? t("stopAndSendQueue") : t("stop")}
+                        : queue.rows.length > 0 ? t("stopAndSendQueue") : t("stop")}
                       className="inline-flex size-7 items-center justify-center rounded-md bg-ink text-surface transition-colors hover:bg-ink-soft disabled:cursor-not-allowed disabled:opacity-50"
                       disabled={stopping}
                       onClick={() => void stop()}
                       title={stopping
                         ? t("stopping")
-                        : queue.items.length > 0 ? t("stopAndSendQueue") : t("stop")}
+                        : queue.rows.length > 0 ? t("stopAndSendQueue") : t("stop")}
                       type="button"
                     >
                       {stopping ? <Loader2 className="size-3.5 animate-spin" /> : <Square className="size-3 fill-current" />}

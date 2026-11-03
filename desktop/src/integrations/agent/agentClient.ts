@@ -127,6 +127,13 @@ export interface AgentPromptInput {
   modelId?: string | null;
   attachments?: AttachmentInput[];
   thinkingLevel?: string | null;
+  /**
+   * What this send means while the conversation's run is still in flight: an
+   * Agent `BusyPolicy` value (`enqueue_coalescing`, `enqueue_if_busy`,
+   * `supersede_session`), or absent for the Agent's own default. The queued
+   * ack comes back as `terminationKind: "run_queued"`.
+   */
+  busyPolicy?: string;
   onAccepted?: () => void;
 }
 
@@ -139,6 +146,7 @@ export async function sendPromptToFutureAgent({
   modelId,
   attachments,
   thinkingLevel,
+  busyPolicy,
   onAccepted,
 }: AgentPromptInput) {
   const acceptance = onAccepted ? new Channel<null>(() => onAccepted()) : undefined;
@@ -153,6 +161,7 @@ export async function sendPromptToFutureAgent({
       runId: runId ?? null,
       modelId: modelId ?? null,
       thinkingLevel: thinkingLevel ?? null,
+      busyPolicy: busyPolicy ?? "",
     },
   });
   return {

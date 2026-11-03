@@ -1,16 +1,34 @@
-import { Check, Pencil, RotateCcw, Trash2 } from "lucide-react-native";
+import { Check, Pencil, Play, Trash2 } from "lucide-react-native";
 import { useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { radius, spacing } from "../../../theme/tokens";
 import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
 
-/** One row of the panel: a message waiting for the run to finish. */
+/**
+ * One row of the panel: a message the session is holding behind its running turn.
+ *
+ * `id` is the session's own run id, because that is what a cancel or a release
+ * addresses; the phone keeps no row identity of its own any more.
+ */
 export interface SendQueuePanelItem {
   id: string;
-  /** The text as it will be sent (empty for an attachment-only message). */
+  /** The text as the session holds it (empty for an attachment-only message). */
   content: string;
-  attachmentCount: number;
+  /**
+   * How many files travel with it — `undefined` when the queue that holds the row
+   * does not report it.
+   *
+   * A row read back from the session carries a message's text and its acceptance
+   * time, never the uploads it was sent with, so there is no number to show; the
+   * absence is spelled as absence rather than as a zero nobody measured.
+   */
+  attachmentCount?: number;
+  /**
+   * Parked by the session: it waited too long to run by itself and now starts
+   * only when the reader says so. Absent means "runs at the next turn boundary".
+   */
+  parked?: boolean;
 }
 
 /**
@@ -20,22 +38,29 @@ export interface SendQueuePanelItem {
  * typo or take it back before the run it waits for ends. It disappears the moment
  * the queue empties, because an empty panel would only take space.
  *
- * Shared shape with the desktop's panel: the queue is the same promise on both
- * screens, and a phone that showed it differently would read as a different
- * product.
+ * The rows are the conversation's, not this phone's: the same list the desktop's
+ * own window shows, because both read it from the session that holds it. That is
+ * why a removal is a cancel of a run id and an edit is "take it back, send the
+ * new words" — there is no local record here to rename.
  */
 export function SendQueuePanel({
-  failed,
+  attachmentsUnreported,
   items,
+  onRelease,
   onRemove,
-  onRetry,
   onUpdate,
 }: {
-  /** The last automatic delivery failed; offer a retry instead of the hint. */
-  failed?: boolean;
+  /**
+   * The queue behind these rows does not say which files a message carries, so
+   * an edit — a removal and a re-send, the only kind there is — sends the new
+   * text and leaves those files behind. Said in the editor, where the reader is
+   * about to make that trade.
+   */
+  attachmentsUnreported?: boolean;
   items: readonly SendQueuePanelItem[];
+  /** Start a parked row now. Offered only when the session can park one. */
+  onRelease?: (id: string) => void;
   onRemove: (id: string) => void;
-  onRetry?: () => void;
   onUpdate: (id: string, content: string) => void;
 }) {
   const styles = useStyles();
@@ -61,20 +86,7 @@ export function SendQueuePanel({
         <Text style={styles.title}>{t("chat.queue.title")}</Text>
         <Text style={styles.count}>{t("chat.queue.count", { count: items.length })}</Text>
         <View style={styles.headerSpacer} />
-        {failed
-          ? (
-              <Pressable
-                accessibilityLabel={t("chat.queue.retry")}
-                accessibilityRole="button"
-                onPress={onRetry}
-                style={({ pressed }) => [styles.retry, pressed && styles.rowPressed]}
-                testID="send-queue-retry"
-              >
-                <RotateCcw color={colors.warning} size={13} />
-                <Text style={styles.retryText}>{t("chat.queue.retry")}</Text>
-              </Pressable>
-            )
-          : <Text numberOfLines={1} style={styles.hint}>{t("chat.queue.hint")}</Text>}
+        <Text numberOfLines={1} style={styles.hint}>{t("chat.queue.hint")}</Text>
       </View>
       {items.map((item, index) => {
         const editing = editingId === item.id;
@@ -84,6 +96,9 @@ export function SendQueuePanel({
             {editing
               ? (
                   <View style={styles.editArea}>
+                    {attachmentsUnreported ? (
+                      <Text style={styles.editNote}>{t("chat.queue.editDropsFiles")}</Text>
+                    ) : null}
                     <TextInput
                       accessibilityLabel={t("chat.queue.editLabel")}
                       autoFocus
@@ -125,25 +140,45 @@ export function SendQueuePanel({
                             </Text>
                           )
                         : <Text style={styles.attachmentsOnly}>{t("chat.queue.attachmentsOnly")}</Text>}
-                      {item.attachmentCount > 0 && (
+                      {item.attachmentCount !== undefined && item.attachmentCount > 0 && (
                         <Text style={styles.attachments}>
                           {t("chat.queue.attachments", { count: item.attachmentCount })}
                         </Text>
                       )}
+                      {item.parked && onRelease
+                        ? (
+                            <Pressable
+                              accessibilityLabel={t("chat.queue.release")}
+                              accessibilityRole="button"
+                              onPress={() => onRelease(item.id)}
+                              style={({ pressed }) => [styles.release, pressed && styles.rowPressed]}
+                              testID="send-queue-release"
+                            >
+                              <Play color={colors.warning} size={11} />
+                              <Text style={styles.releaseLabel}>{t("chat.queue.release")}</Text>
+                            </Pressable>
+                          )
+                        : null}
                     </View>
-                    <Pressable
-                      accessibilityLabel={t("chat.queue.edit")}
-                      accessibilityRole="button"
-                      hitSlop={8}
-                      onPress={() => {
-                        setEditingId(item.id);
-                        setEditingText(item.content);
-                      }}
-                      style={({ pressed }) => [styles.rowButton, pressed && styles.rowPressed]}
-                      testID="send-queue-edit"
-                    >
-                      <Pencil color={colors.inkMuted} size={14} />
-                    </Pressable>
+                    {/* Nothing to edit in a message that is only files: an empty
+                        save is a removal, and the bin beside it says so plainly. */}
+                    {item.content
+                      ? (
+                          <Pressable
+                            accessibilityLabel={t("chat.queue.edit")}
+                            accessibilityRole="button"
+                            hitSlop={8}
+                            onPress={() => {
+                              setEditingId(item.id);
+                              setEditingText(item.content);
+                            }}
+                            style={({ pressed }) => [styles.rowButton, pressed && styles.rowPressed]}
+                            testID="send-queue-edit"
+                          >
+                            <Pencil color={colors.inkMuted} size={14} />
+                          </Pressable>
+                        )
+                      : null}
                     <Pressable
                       accessibilityLabel={t("chat.queue.remove")}
                       accessibilityRole="button"
@@ -197,19 +232,6 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     fontSize: theme.font(11),
     textAlign: "right",
   },
-  retry: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-    paddingHorizontal: spacing.xs,
-    paddingVertical: 2,
-    borderRadius: radius.sm,
-  },
-  retryText: {
-    color: theme.colors.warning,
-    fontSize: theme.font(12),
-    fontWeight: "600",
-  },
   row: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -243,6 +265,21 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     color: theme.colors.inkMuted,
     fontSize: theme.font(11),
   },
+  release: {
+    marginTop: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: spacing.xs,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: 1,
+    borderRadius: radius.sm,
+  },
+  releaseLabel: {
+    color: theme.colors.warning,
+    fontSize: theme.font(11),
+    fontWeight: "600",
+  },
   rowButton: {
     width: 28,
     height: 28,
@@ -252,6 +289,11 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   },
   rowPressed: { opacity: 0.6 },
   editArea: { minWidth: 0, flex: 1, gap: spacing.xs },
+  editNote: {
+    color: theme.colors.inkMuted,
+    fontSize: theme.font(11),
+    lineHeight: theme.font(15),
+  },
   editField: {
     maxHeight: 120,
     paddingHorizontal: spacing.sm,

@@ -2,6 +2,7 @@ import type { MessageAttachment } from "@future-os/thread-projection";
 import type { FormEvent } from "react";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
+import type { ApprovalChipTier } from "./composer/ComposerControls";
 import type { ContextToolOption, MentionEditorHandle, SkillMentionOption } from "./MentionEditor";
 import type { SessionMentionOption } from "./sessionMention";
 import { fusionTask } from "@future-os/thread-projection";
@@ -83,7 +84,7 @@ interface ComposerProps {
   onModelChange?: (modelId: string) => void;
   thinkingLevel?: string;
   onThinkingLevelChange?: (thinkingLevel: string) => void;
-  approvalTier?: ApprovalTier;
+  approvalTier?: ApprovalChipTier;
   futureSessionStatus?: string;
   onChangeApprovalTier?: (value: ApprovalTier) => void;
   /**
@@ -168,8 +169,9 @@ interface ComposerProps {
    */
   onQueue?: (payload: ComposerSendPayload) => boolean;
   /**
-   * This conversation's send queue (see `lib/sendQueue`) — the other answer to
-   * "a send while the run is still going".
+   * This conversation's send queue — the other answer to "a send while the run is
+   * still going". The row itself belongs to the Agent (`agentQueue`); this is the
+   * composer's own hand-over, not a queue held here.
    *
    * With this present, a send during a run is no longer refused: the send button
    * becomes a choice between holding the draft in the queue and interrupting the

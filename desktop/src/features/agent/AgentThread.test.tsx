@@ -17,17 +17,16 @@ import { clearCommandHandlers } from "../keyboard/commands";
 import { resetAllCommandBindings } from "../keyboard/shortcuts";
 import { AgentThread } from "./AgentThread";
 import { loadComposerDraft, saveComposerDraft } from "./composerDraft";
-import { localSendQueue } from "./sendQueue";
 
 /**
- * Every child is stubbed: this file is about `AgentThread`'s own composition —
- * which notice it shows for which connection state, what it hands the composer,
+ * Every child is stubbed: this file is about `AgentThread`'s own composition 鈥? * which notice it shows for which connection state, what it hands the composer,
  * and how the recovery / fork / compaction callbacks resolve. The children have
  * their own behaviour tests elsewhere.
  */
 const h = vi.hoisted(() => ({
   state: {
     handleAbort: vi.fn(async () => {}),
+    handleQueuedSend: vi.fn<(payload: unknown) => Promise<boolean>>(async () => true),
     handleSend: vi.fn<(payload: unknown, onAccepted?: () => void) => Promise<void>>(async () => {}),
     retryHistory: vi.fn(async () => {}),
   },
@@ -50,6 +49,17 @@ const h = vi.hoisted(() => ({
   },
   reco: { dismiss: vi.fn(), evaluate: vi.fn(async () => null) },
   agentState: { current: null as { isCompacting?: boolean; usage?: unknown } | null },
+  /** The Agent-side queue this view reads: `{ rows, notice, refresh, forget }` plus the commands. */
+  queue: {
+    value: {
+      forget: vi.fn(),
+      notice: null as { reason: string; count: number } | null,
+      refresh: vi.fn(),
+      rows: [] as { acceptedAt: string; position: number; runId: string; state: string; text: string }[],
+    },
+    cancel: vi.fn(async (_runId: string) => {}),
+    release: vi.fn(async (_runId: string) => {}),
+  },
   store: { forkThread: vi.fn() },
   client: { compactThreadContext: vi.fn() },
   skills: { installRecommendedSkill: vi.fn(async () => {}) },
@@ -82,6 +92,15 @@ vi.mock("./Composer", () => ({
         type="button"
       />
       <button data-compact="" onClick={() => void (props.onCompactContext as (() => Promise<void>) | undefined)?.()} type="button" />
+      <button
+        data-enqueue=""
+        onClick={() => {
+          // The real composer's "add to the send queue" choice, as AgentThread
+          // hands it over: same payload shape, same one-way return.
+          (props.onEnqueue as (p: unknown) => boolean)({ attachments: [], content: "hi" });
+        }}
+        type="button"
+      />
       <button
         data-send=""
         onClick={() => {
@@ -128,6 +147,16 @@ vi.mock("../../components/ui/FloatingScrollbar", () => ({
   FloatingScrollbar: () => <div data-scrollbar="" />,
 }));
 vi.mock("./useAgentThreadState", () => ({ useAgentThreadState: () => h.threadState.value }));
+vi.mock("./agentQueue", () => ({
+  // The panel is a view of the Agent's queue (`agentQueue.test.ts` covers the
+  // reading); here it only has to be wired to the rows and the two commands.
+  useAgentQueue: () => h.queue.value,
+  agentQueueNoticeReason: (reason: string) =>
+    ["merged", "cancelled", "superseded", "session_deleted"].includes(reason) ? reason : "other",
+  cancelAgentQueuedRun: (runId: string) => h.queue.cancel(runId),
+  releaseAgentQueuedRun: (runId: string) => h.queue.release(runId),
+  isParkedRow: (row: { state: string }) => row.state.startsWith("stale"),
+}));
 vi.mock("./useMessagePaging", () => ({
   useMessagePaging: (options: Record<string, unknown>) => {
     h.pagingArgs.value = options;
@@ -174,6 +203,8 @@ let props: Parameters<typeof AgentThread>[0];
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Every test starts on an empty Agent queue; the panel tests fill it.
+  h.queue.value = { forget: vi.fn(), notice: null, refresh: vi.fn(), rows: [] };
   // Command handlers outlive a mount in the module-level registry; a test that
   // left one behind would answer the next test's keystrokes.
   clearCommandHandlers();
@@ -192,6 +223,7 @@ beforeEach(() => {
 
   h.threadState.value = {
     handleAbort: h.state.handleAbort,
+    handleQueuedSend: h.state.handleQueuedSend,
     handleSend: h.state.handleSend,
     historyError: null,
     loadAllHistoryForSearch: undefined,
@@ -297,7 +329,7 @@ describe("agentThread composition", () => {
   });
 
   it("keeps the empty state from flashing while the store is still loading a thread", () => {
-    // boundary: no thread yet AND the store has not settled — the shell must not
+    // boundary: no thread yet AND the store has not settled 鈥?the shell must not
     // claim there is no conversation while the store may still produce one.
     render({ loadingStore: true, thread: null });
     expect(container.textContent).not.toContain("No active thread.");
@@ -373,7 +405,7 @@ describe("agentThread composer wiring", () => {
   it("passes the compaction flag through, and never invents one with no agent state", () => {
     // A mutation study found this wiring untested: replacing `?? false` with
     // `?? true` left all 51 tests green, because nothing observed the prop. The
-    // `agentState = null` case is the discriminating one — the fallback must be
+    // `agentState = null` case is the discriminating one 鈥?the fallback must be
     // "not compacting", or a thread whose agent state has not loaded yet would
     // show the composer as mid-compaction and withdraw the compact affordance.
     h.agentState.current = { isCompacting: true };
@@ -651,7 +683,6 @@ describe("agentThread recovery callbacks", () => {
     });
     expect(h.state.handleSend).toHaveBeenCalledTimes(1);
     expect((h.state.handleSend.mock.calls[0] as unknown[])[0]).toMatchObject({
-      attachments: [],
       content: expect.stringContaining("继续上一个任务。"),
     });
   });
@@ -1102,91 +1133,123 @@ describe("reading the transcript from the keyboard", () => {
   });
 });
 
-describe("agentThread send queue", () => {
-  it("sends what was queued, as one message, once the reply settles", async () => {
+describe("agentThread send while the reply streams", () => {
+  it("hands the message to the Agent's queue instead of holding it here", async () => {
     // A run in flight: the bubble streams and the run row is still open.
     setMessages([user("u1"), assistant("a1", { status: "streaming" })]);
     h.threadState.value = { ...h.threadState.value, activeRunId: "R1" };
     render();
-    // Three messages held while the reply streams, as the composer's menu does.
-    act(() => {
-      localSendQueue.enqueue("T1", { attachments: [], content: "queued one" });
-      localSendQueue.enqueue("T1", { attachments: [], content: "queued two" });
-      localSendQueue.enqueue("T1", { attachments: [], content: "queued three" });
-    });
-    rerender();
-    expect(container.querySelector("[data-send-queue]")).not.toBeNull();
+
+    // The composer's send during a run is the queue action, not an interrupt.
+    await click("[data-enqueue]");
+
+    // The Agent holds it (`enqueue_coalescing`), so the run is not interrupted
+    // and nothing stays behind in this window.
+    expect(h.state.handleAbort).not.toHaveBeenCalled();
+    expect(h.state.handleQueuedSend).toHaveBeenCalledWith({ attachments: [], content: "hi" });
     expect(h.state.handleSend).not.toHaveBeenCalled();
-
-    // The reply is over: stream gone, and the run row settled.
-    setMessages([user("u1"), assistant("a1")]);
-    h.threadState.value = { ...h.threadState.value, activeRunId: null };
-    await act(async () => {
-      rerender();
-      await Promise.resolve();
-    });
-    expect(h.state.handleSend).toHaveBeenCalledTimes(1);
-    expect(h.state.handleSend.mock.calls[0]![0]).toEqual({
-      attachments: [],
-      content: "queued one\n\nqueued two\n\nqueued three",
-    });
+    // No client-side panel: the row lives in `get_state`'s `queuedRuns`, and a
+    // second copy here would be a guess about the Agent's own order.
     expect(container.querySelector("[data-send-queue]")).toBeNull();
-    act(() => localSendQueue.clear("T1"));
   });
 
-  it("keeps a refused queue and retries only when the reader asks", async () => {
-    h.state.handleSend.mockRejectedValueOnce(new Error("A response is already in progress for this conversation."));
-    act(() => {
-      localSendQueue.enqueue("T1", { attachments: [], content: "keep me" });
-    });
-    await act(async () => {
-      render();
-      await Promise.resolve();
-    });
-    expect(h.state.handleSend).toHaveBeenCalledTimes(1);
-    // Not delivered: the row is still there, flagged, with a retry control.
-    expect(container.querySelector("[data-send-queue]")).not.toBeNull();
-    expect(container.querySelector("[data-queue-retry]")).not.toBeNull();
-
-    // A re-render must not retry by itself: a refused message would otherwise
-    // be hammered at every streaming tick.
-    await act(async () => {
-      rerender();
-      await Promise.resolve();
-    });
-    expect(h.state.handleSend).toHaveBeenCalledTimes(1);
-
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>("[data-queue-retry]")!.click();
-      await Promise.resolve();
-    });
-    expect(h.state.handleSend).toHaveBeenCalledTimes(2);
-    expect(container.querySelector("[data-send-queue]")).toBeNull();
-    act(() => localSendQueue.clear("T1"));
-  });
-
-  it("edits and removes queued messages from the panel", () => {
+  it("shows the Agent's waiting rows, and takes one back through the Agent", async () => {
+    h.queue.value = {
+      forget: vi.fn(),
+      notice: null,
+      refresh: vi.fn(),
+      rows: [{ acceptedAt: "2026-11-03T10:00:00Z", position: 1, runId: "run-7", state: "queued", text: "waiting" }],
+    };
     setMessages([user("u1"), assistant("a1", { status: "streaming" })]);
-    h.threadState.value = { ...h.threadState.value, activeRunId: "R1" };
-    act(() => {
-      localSendQueue.enqueue("T1", { attachments: [], content: "typo" });
-    });
     render();
-    // Editing reaches the store the flush reads, so the corrected text is what
-    // goes out.
-    expect(localSendQueue.snapshot("T1").items[0]!.content).toBe("typo");
-    act(() => container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
-    const field = container.querySelector<HTMLTextAreaElement>("textarea")!;
-    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
-    act(() => {
-      setValue.call(field, "fixed");
-      field.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    act(() => container.querySelector<HTMLButtonElement>("[data-queue-save]")!.click());
-    expect(localSendQueue.snapshot("T1").items[0]!.content).toBe("fixed");
 
-    act(() => container.querySelector<HTMLButtonElement>("[data-queue-remove]")!.click());
-    expect(localSendQueue.snapshot("T1").items).toHaveLength(0);
-    act(() => localSendQueue.clear("T1"));
+    const panel = container.querySelector("[data-send-queue]");
+    expect(panel).not.toBeNull();
+    expect(panel!.textContent).toContain("waiting");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("[data-queue-remove]")!.click();
+      await Promise.resolve();
+    });
+    // Addressed by run id: the queue belongs to the session, not to this panel.
+    expect(h.queue.cancel).toHaveBeenCalledWith("run-7");
+  });
+
+  it("offers a parked row a start, because the Agent will not run it alone", async () => {
+    h.queue.value = {
+      forget: vi.fn(),
+      notice: null,
+      refresh: vi.fn(),
+      rows: [{ acceptedAt: "2026-11-03T10:00:00Z", position: 1, runId: "run-8", state: "stale:stale", text: "too old" }],
+    };
+    render();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("[data-queue-release]")!.click();
+      await Promise.resolve();
+    });
+    expect(h.queue.release).toHaveBeenCalledWith("run-8");
+  });
+
+  /**
+   * A row can leave the Agent's queue without this window asking — folded into
+   * the turn ahead, taken back on the phone, lost with a deleted conversation.
+   * Without its terminal ack the row just disappears, and the reader believes the
+   * message went out.
+   */
+  it("says why a row left the Agent's queue, even with no rows left to show", async () => {
+    h.queue.value = { forget: vi.fn(), notice: { count: 1, reason: "merged" }, refresh: vi.fn(), rows: [] };
+    render();
+
+    const notice = container.querySelector("[data-queue-notice]");
+    expect(notice).not.toBeNull();
+    expect(notice!.textContent).toContain("folded into the turn");
+    expect(container.querySelector("[data-send-queue]")).toBeNull();
+  });
+
+  /**
+   * The bin is this window's own act: its ack would otherwise come back as "a
+   * waiting message was taken out of the queue" right after the reader took it
+   * out, which reads as a fault rather than as confirmation.
+   */
+  it("takes its own removal out of the news, and names no file count it does not have", async () => {
+    const forget = vi.fn();
+    h.queue.value = {
+      forget,
+      notice: null,
+      refresh: vi.fn(),
+      rows: [{ acceptedAt: "2026-11-03T10:00:00Z", position: 1, runId: "run-9", state: "queued", text: "waiting" }],
+    };
+    render();
+
+    // The Agent's queue reports a message's text, never the files it was sent
+    // with, so the panel must not claim the message carried none.
+    expect(container.querySelector("[data-send-queue]")!.textContent).not.toContain("Attachments:");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("[data-queue-remove]")!.click();
+      await Promise.resolve();
+    });
+    expect(forget).toHaveBeenCalledWith("run-9");
+
+    // An edit is the only kind there is — a removal and a re-send — so the trade
+    // is named in the editor, before the save.
+    act(() => container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
+    expect(container.querySelector("[data-send-queue]")!.textContent).toContain("Saving sends the new text only");
+  });
+
+  it("hands one message per send to the Agent, never a joined one", async () => {
+    // The join is the Agent's (`enqueue_coalescing` folds the burst into one
+    // turn); this window must hand each message over as it was written.
+    setMessages([user("u1"), assistant("a1", { status: "streaming" })]);
+    render();
+    await click("[data-enqueue]");
+    await click("[data-enqueue]");
+    expect(h.state.handleQueuedSend).toHaveBeenCalledTimes(2);
+    expect(h.state.handleQueuedSend.mock.calls.map(call => call[0])).toEqual([
+      { attachments: [], content: "hi" },
+      { attachments: [], content: "hi" },
+    ]);
+    expect(h.state.handleSend).not.toHaveBeenCalled();
   });
 });
