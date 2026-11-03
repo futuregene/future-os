@@ -37,10 +37,19 @@ pub(crate) fn reject(message: &str) -> anyhow::Error {
 /// every retry. Naming it a refusal is what lets the writer drop that one event
 /// and keep the session's journal live, instead of leaving every later batch
 /// queued behind a poisoned one until the agent restarts.
+///
+/// The storage side is not only SQLite's own errors: a lane whose worker died
+/// reports its own typed `StorageUnavailable`, and a dead worker is a storage
+/// failure by every definition. Matching only `rusqlite`/`io` errors classified
+/// that as a refusal, so the writer dropped a durable event and a dead database
+/// shut down as if its journal had flushed.
 pub(crate) fn refusal_unless_storage(error: anyhow::Error) -> anyhow::Error {
     let storage = error.chain().any(|cause| {
         cause.downcast_ref::<rusqlite::Error>().is_some()
             || cause.downcast_ref::<std::io::Error>().is_some()
+            || cause
+                .downcast_ref::<crate::session::database::StorageUnavailable>()
+                .is_some()
     });
     if storage || is_event_rejected(&error) {
         error

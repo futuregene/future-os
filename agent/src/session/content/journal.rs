@@ -1,4 +1,4 @@
-﻿//! Ordered stream encoder. Consecutive live fragments become one semantic
+//! Ordered stream encoder. Consecutive live fragments become one semantic
 //! range; the durable representation never retains their token envelopes.
 use super::{
     entries::stage_named, stream::*, ContentDigest, ContentRange, FORMAT_VERSION, READ_BYTES,
@@ -53,7 +53,7 @@ impl Writer {
     ///
     /// A retry can only clear a storage failure. A batch whose content
     /// conflicts with what is already durable fails identically forever, so it
-    /// is reported as the journal's permanent refusal 鈥?the event writer drops
+    /// is reported as the journal's permanent refusal — the event writer drops
     /// that one event and keeps the session writable, instead of holding every
     /// later batch behind it until the agent restarts.
     pub(crate) fn persist<'a>(

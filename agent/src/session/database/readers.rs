@@ -1,6 +1,6 @@
 //! Fixed, bounded read workers. They never run schema changes or writer jobs.
 use super::DatabaseJob;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use std::{
     path::Path,
@@ -110,7 +110,7 @@ impl Readers {
         self.sender
             .lock()
             .as_ref()
-            .ok_or_else(|| anyhow!("SQLite readers are closed"))?
+            .ok_or_else(|| super::storage_unavailable("SQLite readers are closed"))?
             .try_send(Box::new(move |db| {
                 work_running.store(true, std::sync::atomic::Ordering::Release);
                 let waited = queued.elapsed();
@@ -126,8 +126,12 @@ impl Readers {
                 let _ = reply.send(result);
             }))
             .map_err(|error| match error {
-                mpsc::TrySendError::Full(_) => anyhow!("SQLite read queue is full"),
-                mpsc::TrySendError::Disconnected(_) => anyhow!("SQLite readers are unavailable"),
+                mpsc::TrySendError::Full(_) => {
+                    super::storage_unavailable("SQLite read queue is full")
+                }
+                mpsc::TrySendError::Disconnected(_) => {
+                    super::storage_unavailable("SQLite readers are unavailable")
+                }
             })?;
         job_info.wait(&result, running, request.as_ref())
     }
