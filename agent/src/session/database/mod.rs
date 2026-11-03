@@ -10,6 +10,30 @@ use std::time::Duration;
 
 pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 8;
 
+/// The storage lane could not run a job at all: its worker is closed or gone,
+/// or its queue is full. Nothing about the job's input makes it fail — a retry
+/// after the lane recovers does — so this must never be read as a permanent
+/// refusal of the caller's data. It is typed because a plain `anyhow!` from the
+/// lane is indistinguishable from a job's own verdict about its input, and the
+/// canonical writer classifies exactly that way (see
+/// `sqlite_store::refusal_unless_storage`).
+#[derive(Debug)]
+pub(crate) struct StorageUnavailable(pub(crate) String);
+
+impl std::fmt::Display for StorageUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for StorageUnavailable {}
+
+/// The lane is unavailable rather than the job's input being wrong. Messages are
+/// preserved verbatim: they are what operators and tests read.
+pub(crate) fn storage_unavailable(message: impl std::fmt::Display) -> anyhow::Error {
+    anyhow::Error::new(StorageUnavailable(message.to_string()))
+}
+
 /// Shared admission boundary for every entry opening agent.db. Structure and
 /// bootstrap identity are validated separately before any schema mutation.
 pub(crate) fn supports_schema_version(version: i64) -> bool {
@@ -230,7 +254,7 @@ impl Database {
             .sender
             .lock()
             .as_ref()
-            .ok_or_else(|| anyhow!("SQLite worker is closed"))?
+            .ok_or_else(|| storage_unavailable("SQLite worker is closed"))?
             .try_send(Box::new(move |connection| {
                 work_running.store(true, Ordering::Release);
                 let waited = queued.elapsed();
@@ -246,8 +270,12 @@ impl Database {
                 let _ = reply_tx.send(result);
             }))
             .map_err(|error| match error {
-                mpsc::TrySendError::Full(_) => anyhow!("SQLite operation queue is full"),
-                mpsc::TrySendError::Disconnected(_) => anyhow!("SQLite worker is unavailable"),
+                mpsc::TrySendError::Full(_) => {
+                    storage_unavailable("SQLite operation queue is full")
+                }
+                mpsc::TrySendError::Disconnected(_) => {
+                    storage_unavailable("SQLite worker is unavailable")
+                }
             })?;
         job_info.wait(&reply_rx, running, waiting_request.as_ref())
     }

@@ -74,7 +74,7 @@ impl Job {
             match reply.recv_timeout(Duration::from_millis(50)) {
                 Ok(result) => return result,
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    anyhow::bail!("SQLite operation interrupted")
+                    return Err(super::storage_unavailable("SQLite operation interrupted"))
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             }
