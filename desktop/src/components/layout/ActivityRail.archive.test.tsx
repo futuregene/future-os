@@ -40,11 +40,13 @@ vi.mock("./hooks/useRailView", async (importOriginal) => {
 vi.mock("./hooks/useArchiveView", () => ({
   useArchiveView: () => ({
     ensureLoaded: () => {},
+    ensureWorkspaceThreads: () => {},
     hasMoreThreads: false,
     loadMoreThreads: async () => {},
     loading: false,
     refresh: async () => {},
     threads: [],
+    workspaceThreads: {},
     workspaces: [],
   }),
 }));

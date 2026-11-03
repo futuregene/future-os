@@ -14,10 +14,21 @@ const PAGE_SIZE = 50;
 export interface ArchiveView {
   workspaces: StoredWorkspace[];
   threads: StoredThread[];
+  /**
+   * The conversations inside each archived workspace the reader has expanded.
+   *
+   * They are not in the store's pages (the workspace is JOIN-hidden), so the
+   * view fetches them per group; the rail merges them into the list a batch
+   * selection addresses, which is what lets one be restored or deleted from the
+   * same toolbar as everything else.
+   */
+  workspaceThreads: Record<string, StoredThread[]>;
   loading: boolean;
   hasMoreThreads: boolean;
   /** Read the archived lists once, when the entry is first opened. */
   ensureLoaded: () => void;
+  /** Fetch one archived workspace's contents (once per group). */
+  ensureWorkspaceThreads: (workspaceId: string) => void;
   /** Fetch the next page of archived conversation trees. */
   loadMoreThreads: () => Promise<void>;
   /** Re-read the archived lists (after an archive/restore/delete). */
@@ -36,6 +47,7 @@ export interface ArchiveView {
 export function useArchiveView(): ArchiveView {
   const [workspaces, setWorkspaces] = useState<StoredWorkspace[]>([]);
   const [threads, setThreads] = useState<StoredThread[]>([]);
+  const [workspaceThreads, setWorkspaceThreads] = useState<Record<string, StoredThread[]>>({});
   const [loading, setLoading] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const stateRef = useRef<ArchiveViewState>({ loading: false, loaded: false, nextCursor: null });
@@ -54,11 +66,43 @@ export function useArchiveView(): ArchiveView {
       setWorkspaces(workspacePage.workspaces);
       setThreads(threadPage.threads);
       setNextCursor(threadPage.nextCursor);
+      // Contents of workspaces that are still shelved are re-read for the ones
+      // the reader had open; a restored workspace's entry simply disappears
+      // with its heading.
+      setWorkspaceThreads((current) => {
+        const kept: Record<string, StoredThread[]> = {};
+        for (const workspace of workspacePage.workspaces) {
+          if (current[workspace.id])
+            kept[workspace.id] = current[workspace.id]!;
+        }
+        return kept;
+      });
     }
     finally {
       stateRef.current = { loading: false, loaded: true, nextCursor: stateRef.current.nextCursor };
       setLoading(false);
     }
+  }, []);
+
+  /**
+   * One archived workspace's conversations.
+   *
+   * Loaded on its group's first expansion and kept with the workspace id, so a
+   * collapse/re-expand does not refetch and a batch can address the rows.
+   */
+  const ensureWorkspaceThreads = useCallback((workspaceId: string) => {
+    setWorkspaceThreads((current) => {
+      if (current[workspaceId])
+        return current;
+      void listThreadsPage(`workspace-archived:${workspaceId}`, null, 50)
+        .then((page) => {
+          setWorkspaceThreads(previous => ({ ...previous, [workspaceId]: page.threads }));
+        })
+        .catch(() => {
+          setWorkspaceThreads(previous => ({ ...previous, [workspaceId]: [] }));
+        });
+      return current;
+    });
   }, []);
 
   const ensureLoaded = useCallback(() => {
@@ -102,9 +146,11 @@ export function useArchiveView(): ArchiveView {
   return {
     workspaces,
     threads,
+    workspaceThreads,
     loading,
     hasMoreThreads: nextCursor !== null,
     ensureLoaded,
+    ensureWorkspaceThreads,
     loadMoreThreads,
     refresh,
   };
