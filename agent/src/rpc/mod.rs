@@ -210,6 +210,8 @@ impl AppState {
                 ServerSession::ensure_scheduler_worker(&sess);
                 return Ok(Some(sess));
             }
+            self.control_plane
+                .register_streaming(session_id, &new_sess.is_streaming);
             let sess_arc = Arc::new(RwLock::new(new_sess));
             sessions.insert(session_id.to_string(), sess_arc.clone());
             drop(sessions);
@@ -255,6 +257,8 @@ impl AppState {
             session.broadcaster = broadcaster;
         }
         session.service_work = self.service_work.clone();
+        self.control_plane
+            .register_streaming(&id, &session.is_streaming);
         let session = Arc::new(RwLock::new(session));
         self.sessions.write().insert(id.clone(), session.clone());
         ServerSession::ensure_scheduler_worker(&session);

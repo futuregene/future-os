@@ -211,6 +211,8 @@ describe("storage invoke wrappers", () => {
     expect(invokeMock).toHaveBeenLastCalledWith("create_run", { input: { threadId: "t", triggerMessageId: "m" } });
     await listRuns("t");
     expect(invokeMock).toHaveBeenLastCalledWith("list_runs", { threadId: "t" });
+    await listRuns("t", { after: 100, before: 200 });
+    expect(invokeMock).toHaveBeenLastCalledWith("list_runs", { threadId: "t", after: 100, before: 200 });
     await getLatestRun("t");
     expect(invokeMock).toHaveBeenLastCalledWith("get_latest_run", { threadId: "t" });
     await getRun("r");

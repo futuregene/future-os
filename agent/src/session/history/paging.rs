@@ -528,7 +528,7 @@ impl Manager {
             // being repaired is not cacheable — that repair is what the caller is
             // owed, and it runs below.
             let owned = id.to_owned();
-            let (revision, ready) = store.db.read(move |db| {
+            let (revision, ready) = store.db.fence(move |db| {
                 // The stored key is not always the wire id (native sessions are a
                 // binary identity), so it is resolved the way every other reader
                 // resolves it.
@@ -568,10 +568,7 @@ impl Manager {
                 // Rebuild disposable projections before capturing the page. No
                 // page or body has been read yet, and this is not a failed-read retry.
                 drop(snapshot);
-                let owned = id.to_owned();
-                store
-                    .db
-                    .call(move |db| super::with_history_index(db, &owned, |_| Ok(())))?;
+                self.rebuild_history_index(id)?;
                 tracing::debug!(
                     event = "history_projection_rebuild_completed",
                     session_id = id

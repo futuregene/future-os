@@ -69,24 +69,28 @@ impl Manager {
         let store = self.storage()?;
         if store.storage_format(id)? == crate::session::content::FORMAT_VERSION {
             let scope = crate::session::content::reader::Snapshot::capture(store, id)?;
-            let mut entries = Vec::new();
-            let mut after = -1;
-            loop {
-                let page = scope.page(store, after)?;
-                if page.is_empty() {
-                    break;
+            // Runtime restoration needs current configuration and the latest
+            // model change, not a header round trip for every historical tool.
+            let selected = scope.clone();
+            let locators = store.db.read_as("session_metadata", move |db| {
+                let key = selected.session_key();
+                let mut query = db.prepare_cached("SELECT position,entry_id FROM entries WHERE session_id=?1 AND position IN (
+                    SELECT min(position) FROM entries WHERE session_id=?1
+                    UNION SELECT max(position) FROM entries WHERE session_id=?1 AND entry_type='session_info'
+                    UNION SELECT max(position) FROM entries WHERE session_id=?1 AND entry_type='model_change'
+                ) ORDER BY position")?;
+                let rows = query.query_map([key], |row| Ok(super::super::content::reader::Entry { position: row.get(0)?, id: row.get(1)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })?;
+            let mut entries = Vec::with_capacity(locators.len());
+            for locator in locators {
+                let mut value = scope.header(store, &locator)?;
+                if value["type"] == ENTRY_TYPE_SESSION_INFO {
+                    value = scope.entry(store, &locator)?;
                 }
-                for locator in page {
-                    after = locator.position;
-                    let mut value = scope.header(store, &locator)?;
-                    // Configuration is runtime input (system prompts,
-                    // provenance, account state), not a display placeholder.
-                    if value["type"] == ENTRY_TYPE_SESSION_INFO {
-                        value = scope.entry(store, &locator)?;
-                    }
-                    entries.push(serde_json::from_value(value)?);
-                }
+                entries.push(serde_json::from_value(value)?);
             }
+            scope.verify(store)?;
             return self.restore_session_times(Self::session_from_entries(id, entries)?);
         }
         let session_id = id.to_owned();
@@ -106,6 +110,16 @@ impl Manager {
             .map(|row| serde_json::from_str(&row))
             .collect::<std::result::Result<Vec<_>, _>>()?;
         self.restore_session_times(Self::session_from_entries(id, entries)?)
+    }
+
+    /// Sequence restoration does not require decoding every run marker.
+    pub(crate) fn next_sequence(&self, id: &str) -> Result<u64> {
+        let id = id.to_owned();
+        self.storage()?.db.read_as("session_next_sequence", move |db| {
+            let key = crate::session::identity::BoundIdentity::session(db, &id)?;
+            let previous: i64 = db.query_row("SELECT max(coalesce((SELECT max(run_sequence) FROM runs WHERE session_id=?1),0),(SELECT count(*) FROM entries WHERE session_id=?1 AND entry_type='run_started'))", [key], |row| row.get(0))?;
+            Ok(u64::try_from(previous)?.saturating_add(1).max(1))
+        })
     }
 
     pub(in crate::session) fn restore_session_times(

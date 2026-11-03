@@ -81,13 +81,18 @@ export async function loadThreadHistory(
     // Agent transcript doesn't record a run's GUI-side outcome (failed/cancelled/
     // model) — backfill it from the SQLite `runs` table so a reload keeps the
     // Retry/Continue button, the "stopped" marker, and the model badge.
-    const allRuns = await listRuns(threadId).catch(() => [] as StoredRun[]);
     // Do not recover failures or events from unloaded history into this page.
     const firstTime = Date.parse(messages[0]!.createdAt);
     const lastTime
       = before === null
         ? Infinity
         : Date.parse(messages[messages.length - 1]!.createdAt);
+    const allRuns = await listRuns(threadId, {
+      ...(result.hasMore && Number.isFinite(firstTime) ? { after: firstTime } : {}),
+      ...(Number.isFinite(lastTime) ? { before: lastTime } : {}),
+    }).catch(() => [] as StoredRun[]);
+    if (isCurrent && !isCurrent())
+      throw new Error("stale_history_transfer");
     const runs = allRuns.filter((run) => {
       const time = run.startedAt ?? run.createdAt;
       return (
