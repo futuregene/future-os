@@ -1,4 +1,4 @@
-//! Ordered stream encoder. Consecutive live fragments become one semantic
+﻿//! Ordered stream encoder. Consecutive live fragments become one semantic
 //! range; the durable representation never retains their token envelopes.
 use super::{
     entries::stage_named, stream::*, ContentDigest, ContentRange, FORMAT_VERSION, READ_BYTES,
@@ -50,6 +50,12 @@ fn same_delta_metadata(left: &Value, right: &Value) -> bool {
 impl Writer {
     /// A failed attempt retains the caller's immutable batch. Rolling hashes
     /// advance only after all commits succeed; partial commits retry verbatim.
+    ///
+    /// A retry can only clear a storage failure. A batch whose content
+    /// conflicts with what is already durable fails identically forever, so it
+    /// is reported as the journal's permanent refusal 鈥?the event writer drops
+    /// that one event and keeps the session writable, instead of holding every
+    /// later batch behind it until the agent restarts.
     pub(crate) fn persist<'a>(
         &mut self,
         store: &SqliteStore,
@@ -60,6 +66,16 @@ impl Writer {
             store.storage_format(session)? == FORMAT_VERSION,
             "wrong journal format"
         );
+        self.persist_batch(store, session, events)
+            .map_err(crate::session::sqlite_store::refusal_unless_storage)
+    }
+
+    fn persist_batch<'a>(
+        &mut self,
+        store: &SqliteStore,
+        session: &str,
+        events: impl IntoIterator<Item = &'a Value>,
+    ) -> Result<()> {
         let mut next = self.clone();
         let mut pending = Pending::default();
         for event in events {
