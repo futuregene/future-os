@@ -8,6 +8,17 @@ export type ConnectionCustomerState =
   | "connecting"
   | "waitingDesktop"
   | "devicePreparing"
+  /**
+   * The desktop has never answered this phone.
+   *
+   * Its own state — not "connecting": there an attempt or a recovery is
+   * running, and here nothing is, because nothing has ever come back to run
+   * one against. The red page a first connection failure gets is the right one
+   * (a phone that has never reached this pairing cannot retry itself into a
+   * desktop that is not serving it); this state is what makes that page say so
+   * instead of the generic "the desktop may be asleep".
+   */
+  | "desktopNotServing"
   | "disconnected"
   | RemoteErrorCustomerState;
 export type ConnectionAction =
@@ -34,6 +45,7 @@ export interface ConnectionPresentation {
     | "connection.manuallyDisconnectedHint"
     | "connection.agentUnavailable"
     | "connection.failedHint"
+    | "connection.notServingHint"
     | null;
 }
 
@@ -60,6 +72,7 @@ export function connectionPresentation({
   agentAvailable = true,
   desktopDisconnected = false,
   desktopDisconnectReason,
+  desktopUnanswered = false,
   error = null,
 }: {
   phase: ConnectionPhase;
@@ -67,6 +80,18 @@ export function connectionPresentation({
   agentAvailable?: boolean;
   desktopDisconnected?: boolean;
   desktopDisconnectReason?: string;
+  /**
+   * Not one answer from this desktop in the first-answer budget.
+   *
+   * The transport's phases cannot say this by themselves: `connecting` and
+   * `reconnecting` are the same two words for a first connection that is not
+   * getting through and for a healthy connection on its way back. The
+   * connection measures it (`useDesktopConnection`); here it is only the fact
+   * that turns an endless "connecting" into a terminal the user can act on.
+   * A phase that has an answer of its own — `ready`, an explicit disconnect, a
+   * failure — outranks it.
+   */
+  desktopUnanswered?: boolean;
   error?: string | null;
 }): ConnectionPresentation {
   if (phase === "revoked")
@@ -124,6 +149,19 @@ export function connectionPresentation({
       supportCode: null,
       titleKey: "connection.waitingDesktop",
       hintKey: "connection.offlineHint",
+    };
+  // Nothing has ever come back from this desktop, and the budget for expecting
+  // an answer is spent. This is a red terminal, not a yellow wait: the desktop
+  // is not serving this device, and "nearly there" was the one thing the page
+  // could say that was not true.
+  if (desktopUnanswered)
+    return {
+      level: "disconnected",
+      customerState: "desktopNotServing",
+      action: "reconnect",
+      supportCode: "RT007",
+      titleKey: "connection.disconnected",
+      hintKey: "connection.notServingHint",
     };
   return {
     level: "connecting",

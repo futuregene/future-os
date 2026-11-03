@@ -143,6 +143,31 @@ test("with nothing answering the cause is the open machine's, code and all", () 
   expect(text()).not.toContain("connection.machinesPartial");
 });
 
+/**
+ * A desktop that has never answered is the block's own cause, not a wait.
+ *
+ * The badge could only say "connecting" for it, with no support code and no
+ * next step, which is indistinguishable from a connection that is about to
+ * arrive. The dot is red now and the block names the silence.
+ */
+test("a desktop that never answered reads as red, with its own cause and code", () => {
+  const silent = connectionPresentation({
+    phase: "reconnecting",
+    desktopOnline: false,
+    desktopUnanswered: true,
+  });
+  render(silent);
+  expect(text()).toContain("connection.disconnected");
+  expect(text()).toContain("connection.disconnectDetails.notServing.reason (RT007)");
+  expect(text()).toContain("connection.disconnectDetails.notServing.solution");
+  expect(connectionState({ presentation: silent })).toBe("down");
+  // Retrying is what the page offers, and it still has to be offered: the
+  // pairing is not gone, the desktop is just not serving it.
+  const action = tree!.root.findByType(Button);
+  expect(action.props.label).toBe("connection.reconnect");
+  expect(action.props.variant).toBe("primary");
+});
+
 test("an expired pairing is offered as an unpair, not as the set's state", () => {
   render(
     connectionPresentation({ phase: "revoked", desktopOnline: false }),

@@ -1693,6 +1693,7 @@ Support codes are used uniformly for logs and user-understandable error hints;
 | File-transfer subscription invalid (`transfer_subscription`) | `RT004` |
 | Event publish failure (`event_publish`) | `RT005` |
 | Heartbeat or state publish failure (`heartbeat_publish`, `state_publish`) | `RT006` |
+| No answer at all from the desktop within the first-connection budget (`no_first_answer`, the phone's own measurement; see 7.1) | `RT007` |
 | System sleep (`system_sleep`) | `PW001` |
 | Requested content does not exist | `DT001` |
 | Local web service bind failure (`web_bind`) | `LC002` |
@@ -1717,6 +1718,21 @@ phases must not be displayed to customers directly:
 | Connected | green success | the current connection is usable. On Desktop it means the remote entry is usable; the phone must also confirm the desktop is online and local services are usable; it does not mean all history is synced |
 | Connecting | yellow warning | temporarily unusable with a connection or auto-recovery action actually running; merges first connection, waiting for desktop, reconnect, renewal, and local service recovery. Customers need not understand the differences |
 | Disconnected | red danger | actively stopped, an explicit Desktop-disconnect notice received, pairing invalid, first-connection failure, or auto-recovery terminated. Ordinary disconnects offer reconnect; pairing-invalid offers only explicit unpair |
+
+A first connection that is never answered is the Disconnected row, not the
+Connecting one. The transport says `connecting` while an attempt is in flight
+and `reconnecting` between them, which are also its words for a healthy
+connection on its way back; a pairing that has never been answered therefore
+had no wording of its own, and the phone sat on yellow "connecting" while the
+client retried behind a five-minute timer — a state the yellow rule above
+forbids, because no action is running. The phone measures the silence itself
+(`mobile/src/remote/useDesktopConnection.ts`, `FIRST_ANSWER_BUDGET_MS`): one
+full minute in front with not one answer, three times the 20 s an unready
+client gives an attempt and well inside its five-minute silence, after which
+the page turns red and says the desktop is not serving this device, quoting
+`RT007`. The clock runs only while the app is in front and starts over on an
+explicit retry, and a pairing that has answered even once never enters this
+state — its disconnections keep the ordinary reconnect story.
 
 The display model is fixed as three layers; components must not assemble
 wording from low-level phases themselves:
