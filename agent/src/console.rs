@@ -833,6 +833,7 @@ mod tests {
     }
 
     /// Environment naming the child half of [`a_write_to_a_dead_stream_survives`].
+    #[cfg(unix)]
     const FIXTURE_DEAD_STREAM: &str = "FUTURE_CONSOLE_DEAD_STREAM_FIXTURE";
 
     /// A write to a stream nobody reads is dropped, not fatal.
