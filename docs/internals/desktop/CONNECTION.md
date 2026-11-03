@@ -617,6 +617,20 @@ slow `exec` names an expensive read. The row identifies the command, never the
 content it returned. A command that never replied carries neither half: there is
 no boundary to measure.
 
+**Whether the page read was the database, or the handoff to it.** The Agent logs
+one row per history page read — `history_page_read_completed` at `debug`, and
+`history_page_read_slow` when it takes a second or more — carrying three fields
+beyond `elapsed_ms`: `db_reads`, `db_job_ms`, `db_handoff_ms`. `db_reads` counts
+the round trips the page made to the database, which is one per field, block and
+content body it materialises, so a tool-heavy entry costs dozens and a page
+costs thousands. `db_job_ms` is the work inside those closures — what
+`readerJob`/`readerQueue` already report process-wide, here attributed to one
+page. `db_handoff_ms` is everything else in those round trips: waiting for a
+pooled read connection, the handoff into the blocking pool and the wake-up back
+into the async task. It is invisible to every other metric, and it grows with
+whatever else the process is doing, which is why the same page can read in 10 ms
+from a bare Agent and 42 ms from the desktop's embedded one.
+
 **Credentials and ownership.** The client's credential book is entirely
 separate from the host's: `~/.future/remote_peers.json` (new; the host side's
 `remote_pairing.json` is unchanged). The two answer opposite questions ("who

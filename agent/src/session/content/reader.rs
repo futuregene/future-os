@@ -6,7 +6,7 @@ use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
 
@@ -19,6 +19,56 @@ pub(crate) struct Snapshot {
     read_snapshot: Option<crate::session::database::ReadSnapshot>,
     /// Whether this lease has already passed the scope guard. See [`Self::check`].
     checked: Arc<AtomicBool>,
+    /// Where one page's database round trips are counted. See [`ReadTally`].
+    tally: Arc<ReadTally>,
+}
+
+/// What one page read spent on database round trips.
+///
+/// `total` is the caller's side of every [`Snapshot::read`]: the wait for a
+/// pooled connection, the handoff into the blocking pool, the job, and the trip
+/// back. `job` is the part inside the closure, which is what
+/// `readerJob`/`readerQueue` already measure process-wide. The difference is the
+/// handoff — invisible to every existing metric, and the thing a page that opens
+/// one closure per field, block and body pays thousands of times.
+#[derive(Default)]
+pub(crate) struct ReadTally {
+    closures: AtomicU64,
+    total_micros: AtomicU64,
+    job_micros: AtomicU64,
+}
+
+/// One page's round-trip cost, in the units the log prints.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ReadCost {
+    pub closures: u64,
+    pub total_micros: u64,
+    pub job_micros: u64,
+}
+
+impl ReadCost {
+    /// Everything that is not the job: pool wait, handoff, wake-up.
+    pub(crate) fn handoff_micros(&self) -> u64 {
+        self.total_micros.saturating_sub(self.job_micros)
+    }
+}
+
+impl ReadTally {
+    fn record(&self, total: std::time::Duration, job: std::time::Duration) {
+        self.closures.fetch_add(1, Ordering::Relaxed);
+        self.total_micros
+            .fetch_add(total.as_micros() as u64, Ordering::Relaxed);
+        self.job_micros
+            .fetch_add(job.as_micros() as u64, Ordering::Relaxed);
+    }
+
+    pub(crate) fn cost(&self) -> ReadCost {
+        ReadCost {
+            closures: self.closures.load(Ordering::Relaxed),
+            total_micros: self.total_micros.load(Ordering::Relaxed),
+            job_micros: self.job_micros.load(Ordering::Relaxed),
+        }
+    }
 }
 #[derive(Debug, Clone)]
 pub(crate) struct Entry {
@@ -91,6 +141,7 @@ impl Snapshot {
             identity: super::transport::storage_identity(db)?,
             generation: generation(db, &session)?,
             checked: Arc::new(AtomicBool::new(false)),
+            tally: Arc::new(ReadTally::default()),
             until: db
                 .prepare_cached(
                     "SELECT coalesce(max(position),-1) FROM entries WHERE session_id=?1",
@@ -103,16 +154,39 @@ impl Snapshot {
         self.read_snapshot = Some(snapshot);
     }
 
+    /// Count this page's round trips into `tally`.
+    pub(crate) fn share_tally(&mut self, tally: Arc<ReadTally>) {
+        self.tally = tally;
+    }
+
     fn read<T: Send + 'static>(
         &self,
         store: &SqliteStore,
         read: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        if let Some(snapshot) = &self.read_snapshot {
-            snapshot.read(read)
+        // Time both halves of one round trip: the caller's wait (pool, handoff,
+        // wake-up) and the closure's own execution on the database thread. The
+        // second number is what the process-wide metrics see; the first is what a
+        // page pays per closure and nobody measured before.
+        let started = std::time::Instant::now();
+        let job_micros = Arc::new(AtomicU64::new(0));
+        let observed = Arc::clone(&job_micros);
+        let timed = move |db: &mut Connection| {
+            let job = std::time::Instant::now();
+            let result = read(db);
+            observed.store(job.elapsed().as_micros() as u64, Ordering::Relaxed);
+            result
+        };
+        let result = if let Some(snapshot) = &self.read_snapshot {
+            snapshot.read(timed)
         } else {
-            store.db.read(read)
-        }
+            store.db.read(timed)
+        };
+        self.tally.record(
+            started.elapsed(),
+            std::time::Duration::from_micros(job_micros.load(Ordering::Relaxed)),
+        );
+        result
     }
 
     pub(crate) fn verify(&self, store: &SqliteStore) -> Result<()> {
