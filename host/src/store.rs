@@ -275,7 +275,8 @@ pub fn test_schema_home(label: &str) -> crate::auth_store::test_support::HomeGua
 }
 
 pub use cleanup::{
-    empty_conversation_candidates, session_reconcile_candidates, SessionReconcileCandidates,
+    empty_conversation_candidates, record_thread_has_messages, session_reconcile_candidates,
+    SessionReconcileCandidates,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
