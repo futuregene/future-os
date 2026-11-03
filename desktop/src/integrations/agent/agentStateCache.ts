@@ -38,6 +38,18 @@ export interface AgentSessionState {
   /** Whether a manual context compaction is currently running. */
   isCompacting?: boolean;
   /**
+   * The approval tier this session actually runs in: "off" | "manual" |
+   * "sandbox" | "auto" (the agent reports the full mode, so a model reviewer
+   * is distinguishable from the plain sandbox tier). Undefined only when the
+   * session never chose one — which the agent treats as fully open — or the
+   * agent is too old to report it.
+   *
+   * This is the session's own policy, deliberately not the app-wide default: an
+   * approval picker that renders the default claims a tier the session may not
+   * have (a CLI- or agent-driven session keeps whatever that client set).
+   */
+  sandboxTier?: string | null;
+  /**
    * Token usage and amount for the whole session. Absent until the first
    * successful state read (and for agents too old to report per-category
    * costs).
@@ -142,6 +154,8 @@ export async function getAgentState(
           typeof raw.isStreaming === "boolean" ? raw.isStreaming : undefined,
         isCompacting:
           typeof raw.isCompacting === "boolean" ? raw.isCompacting : undefined,
+        sandboxTier:
+          typeof raw.sandboxTier === "string" ? raw.sandboxTier : null,
         usage: parseUsage(raw.usage),
         activeRun: parseActiveRun(raw.activeRun),
       };
@@ -344,6 +358,7 @@ export function installAgentEventListener() {
       case "session_name_changed":
       case "cwd_changed":
       case "config_reloaded":
+      case "sandbox_policy_changed":
         applySettingsEvent(sessionId, eventType, p);
         break;
 
@@ -493,6 +508,17 @@ function applySettingsEvent(
           // reconcile_thread_workspace already called above
         }
         break;
+      case "sandbox_policy_changed": {
+        // `mode` carries the whole mode ("auto" included); `tier` is the plain
+        // tier without the reviewer. Prefer the former, which is what get_state
+        // reports as `sandboxTier`.
+        const mode = typeof p.mode === "string" ? p.mode : p.tier;
+        if (typeof mode === "string") {
+          next.sandboxTier = mode;
+          changed = true;
+        }
+        break;
+      }
     }
 
     if (changed) {

@@ -1,9 +1,11 @@
 import type { AgentModelOption } from "../../../integrations/agent/agentClient";
+import type { ApprovalTier } from "../../../integrations/storage/appSettings";
 import type { StoredThread } from "../../../integrations/storage/threadStore";
 import { useEffect, useRef, useState } from "react";
 import i18n from "../../../i18n";
 import { defaultThinkingLevel, modelKey, modelOption, modelThinkingLevel, normalizeThinkingLevel, readLastUsedThinkingLevel, rememberLastUsedModel, rememberLastUsedThinkingLevel, resolveInitialModelId, resolveInitialThinkingLevel, resolveThinkingLevel } from "../../../integrations/agent/agentClient";
 import { updateCachedAgentState, useCachedAgentState } from "../../../integrations/agent/agentStateCache";
+import { isApprovalTier } from "../../../integrations/storage/appSettings";
 import { updateThreadModel, updateThreadThinkingLevel } from "../../../integrations/storage/threadStore";
 import { errorMessage } from "../../../lib/errors";
 import { emitFutureEvent } from "../../../lib/futureEvents";
@@ -36,6 +38,17 @@ export interface ModelSelection {
   changeDraftThinkingLevel: (thinkingLevel: string) => void;
   /** Thinking-level change: persists it when a thread is active. */
   changeThinkingLevel: (thinkingLevel: string) => Promise<void>;
+  /**
+   * The approval tier this session runs in, as the agent reports it.
+   *
+   * Read-only on purpose: this is the tier the gate actually enforces, so the
+   * composer must not "correct" it — writing the app-wide default onto the
+   * session belongs to the approval flow, not to rendering.
+   *
+   * Undefined when the session never chose one (`get_state` omits it), when the
+   * agent is too old to report it, or before the first state read lands.
+   */
+  sessionApprovalTier: ApprovalTier | undefined;
   /** Prime the selection to a just-created thread's model + thinking level. */
   syncSelection: (modelId: string, thinkingLevel: string) => void;
 }
@@ -73,6 +86,9 @@ export function useModelSelection({
   // Reactive read: a background prefetch re-renders us the moment it lands, so
   // switching to an old thread doesn't briefly show the model default.
   const agentState = useCachedAgentState(activeThread?.id);
+  const sessionApprovalTier = isApprovalTier(agentState?.sandboxTier)
+    ? agentState.sandboxTier
+    : undefined;
   const rawThreadModelId = agentState?.model ?? selectedModelId;
   const activeThreadModel = modelOption(rawThreadModelId, visibleModelOptions);
   const activeThreadModelId = activeThreadModel
@@ -193,6 +209,7 @@ export function useModelSelection({
     changeDraftModel,
     changeDraftThinkingLevel,
     changeThinkingLevel,
+    sessionApprovalTier,
     syncSelection,
   };
 }

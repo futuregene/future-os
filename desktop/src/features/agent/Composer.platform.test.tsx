@@ -1,6 +1,7 @@
 import type { Root } from "react-dom/client";
 // @vitest-environment jsdom
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
+import type { ApprovalChipTier } from "./composer/ComposerControls";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -60,10 +61,10 @@ const MODELS = [
 let container: HTMLDivElement;
 let root: Root;
 
-function render() {
+function render(approvalTier: ApprovalChipTier = "sandbox") {
   act(() => root.render(
     <Composer
-      approvalTier="sandbox"
+      approvalTier={approvalTier}
       futureSessionStatus="authenticated"
       modelId="m1"
       modelOptions={MODELS}
@@ -96,6 +97,27 @@ async function openTierMenu() {
     trigger!.click();
   });
 }
+
+describe("approval badge provenance", () => {
+  it("renders the session's own tier, not the app-wide default", async () => {
+    // The regression this covers: a session a CLI created ran on `manual` while
+    // the badge advertised the app default 完全访问 on top of it, so the badge now
+    // renders whatever tier the session reports.
+    render("manual");
+    const trigger = [...container.querySelectorAll<HTMLButtonElement>("button[title]")]
+      .find(candidate => candidate.getAttribute("title") === "Approval mode");
+    expect(trigger!.textContent).toContain("Manual");
+  });
+
+  it("says the session decides when the agent reports no tier, instead of falling back", async () => {
+    render("unknown");
+    const trigger = [...container.querySelectorAll<HTMLButtonElement>("button[title]")]
+      .find(candidate => candidate.getAttribute("title") === "Approval mode");
+    expect(trigger!.textContent).toContain("Per session");
+    // The default would be the same wrong claim in a new wording.
+    expect(trigger!.textContent).not.toContain("Full access");
+  });
+});
 
 describe("approval-tier description by platform", () => {
   it("says it is still checking while the sandbox probe has not resolved", async () => {

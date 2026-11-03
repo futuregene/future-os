@@ -11,6 +11,7 @@ import type {
   StoredThread,
 } from "../../integrations/storage/threadStore";
 import type { ComposerSendPayload } from "./Composer";
+import type { ApprovalChipTier } from "./composer/ComposerControls";
 import type { SessionMentionOption } from "./sessionMention";
 import { ArrowDown, History } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef } from "react";
@@ -80,7 +81,7 @@ export interface AgentThreadProps {
   onModelChange: (modelId: string) => void;
   thinkingLevel: string;
   onThinkingLevelChange: (thinkingLevel: string) => void;
-  approvalTier: ApprovalTier;
+  approvalTier: ApprovalChipTier;
   onChangeApprovalTier: (value: ApprovalTier) => void;
   pendingPrompt: {
     attachments?: MessageAttachment[];

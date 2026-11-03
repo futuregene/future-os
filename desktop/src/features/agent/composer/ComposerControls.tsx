@@ -16,6 +16,18 @@ import { useCommand } from "../../keyboard/commands";
 const APPROVAL_TIERS: ApprovalTier[] = ["manual", "sandbox", "auto", "off"];
 
 /**
+ * What the composer's approval badge can render.
+ *
+ * `unknown` is its own state, not a fallback to the app-wide default: the badge
+ * states *this session's* tier, and a session the agent reports no tier for (a
+ * CLI-created one, an older agent, or a state read that has not landed yet) has
+ * no honest label. Rendering the default there is exactly the wrong claim the
+ * badge was fixed to stop making — it said 完全访问 while the gate asked for
+ * approval on every shell command.
+ */
+export type ApprovalChipTier = ApprovalTier | "unknown";
+
+/**
  * The next entry of a small ring, wrapping at both ends.
  *
  * A ring rather than "stop at the last one": these are four to six values a
@@ -37,7 +49,7 @@ function stepRing<T>(ring: readonly T[], current: T | undefined, delta: 1 | -1):
  * the button always mirrors the selected tier. The check identifies automatic
  * review, while the keyhole identifies sandbox protection.
  */
-function tierIcon(tier: ApprovalTier, className: string) {
+function tierIcon(tier: ApprovalChipTier, className: string) {
   if (tier === "auto")
     return <ShieldCheck className={className} />;
   if (tier === "sandbox")
@@ -55,7 +67,7 @@ interface Props {
   onModelChange?: (modelId: string) => void;
   thinkingLevel?: string;
   onThinkingLevelChange?: (level: string) => void;
-  approvalTier?: ApprovalTier;
+  approvalTier?: ApprovalChipTier;
   futureSessionStatus: string;
   onChangeApprovalTier?: (tier: ApprovalTier) => void;
   sending?: boolean;
@@ -87,7 +99,13 @@ export function ComposerControls({ disabled, modelId, modelOptions, modelsEmptyR
   const sandboxAvailability = useSandboxAvailability();
   const writeOnlySandbox = isWriteOnlySandbox(sandboxAvailability);
   const autoAvailable = automaticApprovalAvailable(futureSessionStatus);
-  const visibleApprovalTier = effectiveApprovalTier(approvalTier ?? "off", futureSessionStatus);
+  const visibleApprovalTier: ApprovalChipTier
+    = approvalTier === "unknown"
+      ? "unknown"
+      // `undefined` keeps the historical default for callers with no session at
+      // all (the new-conversation screen); an unknown *session* tier does not
+      // fall through to it.
+      : effectiveApprovalTier(approvalTier ?? "off", futureSessionStatus);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
   const [approvalMenuOpen, setApprovalMenuOpen] = useState(false);
@@ -141,12 +159,12 @@ export function ComposerControls({ disabled, modelId, modelOptions, modelsEmptyR
   // consuming a press on a ring that would only ever hold the value it has.
   const canStepApproval = !disabled && approvalRing.length > 1 && Boolean(onChangeApprovalTier);
   useCommand("composer.approval.previous", () => {
-    const next = stepRing(approvalRing, visibleApprovalTier, -1);
+    const next = stepRing(approvalRing, visibleApprovalTier === "unknown" ? undefined : visibleApprovalTier, -1);
     if (next)
       onChangeApprovalTier?.(next);
   }, canStepApproval);
   useCommand("composer.approval.next", () => {
-    const next = stepRing(approvalRing, visibleApprovalTier, 1);
+    const next = stepRing(approvalRing, visibleApprovalTier === "unknown" ? undefined : visibleApprovalTier, 1);
     if (next)
       onChangeApprovalTier?.(next);
   }, canStepApproval);
