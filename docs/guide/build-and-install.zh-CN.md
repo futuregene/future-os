@@ -99,7 +99,33 @@ make package-desktop    # 命名后的 DMG 位于仓库根目录；原始包保�
 scripts/build/build-desktop-macos.sh  # 本地 DMG；有 Developer ID 证书时自动签名
 ```
 
+`make install*` 在 macOS 上把二进制装到 `PREFIX`，而该前缀对 darwin 一律是
+`/opt/homebrew/bin`，不按架构探测。Apple Silicon 上这正是 Homebrew 的默认位置，目录可写、
+无需 sudo；Intel 机器的 Homebrew 在 `/usr/local`，若机器上没有 `/opt/homebrew/bin`，
+安装会在编译结束后才失败。先覆盖前缀即可：
+
+```bash
+make install-desktop PREFIX="$HOME/.future/bin"
+make install-skills
+echo 'export PATH="$HOME/.future/bin:$PATH"' >> "$HOME/.zshrc"   # 让 `future` 可用
+```
+
+`install-desktop` 底层是 `tauri build --no-bundle`，装出来的是 `future` 与 `futureos`
+两个裸二进制，**没有 `.app` 包**：不在 Launch Services 里，`open -a FutureOS` 用不了，
+直接运行 `futureos` 启动。因此重启方式是「正常退出后重新运行」——退出会走清理流程，
+不要用 SIGKILL 结束进程，详见 [桌面 Agent：退出、重启与升级](desktop-agent.zh-CN.md)。
+需要 `.app` 或 DMG 时用 `make package-desktop` 或 `scripts/build/build-desktop-macos.sh`。
+
 `scripts/build/build-desktop-macos.sh` 将统一 `future` CLI sidecar 连同 GUI 一起构建。它会自动使用 Keychain 中唯一的 `Developer ID Application` 身份并生成 `FutureOS_<version>_<arch>.dmg`；若没有唯一可用身份，则生成 `FutureOS_<version>_<arch>-unsigned.dmg`。用 `--help` 查看证书选择、输出目录与 Apple 公证选项。
+
+### macOS 发布产物
+
+发布清单 `latest.json` 分两段、用途不同。`platforms` 是应用内更新（Tauri updater）读的，
+`darwin-aarch64` / `darwin-x86_64` 两项都指向 `.app.tar.gz`，里面没有 DMG；`assets` 是
+安装用的完整产物，darwin 两项指向 DMG，安装脚本就是从 `assets` 取 url 与 SHA-256。
+DMG 的文件名是 `FutureOS_<version>_aarch64.dmg` 与 `FutureOS_<version>_x64.dmg`——
+Intel 用 `x64`，清单键才用 `x86_64`，取错一边就是 404。仓库未声明最低 macOS 版本
+（`tauri.conf.json` 的 `bundle.macOS` 只设了签名身份），兼容范围以该版本的发布说明为准。
 
 ## Linux（Debian/Ubuntu）
 

@@ -58,14 +58,18 @@ const INSTALLER: &str = "install.sh";
 
 fn notice(current: &Version, latest: &Version) -> String {
     let installer = INSTALLER;
+    // One line, and the part that matters first: this string is painted on the
+    // footer's single hint row, so a second sentence was a second line — the
+    // frame shifted under it and the sentence landed on the status row. The
+    // notice is clipped at the row's width, so the versions and the command
+    // come before the channel note that only nightly builds need.
     let channel_hint = if latest.build.as_str() == "nightly" {
-        " (set FUTUREOS_BASE=https://dl.future-os.cn/nightly)"
+        " with FUTUREOS_BASE=https://dl.future-os.cn/nightly"
     } else {
         ""
     };
     format!(
-        "New FutureOS version available: v{current} → v{latest}.\n\
-         To update, re-run the official installer: https://dl.future-os.cn/{installer}{channel_hint}"
+        "Update available: v{current} → v{latest} · re-run https://dl.future-os.cn/{installer}{channel_hint}"
     )
 }
 
@@ -177,6 +181,13 @@ mod tests {
                 message.contains("FUTUREOS_BASE="),
                 latest.ends_with("+nightly")
             );
+            // The notice is painted on the footer's one hint row: a control
+            // character here is a line break in the middle of the frame.
+            assert!(
+                !message.chars().any(char::is_control),
+                "the notice must stay on one row: {message:?}"
+            );
+            assert_eq!(message.lines().count(), 1, "{message:?}");
         }
     }
 
