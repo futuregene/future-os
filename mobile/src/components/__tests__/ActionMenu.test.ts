@@ -2,8 +2,11 @@ import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { Modal, Platform, ScrollView, StyleSheet, Text, TextInput } from "react-native";
 import { ActionMenu } from "../ActionMenu";
+import { layout } from "../../theme/tokens";
 jest.mock("lucide-react-native", () => ({ Search: "Search", X: "X" }));
-jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
+jest.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => ({ top: 24, bottom: 34, left: 20, right: 10 }),
+}));
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 let tree: ReactTestRenderer;
 const action = jest.fn();
@@ -35,6 +38,22 @@ test("cancel and hardware back do not execute any action", () => {
   act(() => tree.root.findByType(Modal).props.onDismiss());
   expect(action).not.toHaveBeenCalled();
 });
+// A Modal is its own native window, so a `SafeAreaView` inside it resolves no
+// insets (see `features/chat/components/previewInsets.ts`). The sheet's bottom
+// edge therefore has to come from the context the provider exposes, or the last
+// row sits in the gesture strip.
+test("the sheet pads all four edges by the inset the provider reports", () => {
+  const overlay = tree.root.findAll(node =>
+    StyleSheet.flatten(node.props.style)?.justifyContent === "flex-end",
+  )[0]!;
+  expect(StyleSheet.flatten(overlay.props.style)).toMatchObject({
+    paddingTop: 24 + layout.gutter,
+    paddingBottom: 34 + layout.gutter,
+    paddingLeft: 20 + layout.gutter,
+    paddingRight: 10 + layout.gutter,
+  });
+});
+
 test("actions have the same roomy touch target as other app sheets", () => {
   expect(StyleSheet.flatten(button("New").props.style({ pressed: false })).minHeight).toBeGreaterThanOrEqual(44);
 });

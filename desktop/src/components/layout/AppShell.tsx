@@ -309,6 +309,7 @@ function ReadyAppShell({
     error: remotePeersError,
     loading: remotePeersLoading,
     refresh: refreshRemotePeers,
+    refreshPeers: refreshRemotePeerLabels,
     reconnectAll: reconnectRemotePeers,
   } = useRemotePeers(true);
   useAutoUpgradeSkills(appSettings.autoUpgradeSkills);
@@ -1723,6 +1724,7 @@ function ReadyAppShell({
                                   leftPanelExpanded={showLeftPanel}
                                   onOpenRemoteSession={openRemoteSession}
                                   onReconnectRemoteAll={reconnectRemotePeers}
+                                  onRefreshLabels={refreshRemotePeerLabels}
                                   onRefreshPeers={refreshRemotePeers}
                                   onRefreshRemote={refreshRemote}
                                   onToggleLeftPanel={handleToggleLeftPanel}

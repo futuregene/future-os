@@ -872,8 +872,12 @@ pub struct Goal {
     /// comparing against `scheduler_heartbeats`).
     #[serde(default)]
     pub liveness_alerts: Vec<LivenessAlert>,
-    /// O3: idle-turn no-progress records, folded from `TurnNoProgress`
-    /// (append-only; detection + bookkeeping, no auto-injection).
+    /// O3: the CURRENT streak of idle-turn no-progress records per todo, folded
+    /// from `TurnNoProgress` and cleared for a todo by the next productive turn
+    /// (a run that used a write-class tool). The ledger keeps every record; this
+    /// vector is what the LLM-zombie advisory counts, and its contract is
+    /// CONSECUTIVE turns (`LLM_ZOMBIE_TURN_THRESHOLD`). Detection +
+    /// bookkeeping, no auto-injection.
     #[serde(default)]
     pub turn_no_progress: Vec<TurnNoProgressRecord>,
     /// G13 ①: timestamps of frontier-changing events (todo added/completed/
@@ -973,6 +977,10 @@ pub struct LivenessAlert {
 /// tool (write/edit/shell) started inside the no-progress window. Folded from
 /// `TurnNoProgress` events; the orchestrator nudges via a `todo update`
 /// (picked up at the next turn; the loop itself never auto-injects).
+///
+/// [`Goal::turn_no_progress`] holds the CURRENT streak only: the fold drops a
+/// todo's records when one of its turns uses a write-class tool, because the
+/// advisory they feed counts *consecutive* idle turns.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TurnNoProgressRecord {
     pub goal_id: String,

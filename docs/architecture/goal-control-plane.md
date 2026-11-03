@@ -220,7 +220,10 @@ channel. Both directions ride the same event-sourced state:
   and the supervisor had to relaunch it (measured: 31 launches of one goal
   vanished this way).
   A worker that dies outright (SIGKILL / crash / host failure) executes no
-  code. The independent watchdog started by detached run/registration detects
+  code. A run that reaches its exit path instead releases its own claim on the
+  way out (a bounded segment that ends without completing its todo is not a dead
+  holder), so what the watchdog reports is exactly the claim nobody is tending.
+  The independent watchdog started by detached run/registration detects
   dead lease holders even when the last worker dies. It also flags verification
   pending for five minutes without requiring more paid turns. `scheduler tick`
   remains a supplemental check. After host restart, re-register or run

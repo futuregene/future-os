@@ -42,6 +42,11 @@ pub(crate) async fn lookup(config: &Config, name: &str) -> Result<Reply, io::Err
         let mut nxdomain = false;
         let mut truncated = false;
         for server in config.nameservers() {
+            // Both families are asked of a server before the list is left: a
+            // dual-stack name must contribute its A *and* its AAAA, or the
+            // caller is handed a candidate list missing an address the server
+            // did answer with. The fallback order is unchanged — a server that
+            // yielded nothing still hands over to the next one.
             for qtype in [TYPE_A, TYPE_AAAA] {
                 match query(*server, name, qtype, config.timeout()).await {
                     Ok(reply) => {
@@ -59,9 +64,6 @@ pub(crate) async fn lookup(config: &Config, name: &str) -> Result<Reply, io::Err
                     Err(error) => {
                         last_failure = Some(error);
                     }
-                }
-                if !collected.is_empty() {
-                    break;
                 }
             }
             if !collected.is_empty() {
@@ -268,6 +270,7 @@ pub(crate) fn skip_name(bytes: &[u8], mut offset: usize) -> Result<usize, io::Er
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dns::config::{Inputs, Plan};
 
     fn reply_with(answers: &[(&str, u16, Vec<u8>)], rcode: u8) -> Vec<u8> {
         let mut message = Vec::new();
@@ -296,6 +299,96 @@ mod tests {
         }
         message
     }
+
+    /// A nameserver's answer to one question: the question echoed back verbatim
+    /// and one answer record per entry, every owner a pointer to that question.
+    fn answer_to(query: &[u8], records: &[(u16, Vec<u8>)]) -> Vec<u8> {
+        let mut reply = Vec::new();
+        reply.extend_from_slice(&query[0..2]); // the query's own id
+        reply.extend_from_slice(&0x8180u16.to_be_bytes()); // QR, RD, RA, NOERROR
+        reply.extend_from_slice(&1u16.to_be_bytes()); // QDCOUNT
+        reply.extend_from_slice(&(records.len() as u16).to_be_bytes()); // ANCOUNT
+        reply.extend_from_slice(&[0, 0, 0, 0]); // NS/AR
+        reply.extend_from_slice(&query[12..]); // the question, unchanged
+        for (rtype, rdata) in records {
+            reply.extend_from_slice(&[0xc0, 0x0c]); // owner = the question's name
+            reply.extend_from_slice(&rtype.to_be_bytes());
+            reply.extend_from_slice(&CLASS_IN.to_be_bytes());
+            reply.extend_from_slice(&60u32.to_be_bytes());
+            reply.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
+            reply.extend_from_slice(rdata);
+        }
+        reply
+    }
+
+    /// The record type a query message asks for.
+    fn asked_type(query: &[u8]) -> u16 {
+        let question = skip_name(query, 12).expect("a question name");
+        read_u16(query, question).expect("a question type")
+    }
+
+    /// A custom-resolver configuration that names only `server`.
+    fn config_for(server: SocketAddr) -> Config {
+        let named = server.to_string();
+        let inputs = Inputs {
+            dns_server: Some(&named),
+            resolv_conf: None,
+            prefix: None,
+            exists: &|_| false,
+            read: &|_| Err(io::Error::from(io::ErrorKind::NotFound)),
+        };
+        match Plan::detect_with(&inputs) {
+            Plan::Custom(config) => *config,
+            Plan::System => panic!("a named nameserver is a custom plan"),
+        }
+    }
+
+    /// A dual-stack name must be asked for both families. A name that has an A
+    /// record used to end the loop before the AAAA query was ever sent, so
+    /// `resolve` never offered the IPv6 address the nameserver had answered.
+    #[tokio::test]
+    async fn a_dual_stack_name_is_asked_for_both_families() {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let server = socket.local_addr().unwrap();
+        // An unbounded std channel: the responder only records, never blocks.
+        let (asked_tx, asked_rx) = std::sync::mpsc::channel();
+        let responder = tokio::spawn(async move {
+            let mut buffer = vec![0u8; MAX_UDP_REPLY];
+            while let Ok((received, from)) = socket.recv_from(&mut buffer).await {
+                let query = &buffer[..received];
+                let qtype = asked_type(query);
+                let _ = asked_tx.send(qtype);
+                let reply = match qtype {
+                    TYPE_A => answer_to(query, &[(TYPE_A, vec![198, 51, 100, 7])]),
+                    TYPE_AAAA => answer_to(query, &[(TYPE_AAAA, ADDRESS_V6.to_vec())]),
+                    _ => answer_to(query, &[]),
+                };
+                socket.send_to(&reply, from).await.unwrap();
+            }
+        });
+
+        let reply = lookup(&config_for(server), "dual.example.")
+            .await
+            .expect("the fake nameserver answers");
+        responder.abort();
+
+        assert_eq!(
+            asked_rx.try_iter().collect::<Vec<u16>>(),
+            vec![TYPE_A, TYPE_AAAA],
+            "a name with an A record must still be asked for its AAAA"
+        );
+        assert_eq!(
+            reply.addresses,
+            vec![
+                "198.51.100.7".parse::<IpAddr>().unwrap(),
+                "2001:db8::7".parse::<IpAddr>().unwrap(),
+            ],
+            "both families' addresses are handed to the caller"
+        );
+    }
+
+    /// `2001:db8::7` in wire form.
+    const ADDRESS_V6: [u8; 16] = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7];
 
     #[test]
     fn a_query_carries_one_question_and_the_recursion_bit() {

@@ -10,7 +10,7 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Search, X } from "lucide-react-native";
 import { layout, radius, spacing } from "../theme/tokens";
 import { createThemedStyles, useTheme } from "../theme/ThemeContext";
@@ -52,6 +52,10 @@ export function ActionMenu({ title, visible, actions, onClose, onBack, search }:
   const styles = useStyles();
   const { colors } = useTheme();
   const { t } = useTranslation();
+  // A Modal is its own native window, so a `SafeAreaView` inside it resolves no
+  // insets (see `features/chat/components/previewInsets.ts`); the provider's
+  // context is the only source that describes the window this sheet is drawn in.
+  const insets = useSafeAreaInsets();
   const [expandedTitle, setExpandedTitle] = useState<string | null>(null);
   if (expandedTitle !== null && (!visible || expandedTitle !== title)) setExpandedTitle(null);
   const titleExpanded = expandedTitle !== null && expandedTitle === title;
@@ -68,7 +72,14 @@ export function ActionMenu({ title, visible, actions, onClose, onBack, search }:
   };
   return (
     <Modal transparent animationType="slide" visible={visible} onRequestClose={onBack ?? dismiss} onDismiss={flush}>
-      <SafeAreaView style={styles.overlay}>
+      <View
+        style={[styles.overlay, {
+          paddingTop: insets.top + layout.gutter,
+          paddingBottom: insets.bottom + layout.gutter,
+          paddingLeft: insets.left + layout.gutter,
+          paddingRight: insets.right + layout.gutter,
+        }]}
+      >
         <Pressable accessible={false} style={StyleSheet.absoluteFill} onPress={dismiss} />
         <View accessibilityViewIsModal onAccessibilityEscape={onBack ?? dismiss} style={styles.menu}>
           <View style={styles.header}>
@@ -152,13 +163,13 @@ export function ActionMenu({ title, visible, actions, onClose, onBack, search }:
             </Pressable>
           </ScrollView>
         </View>
-      </SafeAreaView>
+      </View>
     </Modal>
   );
 }
 
 const useStyles = createThemedStyles(theme => StyleSheet.create({
-  overlay: { flex: 1, justifyContent: "flex-end", padding: layout.gutter, backgroundColor: theme.colors.overlay },
+  overlay: { flex: 1, justifyContent: "flex-end", backgroundColor: theme.colors.overlay },
   menu: { width: "100%", maxWidth: layout.formMaxWidth, alignSelf: "center", maxHeight: "85%", overflow: "hidden", padding: spacing.sm, borderRadius: radius.xl, backgroundColor: theme.colors.surface },
   header: { flexDirection: "row", alignItems: "center", paddingLeft: spacing.md, marginBottom: spacing.sm },
   titleButton: { flex: 1, minWidth: 0, minHeight: layout.touchTarget, justifyContent: "center", paddingVertical: spacing.sm },
