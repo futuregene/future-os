@@ -20,7 +20,7 @@ test("pending manual compaction blocks send, retry and continue without consumin
   function Harness({ pending }: { pending: boolean }) {
     api = useSendMessage({ remote, t: ((key: string) => key) as Parameters<typeof useSendMessage>[0]["t"],
       message: "draft", attachments: [], setMessage, setAttachments,
-      setTransferProgress: jest.fn(), compactionPending: pending });
+      setTransferProgress: jest.fn(), compactionPending: pending, streaming: false });
     return null;
   }
   let tree!: ReactTestRenderer;

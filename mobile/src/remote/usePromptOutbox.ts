@@ -103,6 +103,7 @@ function samePendingPrompt(
     pending.thinkingLevel === candidate.thinkingLevel &&
     pending.mode === candidate.mode &&
     pending.workspaceId === candidate.workspaceId &&
+    (pending.busyPolicy ?? "") === (candidate.busyPolicy ?? "") &&
     JSON.stringify(attachmentKey(pending.attachments)) ===
       JSON.stringify(attachmentKey(candidate.attachments))
   );
@@ -156,6 +157,10 @@ async function deliverPendingPrompt(
         ...(uploaded.length
           ? { attachments: uploaded.map((attachment) => ({ uploadId: attachment.uploadId! })) }
           : {}),
+        // What this send means if the session is still running: the phone used
+        // to answer that itself by holding the message, and the session is the
+        // one place the answer can be true for every device.
+        ...(pending.busyPolicy ? { busyPolicy: pending.busyPolicy } : {}),
         ...(pending.mode === "workspace"
           ? { mode: "workspace", workspaceId: pending.workspaceId }
           : {}),
@@ -275,8 +280,13 @@ export function usePromptOutbox({
        * later attempt at it — this screen's retry, the outbox's recovery after the
        * link returns, or the same pair of them on a phone that was restarted — is
        * one prompt on the desktop, which dedupes by this id alone.
+       *
+       * `busyPolicy` says what the send means while the conversation still runs
+       * (`enqueue_coalescing`: the session holds it and runs it at the turn
+       * boundary). Absent keeps the legacy refusal, which is what an idle send
+       * wants: a busy session then answers with a reason the reader can read.
        */
-      options?: { commandId?: string },
+      options?: { busyPolicy?: string; commandId?: string },
     ) => {
       const requestedCommandId = options?.commandId || null;
       const client = clientRef.current;
@@ -312,6 +322,7 @@ export function usePromptOutbox({
         sessionId: targetSessionId,
         text,
         attachments,
+        ...(options?.busyPolicy ? { busyPolicy: options.busyPolicy } : {}),
         modelId,
         thinkingLevel,
         mode: targetDraft ? targetDraftMode : ("chat" as const),

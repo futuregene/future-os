@@ -7,6 +7,12 @@ import { useDesktopConnection } from "./useDesktopConnection";
 import type { DesktopConnection } from "./useDesktopConnection";
 import { useDesktopManagement } from "./useDesktopManagement";
 import { usePromptOutbox } from "./usePromptOutbox";
+import {
+  cancelSessionQueuedRun,
+  fetchSessionQueue,
+  releaseSessionQueuedRun,
+  type SessionQueueRow,
+} from "./sessionQueue";
 import { useSessionCatalog } from "./useSessionCatalog";
 import { useCatalogSelfHeal } from "./useCatalogSelfHeal";
 import { useTimelineController } from "./useTimelineController";
@@ -70,6 +76,18 @@ export interface DesktopRuntime {
   conversation: ReturnType<typeof useConversationController>;
   outbox: ReturnType<typeof usePromptOutbox>;
   management: ReturnType<typeof useDesktopManagement>;
+  /**
+   * The session's own queue, read and changed on the machine that holds it.
+   *
+   * Every verb names the conversation: a queue belongs to one session, and an
+   * answer that arrives after the reader moved on must not cancel (or start) a
+   * row in the conversation they are now looking at.
+   */
+  queue: {
+    get(sessionId: string): Promise<SessionQueueRow[]>;
+    cancel(sessionId: string, runId: string): Promise<void>;
+    release(sessionId: string, runId: string): Promise<void>;
+  };
   selectedSessionId: string;
   selectedTitle: string;
   draft: boolean;
@@ -334,6 +352,31 @@ export function useDesktopRuntime({
 
   const management = useDesktopManagement(clientRef);
 
+  /**
+   * The conversation's queue, which lives on the desktop rather than here.
+   *
+   * The client is read at call time (a recovery swaps it), and the session is
+   * named by the caller, so a queue read for one conversation can never act on
+   * another.
+   */
+  const queue = useMemo(() => ({
+    cancel: async (sessionId: string, runId: string) => {
+      const client = clientRef.current;
+      if (!client) throw new Error("not_connected");
+      await cancelSessionQueuedRun(client, sessionId, runId);
+    },
+    get: async (sessionId: string) => {
+      const client = clientRef.current;
+      if (!client) throw new Error("not_connected");
+      return fetchSessionQueue(client, sessionId);
+    },
+    release: async (sessionId: string, runId: string) => {
+      const client = clientRef.current;
+      if (!client) throw new Error("not_connected");
+      await releaseSessionQueuedRun(client, sessionId, runId);
+    },
+  }), []);
+
   const captureConversationOperation = useCallback(
     () => captureConversationLifetime({ conversationEpochRef, clientRef, credentialsRef }),
     [],
@@ -402,6 +445,7 @@ export function useDesktopRuntime({
     conversation,
     outbox,
     management,
+    queue,
     selectedSessionId,
     selectedTitle,
     draft,
@@ -432,6 +476,7 @@ export function useDesktopRuntime({
     label,
     management,
     outbox,
+    queue,
     selectedSessionId,
     selectedTitle,
     skillsRevision,

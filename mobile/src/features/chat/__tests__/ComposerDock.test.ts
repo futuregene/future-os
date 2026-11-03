@@ -24,7 +24,7 @@ jest.mock("react-native", () => {
   });
 });
 
-jest.mock("lucide-react-native", () => Object.fromEntries(["ArrowDown", "Check", "ChevronDown", "CircleAlert", "FileText", "Info", "Lightbulb", "ListPlus", "MessageCircle", "Paperclip", "Pencil", "RotateCcw", "Send", "Slash", "Square", "Trash2", "X", "Zap"].map(name => [name, () => null])));
+jest.mock("lucide-react-native", () => Object.fromEntries(["ArrowDown", "Check", "ChevronDown", "CircleAlert", "FileText", "Info", "Lightbulb", "ListPlus", "MessageCircle", "Paperclip", "Pencil", "Play", "RotateCcw", "Send", "Slash", "Square", "Trash2", "X", "Zap"].map(name => [name, () => null])));
 // The composer takes `t` as a prop, but the details dialog and the surfaces
 // below it call `useTranslation` themselves. Standing up the real i18n module
 // would drag expo-localization into a component test; the translations are
@@ -157,11 +157,14 @@ test("streaming keeps the next draft through updates and completion without subm
     const originalInput = input();
     expect(input().props.editable).toBe(true);
     act(() => input().props.onChangeText("下一条消息\n  保留空格 "));
+    // The keyboard's submit is the send key, and a send while the reply streams
+    // is no longer refused here: it is the same decision the send slot offers.
+    act(() => tree.update(createElement(Harness, { streaming: true })));
     act(() => input().props.onSubmitEditing());
-    expect(send).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledTimes(1);
     expect(button("chat.send")).toBeUndefined();
-    // A draft while the run streams turns the send slot into a question — hold
-    // it in the queue, or interrupt and send — so Stop is not the only control.
+    // A draft while the run streams turns the send slot into a question — hand
+    // it to the session, or interrupt and send — so Stop is not the only control.
     expect(button("chat.stop")).toBeUndefined();
     expect(button("chat.chooseSend")).toBeDefined();
     for (let i = 0; i < 20; i++) {
@@ -170,17 +173,17 @@ test("streaming keeps the next draft through updates and completion without subm
     act(() => tree.update(createElement(Harness, { streaming: false })));
     expect(input()).toBe(originalInput);
     expect(input().props.value).toBe("下一条消息\n  保留空格 ");
-    expect(send).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledTimes(1);
     expect(button("chat.send")!.props.disabled).toBe(false);
     act(() => button("chat.send")!.props.onPress());
-    expect(send).toHaveBeenCalledTimes(1);
-    act(() => input().props.onSubmitEditing());
     expect(send).toHaveBeenCalledTimes(2);
+    act(() => input().props.onSubmitEditing());
+    expect(send).toHaveBeenCalledTimes(3);
     for (const state of [{ busy: true }, { desktopOnline: false }]) {
       act(() => tree.update(createElement(Harness, { streaming: false, ...state })));
       expect(button("chat.send")!.props.disabled).toBe(true);
       act(() => input().props.onSubmitEditing());
-      expect(send).toHaveBeenCalledTimes(2);
+      expect(send).toHaveBeenCalledTimes(3);
       expect(input().props.value).toBe("下一条消息\n  保留空格 ");
     }
   } finally { act(() => tree.unmount()); }
@@ -860,11 +863,11 @@ test("the thinking selector shows the model's own starting level for a stored on
 });
 
 test("a streaming draft's send slot asks the queue question, and both rows reach the screen", async () => {
-  const enqueueDraft = jest.fn(() => true);
+  const send = jest.fn(async () => {});
   const abort = jest.fn(async () => {});
   const { tree, pressable, unmount } = mountDock({
     message: "下一条",
-    enqueueDraft,
+    send,
     remote: {
       draft: false, selectedSessionId: "s1", desktopOnline: true,
       connectionPresentation: { level: "connected" }, models: [], modelId: "model",
@@ -879,28 +882,30 @@ test("a streaming draft's send slot asks the queue question, and both rows reach
     act(() => choose.props.onPress());
     expect(tree.root.findByType(SendChoiceSheet).props.open).toBe(true);
 
-    act(() => tree.root.findByType(SendChoiceSheet).props.onQueue());
-    expect(enqueueDraft).toHaveBeenCalledTimes(1);
+    // Handing it to the session is a plain send: the busy policy travels with the
+    // prompt (see `useSendMessage`), so nothing is held here.
+    act(() => tree.root.findByType(SendChoiceSheet).props.onSend());
+    expect(send).toHaveBeenCalledTimes(1);
     expect(tree.root.findByType(SendChoiceSheet).props.open).toBe(false);
     expect(abort).not.toHaveBeenCalled();
 
-    // The interrupt row hands the draft over first, then ends the run: the
-    // flush that follows the run sends what was on screen.
+    // The interrupt row ends the run first, then sends: the message lands behind
+    // the boundary the interrupt is about to reach.
     act(() => pressable("chat.chooseSend")!.props.onPress());
     await act(async () => tree.root.findByType(SendChoiceSheet).props.onInterruptAndSend());
-    expect(enqueueDraft).toHaveBeenCalledTimes(2);
     expect(abort).toHaveBeenCalledTimes(1);
-    expect(enqueueDraft.mock.invocationCallOrder[1]!).toBeLessThan(
-      abort.mock.invocationCallOrder[0]!,
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(abort.mock.invocationCallOrder[0]!).toBeLessThan(
+      send.mock.invocationCallOrder[1]!,
     );
   } finally {
     unmount();
   }
 });
 
-test("an empty field with a queue waiting stops, and says the queue goes with it", async () => {
+test("an empty field while the reply streams is the stop control, whatever the queue holds", async () => {
   const abort = jest.fn(async () => {});
-  const { tree, pressable, unmount } = mountDock({
+  const { pressable, unmount } = mountDock({
     message: "",
     queueItems: [{ attachmentCount: 0, content: "held", id: "q1" }],
     remote: {
@@ -910,36 +915,41 @@ test("an empty field with a queue waiting stops, and says the queue goes with it
     },
   });
   try {
+    // The waiting row runs at the turn boundary on the session's own schedule, so
+    // there is nothing for the stop button to carry along with it.
     expect(pressable("chat.chooseSend")).toBeUndefined();
-    await act(async () => pressable("chat.stopAndSendQueue")!.props.onPress());
+    expect(pressable("chat.stopAndSendQueue")).toBeUndefined();
+    await act(async () => pressable("chat.stop")!.props.onPress());
     expect(abort).toHaveBeenCalledTimes(1);
   } finally {
     unmount();
   }
 });
 
-test("the queue panel shows what is waiting and edits reach the screen's store", () => {
+test("the queue panel shows what is waiting and its three verbs reach the screen", () => {
   const onQueueUpdate = jest.fn();
   const onQueueRemove = jest.fn();
+  const onQueueRelease = jest.fn();
   const { tree, unmount } = mountDock({
     message: "",
     queueItems: [
-      { attachmentCount: 0, content: "顺手把这个也改了", id: "q1" },
-      { attachmentCount: 2, content: "", id: "q2" },
+      { attachmentCount: 0, content: "顺手把这个也改了", id: "run_a" },
+      { content: "", id: "run_b", parked: true },
     ],
-    queueFailed: true,
-    onQueueRetry: jest.fn(),
     onQueueRemove,
+    onQueueRelease,
     onQueueUpdate,
   });
   try {
     const panel = tree.root.findByType(SendQueuePanel);
-    expect(panel.props.failed).toBe(true);
-    expect(panel.props.items.map((item: { id: string }) => item.id)).toEqual(["q1", "q2"]);
-    act(() => panel.props.onUpdate("q1", "改好了"));
-    expect(onQueueUpdate).toHaveBeenCalledWith("q1", "改好了");
-    act(() => panel.props.onRemove("q2"));
-    expect(onQueueRemove).toHaveBeenCalledWith("q2");
+    expect(panel.props.items.map((item: { id: string }) => item.id)).toEqual(["run_a", "run_b"]);
+    act(() => panel.props.onUpdate("run_a", "改好了"));
+    expect(onQueueUpdate).toHaveBeenCalledWith("run_a", "改好了");
+    act(() => panel.props.onRemove("run_b"));
+    expect(onQueueRemove).toHaveBeenCalledWith("run_b");
+    // A parked row is the one the reader can start by hand.
+    act(() => panel.props.onRelease("run_b"));
+    expect(onQueueRelease).toHaveBeenCalledWith("run_b");
   } finally {
     unmount();
   }

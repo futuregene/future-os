@@ -24,7 +24,7 @@ import { useChatScroll } from "./useChatScroll";
 import { useQuestionNav } from "./useQuestionNav";
 import { useTimelinePaging } from "./useTimelinePaging";
 import { useCompactContext } from "./useCompactContext";
-import { useSendMessage, sendFailureText } from "./useSendMessage";
+import { useSendMessage, sendFailureText, QUEUED_SEND_POLICY } from "./useSendMessage";
 import { useSkillRecommendation } from "./useSkillRecommendation";
 import { useDesktopResource } from "../settings/useDesktopResource";
 import { ChatTimeline, type SyncNoticeState } from "./components/ChatTimeline";
@@ -38,12 +38,8 @@ import { ImageViewer } from "./components/ImageViewer";
 import { SessionUsageSheet } from "./components/SessionUsageSheet";
 import { NativeFileActionSheet } from "./components/NativeFileActionSheet";
 import { newestFirst } from "./timelineListModel";
-import { expandSessionReferences } from "./sessionCompletion";
-import { sendQueue, useSendQueue } from "./sendQueue";
-import { batchCommandId, isTransientQueueRefusal, QUEUE_RETRY_DELAY_MS, QUEUE_RETRY_LIMIT } from "./queueDelivery";
-import { deliveryCommandId, isRecoverableDeliveryError } from "../../remote/usePromptOutbox";
+import { isParkedSessionQueueRow, useSessionQueue } from "../../remote/sessionQueue";
 import { showToast } from "./utils";
-import { collectQueuedAttachments, joinQueuedContent } from "../../lib/sendQueue";
 
 const SYNC_NOTICE_MIN_MS = 750;
 
@@ -148,196 +144,88 @@ export function ChatScreen() {
   const compactContext = useCompactContext(remote, t);
   const { send, retryMessage, continueMessage, forkMessage } = useSendMessage({
     remote, t, message, attachments, setMessage, setAttachments, setTransferProgress,
-    sessionRefs, compactionPending: compactContext.pending,
+    sessionRefs, compactionPending: compactContext.pending, streaming: controls.streaming,
   });
 
   // ── Send queue ──────────────────────────────────────────────────────────
-  // A message held while the desktop was answering leaves the moment that run is
-  // over, joined with whatever else was queued into one message. Two things start
-  // it: the screen reading the run as over (`queueIdle`), and the reader asking the
-  // run to stop — the second does not wait for the first, because the reads of "is
-  // it still running" can trail the interrupt by a moment, and a queue the reader
-  // already asked to send must not look stuck behind a flag. Whichever starts it,
-  // the desktop decides: a `session_busy` answer means "not yet" and is retried.
-  const queue = useSendQueue(conversationKey);
-  const queueSendingRef = useRef(false);
-  const queueRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const queueAttemptRef = useRef(0);
-  const queueIdle = !remote.draft
-    && !controls.streaming
-    && !remote.busy
-    && remote.desktopOnline
-    && remote.presence?.control !== "standby";
+  // What is waiting belongs to the conversation, not to this screen. A message
+  // written while a reply streams is handed to the desktop at once with a
+  // queueing policy (`useSendMessage`), the session holds it on a durable
+  // receipt, and the rows below are the session's own (`get_queue`) — the same
+  // list the desktop's window shows, still there after this app is gone, and
+  // visible to every device on the conversation.
+  const sessionId = remote.selectedSessionId;
+  const {
+    rows: queuedRows,
+    refresh: refreshQueue,
+  } = useSessionQueue({
+    read: () => remote.getQueue(sessionId),
+    sessionId: remote.draft ? "" : sessionId,
+    // A run in flight can take a new waiting row, and a row already waiting can
+    // start or be parked on its own: both are reasons to keep reading.
+    live: (controls.streaming || remote.busy) && !remote.draft,
+    enabled: remote.desktopOnline && !remote.draft,
+  });
 
-  const deliverQueue = useCallback((quiet = false) => {
-    if (!conversationKey || queueSendingRef.current)
-      return;
-    if (sendQueue.snapshot(conversationKey).items.length === 0)
-      return;
-    queueSendingRef.current = true;
+  // Derived from the rows, which are already keyed to the session they were read
+  // for — the panel cannot draw one conversation's queue under another's box.
+  const queuePanelItems = useMemo(
+    () => queuedRows.map(row => ({
+      content: row.text,
+      id: row.runId,
+      parked: isParkedSessionQueueRow(row),
+    })),
+    [queuedRows],
+  );
 
-    /**
-     * One delivery, and the retries that belong to it.
-     *
-     * Acknowledged by the desktop is the only success; `session_busy` means the run
-     * it was waiting for has not settled yet, so the rows go back on the wire a
-     * moment later instead of becoming a "retry" the reader must press for a wait
-     * that ends by itself.
-     *
-     * The rows are taken per attempt, not carried in a closure: a failed attempt
-     * puts them back into the panel (so the reader keeps seeing what is waiting),
-     * and the next attempt takes them again. Restoring the same array twice would
-     * duplicate them — and anything the reader queued meanwhile belongs in the same
-     * message anyway.
-     */
-    const deliver = async (attempt: number): Promise<void> => {
-      const pending = sendQueue.take(conversationKey);
-      if (pending.length === 0) {
-        queueSendingRef.current = false;
-        return;
-      }
-      // One message, one command id: rows that already failed in a way the link
-      // recovers from carry the id they were sent under, and sending them again
-      // has to reuse it. The desktop dedupes by that id alone, so a second one is
-      // a second prompt in a second run — the same words, charged twice.
-      const commandId = batchCommandId(pending);
-      const content = joinQueuedContent(pending);
-      const files = collectQueuedAttachments(pending);
-      try {
-        if (commandId)
-          await remote.sendMessage(content, files, undefined, { commandId });
-        else
-          await remote.sendMessage(content, files);
-        queueAttemptRef.current = 0;
-        queueSendingRef.current = false;
-      }
-      catch (error) {
-        // A failure the link recovers from is not a refusal: the outbox kept the
-        // record, and it — not this panel — delivers the message when the link is
-        // back. The rows go back tagged with the command id that record holds, so
-        // the reader's retry (or this screen's next look at an idle conversation)
-        // asks about that id instead of writing the same words a second time.
-        const owned = isRecoverableDeliveryError(error) ? deliveryCommandId(error) : null;
-        sendQueue.restore(conversationKey, owned
-          ? pending.map(item => ({ ...item, commandId: owned }))
-          : pending);
-        if (isTransientQueueRefusal(error) && attempt < QUEUE_RETRY_LIMIT) {
-          queueAttemptRef.current = attempt + 1;
-          // Not a failure: the rows go back without the brake, and the chain keeps
-          // ownership of the queue until it succeeds or gives up.
-          sendQueue.clearFailure(conversationKey);
-          queueRetryTimerRef.current = setTimeout(() => {
-            queueRetryTimerRef.current = null;
-            void deliver(attempt + 1);
-          }, QUEUE_RETRY_DELAY_MS);
-          return;
-        }
-        queueAttemptRef.current = 0;
-        queueSendingRef.current = false;
-        // A quiet attempt is one the screen made on its own to find out whether the
-        // outbox delivered; the failure it hits is the one the reader was already
-        // told about, so it is not reported twice.
-        if (quiet)
-          return;
+  /**
+   * Act on one waiting row, then re-read the queue whatever the answer was.
+   *
+   * The session named is the one these rows were read for: a tap that lands after
+   * the reader moved on cancels in the conversation it belongs to, never in the
+   * one now on screen.
+   */
+  const changeQueue = useCallback((action: () => Promise<void>) => {
+    void action()
+      .catch((error: unknown) => {
         const failure = sendFailureText(error, remote.presence?.holder?.name?.trim());
         showToast(t(failure.key, failure.params));
-      }
-    };
-    void deliver(0);
-  }, [conversationKey, remote, t]);
+      })
+      .finally(refreshQueue);
+  }, [refreshQueue, remote.presence?.holder?.name, t]);
 
-  useEffect(() => {
-    if (!queueIdle || queue.failed || queueSendingRef.current || !conversationKey)
-      return;
-    if (queue.items.length === 0)
-      return;
-    void deliverQueue();
-  }, [conversationKey, deliverQueue, queue.failed, queue.items.length, queueIdle]);
-
-  /**
-   * Settle what the outbox owns, once per message, when the conversation is free.
-   *
-   * A recoverable failure leaves the rows in the panel flagged, and the outbox
-   * delivers them under their command id when the link is back. Asking about that
-   * id is how the panel learns the message is gone: a delivered one answers with
-   * its receipt and no second prompt is written, and one the outbox dropped is
-   * sent again under the same id. Either way the row settles without the reader
-   * having to press anything for a message they already sent.
-   *
-   * Once per id, not once per render: a row that keeps failing is the reader's
-   * call, the same as any other refusal.
-   */
-  const queueSettledRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!conversationKey || !queueIdle || queueSendingRef.current)
-      return;
-    const commandId = batchCommandId(sendQueue.snapshot(conversationKey).items);
-    if (!commandId || queueSettledRef.current === commandId)
-      return;
-    queueSettledRef.current = commandId;
-    deliverQueue(true);
-  }, [conversationKey, deliverQueue, queueIdle, queue.failed, queue.items.length]);
-
-  // The reader asked the run to stop: whatever they were holding goes next, even
-  // if this screen still reads the conversation as streaming.
-  const handleRunStopped = useCallback(() => {
-    queueAttemptRef.current = 0;
-    if (queueRetryTimerRef.current) {
-      clearTimeout(queueRetryTimerRef.current);
-      queueRetryTimerRef.current = null;
-    }
-    deliverQueue();
-  }, [deliverQueue]);
-
-  useEffect(() => () => {
-    if (queueRetryTimerRef.current) {
-      clearTimeout(queueRetryTimerRef.current);
-      queueRetryTimerRef.current = null;
-    }
-  }, []);
-
-  /**
-   * Hand the field's draft to the queue (the toolbar's "hold it" row). The
-   * references are expanded on the way in: a `#title` token edited away later
-   * must not strip the link out of a message that was already queued.
-   */
-  const enqueueComposerDraft = useCallback(() => {
-    const text = message.trim();
-    if (!text && attachments.length === 0)
-      return false;
-    if (!sendQueue.enqueue(conversationKey, {
-      content: expandSessionReferences(text, sessionRefs),
-      attachments,
-    })) {
-      showToast(t("chat.queueFull"));
-      return false;
-    }
-    setMessage("");
-    setAttachments([]);
-    return true;
-  }, [attachments, conversationKey, message, sessionRefs, setAttachments, setMessage, t]);
-
-  // The dock is memoized against the transcript's streaming commits, so what it
-  // is given has to keep its identity until the queue itself changes. The rows
-  // are derived from the store's stable snapshot, and the three handlers only
-  // ever need the conversation key.
-  const queuePanelItems = useMemo(
-    () => queue.items.map(item => ({
-      attachmentCount: item.attachments.length,
-      content: item.content,
-      id: item.id,
-    })),
-    [queue.items],
-  );
-  const updateQueuedMessage = useCallback((id: string, content: string) => {
-    sendQueue.update(conversationKey, id, content);
-  }, [conversationKey]);
+  /** Delete: a cancel of the session's own run id. */
   const removeQueuedMessage = useCallback((id: string) => {
-    sendQueue.remove(conversationKey, id);
-  }, [conversationKey]);
-  const retrySendQueue = useCallback(() => {
-    sendQueue.clearFailure(conversationKey);
-  }, [conversationKey]);
+    changeQueue(() => remote.cancelQueuedRun(sessionId, id));
+  }, [changeQueue, remote, sessionId]);
+
+  /** "Send this one now": a parked row runs only when a person releases it. */
+  const releaseQueuedMessage = useCallback((id: string) => {
+    changeQueue(() => remote.releaseQueuedRun(sessionId, id));
+  }, [changeQueue, remote, sessionId]);
+
+  /**
+   * Rewrite a waiting message: a queued prompt has no editable text on the
+   * session, so the row is taken back and the new words sent in its place — which
+   * also queues it behind whatever else is waiting, because that is where a new
+   * message goes.
+   */
+  const updateQueuedMessage = useCallback((id: string, content: string) => {
+    const text = content.trim();
+    // An empty edit is a deletion, and the panel already offers that.
+    if (!text)
+      return;
+    changeQueue(async () => {
+      await remote.cancelQueuedRun(sessionId, id);
+      await remote.sendMessage(text, [], undefined, { busyPolicy: QUEUED_SEND_POLICY });
+    });
+  }, [changeQueue, remote, sessionId]);
+
+  /** Send, then read the queue: the row that send may have made is now real. */
+  const sendAndReadQueue = useCallback(async (override?: string) => {
+    await send(override);
+    refreshQueue();
+  }, [refreshQueue, send]);
 
   // Approvals live docked above the composer (not inline in the transcript), and
   // only while undecided — once a decision lands the card disappears.
@@ -500,7 +388,7 @@ export function ChatScreen() {
   );
   const { sendFromComposer, dismissSuggestedSkill, installSuggestedSkill, installingSkill }
     = useComposerSubmission({
-      remote, t, message, attachments, restoring, setMessage, send,
+      remote, t, message, attachments, restoring, setMessage, send: sendAndReadQueue,
       recommendation: skillRecommendation, scrollToLatest
     });
 
@@ -779,12 +667,9 @@ export function ChatScreen() {
                     onInstallSkill={installSuggestedSkill}
                     onDismissSkill={dismissSuggestedSkill}
                     queueItems={queuePanelItems}
-                    queueFailed={queue.failed}
                     onQueueUpdate={updateQueuedMessage}
                     onQueueRemove={removeQueuedMessage}
-                    onQueueRetry={retrySendQueue}
-                    enqueueDraft={enqueueComposerDraft}
-                    onStopped={handleRunStopped}
+                    onQueueRelease={releaseQueuedMessage}
                   />
                 </PausedTimeline>
               </View>

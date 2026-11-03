@@ -10,25 +10,26 @@ import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
  * What "send" means while this conversation is still answering.
  *
  * The desktop answers one prompt at a time, so a send during a run is a decision
- * rather than a refusal: hold the draft until the run ends, or end the run now
- * and send it (with whatever the queue already holds). The draft is never taken
- * without one of these rows being picked.
+ * rather than a refusal: hand it to the session (which holds it and runs it when
+ * the current turn ends), or end the run now and send it. The draft is never
+ * taken without one of these rows being picked.
+ *
+ * The first row used to fill a queue this phone kept in memory; it now means the
+ * same thing it means on the desktop: the message is the session's, at once.
  */
 export function SendChoiceSheet({
   open,
-  queueCount = 0,
   t,
   onClose,
   onInterruptAndSend,
-  onQueue,
+  onSend,
 }: {
   open: boolean;
-  /** What is already waiting behind this message, which the interrupt sends too. */
-  queueCount?: number;
   t: TFunction;
   onClose: () => void;
   onInterruptAndSend: () => void;
-  onQueue: () => void;
+  /** Hand the message to the session, which runs it at the turn boundary. */
+  onSend: () => void;
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -65,7 +66,7 @@ export function SendChoiceSheet({
           </View>
           <Pressable
             accessibilityRole="button"
-            onPress={onQueue}
+            onPress={onSend}
             style={({ pressed }) => [styles.option, pressed && styles.pressed]}
             testID="send-choice-queue"
           >
@@ -84,10 +85,10 @@ export function SendChoiceSheet({
             <Zap color={colors.warning} size={20} />
             <View style={styles.optionCopy}>
               <Text style={styles.optionLabel}>
-                {t(queueCount > 0 ? "chat.queueChoiceInterruptAll" : "chat.queueChoiceInterrupt")}
+                {t("chat.queueChoiceInterrupt")}
               </Text>
               <Text style={styles.optionHint}>
-                {t(queueCount > 0 ? "chat.queueChoiceInterruptAllHint" : "chat.queueChoiceInterruptHint")}
+                {t("chat.queueChoiceInterruptHint")}
               </Text>
             </View>
           </Pressable>
