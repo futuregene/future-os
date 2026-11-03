@@ -149,10 +149,11 @@ function RunReviewBanners({
   if (review.snapshotStatus === "partial")
     banners.push({ key: "partial", text: t("banner.partial") });
   if (review.snapshotStatus === "incomplete") {
+    const missingBoundary = review.confidence === "incomplete";
     banners.push({
       key: "incomplete",
-      text: t("banner.incomplete"),
-      retry: true,
+      text: t(missingBoundary ? "banner.missingBoundary" : "banner.incomplete"),
+      retry: !missingBoundary,
     });
   }
   if (review.snapshotStatus === "unavailable")

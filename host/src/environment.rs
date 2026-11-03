@@ -16,6 +16,10 @@ const PREVIOUS_LOG_LINES: usize = future_agent::logfile::DEFAULT_MAX_LINES;
 /// large, and only its tail matters.
 const TAIL_CHUNK: u64 = 8 * 1024;
 
+// Preparation precedes opening the structured file sink. Retain this one
+// failure so a successfully opened host log can explain the NUL fallback.
+static STDIO_FAILURE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 /// Hydrate the process before choosing Future home, taking its lock or starting
 /// a runtime. Each entry applies its parsed relay options and CLI maintenance
 /// discovery after this common preparation.
@@ -31,8 +35,13 @@ pub fn prepare_process_for(component: future_logging::Component) {
         // that emitted it — including, on this path, the task that would have
         // rebuilt a dropped remote link. See
         // `future_agent::console::redirect_windowless_standard_streams`.
-        redirect_windowless_stdio(component);
+        let stdio = redirect_windowless_stdio(component);
         future_logging::prepare(component, crate::build_info::VERSION, true, false);
+        if let Err(error) = stdio {
+            let _ = STDIO_FAILURE.set(error.to_string());
+            tracing::warn!(event = "stdio_log_unavailable", %error,
+                "standard-stream log unavailable; missing streams use the null device");
+        }
         crate::install_rustls_provider();
         future_agent::sandbox::hydrate_from_login_shell();
         // The remote stack (both the bridge that serves this machine and the
@@ -53,11 +62,11 @@ pub fn prepare_process_for(component: future_logging::Component) {
 /// Best effort by design: if the file cannot be opened there is nothing to say
 /// so on the stream that just failed, and the launch must still start. The
 /// writers that matter go through [`report`] anyway.
-fn redirect_windowless_stdio(component: future_logging::Component) {
+fn redirect_windowless_stdio(component: future_logging::Component) -> std::io::Result<bool> {
     let path = component
         .path(&future_rpc::home::future_home())
         .with_extension("stdio.log");
-    let _ = future_agent::console::redirect_windowless_standard_streams(&path);
+    future_agent::console::redirect_windowless_standard_streams(&path)
 }
 
 pub fn start_logging() -> Result<future_logging::FileGuard, crate::Error> {
@@ -71,6 +80,13 @@ pub fn start_logging() -> Result<future_logging::FileGuard, crate::Error> {
     let component =
         future_logging::primary_component().unwrap_or(future_logging::Component::Desktop);
     let guard = future_logging::open(component, &path, 0)?;
+    if let Some(error) = STDIO_FAILURE.get() {
+        tracing::warn!(
+            event = "stdio_log_unavailable",
+            error,
+            "standard-stream log unavailable; missing streams use the null device"
+        );
+    }
     report(&format!(
         "host starting version={} pid={} mode={} log={}",
         crate::build_info::VERSION,
