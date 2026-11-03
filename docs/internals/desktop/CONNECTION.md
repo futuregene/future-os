@@ -997,6 +997,20 @@ validates this envelope and falls the row back to `isError`-only if a string is
 missing; a `shell_result` whose `status` is not a string is not this trim's to
 reshape and is forwarded byte-for-byte.
 
+What survives that is mostly the envelope's own key names — 257 bytes for an
+ordinary result once the bodies are gone, of which the facts are about 40 — so
+the envelope now goes whole whenever it cannot change the row. The client's own
+rule decides that: a present envelope sets `failed`/`completed` from `is_error`,
+and an absent one falls back to the result block's `isError`, so the two agree
+exactly when neither says failed. Alongside it, `metadata.execution_cwd` goes
+from every entry: the only metadata keys any client reads are `attachments` (a
+user message's files) and `shell_result` (a tool row's status). Same page,
+measured through the same shipping path: **48,797 bytes** trimmed (from 64,540)
+and **14,328** gzipped (from 15,227) — the pre-gzip figure moves six times more
+than the wire one because key names are what gzip already handled best. The
+pre-gzip bytes are still what the reply budget and the phone's parse are spent
+on.
+
 What a phone actually pays is smaller than the whole session, and it is measured
 on **the page the phone asks for** (the newest `HISTORY_PAGE_USER_EXCHANGES`
 exchanges, selected by the agent) rather than on a whole session. Three numbers
