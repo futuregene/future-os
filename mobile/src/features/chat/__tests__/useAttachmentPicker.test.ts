@@ -19,7 +19,10 @@ jest.mock("../../../remote/files", () => ({
 }));
 jest.mock("../utils", () => ({ showToast: jest.fn() }));
 jest.mock("lucide-react-native", () => ({ Camera: () => null, Images: () => null, File: () => null, X: () => null }));
-jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
+jest.mock("react-native-safe-area-context", () => ({
+  SafeAreaView: "SafeAreaView",
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 const t = ((key: string) => key) as TFunction;
 let api: ReturnType<typeof useAttachmentPicker>;
