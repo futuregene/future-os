@@ -129,6 +129,14 @@ interface ActivityRailProps {
   } | null;
   /** True for a moment after an archive, to pulse the entry that just took it. */
   archivePulse?: boolean;
+  /**
+   * Show the archive guide again, from the archived view.
+   *
+   * The guide is one-time by design, but "one-time" must not mean "lost": a
+   * reader who dismissed it before archiving anything has no way to learn the
+   * destination, so the view it explains offers to show it again.
+   */
+  onShowArchiveGuide?: () => void;
   /** Ask for a scope's first page (lazy workspace groups). */
   ensureThreadScope?: (scope: string) => void;
   /** Fetch the next page of a scope. */
@@ -238,6 +246,7 @@ export function ActivityRail({
   onBatchArchiveThreads,
   archiveGuide,
   archivePulse,
+  onShowArchiveGuide,
   ensureThreadScope,
   loadMoreThreadScope,
   threadScopeHasMore,
@@ -1543,7 +1552,7 @@ export function ActivityRail({
                       </div>
                     )
                   : null}
-                <div className="mb-2 flex shrink-0 items-center gap-1" data-testid="rail-view-band">
+                <div className="mb-2 flex h-7 shrink-0 items-center gap-1" data-testid="rail-view-band">
                   <div className="min-w-0 flex-1">
                     <RailViewSwitch
                       onChange={setRailView}
@@ -1561,34 +1570,36 @@ export function ActivityRail({
                     (with the guide bubble anchored beside it) so a reader learns
                     where a shelved conversation went.
                   */}
-                  <button
-                    aria-label={t("activityRail.viewArchived")}
-                    aria-pressed={railView === "archived"}
-                    className={cn(
-                      "ml-auto inline-flex size-6 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft",
-                      railView === "archived" && "bg-surface-subtle text-ink",
-                      archivePulse && "animate-archive-entry-pulse",
-                    )}
-                    data-testid="rail-archive-entry"
-                    onClick={() => setRailView(railView === "archived" ? "workspace" : "archived")}
-                    title={t("activityRail.viewArchived")}
-                    type="button"
-                  >
-                    <Archive className="size-3.5" />
-                  </button>
-                  {archiveGuide?.visible
-                    ? (
-                        <ArchiveGuideBubble
-                          onDismiss={archiveGuide.onDismiss}
-                          onView={() => {
+                  <span className="relative ml-auto shrink-0">
+                    <button
+                      aria-label={t("activityRail.viewArchived")}
+                      aria-pressed={railView === "archived"}
+                      className={cn(
+                        "inline-flex size-6 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft",
+                        railView === "archived" && "bg-surface-subtle text-ink",
+                        archivePulse && "animate-archive-entry-pulse",
+                      )}
+                      data-testid="rail-archive-entry"
+                      onClick={() => setRailView(railView === "archived" ? "workspace" : "archived")}
+                      title={t("activityRail.viewArchived")}
+                      type="button"
+                    >
+                      <Archive className="size-3.5" />
+                    </button>
+                    {archiveGuide?.visible
+                      ? (
+                          <ArchiveGuideBubble
+                            onDismiss={archiveGuide.onDismiss}
+                            onView={() => {
                             // "View archived" is the lesson: show the reader the
                             // destination, not a description of it.
-                            setRailView("archived");
-                            archiveGuide.onView();
-                          }}
-                        />
-                      )
-                    : null}
+                              setRailView("archived");
+                              archiveGuide.onView();
+                            }}
+                          />
+                        )
+                      : null}
+                  </span>
                 </div>
                 <div className="flex min-h-0 flex-1 flex-col">
                   <div className="group relative -mx-2 flex min-h-0 flex-1">
@@ -1657,6 +1668,18 @@ export function ActivityRail({
                                           type="button"
                                         >
                                           {t("activityRail.loadMore")}
+                                        </button>
+                                      )
+                                    : null}
+                                  {onShowArchiveGuide
+                                    ? (
+                                        <button
+                                          className="mt-2 w-full rounded-md px-2 py-1 text-left text-xs text-ink-muted underline decoration-line-soft underline-offset-2 transition-colors hover:text-ink-soft"
+                                          data-testid="rail-archive-guide-again"
+                                          onClick={onShowArchiveGuide}
+                                          type="button"
+                                        >
+                                          {t("activityRail.archiveGuideAgain")}
                                         </button>
                                       )
                                     : null}

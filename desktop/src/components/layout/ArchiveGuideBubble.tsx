@@ -23,8 +23,8 @@ export function ArchiveGuideBubble({
 }) {
   const { t } = useTranslation("layout");
   return (
-    <div className="absolute right-0 top-8 z-30 w-64 rounded-lg border border-line-soft bg-surface p-3 shadow-panel">
-      {/* Right-pointing caret under the entry it is about. */}
+    <div className="absolute right-0 top-full z-30 mt-2 w-64 rounded-lg border border-line-soft bg-surface p-3 shadow-panel">
+      {/* Caret pointing up at the entry this bubble is about. */}
       <div className="absolute right-2.5 top-[-5px] size-2.5 rotate-45 border-l border-t border-line-soft bg-surface" />
       <div className="flex items-center gap-1.5">
         <Archive className="size-4 shrink-0 text-accent" />
