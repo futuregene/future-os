@@ -229,6 +229,55 @@ it("stops listening once unmounted", async () => {
   expect(listRemotePeers).not.toHaveBeenCalled();
 });
 
+/**
+ * Re-reading the machines alone.
+ *
+ * A machine's name and icon are this computer's own record of it — the write
+ * (`remote_peer_set_label`) edits the local credential book and never reaches
+ * the desktop — so the machine list is the whole of what saving one has to wait
+ * for. The catalogue half of `refresh` costs a round trip per connected host,
+ * each bounded by the client's command timeout and retried, so saving a label
+ * through it sat on the network for a write that never left this computer. What
+ * is asserted here is that the short read reaches no host, and still draws the
+ * name.
+ */
+describe("re-reading the machines alone", () => {
+  it("reaches no host, and draws a name from the list", async () => {
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+    fetchRemoteSessions.mockClear();
+    listRemoteWorkspaces.mockClear();
+
+    listRemotePeers.mockResolvedValue([peer({ name: "Old laptop" })]);
+    await act(async () => {
+      await hook.current.refreshPeers();
+    });
+    await settle();
+
+    expect(hook.current.peers[0]!.name).toBe("Old laptop");
+    expect(fetchRemoteSessions).not.toHaveBeenCalled();
+    expect(listRemoteWorkspaces).not.toHaveBeenCalled();
+  });
+
+  it("is a different read from the full refresh, which does ask", async () => {
+    // The contrast is the point: if `refresh` ever stopped reading catalogue
+    // here, the rows on the shared list would still look right in this suite and
+    // be wrong on screen.
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+    fetchRemoteSessions.mockClear();
+    listRemoteWorkspaces.mockClear();
+
+    await act(async () => {
+      await hook.current.refresh();
+    });
+    await settle();
+
+    expect(fetchRemoteSessions).toHaveBeenCalledWith("desktop_a");
+    expect(listRemoteWorkspaces).toHaveBeenCalledWith("desktop_a");
+  });
+});
+
 describe("push catalog", () => {
   it("applies a pushed sessions snapshot without fetching", async () => {
     const hook = renderHook(() => useRemotePeers(true));
