@@ -1,6 +1,5 @@
 //! GUI adapter over the shared in-process Agent host. External Agents retain
 //! their ownership; successful full cleanup is required before relaunch.
-use future_host::console;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tauri::Manager;
@@ -90,7 +89,7 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
         {
             Ok(runtime) => runtime,
             Err(error) => {
-                crate::host_environment::report(&format!("Agent watchdog unavailable: {error}"));
+                tracing::error!(event = "spawn_agent_watchdog", %error, "Agent watchdog unavailable: {error}");
                 return;
             }
         };
@@ -124,7 +123,7 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
             if let LocalAgentState::Blocked(reason) = &observed {
                 loss.reset();
                 if last_notice.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(30)) {
-                    crate::host_environment::report(&format!("Agent recovery blocked: {reason}"));
+                    tracing::warn!(event = "spawn_agent_watchdog", %reason, "Agent recovery blocked: {reason}");
                     last_notice = Some(now);
                 }
                 continue;
@@ -140,7 +139,8 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
                 // 2026-10-28, that silence is what let the Desktop sit with no
                 // Agent for 40 minutes with only "restart Desktop" as the fix.
                 if last_notice.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(30)) {
-                    crate::host_environment::report(
+                    tracing::error!(
+                        event = "spawn_agent_watchdog",
                         "Agent recovery blocked: the previous Agent did not finish its cleanup; \
                          restart FutureOS",
                     );
@@ -163,13 +163,16 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
                 continue;
             }
             loss.reset();
-            crate::host_environment::report(&format!(
+            tracing::info!(
+                event = "spawn_agent_watchdog",
+                attempt = budget.failures(),
+                limit = budget.limit(),
                 "Agent recovery: the Agent is gone; starting a replacement (attempt {}/{})",
                 budget.failures(),
                 budget.limit()
-            ));
+            );
             if let Err(error) = host.recover(address) {
-                crate::host_environment::report(&format!("Agent recovery: {error}"));
+                tracing::error!(event = "spawn_agent_watchdog", %error, "Agent recovery: {error}");
             }
         }
     });
@@ -214,10 +217,10 @@ fn give_up<R: tauri::Runtime>(app: &tauri::AppHandle<R>, reason: &str, failures:
     *GAVE_UP_REASON
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(reason.to_string());
-    crate::host_environment::report(&format!(
+    tracing::error!(event = "agent_recovery_gave_up", failures, limit, %reason,
         "Agent recovery gave up after {failures}/{limit} attempts: {reason}; \
          automatic retries stopped, restart FutureOS"
-    ));
+    );
     // The dialog flag is spent in every build, not only where a dialog can be
     // drawn: that makes the once-per-episode rule code a test can drive, and
     // keeps the dialog itself to the build that has a window to put it in.
@@ -510,7 +513,7 @@ pub(crate) fn request_quit<R: tauri::Runtime>(app: tauri::AppHandle<R>, force: b
     if let Err(error) = std::thread::Builder::new().name("desktop-quit".into()).spawn(move || {
         let result = operation.wait();
         if let Err(error) = result {
-            console::eprintln!("FutureOS exit cleanup failed: {error}");
+            tracing::error!(event = "request_quit", %error, "FutureOS exit cleanup failed: {error}");
             if !FORCE_QUIT_REQUESTED.load(Ordering::Acquire) {
                 app.dialog().message(format!("FutureOS could not complete cleanup: {error}. Exit the process anyway?"))
                     .title("Cleanup failed")

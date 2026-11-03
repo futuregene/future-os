@@ -5,6 +5,10 @@ use crate::session::{identity::BoundIdentity, sqlite_store::SqliteStore};
 use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 #[derive(Clone)]
 pub(crate) struct Snapshot {
@@ -13,6 +17,8 @@ pub(crate) struct Snapshot {
     generation: i64,
     until: i64,
     read_snapshot: Option<crate::session::database::ReadSnapshot>,
+    /// Whether this lease has already passed the scope guard. See [`Self::check`].
+    checked: Arc<AtomicBool>,
 }
 #[derive(Debug, Clone)]
 pub(crate) struct Entry {
@@ -84,11 +90,12 @@ impl Snapshot {
             read_snapshot: None,
             identity: super::transport::storage_identity(db)?,
             generation: generation(db, &session)?,
-            until: db.query_row(
-                "SELECT coalesce(max(position),-1) FROM entries WHERE session_id=?1",
-                [&session],
-                |row| row.get(0),
-            )?,
+            checked: Arc::new(AtomicBool::new(false)),
+            until: db
+                .prepare_cached(
+                    "SELECT coalesce(max(position),-1) FROM entries WHERE session_id=?1",
+                )?
+                .query_row([&session], |row| row.get(0))?,
         })
     }
 
@@ -113,9 +120,11 @@ impl Snapshot {
             snapshot.read(|_| Ok(()))?;
         }
         // The final authorization uses current data, not the leased old view:
-        // deletion/reset/restore must still invalidate the response.
+        // deletion/reset/restore must still invalidate the response. It is
+        // deliberately `check_now`: the lease-wide memo below belongs to the
+        // snapshot this read was served from, and would answer for it.
         let scope = self.clone();
-        store.db.read(move |db| scope.check(db))
+        store.db.read(move |db| scope.check_now(db))
     }
 
     /// Immutable entry identity plus the page's current derived annotations.
@@ -136,6 +145,26 @@ impl Snapshot {
     }
 
     pub(crate) fn check(&self, db: &Connection) -> Result<()> {
+        // Every closure of one page reuses the same leased WAL read transaction
+        // (`use_read_snapshot`), and these three answers cannot change inside
+        // one transaction. A page materializes one closure per field, block and
+        // body — measured at ~40 per entry — so asking again on each of them
+        // costs more than the read it guards: the two identity rows, the
+        // generation and the liveness row were 55% of a 371-entry page's CPU,
+        // almost all of it re-parsing the four statements. Ask once per lease;
+        // `verify` still re-reads current data before the response is served.
+        if self.read_snapshot.is_some() && self.checked.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        self.check_now(db)?;
+        if self.read_snapshot.is_some() {
+            self.checked.store(true, Ordering::Release);
+        }
+        Ok(())
+    }
+
+    /// The guard itself, against whatever connection is handed in.
+    pub(crate) fn check_now(&self, db: &Connection) -> Result<()> {
         ensure!(
             super::transport::storage_identity(db)? == self.identity,
             "transcript database generation changed"
@@ -144,7 +173,11 @@ impl Snapshot {
             generation(db, &self.session)? == self.generation,
             "transcript changed during paged read"
         );
-        let live:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND revision>=0) AND NOT EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1)",[&self.session],|row|row.get(0))?;
+        let live: bool = db
+            .prepare_cached(
+                "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND revision>=0) AND NOT EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1)",
+            )?
+            .query_row([&self.session], |row| row.get(0))?;
         ensure!(live, "session was deleted during paged read");
         Ok(())
     }
@@ -894,11 +927,11 @@ fn decode(encoding: Encoding, raw: String) -> Result<Value> {
 }
 
 fn generation(db: &Connection, session: &BoundIdentity) -> Result<i64> {
-    Ok(db.query_row(
-        "SELECT coalesce((SELECT generation FROM content_history_versions WHERE session_id=?1),0)",
-        [session],
-        |row| row.get(0),
-    )?)
+    Ok(db
+        .prepare_cached(
+            "SELECT coalesce((SELECT generation FROM content_history_versions WHERE session_id=?1),0)",
+        )?
+        .query_row([session], |row| row.get(0))?)
 }
 
 fn set_field(entry: &mut Value, pointer: &str, value: Value) -> Result<()> {

@@ -177,7 +177,21 @@ fn host_fixture() {
     if case == "recover-panic" {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("panic-once"), "").unwrap();
-        assert!(host.start("auto".into()).is_err());
+        let error = host
+            .start("auto".into())
+            .expect_err("the injected worker panics");
+        assert!(
+            error
+                .to_string()
+                .contains("Embedded Agent worker panicked:"),
+            "{error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("injected startup panic after acquiring the service"),
+            "{error}"
+        );
         assert!(matches!(host.phase(), Phase::Failed(_)));
         host.recover("auto".into()).unwrap();
         assert_eq!(host.phase(), Phase::Ready);

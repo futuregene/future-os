@@ -236,3 +236,29 @@ The rule this leaves: before touching a file this repository has recently been
 busy with, read the remote copy first (`git show origin/<branch>:<path>`), not the
 one in the working tree, and not after the code is written.
 
+
+## Startup, review and shutdown boundaries (2026-11-03)
+
+A GUI launch redirects missing or unwritable non-pipe standard handles before
+starting workers. A caller's captured pipes keep their destination. If opening
+`desktop.stdio.log` fails, missing streams use `NUL`; structured diagnostics
+report the log failure. The Desktop keeps an attached terminal for its process
+lifetime instead of calling `FreeConsole` after preparing logging. Embedded
+worker failures include the original panic payload in both status and logs.
+
+Startup does not enumerate historical review snapshots. The last-run panel
+recovers only its conversation's latest ended Run from saved before/after
+boundaries. Missing after snapshots remain incomplete. Existing diffs remain
+readable without Git or the current workspace. Shadow Git/lock work responds to
+shutdown and has deadlines; it does not consume the shutdown budget scanning
+all conversations.
+
+After Agent readiness, account verification has a 5-second offline fallback;
+provider settings have a 15-second deadline and an explicit retry surface. A
+settings failure is not presented as an Agent startup failure.
+
+Native Windows acceptance still requires Explorer and hidden-task launches,
+an unwritable stdio log destination, terminal and captured-pipe launches,
+hundreds of historical conversations, and quit during an active Git operation.
+Check that `crash.log` gains no stderr-write panic, history opens on demand,
+and ordinary quit completes without a review-maintenance cleanup timeout.

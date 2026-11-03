@@ -152,6 +152,13 @@
     "start": "开始",
     "communitySubtitle": "配置自己的模型服务，即可开始使用。"
   },
+  "appStartup": {
+    "loading": "正在加载账号和模型服务设置",
+    "failed": "启动设置加载失败",
+    "providersTimeout": "Agent 已连接，但模型服务设置未及时返回，请重试。",
+    "providersFailed": "无法读取模型服务设置，请检查 Agent 连接后重试。",
+    "retry": "重试"
+  },
   "agentStatus": {
     "noResponse": "Future Agent 暂未响应",
     "noResponseHint": "已连续 15 秒未收到启动状态，正在继续尝试连接。",

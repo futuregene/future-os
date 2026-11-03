@@ -365,8 +365,13 @@ impl AgentHost {
                                         .ok_or("Entry must configure the Agent host driver")?;
                                     driver(&host, &configured)
                                 }));
-                            let result = result
-                                .unwrap_or_else(|_| Err("Embedded Agent worker panicked".into()));
+                            let result = result.unwrap_or_else(|panic| {
+                                let detail = panic.downcast_ref::<String>().map(String::as_str)
+                                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                                    .unwrap_or("non-string panic payload");
+                                tracing::error!(event = "embedded_agent_panic", detail, "Embedded Agent worker panicked: {detail}");
+                                Err(format!("Embedded Agent worker panicked: {detail}").into())
+                            });
                             let mut state = host.0.state();
                             if !matches!(state.phase, Phase::Failed(_)) {
                                 // A busy instance lock is a yield, not a fault: the

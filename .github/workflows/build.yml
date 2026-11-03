@@ -223,6 +223,7 @@ jobs:
           };
           fs.writeFileSync("latest.json", `${JSON.stringify(manifest, null, 2)}\n`);
           NODE
+          node scripts/release/updater-signature.mjs check-manifest latest.json
           cat latest.json
 
       - name: Upload update manifest to GitHub
