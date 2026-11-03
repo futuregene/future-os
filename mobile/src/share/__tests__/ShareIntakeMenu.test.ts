@@ -40,7 +40,10 @@ jest.mock("../useShareIntake", () => ({ useShareIntake: () => mockIntake }));
 jest.mock("../../features/chat/utils", () => ({ showToast: jest.fn() }));
 jest.mock("../../remote/PeerIconGlyph", () => ({ PeerIconGlyph: "PeerIconGlyph" }));
 jest.mock("lucide-react-native", () => Object.fromEntries(["ArrowLeft", "Folder", "MessageCircle", "Search", "X"].map(name => [name, name])));
-jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
+jest.mock("react-native-safe-area-context", () => ({
+  SafeAreaView: "SafeAreaView",
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 jest.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, values?: { name?: string; title?: string }) =>

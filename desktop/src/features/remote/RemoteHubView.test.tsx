@@ -105,6 +105,7 @@ let root: ReturnType<typeof createRoot>;
 async function mount(overrides: Partial<Parameters<typeof RemoteHubView>[0]> = {}) {
   const props = {
     leftPanelExpanded: true,
+    onRefreshLabels: vi.fn(async () => {}),
     onRefreshPeers: vi.fn(async () => {}),
     onRefreshRemote: vi.fn(async () => {}),
     onReconnectRemoteAll: vi.fn(async () => {}),
@@ -214,7 +215,7 @@ it("gives each direction what it needs, and nothing crossed over", async () => {
   // The client half draws the shell's live list rather than reading its own: a
   // takeover made on the other machine has to land on these rows while the page
   // is open (see `RemoteClientSection`).
-  expect(sections.client).toMatchObject({ onRefresh: props.onRefreshPeers, peers: props.peers });
+  expect(sections.client).toMatchObject({ onRefresh: props.onRefreshPeers, onRefreshLabels: props.onRefreshLabels, peers: props.peers });
   // The host half has no machines to reconnect, and the client half has no
   // pairing state: a prop on the wrong side would be invisible until it
   // misbehaved.

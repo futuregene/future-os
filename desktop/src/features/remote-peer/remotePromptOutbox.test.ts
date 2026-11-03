@@ -183,6 +183,71 @@ describe("sendRemotePrompt", () => {
   });
 });
 
+describe("recovery ownership", () => {
+  const input = (text: string) => ({
+    text,
+    attachments: [],
+    workspaceId: null,
+    freshModelId: null,
+    freshThinkingLevel: null,
+  });
+
+  /**
+   * Recovery is not atomic: it awaits the host's receipt round trip while the
+   * composer stays live. A send that fails inside that window replaces the
+   * queued prompt, and the recovery that then succeeds belongs to the *older*
+   * command — clearing `prompt` unconditionally deletes the newer one, so its
+   * message is never delivered while the composer keeps saying it is queued.
+   */
+  it("keeps a prompt queued while its own re-delivery is in flight", async () => {
+    prompt.mockRejectedValue(new Error("peer_not_connected"));
+    await expect(sendRemotePrompt("desktop_a", "sess_1", input("first prompt"))).rejects.toThrow("peer_not_connected");
+    const first = getRemoteOutbox("desktop_a", "sess_1").prompt!;
+
+    // The link is back: recovery starts and blocks on the receipt round trip.
+    let settleReceipt: (receipt: null) => void = () => {};
+    getPromptReceipt.mockReturnValue(new Promise((resolve) => {
+      settleReceipt = resolve;
+    }));
+    const recovery = recoverRemoteOutbox("desktop_a", "sess_1");
+
+    // Inside that window the reader sends again, and that send fails too.
+    await expect(sendRemotePrompt("desktop_a", "sess_1", input("second prompt"))).rejects.toThrow("peer_not_connected");
+    expect(getRemoteOutbox("desktop_a", "sess_1").prompt?.text).toBe("second prompt");
+
+    // The receipt for the *first* command arrives, and its re-delivery succeeds.
+    prompt.mockReset().mockResolvedValue({ sessionId: "sess_1", threadId: "thread_1" });
+    settleReceipt(null);
+    await recovery;
+
+    expect(getPromptReceipt).toHaveBeenCalledWith("desktop_a", first.commandId);
+    // The prompt that replaced the recovered one is still the queue's head.
+    const queued = getRemoteOutbox("desktop_a", "sess_1").prompt;
+    expect(queued?.text).toBe("second prompt");
+    expect(queued?.commandId).not.toBe(first.commandId);
+  });
+
+  it("keeps a continuation queued while its own re-delivery is in flight", async () => {
+    continuation.mockRejectedValue(new Error("peer_not_connected"));
+    await expect(sendRemoteContinuation("desktop_a", "sess_1", "run_1")).rejects.toThrow("peer_not_connected");
+
+    let settleReceipt: (receipt: null) => void = () => {};
+    getPromptReceipt.mockReturnValue(new Promise((resolve) => {
+      settleReceipt = resolve;
+    }));
+    const recovery = recoverRemoteOutbox("desktop_a", "sess_1");
+
+    await expect(sendRemoteContinuation("desktop_a", "sess_1", "run_2")).rejects.toThrow("peer_not_connected");
+    expect(getRemoteOutbox("desktop_a", "sess_1").continuation?.runId).toBe("run_2");
+
+    continuation.mockReset().mockResolvedValue(undefined);
+    settleReceipt(null);
+    await recovery;
+
+    expect(getRemoteOutbox("desktop_a", "sess_1").continuation?.runId).toBe("run_2");
+  });
+});
+
 describe("sendRemoteContinuation", () => {
   it("persists a continuation and clears it after the host accepts", async () => {
     await expect(sendRemoteContinuation("desktop_a", "sess_1", "run_1")).resolves.toBeUndefined();

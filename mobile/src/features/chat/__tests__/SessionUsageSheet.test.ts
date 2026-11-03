@@ -2,9 +2,12 @@ import { createElement, type ComponentProps } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { Modal, StyleSheet, View } from "react-native";
 import { SessionUsageSheet } from "../components/SessionUsageSheet";
+import { layout } from "../../../theme/tokens";
 
 jest.mock("lucide-react-native", () => ({ X: "X" }));
-jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
+jest.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => ({ top: 24, bottom: 34, left: 20, right: 10 }),
+}));
 
 const usage = {
   inputTokens: 1_000_000,
@@ -57,6 +60,21 @@ test("splits the tokens by category and names the conversation it accounts for",
   expect(actions.map(node => node.props.accessibilityLabel)).toEqual(["common.close"]);
   act(() => press("common.close").props.onPress());
   expect(props.onClose).toHaveBeenCalledTimes(1);
+});
+
+test("the sheet pads its bottom edge by the inset the provider reports", () => {
+  // A Modal is its own native window, so a `SafeAreaView` inside it resolves no
+  // insets (see `components/previewInsets.ts`); the total row would otherwise
+  // end up in the gesture strip.
+  const overlay = tree.root.findAll(node =>
+    StyleSheet.flatten(node.props.style)?.justifyContent === "flex-end",
+  )[0]!;
+  expect(StyleSheet.flatten(overlay.props.style)).toMatchObject({
+    paddingTop: 24 + layout.gutter,
+    paddingBottom: 34 + layout.gutter,
+    paddingLeft: 20 + layout.gutter,
+    paddingRight: 10 + layout.gutter,
+  });
 });
 
 test("shows tokens only for a model with no prices, and still shows what was billed", () => {

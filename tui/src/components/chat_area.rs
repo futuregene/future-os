@@ -442,6 +442,15 @@ const OPEN_MARKER: &str = "▾";
 const TREE_RAIL: &str = "│";
 const TREE_GUTTER: usize = 2;
 
+/// The narrowest column the transcript wraps text into.
+///
+/// One cell cannot hold a double-width glyph, and `wrap_text_with_ansi` never
+/// emits a glyph wider than the width it was handed (that is what used to tear
+/// markdown tables in two) — a 1-cell column would silently drop every CJK
+/// character instead. Below this floor a row may stand a cell wider than the
+/// frame, which is what a terminal narrower than the layout already did.
+const MIN_CONTENT_WIDTH: usize = 2;
+
 /// What kind of thing a message folds into. Folding is per kind: two reads fold
 /// together, a read and a shell call do not (the same rule the desktop's
 /// collapsed bursts use, so a fold always means one homogeneous run).
@@ -3082,9 +3091,10 @@ impl ChatArea {
             1
         };
         let indent = " ".repeat(inset);
-        let rendered = self
-            .md
-            .render_text(&msg.content, self.width.saturating_sub(inset * 2).max(1));
+        let rendered = self.md.render_text(
+            &msg.content,
+            self.width.saturating_sub(inset * 2).max(MIN_CONTENT_WIDTH),
+        );
         for line in rendered {
             self.push_user_card_row(&format!("{indent}{line}"), bg);
         }
@@ -3152,9 +3162,9 @@ impl ChatArea {
         };
         let indent = " ".repeat(inset);
         let content_width = if card {
-            self.width.saturating_sub(inset * 2).max(1)
+            self.width.saturating_sub(inset * 2).max(MIN_CONTENT_WIDTH)
         } else {
-            self.width.saturating_sub(2).max(1)
+            self.width.saturating_sub(2).max(MIN_CONTENT_WIDTH)
         };
         for picture in &msg.pictures {
             // Markdown rather than a hand-built row: `[…](…)` is exactly the
@@ -3267,7 +3277,7 @@ impl ChatArea {
         }
 
         // Render markdown content.
-        let content_width = self.width.saturating_sub(2).max(1);
+        let content_width = self.width.saturating_sub(2).max(MIN_CONTENT_WIDTH);
         let rendered = if msg.pending {
             Self::render_streaming_markdown(
                 &mut self.stream_caches,
@@ -3455,7 +3465,7 @@ impl ChatArea {
     fn push_thinking_text(&mut self, msg: &ChatMessage) {
         let thinking = msg.thinking.as_deref().unwrap_or("");
         let (detail_width, detail_rail) = self.detail_place();
-        let width = detail_width.saturating_sub(2).max(1);
+        let width = detail_width.saturating_sub(2).max(MIN_CONTENT_WIDTH);
         let thinking_lines = if msg.pending {
             Self::render_streaming_markdown(
                 &mut self.stream_caches,
@@ -3835,7 +3845,7 @@ impl ChatArea {
     // ─── System message ────────────────────────────────────────────────
 
     fn render_system_message(&mut self, msg: &ChatMessage) {
-        let wrap_width = self.width.saturating_sub(2).max(1);
+        let wrap_width = self.width.saturating_sub(2).max(MIN_CONTENT_WIDTH);
         let lines: Vec<&str> = msg.content.split('\n').collect();
         if msg.welcome {
             for line in lines {
@@ -6633,11 +6643,13 @@ mod tests {
     /// cells (`apply_background_to_line` pads with `" ".repeat(padding)`), and
     /// an underflowing viewport index would slice out of range.
     ///
-    /// The observable bound is `width.max(3)`: at or below two columns the
-    /// layout bottoms out at gutter + one content column, and a wide (CJK)
-    /// glyph fills both of those columns, so even a 0-column terminal may emit
-    /// a 3-cell row. From three columns up each row is padded to exactly
-    /// `width`. `usize::MAX` itself is not exercised: a genuine underflow there
+    /// The observable bound is `width.max(3)`: a text column never goes below
+    /// [`MIN_CONTENT_WIDTH`], because a one-cell column cannot hold a
+    /// double-width glyph (`wrap_text_with_ansi` drops a glyph that fits
+    /// nowhere rather than overflow the column), so a wide (CJK) glyph always
+    /// fits and even a 0-column terminal emits 3-cell rows — gutter plus two
+    /// content columns. From three columns up each row is at most `width` wide.
+    /// `usize::MAX` itself is not exercised: a genuine underflow there
     /// would try to allocate that many spaces, so the largest sane width is
     /// the useful end of the table.
     #[test]

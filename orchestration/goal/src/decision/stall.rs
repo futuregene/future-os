@@ -64,7 +64,9 @@ pub fn todo_signals(goal: &Goal, todo: &Todo) -> Vec<String> {
     }
     // LLM-zombie signal (was a forced replan in #343; now an advisory —
     // the kernel surfaces it, the agent decides whether to restart with a
-    // fresh session).
+    // fresh session). The folded vector holds the CURRENT streak for this
+    // todo: a turn that wrote with a write-class tool cleared it, so this is
+    // a consecutive count and a recovered todo stops being nagged.
     let no_progress_turns = goal
         .turn_no_progress
         .iter()

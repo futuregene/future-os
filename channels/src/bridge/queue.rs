@@ -100,6 +100,19 @@ struct QueuedJob {
     generation: u64,
 }
 
+/// Whether `key`'s conversation may be dropped from the routing table.
+///
+/// A busy entry is mid-turn: its worker still holds the generation counter that
+/// `/stop` and newer messages supersede through, so removing the entry would
+/// leave that turn running unstoppably and let the chat's next message start a
+/// second one beside it. The one exception is a closed mailbox — the worker is
+/// gone (a panicked runner leaves `busy` set with no task left to clear it), so
+/// nothing is running to protect and nothing could supersede it anyway; keeping
+/// such an entry would leak a slot for good.
+fn evictable(key: &str, keep: &str, entry: &Entry) -> bool {
+    key != keep && (!entry.busy.load(Ordering::SeqCst) || entry.tx.is_closed())
+}
+
 /// The conversation routing table.
 pub struct Conversations {
     entries: Mutex<HashMap<String, Entry>>,
@@ -210,36 +223,44 @@ impl Conversations {
         self.len().await == 0
     }
 
-    /// Drop the oldest idle conversations until the table fits.
+    /// Drop evictable conversations until the table fits.
+    ///
+    /// A conversation whose turn is in flight is never evicted (see
+    /// [`evictable`]), so when every other conversation is mid-turn the table
+    /// stays over its cap by that many entries: the bound is soft for exactly as
+    /// long as those turns run, and the next submission evicts them again once
+    /// they end. Dropping a message instead would cost the user a reply, and
+    /// dropping a running conversation costs the module's whole invariant.
     fn evict_idle(&self, entries: &mut HashMap<String, Entry>, keep: &str) {
         if entries.len() < self.max_conversations || entries.contains_key(keep) {
             return;
         }
         while entries.len() >= self.max_conversations {
             // Prefer a conversation that has been idle long enough; when none
-            // is, drop the least recently used instead, so a long-running
-            // process cannot grow without bound.
+            // is, drop the least recently used evictable one instead, so a
+            // long-running process cannot grow without bound.
             let idle = entries
                 .iter()
                 .filter(|(key, entry)| {
-                    key.as_str() != keep
-                        && !entry.busy.load(Ordering::SeqCst)
-                        && entry.last_used.elapsed() > self.idle_timeout
+                    evictable(key, keep, entry) && entry.last_used.elapsed() > self.idle_timeout
                 })
                 .min_by_key(|(_, entry)| entry.last_used)
                 .map(|(key, _)| key.clone());
             let candidate = idle.or_else(|| {
                 entries
                     .iter()
-                    .filter(|(key, _)| key.as_str() != keep)
+                    .filter(|(key, entry)| evictable(key, keep, entry))
                     .min_by_key(|(_, entry)| entry.last_used)
                     .map(|(key, _)| key.clone())
             });
-            // The guard above leaves at least one entry that is not `keep`, so
-            // the fallback always names one. Failing to evict would be
-            // unbounded growth, so this is not a silent return.
-            let key = candidate.expect("the capacity guard leaves a candidate");
-            entries.remove(&key);
+            match candidate {
+                Some(key) => {
+                    entries.remove(&key);
+                }
+                // Every other conversation is mid-turn. There is nothing safe
+                // to drop, so the cap gives way rather than the invariant.
+                None => break,
+            }
         }
     }
 }
@@ -684,6 +705,106 @@ mod tests {
         assert!(conversations.generation("busy").await.is_some());
         gate.trigger();
         tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+
+    #[tokio::test]
+    async fn a_full_table_of_running_turns_never_gives_one_chat_two_of_them() {
+        // h4-C4: at `max_conversations`, when no conversation is idle the old
+        // fallback dropped the least recently used entry *even while its turn was
+        // running*. Removing that entry detaches its generation counter, so the
+        // chat's next message opens a second worker: two turns run at once in one
+        // conversation — the invariant this module exists for — and `/stop` can no
+        // longer supersede the stale one, because the counter it watches is no
+        // longer the one the chat submits through.
+        //
+        // The sibling `a_busy_conversation_is_not_evicted_for_a_new_one` never
+        // fills the table (its second submit sees `len == 1 < 2` and returns
+        // before any eviction logic runs), so it never reaches the fallback and
+        // passed while the bug was live.
+        let gate = crate::bridge::Shutdown::new();
+        let gate_for_runner = gate.clone();
+        let live: Arc<StdMutex<HashMap<String, usize>>> = Arc::new(StdMutex::new(HashMap::new()));
+        let live_for_runner = live.clone();
+        let conversations = Conversations::new(Arc::new(move |job, _watch| {
+            let gate = gate_for_runner.clone();
+            let live = live_for_runner.clone();
+            Box::pin(async move {
+                *live
+                    .lock()
+                    .unwrap()
+                    .entry(job.conversation.clone())
+                    .or_insert(0) += 1;
+                gate.notified().await;
+                let mut live = live.lock().unwrap();
+                let running = live.get_mut(&job.conversation).expect("a started turn");
+                *running -= 1;
+            })
+        }))
+        .with_limits(4, 2)
+        // Nothing ever counts as idle, so only the busy check can keep a turn.
+        .with_idle_timeout(Duration::ZERO);
+        let sink: Arc<dyn ReplySink> = Arc::new(RecordingSink::default());
+
+        for name in ["a", "b"] {
+            assert_eq!(
+                conversations.submit(job(name, sink.clone())).await,
+                SubmitOutcome::Accepted
+            );
+            let parked = crate::test_support::wait_until(
+                || live.lock().unwrap().get(name).copied() == Some(1),
+                Duration::from_secs(5),
+            )
+            .await;
+            assert!(parked, "`{name}` should be running its turn");
+        }
+        assert_eq!(conversations.len().await, 2, "the table is exactly full");
+
+        // A third conversation arrives while the whole table is mid-turn.
+        assert_eq!(
+            conversations.submit(job("c", sink.clone())).await,
+            SubmitOutcome::Accepted
+        );
+        // Neither running turn may lose its mailbox: its generation counter is
+        // what `/stop` and a newer message supersede through.
+        for name in ["a", "b"] {
+            assert!(
+                conversations.generation(name).await.is_some(),
+                "`{name}`'s turn is still running, so its conversation must stay routed"
+            );
+        }
+        // The newcomer is admitted rather than its sender rejected: refusing a
+        // message is worse than a table that is a few entries over its cap while
+        // that many turns are in flight.
+        assert!(
+            conversations.generation("c").await.is_some(),
+            "the new conversation must still be routed"
+        );
+
+        // And the chat that would have been evicted cannot now run a second turn
+        // beside its first: its second message joins the surviving worker, which
+        // is busy, so the job waits in that worker's mailbox.
+        assert_eq!(
+            conversations.submit(job("a", sink.clone())).await,
+            SubmitOutcome::Accepted
+        );
+        let doubled = crate::test_support::wait_until(
+            || live.lock().unwrap().get("a").copied().unwrap_or(0) > 1,
+            Duration::from_millis(300),
+        )
+        .await;
+        assert!(
+            !doubled,
+            "one conversation must never run two turns at once: {:?}",
+            live.lock().unwrap()
+        );
+
+        gate.trigger();
+        let drained = crate::test_support::wait_until(
+            || live.lock().unwrap().values().all(|running| *running == 0),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert!(drained, "every turn ends once the gate opens");
     }
 
     #[tokio::test]

@@ -79,6 +79,11 @@ class FakeSocket {
     this.emit("message", { data: buffer });
   }
 
+  /** Deliver one *output* frame: the server's type byte, then the PTY bytes. */
+  frameOutput(bytes: Uint8Array) {
+    this.frame(new Uint8Array([1, ...bytes]));
+  }
+
   /** Deliver a text frame (the view renders it rather than dropping it). */
   textFrame(text: string) {
     this.emit("message", { data: text });
@@ -368,7 +373,7 @@ describe("terminalView connection", () => {
     expect(written).toEqual([]);
 
     await act(async () => {
-      socket.frame(new TextEncoder().encode("after"));
+      socket.frameOutput(new TextEncoder().encode("after"));
     });
     expect(written.join("")).toBe("after");
   });
@@ -703,7 +708,7 @@ describe("terminalView teardown", () => {
   it("drains queued output before serializing the screen", async () => {
     deferWrites = true;
     const socket = await connect();
-    socket.emit("message", { data: new TextEncoder().encode("last chunk").buffer });
+    socket.frameOutput(new TextEncoder().encode("last chunk"));
 
     await act(async () => {
       root?.unmount();
@@ -813,7 +818,7 @@ describe("terminalView teardown", () => {
     root = createRoot(host!);
     const writesBefore = written.length;
     await act(async () => {
-      socket.frame(new TextEncoder().encode("late"));
+      socket.frameOutput(new TextEncoder().encode("late"));
       socket.emit("close", { code: 1006 });
       socket.emit("open", {});
     });
@@ -883,7 +888,7 @@ describe("terminalView persisted cursor", () => {
   const metaFrame = (meta: Record<string, number>) =>
     new Uint8Array([0, ...new TextEncoder().encode(JSON.stringify(meta))]);
   const frameOutput = (socket: FakeSocket, text: string) =>
-    socket.frame(new TextEncoder().encode(text));
+    socket.frameOutput(new TextEncoder().encode(text));
 
   it("advances with live output, so a remount neither replays nor truncates", async () => {
     const first = await connect();

@@ -27,6 +27,7 @@ interface HookSpies {
   refreshAuth: () => void;
   refreshBalance: () => void;
   refreshRemote: () => void;
+  refreshRemotePeerLabels: ReturnType<typeof vi.fn>;
   refreshRemotePeers: ReturnType<typeof vi.fn>;
   refreshSkills: () => void;
   restoreThread: (threadId: string) => Promise<unknown>;
@@ -394,6 +395,7 @@ vi.mock("./hooks/useRemotePeers", () => ({
     loading: false,
     peers: mocks.remotePeers?.peers ?? [],
     refresh: mocks.hooks.refreshRemotePeers,
+    refreshPeers: mocks.hooks.refreshRemotePeerLabels,
   }),
 }));
 vi.mock("./hooks/useThreadStore", () => ({ useThreadStore: () => mocks.store.threadStore }));
@@ -656,6 +658,7 @@ beforeEach(() => {
     reclamp: vi.fn(),
     refreshAgentModels: vi.fn(async () => {}),
     refreshRemote: vi.fn(),
+    refreshRemotePeerLabels: vi.fn(),
     refreshRemotePeers: vi.fn(),
     refreshAuth: vi.fn(),
     refreshBalance: vi.fn(),
