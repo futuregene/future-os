@@ -224,14 +224,7 @@ fn inspect_registry_database(connection: &Connection) -> Result<RegistryDatabase
         if version != 0 || tables != 0 {
             bail!("refusing to initialize an unrecognized database");
         }
-    } else if version != 0
-        && version != 2
-        && version != 3
-        && version != 4
-        && version != 5
-        && version != 6
-        && version != crate::session::database::CURRENT_SCHEMA_VERSION
-    {
+    } else if !crate::session::database::supports_schema_version(version) {
         bail!("unsupported Agent database schema version {version}");
     }
     let schema_ready = connection.query_row(

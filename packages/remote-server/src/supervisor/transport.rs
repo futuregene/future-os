@@ -16,6 +16,7 @@ impl Supervisor {
         pair_id: &str,
         handshake: &commands::HandshakeState,
         reply_slots: commands::ReplySlots,
+        nats_health: std::sync::Arc<crate::health::NatsHealth>,
     ) -> Result<TransportTasks, crate::Error> {
         #[cfg(any(test, feature = "test-support"))]
         if self.hooks.inject_build_failure.swap(0, Ordering::SeqCst) > 0 {
@@ -29,22 +30,26 @@ impl Supervisor {
         let mut candidate_tasks = lifecycle::CandidateTasks::default();
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(4096);
         let coalesce = self.coalesce_events(pair_id);
-        // A live-lane capability belongs to the connection that declared it. Reset
-        // it here so a client that never declares it — an older build on the same
-        // pairing — is served the legacy lane instead of inheriting the previous
-        // client's request.
-        coalesce.store(false, Ordering::Release);
-        // The catalog's recency packets are the same kind of permission: they
-        // replace a whole session list with a few dozen bytes, which only a client
-        // that applies packets can be served.
-        self.catalog_activity(pair_id)
-            .store(false, Ordering::Release);
-        // Same rule for the reply encoding: an older client has no gzip magic-byte
-        // detection and would fail to parse a compressed reply, so the permission
-        // must not outlive the connection that asked for it.
-        handshake.gzip_replies.store(false, Ordering::Release);
-        handshake.lean_events.store(false, Ordering::Release);
-        self.lean_events(pair_id).store(false, Ordering::Release);
+        // The declared capabilities are deliberately NOT reset here. They belong
+        // to the client's connection, and this function rebuilds the *desktop's*
+        // half of it: a credential rotation replaces the link every JWT lifetime
+        // (~15 minutes) while the client sits on an unchanged socket and declares
+        // only once, on `secure_ready`. Clearing them there withdrew a live
+        // client's declarations behind its back and served it the legacy lane;
+        // for `segmented_content_v1` that is not a downgrade but a refusal, so
+        // every read and prompt of a segmented conversation answered
+        // `client_upgrade_required` until the phone reconnected (2026-10-29).
+        //
+        // "Never inherit another client's request" is still guaranteed: a client
+        // that reaches business commands has activated over `secure_ready`, which
+        // records its declaration verbatim — an empty one included — so the flags
+        // always describe the connection that is talking. Tearing the bridge down
+        // clears the whole per-pairing runtime (`Supervisor::stop_with`).
+        self.shared_or_insert(pair_id)
+            .content_refusals
+            .lock()
+            .unwrap()
+            .clear();
         let event_task = self.spawn_generation_for(
             epoch,
             crate::events::run_event_publisher(
@@ -63,6 +68,7 @@ impl Supervisor {
                 pair_id.into(),
                 reply_slots,
                 handshake.clone(),
+                nats_health.clone(),
                 Some(command_ready_tx),
             ),
         );
@@ -246,9 +252,9 @@ impl Supervisor {
                             // Keep the fixed classification observable without
                             // logging the server's untrusted body or message.
                             if revoked {
-                                eprintln!("remote: invalid_remote_credential; forgetting that device");
+                                future_remote_protocol::remote_log!("remote: invalid_remote_credential; forgetting that device");
                             } else {
-                                eprintln!("remote: platform rejected account authorization; stopping bridge");
+                                future_remote_protocol::remote_log!("remote: platform rejected account authorization; stopping bridge");
                             }
                             *server.last_error_code.lock().unwrap() = Some(
                                 if revoked {
@@ -263,7 +269,7 @@ impl Supervisor {
                                 // Only this device's credential is dead. The others on
                                 // this machine keep serving, and the control pointer is
                                 // cleared if it named the device that just died.
-                                let _ = server.forget_slot(&pair_id);
+                                let _ = server.forget_slot(&pair_id, "credential_refused");
                             } else {
                                 // Account-level authorization is not a device fact: the
                                 // whole machine cannot authenticate, so every bridge
@@ -277,13 +283,16 @@ impl Supervisor {
                                 .credential_failures
                                 .record("credential_network", error)
                             {
-                                eprintln!("{line}");
+                                future_remote_protocol::remote_log!("{line}");
                             }
                             server.credential_refreshing.store(false, Ordering::Release);
                             tokio::time::sleep(server.renewal_retry_delay(until_expiry)).await;
                             continue;
                         }
                     };
+                    // A mint came back: the new generation starts with a clean
+                    // count, so `refreshing=stuck(n)` cannot outlive the problem it
+                    // named — the status reads the live generation's health.
                     if pairing::seconds_until_expiry(&refreshed) <= 0 {
                         // Never present a grant that has already lapsed. The
                         // platform can hand one back — a mint that crossed its own
@@ -295,7 +304,7 @@ impl Supervisor {
                             "credential_expired",
                             "the refreshed credential had already expired",
                         ) {
-                            eprintln!("{line}");
+                            future_remote_protocol::remote_log!("{line}");
                         }
                         server.credential_refreshing.store(false, Ordering::Release);
                         tokio::time::sleep(server.executor.options().refresh_tick).await;
@@ -311,7 +320,7 @@ impl Supervisor {
                             // its attempt budget), which is the only thing that can
                             // succeed when the refusal was a stale relay-side cache
                             // rather than a real revocation.
-                            eprintln!(
+                            future_remote_protocol::remote_log!(
                                 "remote: refreshed NATS credential rejected [AU001]: {error}"
                             );
                             if let Some(state) = server.state.lock().unwrap().get(&pair_id) {
@@ -326,11 +335,28 @@ impl Supervisor {
                             return;
                         }
                         Err(error) => {
+                            // Counted on the *live* generation: it is the one whose
+                            // renewal is failing, and it is the one the status reads.
+                            let failures = server
+                                .state
+                                .lock()
+                                .unwrap()
+                                .get(&pair_id)
+                                .map(|state| state.nats_health.note_mint_failure())
+                                .unwrap_or(0);
                             if let Some(line) = server
                                 .credential_failures
                                 .record("credential_connect", error)
                             {
-                                eprintln!("{line}");
+                                future_remote_protocol::remote_log!("{line}");
+                            }
+                            if failures >= crate::health::MINT_FAILURES_BEFORE_STUCK {
+                                // Slow is one thing; this is the state a reader has to
+                                // hear about, or a renewal that keeps failing reads as
+                                // a generic "offline" while nothing renews.
+                                future_remote_protocol::remote_log!(
+                                    "remote: credential renewal stuck ({failures} consecutive mint failures); status reports refreshing=stuck({failures})"
+                                );
                             }
                             server.credential_refreshing.store(false, Ordering::Release);
                             tokio::time::sleep(
@@ -347,7 +373,13 @@ impl Supervisor {
                     // refresh scheduler belongs to its current runtime and is aborted
                     // when that runtime is replaced.
                     let transport = match server
-                        .build_transport(&client, &pair_id, &handshake_state, reply_slots.clone())
+                        .build_transport(
+                            &client,
+                            &pair_id,
+                            &handshake_state,
+                            reply_slots.clone(),
+                            nats_health.clone(),
+                        )
                         .await
                     {
                         Ok(transport) => transport,
@@ -356,7 +388,7 @@ impl Supervisor {
                                 .credential_failures
                                 .record("credential_connect", error)
                             {
-                                eprintln!("{line}");
+                                future_remote_protocol::remote_log!("{line}");
                             }
                             server.credential_refreshing.store(false, Ordering::Release);
                             tokio::time::sleep(
@@ -391,7 +423,7 @@ impl Supervisor {
                         return;
                     };
                     if let Err(error) = server.host.save(&refreshed) {
-                        eprintln!("remote: save refreshed credential failed [LC004]: {error}");
+                        future_remote_protocol::remote_log!("remote: save refreshed credential failed [LC004]: {error}");
                         server.credential_refreshing.store(false, Ordering::Release);
                         continue;
                     }
@@ -413,7 +445,7 @@ impl Supervisor {
                     // backlog — no event gap at the swap point.
                     drop(old_event);
                     if let Some(line) = server.credential_failures.recovered() {
-                        eprintln!("{line}");
+                        future_remote_protocol::remote_log!("{line}");
                     }
                     server.credential_refreshing.store(false, Ordering::Release);
                 }

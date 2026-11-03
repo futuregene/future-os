@@ -29,6 +29,11 @@ fn validator_spawn_failure_is_inconclusive() {
 
         let saved = std::env::var_os("PATH");
         std::env::set_var("PATH", "/nonexistent-dir-xyz");
+        let worker_config = future_goal::worker_config::WorkerConfig {
+            model: "future/test-model".to_string(),
+            thinking_level: "medium".to_string(),
+            source: future_goal::worker_config::ConfigSource::Default,
+        };
         let record = execute_turn(
             &mut client,
             "sess",
@@ -41,6 +46,7 @@ fn validator_spawn_failure_is_inconclusive() {
             None,
             None,
             None,
+            &worker_config,
         )
         .await
         .unwrap();

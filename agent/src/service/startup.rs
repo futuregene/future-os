@@ -1,5 +1,5 @@
 //! Shared model, engine, session-store and listener initialization.
-use super::{AgentConfig, StartupCancellation};
+use super::{AgentConfig, StartupCancellation, StartupStage};
 use crate::{Engine, EngineConfig, Manager, ModelRegistry};
 use anyhow::{Context, Result};
 use chrono::Local;
@@ -204,6 +204,7 @@ pub(super) async fn initialize(
     let local_endpoint = if tcp_bind.is_none() {
         // A shared/network-mounted data root can make this reservation slow;
         // name the phase so a long wait reads as progress, not a hang.
+        cancellation.report(StartupStage::ReservingEndpoint);
         tracing::info!("Agent startup: reserving the local endpoint");
         Some(future_rpc::transport::reserve_local_endpoint().await?)
     } else {
@@ -283,6 +284,7 @@ pub(super) async fn initialize(
     // Even with automatic continuation disabled, a durable user stop must
     // settle as cancelled. No executor or client is admitted at this boundary.
     state.session_manager.reconcile_user_stops_on_start()?;
+    cancellation.report(StartupStage::BindingEndpoint);
     tracing::info!("Agent startup: binding the gRPC endpoint");
     let listener = match tcp_bind {
         Some((host, port)) => crate::grpc::AgentListener::bind_tcp(&host, port).await?,

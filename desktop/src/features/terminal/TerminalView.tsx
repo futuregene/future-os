@@ -37,6 +37,13 @@ const SCROLLBACK = 10_000;
 const PERSIST_SCROLLBACK = 1_000;
 /** Close code the server sends when a viewer fell too far behind. */
 const CLOSE_LAGGED = 4408;
+/**
+ * The server's frame type bytes (`desktop/src-tauri/src/terminal/protocol.rs`).
+ * Every server frame is one of these followed by its payload: output is the
+ * PTY's bytes verbatim, control is UTF-8 JSON.
+ */
+const FRAME_CONTROL = 0;
+const FRAME_DATA = 1;
 
 export interface TerminalViewProps {
   tab: TerminalTab;
@@ -86,6 +93,11 @@ export function TerminalView(props: TerminalViewProps) {
     // stored cursor we only know what the screen shows, so tail the stream
     // rather than replaying (which would duplicate the restored output).
     let seek: number | undefined = initial.cursor ?? (initial.buffer ? -1 : 0);
+    // True once this attachment's control frame has arrived. Everything before
+    // it is replay, and its extent is what that frame reports; everything after
+    // it is live output, which arrives as bare bytes and has to be counted here
+    // (see the message handler).
+    let replaying = true;
     const disposables: IDisposable[] = [];
 
     const terminal = new Terminal({
@@ -214,6 +226,9 @@ export function TerminalView(props: TerminalViewProps) {
     };
 
     const applyMeta = (meta: TerminalFrameMeta | undefined) => {
+      // The attachment's replay is over even when the payload cannot be read:
+      // every later frame is live output and has to move the cursor.
+      replaying = false;
       if (!meta) {
         return;
       }
@@ -290,6 +305,8 @@ export function TerminalView(props: TerminalViewProps) {
       }
       ws.binaryType = "arraybuffer";
       socket = ws;
+      // A new attachment starts with a replay again.
+      replaying = true;
       const decoder = new TextDecoder();
 
       // These listeners belong to this attachment's socket, which the effect
@@ -321,11 +338,29 @@ export function TerminalView(props: TerminalViewProps) {
           return;
         }
         const bytes = new Uint8Array(event.data as ArrayBuffer);
-        if (bytes.length > 0 && bytes[0] === 0) {
+        // The type byte decides, never the payload: output legitimately starts
+        // with NUL (`printf '\0hello'`, `cat` of a binary file), and reading
+        // that as a control frame dropped the whole read however long it was.
+        if (bytes.length > 0 && bytes[0] === FRAME_CONTROL) {
           applyMeta(decodeMeta(bytes.subarray(1)));
           return;
         }
-        push(decoder.decode(bytes, { stream: true }));
+        if (bytes.length > 0 && bytes[0] !== FRAME_DATA) {
+          // A frame kind this client does not know: dropping it is the only
+          // reading that cannot type its header into the user's shell.
+          return;
+        }
+        const payload = bytes.subarray(1);
+        // Live output advances the stored cursor as it is applied: the host
+        // counts the stream in bytes and reports that offset once per
+        // attachment (and again on exit), so without this the cursor persisted
+        // on unmount stays at the attach-time offset and the next mount replays
+        // output the restored screen already shows. The count is the *payload*
+        // — the type byte is framing, not terminal output.
+        if (!replaying) {
+          cursor = (cursor ?? 0) + payload.length;
+        }
+        push(decoder.decode(payload, { stream: true }));
       });
       // These listeners belong to this attachment's socket, which the effect
       // closes on unmount, and every handler re-checks `disposed` — the rule

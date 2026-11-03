@@ -12,9 +12,11 @@ pub mod configure;
 pub mod data;
 pub mod desktop;
 pub mod doctor;
+pub mod fusion;
 pub mod init;
 pub mod mcp;
 pub mod mcp_client;
+pub mod mcp_http;
 pub mod mcp_servers;
 pub mod models;
 pub mod remote;
@@ -35,3 +37,5 @@ pub mod skills;
 pub mod task;
 pub mod tools;
 pub mod workspace;
+
+pub mod logs;

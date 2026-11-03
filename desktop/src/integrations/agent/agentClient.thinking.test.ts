@@ -51,6 +51,18 @@ it("shows exactly the list the agent sends, in its order", () => {
   expect(modelThinkingLevel("future/m", models)).toBe("default");
 });
 
+it("starts at the first level the agent declared when it names no default", () => {
+  // A host that sends the list but not `defaultThinkingLevel` (an older current
+  // build). The list is authoritative and ordered, so its first entry is the
+  // starting point; falling through to `medium` would pick a level the model does
+  // not offer.
+  const models = [currentModel({ defaultThinkingLevel: undefined, thinkingLevels: ["low", "high"] })];
+  expect(modelThinkingLevel("future/m", models)).toBe("low");
+  // The same when the declared default is not one of the offered levels.
+  const narrowed = [currentModel({ defaultThinkingLevel: "max", thinkingLevels: ["low", "high"] })];
+  expect(modelThinkingLevel("future/m", narrowed)).toBe("low");
+});
+
 it("does not filter arbitrary values out of the agent's list", () => {
   const models = [currentModel({ thinkingLevels: ["default", "ultra", "max"], defaultThinkingLevel: "default" })];
   expect(modelThinkingLevels("future/m", models)).toEqual(["default", "ultra", "max"]);

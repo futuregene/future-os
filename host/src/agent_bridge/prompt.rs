@@ -84,6 +84,10 @@ pub struct AgentPromptRequest {
     pub run_id: Option<String>,
     pub model_id: Option<String>,
     pub thinking_level: Option<String>,
+    /// What this send means while the session already has a run in flight: an
+    /// Agent `BusyPolicy` value, or empty for the Agent's own default.
+    #[serde(default)]
+    pub busy_policy: String,
 }
 #[cfg(any(test, feature = "test-support"))]
 pub async fn agent_prompt(
@@ -104,6 +108,7 @@ pub async fn agent_prompt(
         run_id,
         model_id,
         thinking_level,
+        busy_policy: String::new(),
     })
     .await
 }
@@ -200,6 +205,25 @@ pub(super) async fn agent_prompt_inner(
     request: AgentPromptRequest,
     mut accepted: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> Result<AgentPromptResponse, crate::Error> {
+    if let Some(task) = future_fusion::fusion_prompt(&request.message) {
+        if task.is_empty() {
+            return Err(crate::Error::Message(
+                "Use /fusion followed by a task".into(),
+            ));
+        }
+        // A new client must never silently send /fusion as plain text to an
+        // older Agent, even when the Host itself advertises Fusion.
+        super::client::connect_agent()
+            .await?
+            .execute_command(future_rpc::proto::RpcCommand {
+                r#type: "get_fusion_status".into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| crate::Error::Message(format!("Fusion requires an upgraded Agent: {e}")))?
+            .into_inner()
+            .ok_or_rpc_error("Fusion requires an upgraded Agent")?;
+    }
     let AgentPromptRequest {
         message,
         model_context,
@@ -209,6 +233,7 @@ pub(super) async fn agent_prompt_inner(
         run_id,
         model_id,
         thinking_level,
+        busy_policy,
     } = request;
     // The persisted thread binding is the identity authority. The webview's
     // session id is only an optimistic assertion and may be stale for one
@@ -330,7 +355,7 @@ pub(super) async fn agent_prompt_inner(
     // persisted by both the observer and this collector.
     let run_id = match run_id.filter(|id| !id.trim().is_empty()) {
         Some(id) => id,
-        None => crate::store::create_id("run"),
+        None => crate::store::create_run_id(),
     };
     let replica_lease = AGENT_REPLICAS
         .acquire(&run_id)
@@ -344,6 +369,7 @@ pub(super) async fn agent_prompt_inner(
             session_id.clone(),
             attachments.unwrap_or_default(),
             Some(run_id.clone()),
+            &busy_policy,
         ))
         .await
         .map_err(|error| format!("Unable to send prompt to Future Agent: {error}"))?
@@ -416,7 +442,7 @@ pub(super) async fn agent_prompt_inner(
                 // own stream ends here — NOT as a failure of the run.
                 if let Err(error) = persist_queued_user_entry(&session_id, &canonical_run_id).await
                 {
-                    eprintln!("FutureOS queued user-entry persistence failed: {error}");
+                    tracing::error!(event = "agent_prompt_inner", error = %error,"FutureOS queued user-entry persistence failed: {error}");
                 }
                 return Ok(AgentPromptResponse {
                     content: String::new(),
@@ -442,7 +468,9 @@ pub(super) async fn agent_prompt_inner(
                 ))
                 .await
             {
-                eprintln!("FutureOS: failed to abort Agent after stream error: {abort_error}");
+                tracing::error!(event = "agent_prompt_inner", error = %abort_error,
+                    "FutureOS: failed to abort Agent after stream error: {abort_error}"
+                );
             }
             Err(error)
         }

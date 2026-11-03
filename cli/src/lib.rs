@@ -78,6 +78,10 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
         return 0;
     }
 
+    if group == Some("fusion") {
+        return catch(out, commands::fusion::fusion(command, rest, out)).await;
+    }
+
     if group == Some("data") {
         return catch(out, async { commands::data::data(command, rest, out) }).await;
     }
@@ -326,6 +330,14 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
         return catch(
             out,
             commands::run::run_command(args.get(1..).unwrap_or(&[]), out),
+        )
+        .await;
+    }
+
+    if group == Some("logs") {
+        return catch(
+            out,
+            std::future::ready(commands::logs::run(&args[1..], out)),
         )
         .await;
     }

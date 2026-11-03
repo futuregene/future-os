@@ -1,15 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { TAIL_WAIT_MS } from "./historyTransfer";
 import { generateThreadTitle, getSessionEntriesPage } from "./threads";
 
 const invokeMock = vi.fn<(cmd: string, args?: unknown) => Promise<unknown>>();
+const historyMock = vi.fn<(args: unknown, waitMs?: number) => Promise<unknown>>();
 
 vi.mock("../tauri/invoke", () => ({
   invokeCommand: (cmd: string, args?: unknown) => invokeMock(cmd, args),
 }));
+vi.mock("./historyTransfer", async () => {
+  const actual = await vi.importActual<typeof import("./historyTransfer")>("./historyTransfer");
+  return {
+    ...actual,
+    readHistoryTransfer: (args: unknown, _isCurrent?: unknown, waitMs?: number) => historyMock(args, waitMs),
+  };
+});
 
 beforeEach(() => {
   invokeMock.mockReset();
   invokeMock.mockResolvedValue({});
+  historyMock.mockReset();
+  historyMock.mockResolvedValue({});
 });
 
 describe("generateThreadTitle", () => {
@@ -37,49 +48,51 @@ describe("generateThreadTitle", () => {
 });
 
 describe("getSessionEntriesPage", () => {
-  it("defaults to the newest page of ten entries", async () => {
-    invokeMock.mockResolvedValue({ entries: [], hasMore: false });
+  it("defaults to the newest page of ten entries, waiting out the running transfers", async () => {
+    historyMock.mockResolvedValue({ entries: [], hasMore: false });
 
     await getSessionEntriesPage("t1");
 
-    expect(invokeMock).toHaveBeenCalledExactlyOnceWith("get_session_entries_page", {
+    expect(historyMock).toHaveBeenCalledExactlyOnceWith({
       threadId: "t1",
       before: null,
       limit: 10,
-    });
+    }, TAIL_WAIT_MS);
   });
 
   it("paginates backwards with an explicit cursor and limit", async () => {
-    invokeMock.mockResolvedValue({ entries: [{ id: 1 }], hasMore: true });
+    historyMock.mockResolvedValue({ entries: [{ id: 1 }], hasMore: true });
 
     await getSessionEntriesPage("t1", 42, 25);
 
-    expect(invokeMock).toHaveBeenCalledExactlyOnceWith("get_session_entries_page", {
+    // An older page is asked for on top of a transcript that is already on
+    // screen, so it keeps the short admission window (undefined selects it).
+    expect(historyMock).toHaveBeenCalledExactlyOnceWith({
       threadId: "t1",
       before: 42,
       limit: 25,
-    });
+    }, undefined);
   });
 
   it("keeps before=0 as a real cursor rather than dropping it as falsy", async () => {
     await getSessionEntriesPage("t1", 0, 1);
 
-    expect(invokeMock).toHaveBeenCalledExactlyOnceWith("get_session_entries_page", {
+    expect(historyMock).toHaveBeenCalledExactlyOnceWith({
       threadId: "t1",
       before: 0,
       limit: 1,
-    });
+    }, undefined);
   });
 
   it("returns the authoritative page shape unchanged", async () => {
     const page = { entries: [{ role: "user" }], hasMore: true, nextBefore: 7 };
-    invokeMock.mockResolvedValue(page);
+    historyMock.mockResolvedValue(page);
 
     await expect(getSessionEntriesPage("t1")).resolves.toBe(page);
   });
 
   it("propagates a read failure (the transcript keeps what it already shows)", async () => {
-    invokeMock.mockRejectedValue(new Error("database is locked"));
+    historyMock.mockRejectedValue(new Error("database is locked"));
 
     await expect(getSessionEntriesPage("t1")).rejects.toThrow("database is locked");
   });

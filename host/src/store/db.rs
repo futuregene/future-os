@@ -249,7 +249,7 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::Error> {
     // the Agent/file-tool main flow; read paths project its missing column as
     // NULL and the archive action reports its own unavailable error.
     if let Err(error) = apply_versioned_migrations(conn) {
-        eprintln!("FutureOS migration: optional run-archive migration failed: {error}");
+        tracing::warn!(event = "apply_schema", error = %error,"FutureOS migration: optional run-archive migration failed: {error}");
     }
     // Rename columns on databases created before the N-3 rename. `CREATE TABLE
     // IF NOT EXISTS` can't do it, and without this the store reads/writes
@@ -286,7 +286,7 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::Error> {
     let _ = conn.execute_batch("PRAGMA foreign_keys = OFF;");
     for table in DROPPED_TABLES {
         if let Err(e) = conn.execute(&format!("DROP TABLE IF EXISTS {table}"), []) {
-            eprintln!("FutureOS migration: DROP TABLE {table} failed: {e}");
+            tracing::warn!(event = "apply_schema", table = %table, error = %e,"FutureOS migration: DROP TABLE {table} failed: {e}");
         }
     }
     let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
@@ -297,7 +297,7 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::Error> {
             if let Err(error) = conn.execute(&sql, []) {
                 // DROP COLUMN can fail if the column is referenced by an index
                 // or is the last column — log and continue.
-                eprintln!("FutureOS migration: failed to drop {table}.{column}: {error}");
+                tracing::warn!(event = "apply_schema", table = %table, column = %column, error = %error,"FutureOS migration: failed to drop {table}.{column}: {error}");
             }
         }
     }
@@ -1432,36 +1432,17 @@ mod tests {
 
     #[test]
     fn dropping_a_connection_without_a_home_or_pool_just_drops() {
-        use std::sync::MutexGuard;
+        let home = crate::auth_store::test_support::HomeGuard::new("db-no-home");
+        home.withdraw_home();
+        // `Drop` must never derive the pool identity from the current home (see
+        // `PooledConnection::drop`), so the fixture provides exactly the state
+        // such a lookup could not survive: no home and no override, no root to
+        // resolve. The guard restores all three variables.
+        assert!(
+            crate::store::future_dir().is_err(),
+            "no home and no override leaves no FutureOS root"
+        );
 
-        /// Removes HOME for the guard's lifetime (serialized against other
-        /// HOME-mutating tests).
-        struct NoHomeGuard {
-            previous: Option<String>,
-            _lock: MutexGuard<'static, ()>,
-        }
-        impl NoHomeGuard {
-            fn new() -> Self {
-                let lock = crate::TEST_HOME_LOCK
-                    .lock()
-                    .unwrap_or_else(|poison| poison.into_inner());
-                let previous = std::env::var("HOME").ok();
-                std::env::remove_var("HOME");
-                NoHomeGuard {
-                    previous,
-                    _lock: lock,
-                }
-            }
-        }
-        impl Drop for NoHomeGuard {
-            fn drop(&mut self) {
-                if let Some(value) = &self.previous {
-                    std::env::set_var("HOME", value);
-                }
-            }
-        }
-
-        let _no_home = NoHomeGuard::new();
         // The `conn: None` and mismatched-path drop arms.
         drop(PooledConnection {
             conn: None,

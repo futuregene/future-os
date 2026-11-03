@@ -6,6 +6,7 @@ import {
   applyRecoveredEvents,
   applyRunMetadata,
   deriveRenderFields,
+  ensureLiveReply,
   mergeStreamingPreview,
   patchMessage,
   recoverFailedRuns,
@@ -1131,5 +1132,81 @@ describe("legacy run rows and malformed timestamps", () => {
 
     expect(result[1]!.runId).toBe("r-ok");
     expect(result[1]!.status).toBe("complete");
+  });
+});
+
+describe("ensureLiveReply", () => {
+  it("marks the in-flight snapshot as the streaming reply it is", () => {
+    // A reload during a run surfaces the assistant entry the agent saved after
+    // its last model call: complete, no elapsed time, no stop button. The run is
+    // still executing, so that row has to read as streaming again.
+    const snapshot = assistant("a1", {
+      content: "so far",
+      segments: [{ id: "s1", kind: "text", text: "so far", status: "complete" } as never],
+    });
+    const result = ensureLiveReply([user("u1"), snapshot], "r1", 5_000);
+
+    expect(result).toHaveLength(2);
+    expect(result[1]).toMatchObject({
+      id: "a1",
+      role: "assistant",
+      status: "streaming",
+      runId: "r1",
+      runStartedAt: 5_000,
+      createdAt: new Date(5_000).toISOString(),
+      content: "so far",
+    });
+    // The work already on screen stays: re-marking must not look like a reset.
+    expect(result[1]!.segments).toEqual(snapshot.segments);
+  });
+
+  it("leaves an already-streaming reply alone, identity included", () => {
+    const live = assistant("stream_r1", { runId: "r1", status: "streaming" });
+    const messages = [user("u1"), live];
+    expect(ensureLiveReply(messages, "r1", 1_000)).toBe(messages);
+  });
+
+  it("never resurrects a settled reply from an earlier exchange", () => {
+    const settled = assistant("a1", { runId: "r0" });
+    const messages = [user("u1"), settled, user("u2")];
+    const result = ensureLiveReply(messages, "r1", 1_000);
+
+    expect(result[1]).toBe(settled);
+    // With nothing of this run in the transcript, the bubble it would have
+    // opened with is appended instead of touching the older answer.
+    expect(result[3]).toMatchObject({ id: "stream_r1", status: "streaming", runId: "r1" });
+  });
+
+  it("opens an empty streaming bubble when no entry has landed yet", () => {
+    const result = ensureLiveReply([user("u1")], "r1", null);
+
+    expect(result).toHaveLength(2);
+    expect(result[1]).toMatchObject({
+      id: "stream_r1",
+      status: "streaming",
+      thinkingActive: true,
+      content: "",
+      runId: "r1",
+    });
+  });
+
+  it("keeps the snapshot's timestamp when the run row carries no start", () => {
+    const snapshot = assistant("a1", { createdAt: "2026-01-01T00:00:07.000Z" });
+    const result = ensureLiveReply([user("u1"), snapshot], "r1", null);
+    expect(result[1]!.createdAt).toBe("2026-01-01T00:00:07.000Z");
+  });
+
+  it("drops a settle-time verdict that cannot stand on a reply still being written", () => {
+    const snapshot = assistant("a1", {
+      status: "failed",
+      stopped: true,
+      terminationNotice: "stopped",
+      terminationTitle: "stopped",
+    });
+    const result = ensureLiveReply([user("u1"), snapshot], "r1", 1_000);
+
+    expect(result[1]).toMatchObject({ status: "streaming", stopped: false });
+    expect(result[1]!.terminationNotice).toBeUndefined();
+    expect(result[1]!.terminationTitle).toBeUndefined();
   });
 });

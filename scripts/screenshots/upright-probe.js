@@ -20,18 +20,47 @@
 (() => {
   const outline = (el, colour) => { el.style.outline = `3px solid ${colour}`; };
 
+  // The scroller that is *visible*, not merely scrollable.
+  //
+  // The phone keeps the session list mounted underneath an open conversation
+  // (`App.tsx` hides it with `pointerEvents: none` rather than unmounting it), so
+  // a rail long enough to scroll is a second scroller of its own — and a taller
+  // one than the transcript. Picking by height alone then outlined a row of the
+  // list behind the chat: the marker never reached the picture and the check
+  // reported "no in-place tile" for a transcript that was perfectly upright.
+  // A hit test at the scroller's own centre tells the two apart without knowing
+  // either of them: the list's centre is answered by the chat drawn over it.
+  const frontmost = (el) => {
+    const r = el.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + r.width / 2, Math.min(r.bottom - 8, r.top + r.height / 2));
+    return !!hit && (el === hit || el.contains(hit));
+  };
   const scroller = [...document.querySelectorAll('div')]
-    .filter((el) => el.scrollHeight > el.clientHeight + 10 && el.clientHeight > 400)
+    .filter((el) => el.scrollHeight > el.clientHeight + 10 && el.clientHeight > 400 && frontmost(el))
     .sort((a, b) => b.getBoundingClientRect().height - a.getBoundingClientRect().height)[0];
   if (!scroller) throw new Error('upright probe: no scroller on screen');
   const viewport = scroller.getBoundingClientRect();
 
   // The largest block of text that is fully inside the list viewport: partially
   // visible text would correlate against a clipped copy of itself.
+  //
+  // "Block of text" includes a paragraph that carries inline runs — a sentence
+  // with `code` in it, **bold**, a link — because that is what a reply is made
+  // of: requiring a childless element picked a single 13 px code line, and one
+  // line of monospace ink says nothing about which way up the transcript reads
+  // (measured: 0.045 upright against 0.053 mirrored — inconclusive). A block
+  // whose children are all inline-level is still one flowing paragraph, so it
+  // clones and wraps as a whole; a flex/grid container is not, and is skipped.
+  const inlineOnly = (el) => [...el.children].every((child) => {
+    const display = getComputedStyle(child).display;
+    return display === 'inline' || display === 'contents';
+  });
   const inside = (r) => r.top > viewport.top + 4 && r.bottom < viewport.bottom - 4
     && r.left >= viewport.left && r.right <= viewport.right;
   const target = [...scroller.querySelectorAll('div,span,p')]
-    .filter((el) => el.children.length === 0 && (el.innerText || '').trim().length > 20 && inside(el.getBoundingClientRect()))
+    .filter((el) => (el.innerText || '').trim().length > 20
+      && (el.children.length === 0 || inlineOnly(el))
+      && inside(el.getBoundingClientRect()))
     .sort((a, b) => {
       const ra = a.getBoundingClientRect();
       const rb = b.getBoundingClientRect();

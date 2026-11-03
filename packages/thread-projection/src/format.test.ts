@@ -51,6 +51,10 @@ describe("classifyAgentError", () => {
     ["Future Agent run no longer active", "agent:failure.agentInterrupted"],
     ["Future Agent rejected the prompt", "agent:failure.agentInterrupted"],
     ["prompt acknowledgement omitted", "agent:failure.agentInterrupted"],
+    // The row a restart leaves behind (startup convergence / Agent
+    // reconciliation): interrupted, not a model fault, and resumable.
+    ["Interrupted by application restart.", "agent:failure.runInterrupted"],
+    ["Interrupted because Future Agent restarted.", "agent:failure.runInterrupted"],
     ["[CTX_LIMIT] conversation too long", "agent:failure.contextLimit"],
     ["API request failed (HTTP 402).", "agent:failure.insufficientCredit"],
     ["Insufficient credit for this model", "agent:failure.insufficientCredit"],
@@ -103,8 +107,42 @@ describe("classifyAgentError", () => {
     });
   });
 
+  it("carries the provider's own wording for a rejected (HTTP 400) request", () => {
+    // Retrying cannot fix a request the provider refused, so the detail is the
+    // only actionable part — it must reach the user, with the diagnostic tail
+    // and JSON envelope stripped off around it.
+    expect(classifyAgentError(
+      'LLM API request failed (HTTP 400): {"error":{"message":"Invalid model: gemini-9-pro"}} Request: 2 messages, 16 KB.',
+    )).toEqual({
+      key: "agent:failure.badRequest",
+      params: { message: "Invalid model: gemini-9-pro" },
+    });
+  });
+
+  it("keeps a context-limit 400 on the compaction guidance", () => {
+    expect(classifyAgentError("[CTX_LIMIT] Request exceeds the model's maximum context length (HTTP 400)."))
+      .toEqual({ key: "agent:failure.contextLimit" });
+  });
+
   it("leaves an unmapped reason code to the generic run failure", () => {
     expect(classifyAgentError("[NOT_A_CODE] something").key).toBe("agent:failure.run");
+  });
+
+  it("carries the endpoint and cause of a transport failure", () => {
+    // The client's own wording when the endpoint is never reached: no HTTP
+    // status exists, so without this the run fell through to the generic
+    // failure whose copy hid both the host and the reason.
+    expect(classifyAgentError(
+      "error sending request for url (https://hpc-api.westlake.edu.cn/v1/chat/completions): client error (Connect): tls handshake eof",
+    )).toEqual({
+      key: "agent:failure.network",
+      params: { message: "hpc-api.westlake.edu.cn: tls handshake eof" },
+    });
+    // A bare connect failure has no endpoint to name, so its own text is kept.
+    expect(classifyAgentError("connection refused")).toEqual({
+      key: "agent:failure.network",
+      params: { message: "connection refused" },
+    });
   });
 
   it("extracts an embedded provider message and drops the diagnostic tail", () => {

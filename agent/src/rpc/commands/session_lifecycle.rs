@@ -72,10 +72,46 @@ pub(crate) fn reject_deep_parent(state: &AppState, parent: &str) -> Option<Strin
     })
 }
 
+/// The tool permission a session is running with, or `None` when it is not
+/// loaded.
+///
+/// Permission is runtime state (it is not written to `session_info`), so a
+/// session that is only on disk has no level to read; callers fall back to the
+/// settings default rather than inventing one.
+fn live_permission_level(state: &AppState, session_id: &str) -> Option<String> {
+    state
+        .sessions
+        .read()
+        .get(session_id)
+        .map(|session| session.read().get_permission_level().to_string())
+}
+
 pub(crate) fn cmd_storage_health(state: &AppState, id: &str) -> String {
     match state.session_manager.storage_health() {
         Ok(data) => RpcResponse::ok(id, "get_storage_health", data),
         Err(error) => RpcResponse::build_fail(id, "get_storage_health", &error.to_string()),
+    }
+}
+
+/// Metadata-only capability preflight; do not load or create a conversation.
+pub(crate) fn cmd_session_storage_format(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
+    let result = (|| -> anyhow::Result<serde_json::Value> {
+        let store = state.session_manager.storage()?;
+        let session = cmd.session_id.clone();
+        let (exists, format) = store.db.read(move |db| {
+            let tx = db.transaction()?;
+            let session=crate::session::identity::BoundIdentity::session(&tx,&session)?;
+            let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sessions s WHERE s.id=?1 AND NOT EXISTS(SELECT 1 FROM session_tombstones t WHERE t.session_id=s.id))", [&session], |row| row.get(0))?;
+            let format = crate::session::content::format(&tx, &session)?;
+            tx.commit()?;
+            Ok((exists, format))
+        })?;
+        Ok(serde_json::json!({"exists":exists,"format":format,
+            "new_session_format":crate::session::content::NEW_SESSION_FORMAT}))
+    })();
+    match result {
+        Ok(data) => RpcResponse::ok(id, "get_session_storage_format", data),
+        Err(error) => RpcResponse::build_fail(id, "get_session_storage_format", &error.to_string()),
     }
 }
 
@@ -175,8 +211,11 @@ pub(crate) fn cmd_list_sessions(state: &AppState, cmd: &RpcCommand, id: &str) ->
     };
 
     // One canonical contract shared by every client.
+    let fusion_children = crate::fusion::child_sessions();
     let sessions: Vec<serde_json::Value> = summaries
         .into_iter()
+        // Fusion children are addressable for replay but not user conversations.
+        .filter(|s| !fusion_children.contains(&s.id))
         .filter(|s| cwd_filter.is_empty() || s.cwd == cwd_filter)
         .map(|s| {
             let is_streaming = active_flags.get(&s.id).copied().unwrap_or(false);
@@ -356,7 +395,40 @@ fn delete_sessions(
     for session_id in session_ids {
         match prepare_session_delete(state, session_id) {
             Some(error) => results.push(error),
-            None => ready.push(session_id.clone()),
+            None => {
+                let cleanup = (|| -> anyhow::Result<()> {
+                    let Ok(store) = future_fusion::Store::existing(&crate::utils::future_home())
+                    else {
+                        return Ok(());
+                    };
+                    for run in store.runs_for_parent(session_id)? {
+                        store.cancel(&run.id)?;
+                        let children = store
+                            .steps(&run.id)?
+                            .into_iter()
+                            .map(|s| s.session_id)
+                            .filter(|s| !s.is_empty())
+                            .collect::<std::collections::HashSet<_>>()
+                            .into_iter()
+                            .collect::<Vec<_>>();
+                        let deleted = delete_sessions(state, &children);
+                        anyhow::ensure!(
+                            deleted.iter().all(|r| r.deleted),
+                            "Fusion child runs are stopping; retry session deletion"
+                        );
+                    }
+                    Ok(())
+                })();
+                match cleanup {
+                    Ok(()) => ready.push(session_id.clone()),
+                    Err(error) => results.push(deletion_failure(
+                        session_id,
+                        "session_busy",
+                        error.to_string(),
+                        serde_json::json!({"retryable":true}),
+                    )),
+                }
+            }
         }
     }
     if ready.is_empty() {
@@ -370,6 +442,11 @@ fn delete_sessions(
                 .and_then(|data| data["databaseId"].as_str());
             for session_id in ready {
                 state.sessions.write().remove(&session_id);
+                if let Ok(store) = future_fusion::Store::existing(&crate::utils::future_home()) {
+                    if let Err(error) = store.purge_parent(&session_id) {
+                        tracing::error!("Fusion retention cleanup failed: {error:#}");
+                    }
+                }
                 // Publish only after the whole database transaction committed.
                 state
                     .control_plane
@@ -419,6 +496,17 @@ fn prepare_session_delete(
         }
         let (active, cancelled_count) = {
             let mut session = session.write();
+            if session
+                .history_reset_in_progress
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Some(deletion_failure(
+                    session_id,
+                    "session_busy",
+                    "session history reset is in progress".to_owned(),
+                    serde_json::json!({"busy_reason":"history_reset","retryable":true}),
+                ));
+            }
             session.deleting = true;
             let cancelled = session
                 .cancel_all_queued_runs(crate::runtime::QueuedCancellationReason::SessionDeleted);
@@ -473,23 +561,7 @@ pub(crate) fn cmd_get_fork_messages(state: &AppState, cmd: &RpcCommand, id: &str
                 .iter()
                 .filter(|e| e.entry_type == crate::session::ENTRY_TYPE_USER)
                 .map(|e| {
-                    let content_text = e
-                        .content
-                        .as_ref()
-                        .map(|c| {
-                            if let Some(arr) = c.as_array() {
-                                // First text block only — later text blocks are
-                                // the agent-injected attachment-path list.
-                                arr.iter()
-                                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                                    .next()
-                                    .unwrap_or("")
-                                    .to_string()
-                            } else {
-                                c.as_str().unwrap_or("").to_string()
-                            }
-                        })
-                        .unwrap_or_default();
+                    let content_text = entry_text(e);
                     serde_json::json!({
                         "id": e.id,
                         "role": e.role,
@@ -505,6 +577,105 @@ pub(crate) fn cmd_get_fork_messages(state: &AppState, cmd: &RpcCommand, id: &str
         id,
         "get_fork_messages",
         serde_json::json!({"messages": user_entries}),
+    )
+}
+
+/// The display text of a persisted entry: its first text block.
+///
+/// Later text blocks are the agent-injected attachment-path list, so only the
+/// first one is what the reader typed or the model wrote. A pre-block-array
+/// journal stored the content as a bare string, which is the fallback.
+fn entry_text(entry: &crate::session::SessionEntry) -> String {
+    entry
+        .content
+        .as_ref()
+        .map(|content| {
+            if let Some(blocks) = content.as_array() {
+                blocks
+                    .iter()
+                    .filter_map(|block| block.get("text").and_then(serde_json::Value::as_str))
+                    .next()
+                    .unwrap_or("")
+                    .to_string()
+            } else {
+                content.as_str().unwrap_or("").to_string()
+            }
+        })
+        .unwrap_or_default()
+}
+
+/// Where a fork may end: the entries before this index.
+///
+/// A run owns everything from its `run_started` on. While one is in flight —
+/// its start has no terminal after it — the entries it is still writing are not
+/// fork points: there is no answer to branch *at* yet, and the only point of
+/// that turn a fork can name is the prompt that started it, which sits before
+/// the start.
+fn fork_settled_end(entries: &[crate::session::SessionEntry]) -> usize {
+    let last_started = entries
+        .iter()
+        .rposition(|entry| entry.entry_type == crate::session::ENTRY_TYPE_RUN_STARTED);
+    let last_terminal = entries
+        .iter()
+        .rposition(|entry| entry.entry_type == crate::session::ENTRY_TYPE_RUN_TERMINAL);
+    match (last_started, last_terminal) {
+        (Some(started), terminal) if terminal.is_none_or(|terminal| started > terminal) => started,
+        _ => entries.len(),
+    }
+}
+
+/// Load the session's fork points — every question and every answer it has
+/// persisted, in transcript order, each one a place a `/fork` can stop at.
+///
+/// `get_fork_messages` answers the older question ("which user turns can a fork
+/// start from"), which is what `session forks` and the desktop's fork button
+/// list. This one answers the surface's own picker: choose *any* message — the
+/// reader's or the model's — and the child ends right after it. So assistant
+/// entries are candidates too, and the ones still being written are left out
+/// (see [`fork_settled_end`]).
+///
+/// Entries without text are not listed: a pure tool step, a compaction marker
+/// or an attachment-only prompt has no line to show in the picker and is not a
+/// place a reader means to stop at.
+pub(crate) fn cmd_get_fork_entries(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
+    let entries: Vec<serde_json::Value> = state
+        .session_manager
+        .load(&cmd.session_id)
+        .map(|session| {
+            let end = fork_settled_end(&session.entries);
+            session.entries[..end]
+                .iter()
+                .filter(|entry| {
+                    matches!(
+                        entry.entry_type.as_str(),
+                        crate::session::ENTRY_TYPE_USER | crate::session::ENTRY_TYPE_ASSISTANT
+                    )
+                })
+                .filter_map(|entry| {
+                    let text = entry_text(entry);
+                    if text.trim().is_empty() {
+                        return None;
+                    }
+                    let role = if entry.entry_type == crate::session::ENTRY_TYPE_USER {
+                        "user"
+                    } else {
+                        "assistant"
+                    };
+                    Some(serde_json::json!({
+                        "id": entry.id,
+                        "role": role,
+                        "kind": role,
+                        "blocks": [{"kind": "text", "text": text}],
+                        "createdAtMs": entry.timestamp.timestamp_millis(),
+                    }))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    RpcResponse::ok(
+        id,
+        "get_fork_entries",
+        serde_json::json!({"entries": entries}),
     )
 }
 
@@ -621,7 +792,12 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
     if let Err(e) = new_sess.set_model(&default_model.clone()) {
         tracing::warn!("[new_session] could not sync model to fresh loop: {e}");
     }
-    // Always start new sessions at the app's preferred thinking level.
+    // Start new sessions at the product default thinking level, NOT at some
+    // remembered preference: `DEFAULT_THINKING_LEVEL` is `"default"`, i.e. send
+    // no thinking/effort parameter and let the provider decide. Clients that
+    // want a level (GUI/TUI pickers, `future goal run` when it inherits the
+    // supervisor's configuration) set it explicitly on this command or through
+    // `set_thinking_level` right after.
     new_sess.thinking_level =
         new_sess.normalize_thinking_level(crate::rpc::session::DEFAULT_THINKING_LEVEL);
 
@@ -648,6 +824,18 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
             return RpcResponse::build_fail(id, "new_session", &error);
         }
         new_sess.parent_session_id = cmd.parent_session.clone();
+        // A sub-session must not outrank the session that created it. The
+        // settings default applied above is `all` unless the user changed it,
+        // so a parent running approval-gated (`workspace`) or with its tools
+        // denied (`none`) that delegates would otherwise mint a child with more
+        // tool access than the parent has — the user's gate bypassed by the act
+        // of splitting the work. The parent is necessarily live (it is the one
+        // running the command), so its level is readable; a parent that is only
+        // on disk has no recorded level to inherit, because permission is
+        // runtime state rather than part of `session_info`.
+        if let Some(level) = live_permission_level(state, &cmd.parent_session) {
+            new_sess.set_permission_level(&level);
+        }
     }
 
     // Session provenance: typed created_by/source_meta fields first.
@@ -811,6 +999,14 @@ pub(crate) fn cmd_read_session_entries(
             serde_json::json!({"entries": []}),
         );
     }
+    match session_manager.storage().and_then(|store|store.storage_format(session_id)) {
+        Ok(crate::session::content::FORMAT_VERSION)=>return RpcResponse::build_fail_code(
+            id,"get_session_entries","history_paging_required",
+            "Canonical history requires an explicit offset or before cursor; assemble its bounded pages for a full transcript.",
+            serde_json::json!({"sessionId":session_id})),
+        Err(error)=>return RpcResponse::build_fail_code(id,"get_session_entries","session_history_unreadable",&error.to_string(),serde_json::json!({"sessionId":session_id})),
+        _=>{},
+    }
     let revision_before = session_manager.session_revision(session_id).ok();
     let cached = revision_before
         .as_ref()
@@ -882,7 +1078,7 @@ pub(crate) fn cmd_fork(
         cmd.client_request_id.clone()
     };
     let request_id = format!("fork:{request_key}");
-    let result = match session_manager.create_fork(crate::session::ForkRequest {
+    let result = match session_manager.create_fork_identity(crate::session::ForkRequest {
         request_id,
         parent_session_id: parent_id,
         point,
@@ -892,7 +1088,7 @@ pub(crate) fn cmd_fork(
         Ok(result) => result,
         Err(error) => return RpcResponse::build_fail(id, "fork", &error.to_string()),
     };
-    let forked_id = result.session.id.clone();
+    let forked_id = result.session_id;
     if let Err(error) = state.activate_persisted_session(&forked_id) {
         return RpcResponse::build_fail(
             id,
@@ -933,7 +1129,7 @@ pub(crate) fn cmd_clone(
         cmd.client_request_id.clone()
     };
     let request_id = format!("clone:{request_key}");
-    let result = match session_manager.create_fork(crate::session::ForkRequest {
+    let result = match session_manager.create_fork_identity(crate::session::ForkRequest {
         request_id,
         parent_session_id: session_id,
         point: crate::session::ForkPoint::LatestSettled,
@@ -943,7 +1139,7 @@ pub(crate) fn cmd_clone(
         Ok(result) => result,
         Err(error) => return RpcResponse::build_fail(id, "clone", &error.to_string()),
     };
-    let forked_id = result.session.id.clone();
+    let forked_id = result.session_id;
     if let Err(error) = state.activate_persisted_session(&forked_id) {
         return RpcResponse::build_fail(
             id,

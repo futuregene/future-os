@@ -705,11 +705,190 @@ export function rememberPreparedPreview(
   if (index.size > MAX_PREPARED_PREVIEWS) index.delete(index.keys().next().value!);
 }
 
-function cacheFile(info: DownloadInfo): File {
+function cacheFile(info: Pick<DownloadInfo, "contentHash" | "name">): File {
   const directory = new Directory(Paths.cache, "futureos-previews");
   if (!directory.exists) directory.create({ intermediates: true, idempotent: true });
   const ext = extension(info.name);
   return new File(directory, `${info.contentHash}${ext ? `.${ext}` : ""}`);
+}
+
+/**
+ * The preview this phone already holds for a path — scoped to the desktop and
+ * session the path was read in, because a path alone is not an identity.
+ *
+ * The bytes live in the content-addressed cache above; this is the only record
+ * of *which* content hash a path resolves to, and the desktop reveals that
+ * (its `download_prepare` reply) rather than the phone computing it. Keeping
+ * the answer on disk is what lets a conversation reopen with its pictures drawn
+ * on the first frame instead of after two serialized round trips, and what lets
+ * the second picture of a message appear with the first rather than after it.
+ */
+type PreviewVariant = "preview" | "original";
+
+interface PreviewIndexEntry {
+  name: string;
+  mimeType: string;
+  size: number;
+  contentHash: string;
+  variant: PreviewVariant;
+  /** width / height, once a renderer has decoded these exact bytes. */
+  aspect?: number;
+  savedAt: number;
+}
+
+export interface CachedPreviewFile {
+  file: File;
+  contentHash: string;
+  size: number;
+  aspect?: number;
+  /** Old enough that the desktop should be asked again — off the paint path. */
+  stale: boolean;
+}
+
+const previewIndex = new Map<string, PreviewIndexEntry>();
+const PREVIEW_INDEX_VERSION = 1;
+const MAX_PREVIEW_INDEX_ENTRIES = 128;
+/**
+ * How long a held preview is trusted before a background check re-reads the
+ * desktop's content identity. Bounded staleness rather than a round trip on
+ * every open: a file overwritten in place is picked up on the next open after
+ * this window, and the picture on screen never waits for that answer.
+ */
+const PREVIEW_REVALIDATE_MS = 60 * 60 * 1000;
+let previewIndexLoaded = false;
+
+function previewIndexKey(scope: string, path: string, variant: PreviewVariant): string {
+  return JSON.stringify([scope, path, variant]);
+}
+
+function previewIndexFile(): File {
+  // Beside the preview cache rather than inside it: that directory is pruned by
+  // age when it grows, and an index entry for a pruned file is worth keeping —
+  // it still misses cleanly, and it still carries the consumer's aspect ratio.
+  return new File(Paths.cache, "futureos-preview-index.json");
+}
+
+function isPreviewIndexEntry(value: unknown): value is PreviewIndexEntry {
+  if (!value || typeof value !== "object") return false;
+  const entry = value as Partial<PreviewIndexEntry>;
+  return typeof entry.name === "string"
+    && typeof entry.mimeType === "string"
+    && typeof entry.contentHash === "string"
+    && typeof entry.size === "number" && Number.isFinite(entry.size) && entry.size >= 0
+    && (entry.variant === "preview" || entry.variant === "original")
+    && typeof entry.savedAt === "number" && Number.isFinite(entry.savedAt)
+    && (entry.aspect === undefined
+      || (typeof entry.aspect === "number" && Number.isFinite(entry.aspect) && entry.aspect > 0));
+}
+
+function loadPreviewIndex(): void {
+  if (previewIndexLoaded) return;
+  previewIndexLoaded = true;
+  try {
+    const file = previewIndexFile();
+    if (!file.exists) return;
+    const parsed = JSON.parse(file.textSync()) as {
+      version?: number;
+      entries?: Record<string, PreviewIndexEntry>;
+    };
+    if (parsed?.version !== PREVIEW_INDEX_VERSION || !parsed.entries) return;
+    for (const [key, entry] of Object.entries(parsed.entries)) {
+      if (isPreviewIndexEntry(entry)) previewIndex.set(key, entry);
+    }
+  } catch {
+    // An index this build cannot read is a cache miss, never a failure: the
+    // desktop is still there to answer.
+    previewIndex.clear();
+  }
+}
+
+function savePreviewIndex(): void {
+  try {
+    const file = previewIndexFile();
+    if (!file.exists) file.create({ intermediates: true, overwrite: true });
+    file.writeSync(JSON.stringify({
+      version: PREVIEW_INDEX_VERSION,
+      entries: Object.fromEntries(previewIndex),
+    }));
+  } catch {
+    // Losing the index costs one round trip per picture on the next open; that
+    // is never worth failing the read which produced it.
+  }
+}
+
+function prunePreviewIndex(): void {
+  if (previewIndex.size <= MAX_PREVIEW_INDEX_ENTRIES) return;
+  const oldestFirst = [...previewIndex.entries()].sort((a, b) => a[1].savedAt - b[1].savedAt);
+  for (const [key] of oldestFirst.slice(0, previewIndex.size - MAX_PREVIEW_INDEX_ENTRIES)) {
+    previewIndex.delete(key);
+  }
+}
+
+/** The preview this phone already holds for `path`, without asking the desktop. */
+export function cachedPreviewFile(
+  scope: string, path: string, variant: PreviewVariant = "preview",
+): CachedPreviewFile | null {
+  loadPreviewIndex();
+  const entry = previewIndex.get(previewIndexKey(scope, path, variant));
+  if (!entry) return null;
+  const file = cacheFile(entry);
+  // A pruned or replaced file is a miss. The entry stays: it costs nothing, and
+  // the next download rewrites it through `rememberPreviewFile`.
+  if (!file.exists || file.size !== entry.size) return null;
+  return {
+    file,
+    contentHash: entry.contentHash,
+    size: entry.size,
+    aspect: entry.aspect,
+    stale: Date.now() - entry.savedAt > PREVIEW_REVALIDATE_MS,
+  };
+}
+
+/** Record the preview this phone now holds for `path` (its bytes are on disk). */
+export function rememberPreviewFile(scope: string, path: string, info: DownloadInfo): void {
+  loadPreviewIndex();
+  const variant: PreviewVariant = info.variant === "original" ? "original" : "preview";
+  const key = previewIndexKey(scope, path, variant);
+  previewIndex.set(key, {
+    name: info.name,
+    mimeType: info.mimeType,
+    size: info.size,
+    contentHash: info.contentHash,
+    variant,
+    // The measured ratio describes the picture, not the path: keep it across a
+    // re-download so a replacement of the same size does not jump the layout.
+    aspect: previewIndex.get(key)?.aspect,
+    savedAt: Date.now(),
+  });
+  prunePreviewIndex();
+  savePreviewIndex();
+}
+
+/** Drop an entry whose held bytes no longer describe what the desktop serves. */
+export function forgetPreviewFile(scope: string, path: string, variant: PreviewVariant = "preview"): void {
+  loadPreviewIndex();
+  if (previewIndex.delete(previewIndexKey(scope, path, variant))) savePreviewIndex();
+}
+
+/** The width/height a renderer already measured for this path, if known. */
+export function previewAspect(
+  scope: string, path: string, variant: PreviewVariant = "preview",
+): number | undefined {
+  loadPreviewIndex();
+  return previewIndex.get(previewIndexKey(scope, path, variant))?.aspect;
+}
+
+/** Remember a measured width/height so the next paint reserves the right height. */
+export function rememberPreviewAspect(
+  scope: string, path: string, aspect: number, variant: PreviewVariant = "preview",
+): void {
+  if (!Number.isFinite(aspect) || aspect <= 0) return;
+  loadPreviewIndex();
+  const key = previewIndexKey(scope, path, variant);
+  const entry = previewIndex.get(key);
+  if (!entry || entry.aspect === aspect) return;
+  previewIndex.set(key, { ...entry, aspect });
+  savePreviewIndex();
 }
 
 const MAX_EXPORT_CACHE_BYTES = 100 * 1024 * 1024;

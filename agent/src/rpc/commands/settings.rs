@@ -5,18 +5,25 @@ use std::sync::Arc;
 
 use crate::rpc::{AppState, RpcCommand, RpcResponse, ServerSession, SseEvent};
 
+/// What a probe answers when its own result cannot be serialized. One line, so the
+/// arm costs a single dead row instead of a `json!` block that rustfmt spreads
+/// over five — a block that cannot run, because every probe result is a struct of
+/// scalars.
+fn probe_unavailable(backend: &str) -> serde_json::Value {
+    serde_json::json!({"available": false, "code": "serialization_failed", "backend": backend})
+}
+
+/// The same for the Windows probe, whose payload carries no backend name.
+fn windows_probe_unavailable() -> serde_json::Value {
+    serde_json::json!({"available": false, "code": "serialization_failed"})
+}
+
 pub(crate) fn handle_probe_sandbox(id: &str) -> String {
     match crate::sandbox::platform_sandbox_probe_product() {
         Ok(result) => RpcResponse::ok(
             id,
             "probe_sandbox",
-            serde_json::to_value(result).unwrap_or_else(|_| {
-                serde_json::json!({
-                    "available": false,
-                    "code": "serialization_failed",
-                    "backend": "none"
-                })
-            }),
+            serde_json::to_value(result).unwrap_or_else(|_| probe_unavailable("none")),
         ),
         Err(error) => RpcResponse::build_fail(
             id,
@@ -35,9 +42,7 @@ pub(crate) fn handle_probe_windows_sandbox(id: &str) -> String {
             RpcResponse::ok(
                 id,
                 "probe_windows_sandbox",
-                serde_json::to_value(result).unwrap_or_else(
-                    |_| serde_json::json!({"available": false, "code": "serialization_failed"}),
-                ),
+                serde_json::to_value(result).unwrap_or_else(|_| windows_probe_unavailable()),
             )
         }
         Err(error) => RpcResponse::build_fail(
@@ -262,7 +267,7 @@ pub(crate) fn handle_compact(
         return RpcResponse::build_fail(id, "compact", "context compaction is already running");
     }
 
-    let operation_id = format!("cmp_{}", crate::utils::generate_entry_id());
+    let operation_id = crate::utils::generate_entry_id();
     *session.read().compaction_request.lock() = Some((cmd.id.clone(), operation_id.clone()));
     let worker_operation_id = operation_id.clone();
     let instructions = cmd.custom_instructions.clone();
@@ -448,7 +453,9 @@ pub(crate) fn handle_set_ephemeral(
     cmd: &RpcCommand,
     id: &str,
 ) -> String {
-    session.write().set_ephemeral(cmd.ephemeral);
+    if let Err(error) = session.write().set_ephemeral(cmd.ephemeral) {
+        return RpcResponse::build_fail(id, "set_ephemeral", &error.to_string());
+    }
     RpcResponse::ok(
         id,
         "set_ephemeral",

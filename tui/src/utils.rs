@@ -702,6 +702,12 @@ fn wrap_ascii_fast(text: &str, width: usize) -> Vec<String> {
     }
 }
 
+/// Wraps `text` so that **every returned line is at most `width` cells** — the
+/// invariant callers build on (`render_table` composes a row out of wrapped
+/// cells and relies on the row still fitting the frame).
+///
+/// A glyph wider than `width` itself cannot be laid out at all and is dropped;
+/// a caller that must keep such a glyph has to ask for a width it fits in.
 pub fn wrap_text_with_ansi(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return Vec::new();
@@ -713,6 +719,11 @@ pub fn wrap_text_with_ansi(text: &str, width: usize) -> Vec<String> {
     let mut tracker = AnsiCodeTracker::new();
     let mut current_line = String::new();
     let mut current_width = 0usize;
+    // The cells and the byte offset of the last glyph on the line: a wide
+    // glyph changes where the line may break, and carrying one down takes its
+    // offset.
+    let mut tail_width = 0usize;
+    let mut tail_start = 0usize;
     let mut i = 0usize;
 
     while i < text.len() {
@@ -720,6 +731,8 @@ pub fn wrap_text_with_ansi(text: &str, width: usize) -> Vec<String> {
             lines.push(current_line.clone() + &finalize_line(&tracker));
             current_line.clear();
             current_width = 0;
+            tail_width = 0;
+            tail_start = 0;
             i += 1;
             continue;
         }
@@ -736,36 +749,67 @@ pub fn wrap_text_with_ansi(text: &str, width: usize) -> Vec<String> {
         let grapheme = text[i..].graphemes(true).next().unwrap();
         let gw = grapheme_width(grapheme);
 
-        if current_width + gw > width {
-            // Word-boundary break: backtrack to last space
-            let space_idx = current_line.rfind(' ');
-            if let Some(space_idx) = space_idx {
-                if space_idx > 0 && !is_all_ansi(&current_line[..space_idx]) {
-                    // Check visible width up to space
-                    let after_space = current_line[space_idx + 1..].to_string();
-                    // Push line up to space, wrap remainder
-                    lines.push(current_line[..space_idx].to_string() + &finalize_line(&tracker));
-                    current_line =
-                        tracker.get_ansi_code() + &tracker.get_osc8_link() + &after_space;
-                    current_width = visible_width(&strip_ansi_codes(&after_space));
-                    current_line.push_str(grapheme);
-                    current_width += gw;
-                } else {
-                    // Hard break at width
-                    lines.push(current_line.clone() + &finalize_line(&tracker));
-                    current_line = tracker.get_ansi_code() + &tracker.get_osc8_link() + grapheme;
-                    current_width = gw;
-                }
-            } else {
-                // Hard break at width
-                lines.push(current_line.clone() + &finalize_line(&tracker));
-                current_line = tracker.get_ansi_code() + &tracker.get_osc8_link() + grapheme;
-                current_width = gw;
-            }
-        } else {
+        // A glyph wider than the whole line (a 2-cell CJK glyph asked for a
+        // one-cell line) fits nowhere — not even at the start of a fresh line.
+        // Emitting it anyway broke the `<= width` invariant and produced an
+        // empty lead-in line besides, so it is dropped here instead.
+        if gw > width {
+            i += grapheme.len();
+            continue;
+        }
+
+        if current_width + gw <= width {
+            tail_start = current_line.len();
             current_line.push_str(grapheme);
             current_width += gw;
+            tail_width = gw;
+            i += grapheme.len();
+            continue;
         }
+
+        // Where the line breaks, in order of preference:
+        //
+        // 1. Between two wide glyphs the width itself is the break — Chinese
+        //    may break between any two characters, and retreating to a space
+        //    instead sent the whole tail down: one space inside an otherwise
+        //    unspaced run of Chinese left the line half empty.
+        // 2. Otherwise the last space is the break (word wrap).
+        // 3. A line may not open with a closing mark (禁则): when the break
+        //    lands on one, the glyph before it comes down as well.
+        let prefix = tracker.get_ansi_code() + &tracker.get_osc8_link();
+        let wide_break = tail_width >= 2 && gw >= 2;
+        let space = if wide_break {
+            None
+        } else {
+            current_line
+                .rfind(' ')
+                .filter(|at| *at > 0 && !is_all_ansi(&current_line[..*at]))
+        };
+        if let Some(at) = space {
+            let after_space = current_line[at + 1..].to_string();
+            lines.push(current_line[..at].to_string() + &finalize_line(&tracker));
+            current_width = visible_width(&strip_ansi_codes(&after_space));
+            current_line = prefix + &after_space;
+        } else if tail_width >= 2
+            && tail_start > 0
+            && may_not_start_line(grapheme)
+            && !is_all_ansi(&current_line[..tail_start])
+        {
+            let carried = current_line[tail_start..].to_string();
+            lines.push(current_line[..tail_start].to_string() + &finalize_line(&tracker));
+            current_width = tail_width;
+            current_line = prefix + &carried;
+        } else {
+            lines.push(current_line.clone() + &finalize_line(&tracker));
+            current_width = 0;
+            current_line = prefix;
+        }
+
+        // The glyph opens the new line.
+        tail_start = current_line.len();
+        current_line.push_str(grapheme);
+        current_width += gw;
+        tail_width = gw;
         i += grapheme.len();
     }
 
@@ -773,9 +817,53 @@ pub fn wrap_text_with_ansi(text: &str, width: usize) -> Vec<String> {
         lines.push(current_line + &finalize_line(&tracker));
     }
 
-    // `lines` is never empty here: empty input takes the ASCII fast path,
-    // and any grapheme/escape processed above leaves a non-empty line.
+    // Input whose every glyph was dropped (width 1 against CJK) yields one
+    // empty line rather than none, matching the ASCII fast path: callers map
+    // one row per line (`Input::build_visual_layout`).
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
     lines
+}
+
+/// A mark a wrapped line may not begin with: the closing half of Chinese (and
+/// fullwidth) punctuation.
+///
+/// 禁则 is the one line-breaking rule a Chinese reader notices without looking
+/// for it — a line that opens with `，` or `。` reads as a typo. Only marks that
+/// are themselves single codepoints are listed, so a grapheme cluster (an emoji
+/// with a variation selector, a keycap) can never match.
+fn may_not_start_line(grapheme: &str) -> bool {
+    let mut chars = grapheme.chars();
+    let (Some(ch), None) = (chars.next(), chars.next()) else {
+        return false;
+    };
+    matches!(
+        ch,
+        '，' | '、'
+            | '。'
+            | '；'
+            | '：'
+            | '！'
+            | '？'
+            | '）'
+            | '〕'
+            | '］'
+            | '｝'
+            | '〉'
+            | '》'
+            | '」'
+            | '』'
+            | '】'
+            | '〗'
+            | '…'
+            | '‥'
+            | '・'
+            | 'ー'
+            | '々'
+            | '％'
+            | '‰'
+    )
 }
 
 fn is_all_ansi(s: &str) -> bool {
@@ -1352,6 +1440,71 @@ mod tests {
     #[test]
     fn cjk_wrapping_respects_double_width() {
         assert_eq!(wrapped_plain("中文中文", 4), vec!["中文", "中文"]);
+    }
+
+    /// A space inside Chinese does not become the break: the width does.
+    ///
+    /// Chinese may break between any two characters, so retreating to a space
+    /// bought nothing and cost the rest of the line — a draft with one space in
+    /// an otherwise unspaced run of Chinese (an IME habit, not a word
+    /// separator) wrapped into lines that were half empty, and the composer's
+    /// box grew a row for each one.
+    #[test]
+    fn a_space_inside_chinese_does_not_cut_the_line_short() {
+        let text =
+            "阿萨德发生的发烧地方啊舒服的啊舒服的 啊舒服啊发撒地方是发生发撒的发生发撒地方是\
+                    发撒地方撒地方按时发的舒服的舒服的啊舒服的按时发的撒地方按时都发撒地方舒服的";
+        let width = 72;
+        let lines = wrapped_plain(text, width);
+        for line in &lines[..lines.len() - 1] {
+            assert!(
+                visible_width(line) >= width - 2,
+                "a line gave up {width} cells for a space: {:?} ({} cells)",
+                line,
+                visible_width(line)
+            );
+        }
+        assert_eq!(lines.concat(), text);
+    }
+
+    /// A line never opens with `，。、` — the glyph before the closing mark
+    /// comes down with it.
+    #[test]
+    fn chinese_closing_punctuation_never_opens_a_wrapped_line() {
+        let body = "中".repeat(36); // 72 cells: the mark is what overflows
+        let text = format!("{body}。下一句");
+        let lines = wrapped_plain(&text, 72);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            !lines[1].starts_with('。'),
+            "the line opens with a closing mark: {lines:?}"
+        );
+        assert!(lines[1].starts_with("中。"), "{lines:?}");
+        assert_eq!(lines.concat(), text);
+    }
+
+    /// The one contract every caller relies on: a wrapped line is at most
+    /// `width` cells. A double-width glyph asked for a one-cell line fits
+    /// nowhere at all, so it must not be emitted onto that line (it used to be
+    /// pushed onto the fresh line unconditionally, after an empty line).
+    #[test]
+    fn a_glyph_wider_than_the_whole_line_is_never_emitted() {
+        for text in ["中", "中文", "a中b", "\x1b[31m中\x1b[0m", "🦀"] {
+            let lines = wrapped_plain(text, 1);
+            assert!(
+                !lines.is_empty(),
+                "{text:?}: a non-empty input yielded no line"
+            );
+            for line in &lines {
+                assert!(
+                    visible_width(line) <= 1,
+                    "{text:?} wrapped at width 1 emitted {} cells: {line:?} (lines {lines:?})",
+                    visible_width(line)
+                );
+            }
+        }
+        // At a width the glyph does fit, nothing is dropped.
+        assert_eq!(wrapped_plain("中", 2), vec!["中"]);
     }
 
     #[test]

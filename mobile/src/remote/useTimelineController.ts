@@ -1,3 +1,4 @@
+import { eventPayload } from "@future-os/thread-projection";
 import { useOlderHistory, type OlderPageResult, type PendingOlderPage } from "./timeline/useOlderHistory";
 import { compactionTerminalOf, useCompactionOutcomes } from "./timeline/useCompactionOutcomes";
 import { HISTORY_PAGE_USER_EXCHANGES, HISTORY_TAIL_CURSOR, HistoryPageHiddenError, commitHistoryPage, readHistoryPage, latestTimelineWindow, retainOlderHistoryPrefix, diagnosticError } from "./timeline/historyPaging";
@@ -5,8 +6,8 @@ import type { HistoryPagingState } from "./timeline/historyPaging";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState } from "react-native";
-import type { RemoteClient } from "./client";
-import { fetchEventsSince } from "@future-os/remote-client/replay";
+import type { RecoveryReason, RemoteClient } from "./client";
+import { fetchEventsSince, hydrateRemoteEvent } from "@future-os/remote-client/replay";
 
 import type { RunCursor } from "@future-os/thread-projection";
 import { SyncEngine, type ReconcileReason, type TimelineSyncStatus } from "@future-os/remote-client/syncEngine";
@@ -14,7 +15,21 @@ import { emptyTimeline, markApprovalDecision, mergeHistoryAttachments, timelineF
 import type { HistoryEntry, RemoteSessionState, StreamEvent } from "./types";
 export { compactionTerminalOf, COMPACTION_TERMINAL_TIMEOUT_MS } from "./timeline/useCompactionOutcomes";
 
+// A cold open is one lane across `get_state -> history -> replay`, and the guard
+// below is what the reader sees while the first commit is missing. It must not
+// fire on a lane that is still inside its own budget: one `request` attempt may
+// take up to REQUEST_TIMEOUT_MS (10 s) and a read retries it twice more, so a
+// 15 s wall clock replaces the spinner with an error while the client is still
+// working — which is how a slow link turns into "the conversation timed out".
+//
+// The guard therefore reports at TIMELINE_LOAD_TIMEOUT_MS only when the lane has
+// actually failed an attempt, or when no attempt is in flight at all (nothing
+// was ever started — a backgrounded screen defers `restart`, so there is no
+// signal to wait for). A lane that is mid-attempt keeps waiting up to a ceiling
+// that covers one full attempt chain, and that ceiling is what stops a wedged
+// attempt from spinning forever.
 const TIMELINE_LOAD_TIMEOUT_MS = 15_000;
+const TIMELINE_LOAD_CEILING_MS = 45_000;
 
 interface TimelineControllerOptions {
   clientRef: MutableRefObject<RemoteClient | null>;
@@ -25,6 +40,12 @@ interface TimelineControllerOptions {
   refreshSessions(): Promise<void>;
   setTitleOverrides: Dispatch<SetStateAction<Record<string, string>>>;
   onSessionState?(sessionId: string, state: RemoteSessionState): void;
+  /**
+   * The runtime's own connection recovery. `client.recoverNow` is a no-op for a
+   * terminal client, so a retry that only calls it can never heal a fatal one:
+   * the runtime is what can replace the client outright.
+   */
+  recoverConnection?(reason: RecoveryReason): Promise<void>;
 }
 
 export function useTimelineController({
@@ -36,6 +57,7 @@ export function useTimelineController({
   refreshSessions,
   setTitleOverrides,
   onSessionState,
+  recoverConnection,
 }: TimelineControllerOptions) {
   const onSessionStateRef = useRef(onSessionState);
   useEffect(() => { onSessionStateRef.current = onSessionState; }, [onSessionState]);
@@ -56,6 +78,13 @@ export function useTimelineController({
   const historyPagingRef = useRef<Record<string, HistoryPagingState>>({});
   const committedHistoryRef = useRef<Record<string, TimelineState["historyWindow"]>>({});
   const historyEpochRef = useRef(0);
+  // Sessions whose lane has reported a failed reconcile attempt, and when. A
+  // failure is the only evidence the open is not merely slow, so the timeout
+  // guard above is gated on it.
+  const syncFailureRef = useRef<Record<string, number>>({});
+  // The lane's status as the guard reads it. The rendered copy is state; this
+  // one answers a timer callback, which must not close over a stale render.
+  const syncStatusRef = useRef<Record<string, TimelineSyncStatus>>({});
   const { compactionWaitersRef, compactionTerminalsRef, cancelCompactionWaiters, awaitCompactionOutcome }
     = useCompactionOutcomes({ clientRef, selectedRef, syncEngineRef, historyEpochRef });
   const olderRequestRef = useRef<{
@@ -143,7 +172,7 @@ export function useTimelineController({
       }
       if (event.type === "session_name_changed") {
         try {
-          const data = JSON.parse(event.data) as Record<string, unknown>;
+          const data = eventPayload(event, event.data) as Record<string, unknown>;
           const name = typeof data.name === "string" ? data.name.trim() : "";
           if (name) {
             setTitleOverrides((previous) => ({ ...previous, [sid]: name }));
@@ -170,7 +199,7 @@ export function useTimelineController({
         void hydrateAttachmentsRef.current(sid);
       if (event.type === "approval_decision") {
         try {
-          const data = JSON.parse(event.data) as Record<string, unknown>;
+          const data = eventPayload(event, event.data) as Record<string, unknown>;
           const approvalId = data.approval_request_id;
           const status = data.status;
           if (
@@ -214,18 +243,20 @@ export function useTimelineController({
       let entries = response.entries ?? [];
       let nextBefore = response.nextOffset ?? 0;
       let hasMore = response.hasMore === true && nextBefore > 0;
-      // A byte-trimmed tail page sheds whole oldest exchanges to fit the
-      // bridge's reply budget, so it can come back holding fewer exchanges
-      // than the window is meant to show (the tool-dense session that surfaced
-      // this returned a single exchange). The shed exchanges are still durable
-      // and still paged (hasMore stays true) — without backfilling them here
-      // they only ever reappear if the user manually pages up, which reads as
-      // "older messages were eaten". Backfill whole older exchanges until the
-      // window holds its full exchange count or the journal runs out. Only a
-      // page the bridge explicitly marked trimmed is short by construction; a
-      // genuinely short session must not trigger these extra reads. The
-      // backward byte budget only trims the newest page, so these gap reads
-      // return complete exchanges.
+      // A tail page can hold fewer exchanges than the window is meant to show,
+      // and the rest is still durable and still paged (hasMore stays true). Two
+      // bounds shorten one: the bridge sheds whole oldest exchanges to fit its
+      // reply budget, and the Agent cuts a backward read at its own row and byte
+      // limits — a tool-dense exchange then comes back as a single exchange of
+      // 870 KB, which the byte budget cannot shed any further. Measured
+      // 2026-10-28: a three-exchange tail read delivered one exchange, and the
+      // transcript drew the newest reply with nothing above it. Without
+      // backfilling here the shed exchanges only ever reappear if the user
+      // manually pages up, which reads as "older messages were eaten". So
+      // backfill until the window holds its full exchange count or the journal
+      // runs out. The host marks such a page `trimmed` — whichever bound
+      // shortened it — so a page it considers whole is not re-read; a genuinely
+      // short session ends in `hasMore: false` instead.
       const countUsers = (rows: HistoryEntry[]) =>
         rows.reduce((n, row) => n + (row.role === "user" ? 1 : 0), 0);
       let tailTrimmed = response.trimmed === true;
@@ -487,6 +518,9 @@ export function useTimelineController({
       olderRequestRef.current?.controller.abort();
       historyEpochRef.current += 1;
       pruneTimelines(sessionId);
+      // A navigation starts a fresh attempt chain for this conversation: a
+      // failure recorded against the previous open must not fail this one early.
+      delete syncFailureRef.current[sessionId];
       // Explicit navigation starts a bounded latest window. Only an in-place
       // refresh bridges a gap back to already displayed history.
       const nextPaging = { ...historyPagingRef.current };
@@ -550,6 +584,11 @@ export function useTimelineController({
         return state;
       },
       requestHistory: loadHistory,
+      hydrateEvent: async (sessionId, event, isCurrent) => {
+        const client = clientRef.current;
+        if (!client) throw new Error("not_connected");
+        return hydrateRemoteEvent(client, sessionId, event, () => clientRef.current === client && isCurrent());
+      },
       // The lane the Desktop agreed to send decides what the integrity checks
       // may demand: a lean feed omits slices by design, so it must not be read
       // as loss (that reconciliation would retry forever). Read through the
@@ -568,6 +607,7 @@ export function useTimelineController({
         return { ...merged, events: merged.events ?? [] };
       },
       onSyncStatus: (sessionId, status) => {
+        syncStatusRef.current[sessionId] = status;
         setSyncStatuses((previous) =>
           previous[sessionId] === status
             ? previous
@@ -593,8 +633,19 @@ export function useTimelineController({
           retryInMs: failure.retryInMs,
           error: diagnosticError(failure.error),
         });
+        // The log answers "where did it die" for whoever can read it; the beat
+        // answers it for the machine the phone is talking to, which is the only
+        // place the person staring at the spinner can look. Both, because
+        // neither is visible from the other end.
+        clientRef.current?.setSyncStage?.(failure.stage);
+        syncFailureRef.current[failure.sessionId] = Date.now();
       },
       onRecovered: (sessionId) => {
+        // The lane that was stuck has reconciled, so the report is no longer
+        // true. Clear it rather than leave the device looking stuck until its
+        // next failure.
+        clientRef.current?.setSyncStage?.(null);
+        delete syncFailureRef.current[sessionId];
         setTimelineErrors((previous) => {
           if (!previous[sessionId]) return previous;
           const next = { ...previous };
@@ -625,6 +676,9 @@ export function useTimelineController({
     return () => {
       unsubscribe();
       syncEngineRef.current = null;
+      // Lanes die with the engine, and with them every reason to report them.
+      syncFailureRef.current = {};
+      syncStatusRef.current = {};
       engine.clear();
     };
   }, [clientRef, compactionWaitersRef, loadHistory, selectedRef]);
@@ -689,6 +743,8 @@ export function useTimelineController({
     setHistoryPaging({});
     olderFailureRef.current = {};
     setOlderFailure({});
+    syncFailureRef.current = {};
+    syncStatusRef.current = {};
     parkOlderPage(null);
   }, [cancelCompactionWaiters, parkOlderPage]);
 
@@ -723,22 +779,48 @@ export function useTimelineController({
   useEffect(() => {
     if (!timelinePending || !selectedSessionId || timelineError) return;
     const sessionId = selectedSessionId;
-    const timer = setTimeout(() => {
-      if (
-        selectedRef.current !== sessionId ||
-        timelinesRef.current[sessionId] !== undefined
-      )
-        return;
+    const startedAt = Date.now();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const fail = () => {
       console.error("[remote] session timeline load timed out", {
         sessionId,
-        timeoutMs: TIMELINE_LOAD_TIMEOUT_MS,
+        timeoutMs: Date.now() - startedAt,
+        attemptFailed: (syncFailureRef.current[sessionId] ?? 0) > 0,
+        attemptInFlight:
+          syncStatusRef.current[sessionId] === "syncing" ||
+          syncStatusRef.current[sessionId] === "retrying",
+        ceilingMs: TIMELINE_LOAD_CEILING_MS,
       });
       setTimelineErrors((previous) => ({
         ...previous,
         [sessionId]: "timeout",
       }));
-    }, TIMELINE_LOAD_TIMEOUT_MS);
-    return () => clearTimeout(timer);
+    };
+    const check = () => {
+      // A commit landed, or the reader moved on: nothing is waiting for this.
+      if (
+        selectedRef.current !== sessionId ||
+        timelinesRef.current[sessionId] !== undefined
+      )
+        return;
+      const elapsed = Date.now() - startedAt;
+      // Three things justify the error, and a merely slow reconcile is none of
+      // them: an attempt that already failed, a lane with no attempt in flight
+      // (nothing was started, so there is nothing to wait for), and the ceiling
+      // that covers one full attempt chain.
+      const failed = (syncFailureRef.current[sessionId] ?? 0) > 0;
+      const status = syncStatusRef.current[sessionId];
+      const attemptInFlight = status === "syncing" || status === "retrying";
+      if (failed || !attemptInFlight || elapsed >= TIMELINE_LOAD_CEILING_MS) {
+        fail();
+        return;
+      }
+      timer = setTimeout(check, Math.max(0, TIMELINE_LOAD_CEILING_MS - elapsed));
+    };
+    timer = setTimeout(check, TIMELINE_LOAD_TIMEOUT_MS);
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
   }, [selectedRef, selectedSessionId, timelineError, timelinePending]);
 
   const retryTimeline = useCallback(async () => {
@@ -751,8 +833,20 @@ export function useTimelineController({
       return next;
     });
     console.warn("[remote] retrying session timeline sync", { sessionId });
+    // The retry starts a fresh attempt chain, so it gets the whole budget: a
+    // failure recorded against the previous chain must not fail this one early.
+    delete syncFailureRef.current[sessionId];
     const client = clientRef.current;
-    if (client) {
+    if (recoverConnection) {
+      try {
+        await recoverConnection("request-failure");
+      } catch (error) {
+        console.error("[remote] timeline retry transport recovery failed", {
+          sessionId,
+          error: diagnosticError(error),
+        });
+      }
+    } else if (client) {
       try {
         await client.recoverNow("request-failure");
       } catch (error) {
@@ -764,7 +858,7 @@ export function useTimelineController({
     }
     if (selectedRef.current === sessionId)
       syncEngineRef.current?.restart(sessionId, "open");
-  }, [clientRef, selectedRef]);
+  }, [clientRef, recoverConnection, selectedRef]);
 
   // Pull-to-refresh: rebuild the visible window from durable history. This is
   // the explicit escape hatch for any sync state the automatic reconciles
@@ -773,6 +867,7 @@ export function useTimelineController({
   const reloadTimeline = useCallback(() => {
     const sessionId = selectedRef.current;
     if (!sessionId) return;
+    delete syncFailureRef.current[sessionId];
     syncEngineRef.current?.restart(sessionId, "open");
   }, [selectedRef]);
 

@@ -162,6 +162,7 @@ fn install_skill_publishes_the_installed_skill_after_a_platform_download() {
     }
     let bytes = cursor.into_inner();
 
+    crate::test_support::ensure_fd_headroom();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = format!("http://{}", listener.local_addr().unwrap());
     std::thread::spawn(move || {

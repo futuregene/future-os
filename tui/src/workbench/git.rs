@@ -19,7 +19,7 @@
 //!   cwd changes; `ctrl+k`, a `usage` event and every redraw in between reuse
 //!   the cached name instead of spawning a process.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// How long a branch read may take before it is killed and reported as "no
@@ -33,6 +33,9 @@ pub const BRANCH_TIMEOUT: Duration = Duration::from_millis(600);
 /// own is a git implementation detail, and the reader wants to know *where* the
 /// checkout is, not that it is not on a branch.
 pub fn branch(cwd: &Path) -> String {
+    if let Some(name) = branch_fast(cwd) {
+        return name;
+    }
     let (code, stdout, _) = run(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]);
     if code != 0 {
         return String::new();
@@ -56,6 +59,62 @@ pub fn branch(cwd: &Path) -> String {
     }
 }
 
+/// The branch a checkout is on, read out of `.git/HEAD` without spawning
+/// anything, or `None` when the answer needs the real `git`.
+///
+/// A branch name is one line of one file: `<gitdir>/HEAD` holds
+/// `ref: refs/heads/<name>` for as long as a branch is checked out. Reading it
+/// costs a handful of `stat`s and one small `open` — which on Windows is the
+/// difference between a process spawn (55–99 ms measured here: loader, image
+/// checks, the real-time scanner, then `git` itself) and nothing at all.
+///
+/// Everything else is `None` and the caller falls back to
+/// `git rev-parse --abbrev-ref HEAD`, because this is a *shortcut*, not a
+/// second implementation of git's naming rules:
+///
+/// * a **detached** HEAD is spelled with `core.abbrev`, whose length depends on
+///   the object count — only `git` may choose it;
+/// * a symref outside `refs/heads/` (a tag, a remote-tracking ref) is named by
+///   git's own abbreviation, not by stripping a prefix;
+/// * **no repository** above `cwd`, an unreadable `HEAD`, a `gitdir:` pointing
+///   nowhere — all left to git, which also honours `GIT_DIR` and friends.
+pub fn branch_fast(cwd: &Path) -> Option<String> {
+    let head = std::fs::read_to_string(git_dir(cwd)?.join("HEAD")).ok()?;
+    let target = head.trim().strip_prefix("ref:")?.trim();
+    let name = target.strip_prefix("refs/heads/")?;
+    if name.is_empty() {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// The `.git` directory that governs `cwd`: the nearest one up the tree, with a
+/// `gitdir: <path>` indirection followed — a linked worktree and a submodule
+/// keep their `HEAD` in the main repository rather than in the checkout.
+fn git_dir(cwd: &Path) -> Option<PathBuf> {
+    for dir in cwd.ancestors() {
+        let dot = dir.join(".git");
+        match std::fs::metadata(&dot) {
+            Ok(meta) if meta.is_dir() => return Some(dot),
+            Ok(meta) if meta.is_file() => {
+                let text = std::fs::read_to_string(&dot).ok()?;
+                let path = text.trim().strip_prefix("gitdir:")?.trim();
+                if path.is_empty() {
+                    return None;
+                }
+                let path = Path::new(path);
+                return Some(if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    dir.join(path)
+                });
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// `git -C <cwd> <args…>`, bounded by [`BRANCH_TIMEOUT`]. A failure to spawn or
 /// a timeout is reported as a non-zero code with no output, which every caller
 /// already treats as "no branch".
@@ -68,17 +127,30 @@ fn run(cwd: &Path, args: &[&str]) -> (i32, String, String) {
     }
 }
 
-/// The branch of one workspace, re-read only when the workspace changes.
+/// The branch of one workspace, installed once and then only read.
 ///
-/// The surface asks for the header on every frame and for the local facts on
-/// every state refresh; a `git` spawn per frame would show up as a stutter on a
-/// large repository, and the answer only changes when the reader moves.
+/// The surface asks for the header on every frame, so a `git` spawn per frame
+/// would show up as a stutter on a large repository. It also asks *right after a
+/// switch*, which is the worst moment to wait for a process — and a read can take
+/// up to [`BRANCH_TIMEOUT`] on a repository another session has locked. So this
+/// type never reads: it holds the last answer, says when a workspace still needs
+/// one, and the caller reads on its own thread.
+///
+/// Two rules, both about not letting a repository annoy the reader:
+///
+/// * **No read here.** [`Self::get`] answers from memory and never spawns; the
+///   frame that names the workspace cannot wait for a process. The read itself
+///   belongs to [`crate::workbench::live::LocalReads`], which also decides *when*
+///   one is owed (a workspace move) and drops an answer for a workspace the
+///   reader has already left.
+/// * **No stale name.** A workspace that has not been read yet has no branch to
+///   name — an empty string, never the previous workspace's branch.
 #[derive(Debug, Default)]
 pub struct BranchCache {
     cwd: String,
     branch: String,
-    /// Whether a workspace has ever been asked about: `""` is a real answer
-    /// (a terminal outside a repository), so it cannot double as "unset".
+    /// Whether a workspace has ever been installed: `""` is a real answer (a
+    /// terminal outside a repository), so it cannot double as "unset".
     loaded: bool,
 }
 
@@ -87,72 +159,46 @@ impl BranchCache {
         Self::default()
     }
 
-    /// The branch for `cwd`, reading it only if this is a different workspace
-    /// than the last answer was for. `""` asks nothing and answers nothing.
-    pub fn for_cwd(&mut self, cwd: &str) -> &str {
-        self.for_cwd_with(cwd, branch)
+    /// The branch of `cwd`, or nothing while its read is still running.
+    pub fn get(&self, cwd: &str) -> &str {
+        if self.loaded && self.cwd == cwd {
+            &self.branch
+        } else {
+            ""
+        }
     }
 
-    /// The same cache with the reader injected, so the "one read per workspace"
-    /// rule is a unit test instead of a process count.
-    pub fn for_cwd_with<F>(&mut self, cwd: &str, read: F) -> &str
-    where
-        F: FnOnce(&Path) -> String,
-    {
+    /// Install a finished read for `cwd`. An empty `cwd` names no workspace and
+    /// installs nothing.
+    pub fn install(&mut self, cwd: &str, branch: String) {
         if cwd.is_empty() {
-            self.cwd.clear();
-            self.branch.clear();
-            self.loaded = false;
-            return &self.branch;
+            return;
         }
-        let changed = !self.loaded || self.cwd != cwd;
-        if changed {
-            // A failed read is "no branch", not the previous workspace's
-            // branch: a header that keeps naming the old branch after a move is
-            // worse than one that names none.
-            self.branch = read(Path::new(cwd));
-            self.cwd = cwd.to_string();
-            self.loaded = true;
-        }
-        &self.branch
+        self.cwd = cwd.to_string();
+        self.branch = branch;
+        self.loaded = true;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
 
-    /// One read per workspace: the second and third refreshes at the same cwd
-    /// spawn nothing, and a move reads again.
+    /// A workspace that has not been read yet names no branch — an empty string,
+    /// never the previous workspace's.
     #[test]
-    fn the_branch_is_read_once_per_cwd() {
-        let calls = Cell::new(0);
+    fn a_workspace_that_was_never_read_names_no_branch() {
         let mut cache = BranchCache::new();
-        let read = |path: &Path| {
-            calls.set(calls.get() + 1);
-            assert_eq!(path, Path::new("/w/one"));
-            "dev-huichen".to_string()
-        };
-        assert_eq!(cache.for_cwd_with("/w/one", read), "dev-huichen");
+        assert_eq!(cache.get("/w/one"), "");
+        cache.install("/w/one", "dev-huichen".to_string());
+        assert_eq!(cache.get("/w/one"), "dev-huichen");
+        assert_eq!(cache.get("/w/one"), "dev-huichen", "a cache, not one shot");
         assert_eq!(
-            cache.for_cwd_with("/w/one", |_| unreachable!("cached")),
-            "dev-huichen"
+            cache.get("/w/two"),
+            "",
+            "and nothing for a workspace it has not been told about"
         );
-        assert_eq!(
-            cache.for_cwd_with("/w/one", |_| unreachable!("cached")),
-            "dev-huichen"
-        );
-        assert_eq!(calls.get(), 1);
-        // A worktree move: a different workspace, a second read.
-        assert_eq!(
-            cache.for_cwd_with("/w/two", |path| {
-                assert_eq!(path, Path::new("/w/two"));
-                "fix/workbench-defects".to_string()
-            }),
-            "fix/workbench-defects"
-        );
-        assert_eq!(calls.get(), 1);
+        assert_eq!(cache.get("/w/one"), "dev-huichen", "which it still holds");
     }
 
     /// A workspace that is not a repository, a read that failed, and a session
@@ -161,22 +207,16 @@ mod tests {
     #[test]
     fn a_failed_read_is_an_empty_branch_not_a_stale_one() {
         let mut cache = BranchCache::new();
-        assert_eq!(
-            cache.for_cwd_with("/w/repo", |_| "main".to_string()),
-            "main"
-        );
-        assert_eq!(cache.for_cwd_with("/w/plain", |_| String::new()), "");
-        // Back to a repository reads again rather than replaying the empty one.
-        assert_eq!(
-            cache.for_cwd_with("/w/repo", |_| "main".to_string()),
-            "main"
-        );
-        // No workspace at all: nothing to name, and the next real one reads.
-        assert_eq!(cache.for_cwd_with("", |_| unreachable!("no cwd")), "");
-        assert_eq!(
-            cache.for_cwd_with("/w/repo", |_| "main".to_string()),
-            "main"
-        );
+        cache.install("/w/repo", "main".to_string());
+        assert_eq!(cache.get("/w/repo"), "main");
+        cache.install("/w/plain", String::new());
+        assert_eq!(cache.get("/w/plain"), "", "not a repository, no branch");
+        assert_eq!(cache.get("/w/repo"), "", "and not the previous one either");
+        // No workspace at all: nothing to name.
+        assert_eq!(cache.get(""), "");
+        cache.install("", "ignored".to_string());
+        assert_eq!(cache.get(""), "", "an install for no workspace is ignored");
+        assert_eq!(cache.get("/w/plain"), "");
     }
 
     /// The real read, in this repository: the branch the checkout is on, and
@@ -193,5 +233,69 @@ mod tests {
         assert!(!name.contains('\n'), "a branch name is one line: {name:?}");
         let outside = tempfile::tempdir().expect("a temp dir");
         assert_eq!(branch(outside.path()), "");
+    }
+
+    /// A checkout on a branch is named by one line of `.git/HEAD`, with no
+    /// process spawned: this is the answer a workspace switch needs, and it is
+    /// the whole reason `branch` can be instant on Windows.
+    #[test]
+    fn a_checked_out_branch_is_read_from_head_without_running_git() {
+        let repo = tempfile::tempdir().expect("a temp dir");
+        let git = repo.path().join(".git");
+        std::fs::create_dir_all(&git).expect("a git dir");
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/dev-huichen\n").expect("head");
+
+        assert_eq!(branch_fast(repo.path()).as_deref(), Some("dev-huichen"));
+        assert_eq!(branch(repo.path()), "dev-huichen", "and through branch()");
+        // A subdirectory of the checkout names the same branch: the walk up is
+        // what makes a session cwd anywhere in the tree work.
+        let nested = repo.path().join("tui/src");
+        std::fs::create_dir_all(&nested).expect("a nested dir");
+        assert_eq!(branch_fast(&nested).as_deref(), Some("dev-huichen"));
+    }
+
+    /// A linked worktree (and a submodule) keeps `.git` as a *file* holding
+    /// `gitdir: <path>`; the branch is still one read, in that directory.
+    #[test]
+    fn a_gitdir_indirection_is_followed() {
+        let holder = tempfile::tempdir().expect("a temp dir");
+        let real = holder.path().join("main/.git/worktrees/checkout");
+        std::fs::create_dir_all(&real).expect("a worktree gitdir");
+        std::fs::write(real.join("HEAD"), "ref: refs/heads/fix/headers\n").expect("head");
+        let checkout = holder.path().join("checkout");
+        std::fs::create_dir_all(&checkout).expect("a checkout");
+        std::fs::write(
+            checkout.join(".git"),
+            format!("gitdir: {}\n", real.display()),
+        )
+        .expect("a .git file");
+
+        assert_eq!(branch_fast(&checkout).as_deref(), Some("fix/headers"));
+    }
+
+    /// The three shapes the shortcut must refuse: a detached HEAD (its short
+    /// sha is git's choice), a symref outside `refs/heads/`, and no repository
+    /// at all. Each falls through to `git rev-parse`, which knows the rules.
+    #[test]
+    fn the_shortcut_refuses_what_only_git_may_name() {
+        let repo = tempfile::tempdir().expect("a temp dir");
+        let git = repo.path().join(".git");
+        std::fs::create_dir_all(&git).expect("a git dir");
+
+        std::fs::write(
+            git.join("HEAD"),
+            "9e4a47d2a5b1f0c3d6e8a2b4c6d8e0f1a3b5c7d9\n",
+        )
+        .expect("a detached head");
+        assert_eq!(branch_fast(repo.path()), None, "detached: git names it");
+
+        std::fs::write(git.join("HEAD"), "ref: refs/remotes/origin/main\n").expect("a symref");
+        assert_eq!(branch_fast(repo.path()), None, "not a local branch");
+
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/\n").expect("an empty name");
+        assert_eq!(branch_fast(repo.path()), None, "no name to show");
+
+        let plain = tempfile::tempdir().expect("a temp dir");
+        assert_eq!(branch_fast(plain.path()), None, "not a repository");
     }
 }

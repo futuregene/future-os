@@ -648,3 +648,107 @@ it("does not restore stale capabilities from a superseded settings read", async 
   expect(view.container.textContent).not.toContain("Upgrade system Bubblewrap on that computer");
   await view.unmount();
 });
+
+/**
+ * A write whose answer arrives after the page moved on is dropped.
+ *
+ * The machine can restart its bridge, or go away and come back, while a write is
+ * on the wire: the page then reloads from the *new* connection, and the old
+ * answer describes a record that no longer belongs to what is on screen.
+ * Applying it would flip a switch back to a value the host has since been asked
+ * about again — the reader would see their own earlier choice win over the
+ * newer read, with nothing to explain it.
+ */
+it("drops a settings answer that lands after the machine was re-read", async () => {
+  let releaseWrite: ((value: unknown) => void) | null = null;
+  request.mockImplementation(async (_desktopId, command) => {
+    const type = typeof command.type === "string" ? command.type : "";
+    if (type === "update_desktop_settings")
+      return new Promise((resolve) => { releaseWrite = resolve; });
+    if (type === "get_desktop_settings")
+      return { autoTitleFirstTurn: false, autoUpgradeSkills: true };
+    if (type === "get_settings")
+      return { approvalTier: "manual", sandboxAvailable: true };
+    return undefined;
+  });
+
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const render = (next: RemotePeer) => act(async () => {
+    root.render(<RemotePeerSettings onBack={vi.fn()} onChanged={vi.fn()} onOpenTasks={vi.fn()} peer={next} />);
+  });
+  await render(peer());
+  await settle();
+
+  const toggle = () => container.querySelector<HTMLButtonElement>("button[aria-label='Auto-upgrade skills']")!;
+  expect(toggle().getAttribute("aria-checked")).toBe("true");
+  await act(async () => toggle().click());
+  expect(releaseWrite).not.toBeNull();
+
+  // The bridge behind that machine restarted: everything is read again for the
+  // new instance, and the pending write no longer belongs to this page.
+  await render(peer({ bridgeInstanceId: "bridge_2" }));
+  await settle();
+  expect(toggle().getAttribute("aria-checked")).toBe("true");
+
+  await act(async () => releaseWrite!({ autoTitleFirstTurn: true, autoUpgradeSkills: false }));
+  await settle();
+
+  // The reloaded value stands; the late answer did not repaint the row.
+  expect(toggle().getAttribute("aria-checked")).toBe("true");
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+/** The same rule for the approval mode, which is written by its own helper. */
+it("drops an approval answer that lands after the machine was re-read", async () => {
+  let releaseTier: ((value: unknown) => void) | null = null;
+  invoke.mockImplementation(async (_cmd, args) => {
+    const type = (args as { command?: { type?: string } })?.command?.type;
+    if (type === "set_approval_tier")
+      return new Promise((resolve) => { releaseTier = resolve; });
+    if (type === "get_settings")
+      return { approvalTier: "manual", sandboxAvailable: true };
+    return undefined;
+  });
+  request.mockImplementation(async (_desktopId, command) => {
+    const type = typeof command.type === "string" ? command.type : "";
+    if (type === "get_desktop_settings")
+      return { autoUpgradeSkills: true };
+    return undefined;
+  });
+
+  const withApproval = (overrides: Partial<RemotePeer> = {}) =>
+    peer({ features: ["approval_tier_v1", "auto_approval_v1"], ...overrides });
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const render = (next: RemotePeer) => act(async () => {
+    root.render(<RemotePeerSettings onBack={vi.fn()} onChanged={vi.fn()} onOpenTasks={vi.fn()} peer={next} />);
+  });
+  await render(withApproval());
+  await settle();
+  const select = () => container.querySelector<HTMLSelectElement>("select")!;
+  expect(select().value).toBe("manual");
+
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+    setter.call(select(), "off");
+    select().dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  expect(releaseTier).not.toBeNull();
+
+  await render(withApproval({ bridgeInstanceId: "bridge_2" }));
+  await settle();
+  expect(select().value).toBe("manual");
+
+  await act(async () => releaseTier!({ approvalTier: "off" }));
+  await settle();
+
+  // The host's new answer is what this page read a moment ago; the old one is
+  // about a connection that is gone.
+  expect(select().value).toBe("manual");
+  await act(async () => root.unmount());
+  container.remove();
+});

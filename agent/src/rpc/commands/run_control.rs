@@ -27,6 +27,18 @@ pub(crate) fn handle_prompt(
     // dispatcher — re-fetching it here can never fail, so the old
     // "session does not exist" arm was unreachable dead code.
     let mut sess = session.write();
+    if sess
+        .history_reset_in_progress
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return RpcResponse::build_fail_code(
+            id,
+            "prompt",
+            "session_busy",
+            "session history reset is in progress",
+            serde_json::json!({"busy_reason":"history_reset","retryable":true}),
+        );
+    }
     let busy_policy = match crate::runtime::BusyPolicy::parse(&cmd.busy_policy) {
         Ok(policy) => policy,
         Err(error) => {
@@ -96,6 +108,36 @@ pub(crate) fn handle_prompt(
                 RpcResponse::build_fail(id, "prompt", &error.to_string())
             }
         }
+    }
+}
+
+pub(crate) fn handle_release_queued_run(
+    session: &Arc<parking_lot::RwLock<ServerSession>>,
+    cmd: &RpcCommand,
+    id: &str,
+) -> String {
+    if cmd.run_id.is_empty() {
+        return RpcResponse::build_fail_code(
+            id,
+            "release_queued_run",
+            "run_not_held",
+            "run_id is required",
+            serde_json::json!({}),
+        );
+    }
+    match session.write().release_queued_run(&cmd.run_id) {
+        Ok(()) => RpcResponse::ok(
+            id,
+            "release_queued_run",
+            serde_json::json!({ "run_id": cmd.run_id, "state": "released" }),
+        ),
+        Err(error) => RpcResponse::build_fail_code(
+            id,
+            "release_queued_run",
+            "run_not_held",
+            &error.to_string(),
+            serde_json::json!({"run_id": cmd.run_id}),
+        ),
     }
 }
 

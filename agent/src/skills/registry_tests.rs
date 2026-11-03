@@ -1,5 +1,51 @@
 use super::*;
 
+#[test]
+fn released_databases_accept_skill_commands_before_the_agent_upgrades_them() {
+    for (version, ddl) in [
+        (2, include_str!("../../tests/fixtures/database/v2.sql")),
+        (3, include_str!("../../tests/fixtures/database/v3.sql")),
+        (4, include_str!("../../tests/fixtures/database/v4.sql")),
+        (5, include_str!("../../tests/fixtures/database/v5.sql")),
+        (6, include_str!("../../tests/fixtures/database/v6.sql")),
+        (7, include_str!("../../tests/fixtures/database/v7.sql")),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("agent.db");
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch(ddl).unwrap();
+        if version >= 3 {
+            db.execute(
+                "INSERT INTO skills(name,deleted,updated_at_ms) VALUES ('keep-uninstalled',1,1)",
+                [],
+            )
+            .unwrap();
+        }
+        drop(db);
+        let db = open_registry(&path).unwrap_or_else(|error| panic!("schema {version}: {error:#}"));
+        if version >= 3 {
+            let tombstone: bool = db
+                .query_row(
+                    "SELECT deleted FROM skills WHERE name='keep-uninstalled'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(tombstone);
+        } else {
+            db.execute(
+                "INSERT INTO skills(name,deleted,updated_at_ms) VALUES ('new-skill',0,1)",
+                [],
+            )
+            .unwrap();
+        }
+        let actual: i64 = db
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(actual, if version == 3 { 4 } else { version });
+    }
+}
+
 /// The registry lives at `$HOME/.future/agent/agent.db` — the same file
 /// the session Manager owns for the default sessions directory.
 #[test]

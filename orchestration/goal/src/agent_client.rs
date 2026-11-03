@@ -289,6 +289,47 @@ impl AgentClient {
         Ok(())
     }
 
+    /// The session's current `(model, thinking_level)` from `get_state`.
+    ///
+    /// Two callers rely on this. A dispatch reads the SUPERVISOR session's
+    /// configuration so a worker can inherit it (the supervisor is where the
+    /// operator's choice for this work actually lives). Every dispatch then
+    /// reads its own worker session back, so the run header records the values
+    /// that took effect instead of what the caller meant to set.
+    ///
+    /// Best-effort by design: a session the agent cannot load (deleted, never
+    /// persisted) yields `Ok(None)` rather than failing the dispatch — an
+    /// unreadable supervisor must degrade to "agent default", not to "no
+    /// worker".
+    pub async fn session_settings(&mut self, session_id: &str) -> Result<Option<(String, String)>> {
+        if session_id.trim().is_empty() {
+            return Ok(None);
+        }
+        let state = match self
+            .call("get_state", session_id, RpcCommand::default())
+            .await
+        {
+            Ok(state) => state,
+            // A missing session is not a dispatch failure (see the doc comment).
+            Err(_) => return Ok(None),
+        };
+        if state.is_null() {
+            return Ok(None);
+        }
+        let model = state
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let thinking = state
+            .get("thinkingLevel")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if model.is_empty() && thinking.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some((model.to_string(), thinking.to_string())))
+    }
+
     /// Enqueue one bounded turn. Returns the canonical run_id.
     ///
     /// Idempotency: the caller owns `client_request_id`; re-sending the same
@@ -416,6 +457,24 @@ impl AgentClient {
     /// expired) must fall back to a fresh session rather than fail the run.
     pub async fn session_alive(&mut self, session_id: &str) -> bool {
         self.session_totals(session_id).await.is_ok()
+    }
+
+    /// What the agent currently says about one run id: active, queued, already
+    /// terminal (with its verdict), interrupted by an agent restart, or
+    /// unknown. `get_state` names the run in its request, so this is one
+    /// round trip and no new command.
+    pub async fn run_status(&mut self, session_id: &str, run_id: &str) -> Result<RunStatus> {
+        let state = self
+            .call(
+                "get_state",
+                session_id,
+                RpcCommand {
+                    run_id: run_id.to_string(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        Ok(parse_run_status(&state, run_id))
     }
 
     /// Name a session this run created from its first exchange: ask the
@@ -556,6 +615,16 @@ impl AgentClient {
     /// nothing double-counts). A second consecutive gap-class failure —
     /// including a failed reconnect — terminates the turn carrying the
     /// original error.
+    ///
+    /// Attach race: `prompt` can answer with a run id the broadcaster does not
+    /// own yet — the run was accepted while the previous one was still
+    /// finalizing, so it sits in the queue — and the attach is then refused
+    /// with `FailedPrecondition: run … is not the active run`. That is not a
+    /// turn failure: ask the agent what it thinks of that run id
+    /// ([`RunStatus`]) and wait while it is queued or starting, adopt the
+    /// agent's own verdict when it already finished, and only fail when the
+    /// run is genuinely gone. Measured before this: resuming a session whose
+    /// previous run had just completed killed the worker instantly.
     pub async fn run_turn(
         &mut self,
         session_id: &str,
@@ -577,6 +646,7 @@ impl AgentClient {
         // original gap error (carried if the retry also fails).
         let mut after_idx: i64 = -1;
         let mut first_gap_error: Option<String> = None;
+        let mut attach_waits: u32 = 0;
         loop {
             let request = tonic::Request::new(StreamRequest {
                 session_id: session_id.to_string(),
@@ -586,16 +656,64 @@ impl AgentClient {
                 atomic_attach: true,
                 global_events: false,
             });
-            let mut stream = match self
+            // The attach result is taken before the match so the borrow of
+            // `self` ends here: the error arm below asks the agent for the
+            // run's status, which needs `&mut self` again.
+            let attached = self
                 .inner
                 .as_mut()
                 .ok_or_else(|| anyhow!("Agent client has no verified connection"))?
                 .stream_events(request)
-                .await
-            {
+                .await;
+            let mut stream = match attached {
                 Ok(resp) => resp.into_inner(),
                 Err(e) => {
                     let attach_err = format!("Failed to attach to run {run_id}: {e}");
+                    // The run may simply not own the stream yet (queued behind
+                    // a finalizing predecessor) or may already have finished.
+                    // Ask the agent before treating this as a lost turn.
+                    if is_attach_race(e.code(), e.message()) && attach_waits < ATTACH_RACE_RETRIES {
+                        attach_waits += 1;
+                        match self.run_status(session_id, run_id).await {
+                            Ok(RunStatus::Terminal {
+                                state,
+                                error,
+                                usage,
+                                duration_ms,
+                            }) => {
+                                summary.terminal_state = terminal_state_of(&state);
+                                summary.error = error;
+                                summary.usage = usage;
+                                summary.duration_ms = duration_ms;
+                                return Ok(summary);
+                            }
+                            // Queued or already starting: the attach can only
+                            // succeed once the run owns the broadcaster.
+                            Ok(RunStatus::Queued) | Ok(RunStatus::Active) => {
+                                tokio::time::sleep(ATTACH_RACE_BACKOFF).await;
+                                continue;
+                            }
+                            Ok(RunStatus::Interrupted { .. }) => {
+                                return Err(anyhow!(
+                                    "run {run_id} was interrupted by an agent restart before it \
+                                     completed; the turn produced no terminal result"
+                                ))
+                            }
+                            Ok(RunStatus::Unknown) => {
+                                return Err(anyhow!(
+                                    "{attach_err} (the agent does not know this run id; it either \
+                                     finished before the attach or belongs to another instance)"
+                                ))
+                            }
+                            // The status probe is best-effort: if it cannot be
+                            // read, fall back to the bounded attach retry
+                            // rather than failing the turn on a second error.
+                            Err(_) => {
+                                tokio::time::sleep(ATTACH_RACE_BACKOFF).await;
+                                continue;
+                            }
+                        }
+                    }
                     return match first_gap_error {
                         // The reconnect itself failed: a second consecutive
                         // failure — terminate the turn with the ORIGINAL
@@ -631,6 +749,16 @@ impl AgentClient {
 /// O5: backoff between a stream-gap disconnect and the reconnect attempt.
 const STREAM_GAP_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// How many times a refused attach is re-asked while the run is queued or
+/// starting. The wait is for the run in front of it to finish finalizing, so
+/// the budget is time-bounded and generous: a session that just completed a
+/// turn persists its terminal entries first, and the queued run starts only
+/// after that.
+const ATTACH_RACE_RETRIES: u32 = 60;
+
+/// Backoff between two attach attempts in the race above.
+const ATTACH_RACE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// O5: gap-class stream errors. The agent terminates the event stream with
 /// `DataLoss` when its per-run replay ring lagged (message: "event stream
 /// gap … reconnect with atomic attach"). Those are recoverable by reconnect
@@ -641,6 +769,117 @@ fn is_stream_gap(status: &tonic::Status) -> bool {
             .message()
             .to_ascii_lowercase()
             .contains("event stream gap")
+}
+
+/// Whether an attach was refused because the run does not own the broadcast
+/// stream yet. `SseBroadcaster::attach` answers exactly this when the run id
+/// it was given is not the one currently streaming — which covers both "the
+/// run is queued behind a finalizing predecessor" and "the run already
+/// terminated before we attached". Neither is a lost turn, so the caller
+/// resolves it with [`AgentClient::run_status`] instead of failing.
+fn is_attach_race(code: tonic::Code, message: &str) -> bool {
+    code == tonic::Code::FailedPrecondition
+        && message
+            .to_ascii_lowercase()
+            .contains("is not the active run")
+}
+
+/// What the agent says about a run id this client is holding. Used only to
+/// resolve a refused attach, so it carries no policy: the goal plane decides
+/// what a state means for the turn.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RunStatus {
+    /// The run owns the session's broadcast stream right now.
+    Active,
+    /// Accepted, queued behind the run in front of it.
+    Queued,
+    /// Already finished; the agent's own terminal verdict for that run.
+    Terminal {
+        state: String,
+        error: Option<String>,
+        usage: Option<Value>,
+        duration_ms: Option<i64>,
+    },
+    /// Began but never committed, because the agent process restarted.
+    Interrupted { error: Option<String> },
+    /// The session knows nothing about this run id.
+    Unknown,
+}
+
+/// Read one field by any of its spellings. The typed `get_state` payload is
+/// camelCase; the JSON fallback historically used snake_case, and a client
+/// that only accepts one of them silently reads `null` (the retired-usage-key
+/// bug). Tolerant on read, canonical on write.
+fn read_field<'a>(value: &'a Value, names: &[&str]) -> Option<&'a Value> {
+    names
+        .iter()
+        .find_map(|name| value.get(*name))
+        .filter(|v| !v.is_null())
+}
+
+fn read_str(value: &Value, names: &[&str]) -> Option<String> {
+    read_field(value, names)
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+/// Map a run object (`activeRun` / `requestedRun` / …) to the goal plane's
+/// canonical terminal state. The agent speaks `completed` / `failed` /
+/// `cancelled` / `interrupted`; the goal plane speaks
+/// `completed` / `incomplete` / `error`, and `turn_succeeded` keys on
+/// `completed` with no error.
+fn terminal_state_of(state: &str) -> String {
+    match state.to_ascii_lowercase().as_str() {
+        "completed" => "completed".to_string(),
+        "incomplete" | "interrupted" => "incomplete".to_string(),
+        _ => "error".to_string(),
+    }
+}
+
+/// Pure projection of a `get_state` payload onto [`RunStatus`] for `run_id`.
+/// Absence is `Unknown` — never "assume completed", which would turn a lost
+/// run into a successful turn.
+pub fn parse_run_status(state: &Value, run_id: &str) -> RunStatus {
+    let is_run = |value: &Value| {
+        read_field(value, &["runId", "run_id"])
+            .and_then(Value::as_str)
+            .is_some_and(|id| id == run_id)
+    };
+    if let Some(active) = read_field(state, &["activeRun", "active_run"]) {
+        if is_run(active) {
+            return RunStatus::Active;
+        }
+    }
+    if let Some(queued) =
+        read_field(state, &["queuedRuns", "queued_runs"]).and_then(Value::as_array)
+    {
+        if queued.iter().any(is_run) {
+            return RunStatus::Queued;
+        }
+    }
+    if let Some(terminal) = read_field(state, &["requestedRun", "requested_run"]) {
+        if is_run(terminal) {
+            return RunStatus::Terminal {
+                state: read_str(
+                    terminal,
+                    &["status", "state", "terminalState", "terminal_state"],
+                )
+                .unwrap_or_else(|| "completed".to_string()),
+                error: read_str(terminal, &["error"]),
+                usage: read_field(terminal, &["usage"]).cloned(),
+                duration_ms: read_field(terminal, &["durationMs", "duration_ms"])
+                    .and_then(Value::as_i64),
+            };
+        }
+    }
+    if let Some(interrupted) = read_field(state, &["interruptedRun", "interrupted_run"]) {
+        if is_run(interrupted) {
+            return RunStatus::Interrupted {
+                error: read_str(interrupted, &["error"]),
+            };
+        }
+    }
+    RunStatus::Unknown
 }
 
 /// How one stream subscription ended (O5).

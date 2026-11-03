@@ -3,6 +3,7 @@
 //! Uses reqwest for HTTP + SSE streaming, matching Go's OpenAI SDK behavior.
 
 pub(crate) mod adapters;
+pub mod probe;
 pub mod schema;
 mod sse;
 #[cfg(test)]
@@ -16,7 +17,6 @@ use serde_json::Value;
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::info;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 1800;
 pub(crate) const UPSTREAM_DISCONNECTED: &str = "[UPSTREAM_DISCONNECTED]";
@@ -324,12 +324,16 @@ impl crate::types::LLMProvider for Client {
                     .header("anthropic-version", version)
             }
         };
-        let req = builder.json(&body).build()?;
-        let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
-        info!(
+        // Serialize once. `RequestBuilder::json` would serialize the body again
+        // just so the diagnostics below could report its length, which costs a
+        // full pass and an extra copy on every model step.
+        let body_bytes = serde_json::to_vec(&body)?;
+        let body_len = body_bytes.len();
+        let req = builder.body(body_bytes).build()?;
+        tracing::debug!(
             protocol = target.protocol.protocol().canonical_name(),
             model = %request.model,
-            body_kb = body_bytes.len() / 1024,
+            body_kb = body_len / 1024,
             "LLM request"
         );
         let resp = self.http.execute(req).await.map_err(|error| {
@@ -346,7 +350,7 @@ impl crate::types::LLMProvider for Client {
                 status.as_u16(),
                 &text,
                 &request.model,
-                body_bytes.len(),
+                body_len,
             ));
         }
 
@@ -652,6 +656,18 @@ fn normalize_http_error(status: u16, text: &str, model: &str, body_bytes: usize)
             message
         );
     }
+    if status == 402
+        || matches!(
+            code,
+            "insufficient_quota" | "quota_exceeded" | "billing_hard_limit_reached"
+        )
+        || matches!(
+            error.get("type").and_then(Value::as_str),
+            Some("insufficient_quota")
+        )
+    {
+        return anyhow!("[PROVIDER_QUOTA] Provider quota unavailable (HTTP {status}): {message}");
+    }
     match status {
         401 | 403 => anyhow!("Authentication failed (HTTP {status}): {message}"),
         429 => anyhow!("Rate limited (HTTP 429): {message}"),
@@ -916,6 +932,21 @@ mod tests {
         assert!(normalize_http_error(429, "slow down", "m", 0)
             .to_string()
             .contains("Rate limited"));
+        for (status, body) in [
+            (
+                429,
+                r#"{"error":{"code":"insufficient_quota","message":"budget exhausted"}}"#,
+            ),
+            (
+                429,
+                r#"{"error":{"type":"insufficient_quota","message":"budget exhausted"}}"#,
+            ),
+            (402, "payment required"),
+        ] {
+            assert!(normalize_http_error(status, body, "m", 0)
+                .to_string()
+                .starts_with("[PROVIDER_QUOTA]"));
+        }
     }
 
     // ─── transport error classification and the image projection ─────────────
@@ -941,6 +972,7 @@ mod tests {
 
         // Nothing listening: a connect error.
         let closed = {
+            crate::test_support::ensure_fd_headroom();
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.local_addr().unwrap()
         };
@@ -959,6 +991,7 @@ mod tests {
         // A body that stops short of its declared length. `hyper` surfaces this as
         // a *decode* failure (the message is incomplete), which the classifier must
         // report as such rather than claiming the peer closed the connection.
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -983,6 +1016,7 @@ mod tests {
         // a decode failure by this hyper/reqwest pair (`Invalid chunk size line`),
         // not as `is_body`. Pin both facts: the mapping follows the predicate, and
         // this toolchain never reports a framing failure as a body error.
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -1014,6 +1048,7 @@ mod tests {
         // `BodyDataStream::new(self.res.into_body().map_err(crate::error::decode))`),
         // so no framing failure can arrive here as `is_body` or `is_request`.
         // Pinned as a measurement, not an assumption.
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -1266,6 +1301,7 @@ mod tests {
     async fn a_request_deadline_is_reported_as_a_response_timeout() {
         // A server that accepts and then says nothing: only the client deadline
         // can end this request, and it must end it as a timeout.
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -1295,6 +1331,7 @@ mod tests {
         // error is forwarded verbatim, because inventing a timeout label there
         // would make a dead provider look like a slow one.
         let closed = {
+            crate::test_support::ensure_fd_headroom();
             let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             probe.local_addr().unwrap()
         };
@@ -1320,6 +1357,7 @@ mod tests {
     /// silently dropped or decoded into a panic.
     #[tokio::test]
     async fn a_frame_with_a_truncated_utf8_sequence_is_a_model_response_error() {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -1365,6 +1403,7 @@ mod tests {
     /// cut short by us rather than by the peer.
     #[tokio::test]
     async fn a_stalled_stream_body_is_reported_as_a_timeout() {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -1420,6 +1459,7 @@ mod tests {
     #[tokio::test]
     async fn a_truncated_stream_body_is_an_upstream_disconnect_not_a_parse_error() {
         let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"par\"}}]}\n\n";
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -1479,6 +1519,7 @@ mod tests {
     /// the event stream would otherwise look like a clean completion.
     #[tokio::test]
     async fn a_frame_whose_payload_is_not_valid_json_is_a_model_response_error() {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -1565,6 +1606,7 @@ mod tests {
             }
         }
 
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -1634,6 +1676,7 @@ mod tests {
         respond: impl Fn(&str) -> (u16, &'static str, String) + Send + 'static,
         read_timeout: std::time::Duration,
     ) -> MockServer {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().unwrap().port();
         let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1742,6 +1785,61 @@ mod tests {
                 serde_json::json!("hello"),
             )],
             tools: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn fusion_profiles_reach_chat_protocols_without_mutating_live_settings() {
+        let config = future_fusion::Configuration::default();
+        for (profile, reasoning) in config.panel.iter().chain([&config.moderator]).zip([
+            schema::ChatReasoningFormat::DeepSeek,
+            schema::ChatReasoningFormat::Zai,
+            schema::ChatReasoningFormat::Qwen {
+                chat_template: false,
+            },
+            schema::ChatReasoningFormat::DeepSeek,
+        ]) {
+            let server = mock_server(|_| {
+                (200, "text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".into())
+            });
+            let mut target = protocol_target(
+                &server.base_url,
+                schema::ProtocolConfig::OpenAiChat(schema::OpenAiChatConfig {
+                    reasoning,
+                    ..Default::default()
+                }),
+            );
+            target.generation.thinking_level = profile.thinking_level.clone();
+            target.capabilities.max_output_tokens = 65_536;
+            target.capabilities.reasoning.supported = true;
+            let client = Client::from_target(target);
+            let frozen = client.snapshot().unwrap();
+            client.update_thinking("high", 16_000);
+            for _ in 0..2 {
+                let _: Vec<_> = frozen
+                    .stream_model(canonical_request())
+                    .await
+                    .unwrap()
+                    .collect()
+                    .await;
+            }
+            let _: Vec<_> = client
+                .stream_model(canonical_request())
+                .await
+                .unwrap()
+                .collect()
+                .await;
+            let requests = server.requests.lock().unwrap();
+            // Initial and retry attempts retain ordinary provider generation settings.
+            for index in 0..2 {
+                let body: Value = serde_json::from_str(&requests[index]).unwrap();
+                assert_eq!(body["max_tokens"], 256);
+                assert_eq!(body["reasoning_effort"], profile.thinking_level);
+                assert!(body["enable_thinking"] == true || body["thinking"]["type"] == "enabled");
+            }
+            let ordinary: Value = serde_json::from_str(&requests[2]).unwrap();
+            assert_eq!(ordinary["max_tokens"], 256);
+            assert_eq!(ordinary["reasoning_effort"], "high");
         }
     }
 
@@ -1995,6 +2093,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_model_transport_disconnect_reports_progress_and_error_chain() {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -2050,6 +2149,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_model_processes_usage_frames_after_finish_reason() {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -2109,6 +2209,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn stream_model_consumer_drop_closes_the_upstream_connection() {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let disconnected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -2156,6 +2257,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_model_reports_body_read_errors() {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -2223,6 +2325,7 @@ mod tests {
 
     #[tokio::test]
     async fn responses_transport_error_cleans_unfinished_items_before_retry() {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
@@ -2436,6 +2539,7 @@ mod tests {
 
     #[tokio::test]
     async fn chat_disconnect_after_finish_does_not_retry_a_completed_response() {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
@@ -2532,6 +2636,7 @@ mod tests {
     async fn stream_model_reports_invalid_utf8_in_buffered_tail() {
         // Invalid UTF-8 flushed by `decoder.finish()` is a malformed model
         // response, not a clean incomplete finish.
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -2574,6 +2679,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_model_reports_invalid_utf8_in_sse() {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {

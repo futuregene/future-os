@@ -16,7 +16,7 @@ import {
 function gestureHarness(options: { now?: () => number } = {}) {
   const create = jest.spyOn(PanResponder, "create");
   const zoom = createZoomController(options);
-  const handlers = create.mock.calls[0]![0];
+  const handlers = create.mock.calls.at(-1)![0];
   create.mockRestore();
   zoom.measure(400, 600);
   const gesture = {} as PanResponderGestureState;
@@ -262,6 +262,10 @@ test("the component measures its frame on layout so the first pinch has real bou
         .not.toHaveLength(0);
     } finally {
       act(() => tree.unmount());
+      // The spy is the module's own `PanResponder.create`, and a spy left
+      // installed keeps recording: the next `gestureHarness` would read this
+      // test's component call instead of its own controller.
+      panCreate.mockRestore();
     }
   } finally {
     jest.useRealTimers();

@@ -6,7 +6,7 @@ import type { HistoryAttachment, TimelineItem } from "../../../remote/types";
  * payload), so a row with no target asks for it when it is opened. Implemented
  * by the screen — the row itself stays free of transport.
  */
-export type ToolTargetResolver = (toolCallId: string, runId: string) => Promise<string | null>;
+export type ToolTargetResolver = (toolCallId: string, runId: string, fusion?: { stepId?: string; offset?: number }) => Promise<string | null>;
 
 export interface TimelineCardProps {
   item: TimelineItem;
@@ -20,11 +20,4 @@ export interface TimelineCardProps {
   /** Fork the conversation at this reply's turn (desktop Fork parity). */
   onFork?(item: TimelineItem): void;
   onResolveToolTarget?: ToolTargetResolver;
-  /**
-   * Where an assistant reply's tail anchor sits inside its own row, in the
-   * row's own coordinates: the offset of the last output block the question
-   * ladder lands on (see `replyTailBlock`). Reported from the row's layout
-   * events, so a jump can aim at it; questions and notices never report one.
-   */
-  onReplyTailAnchor?(itemId: string, offset: number): void;
 }

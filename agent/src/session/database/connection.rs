@@ -9,53 +9,96 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection> {
     open_connection_cancellable(path, &crate::service::StartupCancellation::default())
 }
 
+/// User tables (anything that is not SQLite's own bookkeeping).
+const USER_TABLE_COUNT: &str = "SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'";
+
+/// Does this file carry a table that the Agent's own schema does not own?
+const FOREIGN_TABLES_EXIST: &str = "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table'
+     AND name NOT LIKE 'sqlite_%' AND name NOT IN
+     ('skills','skills_meta','skill_installations','skill_operations'))";
+
+/// The complement of [`FOREIGN_TABLES_EXIST`]: nothing but the skills tables.
+const NO_FOREIGN_TABLES: &str = "SELECT NOT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table'
+     AND name NOT LIKE 'sqlite_%' AND name NOT IN
+     ('skills','skills_meta','skill_installations','skill_operations'))";
+
 pub(super) fn open_connection_cancellable(
     path: &Path,
     cancellation: &crate::service::StartupCancellation,
 ) -> Result<Connection> {
-    cancellation.check()?;
-    if let Some(home) = path.parent().and_then(Path::parent) {
-        future_rpc::home::ensure_restore_complete(home)?;
+    let started = std::time::Instant::now();
+    tracing::debug!(event = "database_open_started", database = "agent", path = %path.display());
+    let result: Result<Connection> = (|| {
+        cancellation.check()?;
+        if let Some(home) = path.parent().and_then(Path::parent) {
+            future_rpc::home::ensure_restore_complete(home)?;
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).context("create SQLite directory")?;
+        }
+        let mut connection = Connection::open(path).context("open Agent SQLite database")?;
+        cancellation.monitor_sqlite(&connection)?;
+        let result = initialize_connection(&mut connection, path, cancellation);
+        // The startup token must not interrupt ordinary writes after readiness.
+        connection.progress_handler(0, None::<fn() -> bool>)?;
+        cancellation.check()?;
+        result?;
+        Ok(connection)
+    })();
+    match &result {
+        Ok(_) => {
+            tracing::debug!(event = "database_open_completed", database = "agent", path = %path.display(), elapsed_ms = started.elapsed().as_millis() as u64)
+        }
+        Err(error) if error.is::<crate::service::StartupCancelled>() => {
+            tracing::info!(event = "database_open_cancelled", database = "agent", path = %path.display(), elapsed_ms = started.elapsed().as_millis() as u64);
+        }
+        Err(error) => {
+            tracing::error!(event = "database_open_failed", database = "agent", path = %path.display(), elapsed_ms = started.elapsed().as_millis() as u64, error = %format!("{error:#}"))
+        }
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).context("create SQLite directory")?;
-    }
-    let mut connection = Connection::open(path).context("open Agent SQLite database")?;
+    result
+}
+
+fn initialize_connection(
+    connection: &mut Connection,
+    path: &Path,
+    cancellation: &crate::service::StartupCancellation,
+) -> Result<()> {
+    crate::session::content::install_functions(connection)?;
+    // Compiling this schema's read paths is dominated by the deep views
+    // (`entry_records`, `entry_header_records`, `history_shapes`): measured on
+    // this connection, `SELECT … FROM entry_records` costs **26 ms to prepare
+    // and 0.2 ms to execute** — a 130:1 ratio — and a trivial table read costs
+    // 20 µs. rusqlite's cache holds 16 statements; this crate prepares ~130
+    // distinct ones, so an LRU of 16 evicts the hot views between calls and
+    // pays the 26 ms again. The cache is per connection and per statement, so
+    // the ceiling only has to cover one connection's working set.
+    connection.set_prepared_statement_cache_capacity(256);
     connection.busy_timeout(Duration::from_secs(5))?;
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     let application: i64 =
         connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
-    if version != 0
-        && version != 2
-        && version != 3
-        && version != 4
-        && version != 5
-        && version != 6
-        && version != super::CURRENT_SCHEMA_VERSION
-    {
+    tracing::debug!(
+        event = "database_header_read",
+        database = "agent",
+        schema_version = version,
+        target_version = super::CURRENT_SCHEMA_VERSION,
+        application_id = application
+    );
+    if !super::supports_schema_version(version) {
         bail!("unsupported Agent database schema version {version}");
     }
     if application != 0 && application != 0x46555452 {
         bail!("database belongs to a different application");
     }
     if application == 0 {
-        let tables: i64 = connection.query_row(
-            "SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
-            [],
-            |row| row.get(0),
-        )?;
+        let tables: i64 = connection.query_row(USER_TABLE_COUNT, [], |row| row.get(0))?;
         if version != 0 || tables != 0 {
             bail!("refusing to initialize an unrecognized database");
         }
     }
     if application == 0x46555452 && version == 0 {
-        let unknown: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table'
-             AND name NOT LIKE 'sqlite_%' AND name NOT IN
-             ('skills','skills_meta','skill_installations','skill_operations'))",
-            [],
-            |row| row.get(0),
-        )?;
+        let unknown: bool = connection.query_row(FOREIGN_TABLES_EXIST, [], |row| row.get(0))?;
         if unknown {
             bail!("Agent database has an incomplete schema identity; preserve it for recovery");
         }
@@ -72,40 +115,62 @@ pub(super) fn open_connection_cancellable(
     }
     if version == super::CURRENT_SCHEMA_VERSION {
         // CREATE IF NOT EXISTS must never mask missing authoritative history.
-        super::schema::validate_core(&connection)?;
+        super::schema::validate_core(connection)?;
     } else if application != 0 {
-        let bootstrap: bool = connection.query_row(
-            "SELECT NOT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table'
-             AND name NOT LIKE 'sqlite_%' AND name NOT IN
-             ('skills','skills_meta','skill_installations','skill_operations'))",
-            [],
-            |row| row.get(0),
-        )?;
+        let bootstrap: bool = connection.query_row(NO_FOREIGN_TABLES, [], |row| row.get(0))?;
         if !(bootstrap && matches!(version, 0 | 3 | 4)) {
-            super::schema::validate_authoritative_history(&connection, version)?;
+            super::schema::validate_authoritative_history(connection, version)?;
         }
         let directory = path
             .parent()
             .context("Agent database has no parent")?
             .join("backups");
-        let snapshot = crate::session::create_database_snapshot(
-            &connection,
+        cancellation.report(crate::service::StartupStage::BackingUpStorage);
+        let snapshot = crate::session::database_backup::create_database_snapshot_cancellable(
+            connection,
             &directory,
             "agent-before-schema-upgrade",
+            cancellation,
         )?;
         tracing::info!(path = %snapshot.display(), "preserved Agent pre-upgrade snapshot");
     }
     // WAL initialization writes the database header. Configure a fresh file's
     // pointer-map layout before that first write, without a full VACUUM.
     cancellation.check()?;
-    configure_incremental_auto_vacuum(&connection)?;
+    configure_incremental_auto_vacuum(connection)?;
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "synchronous", "FULL")?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
-    connection.pragma_update(None, "wal_autocheckpoint", 1_000)?;
+    // FULL durability stays on the writer; PASSIVE checkpoints have their own
+    // connection/thread so crossing a page count does not expand COMMIT work.
+    connection.pragma_update(None, "wal_autocheckpoint", 0)?;
     connection.pragma_update(None, "journal_size_limit", 8 * 1024 * 1024)?;
     cancellation.check()?;
-    super::schema::initialize_schema(&mut connection, cancellation)?;
+    if version != super::CURRENT_SCHEMA_VERSION && application != 0 {
+        cancellation.report(crate::service::StartupStage::UpgradingStorage);
+    }
+    let upgrading = version != super::CURRENT_SCHEMA_VERSION;
+    let migration_started = std::time::Instant::now();
+    if upgrading {
+        tracing::info!(
+            event = "database_upgrade_started",
+            database = "agent",
+            from_version = version,
+            to_version = super::CURRENT_SCHEMA_VERSION
+        );
+    }
+    super::schema::initialize_schema(connection, cancellation).inspect_err(|error| {
+        tracing::error!(event = "database_schema_install_failed", database = "agent", from_version = version, to_version = super::CURRENT_SCHEMA_VERSION, error = %format!("{error:#}"));
+    })?;
+    if upgrading {
+        tracing::info!(
+            event = "database_upgrade_completed",
+            database = "agent",
+            from_version = version,
+            to_version = super::CURRENT_SCHEMA_VERSION,
+            elapsed_ms = migration_started.elapsed().as_millis() as u64
+        );
+    }
     cancellation.check()?;
-    Ok(connection)
+    Ok(())
 }

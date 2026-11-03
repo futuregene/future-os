@@ -471,14 +471,17 @@ mod tests {
             "database":{"bytesBefore":1008119808,"bytesAfter":680000000,"freeBytesAfter":0}}"#
     }
 
-    async fn dispatch(arguments: Vec<String>) -> (Result<(), String>, String) {
+    async fn dispatch_report(
+        reclaim: &str,
+        arguments: Vec<String>,
+    ) -> (Result<(), String>, String, crate::test_server::MockAgent) {
         let _guard = crate::test_env::lock_env().await;
         let agent = crate::test_server::MockAgent::respond("get_journal_stats", stats_report());
         let agent = {
             let mut agent = agent;
             agent
                 .responses
-                .insert("reclaim_run_journals".into(), reclaim_report().into());
+                .insert("reclaim_run_journals".into(), reclaim.into());
             agent
         };
         let seen = agent.clone();
@@ -490,7 +493,11 @@ mod tests {
         let (out, cap) = Output::memory();
         let result = crate::commands::session::session(Some("journal"), &arguments, &out).await;
         let printed = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
-        let _ = seen;
+        (result, printed, seen)
+    }
+
+    async fn dispatch(arguments: Vec<String>) -> (Result<(), String>, String) {
+        let (result, printed, _) = dispatch_report(reclaim_report(), arguments).await;
         (result, printed)
     }
 
@@ -549,5 +556,186 @@ mod tests {
         let (out, _) = Output::memory();
         let error = run(&args(&["--reclaim", "--yes"]), &out).await.unwrap_err();
         assert!(error.contains("integrity check"), "{error}");
+    }
+
+    /// A machine that has never reclaimed and has never skipped a journal: the
+    /// two rows must read "never" and "none recorded" rather than a blank or a
+    /// zero that looks like a measurement. Both arms are what a fresh install
+    /// prints, and both are pure functions of the report — no Agent is needed.
+    #[test]
+    fn a_report_with_no_history_says_never_and_none_recorded() {
+        let (out, cap) = Output::memory();
+        report(&serde_json::json!({}), &out);
+        let printed = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let row = |label: &str| {
+            printed
+                .lines()
+                .find(|line| line.starts_with(label))
+                .map(|line| line.trim_end().to_string())
+                .unwrap_or_else(|| panic!("no {label} row in:\n{printed}"))
+        };
+        // One call per row, into a binding: a `row(..)` inside an assert's
+        // message argument is only evaluated when the assertion fails, and would
+        // sit in this lane's count as an uncovered line forever.
+        let reclaimed = row("Last reclamation");
+        assert!(reclaimed.ends_with("never"), "{reclaimed}");
+        let kept = row("Kept journals");
+        assert!(kept.ends_with("none recorded"), "{kept}");
+    }
+
+    /// A kept journal is printed with the reason it was kept: the sweep's whole
+    /// point is that "not deleted" is evidence, not silence.
+    #[test]
+    fn a_kept_journal_prints_the_reason_it_was_kept() {
+        let (out, cap) = Output::memory();
+        let plan = serde_json::json!({
+            "entries": [{
+                "sessionId": "s",
+                "runId": "run_big",
+                "rawEvents": 3,
+                "rawBytes": 10,
+                "kind": "journal",
+                "skip": "not_terminal",
+            }],
+        });
+        print_entries(&plan, true, &out);
+        let printed = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(printed.contains("kept (not_terminal)"), "{printed}");
+    }
+
+    /// The report's numbers arrive as JSON and are not always typed: a counter
+    /// can be a string after an Agent round trip, and an unexpected shape must
+    /// degrade to zero instead of inventing a figure.
+    #[test]
+    fn counters_read_a_string_and_degrade_an_unknown_shape_to_zero() {
+        assert_eq!(
+            number(&serde_json::json!({ "at": "1761461892000" }), "at"),
+            1_761_461_892_000
+        );
+        assert_eq!(number(&serde_json::json!({ "at": true }), "at"), 0);
+        assert_eq!(number(&serde_json::json!({ "at": null }), "at"), 0);
+        assert_eq!(number(&serde_json::json!({}), "at"), 0);
+        // An unparseable string is not a number either.
+        assert_eq!(number(&serde_json::json!({ "at": "later" }), "at"), 0);
+    }
+
+    /// Run ids shorter than the column are printed whole; longer ones are cut to
+    /// 21 characters plus one ellipsis, so every row keeps its alignment.
+    #[test]
+    fn long_run_ids_are_shortened_and_short_ones_are_not() {
+        let short_id = "a".repeat(22);
+        assert_eq!(short(&short_id), short_id);
+        let long = "b".repeat(30);
+        let printed = short(&long);
+        assert_eq!(printed.chars().count(), 22);
+        assert!(printed.ends_with('…'), "{printed}");
+        assert_eq!(printed.trim_end_matches('…'), "b".repeat(21));
+    }
+
+    /// "Never" is a state, not a timestamp: a missing or non-positive instant is
+    /// said in words rather than rendered as 1970 or as a bare number.
+    #[test]
+    fn an_absent_instant_reads_as_never() {
+        assert_eq!(local_time(0), "never");
+        assert_eq!(local_time(-1), "never");
+    }
+
+    /// `--json` is the machine-readable route: the Agent's own payload goes out
+    /// whole, not the human report rendered beside it. The human labels are
+    /// asserted absent, so a run that printed only the table cannot pass.
+    #[tokio::test]
+    async fn a_report_as_json_is_the_agents_payload_verbatim() {
+        let (result, printed) = dispatch(args(&["--json"])).await;
+        result.unwrap();
+        // Parsed first, asserted second: a message handed to `unwrap_or_else`
+        // or to a multi-line `assert!` is evaluated only on failure, and would
+        // sit in this lane's count as an uncovered line for ever.
+        let parsed = serde_json::from_str::<Value>(printed.trim());
+        assert!(parsed.is_ok(), "not one JSON document:\n{printed}");
+        let payload = parsed.unwrap();
+        assert!(payload["runEvents"]["rows"].is_number(), "{printed}");
+        assert!(!printed.contains("Kept journals"), "{printed}");
+        assert!(!printed.contains("Nothing was deleted"), "{printed}");
+    }
+
+    /// The dry run has its own JSON branch above the confirmation check: a plan
+    /// is exactly what a script wants to read. The document comes first and the
+    /// "add --yes" advice after it, so a caller can take the leading JSON and
+    /// ignore the trailing sentence.
+    #[tokio::test]
+    async fn a_dry_run_as_json_prints_the_plan_then_the_advice() {
+        let (result, printed) = dispatch(args(&["--reclaim", "--json"])).await;
+        result.unwrap();
+        assert!(printed.contains("\"hasMore\": false"), "{printed}");
+        assert!(printed.contains("\"entries\""), "{printed}");
+        let document = printed.find("\"hasMore\": false").unwrap();
+        let advice = printed
+            .find("Dry run: nothing was deleted")
+            .unwrap_or_else(|| panic!("no advice after the plan:\n{printed}"));
+        assert!(
+            document < advice,
+            "the plan must precede the advice:\n{printed}"
+        );
+        // The plan's own JSON is not the human report: no bytes column.
+        assert!(!printed.contains("32.8 MiB"), "{printed}");
+    }
+
+    /// The applied sweep's JSON is the *last* slice — the one that carried
+    /// `hasMore: false` and the integrity result — because that is the report
+    /// the caller's numbers come from. The mock answers the plan and the slice
+    /// with *different* counts, so a run that printed only the plan's document
+    /// cannot pass: the plan's `reclaimedEvents` is 0 and the slice's is the
+    /// number that was actually reclaimed.
+    #[tokio::test]
+    async fn an_applied_sweep_as_json_prints_the_final_slice() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = crate::test_server::MockAgent::respond("get_journal_stats", stats_report());
+        agent.sequences.insert(
+            "reclaim_run_journals".into(),
+            vec![
+                reclaim_report().replace("\"reclaimedEvents\":136298", "\"reclaimedEvents\":0"),
+                reclaim_report().into(),
+            ],
+        );
+        let address = crate::test_server::spawn_mock(agent).await;
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from(address),
+        )]);
+        let (out, cap) = Output::memory();
+        run(&args(&["--reclaim", "--yes", "--json"]), &out)
+            .await
+            .unwrap();
+        let printed = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        // Two documents — the plan's and the final slice's — and the slice's
+        // count is the one that says the sweep ran.
+        assert_eq!(
+            printed.matches("\"reclaimedEvents\": ").count(),
+            2,
+            "{printed}"
+        );
+        assert!(printed.contains("\"reclaimedEvents\": 136298"), "{printed}");
+        assert!(printed.contains("\"quickCheck\": \"ok\""), "{printed}");
+        assert!(printed.contains("quick_check: ok"), "{printed}");
+    }
+
+    /// A server that keeps answering `hasMore` without retiring anything is the
+    /// one way this loop can fail to end, so the cap is load-bearing and its
+    /// refusal has to say how to resume. The mock answers `hasMore: true` for
+    /// ever, which is that server.
+    #[tokio::test]
+    async fn a_sweep_that_never_finishes_stops_at_the_cap_and_says_how_to_resume() {
+        let (result, printed, agent) = dispatch_report(
+            &reclaim_report().replace("\"hasMore\":false", "\"hasMore\":true"),
+            args(&["--reclaim", "--yes"]),
+        )
+        .await;
+        let error = result.unwrap_err();
+        assert!(error.contains("stopped after 256 slices"), "{error}");
+        assert!(error.contains("to continue"), "{error}");
+        // One plan call plus exactly MAX_SLICES slices, and no "a real sweep
+        // finished" line: the cap bounds the loop, it does not end it.
+        assert_eq!(agent.seen_of("reclaim_run_journals").len(), 1 + 256);
+        assert!(!printed.contains("Reclaimed "), "{printed}");
     }
 }

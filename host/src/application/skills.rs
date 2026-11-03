@@ -144,4 +144,63 @@ mod tests {
         assert_eq!(suggested.name, "acme");
         script_mock_agent(MockScript::default());
     }
+
+    /// The skill page's own reads and the three management calls, as the window
+    /// reaches them. The invalidation each write publishes is the reason these
+    /// wrappers exist at all: the page reloads because it hears the event, not
+    /// because the call returned.
+    #[tokio::test]
+    async fn the_skill_page_reads_and_writes_reach_the_agent() {
+        let _lock = mock_agent_lock();
+        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-skills-page");
+        crate::store::initialize_app_store().expect("init store");
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([
+                (
+                    "list_installed_skills".into(),
+                    r#"[{"id":"my-skill","name":"my-skill","description":"does things","version":"1.2.3"}]"#
+                        .into(),
+                ),
+                (
+                    "list_available_skills".into(),
+                    r#"[{"id":"future-x","name":"X","latestVersion":"2.0.0","builtin":true,"upgradeAvailable":true}]"#
+                        .into(),
+                ),
+                ("install_skill".into(), "{}".into()),
+                ("uninstall_skill".into(), r#"{"removed":true}"#.into()),
+                (
+                    "sync_skills".into(),
+                    r#"{"installed":[],"upgraded":[],"skipped":[],"failed":[]}"#.into(),
+                ),
+            ]),
+            ..Default::default()
+        });
+
+        let installed = list_installed_skills().await.expect("installed");
+        assert_eq!(installed.len(), 1);
+        assert_eq!(installed[0].version.as_deref(), Some("1.2.3"));
+        let available = list_available_skills().await.expect("available");
+        assert_eq!(available.len(), 1);
+        assert!(available[0].upgrade_available);
+
+        install_skill("future-x".into(), "2.0.0".into())
+            .await
+            .expect("install");
+        assert!(
+            uninstall_skill("future-x".into()).await.expect("uninstall"),
+            "the agent removed it"
+        );
+        let synced = sync_skills().await.expect("sync");
+        assert_eq!(synced["installed"], serde_json::json!([]));
+
+        // An uninstall that removed nothing must still answer `false` rather than
+        // reporting a change the page would have to undo.
+        script_mock_agent(MockScript {
+            data: HashMap::from([("uninstall_skill".into(), r#"{"removed":false}"#.into())]),
+            ..Default::default()
+        });
+        assert!(!uninstall_skill("absent".into()).await.expect("uninstall"));
+        script_mock_agent(MockScript::default());
+    }
 }

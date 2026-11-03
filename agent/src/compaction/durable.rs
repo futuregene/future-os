@@ -50,11 +50,22 @@ impl CompactionTicket {
         if self.cached.is_some() {
             return Ok(());
         }
+        let canonical = self
+            .journal
+            .manager
+            .storage()?
+            .storage_format(&self.journal.session)?
+            == crate::session::content::FORMAT_VERSION;
+        let receipt = if canonical {
+            json!({"checkpoint":null,"result":result})
+        } else {
+            json!({"checkpoint":checkpoint,"result":result})
+        };
         self.journal.persistence.commit_compaction(
             self.key.clone(),
             self.input.clone(),
             checkpoint.map(crate::session::checkpoint_to_entry),
-            json!({"checkpoint":checkpoint,"result":result}),
+            receipt,
         )
     }
     pub fn fail(&self, error: &str) {
@@ -74,8 +85,12 @@ impl CompactionTicket {
 enum Admission {
     /// A recorded identical compaction was replayed; nothing left to compute.
     Replayed(ContextPreparation, CompactionTicket),
-    /// No usable record: compute now, then commit through the ticket when present.
-    Fresh(Option<CompactionTicket>),
+    /// No usable record: compute now with this projection, then commit through
+    /// the ticket when present.
+    Fresh {
+        prompt: PromptContext,
+        ticket: Option<CompactionTicket>,
+    },
 }
 
 /// Decide whether this compaction was already recorded, and claim the operation
@@ -95,10 +110,7 @@ fn admit(
     strategy: &str,
 ) -> Result<Admission, ContextError> {
     let estimate = prompt
-        .messages
-        .iter()
-        .map(semantic::projected_token_cost)
-        .sum::<u64>()
+        .total_message_tokens()
         .saturating_add(prompt.usage.fixed_input_tokens)
         .max(prompt.usage.estimated_input_tokens)
         .max(prompt.usage.input_tokens.unwrap_or(0));
@@ -217,7 +229,7 @@ fn admit(
             }
         }
     }
-    Ok(Admission::Fresh(ticket))
+    Ok(Admission::Fresh { prompt, ticket })
 }
 
 /// Commit a freshly computed preparation through its ticket, failing the receipt
@@ -269,7 +281,7 @@ pub(crate) async fn prepare_with_journal_and_summary(
     };
     match admit(
         manager,
-        prompt.clone(),
+        prompt,
         raw,
         trigger,
         phase,
@@ -279,7 +291,7 @@ pub(crate) async fn prepare_with_journal_and_summary(
         strategy,
     )? {
         Admission::Replayed(prepared, ticket) => Ok((prepared, Some(ticket))),
-        Admission::Fresh(ticket) => commit(
+        Admission::Fresh { prompt, ticket } => commit(
             manager
                 .prepare_evidence_with_summary(
                     prompt,

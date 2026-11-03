@@ -1,6 +1,6 @@
 .PHONY: help version \
 	build build-cli build-cli-local build-desktop build-desktop-local build-local build-desktop-headless desktop-frontend build-mobile-android build-mobile-ios desktop-sidecars \
-	test test-agent test-channels test-cli test-app-settings test-tui test-cli-diff \
+	test test-agent test-channels test-cli test-app-settings test-config test-http test-tui test-cli-diff \
 	test-desktop test-desktop-rust test-mobile \
 	lint lint-rust lint-desktop stylelint-desktop lint-mobile check-desktop check-mobile fmt \
 	check-docs test-docs-check \
@@ -291,7 +291,7 @@ build-mobile-ios:
 # The unit tests are the CI regression gate. The *-diff / *-tmux targets are
 # manual TS→Rust migration-acceptance gates (pre-release only).
 
-test: test-agent test-channels test-cli test-app-settings test-tui test-desktop test-desktop-rust test-mobile
+test: test-agent test-channels test-cli test-app-settings test-config test-http test-tui test-desktop test-desktop-rust test-mobile
 
 test-agent:
 	cargo test -p future-agent
@@ -304,6 +304,12 @@ test-cli:
 
 test-app-settings:
 	cargo test -p future-app-settings
+
+test-config:
+	cargo test -p future-config
+
+test-http:
+	cargo test -p future-http
 
 test-tui:
 	cargo test -p future-tui
@@ -577,7 +583,7 @@ help:
 	@echo "  build-desktop-headless             Build GUI-free CLI with headless"
 	@echo "  build-mobile-android / -ios         Build & install the mobile app (Expo)"
 	@echo "  test                                All unit tests (Rust crates + desktop + mobile)"
-	@echo "  test-<crate>                        test-agent / -channels / -cli / -tui / -desktop(-rust) / -mobile"
+	@echo "  test-<crate>                        test-agent / -channels / -cli / -config / -http / -tui / -desktop(-rust) / -mobile"
 	@echo "  test-cli-diff                     [manual] TS→Rust migration gate"
 	@echo "  lint                                Rust (CI flags) + desktop + mobile lints"
 	@echo "  check-desktop / check-mobile        Lint + typecheck + tests without building apps"

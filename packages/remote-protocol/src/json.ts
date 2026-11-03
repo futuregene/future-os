@@ -1,9 +1,12 @@
 import { gunzipSync } from "fflate";
 
 const GZIP_MAGIC = [0x1f, 0x8b] as const;
-// Command replies are already bounded below the NATS payload cap. Enforce the
-// same ceiling before allocating decompressed output from the wire.
-const MAX_REMOTE_JSON_BYTES = 1024 * 1024;
+// A bomb guard, not the size of a normal reply: the wire is already bounded by
+// what the host seals, so this only stops a small body from claiming an unbounded
+// allocation. Eight times the old 1 MiB, which also used to work out to "a
+// catalogue of about 2 200 conversations" — the ceiling that made a bigger one
+// unreadable. Keep this in step with the host's `MAX_REMOTE_JSON_BYTES`.
+const MAX_REMOTE_JSON_BYTES = 8 * 1024 * 1024;
 const decoder = new TextDecoder();
 
 function isGzip(data: Uint8Array): boolean {

@@ -98,10 +98,11 @@ fn wait_next(backend: &platform::Backend, timeout_ms: i32, _stdin_gone: bool) ->
 /// A `SIGTERM` that leaves the process running is worse than one that is never
 /// handled: `kill` returns 0, scripts and supervisors report success, and the
 /// process is still there (only `SIGKILL` could remove it). The callback below
-/// hands the app a ctrl+c and waits for its own exit, which is the right path
-/// when it works and no path at all when the app loop is blocked (agent read
-/// hanging, a terminal that never drains, a loop already gone). Override with
-/// `FUTURE_TUI_EXIT_DEADLINE_MS` — the shutdown tests cannot wait ten seconds.
+/// hands the app an exit event and waits for its own exit, which is the right
+/// path when it works and no path at all when the app loop is blocked (agent
+/// read hanging, a terminal that never drains, a loop already gone). Override
+/// with `FUTURE_TUI_EXIT_DEADLINE_MS` — the shutdown tests cannot wait ten
+/// seconds.
 const SIGNAL_EXIT_DEADLINE: Duration = Duration::from_secs(10);
 const SIGNAL_EXIT_DEADLINE_ENV: &str = "FUTURE_TUI_EXIT_DEADLINE_MS";
 
@@ -154,7 +155,57 @@ fn arm_exit_deadline(
 /// Write all bytes to stdout, retrying on interruption, serialized by `lock`.
 fn write_str(lock: &Mutex<()>, data: &str) {
     let _guard = lock.lock();
+    #[cfg(test)]
+    if capture::write(data.as_bytes()) {
+        return;
+    }
     let _ = platform::write_stdout(data.as_bytes());
+}
+
+/// Test-only capture of the bytes a test thread writes to the terminal.
+///
+/// The driver (`workbench::run`) paints through [`write_str`], which forwards
+/// straight to fd 1. A unit test that drives the loop would therefore spray
+/// escape sequences over the harness's own output, and — worse — the only way
+/// to assert *what* a frame contained would be a real terminal to read it back
+/// from. With this installed the bytes land in a buffer instead, so the same
+/// test can check the frame it asked for.
+///
+/// Thread-local on purpose: another test's frame, or the harness's own progress
+/// line, is never captured, and no test has to hold a process-global lock to be
+/// sure of that. Nothing here is compiled outside `cfg(test)`.
+#[cfg(test)]
+pub(crate) mod capture {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static SINK: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+    }
+
+    /// Start capturing on this thread, discarding anything captured before.
+    pub(crate) fn start() {
+        SINK.with(|sink| *sink.borrow_mut() = Some(Vec::new()));
+    }
+
+    /// Stop capturing and return what was written since [`start`].
+    pub(crate) fn take() -> String {
+        SINK.with(|sink| {
+            let bytes = sink.borrow_mut().take().unwrap_or_default();
+            String::from_utf8_lossy(&bytes).into_owned()
+        })
+    }
+
+    /// Hand `data` to an active capture. `false` means "this thread is not
+    /// capturing" and the caller writes for real.
+    pub(crate) fn write(data: &[u8]) -> bool {
+        SINK.with(|sink| match sink.borrow_mut().as_mut() {
+            Some(buffer) => {
+                buffer.extend_from_slice(data);
+                true
+            }
+            None => false,
+        })
+    }
 }
 
 // ─── Size helpers (shared: env fallback mirrors `tui.ts`) ────────────────
@@ -263,6 +314,32 @@ pub(crate) fn backend_or_skip() -> Option<platform::Backend> {
     }
 }
 
+/// A `Terminal` for the workbench driver's tests.
+///
+/// Those tests drive the real event loop and read the bytes it writes through
+/// `capture`, so the terminal supplies the size and the write path while the
+/// events come from the test — it never needs to reach a console. POSIX builds
+/// one directly (`Backend::new` cannot fail there); Windows takes the backend
+/// with no console behind it, because a runner that redirects stdio (CI, an
+/// IDE, an agent harness) has no console handles to build the real one from.
+/// `columns`/`rows` then answer `COLUMNS`/`LINES`/80×24, which is what the POSIX
+/// backend's zero from a redirected stdout already produces there.
+///
+/// This is not `Terminal::new` relaxed: `run` still reports a console-less
+/// launch, and a test that needs real console behaviour still takes
+/// [`terminal_or_skip`].
+#[cfg(test)]
+pub(crate) fn driver_terminal() -> Terminal {
+    #[cfg(windows)]
+    {
+        Terminal::with_backend(Arc::new(platform::Backend::headless()))
+    }
+    #[cfg(not(windows))]
+    {
+        Terminal::new().expect("a POSIX terminal never fails to build")
+    }
+}
+
 impl Terminal {
     pub fn new() -> io::Result<Self> {
         // Test-only fault injection for the POSIX-infallible Backend::new
@@ -271,7 +348,12 @@ impl Terminal {
         if FORCE_NEW_FAILURE.swap(false, Ordering::SeqCst) {
             return Err(io::Error::other("injected test failure"));
         }
-        let backend = Arc::new(platform::Backend::new()?);
+        Ok(Self::with_backend(Arc::new(platform::Backend::new()?)))
+    }
+
+    /// Assemble a handle around an already-built platform backend. Split out of
+    /// [`Self::new`] for [`driver_terminal`], which needs one without a console.
+    fn with_backend(backend: Arc<platform::Backend>) -> Self {
         let size = Arc::new(Mutex::new(backend.size()));
         // Unit tests construct terminals in a shared `cargo test` process: a
         // redirect there would point the whole suite's stderr at a file. The
@@ -281,7 +363,7 @@ impl Terminal {
         let stderr_log = crate::stderr_log::default_path();
         #[cfg(test)]
         let stderr_log = None;
-        Ok(Self {
+        Self {
             raw_enabled: false,
             size,
             kitty_active: Arc::new(AtomicBool::new(false)),
@@ -299,7 +381,7 @@ impl Terminal {
             exit_signal_cb: Arc::new(Mutex::new(None)),
             mouse: false,
             alternate_screen: false,
-        })
+        }
     }
 
     /// Install a callback invoked from the reader thread when SIGINT/SIGTERM
@@ -755,6 +837,25 @@ impl Terminal {
         if cols > 0 && rows > 0 {
             *self.size.lock() = (cols, rows);
         }
+    }
+
+    /// The size to compose a frame for *right now*: the terminal's own, read
+    /// fresh.
+    ///
+    /// [`Self::columns`]/[`Self::rows`] answer from the cached size — the one
+    /// taken at construction and at the last `SIGWINCH`. A resize that never
+    /// reaches this process (a pane resized while nothing was draining the
+    /// signal pipe, a font zoom, a multiplexer that applies the new size to the
+    /// pty under an attached client) leaves that cache describing the
+    /// *previous* terminal, and every frame composed from it is that older
+    /// terminal's frame: the composer stops short of the window's right edge and
+    /// the cells beside it still hold the frame before — text the reader never
+    /// typed, sitting exactly where the draft continues. One `TIOCGWINSZ` per
+    /// frame is what keeps the two the same size; a terminal that reports no
+    /// size at all keeps the cached one (see [`Self::refresh_size`]).
+    pub fn fresh_size(&self) -> (u16, u16) {
+        self.refresh_size();
+        (self.columns(), self.rows())
     }
 
     pub fn move_by(&self, lines: i32) {
@@ -1459,6 +1560,53 @@ mod tests {
             // the surface is composed for the terminal that exists.
             t.refresh_size();
             assert_eq!((t.columns(), t.rows()), (120, 37));
+
+            libc::dup2(saved1, 1);
+            drain_stop.store(true, Ordering::SeqCst);
+            drainer.join().unwrap();
+            libc::close(saved1);
+            libc::close(slave);
+            libc::close(master);
+        }
+    }
+
+    /// Every frame asks the terminal for its size, so a resize the process was
+    /// never notified about costs one frame at most: the next one is composed
+    /// for the terminal that exists. Composing from the cached size instead is
+    /// how a window that grew kept a composer as narrow as the old one, with
+    /// the previous frame's cells still readable beside the draft.
+    #[cfg(unix)]
+    #[test]
+    fn every_frame_asks_for_the_size_rather_than_trusting_the_cache() {
+        let _guard = crate::test_env::lock();
+        unsafe {
+            let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+            assert!(master >= 0);
+            assert_eq!(libc::grantpt(master), 0);
+            assert_eq!(libc::unlockpt(master), 0);
+            let slave = libc::open(libc::ptsname(master), libc::O_RDWR | libc::O_NOCTTY);
+            assert!(slave >= 0);
+            let mut ws: libc::winsize = std::mem::zeroed();
+            ws.ws_col = 73;
+            ws.ws_row = 24;
+            assert_eq!(libc::ioctl(slave, libc::TIOCSWINSZ, &mut ws), 0);
+            let saved1 = libc::dup(1);
+            assert_ne!(libc::dup2(slave, 1), -1);
+            let drain_stop = Arc::new(AtomicBool::new(false));
+            let drainer = drain_pty_master(master, Arc::clone(&drain_stop));
+
+            let t = Terminal::new().unwrap();
+            assert_eq!((t.columns(), t.rows()), (73, 24));
+
+            // The window grows and nothing tells the process: no signal, no
+            // self-pipe byte — exactly a missed notification.
+            ws.ws_col = 112;
+            ws.ws_row = 30;
+            assert_eq!(libc::ioctl(slave, libc::TIOCSWINSZ, &mut ws), 0);
+            assert_eq!((t.columns(), t.rows()), (73, 24), "the cache is stale");
+
+            // The frame for this iteration is the terminal's own size.
+            assert_eq!(t.fresh_size(), (112, 30));
 
             libc::dup2(saved1, 1);
             drain_stop.store(true, Ordering::SeqCst);

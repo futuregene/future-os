@@ -1,0 +1,13 @@
+[package]
+name = "future-config"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Strict-read and atomic-write helpers for the JSON config files under ~/.future"
+
+[dependencies]
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

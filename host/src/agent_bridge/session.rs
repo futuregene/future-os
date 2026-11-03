@@ -24,10 +24,34 @@ pub(super) struct EnsuredSession {
 /// id (the existing one, or the newly-created one if the agent generated it).
 /// `model_id` and `thinking_level` are applied to newly-created sessions so
 /// the agent starts with the user's selection immediately.
+///
+/// The session is left unnamed, so the Agent titles it from its first user
+/// message. Automation that knows the session's purpose up front (a task run)
+/// goes through [`ensure_named_agent_session`] instead.
 pub(super) async fn ensure_agent_session(
     client: &mut super::client::AgentClient,
     session_id: &str,
     cwd: &str,
+    model_id: Option<&str>,
+    thinking_level: Option<&str>,
+) -> Result<EnsuredSession, crate::Error> {
+    ensure_named_agent_session(client, session_id, cwd, "", model_id, thinking_level).await
+}
+
+/// [`ensure_agent_session`], with a human-readable name for the session it
+/// creates.
+///
+/// An unnamed session is named by the Agent from its first user message, which
+/// is right for a conversation a person starts and wrong for a task run: the
+/// first thing a run sends is the `── future_tasks_run_envelope_v1 ──` envelope,
+/// and the sidebar then reads that header instead of the task's name. A
+/// non-empty `name` is the name the session keeps (the Agent preserves an
+/// explicit name across runs). An existing session is never renamed here.
+pub(super) async fn ensure_named_agent_session(
+    client: &mut super::client::AgentClient,
+    session_id: &str,
+    cwd: &str,
+    name: &str,
     model_id: Option<&str>,
     thinking_level: Option<&str>,
 ) -> Result<EnsuredSession, crate::Error> {
@@ -89,16 +113,22 @@ pub(super) async fn ensure_agent_session(
     }
 
     // Create a new session. Pass empty session_id to let the agent generate it.
+    let mut command = new_session_command(
+        String::new(),
+        cwd.to_string(),
+        "desktop",
+        crate::device_identity::device_id_or_empty(),
+        serde_json::Value::Null,
+        model_id.map(str::to_string),
+        thinking_level.map(str::to_string),
+    );
+    // `new_session`'s `name` is the initial human-readable title (the field
+    // `set_session_name` writes). Empty leaves the Agent to title the session
+    // from its first user message; a task run's first message is the
+    // `── future_tasks_run_envelope_v1 ──` envelope, which is no title at all.
+    command.name = name.to_string();
     let resp = client
-        .execute_command(new_session_command(
-            String::new(),
-            cwd.to_string(),
-            "desktop",
-            crate::device_identity::device_id_or_empty(),
-            serde_json::Value::Null,
-            model_id.map(str::to_string),
-            thinking_level.map(str::to_string),
-        ))
+        .execute_command(command)
         .await
         .map_err(|error| format!("Unable to create Future Agent session: {error}"))?
         .into_inner()
@@ -159,7 +189,7 @@ pub(super) async fn set_agent_sandbox_policy(
             // A settings read failure must never widen access. Keep the run
             // usable behind explicit approval; the next successful settings
             // read will apply the user's persisted selection again.
-            eprintln!(
+            tracing::warn!(event = "set_agent_sandbox_policy", error = %error,
                 "FutureOS: approval settings unavailable; falling back to manual approval: {error}"
             );
             "manual".to_string()
@@ -208,7 +238,10 @@ pub async fn set_agent_sandbox_policy_tier(
         }
     }
     if tier == "sandbox" && sandbox_available == Some(false) {
-        eprintln!("FutureOS: sandbox unavailable [SB001]; using manual approval");
+        tracing::warn!(
+            event = "set_agent_sandbox_policy_tier",
+            "FutureOS: sandbox unavailable [SB001]; using manual approval"
+        );
         store::update_app_settings(store::UpdateAppSettingsInput {
             approval_tier: Some("manual".to_string()),
             ..Default::default()
@@ -329,7 +362,7 @@ pub async fn fork_agent_session(
             .unwrap_or_default()
             .to_string(),
         Err(error) => {
-            eprintln!("FutureOS: fork get_state failed: {error}");
+            tracing::warn!(event = "fork_agent_session", error = %error,"FutureOS: fork get_state failed: {error}");
             String::new()
         }
     };
@@ -365,7 +398,7 @@ pub async fn fork_agent_session(
         .execute_command(set_cwd_command(cwd, new_session_id.clone()))
         .await
     {
-        eprintln!("FutureOS: fork set_cwd failed: {e}");
+        tracing::warn!(event = "fork_agent_session", error = %e,"FutureOS: fork set_cwd failed: {e}");
     }
 
     let (provider, model_id) = split_model(&session_model);

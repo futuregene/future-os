@@ -368,6 +368,54 @@ describe("activity rail keyboard commands", () => {
     view.unmount();
   });
 
+  it("opens a host's row from the keyboard walk, not only from a click", () => {
+    // The drawn row's click and the keyboard's "open" are two different paths into
+    // `openRow`: the click goes straight to the shell callback, the walk goes through the
+    // block's own `open`. A host's row must work from the keyboard too — that is the whole
+    // point of the walk on a remote.
+    const onOpenRemoteConversation = vi.fn();
+    const p = props([], {
+      activeThreadId: null,
+      onOpenRemoteConversation,
+      remoteCatalogs: [{
+        desktopId: "desk_1",
+        sessions: [{
+          lastMessageAt: 1,
+          mode: "chat" as const,
+          pinned: true,
+          sessionId: "sess_1",
+          status: "completed",
+          threadId: "sess_1_thread",
+          title: "Remote conversation",
+        }],
+      }],
+      remotePeers: [{
+        agentAvailable: true,
+        bridgeInstanceId: "bridge_1",
+        connected: true,
+        desktopId: "desk_1",
+        error: null,
+        features: [] as string[],
+        icon: "laptop",
+        name: "Studio iMac",
+        pairId: "pair_1",
+        stopped: false,
+      }],
+    });
+    const view = mount(<ActivityRail {...p} />);
+
+    // Nothing is selected, so this is the "open the first row" path.
+    press({ code: "BracketRight", ctrlKey: true, key: "]" });
+
+    expect(onOpenRemoteConversation).toHaveBeenCalledTimes(1);
+    expect(onOpenRemoteConversation.mock.calls[0]![0]).toMatchObject({
+      desktopId: "desk_1",
+      id: "sess_1",
+      threadId: "sess_1_thread",
+    });
+    view.unmount();
+  });
+
   it("opens the first conversation when nothing is selected", () => {
     const p = props([thread("root"), thread("second")], { activeThreadId: null });
     const view = mount(<ActivityRail {...p} />);

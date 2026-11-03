@@ -12,11 +12,13 @@ use crate::rpc::{
 /// event crosses the wire about three times (JSON `data` dual-write, typed
 /// `ReplayEvent.data`, typed `EventPayload`), so this much journal-serialized
 /// content stays well under the 32 MiB gRPC message cap.
-pub(crate) const EVENTS_PAGE_BYTE_BUDGET: usize = 8 * 1024 * 1024;
+pub(crate) const EVENTS_PAGE_BYTE_BUDGET: usize =
+    crate::session::content::transport::REPLAY_PAGE_BYTES;
 
 /// Per-event wire size beyond the `data` payload (type, run/event ids,
 /// timestamp, idx…), approximating the journal line.
-pub(crate) const EVENT_WIRE_OVERHEAD: usize = 320;
+pub(crate) const EVENT_WIRE_OVERHEAD: usize =
+    crate::session::content::transport::EVENT_WIRE_OVERHEAD;
 
 /// Cut `events` to one page for a paging caller (`max_events > 0`): at most
 /// `max_events` entries, and at most [`EVENTS_PAGE_BYTE_BUDGET`] of estimated
@@ -168,26 +170,54 @@ pub(crate) fn handle_get_events_since(
     cmd: &RpcCommand,
     id: &str,
 ) -> String {
-    // P1: backfill current-run events with idx > since_idx (Bridge reconnect).
-    let replay = {
-        let sess = session.read();
-        let limit = (cmd.max_events > 0).then(|| {
-            usize::try_from(cmd.max_events)
-                .unwrap_or(usize::MAX)
-                .saturating_add(1)
-        });
-        sess.broadcaster
-            .events_page(&cmd.run_id, cmd.since_idx, limit)
+    let broadcaster = session.read().broadcaster.clone();
+    let available = match broadcaster.replay_watermark(&cmd.run_id) {
+        Ok(cursor) => cursor,
+        Err(error) => return RpcResponse::build_fail(id, "get_events_since", &error.to_string()),
     };
+    if cmd
+        .replay_until_idx
+        .is_some_and(|until| until < -1 || available.is_some_and(|available| until > available))
+    {
+        return RpcResponse::build_fail(id, "get_events_since", "replay_window_changed");
+    }
+    let watermark = cmd.replay_until_idx.or(available);
+    let limit = (cmd.max_events > 0).then(|| {
+        usize::try_from(cmd.max_events)
+            .unwrap_or(usize::MAX)
+            .saturating_add(1)
+    });
+    let replay = broadcaster.events_page(&cmd.run_id, cmd.since_idx, limit);
     let (run_id, events, _min_idx, projection) = match replay {
         Ok(replay) => replay,
         Err(error) => {
             return RpcResponse::build_fail(id, "get_events_since", &error.to_string());
         }
     };
-    // A cursor older than the replay ring returns a complete compressed
-    // projection instead of a knowingly incomplete event tail.
-    let truncated = projection.is_some();
+    let events = events
+        .into_iter()
+        .filter(|event| watermark.is_none_or(|until| event.idx <= until))
+        .collect();
+    if projection
+        .as_ref()
+        .is_some_and(|projection| watermark.is_some_and(|until| projection.cursor > until))
+    {
+        return RpcResponse::build_fail(id, "get_events_since", "replay_window_changed");
+    }
+    // A cursor older than what this Agent can still serve is not a window: the
+    // events that fell outside it are gone, and the consumer must be told so it
+    // can rebuild from a full read instead of folding the surviving tail into
+    // the projection it already has. Two shapes reach here — a compressed
+    // projection standing in for a dropped tail, and a raw window whose head the
+    // ring or the journal no longer holds (a first event above the cursor).
+    let head_lost = cmd.since_idx >= 0
+        && match broadcaster.earliest_cursor(&cmd.run_id, cmd.since_idx) {
+            Ok(first) => first.is_some_and(|first| cmd.since_idx.saturating_add(1) < first),
+            // The replay itself already answered; a head probe that cannot read
+            // is not worth failing the read over.
+            Err(_) => false,
+        };
+    let truncated = projection.is_some() || head_lost;
     // Paging (proto max_events): a long run's journal far exceeds the
     // gRPC message cap when returned whole, so a paging caller gets the
     // tail cut to its page size (bounded by a serialized-size budget)
@@ -213,6 +243,7 @@ pub(crate) fn handle_get_events_since(
         truncated,
         projection,
         has_more,
+        watermark,
     };
     RpcResponse::ok(
         id,
@@ -232,6 +263,35 @@ pub(crate) fn handle_get_run_snapshot(
     let broadcaster = session.read().broadcaster.clone();
     let snapshot = match broadcaster.run_snapshot(&cmd.run_id) {
         Ok(snapshot) => snapshot,
+        Err(error)
+            if matches!(
+                error.to_string().as_str(),
+                "run snapshot exceeds memory budget"
+                    | "run replay exceeds memory budget; use paged get_events_since"
+            ) =>
+        {
+            return RpcResponse::build_fail_code(
+                id,
+                "get_run_snapshot",
+                "run_snapshot_too_large",
+                &error.to_string(),
+                serde_json::json!({}),
+            )
+        }
+        Err(error)
+            if matches!(
+                error.to_string().as_str(),
+                "run snapshot prefix is incomplete" | "run snapshot is empty"
+            ) =>
+        {
+            return RpcResponse::build_fail_code(
+                id,
+                "get_run_snapshot",
+                "run_snapshot_unavailable",
+                &error.to_string(),
+                serde_json::json!({}),
+            );
+        }
         Err(error) => return RpcResponse::build_fail(id, "get_run_snapshot", &error.to_string()),
     };
     // No visible semantic events yet: the legacy raw read is small and handles
@@ -344,7 +404,9 @@ pub(crate) fn handle_export_html(
     let session_id = sess.session_id();
     let model = sess.model.clone();
     let cwd = sess.cwd.clone();
-    let messages = sess.get_messages();
+    // The session's own block history, not the LLM projection: thinking, a
+    // tool call and its result keep the places the export folds them into.
+    let messages = sess.messages.read().clone();
     drop(sess);
 
     // Generate HTML

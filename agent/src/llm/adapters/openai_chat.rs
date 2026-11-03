@@ -388,31 +388,61 @@ fn chat_usage(value: &Value) -> Usage {
     // defensively so a float/string encoding doesn't silently zero out the
     // token accounting — which would report every turn as 0 tokens (the
     // observed symptom for qwen-family models).
-    fn tok(v: &Value, key: &str) -> i64 {
-        v.get(key)
-            .and_then(|x| {
-                x.as_i64()
-                    .or_else(|| x.as_f64().map(|f| f as i64))
-                    .or_else(|| {
-                        x.as_str()
-                            .and_then(|s| s.parse::<f64>().ok())
-                            .map(|f| f as i64)
-                    })
+    fn parse_tok(x: &Value) -> Option<i64> {
+        x.as_i64()
+            .or_else(|| x.as_f64().map(|f| f as i64))
+            .or_else(|| {
+                x.as_str()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .map(|f| f as i64)
             })
-            .unwrap_or(0)
     }
+    fn tok(v: &Value, key: &str) -> i64 {
+        v.get(key).and_then(parse_tok).unwrap_or(0)
+    }
+    // A cache counter reaches us in one of two spellings. OpenAI nests it in
+    // `prompt_tokens_details`; several `api: "chat"` providers report it at the
+    // top level of `usage` instead (DeepSeek: `prompt_cache_hit_tokens` /
+    // `prompt_cache_miss_tokens`; Anthropic-compatible gateways:
+    // `cache_read_input_tokens` / `cache_creation_input_tokens`). Reading only
+    // the nested field silently priced a fully cached DeepSeek prompt at the
+    // input rate and reported it as 0 % cached, so fall back to the provider's
+    // own spelling. The nested field wins when a provider sends both.
+    fn cache_counter(value: &Value, nested: &str, top_level: &[&str]) -> Option<i64> {
+        value
+            .get("prompt_tokens_details")
+            .and_then(|details| details.get(nested))
+            .and_then(parse_tok)
+            .or_else(|| {
+                top_level
+                    .iter()
+                    .find_map(|key| value.get(*key).and_then(parse_tok))
+            })
+    }
+    let prompt_tokens = tok(value, "prompt_tokens");
+    // The cached bytes are part of the prompt they were counted against, so no
+    // single request can report more of them than it had prompt tokens. A
+    // provider that says otherwise is malformed; cap the counters instead of
+    // letting the block break that invariant (`Usage::cached_tokens_exceed_prompt`).
+    // The cap is a no-op for a well-formed block of either spelling.
+    let cache_read_tokens = cache_counter(
+        value,
+        "cached_tokens",
+        &["prompt_cache_hit_tokens", "cache_read_input_tokens"],
+    )
+    .map(|read| read.clamp(0, prompt_tokens));
+    let cache_write_tokens = cache_counter(
+        value,
+        "cache_write_tokens",
+        &["cache_creation_input_tokens"],
+    )
+    .map(|write| write.clamp(0, prompt_tokens - cache_read_tokens.unwrap_or(0)));
     Usage {
-        prompt_tokens: tok(value, "prompt_tokens"),
+        prompt_tokens,
         completion_tokens: tok(value, "completion_tokens"),
         total_tokens: tok(value, "total_tokens"),
-        cache_read_tokens: value
-            .get("prompt_tokens_details")
-            .and_then(|details| details.get("cached_tokens"))
-            .and_then(Value::as_i64),
-        cache_write_tokens: value
-            .get("prompt_tokens_details")
-            .and_then(|details| details.get("cache_write_tokens"))
-            .and_then(Value::as_i64),
+        cache_read_tokens,
+        cache_write_tokens,
         reasoning_tokens: value
             .get("completion_tokens_details")
             .and_then(|details| details.get("reasoning_tokens"))
@@ -609,6 +639,411 @@ mod tests {
         let body = OpenAiChatAdapter.build_body(&target, &request).unwrap();
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["messages"][1]["role"], "user");
+    }
+
+    fn chat_target(config: OpenAiChatConfig, generation: GenerationConfig) -> ResolvedModelTarget {
+        test_target(ProtocolConfig::OpenAiChat(config), generation)
+    }
+
+    fn simple_request(tools: Vec<crate::types::ToolDef>) -> ModelRequest {
+        ModelRequest {
+            model: "m".into(),
+            system_prompt: "system".into(),
+            messages: vec![crate::types::AgentMessage::new_user("user", json!("hello"))],
+            tools,
+        }
+    }
+
+    #[test]
+    fn a_non_chat_target_is_refused_by_name() {
+        let target = test_target(
+            ProtocolConfig::OpenAiResponses(Default::default()),
+            GenerationConfig::default(),
+        );
+        let error = OpenAiChatAdapter
+            .build_body(&target, &simple_request(Vec::new()))
+            .expect_err("the chat adapter only speaks chat-completions");
+        assert!(error.to_string().contains("non-chat"), "{error}");
+    }
+
+    #[test]
+    fn tools_and_generation_knobs_reach_the_chat_body() {
+        let config = OpenAiChatConfig {
+            tool_stream: true,
+            max_tokens_field: crate::llm::schema::ChatMaxTokensField::MaxCompletionTokens,
+            reasoning: ChatReasoningFormat::DeepSeek,
+            ..Default::default()
+        };
+        let target = chat_target(
+            config,
+            GenerationConfig {
+                temperature: Some(0.25),
+                max_output_tokens: Some(4096),
+                thinking_level: "high".into(),
+                ..Default::default()
+            },
+        );
+        let request = simple_request(vec![crate::types::ToolDef {
+            tool_type: "function".into(),
+            function: crate::types::FunctionDef {
+                name: "shell".into(),
+                description: "run a command".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"],
+                }),
+            },
+        }]);
+        let body = OpenAiChatAdapter.build_body(&target, &request).unwrap();
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert_eq!(body["tools"][0]["function"]["name"], "shell");
+        assert_eq!(body["tools"][0]["function"]["description"], "run a command");
+        assert_eq!(
+            body["tools"][0]["function"]["parameters"]["properties"]["command"]["type"],
+            "string"
+        );
+        assert_eq!(body["tools"][0].get("strict"), None);
+        assert_eq!(body["tool_stream"], true);
+        assert_eq!(body["temperature"], 0.25);
+        // The declared field renames the budget parameter; the old key is gone.
+        assert_eq!(body["max_completion_tokens"], 4096);
+        assert!(body.get("max_tokens").is_none());
+        // DeepSeek's thinking format carries the toggle and the level itself.
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["reasoning_effort"], "high");
+    }
+
+    #[test]
+    fn a_request_without_tools_or_knobs_sends_neither() {
+        let target = chat_target(OpenAiChatConfig::default(), GenerationConfig::default());
+        let body = OpenAiChatAdapter
+            .build_body(&target, &simple_request(Vec::new()))
+            .unwrap();
+        assert!(body.get("tools").is_none());
+        assert!(body.get("tool_stream").is_none());
+        assert!(body.get("temperature").is_none());
+        assert!(body.get("max_tokens").is_none());
+        // A default thinking level sends nothing at all.
+        assert!(body.get("reasoning_effort").is_none());
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn token_counts_accept_the_gateway_encodings() {
+        let adapter = OpenAiChatAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(json!({
+                    "choices": [{"delta": {"content": "hi"}}],
+                    "usage": {
+                        "prompt_tokens": "12.0",
+                        "completion_tokens": 3.75,
+                        "total_tokens": "not a number",
+                        "credit_cost": "0.5",
+                        "prompt_tokens_details": {"cached_tokens": 4}
+                    }
+                })),
+                state.as_mut(),
+            )
+            .unwrap();
+        let usage = events
+            .iter()
+            .find_map(|event| match event {
+                ModelStreamEvent::Usage(usage) => Some(usage.clone()),
+                _ => None,
+            })
+            .expect("the usage block is reported");
+        assert_eq!(usage.prompt_tokens, 12, "a numeric string is its number");
+        assert_eq!(usage.completion_tokens, 3, "a float is truncated");
+        assert_eq!(
+            usage.total_tokens, 0,
+            "an unparseable count stays zero instead of failing the frame"
+        );
+        assert_eq!(usage.cache_read_tokens, Some(4));
+        assert_eq!(usage.credit_cost, Some(0.5));
+    }
+
+    /// DeepSeek reports its cache split at the top level of `usage`
+    /// (`prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`), not inside
+    /// `prompt_tokens_details`. Losing it bills the cached part of the prompt at
+    /// the input rate and reports the request as 0 % cached.
+    #[test]
+    fn top_level_provider_cache_counters_reach_the_usage_block() {
+        let adapter = OpenAiChatAdapter;
+        let decode_usage = |usage: Value| {
+            let mut state = adapter.new_stream_state();
+            adapter
+                .decode_frame(
+                    &frame(json!({"choices": [], "usage": usage})),
+                    state.as_mut(),
+                )
+                .unwrap()
+                .into_iter()
+                .find_map(|event| match event {
+                    ModelStreamEvent::Usage(usage) => Some(usage),
+                    _ => None,
+                })
+                .expect("the usage block is reported")
+        };
+
+        // DeepSeek's documented schema: 100k prompt, 90k of it served from cache.
+        let deepseek = decode_usage(json!({
+            "prompt_tokens": 100_000,
+            "completion_tokens": 500,
+            "total_tokens": 100_500,
+            "prompt_cache_hit_tokens": 90_000,
+            "prompt_cache_miss_tokens": 10_000,
+        }));
+        assert_eq!(
+            deepseek.cache_read_tokens,
+            Some(90_000),
+            "the top-level cache hit is the cached part of the prompt"
+        );
+        assert_eq!(deepseek.cache_hit_rate(), Some(0.9));
+        assert!(
+            !deepseek.cached_tokens_exceed_prompt(),
+            "the cached subset cannot exceed the prompt: {deepseek:?}"
+        );
+
+        // Anthropic-compatible gateways spell the same two numbers this way.
+        let anthropic = decode_usage(json!({
+            "prompt_tokens": 1_000,
+            "completion_tokens": 10,
+            "total_tokens": 1_010,
+            "cache_read_input_tokens": 800,
+            "cache_creation_input_tokens": 100,
+        }));
+        assert_eq!(anthropic.cache_read_tokens, Some(800));
+        assert_eq!(anthropic.cache_write_tokens, Some(100));
+        assert!(!anthropic.cached_tokens_exceed_prompt());
+
+        // The OpenAI spelling still wins where a provider sends both, and the
+        // nested-only shape is unchanged.
+        let both = decode_usage(json!({
+            "prompt_tokens": 1_000,
+            "completion_tokens": 10,
+            "total_tokens": 1_010,
+            "prompt_tokens_details": {"cached_tokens": 600, "cache_write_tokens": 50},
+            "prompt_cache_hit_tokens": 700,
+            "prompt_cache_miss_tokens": 300,
+        }));
+        assert_eq!(both.cache_read_tokens, Some(600));
+        assert_eq!(both.cache_write_tokens, Some(50));
+
+        // A block with no cache counters at all carries no cache detail.
+        let plain = decode_usage(json!({
+            "prompt_tokens": 40,
+            "completion_tokens": 2,
+            "total_tokens": 42,
+        }));
+        assert!(!plain.has_cache_detail());
+    }
+
+    /// The recovered cache hit must be billed at the cache-read rate, not at the
+    /// input rate: a 100k DeepSeek prompt with 90k served from cache costs the
+    /// catalog's 10k input + 90k cache-read, an eighth of pricing the whole
+    /// prompt as uncached.
+    #[test]
+    fn a_deepseek_cache_hit_is_billed_at_the_cache_rate() {
+        let adapter = OpenAiChatAdapter;
+        let mut state = adapter.new_stream_state();
+        let usage = adapter
+            .decode_frame(
+                &frame(json!({
+                    "choices": [],
+                    "usage": {
+                        "prompt_tokens": 100_000,
+                        "completion_tokens": 500,
+                        "total_tokens": 100_500,
+                        "prompt_cache_hit_tokens": 90_000,
+                        "prompt_cache_miss_tokens": 10_000,
+                    }
+                })),
+                state.as_mut(),
+            )
+            .unwrap()
+            .into_iter()
+            .find_map(|event| match event {
+                ModelStreamEvent::Usage(usage) => Some(usage),
+                _ => None,
+            })
+            .expect("the usage block is reported");
+        let model = crate::models::builtin_models()
+            .into_iter()
+            .find(|model| model.id == "deepseek-chat" && model.provider == "deepseek")
+            .expect("the catalog ships deepseek/deepseek-chat");
+        assert!(
+            model.cost.cache_read > 0.0,
+            "the catalog prices a deepseek cache read: {:?}",
+            model.cost
+        );
+        let parts = model.cost.parts(
+            usage.prompt_tokens,
+            usage.completion_tokens,
+            usage.cache_read_tokens.unwrap_or(0),
+            usage.cache_write_tokens.unwrap_or(0),
+        );
+        let input_part = 10_000.0 / 1_000_000.0 * model.cost.input;
+        let cache_part = 90_000.0 / 1_000_000.0 * model.cost.cache_read;
+        assert!(
+            (parts[0] - input_part).abs() < 1e-12,
+            "only the 10k miss is billed at the input rate: {parts:?}"
+        );
+        assert!(
+            (parts[2] - cache_part).abs() < 1e-12,
+            "the 90k hit is billed at the cache rate: {parts:?}"
+        );
+        let cost: f64 = parts.iter().sum();
+        let all_uncached = (100_000.0 / 1_000_000.0 * model.cost.input
+            + 500.0 / 1_000_000.0 * model.cost.output)
+            / cost;
+        assert!(
+            all_uncached > 7.0,
+            "billing the whole prompt as uncached overstates this request {all_uncached:.1}x"
+        );
+    }
+
+    /// A provider that reports more cached bytes than prompt tokens is
+    /// malformed; the block must not carry a cache read that exceeds its prompt.
+    #[test]
+    fn top_level_cache_counters_are_capped_by_the_prompt() {
+        let adapter = OpenAiChatAdapter;
+        let mut state = adapter.new_stream_state();
+        let usage = adapter
+            .decode_frame(
+                &frame(json!({
+                    "choices": [],
+                    "usage": {
+                        "prompt_tokens": 100,
+                        "completion_tokens": 5,
+                        "total_tokens": 105,
+                        "prompt_cache_hit_tokens": 400,
+                        "prompt_cache_miss_tokens": 0,
+                        "cache_creation_input_tokens": 50,
+                    }
+                })),
+                state.as_mut(),
+            )
+            .unwrap()
+            .into_iter()
+            .find_map(|event| match event {
+                ModelStreamEvent::Usage(usage) => Some(usage),
+                _ => None,
+            })
+            .expect("the usage block is reported");
+        assert!(
+            !usage.cached_tokens_exceed_prompt(),
+            "capped to the prompt: {usage:?}"
+        );
+        assert_eq!(usage.cache_read_tokens, Some(100));
+        assert_eq!(usage.cache_write_tokens, Some(0));
+    }
+
+    fn raw_frame(data: &str) -> SseFrame {
+        SseFrame {
+            event: None,
+            data: data.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_stream_is_complete_only_after_its_terminal_frame() {
+        let adapter = OpenAiChatAdapter;
+        let mut state = adapter.new_stream_state();
+        assert!(!adapter.is_stream_complete(state.as_ref()));
+        // A keep-alive frame carries no event and does not propagate anything.
+        assert!(adapter
+            .decode_frame(&raw_frame("  "), state.as_mut())
+            .unwrap()
+            .is_empty());
+        adapter
+            .decode_frame(
+                &frame(json!({
+                    "choices": [{"delta": {"content": "a"}, "finish_reason": "stop"}],
+                })),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(
+            !adapter.is_stream_complete(state.as_ref()),
+            "a finish_reason still waits for the [DONE] marker"
+        );
+        // The marker repeats a finish that already happened, so it adds nothing.
+        assert!(adapter
+            .decode_frame(&raw_frame("[DONE]"), state.as_mut())
+            .unwrap()
+            .is_empty());
+        assert!(adapter.is_stream_complete(state.as_ref()));
+        // Finishing again reports nothing: the stream is already closed.
+        assert!(adapter
+            .decode_frame(&raw_frame("[DONE]"), state.as_mut())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn a_marker_that_arrives_first_still_closes_the_stream() {
+        let adapter = OpenAiChatAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(&raw_frame("[DONE]"), state.as_mut())
+            .unwrap();
+        match events.as_slice() {
+            [ModelStreamEvent::Finish { reason, usage }] => {
+                assert_eq!(*reason, FinishReason::Incomplete);
+                assert!(usage.is_none());
+            }
+            other => panic!("expected one incomplete finish, got {other:?}"),
+        }
+        assert!(adapter.is_stream_complete(state.as_ref()));
+    }
+
+    #[test]
+    fn an_error_chunk_ends_the_stream_with_its_message() {
+        let adapter = OpenAiChatAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(json!({"error": {"message": "quota exhausted"}})),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ModelStreamEvent::Error { message } => assert_eq!(message, "quota exhausted"),
+            other => panic!("expected an error event, got {other:?}"),
+        }
+        assert!(adapter.is_stream_complete(state.as_ref()));
+        // An error frame without a message keeps a readable default.
+        let mut other_state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(json!({"error": {"code": "boom"}})),
+                other_state.as_mut(),
+            )
+            .unwrap();
+        match &events[0] {
+            ModelStreamEvent::Error { message } => {
+                assert_eq!(message, "OpenAI-compatible stream error")
+            }
+            other => panic!("expected an error event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_stream_state_of_the_wrong_type_is_a_reported_error() {
+        let adapter = OpenAiChatAdapter;
+        let mut not_chat = 7u8;
+        assert!(!adapter.is_stream_complete(&not_chat));
+        let error = adapter.finish_stream(&mut not_chat).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid OpenAI Chat stream state"),
+            "{error}"
+        );
     }
 
     #[test]

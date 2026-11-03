@@ -52,11 +52,30 @@ pub struct TuiSettings {
     pub mouse_capture: Option<bool>,
     /// Successful-run terminal notifications (BEL and OSC 9 independently).
     pub notify: Option<crate::notifications::NotifyConfig>,
-    /// Keep the activity indicator still; streaming itself is never delayed.
-    pub reduced_motion: Option<bool>,
-    /// Workspace paths pinned in the rail's 置顶 section (`pinnedWorkspaces`),
-    /// in the order they were pinned.
-    pub pinned_workspaces: Option<Vec<String>>,
+    /// Conversation ids the reader pinned, in the order they were pinned
+    /// (`pinnedSessions`).
+    ///
+    /// The rail's 置顶 block leads the 工作区 tab with them. A pin names a
+    /// conversation rather than a workspace: two conversations in one directory
+    /// are two rows, and the reader pins the one they keep coming back to.
+    pub pinned_sessions: Option<Vec<String>>,
+    /// Workspace paths whose conversations the reader folded away in the rail
+    /// (`foldedWorkspaces`), by path — the group's identity, not its name.
+    ///
+    /// A fold is how a long rail is made readable, so it outlives the process
+    /// the way the rail's width does. A search query does not: that is written
+    /// nowhere, because a filter left over from yesterday reads as conversations
+    /// that went missing.
+    pub folded_workspaces: Option<Vec<String>>,
+    /// The workspace a fresh `future tui` opens on (`lastWorkspace`), by path.
+    ///
+    /// `cd project && future tui` still means that project — this is what the
+    /// launchpad stages when the terminal itself was sitting somewhere ambient
+    /// (the home directory, a temp directory), so the workspace the reader
+    /// picked last time comes back instead of a conversation filed under
+    /// whatever directory the shell happened to be in. A path that no longer
+    /// exists (a removed worktree) is skipped rather than staged.
+    pub last_workspace: Option<String>,
 }
 
 impl TuiSettings {
@@ -111,19 +130,25 @@ impl TuiSettings {
                 obj.insert("notify".into(), value);
             }
         }
-        if let Some(reduced) = self.reduced_motion {
-            obj.insert("reducedMotion".into(), Value::Bool(reduced));
-        }
-        if let Some(pinned) = &self.pinned_workspaces {
+        if let Some(pinned) = &self.pinned_sessions {
             obj.insert(
-                "pinnedWorkspaces".into(),
+                "pinnedSessions".into(),
+                Value::Array(pinned.iter().map(|id| Value::String(id.clone())).collect()),
+            );
+        }
+        if let Some(folded) = &self.folded_workspaces {
+            obj.insert(
+                "foldedWorkspaces".into(),
                 Value::Array(
-                    pinned
+                    folded
                         .iter()
                         .map(|path| Value::String(path.clone()))
                         .collect(),
                 ),
             );
+        }
+        if let Some(workspace) = &self.last_workspace {
+            obj.insert("lastWorkspace".into(), Value::String(workspace.clone()));
         }
         Value::Object(obj)
     }
@@ -157,8 +182,16 @@ impl TuiSettings {
             notify: value
                 .get("notify")
                 .and_then(|value| serde_json::from_value(value.clone()).ok()),
-            reduced_motion: value.get("reducedMotion").and_then(Value::as_bool),
-            pinned_workspaces: value.get("pinnedWorkspaces").and_then(Value::as_array).map(
+            pinned_sessions: value
+                .get("pinnedSessions")
+                .and_then(Value::as_array)
+                .map(|ids| {
+                    ids.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                }),
+            folded_workspaces: value.get("foldedWorkspaces").and_then(Value::as_array).map(
                 |paths| {
                     paths
                         .iter()
@@ -167,6 +200,7 @@ impl TuiSettings {
                         .collect()
                 },
             ),
+            last_workspace: string("lastWorkspace"),
         }
     }
 }
@@ -196,8 +230,9 @@ mod tests {
                 osc9: true,
                 title: false,
             }),
-            reduced_motion: Some(true),
-            pinned_workspaces: Some(vec!["/src/future-os".into()]),
+            pinned_sessions: Some(vec!["s1".into()]),
+            folded_workspaces: Some(vec!["/src/mobile".into()]),
+            last_workspace: Some("/src/future-os".into()),
         };
         let back = TuiSettings::from_json(&settings.to_json());
         assert_eq!(back.default_model.as_deref(), Some("future/deepseek-flash"));
@@ -212,8 +247,9 @@ mod tests {
         assert_eq!(back.sidebar_visible, Some(false));
         assert_eq!(back.mouse_capture, Some(false));
         assert!(!back.notify.unwrap().bell);
-        assert_eq!(back.reduced_motion, Some(true));
-        assert_eq!(back.pinned_workspaces, Some(vec!["/src/future-os".into()]));
+        assert_eq!(back.pinned_sessions, Some(vec!["s1".into()]));
+        assert_eq!(back.folded_workspaces, Some(vec!["/src/mobile".into()]));
+        assert_eq!(back.last_workspace.as_deref(), Some("/src/future-os"));
     }
 
     #[test]

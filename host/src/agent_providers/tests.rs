@@ -1545,3 +1545,61 @@ fn delete_restores_models_when_the_auth_removal_fails() {
     );
     assert!(crate::auth_store::read().unwrap().contains_key("dashscope"));
 }
+
+/// The custom-provider editor's "detect" button reaches the Agent through this
+/// wrapper: the form is trimmed, and the verdict comes back as the editor
+/// renders it. A field that is not trimmed here is quoted into a request the
+/// provider rejects for a reason the user cannot see.
+#[tokio::test]
+async fn the_editor_probe_forwards_the_trimmed_form_and_returns_the_verdict() {
+    let _home = crate::test_support::agent::TestHome::new("provider-probe-forward");
+    let mock = crate::test_support::agent::mock_agent();
+    mock.push_data("probe_thinking_level", json!({"level": "high", "ok": true}));
+
+    let outcome = probe_thinking_level(ThinkingLevelProbeInput {
+        api: " openai-completions ".into(),
+        base_url: " https://api.example/v1 ".into(),
+        api_key: Some(" sk-from-the-form ".into()),
+        provider_id: Some(" acme ".into()),
+        model_id: " acme-large ".into(),
+        level: Some(" high ".into()),
+    })
+    .await
+    .expect("the probe is forwarded");
+
+    assert!(outcome.ok);
+    assert_eq!(outcome.level, "high");
+    let requests = mock.requests_of("probe_thinking_level");
+    let sent = requests[0]
+        .thinking_probe
+        .as_ref()
+        .expect("the probe is forwarded");
+    assert_eq!(sent.api, "openai-completions");
+    assert_eq!(sent.base_url, "https://api.example/v1");
+    assert_eq!(sent.api_key, "sk-from-the-form");
+    assert_eq!(sent.provider_id, "acme");
+    assert_eq!(sent.model_id, "acme-large");
+    assert_eq!(sent.level, "high");
+
+    // A blank level is the calibration call: the Agent reads an empty level as
+    // "send no thinking parameter", so the wrapper must not invent one.
+    mock.push_data(
+        "probe_thinking_level",
+        json!({"level": "default", "ok": true}),
+    );
+    let calibration = probe_thinking_level(ThinkingLevelProbeInput {
+        api: "openai-completions".into(),
+        base_url: "https://api.example/v1".into(),
+        api_key: None,
+        provider_id: None,
+        model_id: "acme-large".into(),
+        level: Some("   ".into()),
+    })
+    .await
+    .expect("the calibration call");
+    assert_eq!(calibration.level, "default");
+    let requests = mock.requests_of("probe_thinking_level");
+    let sent = requests[1].thinking_probe.as_ref().expect("forwarded");
+    assert_eq!(sent.level, "", "a blank level stays blank");
+    assert_eq!(sent.api_key, "", "no key in the form means no key sent");
+}

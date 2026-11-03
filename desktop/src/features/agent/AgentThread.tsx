@@ -23,6 +23,7 @@ import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
 import { foldsSettledReply, useReplyDetail } from "../../lib/replyDisplay";
+import { collectQueuedAttachments, joinQueuedContent } from "../../lib/sendQueue";
 import { useCommittedRef } from "../../lib/useCommittedRef";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { useCommand } from "../keyboard/commands";
@@ -39,6 +40,8 @@ import { MessageList } from "./MessageList";
 import { QuestionNavControl } from "./QuestionNavControl";
 import { replyCopyText } from "./replyBlocks";
 import { useThreadCompaction } from "./runtime/useThreadCompaction";
+import { localSendQueue, useLocalSendQueue } from "./sendQueue";
+import { SendQueuePanel } from "./SendQueuePanel";
 import { ThreadHeader } from "./ThreadHeader";
 import { ThreadSearch } from "./ThreadSearch";
 import { useAgentThreadState } from "./useAgentThreadState";
@@ -207,6 +210,7 @@ export function AgentThread({
   const { t } = useTranslation("agent");
   const agentState = useCachedAgentState(thread?.id);
   const {
+    activeRunId,
     handleAbort,
     handleSend,
     loadingThread,
@@ -316,6 +320,71 @@ export function AgentThread({
   // The reading setting the reply rows themselves read, so "copy the last
   // answer" copies what the answer is currently showing (see `replyCopyText`).
   const replyDetail = useReplyDetail();
+
+  // One answer to "can a message leave this conversation right now": no active
+  // thread, no history still loading, and a history the Agent can still continue.
+  // The composer's own `disabled` and the send queue's flush both read it, so a
+  // queue can never fire into a conversation that refuses to be written to.
+  const composerDisabled = !thread || loadingThread || loadingStore || historyStatus?.canContinue === false;
+
+  // ── Send queue ────────────────────────────────────────────────────────────
+  // A message queued while a reply streamed leaves the moment that reply is
+  // over, joined with whatever else was queued into one message (see
+  // `lib/sendQueue`). The gate is the same "idle" the composer unlocks on — the
+  // stream is gone *and* the run row is settled — so the flush cannot race the
+  // prompt the Agent is still finishing, which it would refuse.
+  const sendQueue = useLocalSendQueue(thread?.id ?? null);
+  const queueFlushingRef = useRef(false);
+  const queueIdle = !isReplyStreaming && !activeRunId && !composerDisabled;
+  useEffect(() => {
+    const threadId = thread?.id;
+    if (!threadId || !queueIdle || sendQueue.failed || queueFlushingRef.current)
+      return;
+    if (sendQueue.items.length === 0)
+      return;
+    // Taken, not read: the effect runs again on every render this view makes,
+    // and the queue must leave exactly once per wait.
+    const taken = localSendQueue.take(threadId);
+    if (taken.length === 0)
+      return;
+    queueFlushingRef.current = true;
+    void handleSend({
+      attachments: collectQueuedAttachments(taken),
+      content: joinQueuedContent(taken),
+    })
+      .catch(() => {
+        // Not delivered (the Agent refused, or the run was not settled yet):
+        // put the messages back where the reader can see, fix and resend them.
+        // `restore` marks the queue failed, which is what stops this effect from
+        // retrying on every render.
+        localSendQueue.restore(threadId, taken);
+      })
+      .finally(() => {
+        queueFlushingRef.current = false;
+      });
+  }, [handleSend, queueIdle, sendQueue.failed, sendQueue.items.length, thread?.id]);
+
+  const handleEnqueueDraft = useCallback((payload: ComposerSendPayload) => {
+    if (!thread?.id)
+      return false;
+    if (!localSendQueue.enqueue(thread.id, payload)) {
+      emitFutureEvent("toast", { message: t("composer.queue.full"), tone: "info" });
+      return false;
+    }
+    return true;
+  }, [thread?.id, t]);
+  const handleQueueUpdate = useCallback((id: string, content: string) => {
+    if (thread?.id)
+      localSendQueue.update(thread.id, id, content);
+  }, [thread?.id]);
+  const handleQueueRemove = useCallback((id: string) => {
+    if (thread?.id)
+      localSendQueue.remove(thread.id, id);
+  }, [thread?.id]);
+  const handleQueueRetry = useCallback(() => {
+    if (thread?.id)
+      localSendQueue.clearFailure(thread.id);
+  }, [thread?.id]);
 
   // Settings → Keyboard: the same interrupt the send button turns into while a
   // reply streams. Registered only then, so the key is unclaimed whenever there
@@ -525,6 +594,11 @@ export function AgentThread({
   // `input` is the panel's dictation layer.
   const isRead = chrome === "read";
   const isInput = chrome === "input";
+  // Whether this composer keeps a send queue. The panel's input layer keeps its
+  // own hand-back queue instead (`onQueue`, VIBE.md §5.4), and a reading cell has
+  // no composer at all — everything else (the main window, and this app's view of
+  // another computer's conversation) queues while its run streams.
+  const queueEnabled = !isInput && !isRead && !onQueue;
   // The input layer shows only the tail of the conversation: the two messages a
   // speaker needs to remember what they were talking about, dimmed so the draft
   // is unmistakably the live thing on screen.
@@ -598,9 +672,29 @@ export function AgentThread({
             onPrevious={goToPreviousQuestion}
           />
         </div>
+        {/* What is waiting for this reply to end, directly above the box that
+            filled it: a queued message is not yet gone, so it is looked at,
+            fixed and taken back here rather than in the transcript. */}
+        {queueEnabled && sendQueue.items.length > 0
+          ? (
+              <div className="pointer-events-auto mx-auto w-full max-w-3xl">
+                <SendQueuePanel
+                  failed={sendQueue.failed}
+                  items={sendQueue.items.map(item => ({
+                    attachmentCount: item.attachments.length,
+                    content: item.content,
+                    id: item.id,
+                  }))}
+                  onRemove={handleQueueRemove}
+                  onRetry={handleQueueRetry}
+                  onUpdate={handleQueueUpdate}
+                />
+              </div>
+            )
+          : null}
         <Composer
           className="pointer-events-auto mx-auto w-full max-w-3xl"
-          disabled={!thread || loadingThread || loadingStore || historyStatus?.canContinue === false}
+          disabled={composerDisabled}
           modelId={modelId}
           modelOptions={modelOptions}
           modelsEmptyReason={
@@ -629,6 +723,8 @@ export function AgentThread({
           triggers={!isInput}
           controls={composerControls}
           onQueue={onQueue}
+          onEnqueue={queueEnabled ? handleEnqueueDraft : undefined}
+          queueCount={queueEnabled ? sendQueue.items.length : 0}
           onSend={handleComposerSend}
           workspaceId={thread?.workspaceId}
           sessionMentions={sessionMentions}

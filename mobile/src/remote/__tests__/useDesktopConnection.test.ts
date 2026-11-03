@@ -43,6 +43,7 @@ jest.mock("../client", () => {
       return { complete: true, pendingTasks: [] };
     });
     waitTasks = jest.fn(async () => ({ complete: true, pendingTasks: [] }));
+    connectionState: ConnectionState = "ready";
     setAppActive = jest.fn();
     setVisibleSession = jest.fn();
     open = jest.fn(async () => {
@@ -112,6 +113,7 @@ interface MockClient {
   open: jest.Mock;
   recoverNow: jest.Mock;
   request: jest.Mock;
+  connectionState: ConnectionState;
 }
 
 const credentials: RemoteCredentials = {
@@ -156,6 +158,7 @@ function makeOptions(): Options {
     reconcileSession: jest.fn(),
     setCatalogEpoch: jest.fn(),
     applySessionSnapshot: jest.fn(),
+    applySessionDelta: jest.fn(),
     applySessionActivity: jest.fn(),
     applySessionStreaming: jest.fn(),
     setWorkspaces: jest.fn(),
@@ -625,6 +628,31 @@ describe("useDesktopConnection", () => {
       expect(c.recoverNow).toHaveBeenCalledWith("foreground");
     });
 
+    test("a fatal client is rebuilt on recover, not probed", async () => {
+      await mountConnected();
+      const previous = client();
+      previous.connectionState = "failed";
+      await act(async () => { await result.current.recover("request-failure"); });
+      // `recoverNow` is a no-op for a terminal client, so probing would leave
+      // the conversation and the composer dead until the app was killed. The
+      // state machine's own answer is a fresh client with the same credentials.
+      expect(previous.recoverNow).not.toHaveBeenCalled();
+      expect(previous.shutdown).toHaveBeenCalled();
+      expect(options.clientRef.current).not.toBe(previous);
+      expect(client().open).toHaveBeenCalled();
+      expect(client().connectionState).toBe("ready");
+    });
+
+    test("a revoked client is not rebuilt by a retry", async () => {
+      await mountConnected();
+      const previous = client();
+      previous.connectionState = "revoked";
+      await act(async () => { await result.current.recover("request-failure"); });
+      // A revoked pairing needs a new pair, not another connection attempt.
+      expect(options.clientRef.current).toBe(previous);
+      expect(previous.open).toHaveBeenCalledTimes(1);
+    });
+
     test("a recovery that fails after a reconnect is reported rather than swallowed", async () => {
       const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
       try {
@@ -849,6 +877,38 @@ describe("useDesktopConnection", () => {
       expect(warn).toHaveBeenCalledWith("remote_cleanup_timeout", ["connection-close"]);
       await act(async () => { finish({ complete: true, pendingTasks: [] }); await drain(); });
       expect(c.open).toHaveBeenCalledTimes(1);
+    } finally { warn.mockRestore(); }
+  });
+
+  test("a cleanup that fails after the timeout is logged, not reported as done", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await mountConnected();
+      const c = client();
+      const failure = new Error("connection already gone");
+      // The budget expired, and the observer that was left watching the real
+      // work then sees it fail: the client stays "closing" until it is released
+      // by a success, so the failure has to be said out loud.
+      c.shutdown.mockResolvedValueOnce({ complete: false, pendingTasks: ["connection-close"] });
+      c.waitTasks.mockReturnValueOnce(Promise.reject(failure));
+      await act(async () => { renderer!.unmount(); renderer = null; await drain(); });
+      expect(warn).toHaveBeenCalledWith("remote_cleanup_failed", failure);
+    } finally { warn.mockRestore(); }
+  });
+
+  test("a shutdown that throws is logged once, and the screen still lets go", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await mountConnected();
+      const c = client();
+      const failure = new Error("transport closed");
+      c.shutdown.mockRejectedValueOnce(failure);
+      // Leaving the conversation must not depend on the desktop answering the
+      // goodbye: a local failure is reported and the runtime moves on.
+      act(() => c.callbacks.onPresence({ ...presence, disconnected: true }));
+      await act(async () => { await drain(); });
+      expect(warn).toHaveBeenCalledWith("remote_cleanup_failed", failure);
+      expect(result.current.phase).toBe("stopped");
     } finally { warn.mockRestore(); }
   });
 

@@ -17,9 +17,13 @@ path = "src/lib.rs"
 dhat-heap = ["dep:dhat"]
 
 [dependencies]
+future-logging = { path = "../packages/logging" }
+future-fusion = { path = "../orchestration/fusion" }
 future-rpc = { path = "../packages/rpc" }
+future-http = { path = "../packages/http" }
 tokio.workspace = true
 parking_lot.workspace = true
+crossbeam-channel = "0.5"
 serde.workspace = true
 # preserve_order: session-list JSON key order must be deterministic across
 # build modes. Without it, the order silently depends on cargo feature
@@ -30,7 +34,6 @@ serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 serde_with = "3"
 reqwest = { workspace = true, features = ["query", "form", "stream", "json", "rustls-no-provider", "blocking"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 futures.workspace = true
 futures-util.workspace = true
 tokio-stream = { workspace = true, features = ["sync"] }
@@ -45,6 +48,9 @@ tracing-subscriber.workspace = true
 chrono.workspace = true
 regex = "1"
 unicode-width = "0.2.2"
+# The session export renders the model's markdown rather than dumping it as
+# text; kept in step with the TUI's own renderer.
+pulldown-cmark = "0.13"
 rand = "0.8"
 sha2 = "0.10"
 fs2 = "0.4"
@@ -63,7 +69,7 @@ image = { version = "0.25", default-features = false, features = [
     "bmp",
 ] }
 fd-lock = "4"
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled", "functions", "hooks"] }
 signal-hook = "0.4"
 
 async-trait.workspace = true
@@ -106,5 +112,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+# paused-clock tests: the idle-history release is a real 30 s sleep otherwise.
+tokio = { workspace = true, features = ["test-util"] }
 tokio-test = "0.4"
 tempfile.workspace = true

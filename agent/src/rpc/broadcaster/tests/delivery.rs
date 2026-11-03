@@ -45,7 +45,7 @@ fn stamps_run_id_idx_and_backfills() {
 fn session_scoped_events_have_independent_durable_identity() {
     let directory = tempfile::tempdir().unwrap();
     let b = SseBroadcaster::new();
-    b.configure_journal(
+    b.configure_legacy_journal(
         "session-1",
         &crate::session::Manager::new(directory.path().to_path_buf()),
     )

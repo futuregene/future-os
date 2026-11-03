@@ -1,5 +1,8 @@
 # dsh-TUI 0.17 能力盘点与 FutureOS 差距分析
 
+> **历史分析（2026）。** 下面的比较是当时的工作台差距快照；“缺失/部分”不是当前状态。
+> 现在的实现以 [TUI 使用指南](../guide/tui.zh-CN.md) 与测试为准。
+
 dsh-TUI 0.17 到底是什么、「工作台感」由什么构成、`future-tui` 现在站在哪里。
 本文是**证据与差距**文档；冻结的实现契约（类型名、模块划分、布局常量、键位）
 在 [workbench-spec.zh-CN.md](workbench-spec.zh-CN.md)；按序改造清单在
@@ -266,7 +269,9 @@ alt screen、鼠标模式与帧时钟 `[F:tui/src/workbench/run.rs:92]`；旧内
 `/transcript` —— 以前写在面板里、按下去却回 `Unknown command` `[V]`；现在五条都能
 落地（`[S:workbench-usage-panel.png]`、`[S:workbench-skills-panel.png]`），
 `every_palette_entry_has_a_handler` 挡住下一条走上老路。那曾是相对内联 UI 的
-**回退**，也是改造清单里的 P0-3。
+**回退**，也是改造清单里的 P0-3。五条里只有 `/transcript` 自己没有事情可做：
+它整条答案就是指向 `/export` 与 `/reply-detail`，而这两条本来就各有自己的面板行，
+所以这一条（连同它背后已经没人用的完整渲染）删掉了。
 
 ## 6. 差距矩阵
 
@@ -294,7 +299,7 @@ alt screen、鼠标模式与帧时钟 `[F:tui/src/workbench/run.rs:92]`；旧内
 | 16 | 分组可搜索的设置页 | 9 组 | 没有设置页；选择器覆盖模型、强度与主题，其余靠零散命令 | partial | partial | P1 |
 | 17 | 全屏草稿编辑器 | `Ctrl+Shift+E`、`⛶` | 无入口、无编辑器；外部 `$EDITOR` 也到不了 | missing | partial | P1 |
 | 18 | 按项目的历史搜索 | `Ctrl+R` | 只有提示词召回 | partial | partial | P1 |
-| 19 | 转向 vs 排队 vs 中断 | `Enter`/`Tab`/`Ctrl+Enter` | 提交即排到运行之后；`ctrl+x` 中断 | partial | partial | P1 |
+| 19 | 转向 vs 排队 vs 中断 | `Enter`/`Tab`/`Ctrl+Enter` | 提交即排到运行之后；`ctrl+c` 中断 | partial | partial | P1 |
 | 20 | 回到较早回合 | 双击 `Esc` + `/rewind` | `/fork` 也不在面板里 | missing | missing | P2 |
 | 21 | Mermaid、LaTeX | Unicode + 图形 | 无 | missing | missing | P2 |
 | 22 | 图片预览缩放/平移、Sixel | 有 | 仅 Kitty/iTerm2 直通 | partial | partial | P2 |

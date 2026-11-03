@@ -839,6 +839,41 @@ mod bridge_tests {
     }
 
     #[tokio::test]
+    async fn events_since_pins_the_first_durable_watermark_on_following_agent_pages() {
+        let mock = mock_agent();
+        mock.push_typed_data(
+            "get_events_since",
+            serde_json::json!({"runId":"r","events":[{"idx":1}],"hasMore":true,"watermark":3}),
+        );
+        mock.push_typed_data("get_events_since", serde_json::json!({"runId":"r","events":[{"idx":2},{"idx":3}],"hasMore":false,"watermark":3}));
+        let result = get_events_since("s".into(), "r".into(), -1).await.unwrap();
+        assert_eq!(result["watermark"], 3);
+        assert_eq!(result["events"].as_array().unwrap().len(), 3);
+        let requests = mock.requests_of("get_events_since");
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].replay_until_idx, None);
+        assert_eq!(requests[1].replay_until_idx, Some(3));
+    }
+
+    #[tokio::test]
+    async fn events_since_refuses_a_window_that_changes_between_agent_pages() {
+        let mock = mock_agent();
+        mock.push_typed_data(
+            "get_events_since",
+            serde_json::json!({"runId":"r","events":[{"idx":1}],"hasMore":true,"watermark":3}),
+        );
+        mock.push_typed_data(
+            "get_events_since",
+            serde_json::json!({"runId":"r","events":[{"idx":2}],"hasMore":false,"watermark":4}),
+        );
+        assert!(get_events_since("s".into(), "r".into(), -1)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("replay_window_changed"));
+    }
+
+    #[tokio::test]
     async fn events_since_remote_page_is_bounded_and_preserves_has_more() {
         let mock = mock_agent();
         mock.push_typed_data(
@@ -935,15 +970,16 @@ mod bridge_tests {
             serde_json::json!({"runId": "r", "events": [], "truncated": false})
         );
 
-        // A hasMore page whose idx does not advance terminates the loop.
+        // A non-advancing hasMore page is a protocol error, never a silently
+        // truncated successful replay.
         mock.push_data(
             "get_events_since",
             serde_json::json!({"events": [{"idx": 5}], "hasMore": true}),
         );
-        let merged = get_events_since("s".to_string(), "r".to_string(), 5)
+        let error = get_events_since("s".to_string(), "r".to_string(), 5)
             .await
-            .expect("terminates");
-        assert_eq!(merged["events"].as_array().expect("array").len(), 1);
+            .expect_err("non-advancing replay must be rejected");
+        assert!(error.to_string().contains("did not advance"), "{error}");
 
         // Transport failure and rejection.
         mock.push(
@@ -1019,6 +1055,49 @@ mod bridge_tests {
             .await
             .expect_err("missing thread");
         assert_eq!(error.to_string(), "Thread could not be loaded.");
+    }
+
+    // ── session_has_entries ───────────────────────────────────────────
+
+    /// A session that holds only the `session_info` snapshot it was born with
+    /// holds no record: that is the shell a task run leaves when its prompt never
+    /// reached the Agent (and what `future session transcript` reports as empty).
+    #[tokio::test]
+    async fn a_session_with_only_its_birth_snapshot_has_no_entries() {
+        let _home = TestHome::new("bridge-empty-session");
+        let mock = mock_agent();
+        mock.push_typed_data(
+            "get_session_entries",
+            serde_json::json!({"entries": [
+                {"id":"s1", "kind":"session_info", "role":"", "createdAtMs":1000, "blocks":[]}
+            ]}),
+        );
+        assert!(!session_has_entries("sess-born")
+            .await
+            .expect("history read"));
+    }
+
+    /// …and one record is enough. A page that reports more behind it is never an
+    /// empty session either, whatever its first entries are — reading one page
+    /// and calling it empty would throw a conversation away.
+    #[tokio::test]
+    async fn a_session_with_a_turn_has_entries_even_when_the_page_is_cut_short() {
+        let _home = TestHome::new("bridge-filled-session");
+        let mock = mock_agent();
+        for page in [
+            serde_json::json!({"entries": [
+                {"id":"s1", "kind":"session_info", "role":"", "createdAtMs":1000, "blocks":[]},
+                {"id":"u1", "kind":"user", "role":"user", "createdAtMs":1001, "blocks":[]}
+            ]}),
+            serde_json::json!({"hasMore": true, "entries": [
+                {"id":"s1", "kind":"session_info", "role":"", "createdAtMs":1000, "blocks":[]}
+            ]}),
+        ] {
+            mock.push_typed_data("get_session_entries", page);
+            assert!(session_has_entries("sess-filled")
+                .await
+                .expect("history read"));
+        }
     }
 
     // ── delete outbox ─────────────────────────────────────────────────
@@ -1324,18 +1403,18 @@ mod bridge_tests {
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-1"));
         let run = seed_run(&thread.id);
-        let mut settled = std::collections::HashSet::new();
+        let mut memory = WatchdogMemory::default();
 
         // A young run (now) is inside the grace window → skipped silently.
         let now = run.created_at;
-        active_run_watchdog_pass(now, &mut settled).await;
+        active_run_watchdog_pass(now, &mut memory).await;
         assert!(mock.requests().is_empty());
 
         // Aged past the grace window: the agent has no marker and the run is
         // below the orphan age → Skip (row untouched), but the probe went out.
         mock.push_run_state(&run.id, serde_json::json!({"isStreaming": false}));
         let aged_now = run.created_at + (WATCHDOG_GRACE_SECS as i64 + 1) * 1000;
-        active_run_watchdog_pass(aged_now, &mut settled).await;
+        active_run_watchdog_pass(aged_now, &mut memory).await;
         assert_eq!(mock.requests_of("get_state").len(), 1);
         assert_eq!(mock.requests_of("get_state")[0].run_id, run.id);
         assert_eq!(
@@ -1349,7 +1428,7 @@ mod bridge_tests {
         // Past the orphan age with no marker → settled failed.
         mock.push_run_state(&run.id, serde_json::json!({"isStreaming": false}));
         let orphan_now = run.created_at + (WATCHDOG_ORPHAN_SECS as i64) * 1000;
-        active_run_watchdog_pass(orphan_now, &mut settled).await;
+        active_run_watchdog_pass(orphan_now, &mut memory).await;
         let record = crate::store::get_run(&run.id).expect("run").expect("some");
         assert_eq!(record.status, "failed");
         assert_eq!(record.error_type.as_deref(), Some("stream_interrupted"));
@@ -1361,7 +1440,7 @@ mod bridge_tests {
             &format!("get_state#{}", run2.id),
             Reply::Status(tonic::Code::Unavailable, "down"),
         );
-        active_run_watchdog_pass(orphan_now, &mut settled).await;
+        active_run_watchdog_pass(orphan_now, &mut memory).await;
         assert_eq!(
             crate::store::get_run(&run2.id)
                 .expect("run")
@@ -1373,8 +1452,82 @@ mod bridge_tests {
 
         // Store unreadable → the pass returns immediately.
         let prev = break_home();
-        active_run_watchdog_pass(orphan_now, &mut settled).await;
+        active_run_watchdog_pass(orphan_now, &mut memory).await;
         restore_home(prev);
+    }
+
+    /// A run whose reconcile fails the *same* way every pass will never heal by
+    /// being asked again. Measured 2026-11-01: two runs retried every 30 s from
+    /// 06:21 to 14:54 (91 log lines), settled only by restarting the Agent, and
+    /// the row kept the conversation reading as "generating" the whole time.
+    #[tokio::test]
+    async fn watchdog_gives_up_on_a_run_it_can_never_reconcile() {
+        let home = TestHome::new("bridge-watchdog-give-up");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-give-up"));
+        let run = seed_run(&thread.id);
+        let mut memory = WatchdogMemory::default();
+        let now = run.created_at + (WATCHDOG_GRACE_SECS as i64 + 1) * 1000;
+
+        let status = || {
+            crate::store::get_run(&run.id)
+                .expect("run")
+                .expect("some")
+                .status
+        };
+
+        // One short of the threshold: still retrying, row untouched.
+        for _ in 0..WATCHDOG_RECONCILE_GIVE_UP_PASSES - 1 {
+            mock.push(
+                &format!("get_state#{}", run.id),
+                Reply::Status(tonic::Code::Unavailable, "down"),
+            );
+            active_run_watchdog_pass(now, &mut memory).await;
+            assert_eq!(status(), "running");
+        }
+
+        // A *different* error is a different diagnosis: it restarts the count
+        // rather than inheriting the streak.
+        mock.push(
+            &format!("get_state#{}", run.id),
+            Reply::Status(tonic::Code::Unavailable, "still down"),
+        );
+        active_run_watchdog_pass(now, &mut memory).await;
+        assert_eq!(status(), "running", "a changed error restarts the count");
+
+        // The same error again, to the threshold: settled once, with a reason.
+        for _ in 0..WATCHDOG_RECONCILE_GIVE_UP_PASSES {
+            mock.push(
+                &format!("get_state#{}", run.id),
+                Reply::Status(tonic::Code::Unavailable, "still down"),
+            );
+            active_run_watchdog_pass(now, &mut memory).await;
+            if status() != "running" {
+                break;
+            }
+        }
+        let record = crate::store::get_run(&run.id).expect("run").expect("some");
+        assert_eq!(record.status, "failed");
+        assert_eq!(record.error_type.as_deref(), Some("stream_interrupted"));
+        let message = record.error_message.unwrap_or_default();
+        assert!(
+            message.contains("could not reconcile"),
+            "the row must say why it was settled: {message}"
+        );
+        assert!(
+            message.contains("watchdog passes"),
+            "and how long it tried: {message}"
+        );
+
+        // Nothing is retried after the give-up: one more pass sends no probe.
+        let probes = mock.requests_of("get_state").len();
+        active_run_watchdog_pass(now, &mut memory).await;
+        assert_eq!(
+            mock.requests_of("get_state").len(),
+            probes,
+            "a settled run leaves the active set"
+        );
     }
 
     // ── settled-run repair ───────────────────────────────────────────
@@ -1414,7 +1567,7 @@ mod bridge_tests {
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-1"));
         let run = failed_run(&thread.id);
-        let mut settled = std::collections::HashSet::new();
+        let mut memory = WatchdogMemory::default();
         assert!(mock.requests().is_empty());
 
         // Our run is queued behind the one the Agent is executing.
@@ -1426,7 +1579,7 @@ mod bridge_tests {
                 "queuedRuns": [{"runId": run.id, "queuePosition": 1}],
             }),
         );
-        active_run_watchdog_pass(run.updated_at + 30_000, &mut settled).await;
+        active_run_watchdog_pass(run.updated_at + 30_000, &mut memory).await;
 
         assert_eq!(ledger_reads(&mock, &run.id), 1);
         let record = crate::store::get_run(&run.id).expect("run").expect("some");
@@ -1446,14 +1599,14 @@ mod bridge_tests {
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-1"));
         let run = failed_run(&thread.id);
-        let mut settled = std::collections::HashSet::new();
+        let mut memory = WatchdogMemory::default();
         let started_at = run.started_at.expect("seeded start");
 
         mock.push_run_state(
             &run.id,
             serde_json::json!({"requestedRun": {"runId": run.id, "status": "completed", "durationMs": 90_000}}),
         );
-        active_run_watchdog_pass(run.updated_at + 30_000, &mut settled).await;
+        active_run_watchdog_pass(run.updated_at + 30_000, &mut memory).await;
 
         let record = crate::store::get_run(&run.id).expect("run").expect("some");
         assert_eq!(record.status, "completed");
@@ -1472,14 +1625,14 @@ mod bridge_tests {
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-1"));
         let run = failed_run(&thread.id);
-        let mut settled = std::collections::HashSet::new();
+        let mut memory = WatchdogMemory::default();
         let now = run.updated_at + 30_000;
 
         mock.push_run_state(
             &run.id,
             serde_json::json!({"requestedRun": {"runId": run.id, "status": "error", "error": "model exploded"}}),
         );
-        active_run_watchdog_pass(now, &mut settled).await;
+        active_run_watchdog_pass(now, &mut memory).await;
         let record = crate::store::get_run(&run.id).expect("run").expect("some");
         assert_eq!(record.status, "failed");
         assert_eq!(
@@ -1489,7 +1642,7 @@ mod bridge_tests {
 
         // A later pass has nothing left to ask about this row.
         let reads = ledger_reads(&mock, &run.id);
-        active_run_watchdog_pass(now + 60_000, &mut settled).await;
+        active_run_watchdog_pass(now + 60_000, &mut memory).await;
         assert_eq!(ledger_reads(&mock, &run.id), reads);
     }
 
@@ -1502,14 +1655,14 @@ mod bridge_tests {
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-1"));
         let run = failed_run(&thread.id);
-        let mut settled = std::collections::HashSet::new();
+        let mut memory = WatchdogMemory::default();
         let now = run.updated_at + 30_000;
 
         mock.push(
             &format!("get_state#{}", run.id),
             Reply::Status(tonic::Code::Unavailable, "down"),
         );
-        active_run_watchdog_pass(now, &mut settled).await;
+        active_run_watchdog_pass(now, &mut memory).await;
         assert_eq!(
             crate::store::get_run(&run.id)
                 .expect("run")
@@ -1522,7 +1675,7 @@ mod bridge_tests {
             &run.id,
             serde_json::json!({"requestedRun": {"runId": run.id, "status": "completed"}}),
         );
-        active_run_watchdog_pass(now + 30_000, &mut settled).await;
+        active_run_watchdog_pass(now + 30_000, &mut memory).await;
         assert_eq!(
             crate::store::get_run(&run.id)
                 .expect("run")
@@ -1544,7 +1697,7 @@ mod bridge_tests {
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-unknown"));
         let run = failed_run(&thread.id);
-        let mut settled = std::collections::HashSet::new();
+        let mut memory = WatchdogMemory::default();
         let now = run.updated_at + 30_000;
 
         // A refused read: `success = false`, so the pass gets an answer rather
@@ -1553,7 +1706,7 @@ mod bridge_tests {
             &format!("get_state#{}", run.id),
             Reply::Reject("unknown session".into()),
         );
-        active_run_watchdog_pass(now, &mut settled).await;
+        active_run_watchdog_pass(now, &mut memory).await;
         assert_eq!(ledger_reads(&mock, &run.id), 1, "the ledger was read once");
         let record = crate::store::get_run(&run.id).expect("run").expect("some");
         assert_eq!(
@@ -1571,9 +1724,12 @@ mod bridge_tests {
             &format!("get_state#{}", run.id),
             Reply::Reject("unknown session".into()),
         );
-        active_run_watchdog_pass(now + 30_000, &mut settled).await;
+        active_run_watchdog_pass(now + 30_000, &mut memory).await;
         assert_eq!(ledger_reads(&mock, &run.id), 2);
-        assert!(settled.is_empty(), "Unknown is not Verified");
+        assert!(
+            memory.settled_verified_count() == 0,
+            "Unknown is not Verified"
+        );
     }
 
     #[tokio::test]
@@ -1602,9 +1758,9 @@ mod bridge_tests {
             error_type: None,
         })
         .expect("complete");
-        let mut settled = std::collections::HashSet::new();
+        let mut memory = WatchdogMemory::default();
 
-        active_run_watchdog_pass(done.updated_at + 30_000, &mut settled).await;
+        active_run_watchdog_pass(done.updated_at + 30_000, &mut memory).await;
 
         assert_eq!(ledger_reads(&mock, &aborted.id), 0);
         assert_eq!(ledger_reads(&mock, &done.id), 0);
@@ -1850,6 +2006,7 @@ mod pipeline_tests {
             run_id: Some(run_id.clone()),
             model_id: Some("future/k3".to_string()),
             thinking_level: Some("high".to_string()),
+            busy_policy: String::new(),
         })
         .await
         .expect("prompt");
@@ -2240,11 +2397,10 @@ mod pipeline_tests {
         .expect("prompt");
         assert!(!response.complete, "an instantly-closed stream is a prefix");
         let prompt = &fixture.mock.requests_of("prompt")[0];
-        assert!(
-            prompt.requested_run_id.starts_with("run-"),
-            "generated id: {}",
-            prompt.requested_run_id
-        );
+        let generated = uuid::Uuid::parse_str(&prompt.requested_run_id)
+            .expect("Host-generated run identity must reach the Agent as a UUID");
+        assert_eq!(generated.get_version(), Some(uuid::Version::Random));
+        assert_eq!(generated.to_string(), prompt.requested_run_id);
     }
 
     #[tokio::test]
@@ -2992,6 +3148,66 @@ mod pipeline_tests {
         crate::request_scope::release_run("sess-rgp", &run4.id);
     }
 
+    /// The observer settles a run from the run's own terminal event. Before this
+    /// split every non-finish became the same `unknown` failure, so a run the
+    /// user had stopped read as a crash — 29 rows in one Agent database, 12 of
+    /// them on the morning of 2026-11-02, while the Agent's ledger said
+    /// `cancelled` all along.
+    #[test]
+    fn the_observer_mirrors_the_runs_own_terminal_state() {
+        let home = TestHome::new("bridge-settle-agent-end");
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-end"));
+
+        // A clean finish is exercised end-to-end by `agent_prompt_new_session_full_pipeline`
+        // (its `completed` settle needs no runtime here).
+        let cases = [
+            (r#"{"state":"cancelled"}"#, "cancelled", Some("cancelled")),
+            (
+                r#"{"state":"interrupted_by_restart"}"#,
+                "failed",
+                Some("stream_interrupted"),
+            ),
+            (r#"{"state":"failed"}"#, "failed", Some("agent_error")),
+            // A state this build does not know keeps the conservative answer.
+            (
+                r#"{"state":"teleported"}"#,
+                "failed",
+                Some("stream_interrupted"),
+            ),
+            // A finish contradicted by an error is not a finish.
+            (
+                r#"{"state":"completed","error":"provider exploded"}"#,
+                "failed",
+                Some("stream_interrupted"),
+            ),
+            ("not json", "failed", Some("stream_interrupted")),
+        ];
+        for (data, status, error_type) in cases {
+            let run = seed_run(&thread.id);
+            settle_agent_end(&run.id, data);
+            let record = crate::store::get_run(&run.id).expect("run").expect("some");
+            assert_eq!(record.status, status, "{data}");
+            assert_eq!(record.error_type.as_deref(), error_type, "{data}");
+        }
+
+        // The Agent's own error text is preserved rather than replaced.
+        let run = seed_run(&thread.id);
+        settle_agent_end(&run.id, r#"{"state":"failed","error":"provider exploded"}"#);
+        let record = crate::store::get_run(&run.id).expect("run").expect("some");
+        assert_eq!(record.error_message.as_deref(), Some("provider exploded"));
+
+        // And an already-terminal row is never rewritten by a late event.
+        let run = seed_run(&thread.id);
+        settle_agent_end(&run.id, r#"{"state":"cancelled"}"#);
+        settle_agent_end(&run.id, r#"{"state":"completed"}"#);
+        let record = crate::store::get_run(&run.id).expect("run").expect("some");
+        assert_eq!(
+            record.status, "cancelled",
+            "compare-and-set: the first terminal write wins"
+        );
+    }
+
     #[test]
     fn settle_from_agent_terminal_maps_all_states() {
         let home = TestHome::new("pipe-settle");
@@ -3201,5 +3417,83 @@ mod pipeline_tests {
             created.path
         );
         assert_eq!(created.name, "brand-new");
+    }
+}
+
+/// Presence answers from a lane that does not queue behind the agent's ordered
+/// writer (see `agent::session::database::Database::fence`). That is what keeps
+/// a long writer job from stalling every remote command — and what costs the
+/// ordering a fence used to get for free: a session whose placeholder commit is
+/// still queued reads `missing` for a moment.
+///
+/// So a `missing` answer is a question, not a verdict: ask once more before
+/// refusing. `deleted` and `import_failed` are verdicts and are never re-asked.
+#[cfg(test)]
+mod presence_fence_tests {
+    use super::test_support::{mock_agent, TestHome};
+    use super::*;
+    use serde_json::json;
+
+    fn presence(status: &str) -> serde_json::Value {
+        json!({
+            "databaseId": "database",
+            "restoreGeneration": "generation",
+            "sessions": [{"sessionId": "s1", "status": status}],
+        })
+    }
+
+    #[tokio::test]
+    async fn a_missing_session_is_asked_again_before_it_is_refused() {
+        let _home = TestHome::new("presence-recheck-missing");
+        let mock = mock_agent();
+        mock.push_data("get_session_presence", presence("missing"));
+        mock.push_data("get_session_presence", presence("present"));
+        let mut client = connect_agent().await.expect("mock agent");
+
+        let answer = require_present_with_client(&mut client, "s1")
+            .await
+            .expect("presence");
+
+        assert_eq!(answer.sessions[0].status, "present");
+        assert_eq!(
+            mock.requests_of("get_session_presence").len(),
+            2,
+            "a missing session must be confirmed before it is refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_deleted_session_is_not_asked_twice() {
+        let _home = TestHome::new("presence-recheck-deleted");
+        let mock = mock_agent();
+        mock.push_data("get_session_presence", presence("deleted"));
+        mock.push_data("get_session_presence", presence("present"));
+        let mut client = connect_agent().await.expect("mock agent");
+
+        let answer = require_present_with_client(&mut client, "s1")
+            .await
+            .expect("presence");
+
+        assert_eq!(answer.sessions[0].status, "deleted");
+        assert_eq!(
+            mock.requests_of("get_session_presence").len(),
+            1,
+            "a deletion is a decision, not a race"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_present_session_is_answered_once() {
+        let _home = TestHome::new("presence-recheck-present");
+        let mock = mock_agent();
+        mock.push_data("get_session_presence", presence("present"));
+        let mut client = connect_agent().await.expect("mock agent");
+
+        let answer = require_present_with_client(&mut client, "s1")
+            .await
+            .expect("presence");
+
+        assert_eq!(answer.sessions[0].status, "present");
+        assert_eq!(mock.requests_of("get_session_presence").len(), 1);
     }
 }

@@ -2,6 +2,7 @@
 //! Explicit host services, role supervision, secure transport and bounded shutdown.
 pub mod commands;
 pub mod connection;
+pub mod content_capability;
 mod credentials;
 pub mod diagnostics;
 mod error;

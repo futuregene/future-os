@@ -26,8 +26,11 @@ function toFileUrl(path: string): string {
  * anchor. In the chat stream, previewable types (image / markdown) left-click
  * into a fullscreen in-app preview and every other type opens with the OS
  * default handler; right click opens a context menu (preview / copy / open).
- * In preview mode (see `PreviewMarkdownContext`) there is no nested in-app
- * preview and no custom menu — every target opens with the OS default handler.
+ * In preview mode (see `PreviewMarkdownContext`) a previewable target opens one
+ * level deeper in the overlay's own stack when the host provides that
+ * capability (`openPreview`), so a manual's chapters stay clipped together;
+ * everything else, and every target when there is nowhere to nest, opens with
+ * the OS default handler. Preview mode has no custom menu.
  * The `file://` href is only a hover/drag affordance — navigation is prevented
  * so the click always routes through our handlers. In-workspace files show
  * their workspace-relative path, files written elsewhere (e.g. `~/Desktop`)
@@ -58,13 +61,19 @@ export function FileLink({ file, children }: { file: StoredFile; children?: Reac
   const openPreview = useCallback(() => setPreviewing(true), []);
 
   function activate() {
-    // Preview mode: no nested in-app preview — hand every target to the OS.
-    if (preview)
-      openExternal();
-    else if (previewKind)
+    // In preview mode a previewable target opens one level deeper in the
+    // overlay's stack, so the reader walks back out with Escape instead of
+    // leaving the app. Everything else — and any target when the host has
+    // nowhere to nest — goes to the OS default handler.
+    if (preview?.openPreview && previewKind) {
+      preview.openPreview({ name: file.name, path: file.path });
+      return;
+    }
+    if (!preview && previewKind) {
       openPreview();
-    else
-      openExternal();
+      return;
+    }
+    openExternal();
   }
 
   const items = [

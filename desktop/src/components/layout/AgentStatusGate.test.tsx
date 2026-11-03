@@ -12,12 +12,12 @@ afterEach(() => {
     mounted.pop()?.();
 });
 
-function renderStatus(phase: AgentStatus["phase"], showWait = false, error?: string, shutdown?: ShutdownProgress) {
+function renderStatus(phase: AgentStatus["phase"], showWait = false, error?: string, shutdown?: ShutdownProgress, startup?: AgentStatus["startup"]) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
   act(() => root.render(
-    <AgentStatusGate showWait={showWait} status={{ phase, desktopVersion: "1.1.8", agentVersion: null, ...(error ? { error } : {}), ...(shutdown ? { shutdown } : {}) }} />,
+    <AgentStatusGate showWait={showWait} status={{ phase, desktopVersion: "1.1.8", agentVersion: null, ...(error ? { error } : {}), ...(shutdown ? { shutdown } : {}), ...(startup ? { startup } : {}) }} />,
   ));
   mounted.push(() => {
     act(() => root.unmount());
@@ -59,6 +59,29 @@ describe("agent status gate", () => {
     expect(text).not.toContain("could not start");
   });
 
+  it("reveals upgrade progress only after the waiting hint delay", () => {
+    const progress = { stage: "upgrading_storage" as const, elapsedMs: 24000 };
+    expect(renderStatus("starting", false, undefined, undefined, progress)).toBe("");
+    const text = renderStatus("starting", true, undefined, undefined, progress);
+    expect(text).toContain("Upgrading conversation data. Do not close the app.");
+    expect(text).toContain("Startup is taking longer");
+    expect(text).not.toContain("could not start");
+  });
+
+  it("shows the backup close warning only after the waiting hint delay", () => {
+    const progress = { stage: "backing_up_storage" as const, elapsedMs: 6000 };
+    expect(renderStatus("starting", false, undefined, undefined, progress)).toBe("");
+    const text = renderStatus("starting", true, undefined, undefined, progress);
+    expect(text).toContain("Backing up data before upgrading. Do not close the app.");
+    expect(text).not.toContain("Startup is taking longer");
+  });
+
+  it("describes missing status responses without claiming a startup failure", () => {
+    const text = renderStatus("startup_timeout");
+    expect(text).toContain("No startup status received for 15 seconds");
+    expect(text).not.toContain("could not start");
+  });
+
   it("shows restart and external Agent diagnostics for startup failures", () => {
     const text = renderStatus("spawn_failed");
     expect(text).toContain("Future Agent could not start");
@@ -73,4 +96,34 @@ describe("agent status gate", () => {
     expect(text).toContain("Update or stop the external Agent");
     expect(text).toContain("cannot be bypassed");
   });
+});
+
+/**
+ * A shutdown an update asked for is not a quit.
+ *
+ * The generic screen explains cleanup stages for a normal quit; an update that
+ * stops the app has its own next step (reopen, or repair the install), and its
+ * panel also keeps the *failure* of that stop — the one moment a user needs to
+ * be told what to do rather than shown a spinner.
+ */
+it("hands an update's shutdown to the recovery panel, not the cleanup screen", () => {
+  const progress: ShutdownProgress = {
+    operationId: "upd-1",
+    reason: "update",
+    state: "running",
+    stage: "background",
+    elapsedMs: 900,
+    errors: [],
+  };
+  const running = renderStatus("stopping", false, undefined, progress);
+  // The quit screen's own copy, which this branch must not borrow.
+  expect(running).not.toContain("Finishing background work");
+  // Neither is the app "just stopping": the panel says what it is waiting for.
+  expect(running.length).toBeGreaterThan(0);
+
+  // A stop that failed during an update says so through its own sentence, not
+  // the quit screen's "cleanup failed".
+  const failed = renderStatus("stopping", false, "deadline exceeded", { ...progress, state: "failed", errors: ["deadline exceeded"] });
+  expect(failed).toContain("couldn’t finish preparing for the update");
+  expect(failed).not.toContain("Finishing background work");
 });

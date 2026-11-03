@@ -94,6 +94,12 @@ interface MentionEditorProps {
   /** Clipboard files without a local URI, handed to the parent for copying. */
   onPasteFiles?: (files: File[]) => void;
   /**
+   * A paste that carried neither text nor files. WebKitGTK reports an empty
+   * `DataTransfer` for a clipboard image, so the parent asks the native
+   * pasteboard for the bytes the WebView never received.
+   */
+  onPasteEmpty?: () => void;
+  /**
    * The conversation's sent messages, for `↑`/`↓` on an empty box.
    *
    * Omitted where walking history makes no sense (the panel's dictation layer),
@@ -130,6 +136,7 @@ export function MentionEditor({
   onChange,
   onPasteAttachmentPaths,
   onPasteFiles,
+  onPasteEmpty,
   history,
   ref,
 }: MentionEditorProps) {
@@ -689,6 +696,16 @@ export function MentionEditor({
     if (text.length === 0 && files.length > 0) {
       event.preventDefault();
       onPasteFiles?.(files);
+      return;
+    }
+
+    // Nothing to insert: the WebView reported no text and no files. A clipboard
+    // image is exactly this case under WebKitGTK (Linux), which dispatches the
+    // paste event with an empty `DataTransfer`; the parent reads the native
+    // pasteboard instead. A genuinely empty clipboard just attaches nothing.
+    if (text.length === 0) {
+      event.preventDefault();
+      onPasteEmpty?.();
       return;
     }
 

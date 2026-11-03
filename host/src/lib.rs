@@ -7,6 +7,11 @@ mod error;
 
 pub use error::Error;
 
+// Terminal writes that drop a failed write instead of panicking (see
+// `future_agent::console`). Re-exported so a host or Desktop file can take
+// `crate::console::eprintln` over the prelude's and keep its call sites.
+pub use future_agent::console;
+
 pub mod approval_rules;
 mod git_diff_parse;
 mod proc;
@@ -24,8 +29,11 @@ mod home;
 pub mod skills;
 pub use home::{future_home_root, home_dir};
 
+/// Install the process TLS provider before an entry point builds an HTTP client.
+/// The provider choice lives in `future-http`; this alias keeps host call sites
+/// (and the Desktop) reading as the host's own concern.
 pub fn install_rustls_provider() {
-    future_agent::http::install_tls_provider();
+    future_http::install_tls_provider();
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -82,3 +90,5 @@ pub mod startup;
 pub mod cli_tool;
 
 pub mod application;
+
+pub mod fusion;

@@ -113,6 +113,9 @@ pub(crate) enum SkipReason {
     /// Agent shutdown interrupted the build. Not evidence: the next completion
     /// (or an explicit sweep) retries the run.
     Cancelled,
+    /// Canonical conversations already store one segmented body and must never
+    /// be rewritten by the explicitly invoked legacy reclamation command.
+    CanonicalFormat,
 }
 
 impl SkipReason {
@@ -126,6 +129,7 @@ impl SkipReason {
             SkipReason::ProviderDelta => "provider_delta",
             SkipReason::NotTerminal => "not_terminal",
             SkipReason::Cancelled => "cancelled",
+            SkipReason::CanonicalFormat => "canonical_format",
         }
     }
 
@@ -135,7 +139,10 @@ impl SkipReason {
     fn is_leftover(self) -> bool {
         !matches!(
             self,
-            SkipReason::AlreadyCompacted | SkipReason::Empty | SkipReason::Cancelled
+            SkipReason::AlreadyCompacted
+                | SkipReason::Empty
+                | SkipReason::Cancelled
+                | SkipReason::CanonicalFormat
         )
     }
 }
@@ -275,9 +282,12 @@ impl SqliteStore {
         session_scope: bool,
         limit: Option<usize>,
     ) -> Result<RunReplayPage> {
+        if self.storage_format(session)? == super::content::FORMAT_VERSION {
+            return self.segmented_replay(session, run, since, session_scope, limit);
+        }
         let (session, run) = (session.to_owned(), run.to_owned());
         let decode_run = run.clone();
-        let (known,rows,snapshot)=self.db.call(move |db| {
+        let (known,rows,snapshot)=self.db.read(move |db| {
             let tx=db.transaction()?;
             let snapshot: Option<(i64,Option<String>)> = if run.is_empty() { None } else {
                 tx.query_row("SELECT cursor,CASE WHEN cursor>?3 THEN payload END FROM run_snapshots WHERE session_id=?1 AND run_id=?2 AND version=1",
@@ -326,10 +336,16 @@ impl SqliteStore {
         run: &str,
         stop: &AtomicBool,
     ) -> Result<CompactionOutcome> {
+        if self.storage_format(session)? == super::content::FORMAT_VERSION {
+            return Ok(CompactionOutcome {
+                skip: Some(SkipReason::CanonicalFormat),
+                ..Default::default()
+            });
+        }
         let (owned_session, owned_run) = (session.to_owned(), run.to_owned());
         let read = self
             .db
-            .call(move |db| read_compaction_source(db, &owned_session, &owned_run))?;
+            .read(move |db| read_compaction_source(db, &owned_session, &owned_run))?;
         let original = match read {
             CompactionRead::Source(source) if source.count > 0 => source,
             CompactionRead::Source(_) => return Ok(self.skipped(session, SkipReason::Empty)),
@@ -366,7 +382,7 @@ impl SqliteStore {
             }
             let (page_session, page_run) = (session.to_owned(), run.to_owned());
             let after_epoch = epoch.unwrap_or(i64::MIN);
-            let Some(rows) = self.db.call(move |db| {
+            let Some(rows) = self.db.read(move |db| {
                 super::sqlite_store::read_compaction_event_rows(
                     db,
                     &page_session,
@@ -501,7 +517,7 @@ impl SqliteStore {
         // replay. The reclaim sweep deletes those inert leftovers.
         let (commit_session, commit_run) = (session.clone(), run.clone());
         let expected = original.clone();
-        let first = self.db.call(move |db| {
+        let first = self.db.call_as("journal_compaction", move |db| {
             let deleted = super::database::try_maintenance_transaction(db, |tx| {
                 ensure!(
                     read_compaction_source(tx, &commit_session, &commit_run)?
@@ -538,7 +554,7 @@ impl SqliteStore {
         let mut deleted = first;
         while (deleted as i64) < original.count && !stop.load(Ordering::Acquire) {
             let (chunk_session, chunk_run) = (session.clone(), run.clone());
-            let chunk = self.db.call(move |db| {
+            let chunk = self.db.call_as("journal_compaction", move |db| {
                 super::database::try_maintenance_transaction(db, |tx| {
                     let deleted =
                         delete_raw_rows(tx, &chunk_session, &chunk_run, RETIRE_CHUNK_ROWS)?;
@@ -576,7 +592,10 @@ impl SqliteStore {
     fn skipped(&self, session: &str, reason: SkipReason) -> CompactionOutcome {
         if reason.is_leftover() {
             let key = reason.key();
-            if let Err(error) = self.db.call(move |db| bump_meta(db, &key, 1)) {
+            if let Err(error) = self
+                .db
+                .call_as("journal_compaction", move |db| bump_meta(db, &key, 1))
+            {
                 tracing::debug!(%error, reason = reason.as_str(), "could not record journal skip");
             }
             tracing::debug!(

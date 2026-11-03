@@ -7,7 +7,7 @@ import * as host from "./host";
 export class RemoteClient extends Client {
   constructor(credentials: RemoteCredentials, callbacks: RemoteClientCallbacks) {
     super(credentials, callbacks, {
-      deviceName: host.deviceName, deviceKind: () => "mobile", randomId,
+      deviceName: host.deviceName, deviceKind: () => "mobile", deviceVersion: host.deviceVersion, randomId,
       refreshCredentials: host.refreshCredentials, connect: wsconnect,
     });
   }

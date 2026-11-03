@@ -304,7 +304,28 @@ fn get_events_since_rejects_unknown_run() {
 
 #[test]
 fn get_run_snapshot_reuses_active_projection_and_folds_completed_journal() {
-    let state = make_app_state();
+    assert_live_and_historical_snapshot(false);
+}
+
+#[test]
+fn canonical_snapshots_keep_the_same_payload_and_content_ranges_as_live() {
+    assert_live_and_historical_snapshot(true);
+}
+
+fn assert_live_and_historical_snapshot(canonical: bool) {
+    // The data carrier is JSON text; object key order may differ when a
+    // canonical range is hydrated. Compare every envelope/payload field.
+    let normalize = |mut data: serde_json::Value| {
+        for event in data["projection"]["events"].as_array_mut().unwrap() {
+            event["data"] = serde_json::from_str(event["data"].as_str().unwrap()).unwrap();
+        }
+        data
+    };
+    let state = if canonical {
+        make_app_state()
+    } else {
+        make_legacy_app_state()
+    };
     let session = state.get_session("default").unwrap();
     let b = session.read().broadcaster.clone();
     b.start_run("snapshot-run".into(), 1);
@@ -336,7 +357,10 @@ fn get_run_snapshot_reuses_active_projection_and_folds_completed_journal() {
     b.start_run("next".into(), 2);
     let historical = read();
     assert_eq!(historical["success"], true);
-    assert_eq!(historical["data"], active["data"]);
+    assert_json_eq(
+        &normalize(historical["data"].clone()),
+        &normalize(active["data"].clone()),
+    );
 
     // The same equivalence must hold for a run full of tool calls, where the
     // live projection and the journal fold reach the argument de-duplication
@@ -381,11 +405,35 @@ fn get_run_snapshot_reuses_active_projection_and_folds_completed_journal() {
     folded_tools.run_id = "tools".into();
     let folded = parse_response(&handle_command_internal(&state, folded_tools));
     assert_eq!(folded["success"], true);
-    assert_eq!(folded["data"], live["data"]);
+    assert_json_eq(
+        &normalize(folded["data"].clone()),
+        &normalize(live["data"].clone()),
+    );
     // The duplicate argument fragments are gone, and each call keeps exactly
     // the two starts that describe it (input, then execution).
     let events = folded["data"]["projection"]["events"].as_array().unwrap();
-    assert!(events.iter().all(|event| event["type"] != "tool_delta"));
+    if canonical {
+        let deltas = events
+            .iter()
+            .filter(|event| event["type"] == "tool_delta")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            deltas.len(),
+            3,
+            "canonical snapshots retain one coalesced range for each tool"
+        );
+        for event in deltas {
+            let payload: serde_json::Value =
+                serde_json::from_str(event["data"].as_str().unwrap()).unwrap();
+            assert!(payload["content_key"].is_string());
+            assert_eq!(
+                payload["content_bytes"].as_u64().unwrap() as usize,
+                payload["text"].as_str().unwrap().len()
+            );
+        }
+    } else {
+        assert!(events.iter().all(|event| event["type"] != "tool_delta"));
+    }
     assert_eq!(
         events
             .iter()
@@ -393,7 +441,10 @@ fn get_run_snapshot_reuses_active_projection_and_folds_completed_journal() {
             .count(),
         6
     );
-    // A missing interior journal event must not become a trusted snapshot.
+    if canonical {
+        return;
+    } // Raw-row corruption applies only to the legacy layout.
+      // A missing interior journal event must not become a trusted snapshot.
     state
         .session_manager
         .test_execute("DELETE FROM run_events WHERE run_id='snapshot-run' AND idx=10");
@@ -476,6 +527,76 @@ fn page_events_tail_oversized_first_event_still_progresses() {
     let (page, has_more) = page_events_tail(events, 10);
     assert_eq!(page.len(), 1);
     assert!(has_more);
+}
+
+#[test]
+fn get_events_since_flags_a_window_whose_head_the_journal_lost() {
+    let state = make_legacy_app_state();
+    let session = state.get_session("default").expect("default session");
+    session
+        .read()
+        .broadcaster
+        .configure_legacy_journal("default", &state.session_manager)
+        .expect("bind the session journal");
+    // The journal keeps idx 100..=104 only — a reclaimed prefix. A consumer
+    // holding 0..0 asks for a window whose start no longer exists.
+    let store = state.session_manager.storage().expect("session storage");
+    let rows: Vec<serde_json::Value> = (100..=104)
+        .map(|idx| {
+            serde_json::json!({
+                "event_type": "text_chunk",
+                "data": serde_json::json!({"text": format!("chunk-{idx}")}).to_string(),
+                "run_id": "run-gap",
+                "epoch": 1,
+                "idx": idx,
+                "session_id": "default",
+                "event_id": format!("default:run-gap:1:{idx}"),
+                "timestamp": "2026-01-01T00:00:00Z",
+                "session_idx": -1,
+                "run_sequence": 1,
+            })
+        })
+        .collect();
+    store
+        .db
+        .call(move |db| {
+            let tx = db.transaction()?;
+            for row in rows {
+                crate::session::sqlite_store::insert_event_record(&tx, "default", row)?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+        .expect("seed the journal");
+
+    let mut cmd = make_cmd("get_events_since");
+    cmd.run_id = "run-gap".to_string();
+    cmd.since_idx = 0;
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true);
+    let data = &resp["data"];
+    assert_eq!(
+        data["events"].as_array().expect("events").len(),
+        5,
+        "the window itself is still served"
+    );
+    assert_eq!(
+        data["truncated"], true,
+        "a window that starts above the requested cursor must say so"
+    );
+
+    // The cursor the journal still honours is a plain continuation.
+    let mut cmd = make_cmd("get_events_since");
+    cmd.run_id = "run-gap".to_string();
+    cmd.since_idx = 100;
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true);
+    assert_eq!(
+        resp["data"]["events"].as_array().expect("events").len(),
+        4,
+        "the tail after the cursor"
+    );
+    assert_eq!(resp["data"]["truncated"], false);
 }
 
 #[test]
@@ -571,7 +692,7 @@ fn get_session_events_since_returns_empty_tail() {
 
 #[test]
 fn get_session_events_since_returns_events_then_journal_error() {
-    let state = make_app_state();
+    let state = make_legacy_app_state();
     // Broadcast a session-level event so the journal has content.
     let mut cmd = make_cmd("set_model");
     cmd.model_id = "mock".to_string();
@@ -686,8 +807,27 @@ fn export_html_writes_the_transcript_to_the_configured_directory() {
             user_message("怎么导出？", serde_json::json!({})),
             crate::types::AgentMessage {
                 role: "assistant".to_string(),
-                content: vec![crate::types::ContentBlock::Text {
-                    text: "用 export_html".to_string(),
+                content: vec![
+                    crate::types::ContentBlock::reasoning("先找导出命令", Default::default()),
+                    crate::types::ContentBlock::Text {
+                        text: "用 export_html".to_string(),
+                    },
+                    crate::types::ContentBlock::ToolCall {
+                        id: "call-1".to_string(),
+                        name: "shell".to_string(),
+                        args: serde_json::json!({"command": "future session export s1"}),
+                        provider_metadata: Default::default(),
+                    },
+                ],
+                ..Default::default()
+            },
+            crate::types::AgentMessage {
+                role: "tool".to_string(),
+                name: "shell".to_string(),
+                content: vec![crate::types::ContentBlock::ToolResult {
+                    tool_call_id: "call-1".to_string(),
+                    content: "/tmp/session.html".to_string(),
+                    is_error: false,
                 }],
                 ..Default::default()
             },
@@ -713,6 +853,18 @@ fn export_html_writes_the_transcript_to_the_configured_directory() {
         html.contains("用 export_html"),
         "answer missing from export"
     );
+    assert!(
+        html.contains("<details class=\"fold thinking\">"),
+        "thinking is not folded in the export"
+    );
+    assert!(
+        html.contains("<details class=\"fold tool\">"),
+        "tool call is not folded in the export"
+    );
+    assert!(
+        html.contains("future session export s1") && html.contains("/tmp/session.html"),
+        "the call and its result do not meet in the export"
+    );
 }
 
 #[test]
@@ -728,4 +880,48 @@ fn export_html_reports_write_failure() {
         .as_str()
         .unwrap()
         .contains("failed to write file"));
+}
+
+#[test]
+fn replay_window_does_not_grow_while_following_pages() {
+    let state = make_app_state();
+    let broadcaster = state
+        .get_session("default")
+        .unwrap()
+        .read()
+        .broadcaster
+        .clone();
+    broadcaster.start_run("pinned".into(), 1);
+    for _ in 0..5 {
+        broadcaster.broadcast(SseEvent::new("text_chunk", serde_json::json!({"text":"x"})));
+    }
+    let mut first = make_cmd("get_events_since");
+    first.run_id = "pinned".into();
+    first.since_idx = -1;
+    first.max_events = 2;
+    let first = parse_response(&handle_command_internal(&state, first));
+    assert_eq!(first["data"]["watermark"], 4);
+    assert_eq!(first["data"]["hasMore"], true);
+    for _ in 0..5 {
+        broadcaster.broadcast(SseEvent::new(
+            "text_chunk",
+            serde_json::json!({"text":"later"}),
+        ));
+    }
+    let mut next = make_cmd("get_events_since");
+    next.run_id = "pinned".into();
+    next.since_idx = 1;
+    next.max_events = 100;
+    next.replay_until_idx = Some(4);
+    let next = parse_response(&handle_command_internal(&state, next));
+    assert_eq!(next["data"]["watermark"], 4);
+    assert!(next["data"]["hasMore"].is_null() || next["data"]["hasMore"] == false);
+    let events = next["data"]["events"].as_array().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event["idx"].as_i64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![2, 3, 4]
+    );
 }

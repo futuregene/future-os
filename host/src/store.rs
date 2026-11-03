@@ -70,9 +70,8 @@ pub use markdown_refs::resolve_markdown_references;
 pub use records::*;
 pub use review_snapshots::{
     create_review_snapshot, get_last_run_changeset, get_review_snapshot, get_run_changeset,
-    list_snapshots_with_commits, list_unmaterialized_runs, mark_run_overlapped,
-    mark_snapshot_failed, prune_thread_changesets, upsert_run_changeset, ReviewChangesetRecord,
-    ReviewFileChangeRecord, ReviewSnapshotRecord,
+    latest_review_run, mark_run_overlapped, mark_snapshot_failed, prune_thread_changesets,
+    upsert_run_changeset, ReviewChangesetRecord, ReviewFileChangeRecord, ReviewSnapshotRecord,
 };
 pub use runs::{
     active_run_sessions, advance_tool_projection, clear_all_run_events_files,
@@ -85,6 +84,8 @@ pub use runs::{
 #[cfg(any(test, feature = "test-support"))]
 pub use runs::{append_run_event, flush_run_event_log_for_test, reset_run_event_writer_for_test};
 pub use skill_reco::{record_skill_reco, skill_reco_today, SkillRecoToday};
+/// Run-status vocabulary: terminal states, so callers stop re-listing them.
+pub use status::is_terminal_run_status;
 pub use thread_sources::{record_thread_source, thread_source};
 pub use threads::{
     archive_thread, bind_thread_session_id, create_thread, delete_thread, delete_thread_tree,
@@ -97,7 +98,7 @@ pub use threads::{
     update_thread_thinking_level, ThreadRecord,
 };
 pub use util::strip_verbatim_prefix;
-pub use util::{create_id, now_millis, take_catalog_dirty};
+pub use util::{catalog_dirty_peek, create_id, create_run_id, now_millis, take_catalog_dirty};
 pub use workspace_files::{search_workspace_files, WorkspaceFileResult, WorkspaceFileSearchInput};
 pub use workspaces::{
     create_workspace, delete_workspace, file_session_workspace, get_or_create_chat_workspace,
@@ -189,8 +190,12 @@ pub fn reconcile_after_startup() {
 fn log_purge(result: Result<usize, crate::Error>, noun: &str, op: &str) {
     match result {
         Ok(0) => {}
-        Ok(count) => eprintln!("purged {count} {noun}"),
-        Err(error) => eprintln!("{op} failed: {error}"),
+        Ok(count) => {
+            tracing::info!(event = "log_purge", count = count, noun = %noun,"purged {count} {noun}")
+        }
+        Err(error) => {
+            tracing::warn!(event = "log_purge", op = %op, error = %error,"{op} failed: {error}")
+        }
     }
 }
 
@@ -198,7 +203,7 @@ fn log_purge(result: Result<usize, crate::Error>, noun: &str, op: &str) {
 /// on reclaim failures). Split out so the `Ok`/`Err` arms are directly testable.
 fn log_reconcile(result: Result<usize, crate::Error>, op: &str) {
     if let Err(error) = result {
-        eprintln!("{op} failed: {error}");
+        tracing::warn!(event = "log_reconcile", op = %op, error = %error,"{op} failed: {error}");
     }
 }
 

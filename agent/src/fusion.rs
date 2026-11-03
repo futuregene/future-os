@@ -1,0 +1,746 @@
+//! Run-scoped adapter for the shared, durable Host consultation queue.
+use crate::types::{AgentTool, FunctionDef, ToolDef};
+use anyhow::{ensure, Context, Result};
+use future_fusion::{ConsultationInput, Parent, Snapshot, Store};
+use serde_json::{json, Value};
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+
+#[derive(Clone)]
+pub(crate) enum ContextScope {
+    Parent {
+        parent: Parent,
+        workspace: PathBuf,
+        store: Store,
+        sandbox: Arc<crate::sandbox::ResolvedSandbox>,
+        cancelled: Arc<AtomicBool>,
+    },
+    Inner(Arc<Snapshot>),
+}
+
+tokio::task_local! { static CONTEXT: ContextScope; }
+
+pub(crate) async fn with_context<F: Future>(context: Option<ContextScope>, future: F) -> F::Output {
+    match context {
+        Some(context) => CONTEXT.scope(context, future).await,
+        None => future.await,
+    }
+}
+
+pub(crate) fn available() -> bool {
+    settings_enabled().unwrap_or(false)
+        && Store::existing(&crate::utils::future_home()).is_ok_and(|s| s.host_available())
+}
+
+pub(crate) fn settings_enabled() -> Result<bool> {
+    let home = crate::utils::future_home();
+    if !home.join("fusion/fusion.db").exists() {
+        return Ok(true);
+    }
+    Ok(Store::existing(&home)?.settings()?.enabled)
+}
+
+pub(crate) fn query_settings() -> Result<Value> {
+    Ok(serde_json::to_value(
+        Store::open(&crate::utils::future_home())?.settings()?,
+    )?)
+}
+
+pub(crate) fn update_settings(state: &crate::rpc::AppState, raw: &str) -> Result<Value> {
+    ensure!(raw.len() <= 16 * 1024, "Fusion settings exceed size limit");
+    let mut patch: future_fusion::SettingsPatch = serde_json::from_str(raw)?;
+    if let Some(config) = &mut patch.configuration {
+        config.validate()?;
+        let registry = state.model_registry.read();
+        for profile in config.panel.iter_mut().chain([&mut config.moderator]) {
+            let (model, _) = registry
+                .resolve_for_request(&profile.model)
+                .with_context(|| format!("Fusion model unavailable: {}", profile.model))?;
+            ensure!(
+                model
+                    .allowed_thinking_levels()
+                    .contains(&profile.thinking_level),
+                "Unsupported thinking level for {}: {}",
+                profile.model,
+                profile.thinking_level
+            );
+            ensure!(
+                model.output.iter().any(|kind| kind == "text"),
+                "Fusion requires a text model"
+            );
+            profile.model = format!("{}/{}", model.provider, model.id);
+        }
+    }
+    let settings = Store::open(&crate::utils::future_home())?.update_settings(patch)?;
+    state
+        .control_plane
+        .global_events_broadcaster()
+        .broadcast(crate::rpc::SseEvent::new(
+            "fusion_settings_changed",
+            json!({"revision":settings.revision}),
+        ));
+    Ok(serde_json::to_value(settings)?)
+}
+
+fn tool(
+    name: &str,
+    description: &str,
+    parameters: Value,
+    handler: crate::types::ToolHandler,
+) -> AgentTool {
+    AgentTool {
+        def: ToolDef {
+            tool_type: "function".into(),
+            function: FunctionDef {
+                name: name.into(),
+                description: description.into(),
+                parameters,
+            },
+        },
+        handler,
+        guidelines: vec![],
+    }
+}
+
+pub(crate) fn main_tool() -> AgentTool {
+    let description = format!(
+        "{}\n\n{}",
+        future_fusion::TOOL_DESCRIPTION,
+        future_fusion::DISCUSSION_POLICY
+    );
+    tool(
+        "fusion",
+        &description,
+        json!({"type":"object","additionalProperties":false,"required":["question","goal","background","constraints"],"properties":{
+            "question":{"type":"string","description":"Preserve the user's wording; change only for necessary disambiguation or focus. No added requirements, answer checklist, assumptions or preferred approach. Split broad topics across discussions rather than overloading this question."},"goal":{"type":"string","description":"Only the outcome the user actually requested; do not add quality criteria, detail, audience assumptions, compliance framing or deliverables the user did not specify."},"background":{"type":"string","description":"Faithful compression of relevant context and user requirements, attributed facts and unknowns. Attribute user-provided proposals here. No main-agent reasoning, invented plans or preferences; prior assistant claims are not verified facts. Do not relocate invented requirements here or turn research facts into user instructions. Unknown identity, location, equipment and intent remain unknown."},"constraints":{"type":"array","description":"Only brief task restrictions explicitly established by the user or relevant prior context; use an empty array when none apply. Never infer restrictions from your preferred answer. No invented compliance, equipment, language, length or formatting demands.","items":{"type":"string"}},"evidence":{"type":"array","description":"Sourced observations with provenance, not unsourced main-agent judgments","items":{"type":"string"}},"read_scope":{"type":"array","items":{"type":"string"},"description":"Only necessary workspace-relative files/directories. Omit for conceptual decisions."}
+        }}),
+        invoke,
+    )
+}
+
+fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
+    Box::pin(async move {
+        let context = CONTEXT
+            .try_with(Clone::clone)
+            .context("Fusion unavailable outside an explicitly enabled parent run")?;
+        let ContextScope::Parent {
+            mut parent,
+            workspace,
+            store,
+            sandbox,
+            cancelled,
+        } = context
+        else {
+            anyhow::bail!("Recursive Fusion is prohibited")
+        };
+        ensure!(
+            store.host_available(),
+            "Fusion host is unavailable; start the FutureOS host"
+        );
+        parent.tool_call_id = crate::tools::current_tool_call_id();
+        ensure!(
+            !parent.tool_call_id.is_empty(),
+            "Missing Fusion tool call identity"
+        );
+        ensure!(
+            args.get("options").is_none(),
+            "Fusion no longer accepts options; attribute user-provided proposals in background"
+        );
+        let input: ConsultationInput = serde_json::from_value(args)?;
+        input.validate()?;
+        let (run, created) = store.prepare(parent, input, &workspace)?;
+        let mut guard = InvocationGuard {
+            store: store.clone(),
+            id: run.id.clone(),
+            armed: true,
+        };
+        if created {
+            let root = PathBuf::from(&run.snapshot_root);
+            let scopes = run.input.read_scope.clone();
+            let flag = cancelled.clone();
+            let captured = tokio::task::spawn_blocking(move || {
+                Snapshot::capture(&workspace, &root, &scopes, &flag, |path| {
+                    !sandbox.enabled()
+                        || sandbox.evaluate(path, crate::sandbox::rules::Op::Read)
+                            == crate::sandbox::rules::Decision::Allow
+                })
+            })
+            .await?;
+            if let Err(error) = captured {
+                store.fail(&run.id, None, &format!("Snapshot failed: {error:#}"))?;
+                return Err(error);
+            }
+            store.ready(&run.id)?;
+        }
+        let timeout_ms = run
+            .configuration
+            .as_ref()
+            .map(|config| config.run_timeout_secs)
+            .unwrap_or(future_fusion::RUN_TIMEOUT_SECS)
+            .saturating_mul(1000);
+        let remaining_ms = timeout_ms.saturating_sub(
+            future_fusion::now_ms()
+                .saturating_sub(run.created_at)
+                .max(0) as u64,
+        );
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(remaining_ms);
+        loop {
+            if cancelled.load(Ordering::Acquire) {
+                store.cancel(&run.id)?;
+                anyhow::bail!("Fusion cancelled");
+            }
+            let current = store.get(&run.id)?;
+            if current.result.is_some() {
+                ensure!(
+                    matches!(current.status.as_str(), "delivering" | "completed"),
+                    "Fusion result belongs to an interrupted invocation"
+                );
+                guard.armed = false;
+                return current.tool_output();
+            }
+            if current.status == "failed" && current.report.is_some() {
+                guard.armed = false;
+                return current.tool_output();
+            }
+            ensure!(
+                !current.terminal(),
+                "Fusion {}: {}",
+                current.status,
+                current.error.as_deref().unwrap_or("no final result")
+            );
+            if tokio::time::Instant::now() >= deadline || !store.host_available() {
+                store.fail(
+                    &run.id,
+                    None,
+                    "Fusion host disappeared or consultation timed out",
+                )?;
+                continue;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    })
+}
+
+// Aborting the parent task also cancels its accepted consultation. The worker
+// observes the durable state and aborts only the child runs it owns.
+struct InvocationGuard {
+    store: Store,
+    id: String,
+    armed: bool,
+}
+impl Drop for InvocationGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.store.cancel(&self.id);
+        }
+    }
+}
+
+fn query(name: &'static str, args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
+    Box::pin(async move {
+        let context = CONTEXT
+            .try_with(Clone::clone)
+            .context("Read-only Fusion context missing")?;
+        let ContextScope::Inner(snapshot) = context else {
+            anyhow::bail!("Fusion file tools are only available inside a consultation")
+        };
+        tokio::task::spawn_blocking(move || snapshot.query(name, args)).await?
+    })
+}
+fn read(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
+    query("read", args)
+}
+fn ls(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
+    query("ls", args)
+}
+fn glob(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
+    query("glob", args)
+}
+fn grep(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
+    query("grep", args)
+}
+
+pub(crate) fn inner_tools() -> Vec<AgentTool> {
+    vec![
+        tool(
+            "read",
+            "Read lines from this consultation's immutable authorized file snapshot.",
+            json!({"type":"object","required":["path"],"properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}}}),
+            read,
+        ),
+        tool(
+            "ls",
+            "List directories in the authorized snapshot; no commands are executed.",
+            json!({"type":"object","properties":{"path":{"type":"string"},"depth":{"type":"integer"},"limit":{"type":"integer"}}}),
+            ls,
+        ),
+        tool(
+            "glob",
+            "Find snapshot files by glob pattern.",
+            json!({"type":"object","required":["pattern"],"properties":{"pattern":{"type":"string"},"root":{"type":"string"},"limit":{"type":"integer"}}}),
+            glob,
+        ),
+        tool(
+            "grep",
+            "Search UTF-8 snapshot contents by a bounded regular expression.",
+            json!({"type":"object","required":["pattern"],"properties":{"pattern":{"type":"string"},"root":{"type":"string"},"glob":{"type":"string"},"context":{"type":"integer"},"limit":{"type":"integer"}}}),
+            grep,
+        ),
+    ]
+}
+
+pub(crate) struct InnerExecution {
+    pub snapshot: Snapshot,
+    pub file_tools: bool,
+    pub settings: future_fusion::StepSettings,
+}
+
+pub(crate) fn inner_execution(
+    meta: &Value,
+    session: &str,
+    agent_run: &str,
+    model: &str,
+    thinking: &str,
+) -> Result<Option<InnerExecution>> {
+    let Some(id) = meta.get("fusionRunId").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let store = Store::existing(&crate::utils::future_home())?;
+    let run = store.get(id)?;
+    ensure!(run.status == "running", "Fusion is not active");
+    let step_id = meta["stepId"]
+        .as_str()
+        .context("Fusion step identity is missing")?;
+    let step = store
+        .steps(id)?
+        .into_iter()
+        .find(|step| step.id == step_id)
+        .context("Fusion step not found")?;
+    ensure!(
+        step.session_id == session && step.agent_run_id == agent_run && step.model == model,
+        "Fusion child execution differs from recorded step"
+    );
+    let settings = step
+        .settings
+        .context("Fusion generation settings are missing; upgrade Host and Agent together")?;
+    ensure!(
+        settings.thinking_level == thinking,
+        "Fusion thinking level differs from configured policy; fallback prohibited"
+    );
+    let file_tools = file_tools_allowed(
+        &step.phase,
+        !run.input.read_scope.is_empty(),
+        settings.report_revision,
+    );
+    Ok(Some(InnerExecution {
+        snapshot: Snapshot::load(Path::new(&run.snapshot_root))?,
+        settings,
+        file_tools,
+    }))
+}
+
+// Only participant analysis/review may investigate; moderator stages never get tools.
+fn file_tools_allowed(phase: &str, has_scope: bool, report_revision: u32) -> bool {
+    report_revision == 0 && has_scope && matches!(phase, "analyzing" | "reviewing")
+}
+
+pub(crate) fn record_delivery(result: &str) -> Result<()> {
+    if let Ok(value) = serde_json::from_str::<future_fusion::Conclusion>(result) {
+        let ContextScope::Parent {
+            mut parent, store, ..
+        } = CONTEXT
+            .try_with(Clone::clone)
+            .context("Fusion delivery context missing")?
+        else {
+            anyhow::bail!("Invalid Fusion delivery context")
+        };
+        parent.tool_call_id = crate::tools::current_tool_call_id();
+        // The tool ID task-local ends before persistence; verify the run/session
+        // source as well as the result's deterministic consultation ID.
+        let run = store.get(&value.fusion_run_id)?;
+        ensure!(
+            run.parent.database_id == parent.database_id
+                && run.parent.session_id == parent.session_id
+                && run.parent.run_id == parent.run_id,
+            "Fusion delivery source mismatch"
+        );
+        store.delivered(&value.fusion_run_id)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn query_status(state: &crate::rpc::AppState) -> Result<Value> {
+    let identity = state.session_manager.storage()?.storage_identity()?;
+    let settings = Store::open(&crate::utils::future_home())?.settings()?;
+    Ok(json!({
+        "available": available(), "enabled": settings.enabled,
+        "database_id": format!("{}:{}", identity.database_id, identity.restore_generation),
+        "panel_models": settings.configuration.panel.iter().map(|role| &role.model).collect::<Vec<_>>(),
+        "moderator_model": settings.configuration.moderator.model,
+        "context_budget_version": future_fusion::CONTEXT_POLICY_VERSION,
+        "generation_policy_version": future_fusion::GENERATION_POLICY_VERSION,
+        "resilience_policy_version": future_fusion::RESILIENCE_POLICY_VERSION,
+        "agent_instance_id": state.agent_instance_id,
+        "config_revision": state.control_plane.current_config_revision(),
+    }))
+}
+
+pub(crate) fn query_discussion(
+    state: &crate::rpc::AppState,
+    cmd: &crate::rpc::RpcCommand,
+) -> Result<Value> {
+    ensure!(
+        !cmd.session_id.is_empty(),
+        "Fusion reads require the parent session"
+    );
+    ensure!(
+        state.session_manager.contains(&cmd.session_id)?,
+        "Parent session not found"
+    );
+    let store = Store::existing(&crate::utils::future_home())?;
+    let tool = cmd.tool_call_id.as_deref().unwrap_or_default();
+    let run = if cmd.run_id.is_empty() && tool.is_empty() {
+        store.latest_for_session(&cmd.session_id)?
+    } else {
+        ensure!(
+            !cmd.run_id.is_empty() && !tool.is_empty(),
+            "Provide both parent run and tool call ID"
+        );
+        store.for_tool(&cmd.session_id, &cmd.run_id, tool)?
+    };
+    let Some(run) = run else {
+        return Ok(json!({"pending":true}));
+    };
+    let identity = state.session_manager.storage()?.storage_identity()?;
+    ensure!(
+        run.parent
+            .database_id
+            .starts_with(&format!("{}:", identity.database_id)),
+        "Fusion belongs to a different Agent database"
+    );
+    let mut discussion = store.discussion(&run.id)?;
+    if !cmd.entry_id.is_empty() {
+        let step = discussion
+            .steps
+            .into_iter()
+            .find(|s| s.id == cmd.entry_id)
+            .context("Step does not belong to this consultation")?;
+        let mut value = serde_json::to_value(&step)?;
+        if !step.session_id.is_empty() {
+            let session = state.session_manager.load(&step.session_id)?;
+            let entries = selected_report_entries(&session.entries, step.report_quality.as_ref())?;
+            let messages = crate::session::entries_to_agent_messages(entries, false);
+            let transcript = messages
+                .iter()
+                .map(|m| {
+                    let content = m
+                        .content
+                        .iter()
+                        .filter(|b| !matches!(b, crate::types::ContentBlock::Reasoning { .. }))
+                        .collect::<Vec<_>>();
+                    json!({"role":m.role,"content":content})
+                })
+                .collect::<Vec<_>>();
+            let encoded = serde_json::to_string(&transcript)?;
+            let offset = cmd.offset.unwrap_or(0).max(0) as usize;
+            ensure!(
+                offset <= encoded.len() && encoded.is_char_boundary(offset),
+                "Invalid discussion byte offset"
+            );
+            let mut end = (offset + 32 * 1024).min(encoded.len());
+            while !encoded.is_char_boundary(end) {
+                end -= 1;
+            }
+            value["transcript"] = json!(&encoded[offset..end]);
+            value["next_offset"] = json!(end);
+            value["total_bytes"] = json!(encoded.len());
+        }
+        return Ok(value);
+    }
+    for step in &mut discussion.steps {
+        step.input.clear();
+    }
+    Ok(serde_json::to_value(discussion)?)
+}
+
+/// A retained original must not be replaced by an empty/unusable later repair.
+fn selected_report_entries<'a>(
+    entries: &'a [crate::session::SessionEntry],
+    quality: Option<&future_fusion::ReportQuality>,
+) -> Result<&'a [crate::session::SessionEntry]> {
+    let Some(quality) = quality else {
+        return Ok(entries);
+    };
+    let start = entries
+        .iter()
+        .position(|entry| {
+            entry.entry_type == "run_started"
+                && entry.content.as_ref().and_then(|v| v["run_id"].as_str())
+                    == Some(quality.source_run_id.as_str())
+        })
+        .context("Selected Fusion report run is missing")?;
+    let end = entries
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find(|(_, entry)| matches!(entry.entry_type.as_str(), "run_terminal" | "run_started"))
+        .map(|(i, _)| i)
+        .unwrap_or(entries.len());
+    Ok(&entries[start..end])
+}
+
+/// Avoid hydrating child message bodies during catalogue enumeration.
+pub(crate) fn child_sessions() -> std::collections::HashSet<String> {
+    Store::existing(&crate::utils::future_home())
+        .and_then(|s| s.child_sessions())
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+}
+
+/// Guard every actual model turn, including tools and generated history.
+pub(crate) struct ContextProvider {
+    pub provider: Arc<dyn crate::types::LLMProvider>,
+    pub settings: future_fusion::StepSettings,
+}
+#[async_trait::async_trait]
+impl crate::types::LLMProvider for ContextProvider {
+    async fn stream_model(
+        &self,
+        request: crate::llm::schema::ModelRequest,
+    ) -> Result<tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>> {
+        let bytes = request_context_bytes(&request)?;
+        // History/tool results grow over multiple requests. Adapt to the real
+        // remaining window, never to the final report's public-byte quota.
+        let remaining = self
+            .settings
+            .context_window
+            .saturating_sub(bytes.saturating_add(future_fusion::CONTEXT_MARGIN));
+        // Keep space for a follow-up report repair in this same session, even
+        // when the catalog's output limit equals the whole context window.
+        // This reserve depends on the working window, never the report quota.
+        let repair_reserve = if self.settings.report_revision == 0 {
+            (self.settings.context_window / 4).min(remaining / 2)
+        } else {
+            0
+        };
+        let output = (self.settings.max_output_tokens.max(0) as usize)
+            .min(remaining.saturating_sub(repair_reserve));
+        ensure!(
+            output >= 256,
+            "Fusion context has no generation space; request was not sent"
+        );
+        future_fusion::guard_context(bytes, self.settings.context_window, output)?;
+        self.provider
+            .stream_model_with_output_limit(request, output.min(i32::MAX as usize) as i32)
+            .await
+    }
+}
+
+/// Conservative UTF-8 accounting of model-visible material. Tool schemas and
+/// call arguments really are JSON; surrounding HTTP string escapes are not.
+fn request_context_bytes(request: &crate::llm::schema::ModelRequest) -> Result<usize> {
+    use crate::types::ContentBlock;
+    let mut bytes = request.system_prompt.len();
+    bytes = bytes.saturating_add(serde_json::to_vec(&request.tools)?.len());
+    for message in &request.messages {
+        bytes = bytes.saturating_add(message.role.len()).saturating_add(32);
+        for block in message.model_content() {
+            let size = match block {
+                ContentBlock::Text { text } | ContentBlock::Reasoning { text, .. } => text.len(),
+                ContentBlock::ToolResult {
+                    content,
+                    tool_call_id,
+                    ..
+                } => content.len().saturating_add(tool_call_id.len()),
+                other => serde_json::to_vec(&other)?.len(),
+            };
+            bytes = bytes.saturating_add(size).saturating_add(32);
+        }
+    }
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod input_contract_tests {
+    #[test]
+    fn retained_original_selects_its_run_without_exposing_later_repair() {
+        use crate::session::SessionEntry;
+        let entries = vec![
+            SessionEntry::run_started("initial", 1),
+            SessionEntry::new_user("assistant", serde_json::json!([])),
+            SessionEntry::run_started("repair", 2),
+            SessionEntry::new_user("assistant", serde_json::json!([])),
+        ];
+        let quality = future_fusion::ReportQuality {
+            validation_errors: vec!["Invalid quote".into()],
+            source_run_id: "initial".into(),
+        };
+        let selected = super::selected_report_entries(&entries, Some(&quality)).unwrap();
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[1].id, entries[1].id);
+        let missing = future_fusion::ReportQuality {
+            source_run_id: "missing".into(),
+            ..quality
+        };
+        assert!(super::selected_report_entries(&entries, Some(&missing)).is_err());
+        assert_eq!(
+            super::selected_report_entries(&entries, None)
+                .unwrap()
+                .len(),
+            4
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_actual_request_never_reaches_provider() {
+        use crate::types::LLMProvider;
+        struct NeverCalled;
+        #[async_trait::async_trait]
+        impl LLMProvider for NeverCalled {
+            async fn stream_model(
+                &self,
+                _: crate::llm::schema::ModelRequest,
+            ) -> anyhow::Result<
+                tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>,
+            > {
+                panic!("over-capacity request reached provider");
+            }
+        }
+        let guarded = super::ContextProvider {
+            provider: std::sync::Arc::new(NeverCalled),
+            settings: future_fusion::StepSettings {
+                thinking_level: "low".into(),
+                max_output_tokens: 1000,
+                context_window: 16384,
+                max_public_bytes: 4096,
+                report_revision: 0,
+                timeout_ms: 1000,
+                retry_reason: None,
+            },
+        };
+        let request = crate::llm::schema::ModelRequest {
+            model: "test".into(),
+            system_prompt: "x".repeat(20000),
+            messages: vec![],
+            tools: vec![],
+        };
+        assert!(guarded.stream_model(request).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn tool_history_uses_remaining_window_not_report_quota_or_wire_escapes() {
+        use crate::types::{AgentMessage, ContentBlock, LLMProvider};
+        use std::sync::{Arc, Mutex};
+        struct Capture(Arc<Mutex<Vec<i32>>>);
+        #[async_trait::async_trait]
+        impl LLMProvider for Capture {
+            async fn stream_model(
+                &self,
+                _: crate::llm::schema::ModelRequest,
+            ) -> anyhow::Result<
+                tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>,
+            > {
+                panic!("capacity override was not applied")
+            }
+            async fn stream_model_with_output_limit(
+                &self,
+                _: crate::llm::schema::ModelRequest,
+                limit: i32,
+            ) -> anyhow::Result<
+                tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>,
+            > {
+                self.0.lock().unwrap().push(limit);
+                let (tx, rx) = tokio::sync::mpsc::channel(1);
+                drop(tx);
+                Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
+            }
+        }
+        let limits = Arc::new(Mutex::new(vec![]));
+        let guarded = super::ContextProvider {
+            provider: Arc::new(Capture(limits.clone())),
+            settings: future_fusion::StepSettings {
+                thinking_level: "medium".into(),
+                max_output_tokens: 50_000,
+                context_window: 65_536,
+                max_public_bytes: 1,
+                report_revision: 0,
+                timeout_ms: 300_000,
+                retry_reason: None,
+            },
+        };
+        let mut request = crate::llm::schema::ModelRequest {
+            model: "test".into(),
+            system_prompt: "Think".into(),
+            messages: vec![],
+            tools: vec![],
+        };
+        let _ = guarded.stream_model(request.clone()).await.unwrap();
+        request.messages.push(AgentMessage {
+            role: "tool".into(),
+            content: vec![ContentBlock::tool_result(
+                "read-1",
+                "\"\n中文".repeat(4000),
+                false,
+            )],
+            ..Default::default()
+        });
+        let input = super::request_context_bytes(&request).unwrap();
+        assert!(input < serde_json::to_vec(&request.messages).unwrap().len());
+        let _ = guarded.stream_model(request.clone()).await.unwrap();
+        let repaired = super::ContextProvider {
+            provider: Arc::new(Capture(limits.clone())),
+            settings: future_fusion::StepSettings {
+                report_revision: 1,
+                ..guarded.settings.clone()
+            },
+        };
+        let _ = repaired.stream_model(request).await.unwrap();
+        let limits = limits.lock().unwrap();
+        assert_eq!(
+            limits[0] as usize,
+            65_536 - 7 - future_fusion::CONTEXT_MARGIN - 65_536 / 4
+        );
+        assert_eq!(
+            limits[1] as usize,
+            (65_536 - input - future_fusion::CONTEXT_MARGIN).div_ceil(2)
+        );
+        assert!(limits[1] > 1);
+        assert_eq!(
+            limits[2] as usize,
+            65_536 - input - future_fusion::CONTEXT_MARGIN
+        );
+    }
+
+    #[test]
+    fn moderator_stages_never_receive_file_tools() {
+        for phase in ["preflight", "issue_mapping", "synthesizing", "unknown"] {
+            assert!(!super::file_tools_allowed(phase, true, 0));
+        }
+        for phase in ["analyzing", "reviewing"] {
+            assert!(super::file_tools_allowed(phase, true, 0));
+            assert!(!super::file_tools_allowed(phase, false, 0));
+            assert!(!super::file_tools_allowed(phase, true, 1));
+        }
+    }
+
+    #[test]
+    fn tool_exposes_factual_context_without_a_candidate_field() {
+        let tool = super::main_tool();
+        let schema = &tool.def.function.parameters;
+        assert!(schema["properties"].get("options").is_none());
+        assert!(schema["properties"]["background"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("No main-agent reasoning"));
+        assert!(schema["properties"]["constraints"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("empty array"));
+    }
+}

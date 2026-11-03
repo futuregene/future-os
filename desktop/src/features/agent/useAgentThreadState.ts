@@ -288,6 +288,7 @@ export function useAgentThreadState({
   ]);
 
   return {
+    activeRunId,
     handleAbort,
     handleSend,
     loadingThread,

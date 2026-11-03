@@ -632,6 +632,15 @@ jobs:
           echo "MACOS_UPDATER=${updaters[0]}" >> "$GITHUB_ENV"
           echo "MACOS_UPDATER_SIG=${updater_sigs[0]}" >> "$GITHUB_ENV"
 
+      # Bundle metadata uses the numeric installer version; the updater must
+      # authenticate the full release version announced by latest.json.
+      - name: Sign updater archive with release version
+        env:
+          FUTURE_VERSION: ${{ steps.v.outputs.version }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: node scripts/release/updater-signature.mjs sign "$MACOS_UPDATER" "$FUTURE_VERSION"
+
       - name: Stage artifacts
         run: |
           set -euo pipefail

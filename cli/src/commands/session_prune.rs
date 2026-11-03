@@ -945,6 +945,187 @@ mod tests {
         );
     }
 
+    /// The JSON form is the same decision a person reads, field for field: a
+    /// script compares `cutoffMs` against its own clock and reads the titles, so
+    /// the report it parses must be the one the text form would have printed.
+    #[tokio::test]
+    async fn the_json_form_carries_the_decision_and_the_titles() {
+        let _guard = crate::test_env::lock_env().await;
+        let now = now_ms();
+        let day = 86_400_000i64;
+        let mut agent = crate::test_server::MockAgent::default();
+        agent.responses.insert(
+            "list_sessions".into(),
+            json!({"sessions": [
+                {"id": "named", "sessionName": "old work", "updatedAtMs": now - 5 * day},
+                {"id": "asked", "firstMessage": "a question I asked once", "updatedAtMs": now - 4 * day},
+                {"id": "untitled", "updatedAtMs": now - 6 * day},
+                // Entries the Agent has no id for are not sessions: they cannot
+                // be named, deleted or matched, and counting them would make the
+                // "N of M" line a lie.
+                {"id": "", "updatedAtMs": now - 30 * day},
+                {"firstMessage": "no id at all", "updatedAtMs": now - 30 * day},
+                {"id": "kept", "updatedAtMs": now - 9 * day},
+                {"id": "busy", "updatedAtMs": now - 9 * day, "isStreaming": true},
+                {"id": "fresh", "updatedAtMs": now}
+            ]})
+            .to_string(),
+        );
+        let addr = crate::test_server::spawn_mock(agent).await;
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from(addr),
+        )])
+        .with_temp_home();
+
+        let (out, captured) = Output::memory();
+        run(
+            &args(&["--older-than", "3d", "--keep", "kept", "--json"]),
+            &out,
+        )
+        .await
+        .expect("preview");
+        let report: Value = serde_json::from_str(&stdout_of(&captured))
+            .unwrap_or_else(|error| panic!("{error}: {}", stdout_of(&captured)));
+
+        assert_eq!(report["dryRun"], json!(true));
+        assert_eq!(report["olderThan"], json!("3d"));
+        assert_eq!(report["olderThanMs"], json!(3 * day));
+        let cutoff = report["cutoffMs"]
+            .as_i64()
+            .expect("a cutoff a script can use");
+        assert!((now - 3 * day - cutoff).abs() < 5_000, "{cutoff}");
+        assert_eq!(
+            report["scanned"],
+            json!(8),
+            "every listed entry is scanned, including the two without an id"
+        );
+        assert_eq!(report["deleted"], json!([]));
+        assert_eq!(report["failed"], json!([]));
+        assert_eq!(report["kept"], json!(["kept"]));
+        assert_eq!(
+            report["skipped"],
+            json!([{"id": "busy", "reason": "active run"}])
+        );
+
+        let matched = report["matched"].as_array().unwrap();
+        assert_eq!(matched.len(), 3, "{report}");
+        assert_eq!(matched[0]["id"], json!("untitled"));
+        assert_eq!(matched[0]["title"], json!("(untitled)"));
+        assert_eq!(matched[0]["age"], json!("6d ago"));
+        assert_eq!(matched[1]["id"], json!("named"));
+        assert_eq!(matched[1]["title"], json!("old work"));
+        assert_eq!(matched[1]["age"], json!("5d ago"));
+        assert_eq!(matched[1]["updatedAtMs"], json!(now - 5 * day));
+        assert_eq!(matched[1]["listedUpdatedAtMs"], json!(now - 5 * day));
+        assert_eq!(matched[2]["id"], json!("asked"));
+        assert_eq!(matched[2]["title"], json!("a question I asked once"));
+    }
+
+    /// Nothing old enough is said plainly, and a run that has to read a page of
+    /// history for every candidate says so before it starts: silence for a
+    /// minute reads as a hang.
+    #[tokio::test]
+    async fn a_run_that_matches_nothing_says_so_after_naming_the_scan() {
+        let _guard = crate::test_env::lock_env().await;
+        let now = now_ms();
+        let sessions: Vec<Value> = (0..21)
+            .map(|index| json!({"id": format!("s{index}"), "updatedAtMs": now}))
+            .collect();
+        let mut agent = crate::test_server::MockAgent::default();
+        agent.responses.insert(
+            "list_sessions".into(),
+            json!({"sessions": sessions}).to_string(),
+        );
+        let seen = agent.seen.clone();
+        let addr = crate::test_server::spawn_mock(agent).await;
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from(addr),
+        )])
+        .with_temp_home();
+
+        let (out, captured) = Output::memory();
+        run(&args(&["--older-than", "3d"]), &out)
+            .await
+            .expect("an empty preview is a successful run");
+        let text = stdout_of(&captured);
+        assert!(
+            text.contains("No session has been idle longer than 3d; nothing to delete."),
+            "{text}"
+        );
+        assert!(text.contains("Matched     0 of 21 sessions"), "{text}");
+        let notice = stderr_of(&captured);
+        assert!(
+            notice.contains("Reading the last activity of 21 sessions"),
+            "{notice}"
+        );
+        // The notice is printed before the reads it announces, and every
+        // candidate whose listed time is inside the window is read.
+        assert_eq!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|command| command.r#type == "get_session_entries")
+                .count(),
+            21
+        );
+    }
+
+    /// A batch whose reply says "not deleted" for one session and says nothing
+    /// about another is settled from the post-delete list when there is one —
+    /// and reported as an unknown outcome when there is not, never as deleted.
+    #[tokio::test]
+    async fn an_unreadable_post_delete_list_keeps_the_reported_outcomes() {
+        let _guard = crate::test_env::lock_env().await;
+        let now = now_ms();
+        let day = 86_400_000i64;
+        let mut agent = crate::test_server::MockAgent::default();
+        agent.sequences.insert(
+            "list_sessions".into(),
+            vec![
+                json!({"sessions": [
+                    {"id": "refused", "updatedAtMs": now - 9 * day},
+                    {"id": "unanswered", "updatedAtMs": now - 9 * day}
+                ]})
+                .to_string(),
+                // The read-back answers something that is not a session list.
+                json!({"sessions": "unknown"}).to_string(),
+            ],
+        );
+        agent.responses.insert(
+            "delete_sessions".into(),
+            json!({"results": [
+                {"sessionId": "refused", "deleted": false,
+                 "error": "session deletion is waiting for the active run to stop"}
+            ]})
+            .to_string(),
+        );
+        let addr = crate::test_server::spawn_mock(agent).await;
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from(addr),
+        )])
+        .with_temp_home();
+
+        let (out, captured) = Output::memory();
+        let error = run(&args(&["--older-than", "3d", "--yes"]), &out)
+            .await
+            .expect_err("two failures exit non-zero");
+        assert_eq!(error, crate::HANDLED_EXIT);
+        let text = stdout_of(&captured);
+        assert!(text.contains("0 of 2 sessions deleted"), "{text}");
+        let errors = stderr_of(&captured);
+        assert!(
+            errors.contains("Failed to delete refused: session deletion is waiting"),
+            "{errors}"
+        );
+        assert!(
+            errors.contains("Failed to delete unanswered: no outcome reported"),
+            "{errors}"
+        );
+    }
+
     #[test]
     fn only_conversation_entries_are_activity() {
         let page = json!({"entries": [

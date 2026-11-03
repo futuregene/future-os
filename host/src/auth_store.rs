@@ -165,6 +165,18 @@ pub mod test_support {
         crate::request_scope::reset_for_test();
         crate::tasks::reset_for_test();
         crate::remote_peer::runtime::reset_after_shutdown_for_test();
+        // A *stopped* host role, not merely a re-armed closed one:
+        // `reset_after_shutdown_for_test` only resets a server that was shut
+        // down, so a suspension with no resume — the shape
+        // `handle_system_suspend_stops_the_running_generation` leaves behind
+        // when it clears `start_requested` at the end — kept `suspended` set
+        // for the whole process. Every later `start` then took
+        // `start_generation`'s `!start_requested || suspended` arm and
+        // answered an *empty* status: no bridge, no invitation, and the next
+        // fixture's failure read as "the host shows no invitation" instead of
+        // the reason. Draining here is the same rule the lines above follow —
+        // nothing process-global outlives the fixture that set it.
+        crate::remote::stop();
         crate::remote::reset_after_shutdown_for_test();
         crate::store::reset_run_event_writer_for_test();
         crate::store::close_pool();
@@ -172,6 +184,7 @@ pub mod test_support {
 
     pub struct HomeGuard {
         previous: Option<String>,
+        previous_userprofile: Option<std::ffi::OsString>,
         previous_future_home: Option<std::ffi::OsString>,
         dir: PathBuf,
         _lock: MutexGuard<'static, ()>,
@@ -193,14 +206,21 @@ pub mod test_support {
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());
             timing.mark("lock_wait");
+            // Names the fixture in the access-epoch journal: a start that answers
+            // `Stopped` is always a reaction to some *other* writer, and the
+            // journal has to say whose.
+            crate::remote::test_support::set_current_fixture(label);
+            crate::remote::test_support::note_access("fixture acquired");
+            crate::remote::test_support::enter_fixture_scope();
             // `HOME` and the SQLite pool are process-global. A task started by
             // an earlier test may outlive its caller runtime, so it must be
             // cancelled and observed before this fixture publishes a new path.
             cleanup();
+            crate::remote::test_support::note_access("fixture drained");
             timing.mark("pre_cleanup");
             let previous = std::env::var("HOME").ok();
+            let previous_userprofile = std::env::var_os("USERPROFILE");
             let previous_future_home = std::env::var_os("FUTURE_HOME");
-            std::env::remove_var("FUTURE_HOME");
             let dir = std::env::temp_dir().join(format!(
                 "futureos-test-{}-{}",
                 std::process::id(),
@@ -209,9 +229,19 @@ pub mod test_support {
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             std::env::set_var("HOME", &dir);
+            // The FutureOS root has to move with this fixture, not merely be
+            // forgotten. Removing the override still puts every *file* under
+            // `<dir>/.future`, but the local endpoint is named from the override
+            // alone (an absent one resolves to the untagged default socket/pipe),
+            // so a fixture that removed it reached the developer's running Agent
+            // while its own state sat in a temp dir. `<dir>/.future` is exactly
+            // what "override absent + this HOME" already resolved to, so no path
+            // assertion changes — only the endpoint becomes this fixture's own.
+            std::env::set_var("FUTURE_HOME", dir.join(".future"));
             timing.mark("setup");
             HomeGuard {
                 previous,
+                previous_userprofile,
                 previous_future_home,
                 dir,
                 _lock: lock,
@@ -224,11 +254,36 @@ pub mod test_support {
             &self.dir
         }
 
+        /// Withdraw every way the home root can be resolved — `HOME`,
+        /// `USERPROFILE` and the `FUTURE_HOME` root this guard published — for
+        /// the rest of the guard's life, so the code under test runs against a
+        /// process that has no home at all.
+        ///
+        /// All three are needed. The two user-home variables are one way to
+        /// name the root and `FUTURE_HOME` is the other, so a test that dropped
+        /// only `HOME` would keep resolving this fixture's root through the
+        /// override and assert about a home it believes does not exist.
+        /// [`restore`](Self::restore) puts every one of them back.
+        pub fn withdraw_home(&self) {
+            std::env::remove_var("HOME");
+            std::env::remove_var("USERPROFILE");
+            std::env::remove_var("FUTURE_HOME");
+        }
+
         /// Restore the process-global `HOME` to its pre-guard state and remove
         /// the temp dir. Split from [`Drop`] so the absent-`HOME` arm is
         /// directly observable without racing the global `TEST_HOME_LOCK`.
         fn restore(&mut self) {
             self.timing.mark("body");
+            // The drain below is this fixture's own machine-wide teardown, so
+            // this fixture has to be the one that owns the machine while it
+            // runs — including for the guards built by struct literal (the
+            // absent-`HOME` arms below, which never went through
+            // `with_cleanup`). Without this line their `cleanup_host` was the
+            // first *unsupervised* stop in the suite, and a refusal there
+            // happens inside `Drop`, which aborts the process instead of
+            // failing a test.
+            crate::remote::test_support::enter_fixture_scope();
             // Keep the fixture path valid until every process-lifetime task
             // started under it has stopped. Restoring HOME first would let a
             // late task resolve another test's database instead.
@@ -238,6 +293,10 @@ pub mod test_support {
                 Some(value) => std::env::set_var("HOME", value),
                 None => std::env::remove_var("HOME"),
             }
+            match &self.previous_userprofile {
+                Some(value) => std::env::set_var("USERPROFILE", value),
+                None => std::env::remove_var("USERPROFILE"),
+            }
             match &self.previous_future_home {
                 Some(value) => std::env::set_var("FUTURE_HOME", value),
                 None => std::env::remove_var("FUTURE_HOME"),
@@ -246,6 +305,10 @@ pub mod test_support {
             // Windows cannot unlink a database held by a connection pool.
             let _ = std::fs::remove_dir_all(&self.dir);
             self.timing.finish();
+            // The scope ends with the fixture, not with the lock: a task this
+            // fixture leaked must not be able to dispatch into the supervisor
+            // under the *next* test's name (see `assert_fixture_scope`).
+            crate::remote::test_support::leave_fixture_scope();
         }
     }
 
@@ -269,6 +332,7 @@ pub mod test_support {
         // remove HOME rather than overwrite it.
         let mut guard = HomeGuard {
             previous: None,
+            previous_userprofile: std::env::var_os("USERPROFILE"),
             previous_future_home: std::env::var_os("FUTURE_HOME"),
             dir: dir.clone(),
             _lock: lock,
@@ -286,9 +350,8 @@ pub mod test_support {
     }
 
     /// `FUTURE_HOME` is the documented way to relocate the whole FutureOS root
-    /// (an embedded host sets it). The fixture clears it
-    /// while it is live — the tests must resolve *its* home, not the caller's —
-    /// and `restore` puts the caller's value back, the same way it does HOME.
+    /// (an embedded host sets it). `restore` puts the caller's value back, the
+    /// same way it does HOME.
     #[test]
     fn home_guard_restores_a_previously_set_future_home() {
         let lock = crate::TEST_HOME_LOCK
@@ -301,14 +364,15 @@ pub mod test_support {
         std::fs::create_dir_all(&dir).unwrap();
         let mut guard = HomeGuard {
             previous,
+            previous_userprofile: std::env::var_os("USERPROFILE"),
             previous_future_home: Some(std::ffi::OsString::from("/opt/pre-existing-future-home")),
             dir: dir.clone(),
             _lock: lock,
             cleanup: cleanup_host,
             timing: crate::test_support::timing::FixtureTiming::start("HomeGuard", "future-home"),
         };
-        // While the fixture is live the variable is removed, so the code under
-        // test resolves the fixture's HOME-based root.
+        // While the fixture is live the variable names the fixture's own root,
+        // so the code under test cannot resolve the caller's one.
         std::env::set_var("FUTURE_HOME", "/opt/temporary-future-home");
 
         guard.restore();
@@ -324,6 +388,67 @@ pub mod test_support {
         // environment exactly as this test found it instead of re-setting it.
         guard.previous_future_home = None;
         std::env::remove_var("FUTURE_HOME");
+    }
+
+    /// A live guard must redirect the FutureOS root itself, not just `HOME`.
+    ///
+    /// Both variables decide where state lands — `HOME` for the files, the
+    /// override for the local endpoint (the untagged default socket/pipe when it
+    /// is absent) — so a fixture that only moved `HOME` kept its own files while
+    /// still reaching the developer's running Agent. `<dir>/.future` is the root
+    /// a `HOME`-only resolution produced anyway, so this pins that the two move
+    /// together without changing any path.
+    #[test]
+    fn a_live_home_guard_redirects_the_future_home_root_it_created() {
+        let home = HomeGuard::new("future-home-live");
+        let dir = home.path().to_path_buf();
+        assert_eq!(
+            future_rpc::home::future_home_override(),
+            Some(dir.join(".future")),
+            "the guard must publish its own FutureOS root"
+        );
+        assert_eq!(
+            future_rpc::home::future_home(),
+            dir.join(".future"),
+            "files resolve to the fixture root, exactly as a HOME-only resolution did"
+        );
+    }
+
+    /// The premise [`HomeGuard::withdraw_home`] exists for: "no home" is not
+    /// `HOME` alone. With the override still published, a test that removed
+    /// only `HOME` kept resolving this fixture's root and asserted about a home
+    /// it believed did not exist — so the withdrawal has to take all three
+    /// variables, and `restore` has to bring all three back.
+    #[test]
+    fn withdrawing_the_home_leaves_no_root_to_resolve_and_restore_puts_it_back() {
+        let mut guard = HomeGuard::new("withdraw-home");
+        let saved_home = guard.previous.clone().map(std::ffi::OsString::from);
+        let saved_userprofile = guard.previous_userprofile.clone();
+        let saved_future_home = guard.previous_future_home.clone();
+
+        guard.withdraw_home();
+
+        assert_eq!(std::env::var_os("HOME"), None, "HOME withdrawn");
+        assert_eq!(
+            std::env::var_os("USERPROFILE"),
+            None,
+            "USERPROFILE is the Windows spelling of the same thing"
+        );
+        assert_eq!(
+            future_rpc::home::future_home_override(),
+            None,
+            "the fixture's own root must go too: it is a second way to name one"
+        );
+        assert!(
+            crate::store::future_dir().is_err(),
+            "with no home and no override there is no FutureOS root to resolve"
+        );
+
+        guard.restore();
+
+        assert_eq!(std::env::var_os("HOME"), saved_home);
+        assert_eq!(std::env::var_os("USERPROFILE"), saved_userprofile);
+        assert_eq!(std::env::var_os("FUTURE_HOME"), saved_future_home);
     }
     #[test]
     fn home_guard_removes_its_directory_even_with_a_live_pooled_connection() {

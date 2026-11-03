@@ -7,7 +7,6 @@
 //!   * `prepare_evidence_with_summary` — the same projection plus a model-written
 //!     handoff summary, and the runtime default.
 
-pub(super) use crate::types::ConvertToLLM;
 use crate::types::{AgentMessage, ContentBlock, Message};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -203,7 +202,32 @@ pub struct ProjectedMessage {
 #[derive(Debug, Clone)]
 pub struct PromptContext {
     pub messages: Vec<ProjectedMessage>,
+    /// Per-message token costs, parallel to `messages`. Computing these once when
+    /// the projection is built keeps budget admission, the compaction gate and
+    /// the planner from converting and walking the whole conversation again.
+    /// A length mismatch falls back to a fresh calculation. Callers replacing
+    /// message contents directly must clear this cache when they do so.
+    pub message_tokens: Vec<u64>,
     pub usage: ContextUsage,
+}
+
+impl PromptContext {
+    pub(crate) fn message_token_costs(&self) -> std::borrow::Cow<'_, [u64]> {
+        if self.message_tokens.len() == self.messages.len() {
+            std::borrow::Cow::Borrowed(&self.message_tokens)
+        } else {
+            std::borrow::Cow::Owned(
+                self.messages
+                    .iter()
+                    .map(|projected| semantic::projected_message_token_cost(&projected.message))
+                    .collect(),
+            )
+        }
+    }
+
+    pub(crate) fn total_message_tokens(&self) -> u64 {
+        self.message_token_costs().iter().copied().sum()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -401,13 +425,18 @@ pub fn project_prompt_context(
             source_entry_ids,
         }
     }));
-    let estimated_input_tokens = projected
+    let mut estimated_input_tokens = 0_u64;
+    let message_tokens = projected
         .iter()
-        .flat_map(|projected| ConvertToLLM(std::slice::from_ref(&projected.message)))
-        .map(|message| estimate_tokens(&message).max(0) as u64)
-        .sum();
+        .map(|projected| {
+            let (body, total) = semantic::projected_message_token_costs(&projected.message);
+            estimated_input_tokens = estimated_input_tokens.saturating_add(body);
+            total
+        })
+        .collect::<Vec<_>>();
     PromptContext {
         messages: projected,
+        message_tokens,
         usage: ContextUsage {
             input_tokens,
             estimated_input_tokens,

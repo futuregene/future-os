@@ -7,11 +7,89 @@ use std::path::Path;
 /// Project the agent's typed run events onto the stable public RPC vocabulary.
 /// This is the only model/run-event boundary that knows the string event names
 /// and legacy JSON `data` shapes retained by released clients.
+pub(super) fn run_event_to_sse_for_storage(
+    event: crate::agent::RunEvent,
+    segmented: bool,
+) -> Option<super::SseEvent> {
+    if segmented {
+        use crate::{agent::RunEvent, llm::schema::ModelStreamEvent};
+        match &event {
+            RunEvent::MessageStart { entry_id } => {
+                return Some(super::SseEvent::new(
+                    "message_start",
+                    serde_json::json!({"entry_id":entry_id}),
+                ))
+            }
+            RunEvent::MessageEnd { entry_id, complete } => {
+                return Some(super::SseEvent::new(
+                    "message_end",
+                    serde_json::json!({"entry_id":entry_id,"complete":complete}),
+                ))
+            }
+            RunEvent::Model(ModelStreamEvent::TextStart { id }) => {
+                return Some(super::SseEvent::new(
+                    "text_start",
+                    serde_json::json!({"block_id":id}),
+                ))
+            }
+            RunEvent::Model(ModelStreamEvent::TextDelta { id, text }) => {
+                return Some(super::SseEvent::new(
+                    "text_chunk",
+                    serde_json::json!({"block_id":id,"text":text}),
+                ))
+            }
+            RunEvent::Model(ModelStreamEvent::ReasoningEnd {
+                id,
+                provider_metadata,
+            }) => {
+                return Some(super::SseEvent::new(
+                    "thinking_end",
+                    serde_json::json!({"block_id":id,"provider_metadata":provider_metadata}),
+                ))
+            }
+            RunEvent::Model(ModelStreamEvent::TextEnd { id }) => {
+                return Some(super::SseEvent::new(
+                    "text_end",
+                    serde_json::json!({"block_id":id}),
+                ))
+            }
+            RunEvent::Model(ModelStreamEvent::ToolInputStart {
+                index,
+                id,
+                name,
+                arguments,
+                provider_metadata,
+            }) => {
+                return Some(super::SseEvent::new(
+                    "tool_start",
+                    serde_json::json!({"phase":"input","tc_index":index,
+                    "tool_id":id,"tool_name":name,"tool_args":arguments.clone().unwrap_or_else(||serde_json::json!("")),"provider_metadata":provider_metadata}),
+                ))
+            }
+            RunEvent::Model(ModelStreamEvent::ToolInputEnd {
+                index,
+                id,
+                name,
+                arguments,
+                provider_metadata,
+            }) => {
+                return Some(super::SseEvent::new(
+                    "tool_input_end",
+                    serde_json::json!({"tc_index":index,"tool_id":id,"tool_name":name,"tool_args":arguments,"provider_metadata":provider_metadata}),
+                ))
+            }
+            _ => {}
+        }
+    }
+    run_event_to_sse(event)
+}
+
 pub(super) fn run_event_to_sse(event: crate::agent::RunEvent) -> Option<super::SseEvent> {
     use crate::agent::RunEvent;
     use crate::llm::schema::ModelStreamEvent;
 
     let projected = match event {
+        RunEvent::MessageStart { .. } | RunEvent::MessageEnd { .. } => return None,
         RunEvent::AgentStart { started_at_ms } => (
             "agent_start",
             ordered_data([
@@ -451,6 +529,7 @@ mod tests {
     use crate::agent::RunEvent;
     use crate::llm::schema::{FinishReason, ModelStreamEvent};
     use crate::types::{Attachment, ImageContent, Usage};
+    use serde_json::json;
     use std::path::PathBuf;
 
     fn project(event: RunEvent) -> (String, String) {
@@ -945,5 +1024,139 @@ mod tests {
     fn resolve_workspace_path_dotdot() {
         let resolved = resolve_workspace_path("/workspace/subdir", "../parent.txt");
         assert!(resolved.contains("parent.txt"));
+    }
+
+    // ─── the segmented event vocabulary ────────────────────────────────────
+
+    /// The segmented vocabulary is what a released client renders. Every entry
+    /// point the stream can report must arrive under its own event name, with
+    /// the id the client joins on, so a client never has to guess from `data`.
+    #[test]
+    fn the_segmented_vocabulary_names_every_entry_point_the_stream_reports() {
+        let metadata = serde_json::Map::new();
+        let cases = vec![
+            (
+                RunEvent::MessageStart {
+                    entry_id: "e1".into(),
+                },
+                "message_start",
+                json!({"entry_id": "e1"}),
+            ),
+            (
+                RunEvent::MessageEnd {
+                    entry_id: "e1".into(),
+                    complete: false,
+                },
+                "message_end",
+                json!({"entry_id": "e1", "complete": false}),
+            ),
+            (
+                RunEvent::Model(ModelStreamEvent::TextStart { id: "b1".into() }),
+                "text_start",
+                json!({"block_id": "b1"}),
+            ),
+            (
+                RunEvent::Model(ModelStreamEvent::TextDelta {
+                    id: "b1".into(),
+                    text: "half".into(),
+                }),
+                "text_chunk",
+                json!({"block_id": "b1", "text": "half"}),
+            ),
+            (
+                RunEvent::Model(ModelStreamEvent::ReasoningEnd {
+                    id: "b2".into(),
+                    provider_metadata: metadata.clone(),
+                }),
+                "thinking_end",
+                json!({"block_id": "b2", "provider_metadata": {}}),
+            ),
+            (
+                RunEvent::Model(ModelStreamEvent::TextEnd { id: "b1".into() }),
+                "text_end",
+                json!({"block_id": "b1"}),
+            ),
+            (
+                RunEvent::Model(ModelStreamEvent::ToolInputEnd {
+                    index: 2,
+                    id: "t1".into(),
+                    name: "shell".into(),
+                    arguments: json!({"cmd": "ls"}),
+                    provider_metadata: metadata,
+                }),
+                "tool_input_end",
+                json!({
+                    "tc_index": 2,
+                    "tool_id": "t1",
+                    "tool_name": "shell",
+                    "tool_args": {"cmd": "ls"},
+                    "provider_metadata": {},
+                }),
+            ),
+        ];
+        for (event, name, expected) in cases {
+            let sse = run_event_to_sse_for_storage(event, true)
+                .unwrap_or_else(|| panic!("{name} must reach a segmented client"));
+            assert_eq!(sse.event_type, name);
+            let data: serde_json::Value = serde_json::from_str(&sse.data).unwrap();
+            assert_eq!(data, expected, "{name}");
+        }
+    }
+
+    /// A segmented stream still reports the run-level events: the segmented
+    /// vocabulary adds entry boundaries, it does not replace the run's own
+    /// events, so anything the entry layer does not name must fall through.
+    #[test]
+    fn a_segmented_stream_passes_run_level_events_through() {
+        let sse = run_event_to_sse_for_storage(RunEvent::StreamResumed, true)
+            .expect("stream_resumed survives segmentation");
+        assert_eq!(sse.event_type, "stream_resumed");
+    }
+
+    /// A stream that carries no initial arguments must still report the tool
+    /// call — as the empty JSON string a client already understands as "not yet
+    /// streamed", never as a missing field.
+    #[test]
+    fn a_tool_call_without_initial_arguments_reports_an_empty_string() {
+        let sse = run_event_to_sse_for_storage(
+            RunEvent::Model(ModelStreamEvent::ToolInputStart {
+                index: 0,
+                id: "t1".into(),
+                name: "shell".into(),
+                arguments: None,
+                provider_metadata: serde_json::Map::new(),
+            }),
+            true,
+        )
+        .expect("tool_start");
+        assert_eq!(sse.event_type, "tool_start");
+        let data: serde_json::Value = serde_json::from_str(&sse.data).unwrap();
+        assert_eq!(data["tool_args"], json!(""), "{data}");
+        assert_eq!(data["phase"], json!("input"), "{data}");
+        assert_eq!(data["tool_name"], json!("shell"), "{data}");
+    }
+
+    /// The unsegmented contract hides entry bookkeeping: a client that cannot
+    /// join entries must not be told a message boundary it cannot render.
+    #[test]
+    fn an_unsegmented_stream_hides_message_boundaries_and_keeps_run_events() {
+        assert!(run_event_to_sse_for_storage(
+            RunEvent::MessageStart {
+                entry_id: "e1".into()
+            },
+            false
+        )
+        .is_none());
+        assert!(run_event_to_sse_for_storage(
+            RunEvent::MessageEnd {
+                entry_id: "e1".into(),
+                complete: true
+            },
+            false
+        )
+        .is_none());
+        let resumed = run_event_to_sse_for_storage(RunEvent::StreamResumed, false)
+            .expect("stream_resumed survives both contracts");
+        assert_eq!(resumed.event_type, "stream_resumed");
     }
 }

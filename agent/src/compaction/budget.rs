@@ -44,11 +44,7 @@ pub fn set_request_budget(
 ) {
     let tool_text = serde_json::to_string(tools).unwrap_or_default();
     let fixed = estimate_text_tokens(system) as u64 + estimate_text_tokens(&tool_text) as u64;
-    let messages = prompt
-        .messages
-        .iter()
-        .map(super::semantic::projected_token_cost)
-        .sum::<u64>();
+    let messages = prompt.total_message_tokens();
     prompt.usage.fixed_input_tokens = fixed;
     prompt.usage.output_reserve_tokens = max_output.max(0) as u64;
     prompt.usage.estimated_input_tokens = fixed.saturating_add(messages);

@@ -85,6 +85,17 @@ export async function readNativeClipboardFilePaths() {
   return invokeCommand<string[]>("read_native_clipboard_file_paths");
 }
 
+/**
+ * Read the OS clipboard's image and persist it as a pasted attachment.
+ *
+ * WebKitGTK hands the WebView an empty `DataTransfer` for a clipboard image, so
+ * on Linux the paste event never carries the bytes; the native pasteboard still
+ * has them. Returns `null` when the clipboard holds no image.
+ */
+export async function readNativeClipboardImage() {
+  return invokeCommand<{ name: string; path: string } | null>("read_native_clipboard_image");
+}
+
 /** Fully decode a candidate image so unreadable/corrupt files are rejected before send. */
 export async function validateImageAttachment(path: string) {
   return invokeCommand<void>("validate_image_attachment", { path });

@@ -461,7 +461,9 @@ fn list_session_ids_reports_all_files_including_corrupt() {
         .map(|v| v.as_str().unwrap().to_string())
         .collect();
     ids.sort();
-    assert_eq!(ids, vec![session.id.clone(), corrupt_id.to_string()]);
+    let mut expected = vec![session.id.clone(), corrupt_id.to_string()];
+    expected.sort();
+    assert_eq!(ids, expected);
 }
 
 /// Audit item 1 contract: list_sessions rows carry canonical camelCase
@@ -742,6 +744,127 @@ fn get_fork_messages_handles_legacy_bare_string_content() {
     assert_eq!(messages[0]["blocks"][0]["text"], "plain legacy text");
 }
 
+// ── coverage batch 1: get_fork_entries ─────────────────────────────────
+
+/// The picker's own list: every question *and* every answer, in transcript
+/// order, with the role the surface labels the row by.
+#[test]
+fn get_fork_entries_lists_questions_and_answers() {
+    let state = make_app_state();
+    let user = crate::session::SessionEntry::new_user(
+        "user",
+        serde_json::json!([
+            {"type": "text", "text": "why does it fail?"},
+            {"type": "text", "text": "agent-injected attachment list"},
+        ]),
+    );
+    let assistant = crate::session::SessionEntry::new_assistant(
+        serde_json::json!("because the loop advanced first"),
+        vec![],
+    );
+    // A tool result and a report-less assistant step are steps of a reply, not
+    // messages a reader branches at: neither is listed.
+    let tool = crate::session::SessionEntry::new_tool("call-1", "file body");
+    let tool_only = crate::session::SessionEntry::new_assistant(serde_json::json!([]), vec![]);
+    save_via(
+        &state,
+        "pick-src",
+        "mock",
+        vec![user, assistant, tool, tool_only],
+    );
+
+    let cmd = make_cmd_for("get_fork_entries", "pick-src");
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true, "{resp}");
+    let entries = resp["data"]["entries"].as_array().unwrap();
+    let listed: Vec<_> = entries
+        .iter()
+        .map(|entry| {
+            (
+                entry["role"].as_str().unwrap().to_string(),
+                entry["blocks"][0]["text"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        vec![
+            ("user".to_string(), "why does it fail?".to_string()),
+            (
+                "assistant".to_string(),
+                "because the loop advanced first".to_string()
+            ),
+        ]
+    );
+    assert!(!entries[0]["id"].as_str().unwrap().is_empty());
+    assert!(entries[0]["createdAtMs"].is_i64());
+}
+
+#[test]
+fn get_fork_entries_unknown_session_returns_empty() {
+    let state = make_app_state();
+    let cmd = make_cmd_for("get_fork_entries", "ghost");
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["data"]["entries"], serde_json::json!([]));
+}
+
+/// A run that is still writing is not a fork point: its entries have no answer
+/// to stop at yet, so the newest message the picker offers is the prompt that
+/// started it. Settling the run puts its reply back on the list.
+#[test]
+fn get_fork_entries_stops_before_the_run_that_is_still_writing() {
+    let state = make_app_state();
+    let question = crate::session::SessionEntry::new_user("user", serde_json::json!("first"));
+    let answer = crate::session::SessionEntry::new_assistant(serde_json::json!("done"), vec![]);
+    let live_prompt = crate::session::SessionEntry::new_user("user", serde_json::json!("and now?"));
+    let live_start = crate::session::SessionEntry::run_started("run-2", 1);
+    let half_written =
+        crate::session::SessionEntry::new_assistant(serde_json::json!("half an ans"), vec![]);
+    save_via(
+        &state,
+        "live-src",
+        "mock",
+        vec![
+            question,
+            answer,
+            live_prompt,
+            live_start,
+            half_written.clone(),
+        ],
+    );
+
+    let texts = |state: &crate::rpc::AppState| -> Vec<String> {
+        let cmd = make_cmd_for("get_fork_entries", "live-src");
+        let resp = parse_response(&handle_command_internal(state, cmd));
+        resp["data"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["blocks"][0]["text"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(texts(&state), vec!["first", "done", "and now?"]);
+
+    // The run's terminal marker settles it, and the answer joins the list.
+    let mut settled = vec![half_written];
+    settled.push(crate::session::SessionEntry::run_terminal(
+        "run-2",
+        "completed",
+        10,
+        20,
+        None,
+    ));
+    let existing = state.session_manager.load("live-src").unwrap().entries;
+    let mut entries = existing;
+    entries.extend(settled);
+    save_via(&state, "live-src", "mock", entries);
+    assert_eq!(
+        texts(&state),
+        vec!["first", "done", "and now?", "half an ans"]
+    );
+}
+
 // ── coverage batch 1: new_session variants ──────────────────────────────
 
 #[test]
@@ -902,6 +1025,105 @@ fn new_session_honors_explicit_id_cwd_model_level_and_provenance() {
     assert_eq!(sess.model, "explicit/model");
     assert_eq!(sess.thinking_level, "low");
     assert_eq!(sess.cwd, "/tmp/some-workspace");
+}
+
+/// A sub-session must not outrank the session that created it.
+///
+/// The settings default for a fresh session is `all`, so before this a parent
+/// running approval-gated (`workspace`) or with its tools denied (`none`) that
+/// delegated minted a child with full tool access — the user's gate bypassed by
+/// the act of splitting the work. Measured on this machine: a supervisor at
+/// `workspace` had workers at `all`.
+#[test]
+fn a_sub_session_inherits_its_parents_tool_permission() {
+    let state = make_app_state();
+
+    for level in ["workspace", "none"] {
+        let root_id = format!("perm-root-{level}");
+        let child_id = format!("perm-child-{level}");
+        let resp = parse_response(&handle_command_internal(
+            &state,
+            make_cmd_for("new_session", &root_id),
+        ));
+        assert_eq!(resp["success"], true, "{resp}");
+        state
+            .get_session(&root_id)
+            .unwrap()
+            .write()
+            .set_permission_level(level);
+
+        let mut child = make_cmd_for("new_session", &child_id);
+        child.parent_session = root_id.clone();
+        let resp = parse_response(&handle_command_internal(&state, child));
+        assert_eq!(resp["success"], true, "{resp}");
+        assert_eq!(
+            state
+                .get_session(&child_id)
+                .unwrap()
+                .read()
+                .get_permission_level(),
+            level,
+            "a child of a {level}-level session must not start with more access"
+        );
+
+        // A root keeps the settings default: inheritance is lineage only.
+        let sibling_id = format!("perm-sibling-{level}");
+        let resp = parse_response(&handle_command_internal(
+            &state,
+            make_cmd_for("new_session", &sibling_id),
+        ));
+        assert_eq!(resp["success"], true, "{resp}");
+        assert_eq!(
+            state
+                .get_session(&sibling_id)
+                .unwrap()
+                .read()
+                .get_permission_level(),
+            "all"
+        );
+    }
+}
+
+/// Permission is runtime state, not part of `session_info`: a parent that is
+/// only on disk has no level to hand down, so the child keeps the settings
+/// default instead of the inheritance inventing one.
+#[test]
+fn a_sub_session_of_a_disk_only_parent_keeps_the_default_permission() {
+    let state = make_app_state();
+    let info = crate::session::SessionEntry::session_info(
+        serde_json::json!({
+            "cwd": state.welcome_cwd,
+            "model": "mock",
+        }),
+        "mock".to_string(),
+        "low".to_string(),
+    );
+    let snapshot = crate::session::Session::snapshot(
+        "disk-parent".to_string(),
+        state.welcome_cwd.clone(),
+        "mock".to_string(),
+        String::new(),
+        String::new(),
+        vec![info],
+    );
+    state.session_manager.save(&snapshot).unwrap();
+    assert!(
+        !state.sessions.read().contains_key("disk-parent"),
+        "the test is only meaningful while the parent is not live"
+    );
+
+    let mut cmd = make_cmd_for("new_session", "disk-parent-child");
+    cmd.parent_session = "disk-parent".to_string();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true, "{resp}");
+    assert_eq!(
+        state
+            .get_session("disk-parent-child")
+            .unwrap()
+            .read()
+            .get_permission_level(),
+        "all"
+    );
 }
 
 /// Delegation is one jump deep: a session that already has a parent cannot
@@ -1134,10 +1356,11 @@ fn get_session_entries_renders_roles_and_run_stats() {
         ],
     );
 
-    let resp = parse_response(&handle_command_internal(
-        &state,
-        make_cmd("get_session_entries"),
-    ));
+    let resp = parse_response(&handle_command_internal(&state, {
+        let mut command = make_cmd("get_session_entries");
+        command.offset = Some(0);
+        command
+    }));
     assert_eq!(resp["success"], true);
     let entries = resp["data"]["entries"].as_array().unwrap();
     // session_info (deduped to one), user, assistant, tool, failing tool.
@@ -1183,10 +1406,11 @@ fn get_session_entries_projects_replyless_failure_onto_canonical_user_entry() {
     );
     save_via(&state, "default", "mock", vec![user, terminal]);
 
-    let resp = parse_response(&handle_command_internal(
-        &state,
-        make_cmd("get_session_entries"),
-    ));
+    let resp = parse_response(&handle_command_internal(&state, {
+        let mut command = make_cmd("get_session_entries");
+        command.offset = Some(0);
+        command
+    }));
     let entry = &resp["data"]["entries"][0];
     assert_eq!(entry["runId"], "run-failed");
     assert_eq!(entry["run"]["status"], "failed");
@@ -1210,10 +1434,11 @@ fn get_session_entries_reports_a_corrupt_persisted_history() {
         .session_manager
         .test_execute("UPDATE entries SET metadata_json='{\"timestamp\":false}'; UPDATE sessions SET revision=revision+1;");
 
-    let response = parse_response(&handle_command_internal(
-        &state,
-        make_cmd("get_session_entries"),
-    ));
+    let response = parse_response(&handle_command_internal(&state, {
+        let mut command = make_cmd("get_session_entries");
+        command.offset = Some(0);
+        command
+    }));
     assert_eq!(response["success"], false);
     assert_eq!(response["error_code"], "session_history_unreadable");
     assert!(response["error"]
@@ -1268,10 +1493,11 @@ fn get_session_entries_covers_compaction_billed_deltas_and_empty_info() {
         ],
     );
 
-    let resp = parse_response(&handle_command_internal(
-        &state,
-        make_cmd("get_session_entries"),
-    ));
+    let resp = parse_response(&handle_command_internal(&state, {
+        let mut command = make_cmd("get_session_entries");
+        command.offset = Some(0);
+        command
+    }));
     assert_eq!(resp["success"], true);
     let entries = resp["data"]["entries"].as_array().unwrap();
 
@@ -1323,10 +1549,11 @@ fn get_session_entries_marks_failed_tool_result_is_error() {
     });
     save_via(&state, "default", "mock", vec![info, assistant, failed]);
 
-    let resp = parse_response(&handle_command_internal(
-        &state,
-        make_cmd("get_session_entries"),
-    ));
+    let resp = parse_response(&handle_command_internal(&state, {
+        let mut command = make_cmd("get_session_entries");
+        command.offset = Some(0);
+        command
+    }));
     assert_eq!(resp["success"], true);
     let entries = resp["data"]["entries"].as_array().unwrap();
     let tool = entries.iter().find(|e| e["kind"] == "tool").unwrap();
@@ -1337,7 +1564,7 @@ fn get_session_entries_marks_failed_tool_result_is_error() {
 
 #[test]
 fn get_session_entries_paginates_only_when_offset_is_explicit() {
-    let state = make_app_state();
+    let state = make_legacy_app_state();
     let entries = (0..5)
         .map(|i| crate::session::SessionEntry::new_user("user", serde_json::json!(format!("q{i}"))))
         .collect();
@@ -1799,7 +2026,7 @@ fn clone_fails_when_disk_session_missing() {
 
 #[test]
 fn clone_rejects_disk_session_with_idless_last_entry() {
-    let state = make_app_state();
+    let state = make_legacy_app_state();
     {
         let session = state.get_session("default").unwrap();
         session
@@ -1985,10 +2212,11 @@ fn get_session_entries_handles_empty_tool_and_rich_meta() {
     let empty_tool = crate::session::SessionEntry::new_tool("call-1", "");
     save_via(&state, "default", "mock", vec![assistant, empty_tool]);
 
-    let resp = parse_response(&handle_command_internal(
-        &state,
-        make_cmd("get_session_entries"),
-    ));
+    let resp = parse_response(&handle_command_internal(&state, {
+        let mut command = make_cmd("get_session_entries");
+        command.offset = Some(0);
+        command
+    }));
     assert_eq!(resp["success"], true);
     let entries = resp["data"]["entries"].as_array().unwrap();
     assert_eq!(entries.len(), 2);
@@ -2146,10 +2374,11 @@ fn get_session_entries_skips_orphan_terminal_marker() {
             crate::session::SessionEntry::new_user("user", serde_json::json!("hi")),
         ],
     );
-    let resp = parse_response(&handle_command_internal(
-        &state,
-        make_cmd("get_session_entries"),
-    ));
+    let resp = parse_response(&handle_command_internal(&state, {
+        let mut command = make_cmd("get_session_entries");
+        command.offset = Some(0);
+        command
+    }));
     assert_eq!(resp["success"], true);
 }
 
@@ -2483,4 +2712,201 @@ fn batch_delete_is_partial_for_busy_sessions_and_validates_before_mutation() {
         .iter()
         .all(|r| r["deleted"] == true));
     assert!(!state.sessions.read().contains_key("default"));
+}
+#[test]
+fn canonical_history_requires_a_cursor_and_never_uses_the_whole_history_fallback() {
+    let root = tempfile::tempdir().unwrap();
+    let manager = crate::session::Manager::new(root.path().join("sessions"));
+    let store = manager.storage().unwrap();
+    store.reserve_segmented("s").unwrap();
+    store.replace("s",vec![serde_json::json!({"id":"u","type":"user","role":"user","timestamp":"2026-10-26T00:00:00Z","content":"visible"})]).unwrap();
+    let response = super::session_lifecycle::cmd_read_session_entries(
+        &manager,
+        "s",
+        &make_cmd("get_session_entries"),
+        "read",
+    );
+    let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+    assert_eq!(response["success"], false);
+    assert_eq!(response["error_code"], "history_paging_required");
+    let mut command = make_cmd("get_session_entries");
+    command.offset = Some(0);
+    command.limit = Some(10);
+    let response =
+        super::session_lifecycle::cmd_read_session_entries(&manager, "s", &command, "read");
+    let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+    assert_eq!(response["success"], true);
+    assert_eq!(
+        response["data"]["entries"][0]["blocks"][0]["text"],
+        "visible"
+    );
+}
+
+/// Presence is a fence every remote command waits on, so it must answer while
+/// the ordered writer is busy — not after it. It used to be read on that lane,
+/// which is how one long writer job stalled four remote commands for 18–21 s on
+/// 2026-10-29.
+#[test]
+fn presence_answers_while_a_writer_job_holds_the_lane() {
+    let state = make_app_state();
+    let mut create = make_cmd_for("new_session", "fence-presence");
+    create.cwd = state.welcome_cwd.clone();
+    let created = parse_response(&handle_command_internal(&state, create));
+    assert_eq!(created["success"], true, "{created}");
+
+    let db = state
+        .session_manager
+        .storage()
+        .expect("the session store is open")
+        .db
+        .clone();
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        db.call(move |_| {
+            let _ = entered_tx.send(());
+            std::thread::sleep(std::time::Duration::from_millis(1_500));
+            Ok(())
+        })
+        .expect("the holding job ran");
+    });
+    entered.recv().expect("the holding job started");
+
+    let mut presence = make_cmd("get_session_presence");
+    presence.session_ids = vec!["fence-presence".into()];
+    let started = std::time::Instant::now();
+    let response = parse_response(&handle_command_internal(&state, presence));
+    let waited = started.elapsed();
+    holder.join().expect("the holding job finished");
+
+    assert_eq!(response["success"], true, "{response}");
+    assert_eq!(response["data"]["sessions"][0]["status"], "present");
+    assert!(
+        waited < std::time::Duration::from_millis(500),
+        "presence waited {waited:?} behind a writer job"
+    );
+}
+
+// ── coverage batch: journal maintenance and an unopenable store ────────
+
+/// A store that cannot be opened at all: `agent.db` is a directory, so every
+/// sessionless surface that reaches for the database has to answer with its
+/// own refusal rather than panicking or reporting empty data.
+fn unopenable_store_state() -> crate::rpc::AppState {
+    let dir = test_session_dir();
+    std::fs::create_dir_all(dir.join("agent.db")).unwrap();
+    make_app_state_with(dir, Arc::new(crate::runtime::GlobalQueueBudget::defaults()))
+}
+
+#[test]
+fn reclaim_run_journals_refuses_a_mode_marker_it_cannot_interpret() {
+    // The command deletes journal rows, so an unrecognised marker is refused
+    // instead of guessed at — and nothing is reclaimed.
+    let state = make_app_state();
+    save_via(
+        &state,
+        "reclaim-guard",
+        "mock",
+        vec![crate::session::SessionEntry::new_user(
+            "user",
+            serde_json::json!("keep me"),
+        )],
+    );
+
+    let mut cmd = make_cmd("reclaim_run_journals");
+    cmd.custom_instructions = "yes please".into();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], false, "{resp}");
+    assert_eq!(resp["error_code"], "invalid_request");
+    assert!(resp["error"]
+        .as_str()
+        .unwrap()
+        .contains("only the `dryRun` mode marker"));
+    assert_eq!(resp["error_data"], serde_json::json!({}));
+
+    // The refused request reclaimed nothing: the session still loads.
+    let resp = parse_response(&handle_command_internal(
+        &state,
+        make_cmd_for("get_session_entries", "reclaim-guard"),
+    ));
+    assert_eq!(resp["success"], true, "{resp}");
+}
+
+#[test]
+fn reclaim_run_journals_answers_the_dry_run_marker_with_a_plan() {
+    // `dryRun` is a plan, not a loop: no run is reclaimed, there is no
+    // "more work" claim to chase, and no integrity check is run for a pass
+    // that wrote nothing.
+    let state = make_app_state();
+    let mut cmd = make_cmd("reclaim_run_journals");
+    cmd.custom_instructions = "dryRun".into();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true, "{resp}");
+    let data = &resp["data"];
+    assert_eq!(data["dryRun"], serde_json::json!(true));
+    assert_eq!(data["hasMore"], serde_json::json!(false));
+    assert_eq!(data["reclaimedRuns"], serde_json::json!(0));
+    assert_eq!(data["reclaimedEvents"], serde_json::json!(0));
+    assert!(data["quickCheck"].is_null(), "{resp}");
+    assert!(data["entries"].is_array(), "{resp}");
+    assert!(data["database"]["bytesBefore"].is_i64(), "{resp}");
+}
+
+#[test]
+fn journal_maintenance_surfaces_report_an_unopenable_store() {
+    let state = unopenable_store_state();
+
+    for (command, expected) in [
+        ("get_journal_stats", "journal"),
+        ("get_storage_health", "storage"),
+        ("get_session_storage_format", "format"),
+    ] {
+        let mut cmd = make_cmd(command);
+        cmd.session_id = "anything".into();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false, "{command}: {resp}");
+        assert_eq!(resp["command"], command, "{resp}");
+        assert!(
+            !resp["error"].as_str().unwrap_or("").is_empty(),
+            "{command}: {resp} reports no reason ({expected})"
+        );
+    }
+
+    // The reclaim sweep names its own command in the refusal, and a plan is not
+    // served from a store that could not be opened.
+    let mut cmd = make_cmd("reclaim_run_journals");
+    cmd.custom_instructions = "dryRun".into();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], false, "{resp}");
+    assert_eq!(resp["command"], "reclaim_run_journals", "{resp}");
+    assert!(!resp["error"].as_str().unwrap_or("").is_empty(), "{resp}");
+
+    // Presence is answered per id from the store, so an unopenable store has no
+    // presence to report.
+    let mut cmd = make_cmd("get_session_presence");
+    cmd.session_ids = vec!["anything".into()];
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], false, "{resp}");
+    assert_eq!(resp["command"], "get_session_presence", "{resp}");
+    assert!(!resp["error"].as_str().unwrap_or("").is_empty(), "{resp}");
+}
+
+#[test]
+fn new_session_reports_an_unopenable_store_instead_of_minting_one() {
+    let state = unopenable_store_state();
+    let mut cmd = make_cmd("new_session");
+    cmd.session_id = "wanted".into();
+    cmd.cwd = state.welcome_cwd.clone();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], false, "{resp}");
+    assert_eq!(resp["error_code"], "session_storage_unavailable");
+    assert_eq!(resp["error_data"]["sessionId"], "wanted");
+    assert!(
+        resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("Unable to inspect session storage"),
+        "{resp}"
+    );
+    // Nothing was created: the id is still free.
+    assert!(!state.sessions.read().contains_key("wanted"));
 }

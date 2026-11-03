@@ -12,8 +12,8 @@
 use crate::workbench::ansi::style;
 use crate::workbench::i18n::{t, Key};
 use crate::workbench::state::{
-    Activity, ActivityKind, GitKind, GitRow, GitSection, GitView, InputView, ModelChoice,
-    SessionMeta, SessionRow, SkillRow, UsageData, WorkbenchData, WorkspaceGroup,
+    Activity, ActivityKind, GitSection, GitView, InputView, ModelChoice, SessionMeta, SessionRow,
+    SkillRow, UsageData, WorkbenchData, WorkspaceGroup,
 };
 use crate::workbench::theme::FUTURE_DARK;
 
@@ -58,7 +58,7 @@ pub fn data(scenario: Scenario) -> WorkbenchData {
 
 fn base() -> WorkbenchData {
     WorkbenchData {
-        app_name: "future-tui".into(),
+        fusion_enabled: Some(true),
         version: "0.11.0".into(),
         connected: true,
         session: SessionMeta::default(),
@@ -69,7 +69,12 @@ fn base() -> WorkbenchData {
             ctx_used: 6_900,
             ctx_total: 1_000_000,
             cost: 0.0123,
+            // 780.0k / 812.4k = 96%: the demo's three counts have to agree with
+            // the hit rate beside them, or the row teaches the wrong arithmetic.
             cache_pct: 96,
+            input_tokens: 812_400,
+            output_tokens: 24_800,
+            cache_read_tokens: 780_000,
             tps: 0.0,
         },
         sessions: vec![
@@ -82,6 +87,7 @@ fn base() -> WorkbenchData {
                 parent_id: None,
                 streaming: false,
                 created_at_ms: 0,
+                pinned: false,
             },
             SessionRow {
                 id: "s2".into(),
@@ -92,6 +98,7 @@ fn base() -> WorkbenchData {
                 parent_id: None,
                 streaming: false,
                 created_at_ms: 0,
+                pinned: false,
             },
             SessionRow {
                 id: "s3".into(),
@@ -102,6 +109,7 @@ fn base() -> WorkbenchData {
                 parent_id: None,
                 streaming: false,
                 created_at_ms: 0,
+                pinned: false,
             },
             SessionRow {
                 id: "s4".into(),
@@ -112,6 +120,7 @@ fn base() -> WorkbenchData {
                 parent_id: None,
                 streaming: false,
                 created_at_ms: 0,
+                pinned: false,
             },
             SessionRow {
                 id: "s5".into(),
@@ -122,27 +131,25 @@ fn base() -> WorkbenchData {
                 parent_id: None,
                 streaming: false,
                 created_at_ms: 0,
+                pinned: false,
             },
         ],
         workspaces: vec![
             WorkspaceGroup {
                 name: "future-os".into(),
                 path: "/home/dev/future-os".into(),
-                pinned: true,
                 age: "2m".into(),
                 session_ids: vec!["s1".into(), "s2".into()],
             },
             WorkspaceGroup {
                 name: "mobile".into(),
                 path: "/home/dev/future-os/.worktrees/mobile".into(),
-                pinned: false,
                 age: "3h".into(),
                 session_ids: vec!["s3".into()],
             },
             WorkspaceGroup {
                 name: "futureos-wechat-articles".into(),
                 path: "/home/dev/futureos-wechat-articles".into(),
-                pinned: false,
                 age: "2d".into(),
                 session_ids: vec!["s4".into()],
             },
@@ -172,7 +179,8 @@ fn base() -> WorkbenchData {
             "docs/tui/workbench-spec.md".into(),
             "AGENTS.md".into(),
         ],
-        messages: Vec::new(),
+        messages: Default::default(),
+        row_stops: Vec::new(),
         input: InputView {
             placeholder: t(
                 crate::workbench::i18n::Language::Zh,
@@ -182,6 +190,7 @@ fn base() -> WorkbenchData {
             ..InputView::default()
         },
         activity: Activity::default(),
+        compacting: false,
         notice: None,
         queue: Vec::new(),
         revision: 0,
@@ -206,67 +215,63 @@ fn base() -> WorkbenchData {
 /// refs that log sits on, one edited file and one stash, with the first merge
 /// commit selected. Deterministic like every other demo value — a screenshot of
 /// this panel must not depend on whose checkout is rendered.
+///
+/// The log is written as the read's own text and parsed by the read's own
+/// parser, so the frame carries the graph the panel would draw for this history
+/// rather than a hand-drawn copy of it that could drift from the renderer.
 pub fn git() -> GitView {
-    let commits = vec![
-        row(
-            Some("9e4a47d2a"),
-            "*   ",
-            &[
-                ("feat(tui): a git panel for the workbench", GitKind::Plain),
-                (
-                    "HEAD -> dev-huichen, origin/dev-huichen",
-                    GitKind::Decoration,
-                ),
-                ("9e4a47d2a", GitKind::Sha),
-                ("2026-10-27", GitKind::Meta),
-                ("huichen", GitKind::Meta),
-            ],
+    // `<short> <parents> <decorations> <date-time> <subject>`, newest first;
+    // the separators are the same US/RS pair the read splits on.
+    const MATRIX: &[(&str, &str, &str, &str, &str)] = &[
+        (
+            "9e4a47d2a",
+            "4c1b8f0e3 7cefc9cea",
+            "HEAD -> dev-huichen, origin/dev-huichen",
+            "2026-10-27 10:12",
+            "feat(tui): a git panel for the workbench",
         ),
-        row(None, "|\\", &[]),
-        row(
-            Some("4c1b8f0e3"),
-            "| * ",
-            &[
-                ("fix(mobile): stop folding code blocks", GitKind::Plain),
-                ("fix/mobile-code-block", GitKind::Decoration),
-                ("4c1b8f0e3", GitKind::Sha),
-                ("2026-10-27", GitKind::Meta),
-                ("huichen", GitKind::Meta),
-            ],
+        (
+            "4c1b8f0e3",
+            "ae142f75a",
+            "fix/mobile-code-block",
+            "2026-10-27 10:08",
+            "fix(mobile): stop folding code blocks",
         ),
-        row(
-            Some("7cefc9cea"),
-            "| * ",
-            &[
-                ("docs: goal control plane notes", GitKind::Plain),
-                ("tag: v0.11.0", GitKind::Decoration),
-                ("7cefc9cea", GitKind::Sha),
-                ("2026-10-25", GitKind::Meta),
-                ("huichen", GitKind::Meta),
-            ],
+        (
+            "7cefc9cea",
+            "ae142f75a",
+            "tag: v0.11.0",
+            "2026-10-25 18:40",
+            "docs: goal control plane notes",
         ),
-        row(None, "|/", &[]),
-        row(
-            Some("ae142f75a"),
-            "* ",
-            &[
-                ("fix(tui): one row per record", GitKind::Plain),
-                ("ae142f75a", GitKind::Sha),
-                ("2026-10-26", GitKind::Meta),
-                ("huichen", GitKind::Meta),
-            ],
+        (
+            "ae142f75a",
+            "56ec934f6",
+            "",
+            "2026-10-26 09:31",
+            "fix(tui): one row per record",
         ),
-        row(
-            Some("56ec934f6"),
-            "* ",
-            &[
-                ("chore(deps): bump the rust toolchain", GitKind::Plain),
-                ("56ec934f6", GitKind::Sha),
-                ("2026-10-24", GitKind::Meta),
-                ("huichen", GitKind::Meta),
-            ],
+        (
+            "56ec934f6",
+            "",
+            "",
+            "2026-10-24 21:05",
+            "chore(deps): bump the rust toolchain",
         ),
     ];
+    let text: String = MATRIX
+        .iter()
+        .map(|(short, parents, decoration, date, subject)| {
+            // RS leads the record, US between the fields: the pair the read
+            // splits on, written rather than escaped by `format!` because it is
+            // the log's own vocabulary.
+            format!(
+                "\u{1e}{short}\u{1f}{short}\u{1f}{parents}\u{1f}{date}\u{1f}\
+huichen\u{1f}{decoration}\u{1f}{subject}\n"
+            )
+        })
+        .collect();
+    let commits = super::git_panel::parse_log(&text);
     let detail = "commit 9e4a47d2a\nAuthor: huichen <huichen@example.invalid>\nDate:   2026-10-27\n\n    fix(mobile): stop folding code blocks — a long line pans instead\n\n mobile/src/components/markdown.tsx | 24 ++++++++++++++----------\n 1 file changed, 14 insertions(+), 10 deletions(-)\n\ndiff --git a/mobile/src/components/markdown.tsx b/mobile/src/components/markdown.tsx\n@@ -118,9 +118,13 @@ export function CodeBlock({ text }: Props) {\n-  return <Text numberOfLines={0}>{text}</Text>;\n+  // A code block pans; it never folds.\n+  return (\n+    <ScrollView horizontal>\n+      <Text>{text}</Text>\n+    </ScrollView>\n+  );"
         .lines()
         .map(str::to_string)
@@ -282,27 +287,18 @@ pub fn git() -> GitView {
     }
 }
 
-/// One painted `/git` row: the gutter, then the fields that fit, each with what
-/// it is so the frame paints it the way the real read would.
-fn row(key: Option<&str>, prefix: &str, pieces: &[(&str, GitKind)]) -> GitRow {
-    let pieces: Vec<(&str, GitKind)> = pieces
-        .iter()
-        .copied()
-        .filter(|(piece, _)| !piece.is_empty())
-        .collect();
-    GitRow {
-        key: key.map(str::to_string),
-        prefix: prefix.to_string(),
-        pieces: pieces
-            .iter()
-            .map(|(piece, _)| (*piece).to_string())
-            .collect(),
-        kinds: pieces.iter().map(|(_, kind)| *kind).collect(),
+pub fn preview_image() -> crate::workbench::state::PreviewView {
+    use crate::workbench::state::PreviewView;
+    PreviewView::Image {
+        path: "/home/dev/future-os/design.png".into(),
+        pixels: picture_pixels(),
     }
 }
 
-pub fn preview_image() -> crate::workbench::state::PreviewView {
-    use crate::workbench::state::PreviewView;
+/// The pixels those pictures are drawn from: a two-axis gradient with a
+/// diagonal band, large enough that fitting it into cells has a visible aspect
+/// ratio and a zoom has something to cut into.
+pub fn picture_pixels() -> crate::workbench::image_view::ImagePixels {
     let (width, height) = (96usize, 64usize);
     let mut rgba = Vec::with_capacity(width * height * 4);
     for y in 0..height {
@@ -314,13 +310,10 @@ pub fn preview_image() -> crate::workbench::state::PreviewView {
             rgba.extend_from_slice(&[r, g, b, 255]);
         }
     }
-    PreviewView::Image {
-        path: "/home/dev/future-os/design.png".into(),
-        pixels: crate::workbench::image_view::ImagePixels {
-            width,
-            height,
-            rgba,
-        },
+    crate::workbench::image_view::ImagePixels {
+        width,
+        height,
+        rgba: rgba.into(),
     }
 }
 
@@ -504,7 +497,9 @@ pub fn chat() -> WorkbenchData {
     data.messages = vec![
         style(p.accent, " ❯ 看看 parser 的 off-by-one，顺手补个回归测试"),
         String::new(),
-        style(p.muted, " ▸ 2 tool calls · 1 thought"),
+        // The process row the conversation renderer draws at the default level,
+        // worded in the interface language of this demo (Chinese).
+        style(p.muted, " ▸ 工具调用 2 次 · 思考 1 次"),
         String::new(),
         style(p.fg, " 循环用的是 `<=`，最后一位会越界读一个字节。"),
         style(p.fg, "改成 `<` 之后 41 个用例都过了。"),
@@ -513,7 +508,8 @@ pub fn chat() -> WorkbenchData {
         style(p.muted, " read src/parser.rs"),
         style(p.muted, " $ cargo test -p parser --off-by-one"),
         String::new(),
-    ];
+    ]
+    .into();
     data
 }
 
@@ -549,11 +545,13 @@ pub fn workspaces() -> WorkbenchData {
             parent_id: None,
             streaming: false,
             created_at_ms: 0,
+            // Two pinned conversations, so the 置顶 block is on screen: the
+            // filing still lists them (the rail lifts them, not the filing).
+            pinned: index < 2,
         });
         data.workspaces.push(WorkspaceGroup {
             name: (*name).to_string(),
             path: format!("/home/dev/{name}"),
-            pinned: index < 2,
             age: format!("{}h", index + 1),
             session_ids: vec![id],
         });
@@ -599,7 +597,7 @@ mod tests {
             .map(|line| crate::utils::strip_ansi_codes(line))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("2 tool calls"), "{text}");
+        assert!(text.contains("工具调用 2 次 · 思考 1 次"), "{text}");
         assert!(text.contains("41 个用例都过了"), "{text}");
     }
 
@@ -607,8 +605,8 @@ mod tests {
     fn the_workspace_scenario_is_long_enough_to_scroll() {
         let data = workspaces();
         assert_eq!(data.workspaces.len(), 12);
-        assert!(data.workspaces.iter().any(|group| group.pinned));
-        assert!(data.workspaces.iter().any(|group| !group.pinned));
+        assert!(data.sessions.iter().any(|row| row.pinned));
+        assert!(data.sessions.iter().any(|row| !row.pinned));
         for group in &data.workspaces {
             for id in &group.session_ids {
                 assert!(data.sessions.iter().any(|session| &session.id == id));

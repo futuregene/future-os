@@ -13,10 +13,12 @@ import {
   MAX_IMAGES,
   albumSource,
   cachedDownload,
+  cachedPreviewFile,
   cachedPreviewForAttachment,
   deleteTemporaryAttachment,
   downloadPrepared,
   fileSha256,
+  forgetPreviewFile,
   namedExternalFile,
   loadAlbumImages,
   pickAttachments,
@@ -24,8 +26,11 @@ import {
   prepareAlbumImages,
   prepareDownload,
   prepareSharedAttachments,
+  previewAspect,
   recoverPendingImagePickerAttachments,
   rememberPreparedPreview,
+  rememberPreviewAspect,
+  rememberPreviewFile,
   remainingImageSlots,
   takePhoto,
   uploadAttachments,
@@ -79,6 +84,12 @@ jest.mock("expo-file-system", () => {
     }
     delete(): void {
       store.delete(this.uri);
+    }
+    textSync(): string {
+      return new TextDecoder().decode(store.get(this.uri)?.bytes ?? new Uint8Array(0));
+    }
+    writeSync(content: string): void {
+      store.set(this.uri, { bytes: new TextEncoder().encode(content) });
     }
     async bytes(): Promise<Uint8Array> {
       return store.get(this.uri)?.bytes ?? new Uint8Array(0);
@@ -1753,6 +1764,114 @@ describe("download & preview cache", () => {
     expect(cachedPreviewForAttachment(client, "s1", { path: "128.jpg", name: "a.jpg" })).not.toBeNull();
   });
 
+  test("a held preview is answered from this phone, and survives the process", () => {
+    mockFS.__set(cacheUri(info), { bytes: new Uint8Array(8) });
+    rememberPreviewFile("desktop/session", "/tmp/a.jpg", info);
+
+    const held = cachedPreviewFile("desktop/session", "/tmp/a.jpg");
+    expect(held?.file.uri).toBe(cacheUri(info));
+    expect(held?.contentHash).toBe(info.contentHash);
+    expect(held?.stale).toBe(false);
+
+    // Reopening a conversation runs in a new process: the index has to come back
+    // from disk, or every picture pays a `download_prepare` before it can paint.
+    const written = new mockFS.File("/mock/cache/futureos-preview-index.json" as never).textSync();
+    let files!: typeof import("../files");
+    let freshFS!: typeof mockFS;
+    jest.isolateModules(() => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      freshFS = require("expo-file-system");
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      files = require("../files");
+    });
+    freshFS.__set("/mock/cache/futureos-preview-index.json", { bytes: new TextEncoder().encode(written) });
+    freshFS.__set(cacheUri(info), { bytes: new Uint8Array(8) });
+    expect(files.cachedPreviewFile("desktop/session", "/tmp/a.jpg")?.file.uri).toBe(cacheUri(info));
+  });
+
+  test("an unreadable index is only a cache miss", () => {
+    let files!: typeof import("../files");
+    let freshFS!: typeof mockFS;
+    jest.isolateModules(() => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      freshFS = require("expo-file-system");
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      files = require("../files");
+    });
+    freshFS.__set("/mock/cache/futureos-preview-index.json", { bytes: new TextEncoder().encode("{not json") });
+    freshFS.__set(cacheUri(info), { bytes: new Uint8Array(8) });
+    expect(files.cachedPreviewFile("desktop/session", "/tmp/a.jpg")).toBeNull();
+
+    // A record of the wrong shape is dropped entry by entry, not wholesale.
+    const malformed = JSON.stringify({
+      version: 1,
+      entries: { broken: { name: "a.jpg" }, alsoBroken: "nope" },
+    });
+    let second!: typeof import("../files");
+    let secondFS!: typeof mockFS;
+    jest.isolateModules(() => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      secondFS = require("expo-file-system");
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      second = require("../files");
+    });
+    secondFS.__set("/mock/cache/futureos-preview-index.json", { bytes: new TextEncoder().encode(malformed) });
+    expect(second.cachedPreviewFile("broken", "/tmp/a.jpg")).toBeNull();
+  });
+
+  test("a held preview never crosses desktops, sessions, variants or a pruned file", () => {
+    mockFS.__set(cacheUri(info), { bytes: new Uint8Array(8) });
+    rememberPreviewFile("desktop-a/s1", "chart.jpg", info);
+    expect(cachedPreviewFile("desktop-a/s1", "chart.jpg")).not.toBeNull();
+    expect(cachedPreviewFile("desktop-a/s2", "chart.jpg")).toBeNull();
+    expect(cachedPreviewFile("desktop-b/s1", "chart.jpg")).toBeNull();
+    expect(cachedPreviewFile("desktop-a/s1", "chart.jpg", "original")).toBeNull();
+
+    // The cache directory is prunable out from under the index: that is a miss,
+    // and the next download re-records the entry.
+    mockFS.__set(cacheUri(info), { size: 4 });
+    expect(cachedPreviewFile("desktop-a/s1", "chart.jpg")).toBeNull();
+    mockFS.__set(cacheUri(info), { bytes: new Uint8Array(8) });
+    expect(cachedPreviewFile("desktop-a/s1", "chart.jpg")).not.toBeNull();
+  });
+
+  test("an entry old enough to re-check is still painted from disk", () => {
+    const now = jest.spyOn(Date, "now").mockReturnValue(1_000);
+    try {
+      mockFS.__set(cacheUri(info), { bytes: new Uint8Array(8) });
+      rememberPreviewFile("stale/s1", "chart.jpg", info);
+      expect(cachedPreviewFile("stale/s1", "chart.jpg")?.stale).toBe(false);
+      now.mockReturnValue(1_000 + 60 * 60 * 1000 + 1);
+      const held = cachedPreviewFile("stale/s1", "chart.jpg");
+      expect(held?.stale).toBe(true);
+      expect(held?.file.uri).toBe(cacheUri(info));
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  test("a measured ratio is kept for the next paint, and dropped with its entry", () => {
+    mockFS.__set(cacheUri(info), { bytes: new Uint8Array(8) });
+    rememberPreviewFile("ratio/s1", "chart.jpg", info);
+    expect(previewAspect("ratio/s1", "chart.jpg")).toBeUndefined();
+    expect(previewAspect("ratio/s1", "never-seen.jpg")).toBeUndefined();
+
+    rememberPreviewAspect("ratio/s1", "chart.jpg", 2.5);
+    expect(previewAspect("ratio/s1", "chart.jpg")).toBe(2.5);
+    expect(cachedPreviewFile("ratio/s1", "chart.jpg")?.aspect).toBe(2.5);
+    // A nonsense ratio never reaches the layout, and a re-download keeps the one
+    // that was measured.
+    rememberPreviewAspect("ratio/s1", "chart.jpg", Number.NaN);
+    rememberPreviewAspect("ratio/s1", "chart.jpg", 0);
+    expect(previewAspect("ratio/s1", "chart.jpg")).toBe(2.5);
+    rememberPreviewFile("ratio/s1", "chart.jpg", { ...info, contentHash: "next" });
+    expect(previewAspect("ratio/s1", "chart.jpg")).toBe(2.5);
+
+    forgetPreviewFile("ratio/s1", "chart.jpg");
+    expect(cachedPreviewFile("ratio/s1", "chart.jpg")).toBeNull();
+    expect(previewAspect("ratio/s1", "chart.jpg")).toBeUndefined();
+  });
+
   test("an already-cancelled prepare does not start a desktop request", async () => {
     const client = mockClient();
     const controller = new AbortController();
@@ -2098,5 +2217,87 @@ describe("download & preview cache", () => {
       { type: "download_cancel", transferId: "t1" },
       "transfer",
     );
+  });
+});
+
+// ─── the preview index's size bound, and a cache write that fails ────────────
+
+describe("cache writes that cannot complete", () => {
+  const bytes = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+  const localInfo: DownloadInfo = {
+    transferId: "t1",
+    name: "result.jpg",
+    mimeType: "image/jpeg",
+    size: bytes.length,
+    contentHash: sha256Hex(bytes),
+    previewKind: "image",
+    variant: "preview",
+    chunkBytes: 4,
+  };
+  const localCacheUri = `/mock/cache/futureos-previews/${localInfo.contentHash}.jpg`;
+
+  test("the index keeps its most recent entries and drops the oldest", () => {
+    let files!: typeof import("../files");
+    let freshFS!: typeof mockFS;
+    jest.isolateModules(() => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      freshFS = require("expo-file-system");
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      files = require("../files");
+    });
+    const entries: Record<string, unknown> = {};
+    for (let index = 0; index < 130; index++) {
+      entries[JSON.stringify(["bulk/s1", `/tmp/${index}.jpg`, "preview"])] = {
+        name: `${index}.jpg`,
+        mimeType: "image/jpeg",
+        contentHash: `hash-${index}`,
+        size: 8,
+        variant: "preview",
+        savedAt: 1_000 + index,
+      };
+    }
+    freshFS.__set("/mock/cache/futureos-preview-index.json", {
+      bytes: new TextEncoder().encode(JSON.stringify({ version: 1, entries })),
+    });
+
+    // One picture more than the index is willing to hold: the bound is what
+    // stops it growing without limit on a phone that is used for months.
+    files.rememberPreviewFile("bulk/s1", "/tmp/newest.jpg", localInfo);
+
+    const written = JSON.parse(
+      new freshFS.File("/mock/cache/futureos-preview-index.json" as never).textSync(),
+    ) as { entries: Record<string, unknown> };
+    const keys = Object.keys(written.entries);
+    expect(keys).toHaveLength(128);
+    // The three oldest are the three that go, and the new one is kept.
+    for (const index of [0, 1, 2])
+      expect(keys).not.toContain(JSON.stringify(["bulk/s1", `/tmp/${index}.jpg`, "preview"]));
+    expect(keys).toContain(JSON.stringify(["bulk/s1", "/tmp/3.jpg", "preview"]));
+    expect(keys).toContain(JSON.stringify(["bulk/s1", "/tmp/newest.jpg", "preview"]));
+  });
+
+  test("a cache file that cannot be opened is deleted and the download fails", async () => {
+    const client = mockClient();
+    client.downloadChunk.mockResolvedValue(bytes);
+    client.request.mockResolvedValue({ success: true, data: {} });
+    // A full disk: the directory and the file could be created, but nothing can
+    // be written into it.
+    const filePrototype = (mockFS as unknown as {
+      File: { prototype: { open(...args: unknown[]): unknown } };
+    }).File.prototype;
+    const open = jest.spyOn(filePrototype, "open").mockImplementationOnce(() => {
+      throw new Error("no space left on device");
+    });
+    try {
+      await expect(downloadPrepared(client as unknown as RemoteClient, localInfo))
+        .rejects.toThrow("no space left on device");
+      // The empty shell is not left behind: `cachedDownload` matches on size, but
+      // a zero-byte file at that path would still be handed out by the native
+      // layer to anything that trusts the filename.
+      expect(new mockFS.File(localCacheUri as never).exists).toBe(false);
+      expect(cachedDownload(localInfo)).toBeNull();
+    } finally {
+      open.mockRestore();
+    }
   });
 });

@@ -1,6 +1,7 @@
 //! Opt-in browser probe around the real DesktopHost and an isolated real Agent.
 //! Replaces NATS/E2EE with loopback HTTP. Not a phone/network/UI benchmark.
 use super::*;
+use crate::console;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
@@ -104,7 +105,7 @@ async fn handle(
             }
             let path = root.join("results.json");
             std::fs::write(&path, &bytes[header_end..header_end + size])?;
-            println!("measurement results written to {}", path.display());
+            console::println!("measurement results written to {}", path.display());
             ("application/json", b"{\"stored\":true}".to_vec())
         }
         ("POST", "/rpc") => {
@@ -839,7 +840,7 @@ async fn serve_real_snapshot() {
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
         .await
         .unwrap();
-    println!("SYNC_BROWSER_READY {origin}");
+    console::println!("SYNC_BROWSER_READY {origin}");
     loop {
         let (socket, _) = listener.accept().await.unwrap();
         let samples = samples.clone();
@@ -853,8 +854,8 @@ async fn serve_real_snapshot() {
             .await
             {
                 Ok(Ok(())) => (),
-                Ok(Err(error)) => eprintln!("probe request failed: {error}"),
-                Err(_) => eprintln!("probe request timed out"),
+                Ok(Err(error)) => console::eprintln!("probe request failed: {error}"),
+                Err(_) => console::eprintln!("probe request timed out"),
             }
         });
     }

@@ -13,6 +13,11 @@ of their implementation language.
   (`~/.future/app/app.db`), shared by the Tauri backend and `future desktop`.
 - `app-workspaces`: the desktop app's workspace records in the same database,
   shared by the Tauri backend and `future workspace`.
+- `config`: strict-read and atomic-write helpers for the hand-editable JSON
+  files under `~/.future/` (`models.json`, `auth.json`, the TUI's
+  `settings.json`), shared by the application host and the TUI.
+- `http`: the HTTP client entry points every Rust consumer starts from, so the
+  process TLS provider is installed once instead of per caller.
 - `markdown`: Shared TypeScript markdown parser and types.
 - `thread-projection`: Shared TypeScript thread projection logic.
 - `json-preview`: Shared TypeScript JSON preview/rendering logic.

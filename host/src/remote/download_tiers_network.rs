@@ -36,6 +36,7 @@
 
 #![cfg(test)]
 
+use crate::console;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -193,7 +194,7 @@ fn orchestrator() {
         file.write_all(b"DLTIERS!").expect("end marker");
     }
 
-    println!(
+    console::println!(
         "DLTIERS_SOURCE {}",
         json!({
             "apk": { "path": apk.display().to_string(), "bytes": APK_BYTES, "sha256": sha256(&apk_bytes) },
@@ -206,7 +207,7 @@ fn orchestrator() {
     );
 
     let mut host = if external {
-        println!("DLTIERS_HOST_EXTERNAL waiting for host.json");
+        console::println!("DLTIERS_HOST_EXTERNAL waiting for host.json");
         None
     } else {
         Some(spawn_role("host", &dir.join("host-child.log")))
@@ -218,7 +219,7 @@ fn orchestrator() {
         }
         panic!("the host bridge never published an invitation (see host-child.log)");
     }
-    println!(
+    console::println!(
         "DLTIERS_HOST_UP {}",
         std::fs::read_to_string(dir.join("host.json")).expect("host.json")
     );
@@ -226,7 +227,7 @@ fn orchestrator() {
     let client = spawn_role("client", &dir.join("client-child.log"));
     let code = wait_child(client, Duration::from_secs(240), "client");
     if dir.join("client.json").is_file() {
-        println!("DLTIERS_CLIENT {}", read_report(&dir.join("client.json")));
+        console::println!("DLTIERS_CLIENT {}", read_report(&dir.join("client.json")));
     }
     // Release the host (the old build waits on this marker; so does ours).
     std::fs::write(dir.join("client.done"), b"done").expect("done marker");
@@ -313,7 +314,7 @@ async fn host_role() {
             "hostPid": std::process::id(),
         }),
     );
-    println!("DLTIERS_HOST_READY pair={}", host.pair_id);
+    console::println!("DLTIERS_HOST_READY pair={}", host.pair_id);
 
     let done = dir.join("client.done");
     let deadline = Instant::now() + Duration::from_secs(300);
@@ -361,7 +362,7 @@ async fn client_role() {
     let connected = runtime::connect_with_emitter(&desktop_id, Some(noop))
         .await
         .expect("pair and connect over the real transport");
-    println!(
+    console::println!(
         "DLTIERS_CONNECTED {}",
         json!({
             "desktopId": desktop_id,

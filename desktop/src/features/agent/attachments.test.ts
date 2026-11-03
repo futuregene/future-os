@@ -9,6 +9,19 @@ vi.mock("../../integrations/storage/files", () => ({
   validateImageAttachment: (...args: unknown[]) => validateImageAttachment(...args),
 }));
 
+// Every describe in this file drives the same two mocks, and a mock's
+// *implementation* survives `clearAllMocks()` — so a reset that lived in only
+// one describe left the others reading a sibling's `mockRejectedValue(...)`
+// (the undecodable-image case) depending on which ran first. Reset and re-seed
+// the default contract for the whole file, and let each test override what it
+// is about.
+beforeEach(() => {
+  inspectAttachment.mockReset();
+  validateImageAttachment.mockReset();
+  // Default contract: the inspect succeeds and the image decodes.
+  validateImageAttachment.mockResolvedValue(undefined);
+});
+
 describe("path helpers", () => {
   it("falls back to the whole path when it has no basename", () => {
     // boundary: `pathBasename("/")` is empty, so a separator-only path keeps its own
@@ -39,12 +52,6 @@ describe("path helpers", () => {
 });
 
 describe("classifyAttachment", () => {
-  beforeEach(() => {
-    inspectAttachment.mockReset();
-    validateImageAttachment.mockReset();
-    validateImageAttachment.mockResolvedValue(undefined);
-  });
-
   it("rejects images over the byte limit", async () => {
     inspectAttachment.mockResolvedValue({ isBinary: true, isDir: false, size: READ_SOURCE_MAX_BYTES + 1 });
 

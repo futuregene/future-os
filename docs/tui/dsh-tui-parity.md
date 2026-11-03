@@ -1,5 +1,9 @@
 # dsh-TUI 0.17 parity inventory and FutureOS gap analysis
 
+> **Historical analysis (2026).** The comparison below is a dated snapshot of the
+> workbench's gaps. “Missing” and “partial” rows are not current status; see the
+> [TUI guide](../guide/tui.md) and the tests for what is implemented now.
+
 What dsh-TUI 0.17 actually is, what makes it feel like a workbench, and where
 `future-tui` now stands against it. This is the **evidence and gap** document.
 The frozen implementation contract (type names, module layout, layout constants,
@@ -312,7 +316,10 @@ Five palette entries used to be advertised and then answer `Unknown command` —
 now `[V]` (`[S:workbench-usage-panel.png]`, `[S:workbench-skills-panel.png]`),
 and `every_palette_entry_has_a_handler` keeps the next entry from rotting the
 same way. That gap was a regression against what the inline UI could do, and it
-was item P0-3 in the change list.
+was item P0-3 in the change list. `/transcript` was the one of the five that
+had nothing of its own to do: its whole answer named `/export` and
+`/reply-detail`, which the palette already advertises on their own rows, so the
+entry (and the unused full-detail render behind it) is gone.
 
 ## 6. Gap matrix
 
@@ -342,7 +349,7 @@ verdict from the first pass at `9d5f02beb`.
 | 16 | Settings screen, grouped and searchable | 9 groups | no settings page; the pickers cover model, thinking and theme, the rest is per-command | partial | partial | P1 |
 | 17 | Fullscreen draft editor | `Ctrl+Shift+E`, `⛶` | no affordance, no editor; external `$EDITOR` no longer reachable | missing | partial | P1 |
 | 18 | History search scoped to the project | `Ctrl+R` `[R]` | prompt recall only | partial | partial | P1 |
-| 19 | Steering vs queue vs interrupt | `Enter`/`Tab`/`Ctrl+Enter` | submit queues behind the run; `ctrl+x` aborts | partial | partial | P1 |
+| 19 | Steering vs queue vs interrupt | `Enter`/`Tab`/`Ctrl+Enter` | submit queues behind the run; `ctrl+c` aborts | partial | partial | P1 |
 | 20 | Rewind to an earlier turn | double `Esc` + `/rewind` | `/fork` is not in the palette either | missing | missing | P2 |
 | 21 | Mermaid fences, LaTeX | Unicode + images | none | missing | missing | P2 |
 | 22 | Image preview zoom/pan, Sixel | yes | Kitty/iTerm2 passthrough only | partial | partial | P2 |

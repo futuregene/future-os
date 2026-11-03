@@ -11,6 +11,10 @@ export interface MarkdownImageLoader {
   scope: string;
   cached(path: string): string | null;
   load(path: string, signal: AbortSignal): Promise<string | null>;
+  /** The width/height this scope already measured for a picture, when known. */
+  aspect?(path: string): number | undefined;
+  /** Keep a measured width/height, so the next paint reserves the right height. */
+  rememberAspect?(path: string, aspect: number): void;
 }
 export const MarkdownImageLoaderContext = createContext<MarkdownImageLoader | null>(null);
 export const MarkdownImageBasePathContext = createContext<string | undefined>(undefined);
@@ -117,7 +121,17 @@ function LocalImage({ alt, loader, path, width, onOpen, linked }: {
   if (uri) {
     // Zoomed-in viewing is local: the bytes are already here, so the viewer opens
     // without a transfer. A linked picture keeps opening its link.
-    const picture = <LoadedImage key={uri} alt={alt} uri={uri} width={width} onFailure={() => { setUri(null); setFailed(true); }} />;
+    const picture = (
+      <LoadedImage
+        key={uri}
+        alt={alt}
+        uri={uri}
+        width={width}
+        initialAspect={loader.aspect?.(path)}
+        onRatio={ratio => loader.rememberAspect?.(path, ratio)}
+        onFailure={() => { setUri(null); setFailed(true); }}
+      />
+    );
     if (linked || !openImageViewer)
       return <Pressable accessibilityLabel={alt} accessibilityRole={linked ? "link" : "button"} onPress={onOpen}>{picture}</Pressable>;
     return <Pressable accessibilityLabel={alt} accessibilityRole="button" onPress={() => openImageViewer({ name: alt, uri })}>{picture}</Pressable>;
@@ -133,10 +147,18 @@ function LocalImage({ alt, loader, path, width, onOpen, linked }: {
   );
 }
 
-function LoadedImage({ alt, uri, width, onFailure }: { alt: string; uri: string; width?: number; onFailure?(): void }) {
+function LoadedImage({ alt, uri, width, initialAspect, onRatio, onFailure }: {
+  alt: string;
+  uri: string;
+  width?: number;
+  /** A ratio this picture already showed before, so it does not jump on redraw. */
+  initialAspect?: number;
+  onRatio?(ratio: number): void;
+  onFailure?(): void;
+}) {
   const styles = useStyles();
   const [failed, setFailed] = useState(false);
-  const [aspectRatio, setAspectRatio] = useState(1.5);
+  const [aspectRatio, setAspectRatio] = useState(initialAspect ?? 1.5);
   if (failed) return <Text selectable style={styles.caption}>{alt || uri}</Text>;
   // `width` is a declarative maximum (from `<img width=…>`): `width: "100%"`
   // fills the container while `maxWidth` caps it, so a 600px image fills a
@@ -153,7 +175,9 @@ function LoadedImage({ alt, uri, width, onFailure }: { alt: string; uri: string;
       const source = event?.nativeEvent?.source;
       if (source && source.width > 0 && source.height > 0
         && Number.isFinite(source.width / source.height)) {
-        setAspectRatio(source.width / source.height);
+        const ratio = source.width / source.height;
+        setAspectRatio(ratio);
+        onRatio?.(ratio);
       }
     }} />;
 }

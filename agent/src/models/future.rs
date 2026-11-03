@@ -91,6 +91,9 @@ static FUTURE_REFRESH_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// while those hold HOME). A build they spawn can publish a catalog between a
 /// future-models test's reset and its assertion, which is the failure this
 /// lock removes: a build, a reset and a publish can no longer overlap.
+/// `get_future_models_with_cache` holds it too, for the whole read → seed →
+/// re-read sequence: a reset landing between the seed write and the re-read
+/// would otherwise leave that re-read looking at the `None` it just installed.
 ///
 /// Re-entrancy is deliberate: `Registry::new()` may be reached from inside
 /// another build (a rebuild triggered while constructing one), and a plain
@@ -834,6 +837,17 @@ pub(super) fn get_future_models_with_cache(api_key: &str, base_url: &str) -> Vec
     // instead of waiting for an hour-long TTL.
     let _ = spawn_future_models_refresh(api_key, base_url);
 
+    // Test builds: hold the cache-access lock across the whole read → seed →
+    // re-read sequence below. Without it, a `reset_future_caches_for_tests` on
+    // another thread could clear the memory cache between the seed write and
+    // the re-read that moves the catalog out, and that re-read would hit its
+    // `expect`. Taken AFTER the refresh spawn on purpose: the spawn takes
+    // `FUTURE_REFRESH_GATE` in test builds, and the tests that hold both take
+    // the cache lock first (see `reset_future_caches_for_tests`), so acquiring
+    // the gate while holding this lock would invert that order.
+    #[cfg(test)]
+    let _access = lock_cache_access();
+
     // Prefer the in-process memory cache — it is updated by completed
     // background refreshes and avoids reading the file from disk.
     if let Some(ref cache) = *FUTURE_MODELS_MEMORY_CACHE.read() {
@@ -1452,6 +1466,7 @@ mod tests {
 
     /// HTTP server: answers up to 8 requests with a canned (status, body).
     fn mock_json_server(status: u16, body: String) -> String {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -1560,6 +1575,7 @@ mod tests {
     async fn fetch_future_models_reuses_connection_with_current_credentials() {
         use std::io::{BufRead, BufReader, Write};
 
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
@@ -1823,6 +1839,72 @@ mod tests {
         let models = get_future_models_with_cache("k", "http://127.0.0.1:1");
         assert_eq!(models[0].id, "disk-model");
         assert!(FUTURE_MODELS_MEMORY_CACHE.read().is_some());
+        drop(home);
+    }
+
+    /// Regression: `get_future_models_with_cache` seeds the memory cache from
+    /// the disk one and then re-reads it to move the catalog out. That pair used
+    /// to sit outside the test-only `CACHE_ACCESS` lock, so a concurrent
+    /// `reset_future_caches_for_tests` could clear the cache in between and the
+    /// re-read panicked on `expect("memory cache seeded above")` — the panic an
+    /// unrelated rpc test hit intermittently on this line.
+    ///
+    /// The window is genuinely narrow (two lock statements apart), so this test
+    /// brackets it with a tight reader loop on one side and thousands of resets
+    /// on the other rather than trying to land inside it by luck.
+    #[test]
+    fn cache_read_survives_a_concurrent_reset() {
+        let _guard = future_test_lock();
+        let home = crate::test_support::TestHome::new();
+        reset_future_cache_state();
+        std::fs::create_dir_all(home.path().join(".future/agent")).unwrap();
+        save_future_models_cache_inner(&FutureModelsCache {
+            fetched_at: 1,
+            models: vec![convert_future_model(
+                serde_json::from_str(r#"{"id":"race-model"}"#).unwrap(),
+                "http://x/v1",
+            )],
+        });
+
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        let started = std::sync::Arc::new(AtomicBool::new(false));
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let reads = std::sync::Arc::new(AtomicU64::new(0));
+        let reader = std::thread::spawn({
+            let started = started.clone();
+            let stop = stop.clone();
+            let reads = reads.clone();
+            move || {
+                while !stop.load(Ordering::Relaxed) {
+                    // The reset loop below keeps emptying the memory cache, so
+                    // every iteration walks the disk-seed → re-read arm.
+                    let models = get_future_models_with_cache("k", "http://127.0.0.1:1");
+                    assert_eq!(
+                        models.first().map(|m| m.id.as_str()),
+                        Some("race-model"),
+                        "a concurrent reset must not tear the read+seed window"
+                    );
+                    reads.fetch_add(1, Ordering::Relaxed);
+                    started.store(true, Ordering::Relaxed);
+                }
+            }
+        });
+        // Start resetting only once the reader is live, so the resets below
+        // land around reads instead of racing the thread's start-up.
+        while !started.load(Ordering::Relaxed) {
+            std::thread::yield_now();
+        }
+        for _ in 0..20_000 {
+            reset_future_caches_for_tests();
+        }
+        stop.store(true, Ordering::Relaxed);
+        reader
+            .join()
+            .expect("the read+seed window survives a concurrent reset");
+        assert!(
+            reads.load(Ordering::Relaxed) > 0,
+            "the reader must have walked the disk-seed arm"
+        );
         drop(home);
     }
 

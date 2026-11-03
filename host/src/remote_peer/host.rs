@@ -91,3 +91,71 @@ impl ClientHost for DesktopClientHost {
         drop(crate::runtime::spawn(future));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::convert;
+    use future_remote_client::Error as ClientError;
+
+    /// Every remote-client call reports failure through this one conversion, so
+    /// the variants that carry meaning across the boundary have to survive it:
+    /// `Remote` keeps the HTTP status and machine-readable code the pairing UI
+    /// branches on, and a transport or authorization failure must not arrive as
+    /// a generic host error. Anything the client's vocabulary has no slot for is
+    /// wrapped with the original still downcastable, so a signed-out desktop is
+    /// not flattened into a message string.
+    #[test]
+    fn a_host_error_keeps_its_variant_across_the_client_boundary() {
+        let malformed = serde_json::from_str::<serde_json::Value>("{").expect_err("invalid json");
+        let json = convert(crate::Error::Json(malformed));
+        assert!(matches!(json, ClientError::Json(_)), "{json:?}");
+
+        let transport = convert(crate::Error::RemoteTransport("relay unreachable".into()));
+        assert!(
+            matches!(transport, ClientError::RemoteTransport(ref message)
+                if message == "relay unreachable"),
+            "{transport:?}"
+        );
+
+        let authorization = convert(crate::Error::RemoteAuthorization("rejected".into()));
+        assert!(
+            matches!(authorization, ClientError::RemoteAuthorization(ref message)
+                if message == "rejected"),
+            "{authorization:?}"
+        );
+
+        let remote = convert(crate::Error::Remote {
+            status: 403,
+            code: Some("invalid_remote_credential".into()),
+            message: "denied".into(),
+        });
+        assert!(
+            matches!(
+                remote,
+                ClientError::Remote {
+                    status: 403,
+                    ref code,
+                    ref message,
+                } if code.as_deref() == Some("invalid_remote_credential") && message == "denied"
+            ),
+            "{remote:?}"
+        );
+
+        let message = convert(crate::Error::Message("a plain failure".into()));
+        assert!(
+            matches!(message, ClientError::Message(ref text) if text == "a plain failure"),
+            "{message:?}"
+        );
+
+        let unsigned = convert(crate::Error::NotSignedIn);
+        match unsigned {
+            ClientError::Host(error) => {
+                let original = error
+                    .downcast::<crate::Error>()
+                    .expect("a host-only error keeps its type");
+                assert!(matches!(*original, crate::Error::NotSignedIn));
+            }
+            other => panic!("a host-only error must stay typed, got {other:?}"),
+        }
+    }
+}

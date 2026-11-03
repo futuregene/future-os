@@ -17,6 +17,9 @@ pub struct ApprovalAssessmentRecord {
 }
 
 pub fn record_approval_assessment(run_id: &str, value: &Value) -> Result<(), crate::Error> {
+    let projected =
+        future_rpc::approval_assessment::for_storage(value.clone(), cfg!(debug_assertions));
+    let value = &projected;
     let field = |key| {
         value
             .get(key)

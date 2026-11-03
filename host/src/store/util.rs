@@ -53,6 +53,12 @@ pub fn create_id(prefix: &str) -> String {
     app_workspaces::new_id(prefix)
 }
 
+/// Public run identity shared with the Agent's native UUID storage boundary.
+/// Existing caller-supplied IDs remain opaque; only newly generated runs use it.
+pub fn create_run_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
 pub fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -83,6 +89,15 @@ pub fn mark_catalog_dirty() {
 
 pub fn take_catalog_dirty() -> bool {
     CATALOG_DIRTY.swap(false, Ordering::AcqRel)
+}
+
+/// Whether a write is waiting to be published, without clearing the flag.
+///
+/// The publisher consumes the flag (`take_catalog_dirty`) on its own tick; a
+/// reader that answers from a cached snapshot asks this instead, so it never
+/// answers a pull with a snapshot taken before a write it can already see.
+pub fn catalog_dirty_peek() -> bool {
+    CATALOG_DIRTY.load(Ordering::Acquire)
 }
 
 /// Turn an "expected to exist" lookup into a hard error when the row is missing.

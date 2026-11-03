@@ -6,6 +6,7 @@
 //! endpoints are unauthenticated). Used by the post-login onboarding flow; runs
 //! on a background thread since it blocks on the CLI child process.
 
+use future_host::console;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
@@ -17,7 +18,7 @@ pub fn run_builtin_skills<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let executable = match crate::cli_tool::resolve_for("skills.init") {
         Ok(path) => path,
         Err(error) => {
-            crate::host_environment::report(&format!("{error}; skipping built-in skill bootstrap"));
+            tracing::warn!(event = "run_builtin_skills", error = %error,"{error}; skipping built-in skill bootstrap");
             return;
         }
     };
@@ -26,7 +27,7 @@ pub fn run_builtin_skills<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let (rx, child) = match command.spawn() {
         Ok(pair) => pair,
         Err(error) => {
-            eprintln!("FutureOS: failed to start skill bootstrap: {error}");
+            tracing::error!(event = "run_builtin_skills", error = %error,"FutureOS: failed to start skill bootstrap: {error}");
             return;
         }
     };
@@ -79,8 +80,14 @@ fn drain_skill_events(
     if stopping.is_some() && !terminated {
         crate::runtime::record_cleanup_error("CLI bootstrap termination was not confirmed".into());
     }
-    if exit_code != Some(0) {
-        eprintln!("FutureOS: skill bootstrap did not complete (exit {exit_code:?})");
+    if stopping.is_some() {
+        tracing::debug!(
+            event = "skill_bootstrap_cancelled",
+            ?exit_code,
+            "Skill bootstrap stopped during shutdown"
+        );
+    } else if exit_code != Some(0) {
+        tracing::error!(event = "drain_skill_events", exit_code = ?exit_code,"FutureOS: skill bootstrap did not complete (exit {exit_code:?})");
     }
     exit_code
 }
@@ -91,10 +98,10 @@ fn drain_skill_events(
 fn handle_skill_event(event: CommandEvent, exit_code: &mut Option<i32>) {
     match event {
         CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes) => {
-            eprint!("[skills] {}", String::from_utf8_lossy(&bytes));
+            console::eprint!("[skills] {}", String::from_utf8_lossy(&bytes));
         }
         CommandEvent::Error(error) => {
-            eprintln!("FutureOS: skill bootstrap error: {error}");
+            tracing::error!(event = "handle_skill_event", error = %error,"FutureOS: skill bootstrap error: {error}");
         }
         CommandEvent::Terminated(payload) => {
             *exit_code = payload.code;
@@ -312,6 +319,26 @@ mod block_fixtures {
 
     const CASE: &str = "FUTURE_SKILLS_BOOTSTRAP_CASE";
 
+    /// How long the whole fixture process may take before `run_case` kills it.
+    const CEILING: Duration = Duration::from_secs(120);
+
+    /// The budget an **unarmed** wait gets: what a healthy host needs for the fixture child
+    /// to start and for the plugin to reap it. Measured on an idle machine, and that is
+    /// exactly why no call site below treats it as a verdict — see [`FIXTURE_WAIT`].
+    const WAIT_BUDGET: Duration = Duration::from_secs(15);
+
+    /// What `host_fixture` arms over [`WAIT_BUDGET`].
+    ///
+    /// Every wait in this module is for a fact about **another process** (the fixture child
+    /// wrote its marker; the plugin's own wait thread reaped it). At load ≈ 28 under the
+    /// instrumented suite those took 15.02 s and the two `stop-*` cases went red on
+    /// "the fixture child must start" — the third instance of the family documented in
+    /// `crate::test_support::wait_budget`, and the reason the fixture arms a budget instead
+    /// of the file carrying a larger constant. Strictly under [`CEILING`], so a genuinely
+    /// stuck wait still fails *in the child* with the assertion's own message rather than
+    /// being killed from outside with none.
+    const FIXTURE_WAIT: Duration = Duration::from_secs(90);
+
     /// Discovery succeeds and the CLI is still byte-identical, but the program it
     /// names as its interpreter is gone: the spawn fails, the drain is skipped,
     /// and `init` never runs.
@@ -362,7 +389,10 @@ mod block_fixtures {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(120);
+        // The harness's own bound, and it is deliberately *not* read through
+        // `crate::test_support::wait_budget`: this is the parent process, which arms nothing.
+        // The fixture child arms `FIXTURE_WAIT` from inside, strictly under this.
+        let deadline = Instant::now() + CEILING;
         let mut finished = false;
         while Instant::now() < deadline {
             if child.try_wait().unwrap().is_some() {
@@ -408,8 +438,12 @@ mod block_fixtures {
     /// Polls a condition for a bounded time. The trailing call is the timeout
     /// answer: reaching it means the assertion after it fails, the same
     /// failure-only class as `pty.rs`'s `wait_for` helpers.
+    ///
+    /// The bound is [`WAIT_BUDGET`] unless the fixture armed one
+    /// (`crate::test_support::wait_budget`) — `host_fixture` always does, so a
+    /// loaded host cannot decide these waits.
     fn wait_until(ready: impl Fn() -> bool) -> bool {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = crate::test_support::wait_budget::deadline(WAIT_BUDGET);
         while Instant::now() < deadline {
             if ready() {
                 return true;
@@ -421,6 +455,28 @@ mod block_fixtures {
 
     fn wait_for(path: &Path) -> bool {
         wait_until(|| path.exists())
+    }
+
+    /// The wiring, not the seam: `wait_until` must read the armed budget. Without this the
+    /// fixture could arm a budget that changes nothing and every `stop-*` case would go back
+    /// to being decided by the host's load.
+    ///
+    /// Both directions are deterministic — 20 ms armed, 15 s unarmed — so the 2 s ceiling is
+    /// not a measurement of this host.
+    #[test]
+    fn an_armed_budget_shortens_a_wait_instead_of_being_ignored() {
+        let _short =
+            crate::test_support::wait_budget::WaitBudgetGuard::armed(Duration::from_millis(20));
+        let started = Instant::now();
+        assert!(
+            !wait_until(|| false),
+            "a condition that never holds must not be reported as met"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the armed budget must decide the wait, not WAIT_BUDGET: took {:?}",
+            started.elapsed()
+        );
     }
 
     fn alive(pid: u32) -> bool {
@@ -445,6 +501,17 @@ mod block_fixtures {
         // production 3 s budget that prerequisite is a race against this host's
         // scheduler rather than a property of the code under test.
         let _deadline = future_host::cli_tool::ProbeDeadlineGuard::without_deadline();
+        // Same class, different clock: every wait below is for a fact about another
+        // process (this fixture child wrote its marker; the plugin reaped it), so the
+        // budget is armed here instead of the file carrying a larger constant.
+        let _waits = crate::test_support::wait_budget::WaitBudgetGuard::armed(FIXTURE_WAIT);
+        // Self-checking: the child proves it runs under the armed budget, so dropping the
+        // line above fails here by name rather than showing up later as a flake.
+        assert_eq!(
+            crate::test_support::wait_budget::wait_budget(WAIT_BUDGET),
+            FIXTURE_WAIT,
+            "the fixture must wait under the budget it armed, not the idle-host default"
+        );
         if case == "spawn-failure" {
             let root = scoped("spawn-failure");
             let bin = root.join("bin");

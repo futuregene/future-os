@@ -65,7 +65,6 @@ fn validates_single_command_before_approval() {
         json!({"command":""}),
         json!({"command":"echo\u{0000}a"}),
         json!({"command":"echo a","timeout":0}),
-        json!({"command":"echo a","timeout":601}),
         json!({"command":"echo a","escalated":true}),
         json!({"command":"x".repeat(65_537)}),
         json!({"command":"echo a","justification":"x".repeat(131_072)}),
@@ -80,6 +79,28 @@ fn validates_single_command_before_approval() {
         assert!(validate(&args).is_err(), "{args}");
     }
     assert!(validate(&json!({"command":"echo a"})).is_ok());
+}
+
+/// An over-long budget is the caller asking for more time, not a malformed
+/// call: clamping keeps the command running for the ceiling this tool enforces
+/// anyway. Rejecting it cost a whole round trip per occurrence (137 calls in one
+/// Agent database), which is a full context re-read spent on re-stating a
+/// number the schema already bounded.
+#[test]
+fn an_over_long_timeout_is_clamped_to_the_ceiling() {
+    for requested in [601u64, 900, 86_400] {
+        let parsed = ShellParams::parse(json!({"command":"echo a","timeout":requested}))
+            .unwrap_or_else(|error| panic!("{requested} must clamp, not fail: {error}"));
+        assert_eq!(parsed.timeout, Some(MAX_TIMEOUT_SECS), "{requested}");
+    }
+    // The ceiling itself, a normal budget and the default are untouched.
+    for (requested, expected) in [(600, Some(600)), (30, Some(30))] {
+        let parsed = ShellParams::parse(json!({"command":"echo a","timeout":requested}))
+            .unwrap_or_else(|error| panic!("{requested} must parse: {error}"));
+        assert_eq!(parsed.timeout, expected, "{requested}");
+    }
+    let parsed = ShellParams::parse(json!({"command":"echo a"})).expect("default");
+    assert_eq!(parsed.timeout, None);
 }
 
 #[tokio::test]

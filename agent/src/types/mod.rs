@@ -503,6 +503,8 @@ impl AgentMessage {
     /// Internal-only metadata key that binds an in-memory message to its
     /// authoritative session-journal entry. It is stripped before `meta` is
     /// serialized, so it never becomes user/provider-visible data.
+    pub const STREAM_BLOCKS_KEY: &'static str = "_future_stream_blocks";
+    pub const STREAM_EPOCH_KEY: &'static str = "_future_stream_epoch";
     pub const JOURNAL_ENTRY_ID_KEY: &'static str = "_future_journal_entry_id";
 
     pub fn journal_entry_id(&self) -> Option<&str> {

@@ -6,6 +6,7 @@
 
 use crate::workbench::ansi::{align_right, clip, fit, width};
 use crate::workbench::i18n::{self, Key, Language};
+use crate::workbench::state::UsageData;
 use crate::workbench::theme::Palette;
 
 /// A horizontal rule across `columns`.
@@ -15,20 +16,131 @@ pub fn rule(palette: &Palette, columns: usize) -> String {
 
 /// The frame's top border with an optional title inline: `╭─ title ─────╮`.
 pub fn box_top(palette: &Palette, columns: usize, title: &str) -> String {
+    top_rule(palette, columns, title, None)
+}
+
+/// The close chip's label in one language: `[× 关闭]` / `[× Close]`.
+///
+/// Every panel is left with `esc`, and a panel whose only way out is a key is a
+/// panel a reader with a mouse cannot leave: the chip is the pointer's way to
+/// say what `esc` says, and a click on it runs that very handler.
+pub fn close_label(lang: Language) -> String {
+    format!("[× {}]", i18n::t(lang, Key::OverlayClose))
+}
+
+/// Where [`close_label`] sits on a `columns`-wide top border, or `None` when
+/// the box is too narrow to carry it (the corner and the title are worth more
+/// than the button).
+///
+/// The one answer shared by the painter and the hit map: a region that
+/// disagrees with the cells is a button that looks live and is not.
+pub fn close_cells(columns: usize, lang: Language) -> Option<(u16, u16)> {
+    let label = close_label(lang);
+    let chip_w = width(&label);
+    // Room for the two corners, the rule, a title of a few cells and the gap
+    // that keeps the title off the chip.
+    if columns < chip_w + 8 {
+        return None;
+    }
+    // Flush against the right corner: the chip is the last thing on the rule,
+    // the way a title bar's close button is.
+    Some(((columns - 1 - chip_w) as u16, chip_w as u16))
+}
+
+/// Where a run at the *end* of a title sits on a `columns`-wide top border
+/// (`╭─ title ───╮`), or `None` when the title is clipped or carries no such
+/// run.
+///
+/// The composer writes the draft's attachment count at the end of its title,
+/// and those cells are the picture's own door: the count is what the reader
+/// clicks to open the image they are about to send. Same rule as
+/// [`close_cells`] — one answer for the painter and the hit map, so a control
+/// that looks live is one.
+///
+/// `lead` is everything the title holds before the run; the run itself is
+/// `tail`.
+pub fn title_tail_cells(columns: usize, lead: &str, tail: &str) -> Option<(u16, u16)> {
+    let inner = columns.checked_sub(2)?;
+    let tail_w = width(tail);
+    if tail_w == 0 {
+        return None;
+    }
+    // `top_rule` clips a label that does not fit its room, and the clip eats
+    // the tail first: a run that was cut off is not a control, so there is no
+    // cell to aim at.
+    if width(&format!(" {lead}{tail} ")) > inner.saturating_sub(1) {
+        return None;
+    }
+    // `╭`, `─`, then the space that separates the corner from the title.
+    Some(((3 + width(lead)) as u16, tail_w as u16))
+}
+
+/// [`box_top`] with any already-painted chip right-aligned on the rule:
+/// `╭─ title ───── chip╮`. The chip occupies the last cells before the right
+/// corner, and one rule cell is kept between it and the title.
+///
+/// For a control that is not the panel's close button — the queue band's
+/// `/queue 管理` door is one — so the rule is drawn by one function and every
+/// box's top edge measures the same way.
+pub fn box_top_with_chip(
+    palette: &Palette,
+    columns: usize,
+    title: &str,
+    chip: Option<&str>,
+) -> String {
+    top_rule(palette, columns, title, chip)
+}
+
+/// [`box_top`] with the close chip right-aligned on the rule:
+/// `╭─ title ─────[× 关闭]╮`.
+///
+/// Returns the row and, when the chip was drawn, the cells it occupies as
+/// `(column, width)` — relative to the row's own left edge, so a caller that
+/// indents its rows adds its own offset.
+pub fn box_top_with_close(
+    palette: &Palette,
+    columns: usize,
+    title: &str,
+    lang: Language,
+) -> (String, Option<(u16, u16)>) {
+    let cells = close_cells(columns, lang);
+    let chip = cells.map(|_| palette.strong(palette.iris, &close_label(lang)));
+    let row = top_rule(palette, columns, title, chip.as_deref());
+    (row, cells)
+}
+
+/// Both top borders are this function: `chip` is already painted, and occupies
+/// the last cells of the rule before the right corner.
+fn top_rule(palette: &Palette, columns: usize, title: &str, chip: Option<&str>) -> String {
     if columns < 4 {
         return palette.text(palette.border, &"─".repeat(columns));
     }
     let inner = columns - 2;
-    let rule = "─".repeat(inner);
+    let chip_w = chip.map_or(0, width);
+    // One rule cell is kept between the title and the chip, so the two never
+    // read as one run of text.
+    let gap = usize::from(chip.is_some());
     if title.is_empty() {
-        return palette.text(palette.border, &format!("╭{rule}╮"));
+        // The rule runs from corner to chip; one of its cells is the gap the
+        // chip is set off by.
+        let rest = inner.saturating_sub(chip_w);
+        return fit(
+            &format!(
+                "{}{}{}{}",
+                palette.text(palette.border, "╭"),
+                palette.text(palette.border, &"─".repeat(rest)),
+                chip.unwrap_or_default(),
+                palette.text(palette.border, "╮"),
+            ),
+            columns,
+        );
     }
     // `─ title ` then as much rule as is left; a title too long for the box is
     // clipped rather than allowed to push the corner off the row. The label is
     // *clipped* to its room, never fitted to it: `fit` pads, so a padded label
     // measured as wide as the box and the rule after the title was never drawn.
     let label = format!(" {title} ");
-    let room = inner.saturating_sub(1);
+    let room = inner.saturating_sub(1 + chip_w + gap);
     let label = if width(&label) > room {
         let mut clipped = clip(&label, room.saturating_sub(1));
         clipped.push('…');
@@ -37,13 +149,14 @@ pub fn box_top(palette: &Palette, columns: usize, title: &str) -> String {
         label
     };
     let used = width(&label);
-    let rest = inner.saturating_sub(1 + used);
+    let rest = inner.saturating_sub(1 + used + chip_w);
     fit(
         &format!(
-            "{}{}{}{}",
+            "{}{}{}{}{}",
             palette.text(palette.border, "╭─"),
             palette.dim(&label),
             palette.text(palette.border, &"─".repeat(rest)),
+            chip.unwrap_or_default(),
             palette.text(palette.border, "╮"),
         ),
         columns,
@@ -72,12 +185,7 @@ pub fn box_row(palette: &Palette, content: &str, columns: usize) -> String {
 
 /// The tab strip across the top of the sidebar: the active tab is iris and
 /// underlined by weight, the rest muted.
-pub fn tab_strip(
-    palette: &Palette,
-    tabs: &[(String, bool)],
-    focused: bool,
-    columns: usize,
-) -> String {
+pub fn tab_strip(palette: &Palette, tabs: &[(String, bool)], columns: usize) -> String {
     let mut row = String::new();
     for (index, (label, active)) in tabs.iter().enumerate() {
         if index > 0 {
@@ -89,12 +197,6 @@ pub fn tab_strip(
         } else {
             row.push_str(&palette.dim(&text));
         }
-    }
-    if focused {
-        // The focused strip says so with a caret, so "which pane takes keys"
-        // is visible without hovering anything.
-        let caret = palette.text(palette.accent, "›");
-        row = format!("{caret}{row}");
     }
     fit(&row, columns)
 }
@@ -128,17 +230,46 @@ pub fn spinner(frame: usize) -> &'static str {
     SPINNER[frame % SPINNER.len()]
 }
 
-/// `◐ 42 tok/s · 缓存 96%` — the activity row's tail, so the numbers live in
-/// one place instead of being re-spelled at each call site.
-pub fn rate(palette: &Palette, tps: f64, cache_pct: u8, lang: Language) -> String {
-    let mut parts = Vec::new();
-    if tps > 0.0 {
-        parts.push(format!("{tps:.0} tok/s"));
+/// `42 tok/s · 输入 12.3k · 输出 640 · 缓存 9.9k · 命中 96%` — the activity row's
+/// tail, so the numbers live in one place instead of being re-spelled at each
+/// call site.
+///
+/// The tail shares the row with the activity text on its left, so it yields
+/// `budget` cells instead of pushing that text off: the token counts go first
+/// (they are the widest, and `usage` in the panels carries them too), then the
+/// rate, never the hit rate — the one number that exists nowhere else.
+pub fn rate(palette: &Palette, usage: &UsageData, lang: Language, budget: usize) -> String {
+    let mut parts: [Option<String>; 5] = [
+        (usage.tps > 0.0).then(|| format!("{:.0} tok/s", usage.tps)),
+        count_part(lang, Key::RateInput, usage.input_tokens),
+        count_part(lang, Key::RateOutput, usage.output_tokens),
+        count_part(lang, Key::RateCacheTokens, usage.cache_read_tokens),
+        (usage.cache_pct > 0).then(|| i18n::render(lang, Key::CacheLabel, &[&usage.cache_pct])),
+    ];
+    let joined = |parts: &[Option<String>; 5]| {
+        parts
+            .iter()
+            .flatten()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" · ")
+    };
+    let mut text = joined(&parts);
+    // Input, output, cache, rate — the hit rate is the floor of the tail.
+    for index in [1, 2, 3, 0] {
+        if width(&text) <= budget {
+            break;
+        }
+        parts[index] = None;
+        text = joined(&parts);
     }
-    if cache_pct > 0 {
-        parts.push(i18n::render(lang, Key::CacheLabel, &[&cache_pct]));
-    }
-    palette.dim(&parts.join(" · "))
+    palette.dim(&text)
+}
+
+/// `输入 12.3k` — a labelled token count, or `None` for a figure no request has
+/// reported yet (a fresh session's tail is not `输入 0`).
+fn count_part(lang: Language, key: Key, tokens: u64) -> Option<String> {
+    (tokens > 0).then(|| i18n::render(lang, key, &[&short_count(tokens)]))
 }
 
 /// `6.9k/1.0M 0.7%` — the context gauge's text form.
@@ -147,8 +278,13 @@ pub fn context_text(used: u64, total: u64) -> String {
 }
 
 /// `6.9k`, `1.0M`, `812` — the compact form the status bar has room for.
+///
+/// The billion tier is `B`, the spelling token counts are quoted in
+/// (`1B tokens`) — `G` would read as gigabytes in a terminal.
 pub fn short_count(count: u64) -> String {
-    if count >= 1_000_000 {
+    if count >= 1_000_000_000 {
+        format!("{:.1}B", count as f64 / 1_000_000_000.0)
+    } else if count >= 1_000_000 {
         format!("{:.1}M", count as f64 / 1_000_000.0)
     } else if count >= 1_000 {
         format!("{:.1}k", count as f64 / 1_000.0)
@@ -331,10 +467,13 @@ pub fn input_box(
     if !compact {
         rows.push(bottom);
     }
+    // The caret is clamped to the last cell *inside* the box, not to its last
+    // column: that one is the right border, and a caret parked on it reads as a
+    // stray block in the gutter beside the draft.
+    let last_inside = columns.saturating_sub(1 + usize::from(framed));
     (
         rows,
-        (draft.cursor_column + prompt_width + usize::from(framed)).min(columns.saturating_sub(1))
-            as u16,
+        (draft.cursor_column + prompt_width + usize::from(framed)).min(last_inside) as u16,
         draft.cursor_row + 1,
     )
 }
@@ -347,6 +486,93 @@ mod tests {
 
     const P: Palette = FUTURE_DARK;
 
+    /// The composer's attachment count is a control, so the cells it reports
+    /// have to be the cells the rule paints it on: a region one column off puts
+    /// the click on the hint beside it, and a region wider than the run lets a
+    /// click land on rule cells that look like nothing.
+    #[test]
+    fn the_title_tail_sits_on_the_cells_it_reports() {
+        let lead = "输入 · enter 发送 · ctrl+j 换行";
+        let tail = " · 📎 2 张图片";
+        let columns = 60;
+        let row = box_top(&P, columns, &format!("{lead}{tail}"));
+        let plain = crate::utils::strip_ansi_codes(&row);
+        let (x, w) = title_tail_cells(columns, lead, tail).expect("room on the rule");
+        // The cells `x..x+w` of the painted row, read by display width so a
+        // wide character counts as the two columns it occupies.
+        let mut cells = String::new();
+        let mut column = 0;
+        for ch in plain.chars() {
+            let cw = width(&ch.to_string());
+            if column >= usize::from(x) && column < usize::from(x + w) {
+                cells.push(ch);
+            }
+            column += cw;
+        }
+        assert_eq!(cells, tail, "{plain:?}");
+        assert_eq!(column, columns, "the rule is the box's width");
+    }
+
+    /// A title the box clips drops its tail first, so there is no cell to aim
+    /// at: a control painted nowhere must not be clickable somewhere.
+    #[test]
+    fn a_clipped_title_has_no_tail_to_click() {
+        let lead = "输入 · enter 发送 · ctrl+j 换行";
+        let tail = " · 📎 12 张图片";
+        assert_eq!(title_tail_cells(24, lead, tail), None);
+        assert!(title_tail_cells(120, lead, tail).is_some());
+        assert_eq!(title_tail_cells(120, lead, ""), None);
+    }
+
+    /// A draft that fills the box's content width is painted whole, and every
+    /// row of the box is exactly `columns` wide.
+    ///
+    /// The row the caret sits on used to come out one column wider than its
+    /// neighbours — the caret's fallback cell was counted as draft — and the
+    /// box's own `fit` paid for that column by clipping the draft's last
+    /// character into an "…". The reader's text ended in an ellipsis they never
+    /// typed, exactly when a line was full, and the caret sat past it: this
+    /// test is that state, at the widths where the phrase fills the line.
+    #[test]
+    fn a_draft_that_fills_the_line_keeps_its_last_character() {
+        let phrase = "我在lin双双适当放松地方史蒂夫，"; // 31 columns
+        assert_eq!(crate::utils::visible_width(phrase), 31);
+        for columns in [35usize, 39, 45, 51] {
+            let content = input_content_width(columns);
+            let draft = format!("{phrase}{}", "x".repeat(content.saturating_sub(31)));
+            let mut editor = crate::workbench::editor::EditorState::default();
+            editor.set(&draft, draft.len());
+            let view =
+                crate::workbench::state::InputView::from_editor(editor, "描述你要做的事".into());
+            let (lines, cursor_column, _) = input_box(&P, columns, &view, "Message", false, 8);
+            for line in &lines {
+                assert_eq!(
+                    width(line),
+                    columns,
+                    "columns={columns}: a row is not the box's width: {line:?}"
+                );
+            }
+            let body: Vec<&String> = lines
+                .iter()
+                .filter(|line| line.contains('❯') || line.contains(&draft[..8]))
+                .collect();
+            assert_eq!(body.len(), 1, "columns={columns}: no draft row: {lines:?}");
+            let plain = crate::utils::strip_ansi_codes(body[0]);
+            assert!(
+                !plain.contains('…'),
+                "columns={columns}: the draft was clipped into an ellipsis: {plain:?}"
+            );
+            assert!(
+                plain.contains(&draft),
+                "columns={columns}: the draft lost its tail: {plain:?}"
+            );
+            assert!(
+                (cursor_column as usize) < columns - 1,
+                "columns={columns}: the caret sits on the box's border (column {cursor_column})"
+            );
+        }
+    }
+
     #[test]
     fn the_rules_and_boxes_are_exactly_their_width() {
         for columns in [0usize, 1, 2, 3, 4, 10, 41] {
@@ -354,8 +580,63 @@ mod tests {
             assert_eq!(width(&box_top(&P, columns, "待办")), columns);
             assert_eq!(width(&box_bottom(&P, columns)), columns);
             assert_eq!(width(&box_row(&P, "读 src/main.rs", columns)), columns);
-            assert_eq!(width(&tab_strip(&P, &[], false, columns)), columns);
+            assert_eq!(width(&tab_strip(&P, &[], columns)), columns);
             assert_eq!(width(&progress(&P, 0.42, columns, P.accent)), columns);
+        }
+    }
+
+    /// The close chip is drawn where the hit map says it is: a button painted
+    /// one cell off its own region is a button that does nothing when clicked.
+    #[test]
+    fn the_close_chip_sits_where_its_cells_say() {
+        for columns in [40usize, 76, 132] {
+            let (row, cells) = box_top_with_close(&P, columns, "文件 · ~/x", Language::Zh);
+            assert_eq!(width(&row), columns, "columns={columns}");
+            let (x, chip_w) = cells.expect("wide enough for the chip");
+            let plain = crate::utils::strip_ansi_codes(&row);
+            let label = close_label(Language::Zh);
+            // The chip is one run of text, and it ends where the corner begins.
+            let painted_at = plain.find(&label).expect("the chip is painted");
+            assert_eq!(width(&plain[..painted_at]) as u16, x, "{plain:?}");
+            assert_eq!(chip_w as usize, width(&label));
+            assert_eq!(
+                x as usize + chip_w as usize,
+                columns - 1,
+                "the chip does not end on the corner: {plain:?}"
+            );
+            assert!(plain.ends_with(&format!("{label}╮")), "{plain:?}");
+            // The title survives beside it, with a rule cell between the two.
+            assert!(plain.starts_with("╭─ 文件"), "{plain:?}");
+        }
+        // A box too narrow for the chip keeps its title and drops the button.
+        let (row, cells) = box_top_with_close(&P, 12, "输入", Language::Zh);
+        assert!(cells.is_none(), "{row:?}");
+        assert_eq!(width(&row), 12);
+        // An untitled box still ends on its corner with the chip on it.
+        let (row, cells) = box_top_with_close(&P, 40, "", Language::Zh);
+        assert_eq!(width(&row), 40);
+        assert!(cells.is_some(), "{row:?}");
+        assert!(
+            crate::utils::strip_ansi_codes(&row).ends_with("[× 关闭]╮"),
+            "{row:?}"
+        );
+    }
+
+    /// Both languages fit the chip, and the English one is the wider of the two:
+    /// a box sized for `[× 关闭]` must not lose its button when the reader
+    /// switches to English.
+    #[test]
+    fn the_close_chip_is_localised_and_its_cells_follow_the_label() {
+        let zh = close_label(Language::Zh);
+        let en = close_label(Language::En);
+        assert_eq!(zh, "[× 关闭]");
+        assert_eq!(en, "[× Close]");
+        assert_eq!(width(&zh), 8);
+        assert_eq!(width(&en), 9);
+        for lang in [Language::Zh, Language::En] {
+            let (x, w) = close_cells(120, lang).expect("a wide box carries the chip");
+            assert_eq!(w as usize, width(&close_label(lang)));
+            assert_eq!(x as usize + w as usize, 119);
         }
     }
 
@@ -516,11 +797,92 @@ mod tests {
         );
     }
 
+    /// The activity row's tail carries the session's three token counts and the
+    /// hit rate they produce, in that order — the reading a reader checks by
+    /// eye (`cache / input`).
+    #[test]
+    fn the_rate_tail_reads_counts_then_the_hit_rate() {
+        let usage = UsageData {
+            tps: 42.0,
+            input_tokens: 812_400,
+            output_tokens: 24_800,
+            cache_read_tokens: 780_000,
+            cache_pct: 96,
+            ..Default::default()
+        };
+        let tail = |lang: Language, budget: usize| {
+            crate::utils::strip_ansi_codes(&rate(&P, &usage, lang, budget))
+        };
+        assert_eq!(
+            tail(Language::Zh, 200),
+            "42 tok/s · 输入 812.4k · 输出 24.8k · 缓存 780.0k · 命中 96%"
+        );
+        assert_eq!(
+            tail(Language::En, 200),
+            "42 tok/s · in 812.4k · out 24.8k · cache 780.0k · hit 96%"
+        );
+        // Idle: no rate, and a session that has not been billed never shows a
+        // `输入 0`.
+        let idle = UsageData { tps: 0.0, ..usage };
+        assert_eq!(
+            crate::utils::strip_ansi_codes(&rate(&P, &idle, Language::En, 200)),
+            "in 812.4k · out 24.8k · cache 780.0k · hit 96%"
+        );
+        assert_eq!(
+            crate::utils::strip_ansi_codes(&rate(&P, &UsageData::default(), Language::En, 200)),
+            ""
+        );
+    }
+
+    /// A narrow row gives the tail's cells up one number at a time — the cache
+    /// count, then the output, then the input, then the rate — and the hit rate
+    /// is the last thing standing, because it is the only figure the panels do
+    /// not repeat.
+    #[test]
+    fn a_narrow_tail_gives_up_the_counts_before_the_hit_rate() {
+        let usage = UsageData {
+            tps: 42.0,
+            input_tokens: 812_400,
+            output_tokens: 24_800,
+            cache_read_tokens: 780_000,
+            cache_pct: 96,
+            ..Default::default()
+        };
+        let tail =
+            |budget: usize| crate::utils::strip_ansi_codes(&rate(&P, &usage, Language::En, budget));
+        // 57 cells is the whole tail; the shapes below are what each next step
+        // of the ladder costs (measured, not guessed).
+        assert_eq!(
+            tail(57),
+            "42 tok/s · in 812.4k · out 24.8k · cache 780.0k · hit 96%"
+        );
+        assert_eq!(tail(56), "42 tok/s · out 24.8k · cache 780.0k · hit 96%");
+        assert_eq!(tail(41), "42 tok/s · cache 780.0k · hit 96%");
+        assert_eq!(tail(29), "42 tok/s · hit 96%");
+        assert_eq!(tail(0), "hit 96%");
+        // Whatever it drops, it never exceeds the budget `rate` was handed —
+        // and the hit rate is the floor it bottoms out at.
+        for budget in 0..80 {
+            let text = rate(&P, &usage, Language::En, budget);
+            let seen = crate::workbench::ansi::width(&text);
+            let floor = crate::workbench::ansi::width(&rate(&P, &usage, Language::En, 0));
+            assert!(seen <= budget.max(floor), "budget {budget} painted {seen}");
+            assert!(
+                crate::utils::strip_ansi_codes(&text).ends_with("hit 96%"),
+                "budget {budget}: {text:?}"
+            );
+        }
+    }
+
     #[test]
     fn counts_and_costs_read_like_the_status_bar_promises() {
         assert_eq!(short_count(812), "812");
         assert_eq!(short_count(6_900), "6.9k");
         assert_eq!(short_count(1_000_000), "1.0M");
+        // A long session's cumulative prompt is past a billion tokens; `2978.1M`
+        // is not a number a footer can carry.
+        assert_eq!(short_count(1_000_000_000), "1.0B");
+        assert_eq!(short_count(2_978_142_108), "3.0B");
         assert_eq!(context_text(6_900, 1_000_000), "6.9k/1.0M");
         assert_eq!(cost_text(0.0), "≈¥0");
         assert_eq!(cost_text(0.004), "<¥0.01");

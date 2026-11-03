@@ -154,6 +154,8 @@ python3 scripts/screenshots/capture.py tui tui-chat.png
   两条指面板的命令 `command-usage` / `command-skills`、`launchpad`（`/new`）、
   `mention-sessions`（草稿里敲 `#`：会话提及菜单）、
   `full-panel`（窄终端上的 `ctrl+b`）、`scrolled`（点一下聊天再滚轮上滚三次）、
+  `rail-search`（`ctrl+d` 把按键交给侧栏，再按 `/` 和一个词：两个页签同时收窄到
+  命中的会话）、
   `light`（`/theme` 后下移一行回车；它会持久化，所以放在最后）以及 `drag`
   （抓住分隔条往右拖六列）。所有坐标都在步骤执行时从当时屏幕上的帧算出来——点页签按
   画出来的标签，拖拽按画出来的分隔条——所以跟着布局走，而不是写死列号。`git`
@@ -162,6 +164,33 @@ python3 scripts/screenshots/capture.py tui tui-chat.png
   `/Users/you/future-os`，面板会如实说那个目录不存在。
 - `--addr <host:port>` 接到已在运行的 agent（也就是**真会话**），而不是启 `demo_agent`；
   并且不动调用方的 `FUTURE_HOME`。
+- `--lang <system|zh|en>` 钉住整张图的语言（默认 `zh`，即已入仓那些帧的语言）：界面文案写进
+  TUI 的 `settings.json`，脚本数据由 `FUTURE_DEMO_LANG` 交给 `demo_agent`——两边必须一致，
+  否则就是英文外壳套一份中文会话列表。英文 `streaming` 场景提交的提问也会跟着变英文
+  （提问是读者的话，不是按键）。`demo_agent` 的英文会话不是中文的逐句翻译，而是一个
+  更长更满的会话：两种语言都是同一个会话——会话列表 58 条，正文两轮里带标题、粗体斜体、
+  行内代码、一段高亮的 `rust` 代码块、一张带边框的表格和一条引用——各自用本语言写，而不是
+  逐句翻译，因为面板空着的时候图看着像 mock。这也顺带查出界面里三处没翻译的标签：空闲状态行
+  （`idle`）、没选模型的会话（`no model`）、模型后面的思考等级（`medium`），以及最新那条会话
+  的年龄（`now`，中文是「刚刚」，宽两格——列宽按画出来的文字量）。它本身就高过
+  54 行的正文带，所以英文帧一般按 190×66 拍，而不是文档里的 120×38。
+- `--sidebar-width <cols>` 钉住侧栏宽度（默认交给界面自己，`SIDEBAR_DEFAULT` = 36）。侧栏会
+  给工作区名留三分之一，于是 36 列下英文标题只剩十九格就出省略号，而中文同样长度放得下；
+  想拍标题完整的英文帧就传它（上限 60）。
+- `--sidebar-position <left|right>` 钉住侧栏在哪一侧（界面自己默认在右）。
+- `--theme <id>` 钉住配色（`dark`、`light`、`dracula`、`tokyo-night`、`gruvbox`、`rose-pine`……
+  见 `theme.rs`）。已入仓的资产全在出厂默认配色上，所以这个参数是给「想展示配色效果」的帧
+  用的，不是产品本来的样子。
+- `--scenario composing` 是「回复刚结束、读者正写到一半」的那一帧：输入框里有四行草稿（用
+  `ctrl+j` 换行打进去、不回车），上方是**输入队列**（`FUTURE_DEMO_QUEUE=idle`——回复已经
+  结束、队列里的三条还没发出去），再上面是上一轮**按树状展开**的经过：`▾ 3 tool calls ·
+  2 thoughts`，下面 `│ ▸ thinking` 和它的推理、`│ edit src/args.rs`、`│ $ cargo test …`。
+  展开走键盘——`tab` 走到那一折、`enter` 打开、再 `tab` 进它的第一条思考、再 `enter`——因为
+  点会话行**点不动**（实测：同样的 SGR 字节能点开侧栏页签、能抓住分隔条，点 `▸ … tool calls`
+  那一行却什么也不会发生）。之后用 `shift+right`（`PanelNext`）把侧栏从「最近」切到**工作区**
+  视图，会话按所属 checkout 的标题与计数分组。这两种形状都只在**结束之后**才有：run 在跑的时候
+  每一行都是平铺的，所以队列带取的是那个状态的 idle 一半。190×72 时整幅刚好放得下——侧栏
+  58 条会话分三组、正文的表格/高亮代码/引用、展开的树、队列带和草稿。
 
 仓库里拍这些帧的入口是 `tui/scripts/shot.sh <scenario> [WxH] [out.png]`，它是
 `capture.py tui` 的一层包装：补上 `--scenario` 与尺寸，并按对应资产命名文件。
@@ -170,7 +199,13 @@ python3 scripts/screenshots/capture.py tui tui-chat.png
 tui/scripts/shot.sh chat 120x38 $PWD/docs/tui/assets/workbench-chat.png
 tui/scripts/shot.sh usage 120x38 $PWD/docs/tui/assets/workbench-panel-usage.png
 tui/scripts/shot.sh drag 120x38 $PWD/docs/tui/assets/workbench-drag-fixed.png
+# 英文帧（界面与会话列表/正文一起），侧栏在左、宽到标题能读全：
+SHOT_LANG=en SHOT_SIDEBAR_WIDTH=56 SHOT_SIDEBAR_POSITION=left \
+  tui/scripts/shot.sh composing 190x72
 ```
+
+`FUTURE_DEMO_LONG=1` 是「往会话里追加轮次，直到正文高过面板」的那颗开关（`scrolled` 场景
+用它）；英文默认会话本身已经够满，拍 `composing` 不需要它。
 
 第三个参数是输出路径；不传时脚本按「场景 + 尺寸」自动命名
 （`workbench-chat-120x38.png`、`workbench-usage-120x38.png`），
@@ -247,6 +282,42 @@ python3 scripts/screenshots/capture.py capture-desktop rail-tree steps-folded   
 
 截图写到 `.screenshots/`（已 gitignore）。你也可以自己打开 <http://localhost:5299/shot/> 手动探索；工具还会在 7391 端口起一个替身 PTY 服务，让内嵌终端面板有东西可显示。
 
+### 同一个会话，两个界面：`parser-*` 两个场景（桌面端）
+
+`.screenshots/tui-zh/` 与 `.screenshots/tui-en/` 是 TUI 给同一个脚本会话拍的两张图——表达式解析器里的一个 off-by-one（`tui/examples/demo_agent.rs` 的 `journal_zh` / `journal_en`）。`parser-zh`、`parser-en` 把同一个会话拍在桌面端：
+
+```bash
+python3 scripts/screenshots/capture.py serve-desktop               # 终端 1
+python3 scripts/screenshots/capture.py capture-desktop parser-zh   # → .screenshots/desktop-zh.png
+python3 scripts/screenshots/capture.py capture-desktop parser-en   # → .screenshots/desktop-en.png
+```
+
+两个场景写在 `scripts/screenshots/scenarios.d/parser-session.json`——用片段而不是改公共表，这样只加一个场景的会话不会去动别人也在改的 `scenarios.json`。
+
+`?thread=th_parser` 打开这段对话，并把它所在的工作区行一起带进来；默认那套 fixture（其它所有场景的起点）原样不动。`?lang=zh|en` 同时钉住一帧的**两半**：界面（`shot/prefs.ts` 在应用启动前读）和 fixture 自己的会话列表与转录（`desktop/shot/mock/data.ts` 读的是同一个参数）。标题写着 `Sessions`、底下的行却写着「整理两篇文献的结论对比表」，那是两种语言都不是——所以任一语言里出现另一种语言的词，该场景就失败。
+
+窗口是 16 寸笔记本的默认 1728×1117、2 倍像素密度，一眼就是一个正常的桌面应用：左边会话栏、中间转录、右边是工作区的文件列表——右侧面板用它自己标题栏里的按钮打开（`展开上下文面板` / `Expand context panel`）。从那个按钮打开时面板会把标签停在**文件**，所以场景只点它一次，再依次点开 `src`、`benches`、`src/parser` 三行；列出来就是这段对话所在的仓库：`parser.rs` 与 `args.rs`，`src/parser/` 下的测试模块，`benches/` 里的基准脚本和它画出来的图，还有 `docs/`、`.github/workflows/` 和 manifest——来自按工作区路径索引的 `workspaceFiles`。展开这三个目录后是 35 行，正好让面板读起来像一棵树、而不是一条尾巴。
+
+这棵树是**一张卡片**，和输入框、审批卡片同一套样式（`rounded-lg border border-line bg-surface/95`），从面板边缘内缩，所以顶边和圆角的下边都看得见，行和行分隔线都在卡片里面。它以前是面板自己那道通到底的列、上面只有一条线——README 第一张图出的问题正是这个：一列名字、边框直接撞在窗口底边上，无论多长都像从面板里溢出来。现在卡片自己的圆角边框把底部收住，滚动视口下面不再另加一条窄条，永远只有一条线。行与行之间是每一行**上方**一道细线，和 app 里其它文件列表（`RemoteFilesPanel`、审查列表）同一个 token；放上方而不是下方，最后一行就不带会和卡片边框叠成双线的横线，卡片自己的上边框顶掉第一行那道。
+
+`FileTreePanel.frame.test.tsx` 钉住这个形状——卡片的类与内缩、行的分隔线、以及「收边窄条没有偷偷回来」；像素（圆角真的画出来、没有行越过卡片下边框、卡片底边在窗口边之上）由截图场景负责，因为 jsdom 没有排版。演示树还会在 mock 的 `list_directory` 里丢掉仓库忽略的名字——`node_modules`、`target`、`.git`、`dist`、`.next`、`coverage` 之类——以后往 fixture 里加一条也带不进截图，出现了该场景就失败。
+
+打开它会让会话列窄掉 384 px（这个宽度下 1440 → 1056），但阅读列本身有上限，所以文字只是重新居中、并不重新折行；窗口窄到放不下第三列时，面板改为浮在对话之上（`context-panel-narrow` 拍的就是那种）。
+
+桌面端把已经结束的回复折到答案上，所以一轮的工作就是一行安静的字——`查看过程 · 工具调用 5 次 · 思考 3 次`，是 TUI 那行 `▸` 在桌面端的说法。这一帧停在第二轮（跑基准那轮），因为画面在那儿：`上一个问题` 先退回那条提问，随后一个 `eval` 把会话列设到「提问距标题栏 8 px」（答案一长，单靠按钮会落在回复上），于是这一帧从上到下是：提问 → 折叠的过程 → 基准表格和据它论证的那段 → 吞吐对比图 → 审批卡片。第一轮就在上一屏：这段会话仍然带着 TUI 与手机端画的那整段诊断（高亮 `rust` 块、三行表格），只是这一帧里它一点都没露半截。
+
+这个裁法算得出来，不是审美。审批卡片占了浮层，转录的净空只有约 600 px，而这段会话高约 2 400 px，所以一帧只能装一轮——装的是带图、带数字、也带卡片的那一轮。`eval` 把这件事钉住：屏上第一个块就是第二个提问、它下面的每个块都在卡片之上、卡片整个在输入框之上，并且另一种语言的词一个都不许出现——右侧文件面板和卡片都算在内。
+
+卡片是这段会话自己的待审批项（fixture 里的 `parserApproval`）：两个 commit 都是绿的，模型想 `git push origin fix/parser-bound`，而沙箱不放行——于是它停下来问，给出命令、理由和「只放行一次」的提示，下面两个按钮是 `拒绝` / `允许一次`。这之所以成立，是因为审批层级：`?settings=approvalTier:sandbox` 和 `?lang=` 一样在启动前钉住审批模式，所以输入框旁的标签是 `沙箱保护`（`Sandboxed`）而不是 `完全访问`；出现 `Full access` 字样该场景就会失败。图是回复自己内嵌的那张——markdown 指向演示仓库里的 `benches/parser-throughput.png`，`shot/mock/core.ts` 把这个名字映射到 `gen-demo-assets.py` 在应用深色底上画出来的真 PNG，断言要求它**解码成功**（`naturalWidth > 0`），不是「有个占位」。同一路径也出现在右侧文件树里，所以两栏说的是同一件事。
+
+图的标签也是「量出来」而不是「看着行」：画完之后 `gen-demo-assets.py` 取每个 y 轴刻度标签的 window extent，任意两个相交、或间距不足 4 px，整个生成过程就失败——四行挤在 190 px 的板子上，23 px 的字间距只有 32 px，在 README 那个尺寸（图约 320 px 宽）就是一堆；所以板子改成 230 px 高，只画正文表格里的三个用例（最近的一对量出来约 16 px）。
+
+配色用的是应用自己的深色外观：`?theme=dark` 和 `?lang=` 一样是 `shot/prefs.ts` 在应用启动前钉的，所以两帧是出厂默认（`futureos`）的深色，不是某个变体；场景还断言 `documentElement` 上有 `dark`，截图不会悄悄变回浅色。它变的只有颜色，对比度也是量出来的而不是看出来的：正文与标题 14:1，次要的表格单元与引用 7.6:1，文件树 15:1，全部高于 WCAG AA；整帧只有 0.6% 的像素比 200 更亮（就是字本身）。读者可能跨配色比较的颜色——*审查* 标签里的 `+18` / `-2` 与 diff 行——取自同一套 `text-success` / `text-danger` token，所以它们跟着配色走、不是每个主题各写一份；这一帧开的是*文件*，显示的是文件树而不是 diff。
+
+两点要说清。桌面端截到的图**不**像 TUI 那样逐字节可复现：每次跑只有两处会动——每条消息旁的相对时间（`刚刚` / `1分钟前`，读的是墙钟）和 fixture 里标成「运行中」的那条会话上的旋转指示。内容稳定，那几处像素不稳定。（`capture-desktop steps-folded` 动的也是这两处，所以这是这个界面的性质，而不是这两个场景的问题。）另外 fixture 里只有会话列表和转录有双语；设置、定时任务、技能那几套数据仍只有中文，而目前没有英文场景会打开它们。
+
+转录本身还需要补两个 mock 没实现的命令。历史读取走的是有界传输通道（`begin_session_history_transfer` 加它的分块读），而只实现了内联那条命令时，每段对话都显示成 `invalid_history_transfer` 加一个重试链接——截图本来要看的那段转录根本没画出来；点开一行工具调用还会读 `list_approval_assessments`，它返回 `null` 直接把整个界面卸掉。这两条现在都在 `desktop/shot/mock/backend.ts` 里答了。
+
 ## 手机端
 
 ```bash
@@ -255,6 +326,37 @@ python3 scripts/screenshots/capture.py capture-mobile       # 终端 2
 ```
 
 手机端以手机视口渲染（默认 390×844、2 倍像素密度），并通过 HTTP 提供演示图片，所以在聊天里内嵌的图片和可缩放预览都能正常显示。`serve-mobile` 会导出 `SHOT_WEB=1`；这是唯一的开关——`mobile/metro.config.js` **仅在 web 平台、仅在该变量为 1 时**把 remote context 和两个原生模块指向 `mobile/shot/mock/`，因此原生构建（`make run-mobile-android`）完全不受影响。
+
+### 同一个会话，两个界面：`parser-*` 两个场景
+
+`.screenshots/tui-zh/` 与 `.screenshots/tui-en/` 是 TUI 给同一个脚本会话拍的两张图——表达式解析器里的一个 off-by-one（`tui/examples/demo_agent.rs` 的 `journal_zh` / `journal_en`）。`parser-zh`、`parser-en` 把同一个会话拍在手机上：
+
+```bash
+SHOT_WEB=1 python3 scripts/screenshots/capture.py serve-mobile    # 终端 1
+python3 scripts/screenshots/capture.py capture-mobile parser-zh   # → .screenshots/mobile-zh.png
+python3 scripts/screenshots/capture.py capture-mobile parser-en   # → .screenshots/mobile-en.png
+```
+
+`?parser=1` 把整个演示目录换成这个会话——配对机器名、三个工作区分组、这段对话（`mobile/shot/mock/parserSession.ts`）——而 `lang` 固定浏览器区域设置（`zh-CN` / `en-US`），所以界面与转录是同一种语言：mock 取词用的 `navigator.language`，正是应用取界面语言的那个输入；任一帧里出现另一种语言的词，该场景就会失败。
+
+手机装不下两轮对话——转录高 1125 css px，而顶栏与输入框之间只有 672——所以这一帧从提问开始，装着折叠后的过程、诊断、改好的那行代码和那张表；第二轮（两个 commit）在往上一屏的位置。TUI 的工具行树在手机上没有对应物：它就是那行折叠摘要，计数写在它的可访问标签里（`查看过程 · 工具调用 2 次 · 思考 1 次`），场景断言的正是这些计数。这两个场景是确定性的：连跑两次得到逐字节相同的 PNG，因为帧里没有任何东西读时钟。
+
+### 五个桌面端摆在同一个首页：`fleet-*` 场景
+
+手机首页打开的是「最近」页——所有会话按最后回复时间排序——配对多于一台桌面端时列表会把它们合并（`mergeSessions`，选择器上的「全部桌面」）。`?fleet=1` 换成五台机器、十四段对话（`mobile/shot/mock/fleet.ts`）：
+
+```bash
+python3 scripts/screenshots/capture.py capture-mobile fleet-zh          # → .screenshots/home-devices-zh.png
+python3 scripts/screenshots/capture.py capture-mobile fleet-en          # → .screenshots/home-devices-en.png
+python3 scripts/screenshots/capture.py capture-mobile fleet-picker-zh   # → .screenshots/home-devices-picker-zh.png
+python3 scripts/screenshots/capture.py capture-mobile fleet-picker-en   # → .screenshots/home-devices-picker-en.png
+```
+
+两个列表场景断言的是「合并」本身而不是画面：行序是各台机器自己报的最后回复时间（不是按机器分组）、五台机器都供了行、唯一的那个分段标题计到十四段。`-picker-` 那两个打开列表上方的选择面板，五台机器的**名字**在那里——列表里一行只用图标表示它属于哪台机器，名字写上去会吃掉标题的宽度。
+
+两次截图里既没有「正在跑」也没有「等我批准」的会话：`running` / `queued` 的行会画 `ActivityIndicator`，`waiting_approval` 的行会画琥珀色的 `CircleAlert`——一张「每台机器的会话都在一张表里」的图两者都不该带（那个叹号会被读成出错，而转圈动画每帧都不一样）。所以每段对话都是已结束的：页面只画一个分段（`14`），场景把两半都断言了——没有活跃分段、任何一行里都没有 `circle-alert` 或琥珀色描边的图标——哪一样回来了都藏不住。连跑两次得到逐字节相同的 PNG。
+
+这四帧是「手机设成深色」的状态（`"appearance": "dark"`），场景也断言了这一点：行所在的底色必须是深色 token 之一、标题必须用深色的 `ink`——如果回落到了浅色主题，截图会失败而不是把错的观感发出去。
 
 ### 聊天转录是正的（inverted 列表那一层多余翻转）
 
@@ -284,6 +386,8 @@ python3 scripts/screenshots/capture.py check-upright-mobile chat
 
 镜像时两个数字对调、命令以非零退出；两个分数相差不到 0.05 时报"inconclusive"而不是放行。判定逻辑与该方向由 `scripts/tests/test-screenshot-upright-check.py` 离线钉住（`make test-screenshot-harness`）。
 
+探针判定的是**看得见**的那个滚动容器，而不是最高的那个：手机把会话列表留着挂在打开的对话下面，于是长到需要滚动的侧栏自己也是一个滚动容器、而且更高。没有这层过滤时它圈中的是对话背后列表中的一行，于是本来完全正立的转录被判成 "no in-place tile"（`parser-zh` / `parser-en` 的侧栏就够长）。它也不再只认无子节点元素，而是接受**段落**——子节点全是行内片段的文本块；因为一帧里最大的纯文本叶子若只剩一行 13 px 的代码，它证明不了任何方向（实测正立 0.045、镜像 0.053，只能报 inconclusive）。
+
 ## 场景
 
 场景是数据不是代码：`scripts/screenshots/scenarios.json`。每个场景就是一串人也能照着复现的步骤。
@@ -302,6 +406,9 @@ python3 scripts/screenshots/capture.py check-upright-mobile chat
 步骤类型：`eval`、`wait`、`shot`、`tap`（按可访问名称）、`tapText`（按可见文字）、`hover`、`type`、`key`、`scroll`、`inject`，以及下面的标注 / 偏移 / 测量类步骤。三个平台级细节值得先知道：
 
 - **`ready`** 是驱动会反复轮询直到为真的 JavaScript 表达式，它也是截图快的关键：热缓存下约 1 秒就绪，冷启动可能要 20 秒。`settle` 只是就绪后的一小段缓冲。如果截图抢在界面绘制之前，应该调大 `readyTimeout` 而不是 `settle`。
+- **`lang` 固定的是浏览器区域设置，不是一条只给 harness 用的开关。** 必须使用某种语言的场景写 `"lang": "en-US"`，`cdp.mjs` 会在应用第一个脚本运行之前把页面的系统区域设置改成它：`Emulation.setLocaleOverride` 管 `Intl`，用户代理覆盖里的 `acceptLanguage` 管 `navigator.language`（Chrome 156 上实测——只设前者时 `navigator.language` 仍是宿主机的 `zh-CN`）。应用读的就是系统区域设置，与真机一致；应用内已保存的语言偏好仍然优先。
+- **`appearance` 固定的是平台的「外观」，就像 `lang` 固定区域设置。** `"appearance": "dark"` 让页面上报 `prefers-color-scheme: dark`（`Emulation.setEmulatedMedia`）——这正是把手机设成深色模式时它上报的东西，而应用的「跟随系统」主题就是拿它来解析（`mobile/src/theme/theme.ts` 的 `resolveScheme("system", …)`）。应用内已保存的偏好仍然优先，所以这条固定的是手机，不是读者的选择；桌面端反过来用 `?theme=` 固定自己的窗口，因为窗口没有可问的平台。
+- **`query` 拼在平台 URL 后面。** `"query": "?parser=1"` 让场景跟着 `serve-mobile` 当前服务的端口走，而不像写全 `url` 那样把 `http://localhost:8099/` 钉在场景里。
 - **`tap` 需要可访问名称。** 先匹配 `aria-label`，再匹配可交互元素自身的文字。两者都没有就用 `tapText`；如果你发现自己在写坐标点击，那通常说明这个控件缺标签。
 - **点不到的状态用 `eval`。** 只在悬停时出现的控件，需要先对它的容器加一个 `hover` 步骤（否则驱动会报告目标尺寸为 0，而不是去点页面角落）。例如对话内搜索是 ⌘F 打开的，驱动没法把它当按键发出去，所以场景改为访问 `?press=meta%2Bf`，由 `desktop/shot/main.tsx` 把快捷键派发给真实的 window 监听器。
 - **`eval` 里断言就是测试。** 步骤里的 `eval` 抛错会让这次截图以非零退出码失败（和点不到目标一样计入 `step(s) could not reach their target`），所以「界面必须处于某状态」写成 `eval` 断言才有意义：`if (document.body.innerText.includes('正在生成')) throw new Error('…');`。驱动内部自己的探测（`ready`、可选的元素读取）不在此列，不会因为读不到就判失败。

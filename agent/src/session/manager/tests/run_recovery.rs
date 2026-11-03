@@ -266,3 +266,84 @@ fn append_run_start_on_clean_history_appends_two_entries() {
     let after = manager.load("s1").unwrap().entries.len();
     assert_eq!(after - before, 2, "no healing entry needed");
 }
+
+/// A legacy conversation whose durable user stop never committed its
+/// cancellation is settled on the next start: the run must not be resumed, and
+/// the terminal has to say the user stopped it (not that a restart interrupted
+/// it). A second pass changes nothing.
+#[test]
+fn a_durable_user_stop_settles_as_cancelled_on_the_next_start() {
+    let (_dir, manager) = temp_manager("user-stop");
+    let store = manager.storage().unwrap().clone();
+    // A conversation written before the canonical format existed: it exists,
+    // but its event journal is the legacy one.
+    manager
+        .save(&Session::snapshot(
+            "s-stop".to_string(),
+            "/a".to_string(),
+            "m".to_string(),
+            String::new(),
+            String::new(),
+            Vec::new(),
+        ))
+        .unwrap();
+    store.bind_legacy_events("s-stop").unwrap();
+    manager
+        .append_entries(
+            "s-stop",
+            &[
+                SessionEntry::run_started("run-stop", 1),
+                SessionEntry::new_user("user", serde_json::json!("quit")),
+            ],
+        )
+        .unwrap();
+    // The stop request is durable, but the process died before the
+    // cancellation committed.
+    manager
+        .append_entries("s-stop", &[SessionEntry::run_stop_requested("run-stop")])
+        .unwrap();
+    // The run row exists (the journal created it with the started marker) and
+    // still reads as in flight: this is what the startup pass selects on.
+    store
+        .db
+        .call(|db| {
+            let changed = db.execute(
+                "UPDATE runs SET status='running', completed_at_ms=NULL WHERE session_id='s-stop' AND run_id='run-stop'",
+                [],
+            )?;
+            assert_eq!(changed, 1, "the run row is created by its started marker");
+            Ok(())
+        })
+        .unwrap();
+
+    manager.reconcile_user_stops_on_start().unwrap();
+    let collect_terminals = |entries: &[SessionEntry]| -> Vec<SessionEntry> {
+        entries
+            .iter()
+            .filter(|entry| {
+                entry.entry_type == ENTRY_TYPE_RUN_TERMINAL
+                    && entry
+                        .content
+                        .as_ref()
+                        .is_some_and(|content| content["run_id"] == "run-stop")
+            })
+            .cloned()
+            .collect()
+    };
+    let loaded = manager.load("s-stop").unwrap();
+    let settled = collect_terminals(&loaded.entries);
+    assert_eq!(settled.len(), 1, "exactly one settle for the stopped run");
+    let content = settled[0].content.as_ref().expect("terminal content");
+    assert_eq!(content["state"], crate::session::RUN_STATE_CANCELLED);
+    assert_eq!(content["error"], "Stopped by user before recovery");
+    assert_eq!(content["interruption_cause"], "user_stop");
+
+    // Re-running the startup pass is a no-op: the run already carries a
+    // terminal that is not an interruption-by-restart.
+    manager.reconcile_user_stops_on_start().unwrap();
+    assert_eq!(
+        collect_terminals(&manager.load("s-stop").unwrap().entries).len(),
+        1,
+        "a second startup pass must not append another terminal"
+    );
+}

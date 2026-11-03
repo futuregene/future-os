@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   listAgentProviders: vi.fn(),
   logoutFutureProvider: vi.fn(),
   peekAgentProviders: vi.fn(),
+  probeThinkingLevel: vi.fn(),
   syncFutureModels: vi.fn(),
   updateBuiltinProvider: vi.fn(),
   upsertCustomProvider: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock("../../integrations/agent/providers", () => ({
   listAgentProviders: mocks.listAgentProviders,
   logoutFutureProvider: mocks.logoutFutureProvider,
   peekAgentProviders: mocks.peekAgentProviders,
+  probeThinkingLevel: mocks.probeThinkingLevel,
   updateBuiltinProvider: mocks.updateBuiltinProvider,
   upsertCustomProvider: mocks.upsertCustomProvider,
 }));

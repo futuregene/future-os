@@ -17,6 +17,7 @@ pub struct ServiceWork {
     state: Mutex<WorkState>,
     streams: watch::Sender<bool>,
     listener: watch::Sender<bool>,
+    abandoned: watch::Sender<bool>,
 }
 
 impl Default for ServiceWork {
@@ -25,6 +26,7 @@ impl Default for ServiceWork {
             state: Mutex::new(WorkState::default()),
             streams: watch::channel(false).0,
             listener: watch::channel(false).0,
+            abandoned: watch::channel(false).0,
         }
     }
 }
@@ -119,6 +121,16 @@ impl ServiceWork {
     pub(crate) fn stop_listener(&self) {
         self.listener.send_replace(true);
     }
+    /// End the listener's graceful drain.
+    ///
+    /// `stop_listener` asks Tonic to stop accepting and drain its connections;
+    /// a peer that stays connected without finishing its request is what that
+    /// drain waits for, and nothing inside `serve` can bound it. This is the
+    /// stop's own verdict: the serving future must drop the server instead of
+    /// waiting, which closes the listener and every connection with it.
+    pub(crate) fn abandon_listener(&self) {
+        self.abandoned.send_replace(true);
+    }
     pub(crate) fn stream_shutdown(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
         wait_closed(self.streams.subscribe())
     }
@@ -126,6 +138,11 @@ impl ServiceWork {
         &self,
     ) -> impl std::future::Future<Output = ()> + Send + 'static {
         wait_closed(self.listener.subscribe())
+    }
+    pub(crate) fn listener_abandoned(
+        &self,
+    ) -> impl std::future::Future<Output = ()> + Send + 'static {
+        wait_closed(self.abandoned.subscribe())
     }
 }
 

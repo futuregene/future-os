@@ -164,23 +164,33 @@ fn readiness_budget() -> Option<u32> {
 #[cfg(test)]
 static READINESS_BUDGET_OVERRIDE: std::sync::Mutex<Option<u32>> = std::sync::Mutex::new(None);
 
-/// Sets [`READINESS_BUDGET_OVERRIDE`] and restores it on drop, so a panicking
-/// test cannot leak a probe budget into the rest of the binary.
+/// Sets [`READINESS_BUDGET_OVERRIDE`] and restores the previous value on drop,
+/// so a panicking test cannot leak a probe budget into the rest of the binary
+/// and a nested guard gives its caller back what it found.
+///
+/// Note the **matching slot in `browser/safari/safari_manager.rs`**: that one is
+/// a window the test owns (no probe count), because the Safari launch tests
+/// depended on it; this one still counts probes for its own poll. Two names for
+/// one concept — see `coverage/flaky/rust/f1-f3/round.md` for why the chromium
+/// twin was not changed in the same round.
 #[cfg(test)]
-struct ReadinessBudgetGuard;
+struct ReadinessBudgetGuard {
+    previous: Option<u32>,
+}
 
 #[cfg(test)]
 impl ReadinessBudgetGuard {
     fn set(max_probes: u32) -> Self {
-        *READINESS_BUDGET_OVERRIDE.lock().unwrap() = Some(max_probes);
-        ReadinessBudgetGuard
+        ReadinessBudgetGuard {
+            previous: (*READINESS_BUDGET_OVERRIDE.lock().unwrap()).replace(max_probes),
+        }
     }
 }
 
 #[cfg(test)]
 impl Drop for ReadinessBudgetGuard {
     fn drop(&mut self) {
-        *READINESS_BUDGET_OVERRIDE.lock().unwrap() = None;
+        *READINESS_BUDGET_OVERRIDE.lock().unwrap() = self.previous.take();
     }
 }
 
@@ -3361,6 +3371,12 @@ mod tests {
     #[tokio::test]
     async fn start_with_browser_safari_dispatches_to_the_safari_manager() {
         let (_g, _e, _d) = isolated_home().await;
+        // The dispatch is the claim; how long the manager's own readiness poll
+        // runs is not. The window arm of that poll keeps its own tests
+        // (`safari_manager::start_launch_never_ready_times_out`,
+        // `…_when_the_test_closes_its_window`), so this one closes the Safari
+        // manager's window up front instead of spending it here.
+        let _window = crate::browser::safari::safari_manager::ReadinessWindowGuard::closed();
         let err = browser_start(&args(&[
             ("browser", json!("safari")),
             ("port", json!(free_port())),
@@ -3368,9 +3384,9 @@ mod tests {
         .await
         .map(|_| ())
         .unwrap_err();
-        // Off macOS the manager refuses before any probe; on macOS it would
-        // probe a real safaridriver. Either way the *dispatch* is what is
-        // asserted, so the platform-specific text is not pinned.
+        // Off macOS the manager refuses before any probe; on macOS it probes a
+        // real safaridriver. Either way the *dispatch* is what is asserted, so
+        // the platform-specific text is not pinned.
         assert!(!err.is_empty(), "the safari path reported nothing");
     }
 
@@ -3855,6 +3871,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn start_default_profile_dir_uses_scanned_port() {
         let (_g, _e, _d) = isolated_home().await;
+        // The launch below can never become reachable (`/bin/true` exits), and
+        // the claim here is the resolved port and profile directory, not the
+        // length of the poll: the 10 s wall-clock window keeps its own test
+        // (`start_launch_never_reachable_reports_starting`). This one runs under
+        // the probe budget so it cannot add ten seconds to the crate's gate.
+        let _budget = ReadinessBudgetGuard::set(2);
         // Occupied requested port + no explicit profileDir → profile-N dir.
         let holder = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let taken = holder.local_addr().unwrap().port() as i64;

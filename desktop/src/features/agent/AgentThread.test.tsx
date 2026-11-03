@@ -17,6 +17,7 @@ import { clearCommandHandlers } from "../keyboard/commands";
 import { resetAllCommandBindings } from "../keyboard/shortcuts";
 import { AgentThread } from "./AgentThread";
 import { loadComposerDraft, saveComposerDraft } from "./composerDraft";
+import { localSendQueue } from "./sendQueue";
 
 /**
  * Every child is stubbed: this file is about `AgentThread`'s own composition —
@@ -1063,6 +1064,26 @@ describe("reading the transcript from the keyboard", () => {
     off();
   });
 
+  it("says so when the clipboard refuses the copy", async () => {
+    // A locked keyring or a WebView without clipboard permission: the key did its job
+    // (it found the answer) and the write failed. Silence would look like the copy
+    // worked, and the reader would paste nothing.
+    const toasts: { message: string; tone?: string }[] = [];
+    const off = onFutureEvent("toast", toast => void toasts.push(toast as { message: string }));
+    vi.mocked(copyText).mockRejectedValueOnce(new Error("clipboard denied"));
+    render();
+
+    expect(press("KeyC", "c").defaultPrevented).toBe(true);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(copyText).toHaveBeenCalledWith("answer a1");
+    expect(toasts[0]?.tone).toBe("error");
+    off();
+  });
+
   it("leaves the copy key unclaimed while the turn has no answer", () => {
     // Nothing to copy: a key that fired on an empty transcript would take the
     // press and give nothing back. Walking back skips an interrupted reply.
@@ -1078,5 +1099,94 @@ describe("reading the transcript from the keyboard", () => {
     render();
     expect(press("KeyG", "g").defaultPrevented).toBe(true);
     expect(h.paging.scrollToLatest).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("agentThread send queue", () => {
+  it("sends what was queued, as one message, once the reply settles", async () => {
+    // A run in flight: the bubble streams and the run row is still open.
+    setMessages([user("u1"), assistant("a1", { status: "streaming" })]);
+    h.threadState.value = { ...h.threadState.value, activeRunId: "R1" };
+    render();
+    // Three messages held while the reply streams, as the composer's menu does.
+    act(() => {
+      localSendQueue.enqueue("T1", { attachments: [], content: "queued one" });
+      localSendQueue.enqueue("T1", { attachments: [], content: "queued two" });
+      localSendQueue.enqueue("T1", { attachments: [], content: "queued three" });
+    });
+    rerender();
+    expect(container.querySelector("[data-send-queue]")).not.toBeNull();
+    expect(h.state.handleSend).not.toHaveBeenCalled();
+
+    // The reply is over: stream gone, and the run row settled.
+    setMessages([user("u1"), assistant("a1")]);
+    h.threadState.value = { ...h.threadState.value, activeRunId: null };
+    await act(async () => {
+      rerender();
+      await Promise.resolve();
+    });
+    expect(h.state.handleSend).toHaveBeenCalledTimes(1);
+    expect(h.state.handleSend.mock.calls[0]![0]).toEqual({
+      attachments: [],
+      content: "queued one\n\nqueued two\n\nqueued three",
+    });
+    expect(container.querySelector("[data-send-queue]")).toBeNull();
+    act(() => localSendQueue.clear("T1"));
+  });
+
+  it("keeps a refused queue and retries only when the reader asks", async () => {
+    h.state.handleSend.mockRejectedValueOnce(new Error("A response is already in progress for this conversation."));
+    act(() => {
+      localSendQueue.enqueue("T1", { attachments: [], content: "keep me" });
+    });
+    await act(async () => {
+      render();
+      await Promise.resolve();
+    });
+    expect(h.state.handleSend).toHaveBeenCalledTimes(1);
+    // Not delivered: the row is still there, flagged, with a retry control.
+    expect(container.querySelector("[data-send-queue]")).not.toBeNull();
+    expect(container.querySelector("[data-queue-retry]")).not.toBeNull();
+
+    // A re-render must not retry by itself: a refused message would otherwise
+    // be hammered at every streaming tick.
+    await act(async () => {
+      rerender();
+      await Promise.resolve();
+    });
+    expect(h.state.handleSend).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("[data-queue-retry]")!.click();
+      await Promise.resolve();
+    });
+    expect(h.state.handleSend).toHaveBeenCalledTimes(2);
+    expect(container.querySelector("[data-send-queue]")).toBeNull();
+    act(() => localSendQueue.clear("T1"));
+  });
+
+  it("edits and removes queued messages from the panel", () => {
+    setMessages([user("u1"), assistant("a1", { status: "streaming" })]);
+    h.threadState.value = { ...h.threadState.value, activeRunId: "R1" };
+    act(() => {
+      localSendQueue.enqueue("T1", { attachments: [], content: "typo" });
+    });
+    render();
+    // Editing reaches the store the flush reads, so the corrected text is what
+    // goes out.
+    expect(localSendQueue.snapshot("T1").items[0]!.content).toBe("typo");
+    act(() => container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
+    const field = container.querySelector<HTMLTextAreaElement>("textarea")!;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+    act(() => {
+      setValue.call(field, "fixed");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    act(() => container.querySelector<HTMLButtonElement>("[data-queue-save]")!.click());
+    expect(localSendQueue.snapshot("T1").items[0]!.content).toBe("fixed");
+
+    act(() => container.querySelector<HTMLButtonElement>("[data-queue-remove]")!.click());
+    expect(localSendQueue.snapshot("T1").items).toHaveLength(0);
+    act(() => localSendQueue.clear("T1"));
   });
 });

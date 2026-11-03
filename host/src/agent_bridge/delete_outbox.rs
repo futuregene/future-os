@@ -142,3 +142,68 @@ pub(super) fn delete_outbox_interval() -> std::time::Duration {
     }
     std::time::Duration::from_secs(5)
 }
+
+#[cfg(test)]
+mod presence_failure_tests {
+    #![allow(clippy::await_holding_lock)]
+    use super::reconcile_delete_outbox;
+    use crate::test_support::command_agent::{mock_agent_lock, script_mock_agent, MockScript};
+    use std::collections::HashMap;
+
+    /// The catalogue read is what decides *which* Agent owns a pending deletion.
+    /// When it fails the intent is not dropped and not delivered blind: every
+    /// pending session is settled with that reason, so the tombstone stays up and
+    /// the retry carries the cause the user (and the log) can read.
+    #[tokio::test]
+    async fn a_catalogue_failure_is_recorded_against_every_pending_delete() {
+        let _lock = mock_agent_lock();
+        let _home = crate::auth_store::test_support::HomeGuard::new("outbox-presence-failure");
+        crate::store::initialize_app_store().expect("init store");
+        crate::test_support::command_agent::ensure_mock_agent();
+
+        // A pending intent, inserted the way the GUI's delete does.
+        let home = std::env::var("HOME").expect("test home");
+        let db = std::path::Path::new(&home).join(".future/app/app.db");
+        let conn = rusqlite::Connection::open(&db).expect("open app db");
+        conn.execute(
+            "INSERT INTO agent_delete_outbox(session_id, requested_at, attempts, last_error) \
+             VALUES ('sess_orphan', 1, 0, NULL)",
+            [],
+        )
+        .expect("queue a pending delete");
+        drop(conn);
+
+        script_mock_agent(MockScript {
+            errors: HashMap::from([(
+                "get_session_presence".to_string(),
+                "the catalogue is unavailable".to_string(),
+            )]),
+            ..Default::default()
+        });
+        reconcile_delete_outbox().await;
+
+        // Still pending (a failure must not settle the intent) and carrying the
+        // Agent's own sentence, with one attempt recorded.
+        assert_eq!(
+            crate::store::pending_agent_session_deletes().expect("pending"),
+            vec!["sess_orphan".to_string()],
+            "a failed catalogue read must not drop the deletion intent"
+        );
+        let conn = rusqlite::Connection::open(&db).expect("open app db");
+        let (attempts, last_error): (i64, Option<String>) = conn
+            .query_row(
+                "SELECT attempts, last_error FROM agent_delete_outbox WHERE session_id='sess_orphan'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("the row");
+        assert_eq!(attempts, 1, "one delivery attempt was recorded");
+        assert!(
+            last_error
+                .as_deref()
+                .is_some_and(|text| text.contains("catalogue")),
+            "{last_error:?}"
+        );
+        script_mock_agent(MockScript::default());
+    }
+}

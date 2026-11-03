@@ -128,6 +128,25 @@ pub fn entries_to_agent_messages(
                 false,
             ));
         }
+        if entry
+            .meta
+            .as_ref()
+            .is_some_and(|meta| meta["recovered_partial"] == true)
+        {
+            for block in &mut content {
+                if let ContentBlock::Reasoning {
+                    text,
+                    provider_metadata,
+                } = block
+                {
+                    if provider_metadata.is_empty() {
+                        *block = ContentBlock::text(format!(
+                            "[Reasoning interrupted by agent restart]\n{text}"
+                        ));
+                    }
+                }
+            }
+        }
         let mut metadata = entry.meta.as_ref().and_then(|m| m.as_object().cloned());
         metadata.get_or_insert_with(serde_json::Map::new).insert(
             crate::types::AgentMessage::JOURNAL_ENTRY_ID_KEY.to_string(),
@@ -252,6 +271,40 @@ pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry 
     }
 }
 
+/// Canonical non-streamed entries do not repeat derived thinking/tool fields.
+/// Their ordered content is serialized once; readers restore legacy projections.
+pub(crate) fn agent_message_to_compact_entry(msg: &crate::types::AgentMessage) -> SessionEntry {
+    let mut metadata = msg.metadata.clone().unwrap_or_default();
+    for key in [
+        crate::types::AgentMessage::JOURNAL_ENTRY_ID_KEY,
+        crate::types::AgentMessage::STREAM_BLOCKS_KEY,
+        crate::types::AgentMessage::STREAM_EPOCH_KEY,
+    ] {
+        metadata.remove(key);
+    }
+    SessionEntry {
+        id: msg
+            .journal_entry_id()
+            .map(str::to_owned)
+            .unwrap_or_else(generate_entry_id),
+        entry_type: msg.role.clone(),
+        role: msg.role.clone(),
+        content: Some(serde_json::Value::Array(
+            msg.content
+                .iter()
+                .map(|block| serde_json::to_value(block).expect("content block serializes"))
+                .collect(),
+        )),
+        tool_calls: Vec::new(),
+        timestamp: Local::now(),
+        tool_call_id: String::new(),
+        name: msg.name.clone(),
+        tool_args: String::new(),
+        thinking: String::new(),
+        meta: (!metadata.is_empty()).then_some(serde_json::Value::Object(metadata)),
+    }
+}
+
 pub(crate) fn hydrate_entry_projections(entry: &mut SessionEntry) {
     let Some(serde_json::Value::Array(values)) = entry.content.as_ref() else {
         return;
@@ -305,7 +358,7 @@ pub(crate) fn hydrate_entry_projections(entry: &mut SessionEntry) {
 /// [`future_rpc::title::plain_title_text`]), trimmed to the ~40 visible columns
 /// the session list previews.
 pub fn first_message_title(text: &str) -> String {
-    truncate_visible(&future_rpc::title::plain_title_text(text), 40)
+    super::title_preview::from_str(text)
 }
 
 /// Truncate a string to max_vis visible columns using Unicode scalar widths.
@@ -965,6 +1018,107 @@ mod thinking_projection {
                 .count(),
             1,
             "an already-projected reasoning block is not duplicated"
+        );
+    }
+    // ─── the tool-role projection ───────────────────────────────────────────
+
+    /// A `tool` entry that recorded only text still has to reach the model as
+    /// a tool result: a plain user-side text block would be answered as a new
+    /// user turn and lose the call it belongs to.
+    #[test]
+    fn a_tool_entry_carrying_only_text_is_projected_as_a_tool_result() {
+        let entry = SessionEntry::new_tool("call-7", "listed 3 files");
+        let messages = entries_to_agent_messages(std::slice::from_ref(&entry), false);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "tool");
+        assert_eq!(messages[0].content.len(), 1, "{:?}", messages[0].content);
+        match &messages[0].content[0] {
+            ContentBlock::ToolResult {
+                tool_call_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_call_id, "call-7");
+                assert_eq!(content, "listed 3 files");
+                assert!(!is_error);
+            }
+            other => panic!("expected a tool result block, got {other:?}"),
+        }
+    }
+
+    /// A tool entry that already carries its result block is passed through
+    /// unchanged — re-wrapping it would send the text twice.
+    #[test]
+    fn a_tool_entry_that_already_carries_its_result_is_not_rewrapped() {
+        let mut entry = SessionEntry::new_tool("call-7", "ignored");
+        entry.content = Some(serde_json::json!([{
+            "type": "tool_result",
+            "tool_call_id": "call-7",
+            "content": "the recorded result",
+            "is_error": true
+        }]));
+        let messages = entries_to_agent_messages(std::slice::from_ref(&entry), false);
+        assert_eq!(messages[0].content.len(), 1, "{:?}", messages[0].content);
+        match &messages[0].content[0] {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
+                assert_eq!(content, "the recorded result");
+                assert!(is_error);
+            }
+            other => panic!("expected the recorded tool result, got {other:?}"),
+        }
+    }
+}
+#[cfg(test)]
+mod recovered_projection {
+    use super::*;
+    use crate::session::SessionEntry;
+    use crate::types::ContentBlock;
+
+    /// A run cut short by a restart leaves reasoning with no provider state to
+    /// replay. Projecting it as reasoning would hand the provider a block it
+    /// cannot resume, so it is announced as interrupted text instead — while a
+    /// reasoning block that still carries its provider state is left alone.
+    #[test]
+    fn a_recovered_partial_reasoning_block_is_announced_as_interrupted_text() {
+        let mut entry = SessionEntry::new_assistant(
+            serde_json::Value::Array(vec![serde_json::to_value(ContentBlock::reasoning(
+                "thought so far",
+                Default::default(),
+            ))
+            .unwrap()]),
+            vec![],
+        );
+        entry.meta = Some(serde_json::json!({"recovered_partial": true}));
+        let messages = entries_to_agent_messages(std::slice::from_ref(&entry), false);
+        match &messages[0].content[0] {
+            ContentBlock::Text { text } => assert_eq!(
+                text,
+                "[Reasoning interrupted by agent restart]\nthought so far"
+            ),
+            other => panic!("expected the interrupted text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_recovered_partial_reasoning_block_that_keeps_its_state_stays_reasoning() {
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("openai".to_string(), serde_json::json!({"item_id": "rs_1"}));
+        let mut entry = SessionEntry::new_assistant(
+            serde_json::Value::Array(vec![serde_json::to_value(ContentBlock::reasoning(
+                "thought so far",
+                metadata,
+            ))
+            .unwrap()]),
+            vec![],
+        );
+        entry.meta = Some(serde_json::json!({"recovered_partial": true}));
+        let messages = entries_to_agent_messages(std::slice::from_ref(&entry), false);
+        assert!(
+            matches!(&messages[0].content[0], ContentBlock::Reasoning { .. }),
+            "{:?}",
+            messages[0].content
         );
     }
 }

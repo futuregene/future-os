@@ -12,6 +12,12 @@ use params::ShellParams;
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
+/// Default execution budget, in seconds, when the caller names none.
+pub(super) const DEFAULT_TIMEOUT_SECS: u64 = 120;
+/// Ceiling this tool enforces. A larger request is clamped to it rather than
+/// rejected, so the command still runs (see `params::ShellParams::parse`).
+pub(super) const MAX_TIMEOUT_SECS: u64 = 600;
+
 #[derive(Default)]
 struct ExecutionFacts {
     attempts: Vec<ShellAttempt>,
@@ -150,7 +156,7 @@ pub(crate) fn record_gated(args: &serde_json::Value, note: &str) {
 
 pub(crate) async fn execute(args: serde_json::Value) -> Result<String> {
     let params = ShellParams::parse(args)?;
-    let timeout = params.timeout.unwrap_or(120);
+    let timeout = params.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
     let start = Instant::now();
     let mut result = empty_result(params.command.clone())?;
     result.approval = GATE_OUTCOME

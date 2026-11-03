@@ -5,14 +5,25 @@
 
 use std::process::Command;
 
-/// Run the binary with a scratch HOME so no user config is touched.
+/// Run the binary with a scratch FutureOS home so no user state is touched.
+///
+/// `FUTURE_HOME` is the root that actually decides where the TUI looks — it
+/// outranks `HOME` (`future_home_from` in `agent/src/utils`) — so an isolation
+/// that only redirected the home fell through to the developer's real
+/// `~/.future` whenever their shell exported `FUTURE_HOME`. The endpoint
+/// variables are cleared for the same reason: the TUI must fail to discover an
+/// Agent rather than attach to the one already running on this machine.
 fn run_with_args(args: &[&str]) -> std::process::Output {
     let home = tempfile::tempdir().expect("tempdir");
-    Command::new(env!("CARGO_BIN_EXE_future-tui"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_future-tui"));
+    command
         .args(args)
         .env("HOME", home.path())
-        .output()
-        .expect("spawn future-tui")
+        .env("USERPROFILE", home.path())
+        .env("FUTURE_HOME", home.path().join(".future"))
+        .env_remove("FUTURE_AGENT_SOCKET")
+        .env_remove("FUTURE_AGENT_GRPC_ADDR");
+    command.output().expect("spawn future-tui")
 }
 
 #[test]

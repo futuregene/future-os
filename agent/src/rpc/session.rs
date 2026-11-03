@@ -9,6 +9,32 @@ use super::{ApprovalGate, SseBroadcaster};
 /// session, until the session is dropped (Weak upgrade fails) or the
 /// completion sender hangs up. A free function (not an inline spawn closure)
 /// so the dropped-session exit is directly testable.
+const IDLE_HISTORY_RELEASE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long a stop waits for its durable `run_stop_requested` marker before it
+/// stops waiting and interrupts the run.
+///
+/// The marker is what recovery reads: an unterminated run that carries one is
+/// never resumed, so it is worth a brief wait before the run can be
+/// interrupted. It is not worth an unbounded one — the write lands in the
+/// store's single ordered writer, whose queue can be held by another session's
+/// job. Ordinary writes commit in about a millisecond; the budget only decides
+/// how long a stop stands behind a store that cannot answer.
+const STOP_MARKER_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
+
+fn schedule_idle_history_release(session: std::sync::Weak<parking_lot::RwLock<ServerSession>>) {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    handle.spawn(async move {
+        tokio::time::sleep(IDLE_HISTORY_RELEASE).await;
+        let Some(session) = session.upgrade() else {
+            return;
+        };
+        session.write().release_idle_history_if_unused();
+    });
+}
+
 async fn scheduler_wake_worker(
     session: std::sync::Weak<parking_lot::RwLock<ServerSession>>,
     mut receiver: tokio::sync::mpsc::UnboundedReceiver<crate::runtime::RunLease>,
@@ -18,6 +44,7 @@ async fn scheduler_wake_worker(
             return;
         };
         session.write().on_scheduled_run_finished(&finished);
+        schedule_idle_history_release(std::sync::Arc::downgrade(&session));
     }
 }
 
@@ -79,6 +106,16 @@ pub struct ServerSession {
     /// Full message history as persisted to/loaded from the session JSONL.
     pub messages: Arc<parking_lot::RwLock<Vec<crate::types::AgentMessage>>>,
     pub(crate) history_loaded: bool,
+    /// Latest compaction checkpoint, shared by the session's control-plane loop
+    /// and every run snapshot minted from it. A run that commits a checkpoint
+    /// updates this cell directly, so the next prompt never has to reload the
+    /// complete transcript to recover it.
+    pub(crate) active_checkpoint:
+        Arc<parking_lot::Mutex<Option<crate::compaction::ContextCheckpoint>>>,
+    /// Whether `active_checkpoint` reflects the durable history. A cold handle
+    /// must load once; `None` with this set means "loaded, and there is no
+    /// checkpoint", which is different from "not loaded yet".
+    pub(crate) checkpoint_loaded: std::sync::atomic::AtomicBool,
     /// Canonical model identifier for this session (e.g. "deepseek-v4-pro").
     /// Updated by `set_model`; read by prompt construction and compaction.
     pub model: String,
@@ -109,6 +146,8 @@ pub struct ServerSession {
     /// is asynchronous, so the session itself must reject duplicate requests
     /// until the accepted operation reaches a terminal lifecycle event.
     pub compaction_in_progress: Arc<std::sync::atomic::AtomicBool>,
+    /// Blocks new prompt/maintenance admission while a reset is planned and published.
+    pub history_reset_in_progress: Arc<std::sync::atomic::AtomicBool>,
     /// Last accepted manual-compaction request and its stable operation id.
     /// Retrying the same RPC request id returns the original acknowledgement
     /// instead of starting a second summary operation.
@@ -153,7 +192,8 @@ pub struct ServerSession {
     /// receives a clone of the receiver.  Private per-session so events for
     /// one session never leak to another.
     pub broadcaster: Arc<SseBroadcaster>,
-    /// When true, the session is never persisted to disk.
+    /// When true, subsequent conversation bodies/events stay in memory. The
+    /// storage mode must be selected before any prompt is admitted.
     pub ephemeral: bool,
     /// Cumulative token counters (Arc<AtomicI64> — read lock-free without agent_loop lock)
     pub tokens_in: Arc<std::sync::atomic::AtomicI64>,
@@ -249,13 +289,14 @@ impl ServerSession {
             tracing::error!(session_id, "failed to configure event journal: {error:#}");
         }
         // Clone token counter Arcs and queue senders from the agent loop for lock-free access
-        let (ti, to, tcr, tcw, lpt) = if let Ok(loop_) = agent_loop.try_read() {
+        let (ti, to, tcr, tcw, lpt, active_checkpoint) = if let Ok(loop_) = agent_loop.try_read() {
             (
                 loop_.cumulative_input_tokens.clone(),
                 loop_.cumulative_output_tokens.clone(),
                 loop_.cumulative_cache_read_tokens.clone(),
                 loop_.cumulative_cache_write_tokens.clone(),
                 loop_.last_prompt_tokens.clone(),
+                loop_.active_checkpoint.clone(),
             )
         } else {
             (
@@ -264,6 +305,7 @@ impl ServerSession {
                 Arc::new(std::sync::atomic::AtomicI64::new(0)),
                 Arc::new(std::sync::atomic::AtomicI64::new(0)),
                 Arc::new(std::sync::atomic::AtomicI64::new(0)),
+                Arc::new(parking_lot::Mutex::new(None)),
             )
         };
         let is_streaming = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -291,6 +333,8 @@ impl ServerSession {
             agent_loop,
             messages: Arc::new(parking_lot::RwLock::new(vec![])),
             history_loaded: true,
+            active_checkpoint,
+            checkpoint_loaded: std::sync::atomic::AtomicBool::new(true),
             model: String::new(),
             thinking_level: DEFAULT_THINKING_LEVEL.to_string(),
             auto_compaction: true,
@@ -299,6 +343,7 @@ impl ServerSession {
             custom_system_prompt: String::new(),
             append_system_prompt: String::new(),
             compaction_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            history_reset_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             compaction_request: Arc::new(parking_lot::Mutex::new(None)),
             session_manager: manager,
             persistence,
@@ -397,7 +442,7 @@ impl ServerSession {
                 .session_manager
                 .finish_cancelled_receipts(&self.session_id)
             {
-                Ok(count) if count > 0 => self.history_loaded = false,
+                Ok(count) if count > 0 => self.mark_history_stale(),
                 Ok(_) => {}
                 Err(error) => {
                     tracing::error!(%error,"scheduler paused while preserving cancelled inputs");
@@ -416,10 +461,20 @@ impl ServerSession {
         if self.service_work.is_closed() {
             return;
         }
-        while let Some(next) = self.scheduler.queued().into_iter().next() {
+        while let Some(next) = self.scheduler.next_startable() {
             match self.start_next_scheduled() {
                 Ok(_) => return,
                 Err(error) => {
+                    // Parked because it waited too long: not a failure, and not
+                    // something to cancel — it stays queued for the reader. Any
+                    // prompt behind it may still be startable.
+                    if self.scheduler.is_held(&next.run_id) {
+                        tracing::info!(
+                            run_id = %next.run_id,
+                            "queued prompt parked; waiting for the reader to release it"
+                        );
+                        continue;
+                    }
                     if self
                         .scheduler
                         .active()
@@ -440,6 +495,32 @@ impl ServerSession {
                 }
             }
         }
+    }
+
+    /// Run a parked queued prompt now, because the reader said so.
+    ///
+    /// The staleness rule stops prompts from starting *by themselves*; it does
+    /// not take the decision away from the person who wrote them. Releasing puts
+    /// the prompt back in its place in the queue and lets the ordinary boundary
+    /// start it — immediately, when nothing else is running.
+    ///
+    /// A failure to start is logged rather than reported: the prompt is back in
+    /// the queue either way, and the run's own outcome is what the reader sees.
+    pub fn release_queued_run(
+        &mut self,
+        run_id: &str,
+    ) -> Result<(), crate::runtime::RunQueueError> {
+        self.scheduler.release_held(run_id)?;
+        if self.scheduler.active().is_none() {
+            if let Err(error) = self.start_next_scheduled() {
+                tracing::warn!(
+                    run_id = %run_id,
+                    %error,
+                    "released queued prompt could not start yet; it stays queued"
+                );
+            }
+        }
+        Ok(())
     }
 
     pub fn cancel_queued_run(
@@ -505,7 +586,7 @@ impl ServerSession {
                 .session_manager
                 .finish_cancelled_receipts(&self.session_id)
             {
-                Ok(count) if count > 0 => self.history_loaded = false,
+                Ok(count) if count > 0 => self.mark_history_stale(),
                 Ok(_) => {}
                 Err(error) => tracing::error!(%error,"cancelled input preservation deferred"),
             }
@@ -608,32 +689,11 @@ impl ServerSession {
 
     pub fn abort_run(&self, expected_run_id: Option<&str>) -> Result<()> {
         let _recovery = self.fault_recovery.lock();
-        if !self.ephemeral && self.session_manager.contains(&self.session_id)? {
-            if let Some(active) = self.runtime.snapshot() {
-                let lease = crate::runtime::RunLease {
-                    run_id: active.run_id.clone(),
-                    epoch: active.epoch,
-                    run_sequence: active.run_sequence,
-                };
-                let cancellable = matches!(
-                    active.phase,
-                    crate::runtime::RunPhase::Starting
-                        | crate::runtime::RunPhase::Running
-                        | crate::runtime::RunPhase::Cancelling
-                ) || self.runtime.cancellation_kind(&lease)
-                    == Some(crate::runtime::CancellationCause::SystemShutdown);
-                if cancellable
-                    && expected_run_id.is_none_or(|id| id.is_empty() || id == active.run_id)
-                {
-                    self.session_manager.append_entries_synced(
-                        &self.session_id,
-                        &[crate::session::SessionEntry::run_stop_requested(
-                            &active.run_id,
-                        )],
-                    )?;
-                }
-            }
-        }
+        // A stop with no live run can only be made durable: it lands in the
+        // journal so a run still inside startup's recovery delay is not started
+        // moments later. Storage-only, and it keeps the "nothing is running"
+        // answer before `request_abort` (which rejects a run id that is no
+        // longer active).
         if self.runtime.snapshot().is_none() && !self.ephemeral {
             if let Some(run_id) = self.session_manager.resumable_run_id(&self.session_id)? {
                 if expected_run_id.is_none_or(|expected| expected.is_empty() || expected == run_id)
@@ -664,6 +724,24 @@ impl ServerSession {
                 }
             }
         }
+        // Which run the stop reaches is decided before the request, so the
+        // marker below names the run the cancellation was actually for.
+        let stopped = self.stop_target(expected_run_id);
+        // The durable marker is started first — recovery resumes an
+        // unterminated run that carries no `run_stop_requested`, so it must be
+        // in the store before the run can be interrupted — but the stop waits
+        // for it only briefly. It waits for the marker's *commit* in the store's
+        // single ordered writer, and that is not the stop: on 2026-10-29 a
+        // contended lane held this append for 71 s, so `request_abort` below was
+        // never reached, five ctrl+x presses each expired at the client's
+        // deadline as `Could not stop the run: Timeout expired`, and the run
+        // kept streaming until the marker finally landed.
+        if let Some(pending) = stopped
+            .as_deref()
+            .and_then(|run_id| self.begin_stop_marker(run_id))
+        {
+            let _ = pending.recv_timeout(STOP_MARKER_GRACE);
+        }
         self.runtime.request_abort(expected_run_id)?;
         self.shell_cancel_generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -690,6 +768,70 @@ impl ServerSession {
             );
         }
         Ok(())
+    }
+
+    /// The run a user stop can still reach, if any: the run that would be
+    /// cancelled in memory, and therefore the one a durable stop marker names.
+    /// A run past the cancellation point (`Finalizing`) is not one, and a
+    /// mismatched `expected_run_id` addresses a different run entirely.
+    fn stop_target(&self, expected_run_id: Option<&str>) -> Option<String> {
+        let active = self.runtime.snapshot()?;
+        let lease = crate::runtime::RunLease {
+            run_id: active.run_id.clone(),
+            epoch: active.epoch,
+            run_sequence: active.run_sequence,
+        };
+        let cancellable = matches!(
+            active.phase,
+            crate::runtime::RunPhase::Starting
+                | crate::runtime::RunPhase::Running
+                | crate::runtime::RunPhase::Cancelling
+        ) || self.runtime.cancellation_kind(&lease)
+            == Some(crate::runtime::CancellationCause::SystemShutdown);
+        (cancellable && expected_run_id.is_none_or(|id| id.is_empty() || id == active.run_id))
+            .then_some(active.run_id)
+    }
+
+    /// Start the durable user intent for crash recovery on its own thread and
+    /// hand back the receiver that reports when it is committed. The caller
+    /// waits on it only for [`STOP_MARKER_GRACE`], so a write that outlives that
+    /// budget still lands — it just stops holding up the interruption.
+    ///
+    /// A failed write is a warning, not a failed stop: the worst case is a run
+    /// recovered as `interrupted_by_restart` instead of `cancelled`.
+    fn begin_stop_marker(&self, run_id: &str) -> Option<std::sync::mpsc::Receiver<()>> {
+        if self.ephemeral {
+            return None;
+        }
+        let manager = self.session_manager.clone();
+        let session_id = self.session_id.clone();
+        let run_id = run_id.to_owned();
+        let (done, pending) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("agent-stop-marker".into())
+            .spawn(move || {
+                let written = manager.contains(&session_id).and_then(|known| {
+                    if known {
+                        manager.append_entries_synced(
+                            &session_id,
+                            &[crate::session::SessionEntry::run_stop_requested(&run_id)],
+                        )
+                    } else {
+                        Ok(())
+                    }
+                });
+                if let Err(error) = written {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        %run_id,
+                        %error,
+                        "run stop request could not be journalled; the run is being stopped anyway"
+                    );
+                }
+                let _ = done.send(());
+            })
+            .ok()?;
+        Some(pending)
     }
 
     fn persist_fault_outcome(
@@ -920,10 +1062,7 @@ impl ServerSession {
     }
 
     pub fn compact(&self, instructions: &str) -> Result<serde_json::Value> {
-        self.compact_with_operation_id(
-            instructions,
-            format!("cmp_{}", crate::utils::generate_entry_id()),
-        )
+        self.compact_with_operation_id(instructions, crate::utils::generate_entry_id())
     }
 
     /// Manual compaction. Runs on a plain thread (the RPC worker or a test), so a
@@ -996,6 +1135,7 @@ impl ServerSession {
         // `/压缩` would incorrectly report "nothing to compact" for a visible
         // conversation. Keep the restored cache for the next prompt as well.
         let mut messages = self.messages.read().clone();
+        let mut loaded_checkpoint = None;
         if !self.ephemeral || messages.is_empty() {
             if let Ok(session) = self.session_manager.load(&self.session_id) {
                 let supports_images = self
@@ -1004,6 +1144,10 @@ impl ServerSession {
                     .request_model_accepts_images(&self.model);
                 messages =
                     crate::session::entries_to_agent_messages(&session.entries, supports_images);
+                loaded_checkpoint = crate::session::latest_context_checkpoint(&session.entries);
+                *self.active_checkpoint.lock() = loaded_checkpoint.clone();
+                self.checkpoint_loaded
+                    .store(true, std::sync::atomic::Ordering::Release);
                 if !messages.is_empty() {
                     *self.messages.write() = messages.clone();
                 }
@@ -1011,11 +1155,7 @@ impl ServerSession {
         }
         let (reserve_tokens, keep_tokens) =
             crate::compaction::context_token_budgets(context_window);
-        let active_checkpoint = self
-            .session_manager
-            .load(&self.session_id)
-            .ok()
-            .and_then(|session| crate::session::latest_context_checkpoint(&session.entries));
+        let active_checkpoint = loaded_checkpoint.or_else(|| self.active_checkpoint.lock().clone());
         let reported = self
             .last_prompt_tokens
             .load(Ordering::Relaxed)
@@ -1178,6 +1318,18 @@ impl ServerSession {
         // model, or a provider that reports no credit_cost), so the request is never
         // invisible; only the cost is conditional.
         if let Some(usage) = summary_usage.lock().clone() {
+            // Journal the summary as the billed request it is, through the same
+            // `usage` event a model call produces: the session's per-category
+            // split is rebuilt from the journal for a record that has none, and
+            // the replay prices only `usage`/`model_changed` rows — a summary
+            // charged here but never journaled would leave that rebuilt split
+            // short by a whole request (h1-C2).
+            self.broadcast_compaction_event(
+                phase,
+                crate::agent::RunEvent::Model(crate::llm::schema::ModelStreamEvent::Usage(
+                    usage.clone(),
+                )),
+            );
             let cost = usage.credit_cost.unwrap_or_else(|| {
                 crate::agent::estimate_usage_cost_with(
                     Some(&self.model_registry),
@@ -1321,6 +1473,7 @@ impl ServerSession {
                 {
                     tracing::warn!(%error, "checkpoint committed but usage-baseline persistence failed");
                 }
+                *self.active_checkpoint.lock() = Some((*checkpoint).clone());
                 if let Ok(loop_) = self.agent_loop.try_write() {
                     *loop_.active_checkpoint.lock() = Some((*checkpoint).clone());
                 }
@@ -1424,8 +1577,25 @@ impl ServerSession {
         }
     }
 
-    pub fn set_ephemeral(&mut self, ephemeral: bool) {
+    pub fn set_ephemeral(&mut self, ephemeral: bool) -> Result<()> {
+        if self.ephemeral == ephemeral {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            self.runtime.snapshot().is_none()
+                && !self.runtime.has_owned_task()
+                && !self.scheduler.has_pending()
+                && !self.broadcaster.has_started_run(),
+            "persistence mode must be selected before a prompt is admitted"
+        );
+        if ephemeral {
+            self.broadcaster.use_memory_journal()?;
+        } else {
+            self.broadcaster
+                .configure_journal(self.session_id.clone(), &self.session_manager)?;
+        }
         self.ephemeral = ephemeral;
+        Ok(())
     }
 
     pub fn execute_shell(
@@ -1600,6 +1770,7 @@ impl ServerSession {
             "queuedBytes": self.scheduler.queued_bytes(),
             "eventJournalHealthy": self.broadcaster.persistence_error().is_none(),
             "eventJournalError": self.broadcaster.persistence_error(),
+            "eventJournal": self.broadcaster.journal_metrics(),
         })
     }
 
@@ -1696,6 +1867,52 @@ impl ServerSession {
         Ok(())
     }
 
+    /// Recover the latest checkpoint once per cold handle. Normal prompts arrive
+    /// with history already loaded (command admission calls
+    /// `ensure_history_loaded` first), so this is a no-op on the hot path and a
+    /// one-time fallback for direct/scheduled paths.
+    pub(crate) fn ensure_checkpoint_loaded(&mut self) -> Result<()> {
+        if self
+            .checkpoint_loaded
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Ok(());
+        }
+        let session = self.session_manager.load(&self.session_id)?;
+        *self.active_checkpoint.lock() =
+            crate::session::latest_context_checkpoint(&session.entries);
+        self.checkpoint_loaded
+            .store(true, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
+    pub(crate) fn mark_history_stale(&mut self) {
+        self.history_loaded = false;
+        self.checkpoint_loaded
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Drop the cached full transcript after a session has been idle. Every
+    /// command that needs model context calls `ensure_history_loaded` first, so
+    /// this only releases the duplicate working copy; disk remains authoritative.
+    /// Active runs, queued inputs, live subscribers and ephemeral sessions keep
+    /// their history.
+    pub(crate) fn release_idle_history_if_unused(&mut self) -> bool {
+        if self.ephemeral
+            || !self.history_loaded
+            || self.runtime.snapshot().is_some()
+            || self.runtime.has_owned_task()
+            || self.scheduler.active().is_some()
+            || !self.scheduler.queued().is_empty()
+            || self.broadcaster.has_subscribers()
+        {
+            return false;
+        }
+        self.messages.write().clear();
+        self.mark_history_stale();
+        true
+    }
+
     /// Load this session's durable history into the in-memory message list,
     /// whether or not this handle thinks it already has it.
     ///
@@ -1712,7 +1929,11 @@ impl ServerSession {
             .request_model_accepts_images(&self.model);
         *self.messages.write() =
             crate::session::entries_to_agent_messages(&session.entries, supports_images);
+        *self.active_checkpoint.lock() =
+            crate::session::latest_context_checkpoint(&session.entries);
         self.history_loaded = true;
+        self.checkpoint_loaded
+            .store(true, std::sync::atomic::Ordering::Release);
         Ok(())
     }
 
@@ -1864,6 +2085,16 @@ impl ServerSession {
             }
             *self.messages.write() = msgs;
             self.history_loaded = load_history;
+            if load_history {
+                *self.active_checkpoint.lock() =
+                    crate::session::latest_context_checkpoint(&session.entries);
+                self.checkpoint_loaded
+                    .store(true, std::sync::atomic::Ordering::Release);
+            } else {
+                *self.active_checkpoint.lock() = None;
+                self.checkpoint_loaded
+                    .store(false, std::sync::atomic::Ordering::Release);
+            }
             self.session_id = id.to_string();
             self.scheduler = Arc::new(crate::runtime::InMemoryRunQueue::with_limits_and_global(
                 id,
@@ -2196,14 +2427,26 @@ mod tests {
     // ─── Helper to build a test session ─────────────────────────────────────
 
     fn make_test_session(id: &str) -> ServerSession {
+        make_test_session_with_format(id, false)
+    }
+
+    fn make_legacy_test_session(id: &str) -> ServerSession {
+        make_test_session_with_format(id, true)
+    }
+
+    fn make_test_session_with_format(id: &str, legacy: bool) -> ServerSession {
         let cwd = test_workspace();
+        let manager = Arc::new(Manager::new(test_session_dir()));
+        if legacy {
+            manager.storage().unwrap().bind_legacy_events(id).unwrap();
+        }
         ServerSession::new(
             id.to_string(),
             Arc::new(tokio::sync::RwLock::new(Loop::new(
                 Arc::new(EmptyProvider),
                 "mock",
             ))),
-            Arc::new(Manager::new(test_session_dir())),
+            manager,
             &cwd,
             Arc::new(SseBroadcaster::new()),
             ApprovalGate::default(),
@@ -2212,15 +2455,23 @@ mod tests {
     }
 
     fn make_persistent_test_session(id: &str) -> ServerSession {
+        make_persistent_test_session_with_format(id, false)
+    }
+
+    fn make_persistent_test_session_with_format(id: &str, legacy: bool) -> ServerSession {
         let cwd = test_workspace();
         let session_dir = std::path::Path::new(&cwd).join("sessions");
+        let manager = Arc::new(Manager::new(session_dir));
+        if legacy {
+            manager.storage().unwrap().bind_legacy_events(id).unwrap();
+        }
         ServerSession::new(
             id.to_string(),
             Arc::new(tokio::sync::RwLock::new(Loop::new(
                 Arc::new(EmptyProvider),
                 "mock",
             ))),
-            Arc::new(Manager::new(session_dir)),
+            manager,
             &cwd,
             Arc::new(SseBroadcaster::new()),
             ApprovalGate::default(),
@@ -2379,10 +2630,32 @@ mod tests {
     #[test]
     fn set_ephemeral() {
         let mut session = make_test_session("s1");
-        session.set_ephemeral(true);
+        session.set_ephemeral(true).unwrap();
         assert!(session.ephemeral);
-        session.set_ephemeral(false);
+        session.set_ephemeral(false).unwrap();
         assert!(!session.ephemeral);
+    }
+
+    #[test]
+    fn persistence_mode_does_not_change_after_prompt_admission() {
+        let mut session = make_test_session("mode-boundary");
+        session.runtime.begin(Some("run"), Some("request")).unwrap();
+        assert!(session.set_ephemeral(true).is_err());
+        assert!(!session.ephemeral);
+    }
+
+    #[test]
+    fn ephemeral_event_cursors_cannot_be_reused_as_durable_cursors() {
+        let mut session = make_test_session("mode-cursors");
+        session.set_ephemeral(true).unwrap();
+        session
+            .broadcaster
+            .broadcast_session(crate::rpc::SseEvent::new(
+                "cwd_changed",
+                serde_json::json!({"cwd":"volatile"}),
+            ));
+        assert!(session.set_ephemeral(false).is_err());
+        assert!(session.ephemeral);
     }
 
     #[test]
@@ -3102,7 +3375,7 @@ mod tests {
             ApprovalGate::default(),
             Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
         );
-        session.set_ephemeral(true);
+        session.set_ephemeral(true).unwrap();
 
         let lease = session
             .prompt("hold", &[], &[], Some("run-snapshot"), None)
@@ -3254,7 +3527,7 @@ mod tests {
             ApprovalGate::default(),
             Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
         )));
-        session.write().set_ephemeral(true);
+        session.write().set_ephemeral(true).unwrap();
         ServerSession::ensure_scheduler_worker(&session);
 
         let first = session
@@ -3466,23 +3739,41 @@ mod tests {
 
     #[tokio::test]
     async fn healing_rewrite_preserves_run_markers() {
-        let mut session = make_persistent_test_session("rewrite-markers");
+        let mut session = make_persistent_test_session_with_format("rewrite-markers", true);
         std::fs::create_dir_all(&session.cwd).unwrap();
         session.set_auto_retry(false);
         // Refuse the append-only commit once. The fallback rewrite must heal
         // the snapshot without erasing the current lifecycle boundary.
         session.persistence.fail_next_commit();
+        // Wait on the runtime's own settled signal rather than polling the
+        // control state against a wall clock. The monitor that owns a run's task
+        // slot sends this lease once the run task has returned, its terminal
+        // record (here: the healing rewrite) has been committed, `finish` has
+        // released the session and that slot has been dropped — the same
+        // boundary this test used to approximate by polling `snapshot()`.
+        //
+        // The 5 s budget it replaced measured the machine, not the run: the
+        // terminal commit fsyncs inside `spawn_blocking`, and a parallel run of
+        // this crate can push that past any fixed number while the run is making
+        // progress the whole time (`Elapsed(())` here and on `main`).
+        let (settled_tx, mut settled_rx) = tokio::sync::mpsc::unbounded_channel();
+        session.runtime.set_completion_sender(settled_tx);
         session
             .prompt("heal the journal", &[], &[], Some("run-healed"), None)
             .unwrap();
 
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while session.runtime.snapshot().is_some() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
+        // A guard for a genuine hang — a run that never settles — not a budget
+        // the success path races: a slow machine cannot make this fire while the
+        // run is still moving towards its terminal record.
+        let settled = tokio::time::timeout(std::time::Duration::from_secs(120), settled_rx.recv())
+            .await
+            .expect("the run never reported that it settled")
+            .expect("the run's completion signal was dropped without a lease");
+        assert_eq!(settled.run_id, "run-healed");
+        assert!(
+            session.runtime.snapshot().is_none(),
+            "a settled run must have released the session"
+        );
 
         let loaded = session.session_manager.load(&session.session_id).unwrap();
         assert!(loaded.entries.iter().any(|entry| {
@@ -3869,7 +4160,7 @@ mod tests {
 
         use crate::rpc::SseEvent;
 
-        let mut session = make_test_session("compact-keeps-journal");
+        let mut session = make_legacy_test_session("compact-keeps-journal");
 
         // History to compact, so the manual compaction takes its real path
         // (the summary request degrades to the evidence index offline).
@@ -4281,7 +4572,7 @@ mod tests {
     /// charge, and retrying would pay for the same history twice.
     #[test]
     fn a_usage_write_that_cannot_land_fails_the_compaction_receipt() {
-        let mut session = make_test_session("compact-usage-persist-fail");
+        let mut session = make_legacy_test_session("compact-usage-persist-fail");
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         session.agent_loop.try_write().unwrap().provider =
             Arc::new(CountingUsageSummaryProvider(calls.clone()));
@@ -4573,7 +4864,7 @@ mod tests {
     #[test]
     fn ephemeral_session_checkpoint_commit_failure_is_reported() {
         let mut session = make_test_session("ephemeral-checkpoint-fail");
-        session.set_ephemeral(true);
+        session.set_ephemeral(true).unwrap();
         session.agent_loop.try_write().unwrap().provider = Arc::new(SummaryProvider);
         session.model = "glm-4.5v".to_string();
         session
@@ -5363,7 +5654,7 @@ mod tests {
         // an unreadable row must be skipped rather than abort the whole replay:
         // one malformed event must not turn a session with real spend into a
         // session reported as free.
-        let mut session = make_test_session("noisy-cost-journal");
+        let mut session = make_legacy_test_session("noisy-cost-journal");
         session.model = "test/cheap".to_string();
         session.model_registry = two_priced_models();
         session
@@ -5479,10 +5770,13 @@ mod tests {
 
         let id = session.session_id.clone();
         session.switch_session(&id).unwrap();
+        // Read the split before the assertion: the message is built only on
+        // failure, so an argument written inline is never evaluated by a run
+        // that passes.
+        let replayed = *(session.cumulative_cost_split.lock());
         assert!(
-            (session.cumulative_cost_split.lock().input - 1.0).abs() < 1e-9,
-            "the readable request must still be priced: {:?}",
-            *session.cumulative_cost_split.lock()
+            (replayed.input - 1.0).abs() < 1e-9,
+            "the readable request must still be priced: {replayed:?}"
         );
     }
 
@@ -5491,7 +5785,7 @@ mod tests {
         // Caching the replayed split is an optimisation: a session whose store
         // cannot take the cache row must still open with the correct split, and
         // must not be left claiming a cache it never wrote.
-        let mut session = make_test_session("replay-persist-failure");
+        let mut session = make_legacy_test_session("replay-persist-failure");
         session.model = "test/cheap".to_string();
         session.model_registry = two_priced_models();
         session
@@ -5516,10 +5810,10 @@ mod tests {
         session
             .switch_session(&id)
             .expect("a failed cache write must not fail the session open");
+        let replayed = *(session.cumulative_cost_split.lock());
         assert!(
-            (session.cumulative_cost_split.lock().input - 101.0).abs() < 1e-9,
-            "the replayed split applies even when it cannot be cached: {:?}",
-            *session.cumulative_cost_split.lock()
+            (replayed.input - 101.0).abs() < 1e-9,
+            "the replayed split applies even when it cannot be cached: {replayed:?}"
         );
         // Nothing was cached: the store still has no split for this session, so
         // the next open replays the journal again rather than trusting a row that
@@ -5535,7 +5829,7 @@ mod tests {
         // The live session must not be blocked by a store it cannot update, but a
         // failed durable write must not be reported as success either: the value
         // stays changed in memory and the disk keeps what it had.
-        let mut session = make_test_session("auto-compaction-persist-failure");
+        let mut session = make_legacy_test_session("auto-compaction-persist-failure");
         let info = crate::session::SessionEntry::session_info(
             serde_json::json!("not an object"),
             session.model.clone(),
@@ -5579,7 +5873,7 @@ mod tests {
         // it happens to run now would bill the cheap request's million tokens at
         // the expensive model's rate; the journal says which model served each
         // request, so replaying it costs ¥101 rather than ¥200.
-        let mut session = make_test_session("legacy-cost-split");
+        let mut session = make_legacy_test_session("legacy-cost-split");
         session.model = "test/cheap".to_string();
         session.model_registry = two_priced_models();
         session
@@ -5624,7 +5918,7 @@ mod tests {
         // session's earlier spend is missing from it. Trusting it understates the
         // session (a real one reported ¥0.91 of rows against a ¥9.32 total), so
         // the journal decides instead.
-        let mut session = make_test_session("partial-cost-split");
+        let mut session = make_legacy_test_session("partial-cost-split");
         session.model = "test/cheap".to_string();
         session.model_registry = two_priced_models();
         session
@@ -5652,10 +5946,10 @@ mod tests {
 
         let id = session.session_id.clone();
         session.switch_session(&id).unwrap();
+        let replayed = *(session.cumulative_cost_split.lock());
         assert!(
-            (session.cumulative_cost_split.lock().input - 101.0).abs() < 1e-9,
-            "the journal covers the whole session: {:?}",
-            *session.cumulative_cost_split.lock()
+            (replayed.input - 101.0).abs() < 1e-9,
+            "the journal covers the whole session: {replayed:?}"
         );
         // Marked complete, so the next load keeps it instead of replaying again.
         let stored = session.session_manager.load(&id).unwrap();
@@ -5671,7 +5965,7 @@ mod tests {
     fn a_recorded_cost_split_is_kept_as_is() {
         // Sessions written by the current agent carry their own split; loading
         // one must not overwrite it with a replay.
-        let mut session = make_test_session("recorded-cost-split");
+        let mut session = make_legacy_test_session("recorded-cost-split");
         session.model = "test/cheap".to_string();
         session.model_registry = two_priced_models();
         session
@@ -5931,10 +6225,10 @@ mod tests {
             100,
             "the unpriced request's tokens must still be charged"
         );
+        let charged = *session.cumulative_cost.lock();
         assert!(
-            (*session.cumulative_cost.lock() - expected).abs() < 1e-12,
-            "the request was not priced from the model rates: {}",
-            *session.cumulative_cost.lock()
+            (charged - expected).abs() < 1e-12,
+            "the request was not priced from the model rates: {charged}"
         );
         let split = *session.cumulative_cost_split.lock();
         assert!((split.input - 0.01).abs() < 1e-12, "{split:?}");
@@ -5946,6 +6240,140 @@ mod tests {
         assert!(
             (info["total_cost"].as_f64().unwrap() - expected).abs() < 1e-12,
             "the estimate must be what the session persisted: {info}"
+        );
+    }
+
+    /// A session recorded before the split was persisted rebuilds it from the
+    /// journal on load, and the rebuilt split must add up to what the session
+    /// was actually charged — including the compaction summary, which is a
+    /// billed request of its own.
+    ///
+    /// The summary is charged from an observer (`record_summary_usage`) and used
+    /// to reach the counters only through it; if it never reaches the journal,
+    /// `replay_cost_split` cannot price it, and the result is cached with
+    /// `cost_split_complete = true`, so the understatement never heals (h1-C2).
+    #[test]
+    fn a_replayed_cost_split_accounts_for_a_compaction_summary() {
+        assert_replayed_split_includes_a_compaction_summary("replayed-summary-split", false);
+    }
+
+    /// The records that need the replay are the older ones, which also exist in
+    /// the legacy (pre-canonical) journal layout — the repair must hold there too.
+    #[test]
+    fn a_replayed_legacy_cost_split_accounts_for_a_compaction_summary() {
+        assert_replayed_split_includes_a_compaction_summary("replayed-summary-split-legacy", true);
+    }
+
+    fn assert_replayed_split_includes_a_compaction_summary(id: &str, legacy: bool) {
+        let mut session = make_test_session_with_format(id, legacy);
+        {
+            let mut registry = session.model_registry.write();
+            registry.test_insert(crate::models::Model {
+                id: "priced".to_string(),
+                name: "priced".to_string(),
+                provider: "test".to_string(),
+                api: "openai-completions".to_string(),
+                base_url: "http://127.0.0.1:1/v1".to_string(),
+                input: vec!["text".to_string()],
+                output: vec!["text".to_string()],
+                context_window: 1_000_000,
+                max_tokens: 4_096,
+                cost: crate::models::Cost {
+                    input: 1_000.0,
+                    output: 2_000.0,
+                    cache_read: 500.0,
+                    cache_write: 250.0,
+                },
+                ..Default::default()
+            });
+        }
+        session.model = "test/priced".to_string();
+        // Reports 100 in / 20 out / 80 cache-read / 10 cache-write and no
+        // `credit_cost`, so the session's own total is exactly the sum of the
+        // per-category split: any gap between them is a request the split lost.
+        session.agent_loop.try_write().unwrap().provider = Arc::new(EstimatedCostSummaryProvider);
+        {
+            let mut messages = session.messages.write();
+            for i in 0..5 {
+                messages.push(crate::types::AgentMessage::new_user(
+                    "user",
+                    serde_json::json!(format!("question {i}")),
+                ));
+                messages.push(crate::types::AgentMessage {
+                    role: "assistant".into(),
+                    content: vec![
+                        crate::types::ContentBlock::text(format!("answer {i}")),
+                        crate::types::ContentBlock::tool_call(
+                            format!("read-{i}"),
+                            "read",
+                            serde_json::json!({"path":"large.rs"}),
+                            Default::default(),
+                        ),
+                    ],
+                    ..Default::default()
+                });
+                messages.push(crate::types::AgentMessage {
+                    role: "tool".into(),
+                    content: vec![crate::types::ContentBlock::tool_result(
+                        format!("read-{i}"),
+                        format!("tool result {i} ").repeat(2000),
+                        false,
+                    )],
+                    ..Default::default()
+                });
+            }
+            for message in messages.iter_mut() {
+                message.ensure_journal_entry_id();
+            }
+        }
+        persist_transcript(&session);
+        session.compact("").unwrap();
+
+        let total = |split: crate::models::CostSplit| {
+            split.input + split.output + split.cache_read + split.cache_write
+        };
+        let charged = *session.cumulative_cost.lock();
+        let live = *session.cumulative_cost_split.lock();
+        assert!(
+            charged > 0.0,
+            "the summary request must be charged to the session: {live:?}"
+        );
+        assert!(
+            (total(live) - charged).abs() < 1e-12,
+            "the live split must add up to the charge: {live:?} against {charged}"
+        );
+
+        // The record the replay exists for: same counters, no persisted split —
+        // what an agent older than the per-request split wrote.
+        let mut stored = session.session_manager.load(&session.session_id).unwrap();
+        for entry in stored
+            .entries
+            .iter_mut()
+            .filter(|entry| entry.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO)
+        {
+            if let Some(object) = entry
+                .content
+                .as_mut()
+                .and_then(|content| content.as_object_mut())
+            {
+                object.remove("cost_split");
+                object.remove("cost_split_complete");
+            }
+        }
+        session.session_manager.save(&stored).unwrap();
+
+        let id = session.session_id.clone();
+        session.switch_session(&id).unwrap();
+        let replayed = *session.cumulative_cost_split.lock();
+        assert_eq!(
+            *session.cumulative_cost.lock(),
+            charged,
+            "the total is authoritative and must survive the reload"
+        );
+        assert!(
+            (total(replayed) - charged).abs() < 1e-12,
+            "the replayed split must cover every request the session paid for, \
+             the compaction summary included: {replayed:?} against {charged}"
         );
     }
 
@@ -6545,7 +6973,7 @@ mod tests {
     /// client could be shown.
     #[test]
     fn a_session_whose_pricing_journal_is_unreadable_opens_with_a_default_split() {
-        let mut session = make_test_session("cost-unreadable");
+        let mut session = make_legacy_test_session("cost-unreadable");
         session.model = "test/cheap".to_string();
         session.model_registry = two_priced_models();
         // A record with no cached split puts the load on the *replay* path: a
@@ -6604,7 +7032,7 @@ mod tests {
     /// (skipped, not mistaken for a usage row).
     #[test]
     fn the_replay_reads_object_style_data_and_ignores_unpriced_event_types() {
-        let mut session = make_test_session("object-style-cost-journal");
+        let mut session = make_legacy_test_session("object-style-cost-journal");
         session.model = "test/cheap".to_string();
         session.model_registry = two_priced_models();
         session
@@ -6680,7 +7108,7 @@ mod tests {
             ApprovalGate::default(),
             Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
         );
-        session.set_ephemeral(ephemeral);
+        session.set_ephemeral(ephemeral).unwrap();
         std::fs::create_dir_all(&session.cwd).unwrap();
         session
             .runtime
@@ -6787,5 +7215,392 @@ mod tests {
             "an ephemeral session writes no receipt"
         );
         let _ = std::fs::remove_dir_all(&session.cwd);
+    }
+
+    /// A stop that arrives while the run is still inside startup's recovery
+    /// delay has nothing live to interrupt, so it has to be written down — and a
+    /// stop naming a run that already settled must not write a second terminal.
+    #[tokio::test]
+    async fn a_stop_is_durable_before_recovery_and_a_noop_after_a_settled_run() {
+        let mut session = make_persistent_test_session("stop-before-recovery");
+        std::fs::create_dir_all(&session.cwd).unwrap();
+        session.set_auto_retry(false);
+        // An empty conversation exists on disk; its run began before the crash
+        // and never committed a terminal.
+        session
+            .session_manager
+            .save(&crate::session::Session::snapshot(
+                session.session_id.clone(),
+                session.cwd.clone(),
+                "mock".to_string(),
+                String::new(),
+                String::new(),
+                Vec::new(),
+            ))
+            .unwrap();
+        session
+            .session_manager
+            .append_entries(
+                &session.session_id,
+                &[crate::session::SessionEntry::run_started("crashed-run", 99)],
+            )
+            .unwrap();
+        assert_eq!(
+            session
+                .session_manager
+                .resumable_run_id(&session.session_id)
+                .unwrap(),
+            Some("crashed-run".to_string())
+        );
+        assert!(
+            session.runtime.snapshot().is_none(),
+            "nothing is running yet: the recovery delay owns the run"
+        );
+
+        // The stop is recorded as a cancelled terminal, so recovery can no
+        // longer start the run moments later.
+        session.abort_run(None).unwrap();
+        assert_eq!(
+            session
+                .session_manager
+                .resumable_run_id(&session.session_id)
+                .unwrap(),
+            None,
+            "a stopped run must not be resumable"
+        );
+        let loaded = session.session_manager.load(&session.session_id).unwrap();
+        let terminal = loaded.entries.last().expect("terminal record");
+        assert_eq!(terminal.entry_type, crate::session::ENTRY_TYPE_RUN_TERMINAL);
+        let content = terminal.content.as_ref().expect("terminal content");
+        assert_eq!(content["run_id"], "crashed-run");
+        assert_eq!(content["state"], crate::session::RUN_STATE_CANCELLED);
+        assert_eq!(content["error"], "Stopped by user before recovery");
+        // Only one terminal was written for that run.
+        let terminals = loaded
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.entry_type == crate::session::ENTRY_TYPE_RUN_TERMINAL
+                    && entry
+                        .content
+                        .as_ref()
+                        .is_some_and(|content| content["run_id"] == "crashed-run")
+            })
+            .count();
+        assert_eq!(terminals, 1);
+
+        // A run that already settled needs no marker: the stop is a no-op and
+        // does not append anything.
+        session
+            .prompt("first", &[], &[], Some("run-done"), None)
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while session.runtime.snapshot().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let before = session
+            .session_manager
+            .load(&session.session_id)
+            .unwrap()
+            .entries
+            .len();
+        session.abort_run(Some("run-done")).unwrap();
+        let after = session
+            .session_manager
+            .load(&session.session_id)
+            .unwrap()
+            .entries
+            .len();
+        assert_eq!(before, after, "a settled run gets no second terminal");
+
+        let _ = std::fs::remove_dir_all(&session.cwd);
+    }
+
+    /// The idle-history release is a 30 s sleep, so it is driven on a paused
+    /// clock: a session with no work and no subscribers drops its in-memory
+    /// history, and a session that is still busy keeps it.
+    #[tokio::test(start_paused = true)]
+    async fn an_idle_session_releases_its_history_after_the_delay() {
+        let session = make_persistent_test_session("idle-release");
+        session
+            .messages
+            .write()
+            .push(crate::types::AgentMessage::new_user(
+                "user",
+                serde_json::json!("hi"),
+            ));
+        assert_eq!(session.messages.read().len(), 1);
+        let shared = Arc::new(parking_lot::RwLock::new(session));
+        schedule_idle_history_release(Arc::downgrade(&shared));
+        // Let the spawned task reach its sleep before the clock moves: a timer
+        // that has not been registered cannot be woken by .
+        tokio::task::yield_now().await;
+        tokio::time::advance(IDLE_HISTORY_RELEASE + std::time::Duration::from_secs(1)).await;
+        for _ in 0..64 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            shared.read().messages.read().is_empty(),
+            "an idle session must release its in-memory history"
+        );
+        assert!(!shared.read().history_loaded, "and mark it stale");
+
+        // A session that is still active keeps its history.
+        let busy = make_persistent_test_session("idle-release-busy");
+        busy.messages
+            .write()
+            .push(crate::types::AgentMessage::new_user(
+                "user",
+                serde_json::json!("hi"),
+            ));
+        // A live SSE client is what "in use" means here.
+        let _subscriber = busy.broadcaster.subscribe();
+        let shared = Arc::new(parking_lot::RwLock::new(busy));
+        schedule_idle_history_release(Arc::downgrade(&shared));
+        tokio::task::yield_now().await;
+        tokio::time::advance(IDLE_HISTORY_RELEASE + std::time::Duration::from_secs(1)).await;
+        for _ in 0..64 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            shared.read().messages.read().len(),
+            1,
+            "a session with a started run must keep its history"
+        );
+
+        // Without a runtime the scheduling call is a no-op instead of a panic.
+        let idle = make_persistent_test_session("idle-release-sync");
+        idle.messages
+            .write()
+            .push(crate::types::AgentMessage::new_user(
+                "user",
+                serde_json::json!("hi"),
+            ));
+        let shared = Arc::new(parking_lot::RwLock::new(idle));
+        std::thread::spawn({
+            let weak = Arc::downgrade(&shared);
+            move || schedule_idle_history_release(weak)
+        })
+        .join()
+        .unwrap();
+        assert_eq!(shared.read().messages.read().len(), 1);
+    }
+
+    /// A store that cannot settle cancelled receipts pauses the scheduler
+    /// instead of starting the next queued run on top of them: the queue is left
+    /// exactly as it was, and the next call (once the store recovers) dequeues.
+    #[test]
+    fn a_store_that_cannot_settle_cancelled_receipts_pauses_the_scheduler() {
+        let session = make_persistent_test_session("pause-on-cancelled-receipts");
+        let manager = session.session_manager.clone();
+        // One cancelled receipt for this session, and two queued runs to dequeue.
+        let ack = crate::runtime::RunAck::queued("cancelled-run".into(), 1, 1);
+        let user: crate::session::SessionEntry = serde_json::from_value(serde_json::json!({
+            "id":"u-cancelled","type":"user","role":"user",
+            "timestamp":"2026-10-26T00:00:01Z","meta":{"run_id":"cancelled-run"},"content":"q"
+        }))
+        .unwrap();
+        manager
+            .record_queued_receipt(
+                "pause-on-cancelled-receipts",
+                "req-cancelled",
+                &ack,
+                "fingerprint",
+                &serde_json::json!({}),
+                &user,
+            )
+            .unwrap();
+        manager
+            .cancel_queued_receipt("pause-on-cancelled-receipts", "cancelled-run")
+            .unwrap();
+        for (request, run) in [("req-a", "run-a"), ("req-b", "run-b")] {
+            session
+                .scheduler
+                .accept(
+                    request,
+                    Some(run),
+                    crate::runtime::BusyPolicy::EnqueueIfBusy,
+                    serde_json::json!({"message": request}),
+                )
+                .unwrap();
+        }
+        assert_eq!(session.scheduler.queued().len(), 2);
+        let store = manager.storage().unwrap().clone();
+        store
+            .db
+            .call(|db| {
+                db.execute_batch(
+                    "CREATE TRIGGER refuse_receipt_settle BEFORE UPDATE ON queued_run_receipts \
+                     BEGIN SELECT RAISE(ABORT,'injected receipt settle failure'); END;",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let lease = crate::runtime::RunLease {
+            run_id: "run-a".to_string(),
+            epoch: 1,
+            run_sequence: Some(0),
+        };
+        let mut session = session;
+        session.on_scheduled_run_finished(&lease);
+        assert_eq!(
+            session.scheduler.queued().len(),
+            2,
+            "a paused scheduler must not dequeue"
+        );
+        assert!(session.scheduler.active().is_none());
+        // A store that can settle them again lets the scheduler continue.
+        store
+            .db
+            .call(|db| {
+                db.execute_batch("DROP TRIGGER refuse_receipt_settle")?;
+                Ok(())
+            })
+            .unwrap();
+        session.on_scheduled_run_finished(&lease);
+        assert!(
+            session.scheduler.queued().len() < 2 || session.scheduler.active().is_some(),
+            "the scheduler must continue once the store recovers"
+        );
+    }
+
+    /// Cancelling a queued run marks its receipt first: if the store refuses
+    /// that, the run stays queued and the client is told the store failed,
+    /// instead of the queue forgetting an input whose receipt still says queued.
+    #[test]
+    fn cancelling_a_queued_run_keeps_it_when_the_receipt_cannot_be_marked() {
+        let session = make_persistent_test_session("cancel-queued-run");
+        let ack = session
+            .scheduler
+            .accept(
+                "req-cancel",
+                Some("run-cancel"),
+                crate::runtime::BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({"message": "cancel me"}),
+            )
+            .unwrap();
+        assert_eq!(session.scheduler.queued().len(), 1);
+        // The queued input has its durable receipt — that is the row the
+        // cancellation has to mark.
+        let user: crate::session::SessionEntry = serde_json::from_value(serde_json::json!({
+            "id":"u-cancel","type":"user","role":"user",
+            "timestamp":"2026-10-26T00:00:01Z","meta":{"run_id":"run-cancel"},"content":"cancel me"
+        }))
+        .unwrap();
+        session
+            .session_manager
+            .record_queued_receipt(
+                "cancel-queued-run",
+                "req-cancel",
+                &ack,
+                "fingerprint",
+                &serde_json::json!({}),
+                &user,
+            )
+            .unwrap();
+        let store = session.session_manager.storage().unwrap().clone();
+        const REFUSE_CANCEL: &str =
+            "CREATE TRIGGER refuse_receipt_cancel BEFORE UPDATE ON queued_run_receipts \
+             BEGIN SELECT RAISE(ABORT,'injected receipt cancel failure'); END;";
+        store
+            .db
+            .call(|db| Ok(db.execute_batch(REFUSE_CANCEL)?))
+            .unwrap();
+        let mut session = session;
+        let error = session
+            .cancel_queued_run(
+                "run-cancel",
+                crate::runtime::QueuedCancellationReason::Cancelled,
+            )
+            .unwrap_err();
+        let unavailable = matches!(
+            error,
+            crate::runtime::RunQueueError::PersistenceUnavailable(_)
+        );
+        assert!(
+            unavailable,
+            "the cancellation must report the store failure: {error:?}"
+        );
+        assert_eq!(
+            session.scheduler.queued().len(),
+            1,
+            "the run must stay queued when its receipt could not be marked"
+        );
+        // Once the store accepts the mark, the cancellation goes through.
+        store
+            .db
+            .call(|db| {
+                db.execute_batch("DROP TRIGGER refuse_receipt_cancel")?;
+                Ok(())
+            })
+            .unwrap();
+        let cancelled = session
+            .cancel_queued_run(
+                "run-cancel",
+                crate::runtime::QueuedCancellationReason::Cancelled,
+            )
+            .unwrap();
+        assert_eq!(cancelled.run_id, "run-cancel");
+        assert!(session.scheduler.queued().is_empty());
+    }
+
+    /// The checkpoint fallback is for cold handles only: a directly scheduled
+    /// run can arrive before history was ever loaded, so the first call reads the
+    /// transcript and marks itself done, and every later call is a no-op.
+    #[test]
+    fn a_cold_handle_recovers_its_checkpoint_once_and_then_reports_itself_loaded() {
+        use std::sync::atomic::Ordering;
+        let mut session = make_persistent_test_session("checkpoint-once");
+        // A handle starts with its checkpoint already resolved; the fallback is
+        // what a stale handle uses after its cached history was released.
+        assert!(session.checkpoint_loaded.load(Ordering::Acquire));
+        session.mark_history_stale();
+        assert!(!session.checkpoint_loaded.load(Ordering::Acquire));
+        assert!(session.active_checkpoint.lock().is_none());
+        let snapshot = crate::session::Session::snapshot(
+            "checkpoint-once".to_string(),
+            session.cwd.clone(),
+            "mock".to_string(),
+            String::new(),
+            String::new(),
+            vec![crate::session::SessionEntry::new_user(
+                "user",
+                serde_json::json!("hi"),
+            )],
+        );
+        session.session_manager.save(&snapshot).unwrap();
+
+        session.ensure_checkpoint_loaded().unwrap();
+        assert!(
+            session.checkpoint_loaded.load(Ordering::Acquire),
+            "the fallback marks itself loaded"
+        );
+        // This conversation carries no compaction checkpoint, so the recovery is
+        // "none found" rather than an error, and the lock is explicitly reset.
+        assert!(session.active_checkpoint.lock().is_none());
+
+        // The second call must not read again: a checkpoint written afterwards is
+        // deliberately not picked up on the hot path.
+        session
+            .session_manager
+            .storage()
+            .unwrap()
+            .replace(
+                "checkpoint-once",
+                vec![serde_json::json!({
+                    "id":"torn","type":"compaction","role":"system",
+                    "timestamp":"2026-10-28T00:00:00Z",
+                    "content":{"summary":"[checkpoint]"},
+                })],
+            )
+            .unwrap();
+        session.ensure_checkpoint_loaded().unwrap();
+        assert!(
+            session.active_checkpoint.lock().is_none(),
+            "the once-only fallback did not re-read the transcript"
+        );
     }
 }

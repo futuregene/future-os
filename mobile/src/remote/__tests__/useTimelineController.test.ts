@@ -81,6 +81,9 @@ describe("useTimelineController", () => {
     return {
       requestRetry: request,
       recoverNow: jest.fn(async () => {}),
+      // The stage this client reports to the desktop. Asserted where a failure
+      // has to reach the machine the phone is talking to, not just the log.
+      setSyncStage: jest.fn(),
     } as unknown as RemoteClient;
   }
 
@@ -1220,11 +1223,18 @@ describe("useTimelineController", () => {
         await flush();
         expect(result.current.timeline.items.map(item => item.id)).toEqual(["m_u1"]);
         expect(result.current.timelineSyncStatus).toBe("retrying");
+        // The failing stage reaches the desktop, so a person looking at the
+        // machine can see where the conversation died instead of watching a
+        // phone spin.
+        expect(client().current?.setSyncStage).toHaveBeenLastCalledWith("replay");
         request.mockResolvedValueOnce({ data: {} }).mockResolvedValueOnce(tail).mockResolvedValueOnce(gap);
         act(() => result.current.syncEngineRef.current!.restart("s1", "reconnect"));
         await flush();
         expect(request.mock.calls.filter(([command]) => command.before === 23)).toHaveLength(2);
         expect(result.current.timeline.items.map(item => item.id)).toEqual(["m_u1", "m_u2", "m_a2", "m_u3"]);
+        // Recovery clears the report: a device that caught up must stop reading
+        // as stuck without anyone reloading the page.
+        expect(client().current?.setSyncStage).toHaveBeenLastCalledWith(null);
         request.mockResolvedValueOnce({ data: {
           entries: [userEntry("u0", "older")], nextOffset: 0, hasMore: false,
         } });
@@ -2228,6 +2238,59 @@ describe("useTimelineController", () => {
         jest.useRealTimers();
       }
     });
+
+    test("keeps waiting while the lane is still inside one attempt", async () => {
+      jest.useFakeTimers();
+      try {
+        options.selectedSessionId = "s1";
+        options.selectedRef.current = "s1";
+        // One slow round trip: the client's own request timeout (10 s) plus its
+        // retries can legitimately outlast the 15-second mark, and an open that
+        // is still working must keep its spinner instead of claiming failure.
+        let resolveState!: (value: unknown) => void;
+        request.mockImplementation((command: { type: string }) =>
+          command.type === "get_state"
+            ? new Promise((yes) => { resolveState = yes; })
+            : Promise.resolve({
+              data: { entries: [userEntry("e1", "hi")], hasMore: false },
+            }),
+        );
+        render();
+        act(() => result.current.reconcileSession("s1", "open"));
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(20_001);
+        });
+        expect(result.current.timelineError).toBeNull();
+        expect(result.current.timelinePending).toBe(true);
+        // The ceiling still bounds a wedged attempt, so nobody spins forever.
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(26_000);
+        });
+        expect(result.current.timelineError).toBe("timeout");
+        expect(resolveState).toBeDefined();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test("reports at the deadline once an attempt has failed", async () => {
+      jest.useFakeTimers();
+      try {
+        options.selectedSessionId = "s1";
+        options.selectedRef.current = "s1";
+        request.mockRejectedValue(new Error("desktop_unavailable"));
+        render();
+        act(() => result.current.reconcileSession("s1", "open"));
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(15_001);
+        });
+        // A lane that has said where it is stuck is reported at the deadline,
+        // as before: waiting is only for lanes that have not answered yet.
+        expect(result.current.timelineError).toBe("timeout");
+      } finally {
+        jest.useRealTimers();
+      }
+    });
   });
 
   describe("retryTimeline", () => {
@@ -2237,6 +2300,23 @@ describe("useTimelineController", () => {
         await result.current.retryTimeline();
       });
       expect(request).not.toHaveBeenCalled();
+    });
+
+    test("routes transport recovery through the runtime when it offers one", async () => {
+      options.selectedRef.current = "s1";
+      const recoverConnection = jest.fn(async () => {});
+      options.recoverConnection = recoverConnection;
+      render();
+      await act(async () => {
+        await result.current.retryTimeline();
+      });
+      // The runtime can replace a fatal client; `client.recoverNow` alone
+      // cannot, so it must not be the path a retry takes when both exist.
+      expect(recoverConnection).toHaveBeenCalledWith("request-failure");
+      const recoverNow = (
+        client().current as unknown as { recoverNow: jest.Mock }
+      ).recoverNow;
+      expect(recoverNow).not.toHaveBeenCalled();
     });
 
     test("recovers the client and restarts the session sync", async () => {
@@ -2289,6 +2369,28 @@ describe("useTimelineController", () => {
       errorSpy.mockRestore();
     });
 
+    test("a runtime recovery that fails is logged, and the sync still restarts", async () => {
+      const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        options.selectedRef.current = "s1";
+        options.recoverConnection = jest.fn(async () => { throw new Error("runtime offline"); });
+        render();
+        const restart = jest.spyOn(result.current.syncEngineRef.current!, "restart");
+        await act(async () => {
+          await result.current.retryTimeline();
+        });
+        // The runtime owns the connection's recovery; a failure inside it is a
+        // diagnostic, not a reason to leave the lane stuck.
+        expect(errorSpy).toHaveBeenCalledWith(
+          "[remote] timeline retry transport recovery failed",
+          expect.objectContaining({ error: expect.objectContaining({ message: "runtime offline" }) }),
+        );
+        expect(restart).toHaveBeenCalledWith("s1", "open");
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
     test("clears an existing timeout error before retrying", async () => {
       jest.useFakeTimers();
       try {
@@ -2308,6 +2410,63 @@ describe("useTimelineController", () => {
       } finally {
         jest.useRealTimers();
       }
+    });
+  });
+
+  describe("a lean event body", () => {
+    const contentReads = () => request.mock.calls
+      .map((call) => call[0] as { type: string })
+      .filter((command) => command.type === "get_event_content_range");
+
+    test("is read from the desktop, and a full body is not", async () => {
+      request.mockImplementation(async (command: { type: string }) => {
+        if (command.type === "get_state") return { data: { isCompacting: false } };
+        if (command.type === "get_event_content_range")
+          return {
+            success: true,
+            data: {
+              text: "the question", nextOffset: 12, totalBytes: 12, hasMore: false,
+              encoding: "text", etag: "e1", databaseId: "db1", restoreGeneration: "rg1",
+            },
+          };
+        if (command.type === "get_events_since") return { data: { events: [], hasMore: false } };
+        return { data: { entries: [] } };
+      });
+      render();
+      await establish();
+
+      // A feed that omits bodies carries its text directly; nothing to read.
+      act(() => result.current.handleEvent(evt("user_message", '{"text":"asked"}', "r", 1), "s1"));
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });
+      expect(contentReads()).toHaveLength(0);
+
+      // The same event, this time naming a field instead of carrying it: the
+      // phone has to ask the desktop for that page before the event can be
+      // projected, or the reply would render as empty.
+      act(() => result.current.handleEvent({
+        type: "user_message",
+        runId: "r",
+        idx: 2,
+        data: JSON.stringify({
+          text: "",
+          content_refs: {
+            text: { databaseId: "db1", restoreGeneration: "rg1", epoch: 0, cursor: 3, field: "/data/text" },
+          },
+        }),
+      }, "s1"));
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 120)); });
+      expect(contentReads()).toHaveLength(1);
+      expect(request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "get_event_content_range",
+          sessionId: "s1",
+          // The run the event belongs to travels with the request: the field is
+          // addressed inside that run's stream.
+          runId: "r",
+          contentRequest: expect.objectContaining({ field: "/data/text", databaseId: "db1" }),
+        }),
+        "s1",
+      );
     });
   });
 

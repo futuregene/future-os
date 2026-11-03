@@ -257,6 +257,7 @@ pub fn prompt_command(
     session_id: String,
     attachments: Vec<AttachmentInput>,
     requested_run_id: Option<String>,
+    busy_policy: &str,
 ) -> RpcCommand {
     // Only paths cross the wire; the agent reads + encodes image bytes itself.
     let attachments = attachments
@@ -273,6 +274,9 @@ pub fn prompt_command(
         model_context,
         attachments,
         requested_run_id: requested_run_id.unwrap_or_default(),
+        // Empty is the Agent's own default (`enqueue_if_busy`); the caller names
+        // a policy only when the reader asked for that meaning of "send".
+        busy_policy: busy_policy.to_string(),
         client_request_id: command_id(),
         ..base_command("prompt", session_id)
     }
@@ -292,6 +296,23 @@ pub fn approval_decision_command(
     }
 }
 
+/// Drop one prompt out of the session's queue, by the run id it was accepted as.
+pub fn cancel_queued_run_command(run_id: String, session_id: String) -> RpcCommand {
+    RpcCommand {
+        run_id,
+        ..base_command("cancel_queued_run", session_id)
+    }
+}
+
+/// Start a queued prompt the reader asked for (one parked as stale, or one they
+/// want now instead of at the turn boundary).
+pub fn release_queued_run_command(run_id: String, session_id: String) -> RpcCommand {
+    RpcCommand {
+        run_id,
+        ..base_command("release_queued_run", session_id)
+    }
+}
+
 pub fn base_command(command_type: &str, session_id: String) -> RpcCommand {
     RpcCommand {
         id: command_id(),
@@ -305,6 +326,7 @@ pub fn base_command(command_type: &str, session_id: String) -> RpcCommand {
         level: String::new(),
         mode: String::new(),
         custom_instructions: String::new(),
+        fusion_settings_json: String::new(),
         created_by: String::new(),
         creator_id: String::new(),
         source_meta: String::new(),
@@ -328,6 +350,8 @@ pub fn base_command(command_type: &str, session_id: String) -> RpcCommand {
         limit: None,
         before: None,
         fragment_offset: None,
+        content_request: None,
+        replay_until_idx: None,
         // Cross-session history search bound. The GUI has no UI for it yet, so
         // it stays absent (the Agent then applies its own default scan window).
         max_sessions: None,
@@ -338,6 +362,7 @@ pub fn base_command(command_type: &str, session_id: String) -> RpcCommand {
         include_builtin_providers: false,
         auth_update: None,
         provider_config: None,
+        thinking_probe: None,
         suggest_query: String::new(),
         suggest_candidates: vec![],
         skill_id: String::new(),
@@ -534,6 +559,11 @@ mod tests {
         );
         assert_eq!(bare.model_id, "");
         assert_eq!(bare.level, "");
+        // A session created without a name stays unnamed: the Agent titles it
+        // from its first message, which is what every chat conversation wants.
+        // Task runs set the name on the command themselves (see
+        // `agent_bridge::session::ensure_named_agent_session`).
+        assert_eq!(bare.name, "");
     }
 
     #[test]
@@ -631,6 +661,7 @@ mod tests {
                 },
             ],
             Some("run-1".to_string()),
+            "",
         );
         assert_eq!(cmd.r#type, "prompt");
         assert_eq!(cmd.message, "hello");
@@ -656,6 +687,11 @@ mod tests {
             "s".to_string(),
             vec![],
             None,
+            "",
+        );
+        assert_eq!(
+            bare.busy_policy, "",
+            "an unnamed send keeps the Agent default"
         );
         assert_eq!(bare.requested_run_id, "");
     }

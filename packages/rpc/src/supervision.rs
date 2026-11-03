@@ -87,6 +87,21 @@ pub async fn select_agent_with_retries(
     .await
 }
 
+/// [`select_agent_with_retries`] for a host that serves the Agent at
+/// `configured` (see [`connection::select_agent_serving`]): the same retries,
+/// with an absent endpoint treated as this host's to fill rather than a refusal.
+pub async fn select_agent_serving_with_retries(
+    configured: &str,
+    version: &str,
+    connect_timeout: Duration,
+    handshake_timeout: Duration,
+) -> Result<AgentSelection, ConnectionError> {
+    with_readiness_retries(READINESS_PROBE_ATTEMPTS, READINESS_RETRY_BASE, || {
+        connection::select_agent_serving(configured, version, connect_timeout, handshake_timeout)
+    })
+    .await
+}
+
 /// Probe the local Agent and classify the result.
 ///
 /// A successful selection is dropped immediately: this only classifies. An
@@ -98,13 +113,40 @@ pub async fn probe_local_agent(
     connect_timeout: Duration,
     handshake_timeout: Duration,
 ) -> LocalAgentState {
-    let outcome = select_agent_with_retries(
-        configured,
-        connection::EXPECTED_AGENT_VERSION,
-        connect_timeout,
-        handshake_timeout,
+    classify_selection(
+        select_agent_with_retries(
+            configured,
+            connection::EXPECTED_AGENT_VERSION,
+            connect_timeout,
+            handshake_timeout,
+        )
+        .await,
     )
-    .await;
+}
+
+/// [`probe_local_agent`] for a host that serves the Agent at `configured`.
+///
+/// The distinction matters to a supervisor: with the attach-only probe, an
+/// address nothing answers on is `Blocked` — "somebody else's endpoint is
+/// down". For the host that owns that address it is `Startable`, and the
+/// service has to come back.
+pub async fn probe_served_agent(
+    configured: &str,
+    connect_timeout: Duration,
+    handshake_timeout: Duration,
+) -> LocalAgentState {
+    classify_selection(
+        select_agent_serving_with_retries(
+            configured,
+            connection::EXPECTED_AGENT_VERSION,
+            connect_timeout,
+            handshake_timeout,
+        )
+        .await,
+    )
+}
+
+fn classify_selection(outcome: Result<AgentSelection, ConnectionError>) -> LocalAgentState {
     match outcome {
         Ok(AgentSelection::External(client)) => {
             drop(client);
@@ -252,6 +294,13 @@ pub struct RestartBudget {
     attempts: Vec<Instant>,
     open_until: Option<Instant>,
     cooldown_now: Duration,
+    /// Consecutive recovery attempts that never reached a stable Agent.
+    failures: u32,
+    /// Attempts after which this process stops restarting at all.
+    limit: u32,
+    /// The budget is spent: no further attempt is allowed, and no event re-arms
+    /// it. Only a new process (a relaunch) starts a new budget.
+    exhausted: bool,
 }
 
 impl Default for RestartBudget {
@@ -261,17 +310,27 @@ impl Default for RestartBudget {
 }
 
 impl RestartBudget {
-    /// Three attempts inside five minutes open a one-minute cooldown that
-    /// doubles (to ten minutes) while the half-open attempt keeps failing.
+    /// Two attempts inside five minutes open a one-minute cooldown that doubles
+    /// (to ten minutes) while the half-open attempt keeps failing; the third
+    /// attempt that never stabilises spends the budget for good.
+    ///
+    /// Both halves matter and they answer different questions. The window spaces
+    /// the attempts; the limit ends them. Measured 2026-11-01: without the limit
+    /// an Agent that died 1.4 s after every start was restarted 84 times over
+    /// thirteen hours, because the escalation had a ceiling but no terminal
+    /// state and nothing told the user.
     pub fn new() -> Self {
         Self {
             window: Duration::from_secs(300),
-            threshold: 3,
+            threshold: 2,
             cooldown: Duration::from_secs(60),
             max_cooldown: Duration::from_secs(600),
             attempts: Vec::new(),
             open_until: None,
             cooldown_now: Duration::from_secs(60),
+            failures: 0,
+            limit: 3,
+            exhausted: false,
         }
     }
 
@@ -281,7 +340,16 @@ impl RestartBudget {
     /// (the caller resets only after the Agent has stayed reachable), so the
     /// half-open attempt re-arms the breaker immediately: a start that becomes
     /// ready and is killed again must not get a fresh cooldown each lap.
+    ///
+    /// A spent budget answers `false` forever. That is the difference between
+    /// this and the cooldown: a cooldown is a pause, a spent budget is the end.
+    /// Measured 2026-11-01: an Agent that died 1.4 s after every start was
+    /// restarted 84 times over thirteen hours, because the escalation had a
+    /// ceiling but no terminal state, and nothing told the user.
     pub fn allow(&mut self, now: Instant) -> bool {
+        if self.exhausted {
+            return false;
+        }
         if let Some(until) = self.open_until {
             if now < until {
                 return false;
@@ -292,12 +360,16 @@ impl RestartBudget {
             self.attempts.push(now);
             self.open_until = Some(now + self.cooldown_now);
             self.cooldown_now = (self.cooldown_now * 2).min(self.max_cooldown);
+            self.failures = self.failures.saturating_add(1);
+            self.exhausted = self.failures >= self.limit;
             return true;
         }
         self.attempts
             .retain(|at| now.duration_since(*at) < self.window);
         if self.attempts.len() < self.threshold {
             self.attempts.push(now);
+            self.failures = self.failures.saturating_add(1);
+            self.exhausted = self.failures >= self.limit;
             return true;
         }
         self.open_until = Some(now + self.cooldown_now);
@@ -305,11 +377,32 @@ impl RestartBudget {
         false
     }
 
-    /// The Agent came up: forget the failures and the escalation.
+    /// The Agent came up and stayed: forget the failures and the escalation.
+    ///
+    /// The one thing it does not undo is [`Self::exhausted`]. A budget that ran
+    /// out describes what happened before this Agent was reachable, and the
+    /// caller finishes on it; re-arming it here would let one late success
+    /// restart the whole silent loop.
     pub fn reset(&mut self) {
         self.attempts.clear();
         self.open_until = None;
         self.cooldown_now = self.cooldown;
+        self.failures = 0;
+    }
+
+    /// Whether this process has given up on restarting the Agent.
+    pub fn exhausted(&self) -> bool {
+        self.exhausted
+    }
+
+    /// How many consecutive recovery attempts never reached a stable Agent.
+    pub fn failures(&self) -> u32 {
+        self.failures
+    }
+
+    /// The attempt after which this budget is spent.
+    pub fn limit(&self) -> u32 {
+        self.limit
     }
 
     /// How long the breaker stays open, for the message a user sees.
@@ -358,42 +451,52 @@ mod tests {
     }
 
     #[test]
-    fn the_breaker_opens_after_three_attempts_and_reopens_after_a_half_open_failure() {
+    fn the_breaker_spaces_attempts_and_the_budget_ends_them() {
         let mut budget = RestartBudget::new();
         let start = Instant::now();
         assert!(budget.allow(start));
         assert!(budget.allow(start + Duration::from_secs(1)));
-        assert!(budget.allow(start + Duration::from_secs(2)));
-        // Fourth attempt inside the window is refused and opens the breaker.
-        assert!(!budget.allow(start + Duration::from_secs(3)));
-        assert!(budget.open_for(start + Duration::from_secs(3)).is_some());
-        // Still closed inside the cooldown.
+        // The window is full: the third launch waits out the cooldown.
+        assert!(!budget.allow(start + Duration::from_secs(2)));
+        assert!(budget.open_for(start + Duration::from_secs(2)).is_some());
         assert!(!budget.allow(start + Duration::from_secs(30)));
-        // Half-open after the cooldown: exactly one attempt...
+        // Half-open after the cooldown: the third attempt, which also spends the
+        // budget, because none of the three ever stabilised.
         assert!(budget.allow(start + Duration::from_secs(64)));
-        // ...and the breaker re-arms at once until a success is proven, so a
-        // half-open failure does not hand out attempts on demand.
+        assert!(
+            budget.exhausted(),
+            "three attempts without stability is the end"
+        );
+        assert_eq!(budget.failures(), budget.limit());
+        // And that is forever: a cooldown of any length, a much later wake-up,
+        // and even a reset cannot hand out a fourth attempt.
         assert!(!budget.allow(start + Duration::from_secs(65)));
-        assert!(!budget.allow(start + Duration::from_secs(130)));
-        // The doubled cooldown expired: one more attempt, then brakes again.
-        assert!(budget.allow(start + Duration::from_secs(200)));
-        assert!(!budget.allow(start + Duration::from_secs(201)));
+        assert!(!budget.allow(start + Duration::from_secs(86_400)));
+        budget.reset();
+        assert!(!budget.allow(start + Duration::from_secs(86_401)));
+        assert!(budget.exhausted());
     }
 
     #[test]
-    fn a_proven_success_clears_the_budget() {
+    fn a_proven_success_clears_the_attempts_but_not_a_spent_budget() {
         let mut budget = RestartBudget::new();
         let start = Instant::now();
         assert!(budget.allow(start));
         assert!(budget.allow(start + Duration::from_secs(1)));
-        assert!(budget.allow(start + Duration::from_secs(2)));
-        assert!(!budget.allow(start + Duration::from_secs(3)));
-        // The Agent stayed reachable long enough: clean slate.
+        assert_eq!(budget.failures(), 2);
+        // The Agent stayed reachable long enough: a fresh window, so the window
+        // rule starts again from zero rather than spending the budget on it.
         budget.reset();
+        assert_eq!(budget.failures(), 0);
+        assert!(!budget.exhausted());
         assert!(budget.allow(start + Duration::from_secs(200)));
         assert!(budget.allow(start + Duration::from_secs(201)));
-        assert!(budget.allow(start + Duration::from_secs(202)));
-        assert!(!budget.allow(start + Duration::from_secs(203)));
+        assert!(!budget.allow(start + Duration::from_secs(202)));
+        assert!(budget.allow(start + Duration::from_secs(300)));
+        assert!(
+            budget.exhausted(),
+            "the third attempt without stability spends the budget"
+        );
     }
 
     /// The case the breaker exists for: the Agent becomes ready, runs the task,
@@ -413,18 +516,21 @@ mod tests {
         assert_eq!(Attached::of(start, start + STABLE_AFTER), Attached::Stable);
     }
 
+    /// Spacing does not buy immortality: an attempt spaced far beyond the window
+    /// still counts toward the limit, which is what stops a machine that dies
+    /// every ten minutes from looping for a day.
     #[test]
-    fn attempts_outside_the_window_do_not_count() {
+    fn attempts_beyond_the_window_still_count_toward_the_limit() {
         let mut budget = RestartBudget::new();
         let start = Instant::now();
-        // Two attempts age out of the five-minute window before the next run.
         assert!(budget.allow(start));
-        assert!(budget.allow(start + Duration::from_secs(1)));
         assert!(budget.allow(start + Duration::from_secs(400)));
-        assert!(budget.allow(start + Duration::from_secs(401)));
-        // Three inside the window is the threshold.
-        assert!(budget.allow(start + Duration::from_secs(402)));
-        assert!(!budget.allow(start + Duration::from_secs(403)));
+        assert!(budget.allow(start + Duration::from_secs(800)));
+        assert!(
+            budget.exhausted(),
+            "three launches, none stable, however far apart"
+        );
+        assert!(!budget.allow(start + Duration::from_secs(1_200)));
     }
 
     #[test]

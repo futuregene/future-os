@@ -43,7 +43,8 @@ timeout --signal=TERM --kill-after=10s 180s docker run --rm --name "$container_n
     printf "%s\n" "$output"
     # timeout sends SIGTERM to the serving host; 124 proves it stayed alive.
     test "$status" -eq 124
-    printf "%s\n" "$output" | grep -F "FutureOS: embedded Agent ready"
+    # The structured event survives changes to terminal log formatting.
+    printf "%s\n" "$output" | grep -F "embedded_agent_ready"
     printf "%s\n" "$output" | grep -F "Not signed in to FutureOS: serving local"
     printf "%s\n" "$output" | grep -F "FutureOS: cleanup stage=verification"
     if printf "%s\n" "$output" | grep -E "PHONE PAIRING|user code"; then

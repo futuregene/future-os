@@ -74,6 +74,7 @@ import { ToastHost } from "../ui/ToastHost";
 import { ActivityRail } from "./ActivityRail";
 import { AgentStatusGate } from "./AgentStatusGate";
 import { AppShellDialogs } from "./AppShellDialogs";
+import { AppStartupGate } from "./AppStartupGate";
 import { ContextPanel } from "./ContextPanel";
 import {
   defaultNewConversationTarget,
@@ -123,15 +124,14 @@ export function AppShell() {
     || agentStatus.phase === "incompatible") {
     return <AgentStatusGate showWait={agentStatus.showWait} status={agentStatus} />;
   }
-  return <StartingAppShell agentStatus={agentStatus} />;
+  return <StartingAppShell />;
 }
 
-function StartingAppShell({ agentStatus }: { agentStatus: ReturnType<typeof useAgentStatus> }) {
-  const startup = useAppStartup(true);
-  if (startup.phase === "pending")
-    return <AgentStatusGate showWait={agentStatus.showWait} status={{ ...agentStatus, phase: "starting" }} />;
-  if (startup.phase === "failed")
-    return <AgentStatusGate status={{ ...agentStatus, phase: "unavailable" }} />;
+function StartingAppShell() {
+  const [attempt, setAttempt] = useState(0);
+  const startup = useAppStartup(true, attempt);
+  if (startup.phase !== "ready")
+    return <AppStartupGate onRetry={() => setAttempt(current => current + 1)} startup={startup} />;
   return <ReadyAppShell initialAuth={startup.auth} initialProviders={startup.providers} />;
 }
 
@@ -309,6 +309,7 @@ function ReadyAppShell({
     error: remotePeersError,
     loading: remotePeersLoading,
     refresh: refreshRemotePeers,
+    refreshPeers: refreshRemotePeerLabels,
     reconnectAll: reconnectRemotePeers,
   } = useRemotePeers(true);
   useAutoUpgradeSkills(appSettings.autoUpgradeSkills);
@@ -1723,6 +1724,7 @@ function ReadyAppShell({
                                   leftPanelExpanded={showLeftPanel}
                                   onOpenRemoteSession={openRemoteSession}
                                   onReconnectRemoteAll={reconnectRemotePeers}
+                                  onRefreshLabels={refreshRemotePeerLabels}
                                   onRefreshPeers={refreshRemotePeers}
                                   onRefreshRemote={refreshRemote}
                                   onToggleLeftPanel={handleToggleLeftPanel}
@@ -1772,8 +1774,19 @@ function ReadyAppShell({
                                             void refreshRemotePeers();
                                           }}
                                           onSent={() => {
+                                            // The conversation is re-read; the catalogue is
+                                            // not. A host pushes `state.sessions` when a
+                                            // conversation of its own changes, and the slow
+                                            // catalogue poll covers one that does not, so a
+                                            // per-peer catalogue read here bought nothing —
+                                            // and it crossed the same link the transcript's
+                                            // own refresh was waiting on, right after the
+                                            // host accepted the message.
+                                            //
+                                            // A *new* conversation is the exception that is
+                                            // already handled: `onCreated` above refreshes the
+                                            // peers, so its row appears without this.
                                             void remoteTimeline.refresh();
-                                            void refreshRemotePeers();
                                           }}
                                           peer={activeRemotePeer}
                                           sessionId={activeRemote.sessionId}
@@ -1892,8 +1905,8 @@ function ReadyAppShell({
                   </main>
                   {/* Views without thread context hide the right panel entirely, including
           the collapsed expand affordance. */}
-                  {/* A remote conversation's right panel is that machine's files — and
-          nothing else. The panel's other tabs (review, runs, artifacts)
+                  {/* A remote conversation's right panel reads that machine's files
+          and selected Fusion discussions. The local panel's other tabs (review, runs, artifacts)
           describe *this* machine, so they have no remote counterpart to show;
           the panel is hidden entirely while a remote conversation is open and
           this one is drawn instead. */}

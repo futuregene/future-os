@@ -2,11 +2,13 @@
 import type { RemotePeer } from "./remotePeerClient";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { emitFutureEvent } from "../../lib/futureEvents";
+import { QUEUE_RETRY_DELAY_MS, QUEUE_RETRY_LIMIT } from "./queueDelivery";
 import { RemoteComposer } from "./RemoteComposer";
 import { clearRemoteComposerDraft } from "./remoteComposerDraft";
 import { getRemoteOutbox, resetRemoteOutbox } from "./remotePromptOutbox";
+import { remoteSendQueue } from "./sendQueue";
 
 /**
  * The composer's contract is about *which machine* a prompt or a stop goes to,
@@ -52,10 +54,12 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
  * (bytes written to a temporary file, because the host's upload takes a path).
  */
 const nativePaths = vi.fn<() => Promise<string[]>>();
+const nativeImage = vi.fn<() => Promise<{ name: string; path: string } | null>>();
 const saveImage = vi.fn<(input: { bytes: number[]; extension: string }) => Promise<{ path: string }>>();
 const saveFile = vi.fn<(input: { bytes: number[]; name: string }) => Promise<{ path: string }>>();
 vi.mock("../../integrations/storage/threadStore", () => ({
   readNativeClipboardFilePaths: () => nativePaths(),
+  readNativeClipboardImage: () => nativeImage(),
   savePastedFile: (input: { bytes: number[]; name: string }) => saveFile(input),
   savePastedImage: (input: { bytes: number[]; extension: string }) => saveImage(input),
 }));
@@ -192,6 +196,7 @@ beforeEach(() => {
   saveFile.mockReset();
   saveImage.mockReset();
   nativePaths.mockReset().mockResolvedValue([]);
+  nativeImage.mockReset().mockResolvedValue(null);
   saveFile.mockResolvedValue({ path: "/tmp/pasted" });
 
   listSkills.mockReset().mockResolvedValue([]);
@@ -361,21 +366,21 @@ it("stops a run in flight instead of sending", async () => {
 });
 
 /**
- * A draft typed during a run does not bring Send back: the host refuses a second
- * prompt while it is answering the first ("This session is still running; wait
- * for it to finish or abort it first"), so a press could only produce an error
- * over a message the reader meant to send. The draft waits in the field, Stop
- * stays reachable, and Send returns when the run settles — the local composer's
- * rule and the phone's.
+ * A draft typed during a run used to wait in the field, because the host refuses
+ * a second prompt while it is answering the first ("This session is still
+ * running; wait for it to finish or abort it first"). It now has somewhere to
+ * go: the send button asks whether to hold the draft in this conversation's send
+ * queue or to interrupt the run and send it now (see `lib/sendQueue`). Enter asks
+ * the same question, and the draft is never taken without a choice.
  */
-it("keeps Send away while a run is in flight, however much is drafted", async () => {
+it("asks what a send means while a run is in flight, however much is drafted", async () => {
   const view = await mount({ streaming: true });
   await view.type("a follow-up");
 
   expect(view.button("Send")).toBeUndefined();
-  const stop = view.button("Stop");
-  expect(stop).toBeTruthy();
-  expect(stop!.disabled).toBe(false);
+  // With a draft, Stop is no longer the only control in this slot.
+  expect(view.button("Stop")).toBeUndefined();
+  expect(view.button("Choose what to do with this message")).toBeTruthy();
 
   // Enter takes the same route as the button, and the draft survives it.
   await view.press("Enter");
@@ -383,8 +388,9 @@ it("keeps Send away while a run is in flight, however much is drafted", async ()
   expect(prompt).not.toHaveBeenCalled();
   expect(view.input.value).toBe("a follow-up");
 
-  // The run ends: what was typed meanwhile is still there, and now it can go.
+  // The run ends: the question is gone, and the draft can go as it always did.
   await view.rerender({ streaming: false });
+  expect(view.button("Choose what to do with this message")).toBeUndefined();
   expect(view.button("Stop")).toBeUndefined();
   expect(view.button("Send")!.disabled).toBe(false);
   await act(async () => view.button("Send")!.click());
@@ -660,6 +666,63 @@ it("leaves a text paste to the input", async () => {
   await view.unmount();
 });
 
+it("prefers editable text when the native clipboard also holds an image", async () => {
+  nativeImage.mockResolvedValue({ name: "preview.png", path: "/tmp/preview.png" });
+  const view = await mount();
+
+  const event = pasteEvent({ text: "keep this text" });
+  await act(async () => {
+    view.input.dispatchEvent(event);
+  });
+  await settle();
+
+  expect(nativeImage).not.toHaveBeenCalled();
+  expect(upload).not.toHaveBeenCalled();
+  expect(event.defaultPrevented).toBe(false);
+  await view.unmount();
+});
+
+/**
+ * WebKitGTK reports a clipboard image as a paste with an empty `DataTransfer`,
+ * so the only payload the webview never sees is read from the native pasteboard
+ * and uploaded from there.
+ */
+it("stages a clipboard image the webview could not report", async () => {
+  nativeImage.mockResolvedValue({ name: "pasted-2.png", path: "/tmp/pasted-2.png" });
+  upload.mockResolvedValue({ contentHash: "h", name: "pasted-2.png", uploadId: "upload_20" });
+  const view = await mount();
+
+  const event = pasteEvent();
+  await act(async () => {
+    view.input.dispatchEvent(event);
+  });
+  await settle();
+
+  expect(nativeImage).toHaveBeenCalledTimes(1);
+  // The bytes were already written by the backend, so nothing is copied twice.
+  expect(saveImage).not.toHaveBeenCalled();
+  expect(upload).toHaveBeenCalledWith({ desktopId: "desktop_a", path: "/tmp/pasted-2.png" });
+  expect(view.text()).toContain("pasted-2.png");
+  await view.unmount();
+});
+
+/** No clipboard image means no payload at all: the field keeps the paste. */
+it("leaves an empty paste to the input when the pasteboard holds no image", async () => {
+  nativeImage.mockResolvedValue(null);
+  const view = await mount();
+
+  const event = pasteEvent();
+  await act(async () => {
+    view.input.dispatchEvent(event);
+  });
+  await settle();
+
+  expect(nativeImage).toHaveBeenCalledTimes(1);
+  expect(upload).not.toHaveBeenCalled();
+  expect(event.defaultPrevented).toBe(false);
+  await view.unmount();
+});
+
 /**
  * A clipboard carrying a file URI the platform cannot turn back into a path —
  * the case where the user's paste yields nothing to send. It must not swallow the
@@ -771,11 +834,17 @@ it("reports a pasted file the host refused", async () => {
 });
 
 /** A clipboard carrying a file URI but no `File` is still a file copy. */
-function pasteEvent(input: { files?: File[]; uriList?: string } = {}): Event {
+function pasteEvent(input: { files?: File[]; text?: string; uriList?: string } = {}): Event {
   const event = new Event("paste", { bubbles: true, cancelable: true });
   const data = {
     files: input.files ?? [],
-    getData: (type: string) => (type === "text/uri-list" ? input.uriList ?? "" : ""),
+    getData: (type: string) => {
+      if (type === "text/uri-list")
+        return input.uriList ?? "";
+      if (type === "text/plain")
+        return input.text ?? "";
+      return "";
+    },
     types: input.uriList ? ["text/uri-list"] : [],
   };
   Object.defineProperty(event, "clipboardData", { value: data });
@@ -967,6 +1036,57 @@ it("walks the conversation menu with the arrow keys", async () => {
     view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowDown" }));
   });
   expect(selected()).toEqual(["true", "false"]);
+  await view.unmount();
+});
+
+/**
+ * Pressing a conversation row keeps the caret in the draft.
+ *
+ * The reference is inserted where the `#` word was typed and the sentence
+ * continues from there, so the press must not move focus to the row — a click
+ * that did would put the next keystroke into a button that is about to close.
+ */
+it("keeps the caret in the draft when a conversation row is pressed", async () => {
+  const view = await mount({ conversations });
+  await act(async () => view.type("#"));
+
+  const mousedown = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+  await act(async () => menuRows(view)[0]!.dispatchEvent(mousedown));
+
+  expect(mousedown.defaultPrevented).toBe(true);
+  // The press still chooses: preventing the focus change is not a swallowed click.
+  await act(async () => menuRows(view)[0]!.click());
+  expect(view.input.value).toBe("#Fix the flaky test ");
+  await view.unmount();
+});
+
+/**
+ * …and upwards, wrapping at the first row.
+ *
+ * The walk is a ring in both directions: a reader who overshoots the row they
+ * wanted presses Up rather than starting over at the top. Only the downward
+ * half was walked, so the upward arm — and the modulo that keeps it from
+ * landing on `-1` — was never run by a test.
+ */
+it("walks the conversation menu upwards, wrapping at the first row", async () => {
+  const view = await mount({ conversations });
+  await act(async () => view.type("#"));
+
+  const selected = () => menuRows(view).map(node => node.getAttribute("aria-selected"));
+  expect(selected()).toEqual(["true", "false"]);
+
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowUp" }));
+  });
+  // Above the first row is the last one, not a wrap to `-1`.
+  expect(selected()).toEqual(["false", "true"]);
+
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowUp" }));
+  });
+  expect(selected()).toEqual(["true", "false"]);
+  // The draft is untouched by moving the highlight.
+  expect(view.input.value).toBe("#");
   await view.unmount();
 });
 
@@ -1462,4 +1582,185 @@ it("leaves compact out of the `/` menu while another device holds the machine", 
   await settle();
   expect(onCompact).not.toHaveBeenCalled();
   await view.unmount();
+});
+
+describe("the send queue", () => {
+  const queueKey = "desktop_a:sess_1";
+  /** A menu row, whose label is a title plus a hint inside one button. */
+  const menuRow = (view: { container: HTMLElement }, text: string) =>
+    [...view.container.querySelectorAll("button")].find(node => node.textContent?.includes(text));
+
+  beforeEach(() => {
+    remoteSendQueue.clear(queueKey);
+  });
+
+  it("asks what a send means while that host is answering, and flushes when it settles", async () => {
+    const view = await mount({ streaming: true });
+    await view.type("and then this");
+    // Stop is not the only control in the slot: with a draft, the button asks.
+    expect(view.button("Stop")).toBeUndefined();
+    const choose = view.button("Choose what to do with this message")!;
+    await act(async () => choose.click());
+    expect(view.text()).toContain("Add to the send queue");
+    expect(view.text()).toContain("Interrupt and send");
+
+    await act(async () => menuRow(view, "Add to the send queue")!.click());
+    await settle();
+    expect(prompt).not.toHaveBeenCalled();
+    expect(abort).not.toHaveBeenCalled();
+    // Handed over: the field gives it up, and the queue shows what is waiting.
+    expect(view.input.value).toBe("");
+    expect(view.container.querySelector("[data-send-queue]")).not.toBeNull();
+
+    // The host's run settles; the queue leaves as one message, by itself.
+    await view.rerender({ streaming: false });
+    await settle();
+    expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "and then this", [], null, { modelId: null, thinkingLevel: null }, expect.any(String));
+    expect(view.onSent).toHaveBeenCalled();
+    expect(view.container.querySelector("[data-send-queue]")).toBeNull();
+    await view.unmount();
+  });
+
+  it("interrupts the run on request, with the draft already queued", async () => {
+    const view = await mount({ streaming: true });
+    await view.type("send this now");
+    await act(async () => view.button("Choose what to do with this message")!.click());
+    await act(async () => menuRow(view, "Interrupt and send")!.click());
+    await settle();
+    expect(abort).toHaveBeenCalledWith("desktop_a", "sess_1");
+    expect(prompt).not.toHaveBeenCalled();
+    expect(remoteSendQueue.snapshot(queueKey).items.map(item => item.content)).toEqual(["send this now"]);
+    await view.unmount();
+  });
+
+  it("stops from an empty field and says the queue goes with it", async () => {
+    remoteSendQueue.enqueue(queueKey, { content: "held while it runs", attachments: [] });
+    const view = await mount({ streaming: true });
+    const stop = view.button("Stop and send the queued messages")!;
+    expect(stop).toBeDefined();
+    await act(async () => stop.click());
+    await settle();
+    expect(abort).toHaveBeenCalledTimes(1);
+    // The flush waits for the host to report the run over.
+    expect(prompt).not.toHaveBeenCalled();
+    await view.rerender({ streaming: false });
+    await settle();
+    expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "held while it runs", [], null, { modelId: null, thinkingLevel: null }, expect.any(String));
+    await view.unmount();
+  });
+
+  it("sends a whole queue and the draft in the field as one message", async () => {
+    // The case the queue exists for: two sentences already held, a third still
+    // being typed, then "interrupt and send all". They leave as ONE prompt — the
+    // host takes one at a time, so two prompts would be one refusal and a lost
+    // message, and the reader who interrupted meant the whole thing.
+    const view = await mount({ streaming: true });
+    const queue = async (text: string) => {
+      await view.type(text);
+      await act(async () => view.button("Choose what to do with this message")!.click());
+      await act(async () => menuRow(view, "Add to the send queue")!.click());
+      await settle();
+    };
+    await queue("first held");
+    await queue("second held");
+    expect(remoteSendQueue.snapshot(queueKey).items.map(item => item.content)).toEqual(["first held", "second held"]);
+
+    await view.type("still in the field");
+    await act(async () => view.button("Choose what to do with this message")!.click());
+    await act(async () => menuRow(view, "Interrupt and send all")!.click());
+    await settle();
+    // Queued before the interrupt, so the flush that follows the run carries it.
+    expect(abort).toHaveBeenCalledTimes(1);
+    expect(remoteSendQueue.snapshot(queueKey).items.map(item => item.content))
+      .toEqual(["first held", "second held", "still in the field"]);
+
+    await view.rerender({ streaming: false });
+    await settle();
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(prompt.mock.calls[0]![2]).toBe("first held\n\nsecond held\n\nstill in the field");
+    expect(view.container.querySelector("[data-send-queue]")).toBeNull();
+    expect(view.input.value).toBe("");
+    await view.unmount();
+  });
+
+  it("keeps a refused queue visible and retries it only when asked", async () => {
+    // A refusal that will not pass by itself (the prompt is too large): the reader
+    // is handed the decision instead of the screen retrying behind their back.
+    prompt.mockRejectedValueOnce(new Error("prompt_too_large"));
+    remoteSendQueue.enqueue(queueKey, { content: "try me", attachments: [] });
+    const view = await mount({ streaming: false });
+    await settle();
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(view.container.querySelector("[data-send-queue]")).not.toBeNull();
+    const retry = view.container.querySelector<HTMLButtonElement>("[data-queue-retry]");
+    expect(retry).not.toBeNull();
+    // No retry from a re-render: that would hammer a host that keeps refusing.
+    await view.rerender({ streaming: false });
+    await settle();
+    expect(prompt).toHaveBeenCalledTimes(1);
+    await act(async () => retry!.click());
+    await settle();
+    expect(prompt).toHaveBeenCalledTimes(2);
+    expect(view.container.querySelector("[data-send-queue]")).toBeNull();
+    await view.unmount();
+  });
+
+  it("rides out a host that has not finished the run yet, instead of showing a retry", async () => {
+    vi.useFakeTimers();
+    try {
+      // The host's answer while the run it is settling has not cleared: the same
+      // message the phone sees. `Error` and a bare string are both shapes a Tauri
+      // rejection arrives in.
+      const busy = "session_busy: this session is still running; wait for it to finish or abort it first.";
+      prompt
+        .mockRejectedValueOnce(new Error(busy))
+        .mockRejectedValueOnce(busy)
+        .mockResolvedValue({ sessionId: "sess_1", threadId: "thread_1" });
+      remoteSendQueue.enqueue(queueKey, { content: "held while it ran", attachments: [] });
+      const view = await mount({ streaming: false });
+      await settle();
+      expect(prompt).toHaveBeenCalledTimes(1);
+      // Still waiting, not failed: the row stays and offers no retry.
+      expect(view.container.querySelector("[data-send-queue]")).not.toBeNull();
+      expect(view.container.querySelector("[data-queue-retry]")).toBeNull();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(QUEUE_RETRY_DELAY_MS + 20);
+      });
+      expect(prompt).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(QUEUE_RETRY_DELAY_MS + 20);
+      });
+      expect(prompt).toHaveBeenCalledTimes(3);
+      // Accepted on the third ask: one message, queue empty.
+      expect(prompt.mock.calls[2]![2]).toBe("held while it ran");
+      expect(view.container.querySelector("[data-send-queue]")).toBeNull();
+      expect(view.onSent).toHaveBeenCalled();
+      await view.unmount();
+    }
+    finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives a queue the host keeps refusing back to the reader after the budget", async () => {
+    vi.useFakeTimers();
+    try {
+      prompt.mockRejectedValue(new Error("session_busy: this session is still running."));
+      remoteSendQueue.enqueue(queueKey, { content: "never accepted", attachments: [] });
+      const view = await mount({ streaming: false });
+      await settle();
+      for (let attempt = 0; attempt < QUEUE_RETRY_LIMIT + 2; attempt += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(QUEUE_RETRY_DELAY_MS + 20);
+        });
+      }
+      expect(view.container.querySelector("[data-queue-retry]")).not.toBeNull();
+      expect(prompt.mock.calls.length).toBeLessThanOrEqual(QUEUE_RETRY_LIMIT + 1);
+      await view.unmount();
+    }
+    finally {
+      vi.useRealTimers();
+    }
+  });
 });

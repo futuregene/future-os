@@ -227,7 +227,50 @@ impl RunClient {
             .map(|_| ())
     }
 
+    pub async fn fusion_discussion(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        tool_call_id: &str,
+        step: &str,
+        offset: i64,
+    ) -> Result<Value, String> {
+        self.execute_command(
+            "get_fusion",
+            RpcCommand {
+                run_id: run_id.into(),
+                tool_call_id: (!tool_call_id.is_empty()).then(|| tool_call_id.into()),
+                entry_id: step.into(),
+                offset: Some(offset),
+                ..Default::default()
+            },
+            Some(session_id),
+            10,
+        )
+        .await
+    }
+
     /// `listModels()` — `list_models` → `{models, defaultModel}`.
+    pub async fn fusion_settings(
+        &self,
+        patch: Option<future_fusion::SettingsPatch>,
+    ) -> Result<future_fusion::Settings, String> {
+        let (command, fields) = if let Some(patch) = patch {
+            (
+                "update_fusion_settings",
+                RpcCommand {
+                    fusion_settings_json: serde_json::to_string(&patch)
+                        .map_err(|error| error.to_string())?,
+                    ..Default::default()
+                },
+            )
+        } else {
+            ("get_fusion_settings", RpcCommand::default())
+        };
+        let data = self.execute_command(command, fields, None, 10).await?;
+        serde_json::from_value(data).map_err(|error| error.to_string())
+    }
+
     pub async fn list_models(&self) -> Result<Value, String> {
         self.execute_command("list_models", RpcCommand::default(), None, 5)
             .await
@@ -317,13 +360,31 @@ impl RunClient {
 
     /// `getSessionEntries(sessionId)` — `get_session_entries` → `{entries}`.
     pub async fn get_session_entries(&self, session_id: &str) -> Result<Value, String> {
-        self.execute_command(
-            "get_session_entries",
-            RpcCommand::default(),
-            Some(session_id),
-            5,
-        )
-        .await
+        let mut entries = Vec::new();
+        let mut offset = 0;
+        loop {
+            let page = self
+                .get_session_entries_page(session_id, offset, 250)
+                .await?;
+            entries.extend(
+                page["entries"]
+                    .as_array()
+                    .ok_or("invalid history entries")?
+                    .iter()
+                    .cloned(),
+            );
+            if page["hasMore"] != true {
+                break;
+            }
+            let next = page["nextOffset"]
+                .as_i64()
+                .ok_or("history page has no cursor")?;
+            if next <= offset {
+                return Err("history returned a non-advancing cursor".into());
+            }
+            offset = next;
+        }
+        Ok(serde_json::json!({"entries":entries}))
     }
 
     /// The bounded tail of a session's display history: the last `exchanges`
@@ -336,15 +397,13 @@ impl RunClient {
         session_id: &str,
         exchanges: i64,
     ) -> Result<Value, String> {
-        self.execute_command(
-            "get_session_entries",
+        self.history_page(
             RpcCommand {
                 before: Some(i64::MAX),
                 limit: Some(exchanges),
                 ..Default::default()
             },
-            Some(session_id),
-            30,
+            session_id,
         )
         .await
     }
@@ -360,17 +419,28 @@ impl RunClient {
         offset: i64,
         limit: i64,
     ) -> Result<Value, String> {
-        self.execute_command(
-            "get_session_entries",
+        self.history_page(
             RpcCommand {
                 offset: Some(offset),
                 limit: Some(limit),
                 ..Default::default()
             },
-            Some(session_id),
-            30,
+            session_id,
         )
         .await
+    }
+
+    async fn history_page(&self, command: RpcCommand, session_id: &str) -> Result<Value, String> {
+        let page: future_rpc::payloads::SessionEntriesPage<Value> =
+            future_rpc::history::read_page(command, |command| async move {
+                let value = self
+                    .execute_command("get_session_entries", command, Some(session_id), 30)
+                    .await?;
+                serde_json::from_value(value)
+                    .map_err(|error| format!("invalid history page: {error}"))
+            })
+            .await?;
+        serde_json::to_value(page).map_err(|error| error.to_string())
     }
 
     /// Search original visible history. The existing message field carries the literal query.
@@ -835,6 +905,20 @@ impl RunClient {
         session_id: &str,
         busy_policy: &str,
     ) -> Result<Value, String> {
+        if let Some(task) = future_fusion::fusion_prompt(message) {
+            if task.is_empty() {
+                return Err("Use /fusion followed by a task".into());
+            }
+            let status = self
+                .execute_command("get_fusion_status", RpcCommand::default(), None, 10)
+                .await?;
+            if status["enabled"] == false {
+                return Err("Fusion is disabled in settings".into());
+            }
+            if status["available"] != true {
+                return Err("Fusion is unavailable: start or upgrade the FutureOS host".into());
+            }
+        }
         let cmd = RpcCommand {
             message: message.to_string(),
             busy_policy: busy_policy.to_string(),
@@ -906,7 +990,7 @@ impl RunClient {
         let mut events: Vec<Value> = Vec::new();
         let mut text = String::new();
         loop {
-            let message = match tokio::time::timeout(self.stream_idle_timeout, stream.message())
+            let mut message = match tokio::time::timeout(self.stream_idle_timeout, stream.message())
                 .await
                 .map_err(|_| "Event stream timed out waiting for an event".to_string())?
             {
@@ -922,6 +1006,8 @@ impl RunClient {
                     continue;
                 }
             }
+            future_rpc::content_body::hydrate_stream_event(&mut client, session_id, &mut message)
+                .await?;
             // `raw_data`: parsed `data` payload (empty object when absent).
             let raw_data: Map<String, Value> = if message.data.is_empty() {
                 Map::new()
@@ -1395,8 +1481,8 @@ impl RunClient {
     ) -> Result<bool, String> {
         let current = self.get_state(Some(session_id)).await?;
         Ok(first_turn_title_eligible(&current)
-            && !first_turn_title_baseline(&current)
-                .is_some_and(|after| Some(after.as_str()) != before))
+            && first_turn_title_baseline(&current)
+                .is_none_or(|after| Some(after.as_str()) == before))
     }
 }
 
@@ -1621,6 +1707,32 @@ pub fn grpc_addr_env() -> String {
 mod tests {
     use super::*;
     use crate::test_server::{spawn_mock, stream_event, stream_event_with_run, MockAgent};
+
+    #[tokio::test]
+    async fn full_history_assembles_fragments_and_follows_the_forward_cursor() {
+        use sha2::{Digest, Sha256};
+        let entry = serde_json::json!({"id":"large","kind":"assistant","role":"assistant","blocks":[{"kind":"text","text":"中🙂\\n".repeat(1000)}]});
+        let raw = serde_json::to_string(&entry).unwrap();
+        let split = raw.floor_char_boundary(raw.len() / 2);
+        let hash = format!("{:x}", Sha256::digest(raw.as_bytes()));
+        let fragment = |offset: usize, json: &str| {
+            serde_json::json!({"entries":[],"hasMore":true,"nextOffset":1,"fragment":{"entryId":"large","ordinal":0,"offset":offset,"totalBytes":raw.len(),"sha256":hash,"json":json}}).to_string()
+        };
+        let mut agent = MockAgent::default();
+        agent.sequences.insert("get_session_entries".into(),vec![fragment(0,&raw[..split]),fragment(split,&raw[split..]),serde_json::json!({"entries":[{"id":"tail","kind":"user","role":"user","blocks":[]}],"hasMore":false,"nextOffset":2}).to_string()]);
+        let address = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&address);
+        let all = client.get_session_entries("s").await.unwrap();
+        assert_eq!(
+            all["entries"],
+            serde_json::json!([entry,{"id":"tail","kind":"user","role":"user","blocks":[]} ])
+        );
+        let seen = agent.seen_of("get_session_entries");
+        assert_eq!(seen.len(), 3);
+        assert_eq!(seen[0].offset, Some(0));
+        assert_eq!(seen[1].fragment_offset, Some(split as i64));
+        assert_eq!(seen[2].offset, Some(1));
+    }
 
     // ── addr / helpers ──────────────────────────────────────────────
 

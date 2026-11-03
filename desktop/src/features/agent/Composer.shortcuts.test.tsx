@@ -8,6 +8,9 @@ import { Composer } from "./Composer";
 
 const dialog = vi.hoisted(() => ({ open: vi.fn(async () => null) }));
 
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async () => () => {}),
+}));
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }),
 }));
@@ -37,9 +40,9 @@ afterEach(() => {
   uninstall();
 });
 
-/** `⌘⇧O` — the paperclip, from the keyboard. */
+/** `⌘⌥A` — the paperclip, from the keyboard. */
 function pressAttach() {
-  const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, code: "KeyO", ctrlKey: true, key: "O", shiftKey: true });
+  const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, altKey: true, code: "KeyA", ctrlKey: true, key: "a" });
   act(() => {
     window.dispatchEvent(event);
   });

@@ -282,7 +282,7 @@ fn heal_pending_approval_from_agent(
             .and_then(|value| value.as_str())
             .map(str::to_string),
     }) {
-        eprintln!("FutureOS approval heal failed for {approval_request_id}: {error}");
+        tracing::warn!(event = "heal_pending_approval_from_agent", approval_request_id = %approval_request_id, error = %error,"FutureOS approval heal failed for {approval_request_id}: {error}");
         return;
     }
     // Same CAS as the live persist path: the parked run awaits this decision.
@@ -292,7 +292,9 @@ fn heal_pending_approval_from_agent(
         error_message: None,
         error_type: None,
     });
-    eprintln!("FutureOS rebuilt missing approval card {approval_request_id} from agent state");
+    tracing::info!(event = "heal_pending_approval_from_agent", approval_request_id = %approval_request_id,
+        "FutureOS rebuilt missing approval card {approval_request_id} from agent state"
+    );
 }
 
 fn compact_json(value: &serde_json::Value) -> String {

@@ -6,7 +6,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 import { PausedTimeline } from "../PausedTimeline";
 import { TimelineCard } from "../TimelineCard";
 import { useStyles } from "../../features/chat/messages/messageStyles";
-import { collapsedPromptHeight, PROMPT_COLLAPSE_LINES } from "../../features/chat/messages/promptCollapse";
+import { collapsedPromptHeight, PROMPT_COLLAPSE_LINES, PROMPT_PREVIEW_LINES } from "../../features/chat/messages/promptCollapse";
 import { lightTheme } from "../../theme/theme";
 import type { HistoryAttachment, TimelineItem, TimelineSegment } from "../../remote/types";
 import i18n from "../../i18n";
@@ -201,14 +201,14 @@ describe("a prompt taller than the phone is read in a reader, never drawn whole"
       Dimensions.get("window").height,
     );
     expect(bubbleStyle()).toMatchObject({ maxHeight: expectedCap, overflow: "hidden" });
-    expect(expectedCap).toBeGreaterThan(lightTheme.chat.lineHeight * (PROMPT_COLLAPSE_LINES - 1));
+    expect(expectedCap).toBeGreaterThan(lightTheme.chat.lineHeight * (PROMPT_PREVIEW_LINES - 1));
     expect(expectedCap).toBeLessThanOrEqual(Dimensions.get("window").height / 2);
     // The bubble renders a head of the source, not the whole of it: what made
     // the row blank was its height, so the row must not carry the tail at all.
     const drawn = markdownNodes()[0]!.props.text as string;
     expect(drawn.length).toBeLessThan(giantPrompt.length);
     expect(giantPrompt.startsWith(drawn)).toBe(true);
-    expect(drawn.length).toBeLessThanOrEqual(800);
+    expect(drawn.length).toBeLessThanOrEqual(200);
   });
 
   test("the control sits after the bubble and opens the whole prompt in a reader", () => {
@@ -332,9 +332,13 @@ describe("the settled footer", () => {
     expect(onContinue).toHaveBeenCalledWith(item);
   });
 
-  test("a failed run the user stopped is not offered as recoverable", () => {
+  test("a run the user stopped is offered for recovery like any other", () => {
+    // The reason a reply stopped is not a gate: a stop, a failure, a truncated
+    // stream and the cancelled row a restart leaves behind all end the reply in
+    // a place the reader may want to pick it up from.
     render(message({ id: "latest", failed: true, stopped: true, runId: "run-1" }), { isLatestAssistant: true });
-    expect(hasText("Retry")).toBe(false);
+    expect(hasText("Retry")).toBe(true);
+    expect(hasText("Continue")).toBe(true);
   });
 
   test("a settled reply offers Fork and hands back its own item", () => {
@@ -488,7 +492,7 @@ describe("tool rows name the failure that happened", () => {
   });
 });
 
-describe("a reply's tail anchor is measured inside its own row", () => {
+describe("a reply's block list is drawn as one list", () => {
   const prose = (id: string, text: string): TimelineSegment => ({ id, kind: "text", text });
   const reasoning = (id: string): TimelineSegment => ({ id, kind: "thinking", text: "..." });
 
@@ -498,60 +502,28 @@ describe("a reply's tail anchor is measured inside its own row", () => {
       node => typeof node.type === "string" && node.props.style === messageStyles.segmentList,
     )[0];
   }
-  /**
-   * The wrapper the bubble measures the anchor through: the block list's only
-   * child carrying a layout handler and no style of its own, because the anchor
-   * block is wrapped and the blocks around it are not.
-   */
-  function anchorWrapper(list: ReactTestInstance): ReactTestInstance | undefined {
-    return list.children.filter(
-      (child): child is ReactTestInstance =>
-        typeof child !== "string"
-        && typeof child.props.onLayout === "function"
-        && child.props.style === undefined,
-    )[0];
-  }
 
-  test("the block list and the anchor block chain into the row's own offset", () => {
-    const onReplyTailAnchor = jest.fn();
+  test("every rendered block sits directly in the list, with no measuring wrapper", () => {
+    // The question walk lands on prompts only, so nothing inside a reply has to
+    // be measured: the blocks are the list's own children, not wrapped in a
+    // layout-reporting view.
     render(message({
       id: "a1",
       segments: [reasoning("h1"), prose("t1", "first"), prose("t2", "the answer")],
-    }), { onReplyTailAnchor });
+    }));
 
     const list = blockList()!;
-    const anchor = anchorWrapper(list)!;
-    // The last output block is the one measured, so the wrapper holds the last
-    // piece of prose and the earlier one is left alone.
-    expect(
-      anchor.findAll(node => String(node.type) === "MarkdownText").map(node => node.props.text),
-    ).toEqual(["the answer"]);
-
-    act(() => list.props.onLayout({ nativeEvent: { layout: { y: 4 } } }));
-    // Half of a position is not a position: nothing is reported until the
-    // anchor itself has been laid out too.
-    expect(onReplyTailAnchor).not.toHaveBeenCalled();
-
-    act(() => anchor.props.onLayout({ nativeEvent: { layout: { y: 260 } } }));
-    expect(onReplyTailAnchor).toHaveBeenCalledWith("a1", 264);
+    const wrappers = list.children.filter(
+      (child): child is ReactTestInstance =>
+        typeof child !== "string" && typeof child.props.onLayout === "function",
+    );
+    expect(wrappers).toHaveLength(0);
   });
 
-  test("a reply with no output block reports nothing to aim at", () => {
-    const onReplyTailAnchor = jest.fn();
-    render(message({ id: "a2", segments: [reasoning("h1")] }), { onReplyTailAnchor });
-
-    const list = blockList()!;
-    act(() => list.props.onLayout({ nativeEvent: { layout: { y: 4 } } }));
-
-    expect(anchorWrapper(list)).toBeUndefined();
-    expect(onReplyTailAnchor).not.toHaveBeenCalled();
-  });
-
-  test("a reply with no segments at all has no block list to measure", () => {
-    const onReplyTailAnchor = jest.fn();
-    render(message({ id: "a3", text: "the whole reply" }), { onReplyTailAnchor });
+  test("a reply with no segments at all is plain markdown, with no block list", () => {
+    render(message({ id: "a3", text: "the whole reply" }));
 
     expect(blockList()).toBeUndefined();
-    expect(onReplyTailAnchor).not.toHaveBeenCalled();
+    expect(tree.root.findAll(node => String(node.type) === "MarkdownText").length).toBeGreaterThan(0);
   });
 });

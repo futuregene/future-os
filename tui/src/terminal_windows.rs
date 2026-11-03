@@ -123,6 +123,31 @@ impl Backend {
         })
     }
 
+    /// A backend with no console behind it, for a test that only needs a
+    /// `Terminal` to exist (`terminal::driver_terminal`).
+    ///
+    /// Every console call is inert: no mode was captured, so `restore_raw`
+    /// returns at once and `enable_raw` is never reached (a caller of this one
+    /// drives the event loop, not `start`). `size` reads `(0, 0)` from the
+    /// invalid handle — the same "nothing to report" a redirected stdout gives
+    /// the POSIX ioctl, which `Terminal::columns`/`rows` turn into
+    /// `COLUMNS`/`LINES`/80×24.
+    #[cfg(test)]
+    pub(crate) fn headless() -> Self {
+        Self {
+            stdin: ConsoleHandle(INVALID_HANDLE_VALUE),
+            stdout: ConsoleHandle(INVALID_HANDLE_VALUE),
+            state: Mutex::new(RawState {
+                orig_in_mode: 0,
+                orig_out_mode: 0,
+                orig_in_cp: 0,
+                orig_out_cp: 0,
+                raw_enabled: false,
+            }),
+            last_size: Mutex::new((0, 0)),
+        }
+    }
+
     pub(crate) fn is_tty(&self) -> bool {
         let mut mode: u32 = 0;
         unsafe { GetConsoleMode(self.stdin.0, &mut mode) != 0 }

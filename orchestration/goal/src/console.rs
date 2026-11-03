@@ -120,7 +120,10 @@ pub fn run(prog: &str, args: Vec<String>) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(main_from_args(prog, args))
+    // The dispatch future contains RPC-heavy command states. Keep it on the
+    // heap across the runtime boundary, including detached Windows re-execs
+    // whose main thread has a small stack (as the unified CLI already does).
+    runtime.block_on(Box::pin(main_from_args(prog, args)))
 }
 
 /// Invocation name for error hints — set by `run`, falls back to the
@@ -212,51 +215,66 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         return Ok(());
     }
     let mut store = Store::open(&root_dir())?;
+    dispatch_command(&mut store, &registry, &args, prog).await
+}
+
+/// Construct the selected handler outside the async dispatcher. Debug builds
+/// otherwise reserve stack temporaries for every RPC-heavy match arm inside
+/// one poll frame, even when that command is not selected. Windows detached
+/// re-execs must reach their identity gate on the normal main-thread stack.
+fn dispatch_command<'a>(
+    store: &'a mut Store,
+    registry: &CommandRegistry,
+    args: &'a [String],
+    prog: &str,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + 'a>> {
     match args[0].as_str() {
-        "init" | "cancel" | "delete" => cmd_goal(&mut store, &args[..]).await,
-        "agent" => cmd_agent(&mut store, &args[1..]),
-        "todo" => cmd_todo(&mut store, &args[1..]).await,
-        "gate" => cmd_gate(&mut store, &args[1..]),
-        "backup" => cmd_backup(&store, &args[1..]),
-        "authority" => cmd_authority(&mut store, &args[1..]),
-        "replan" => cmd_replan(&mut store, &args[1..]),
-        "frontier" => cmd_frontier(&store, &args[1..]),
-        "profile" => cmd_profile(&mut store, &args[1..]),
-        "status" => cmd_status(&mut store, &args[1..]).await,
-        "ui" => cmd_webui(&args[1..]).await,
-        "quota" => cmd_quota(&store, &args[1..]),
-        "scheduler" => cmd_scheduler(&mut store, &args[1..]).await,
-        "store" => cmd_store(&mut store, &args[1..]),
-        "backfill" => cmd_backfill(&mut store, &args[1..]),
-        "privacy" => cmd_privacy(&store, &args[1..]),
-        "lease" => cmd_lease(&mut store, &args[1..]),
-        "runs" => cmd_runs(&store, &args[1..]),
-        "heartbeat-prompt" => cmd_heartbeat(&store, &args[1..]),
-        "worker-bridge" => cmd_worker_bridge(&mut store, &args[1..]).await,
-        "models" => cmd_models(&args[1..]).await,
-        "diagnose" => cmd_diagnose(&store, &args[1..]),
-        "run" => cmd_run(&mut store, &args[1..]).await,
+        "init" | "cancel" | "delete" => Box::pin(cmd_goal(store, args)),
+        "agent" => Box::pin(std::future::ready(cmd_agent(store, &args[1..]))),
+        "todo" => Box::pin(cmd_todo(store, &args[1..])),
+        "gate" => Box::pin(std::future::ready(cmd_gate(store, &args[1..]))),
+        "backup" => Box::pin(std::future::ready(cmd_backup(store, &args[1..]))),
+        "authority" => Box::pin(std::future::ready(cmd_authority(store, &args[1..]))),
+        "replan" => Box::pin(std::future::ready(cmd_replan(store, &args[1..]))),
+        "frontier" => Box::pin(std::future::ready(cmd_frontier(store, &args[1..]))),
+        "profile" => Box::pin(std::future::ready(cmd_profile(store, &args[1..]))),
+        "status" => Box::pin(cmd_status(store, &args[1..])),
+        "ui" => Box::pin(cmd_webui(&args[1..])),
+        "quota" => Box::pin(std::future::ready(cmd_quota(store, &args[1..]))),
+        "scheduler" => Box::pin(cmd_scheduler(store, &args[1..])),
+        "store" => Box::pin(std::future::ready(cmd_store(store, &args[1..]))),
+        "backfill" => Box::pin(std::future::ready(cmd_backfill(store, &args[1..]))),
+        "privacy" => Box::pin(std::future::ready(cmd_privacy(store, &args[1..]))),
+        "lease" => Box::pin(std::future::ready(cmd_lease(store, &args[1..]))),
+        "runs" => Box::pin(std::future::ready(cmd_runs(store, &args[1..]))),
+        "heartbeat-prompt" => Box::pin(std::future::ready(cmd_heartbeat(store, &args[1..]))),
+        "worker-bridge" => Box::pin(cmd_worker_bridge(store, &args[1..])),
+        "models" => Box::pin(cmd_models(&args[1..])),
+        "diagnose" => Box::pin(std::future::ready(cmd_diagnose(store, &args[1..]))),
+        "run" => Box::pin(cmd_run(store, &args[1..])),
         // ── P3 commands ──────────────────────────────────────────────────
-        "scope" => cmd_scope(&store, &args[1..]),
-        "lane" => cmd_lane(&store, &args[1..]),
-        "supervisor" => cmd_supervisor(&mut store, &args[1..]).await,
-        "report" => cmd_report(&mut store, &args[1..]),
-        "worker" => cmd_worker(&mut store, &args[1..]).await,
-        "task-graph" => cmd_task_graph(&store, &args[1..]),
-        "attention" => cmd_attention(&store, &args[1..]),
-        "inbox" => cmd_inbox(&store, &args[1..]),
-        "delivery" => cmd_delivery(&mut store, &args[1..]).await,
-        "registry" => cmd_registry(&registry, &args[1..]),
-        "commands" => cmd_commands(&registry, &args[1..]),
+        "scope" => Box::pin(std::future::ready(cmd_scope(store, &args[1..]))),
+        "lane" => Box::pin(std::future::ready(cmd_lane(store, &args[1..]))),
+        "supervisor" => Box::pin(cmd_supervisor(store, &args[1..])),
+        "report" => Box::pin(std::future::ready(cmd_report(store, &args[1..]))),
+        "worker" => Box::pin(cmd_worker(store, &args[1..])),
+        "task-graph" => Box::pin(std::future::ready(cmd_task_graph(store, &args[1..]))),
+        "attention" => Box::pin(std::future::ready(cmd_attention(store, &args[1..]))),
+        "inbox" => Box::pin(std::future::ready(cmd_inbox(store, &args[1..]))),
+        "delivery" => Box::pin(cmd_delivery(store, &args[1..])),
+        "registry" => Box::pin(std::future::ready(cmd_registry(registry, &args[1..]))),
+        "commands" => Box::pin(std::future::ready(cmd_commands(registry, &args[1..]))),
         // ── P4 commands (G-20 / G-27) ───────────────────────────────────
-        "canary" => cmd_canary(&store, &args[1..]),
-        "version" => cmd_version(&store, &args[1..]),
-        "doctor" => cmd_doctor(&store, &args[1..]).await,
-        "history" => cmd_history(&store, &args[1..]),
-        "turn" => cmd_turn(&store, &args[1..]),
-        "todo-event" => cmd_todo_event(&store, &args[1..]),
-        "evidence-log" => cmd_evidence_log(&store, &args[1..]),
-        other => bail!("unknown command `{other}` (try `{prog} --help`)"),
+        "canary" => Box::pin(std::future::ready(cmd_canary(store, &args[1..]))),
+        "version" => Box::pin(std::future::ready(cmd_version(store, &args[1..]))),
+        "doctor" => Box::pin(cmd_doctor(store, &args[1..])),
+        "history" => Box::pin(std::future::ready(cmd_history(store, &args[1..]))),
+        "turn" => Box::pin(std::future::ready(cmd_turn(store, &args[1..]))),
+        "todo-event" => Box::pin(std::future::ready(cmd_todo_event(store, &args[1..]))),
+        "evidence-log" => Box::pin(std::future::ready(cmd_evidence_log(store, &args[1..]))),
+        other => Box::pin(std::future::ready(Err(anyhow::anyhow!(
+            "unknown command `{other}` (try `{prog} --help`)"
+        )))),
     }
 }
 
@@ -4499,12 +4517,55 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
             ts: crate::state::now_epoch(),
         })?;
     }
-    if let Some(m) = model {
-        client.set_model(&session_id, &m).await?;
+    // ── Worker configuration: the supervisor's model/thinking level is the
+    //    default, not a per-run judgement.
+    //
+    //    Both flags are optional and were previously applied only when given,
+    //    so an omitted flag silently left the worker on the agent's registry
+    //    default. With per-run flags and no goal-level default, that made one
+    //    pasted command line the de-facto configuration of every worker in a
+    //    goal — and an explicit flag was applied without any line saying so.
+    //    Resolution rules (and the vocabulary stamped into the run header) live
+    //    in `crate::worker_config`.
+    let supervisor_settings = match goal0.supervisor_session_id.as_deref() {
+        Some(id) => client.session_settings(id).await?,
+        None => None,
+    };
+    let resolution = crate::worker_config::resolve(
+        model.as_deref(),
+        thinking.as_deref(),
+        supervisor_settings
+            .as_ref()
+            .map(|(model, level)| (model.as_str(), level.as_str())),
+        !created_session,
+    );
+    if let Some(m) = resolution.set_model.as_deref() {
+        client.set_model(&session_id, m).await?;
     }
-    if let Some(l) = thinking {
-        client.set_thinking_level(&session_id, &l).await?;
+    if let Some(l) = resolution.set_thinking.as_deref() {
+        client.set_thinking_level(&session_id, l).await?;
     }
+    // Record what ACTUALLY took effect. The inherited shapes copy a value from
+    // another session and the agent-default shape sends nothing at all, so only
+    // a read-back can put the truth in the header.
+    let resolved = match client.session_settings(&session_id).await? {
+        Some((model, thinking_level)) => crate::worker_config::WorkerConfig {
+            model,
+            thinking_level,
+            source: resolution.source,
+        },
+        None => crate::worker_config::WorkerConfig::unknown(resolution.source),
+    };
+    println!(
+        "{}",
+        crate::worker_config::console_line(
+            agent_id.as_deref().unwrap_or("anonymous"),
+            &resolved,
+            supervisor_settings
+                .as_ref()
+                .map(|(model, level)| (model.as_str(), level.as_str())),
+        )
+    );
 
     // Run the turn loop. Session lifecycle: the session is never deleted —
     // the kernel records the retention state (id + failure classification +
@@ -4538,6 +4599,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         &mut executed_turn,
         !no_title,
         created_session,
+        &resolved,
     )
     .await;
     steer_handle.abort();
@@ -4793,7 +4855,9 @@ pub async fn notify_dead_holders(store: &mut Store, goal_id: &str) -> Result<()>
 ///   SIGKILL'd/crashed worker executes no code, so it cannot self-report).
 ///   This is the single supervision signal the single-process model needs:
 ///   the orchestrator is the only live actor, and this sweep is what lets a
-///   dead worker surface without a cron.
+///   dead worker surface without a cron. A run that DOES reach its exit path
+///   has already given its claim back (`run_turns` → `release_run_claim`), so
+///   what remains here is exactly the claim nobody is tending.
 async fn supervise_after_run(store: &mut Store, goal_id: &str) -> Result<()> {
     // Dead-holder sweep is best-effort: a lost notification must never fail
     // the run that already wrote back.
@@ -4835,6 +4899,90 @@ async fn run_turns(
     executed_turn: &mut bool,
     auto_title: bool,
     created_session: bool,
+    worker_config: &crate::worker_config::WorkerConfig,
+) -> Result<()> {
+    let result = run_turns_inner(
+        client,
+        store,
+        goal_id,
+        session_id,
+        max_turns,
+        lease_secs,
+        agent_id,
+        max_incomplete_retries,
+        force_workspace,
+        last_failure_kind,
+        executed_turn,
+        auto_title,
+        created_session,
+        worker_config,
+    )
+    .await;
+    // The claim taken by `claim_selected_with_lease` is the RUN's lease, stamped
+    // with this process's pid (lease liveness). A run that RETURNS is not a dead
+    // holder: it hands the claim back here, on every exit path — validated
+    // closure, science failure, operator stop, transport error — so the
+    // supervision sweep's `host_died` note keeps meaning "a claim nobody is
+    // tending any more". A SIGKILLed or crashed run executes none of this, so its
+    // claim stays behind with a dead pid and is still reported.
+    release_run_claim(store, goal_id, agent_id, std::process::id());
+    result
+}
+
+/// Give back every todo claim this run process still holds (see [`run_turns`]).
+///
+/// Scoped to the exact holder — this process's pid plus the run's agent id — so a
+/// claim another worker already stole or reclaimed is never released from here. A
+/// todo this run completed needs nothing (`Todo::complete` clears its claim) and
+/// an anonymous run never claimed at all.
+///
+/// A refused release is a lost ledger write, not a lost run: the caller is on its
+/// way out and the claim's lease still lapses on its TTL.
+fn release_run_claim(store: &mut Store, goal_id: &str, agent_id: Option<&str>, holder_pid: u32) {
+    let Some(agent_id) = agent_id else {
+        return;
+    };
+    let Ok(Some(goal)) = store.replay(goal_id) else {
+        return;
+    };
+    let held: Vec<String> = goal
+        .todos
+        .iter()
+        .filter(|todo| {
+            todo.status == TodoStatus::Open
+                && todo.claimed_by.as_deref() == Some(agent_id)
+                && todo.holder_pid == Some(holder_pid)
+        })
+        .map(|todo| todo.id.clone())
+        .collect();
+    for todo_id in held {
+        if let Err(error) = store.append(Event::TodoReleased {
+            goal_id: goal_id.to_string(),
+            todo_id: todo_id.clone(),
+            agent_id: agent_id.to_string(),
+            ts: now_epoch(),
+        }) {
+            eprintln!("goal: could not release the run's claim on {todo_id}: {error:#}");
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_turns_inner(
+    client: &mut crate::agent_client::AgentClient,
+    store: &mut Store,
+    goal_id: &str,
+    session_id: &str,
+    max_turns: u32,
+    lease_secs: u64,
+    agent_id: Option<&str>,
+    max_incomplete_retries: u32,
+    force_workspace: bool,
+    last_failure_kind: &mut Option<crate::state::FailureKind>,
+    executed_turn: &mut bool,
+    auto_title: bool,
+    created_session: bool,
+    worker_config: &crate::worker_config::WorkerConfig,
 ) -> Result<()> {
     let mut turn = 0u32;
     // P2: goal-monotonic turn counter. `turn` below restarts at 1 on every
@@ -5076,6 +5224,7 @@ async fn run_turns(
             Some(runs_dir),
             Some(&progress),
             turn_note.as_deref(),
+            worker_config,
         );
         let record = match turn_future.await {
             Ok(rec) => rec,
@@ -5424,6 +5573,41 @@ async fn run_turns(
                     break;
                 }
             }
+        }
+        // Transport-failure retry: a turn that never reached `agent_end`
+        // because the agent host or the stream under it went away is an infra
+        // event, so the worker keeps going instead of ending its whole run
+        // (an agent restart used to kill it outright, mid-task). Bounded like
+        // the incomplete path: N consecutive transport failures on the same
+        // todo mean the agent is not coming back within this run.
+        if record.terminal_state == "error"
+            && crate::executor::is_transport_error(record.error.as_deref())
+        {
+            let streak = crate::executor::transport_failure_streak(&g.history, &todo_id);
+            if streak >= crate::executor::DEFAULT_MAX_TRANSPORT_RETRIES {
+                println!(
+                    "   ✘ transport retry budget exhausted ({streak}/{}) — the agent stopped answering this turn; stopping (relaunch when the agent is healthy)",
+                    crate::executor::DEFAULT_MAX_TRANSPORT_RETRIES
+                );
+                notify_infra_stop(
+                    store,
+                    client,
+                    goal_id,
+                    g.supervisor_session_id.as_deref(),
+                    &todo_id,
+                    "transport_budget",
+                    &format!(
+                        "the turn stream keeps dying without an agent_end ({streak}/{})",
+                        crate::executor::DEFAULT_MAX_TRANSPORT_RETRIES
+                    ),
+                )
+                .await;
+                break;
+            }
+            println!(
+                "   ↻ transport failure (attempt {streak}/{}) — recorded as an infra turn, continuing",
+                crate::executor::DEFAULT_MAX_TRANSPORT_RETRIES
+            );
         }
         // P0-2②: outcome_followthrough — auto-derive a follow-up todo for any
         // delivery left unverified past the threshold, then refresh the read
@@ -8962,10 +9146,20 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
     // becomes due. A non-numeric value keeps the legacy text-only behavior
     // (resume_when_text hint, no real deadline) — and now warns about it
     // (P0-3④) instead of silently scheduling nothing.
-    let resume_when_parsed = resume_when
-        .as_deref()
-        .map(|rw| match parse_resume_when(rw) {
-            ResumeWhen::Defer(secs) => format!("defer:{secs}"),
+    //
+    // The deadline is resolved HERE, at the write site, and stored as an
+    // absolute instant (`resume_at_ms`): a relative `defer:N` left for the
+    // replay fold to resolve became "read-time + N" and re-armed itself on
+    // every read (bug h3-C1).
+    let written_at_ms = crate::state::now_epoch_millis();
+    let written_at = written_at_ms / 1000;
+    let (resume_when_parsed, resume_at_ms) = match resume_when.as_deref() {
+        None => (None, None),
+        Some(rw) => match parse_resume_when(rw) {
+            ResumeWhen::Defer(secs) => (
+                Some(format!("defer:{secs}")),
+                Some(written_at_ms.saturating_add(secs.saturating_mul(1000))),
+            ),
             ResumeWhen::TextHint(text) => {
                 eprintln!(
                     "{}",
@@ -8974,9 +9168,10 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
                         "no deadline is scheduled; the todo stays deferred until updated again"
                     )
                 );
-                text
+                (Some(text), None)
             }
-        });
+        },
+    };
     store.append_todo_change(Event::TodoUpdated {
         goal_id: goal_id.clone(),
         todo_id: todo_id.clone(),
@@ -8986,10 +9181,11 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
         note: note.clone(),
         priority: priority.clone(),
         resume_when: resume_when_parsed,
+        resume_at_ms,
         blocks: blocks.clone(),
         acceptance: acceptance.clone(),
         owner: owner.clone(),
-        ts: crate::state::now_epoch(),
+        ts: written_at,
     })?;
     refresh_next_action(store, &goal_id)?;
     sync_compat(store, &goal_id);
@@ -9195,6 +9391,7 @@ mod coverage_tests {
                 note: None,
                 priority: None,
                 resume_when: None,
+                resume_at_ms: None,
                 blocks: None,
                 acceptance: None,
                 owner: None,
@@ -10537,7 +10734,13 @@ mod cli_quirks_tests {
         let todo = goal.todo("t1").unwrap();
         assert_eq!(todo.status, crate::state::TodoStatus::Deferred);
         let deadline = todo.resume_when.expect("numeric sets a deadline");
-        assert!(deadline >= before + std::time::Duration::from_secs(120));
+        // The deadline is stamped at the write site as Unix MILLIS
+        // (`resume_at_ms`), so it can sit at most 1 ms below `before + 120 s` —
+        // that is the granularity of the stored instant, not a semantic slack.
+        assert!(
+            deadline + std::time::Duration::from_millis(1)
+                >= before + std::time::Duration::from_secs(120)
+        );
     }
 
     #[tokio::test]
@@ -11096,6 +11299,17 @@ mod residual_branch_tests {
         let root = dir.path().to_string_lossy().into_owned();
         let store = Store::open(&root).unwrap();
         (dir, store)
+    }
+
+    /// The configuration a dispatch stamps into the run header. These tests
+    /// exercise the turn loop, not the provenance rules — those are covered by
+    /// `worker_config`'s own tests.
+    fn test_worker_config() -> crate::worker_config::WorkerConfig {
+        crate::worker_config::WorkerConfig {
+            model: "future/test-model".to_string(),
+            thinking_level: "medium".to_string(),
+            source: crate::worker_config::ConfigSource::Default,
+        }
     }
 
     fn registered(store: &mut Store, id: &str) {
@@ -11727,6 +11941,7 @@ mod residual_branch_tests {
             &mut executed,
             false,
             true,
+            &test_worker_config(),
         )
         .await
         .unwrap_err();
@@ -11956,6 +12171,16 @@ mod rate_limit_backoff_tests {
     /// below the 45 s cool-down it is there to catch.
     const WATCH: Duration = Duration::from_secs(5);
 
+    /// The configuration a dispatch stamps into the run header; this module
+    /// exercises the backoff path, not the provenance rules.
+    fn test_worker_config() -> crate::worker_config::WorkerConfig {
+        crate::worker_config::WorkerConfig {
+            model: "future/test-model".to_string(),
+            thinking_level: "medium".to_string(),
+            source: crate::worker_config::ConfigSource::Default,
+        }
+    }
+
     struct Drive {
         _dir: tempfile::TempDir,
         store: Store,
@@ -12014,6 +12239,7 @@ mod rate_limit_backoff_tests {
 
         let mut last_failure_kind = None;
         let mut executed = false;
+        let worker_config = test_worker_config();
         // `max-turns 1`: the failing turn is the whole run.
         let run = run_turns(
             &mut client,
@@ -12029,6 +12255,7 @@ mod rate_limit_backoff_tests {
             &mut executed,
             false,
             true,
+            &worker_config,
         );
         // The wrapper is the observation: a run that returns inside WATCH did
         // not wait out the cool-down.
@@ -12672,6 +12899,179 @@ mod verify_failure_reason_tests {
             reason.len() < VERIFY_REASON_CHARS + 200,
             "len {}",
             reason.len()
+        );
+    }
+}
+
+/// h3-C2 — the run-scoped claim must not outlive the run that took it.
+///
+/// `claim_selected_with_lease` stamps the claim with the RUN process's pid so a
+/// dead holder can be detected (`work_items::task_lease::dead_holder_todos` →
+/// `host_died` supervisor note). A bounded segment that ends WITHOUT completing
+/// its todo used to leave that claim behind, so the next sweep read the exited
+/// run's pid and told the supervisor the worker had died — for a run that had
+/// finished normally. These tests drive the real loop (claim + writeback) and
+/// pin both halves: a finished segment gives its claim back, a holder that
+/// really died is still reported.
+#[cfg(test)]
+mod run_claim_release_tests {
+    use super::*;
+    use crate::state::{Goal, Todo, TodoStatus};
+    use crate::store::{Event, Store};
+    use scripted_agent::{ev, spawn_mock, MockState};
+
+    /// A pid that cannot be alive: above every platform's pid range, so the
+    /// `kill -0` / `OpenProcess` probe fails without touching a real process.
+    const DEAD_PID: u32 = i32::MAX as u32;
+
+    fn worker_config() -> crate::worker_config::WorkerConfig {
+        crate::worker_config::WorkerConfig {
+            model: "future/test-model".to_string(),
+            thinking_level: "medium".to_string(),
+            source: crate::worker_config::ConfigSource::Default,
+        }
+    }
+
+    /// One runnable advancement todo plus a registered peer — the shape an
+    /// `--agent-id` run needs (`decision/identity.rs` fails closed otherwise).
+    fn goal_with_todo() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path().to_str().unwrap()).unwrap();
+        store.register(&Goal::new("g", "obj", "/tmp")).unwrap();
+        store
+            .append(Event::GoalStarted {
+                goal_id: "g".into(),
+                ts: 1,
+            })
+            .unwrap();
+        store
+            .append(Event::AgentRegistered {
+                goal_id: "g".into(),
+                agent_id: "agent-a".into(),
+                workspaces: vec![],
+                ts: 2,
+            })
+            .unwrap();
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("t1", "work"),
+                ts: 3,
+            })
+            .unwrap();
+        (dir, store)
+    }
+
+    fn host_died_notes(store: &Store) -> Vec<String> {
+        store
+            .events("g")
+            .unwrap()
+            .into_iter()
+            .filter_map(|stored| match stored.event {
+                Event::SupervisorNote {
+                    note_kind, message, ..
+                } if note_kind == "host_died" => Some(message),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_run_that_ends_without_completing_gives_its_claim_back() {
+        let (_dir, mut store) = goal_with_todo();
+        // A turn that FAILS: the bounded segment ends, the todo stays open with
+        // no completion — the exact shape the sweep used to call `host_died`.
+        let (addr, state) = spawn_mock(MockState {
+            events: vec![
+                ev("mock-run-1", 0, "text_chunk", "{\"text\":\"partial\"}"),
+                ev("mock-run-1", 1, "error", "{\"error\":\"model refused\"}"),
+            ],
+            ..Default::default()
+        })
+        .await;
+        let mut client = crate::agent_client::AgentClient::connect(&addr)
+            .await
+            .expect("the scripted mock is reachable");
+        let mut last_failure_kind = None;
+        let mut executed = false;
+        let worker_config = worker_config();
+        let result = run_turns(
+            &mut client,
+            &mut store,
+            "g",
+            "session-1",
+            1,
+            3600,
+            Some("agent-a"),
+            0,
+            false,
+            &mut last_failure_kind,
+            &mut executed,
+            false,
+            true,
+            &worker_config,
+        )
+        .await;
+        assert!(
+            executed,
+            "the turn must reach the model, otherwise no claim was taken and the \
+             release below proves nothing: {result:?} (prompts: {})",
+            state.lock().unwrap_or_else(|e| e.into_inner()).prompts
+        );
+
+        // The claim really happened…
+        let claimed = store.events("g").unwrap().into_iter().any(
+            |stored| matches!(&stored.event, Event::TodoClaimed { todo_id, .. } if todo_id == "t1"),
+        );
+        assert!(
+            claimed,
+            "the run must take the claim (that is what the pid-liveness sweep reads)"
+        );
+        // …and the todo is still open, so the run left the claim behind.
+        let goal = store.replay("g").unwrap().unwrap();
+        let todo = goal.todo("t1").unwrap();
+        assert_eq!(
+            todo.status,
+            TodoStatus::Open,
+            "the segment must end WITHOUT completing the todo (that is the case under test)"
+        );
+        assert!(
+            todo.claimed_by.is_none(),
+            "a run that ended must give its claim back; still claimed by {:?} (holder pid {:?})",
+            todo.claimed_by,
+            todo.holder_pid
+        );
+
+        // The post-run sweep finds nothing to report for a finished segment…
+        crate::agents::supervision::record_dead_holders(&mut store, "g").unwrap();
+        assert!(
+            host_died_notes(&store).is_empty(),
+            "a finished segment must not be reported as host_died: {:?}",
+            host_died_notes(&store)
+        );
+
+        // …while a holder that really died (SIGKILL right after claiming, so it
+        // never reached its release) is still reported.
+        store
+            .append(Event::TodoClaimed {
+                goal_id: "g".into(),
+                todo_id: "t1".into(),
+                agent_id: "agent-a".into(),
+                lease_expires_at: now_epoch() + 3600,
+                holder_pid: Some(DEAD_PID),
+                ts: now_epoch(),
+            })
+            .unwrap();
+        crate::agents::supervision::record_dead_holders(&mut store, "g").unwrap();
+        let notes = host_died_notes(&store);
+        assert_eq!(
+            notes.len(),
+            1,
+            "a genuinely dead holder must still be reported: {notes:?}"
+        );
+        assert!(
+            notes[0].contains("host_died") && notes[0].contains("t1"),
+            "the note must name the todo and the cause: {notes:?}"
         );
     }
 }

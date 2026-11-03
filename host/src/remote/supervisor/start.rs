@@ -1,20 +1,40 @@
 //! Desktop entry points forward lifecycle policy to its owned Server.
 use super::*;
 pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::Error> {
-    SUPERVISOR.start().await.map_err(Into::into)
+    let status = SUPERVISOR.start().await.map_err(crate::Error::from);
+    lifecycle("serving", &status);
+    status
 }
 pub async fn enable() -> Result<RemoteStatus, crate::Error> {
-    SUPERVISOR.enable().await.map_err(Into::into)
+    let status = SUPERVISOR.enable().await.map_err(crate::Error::from);
+    lifecycle("enabled", &status);
+    status
+}
+/// One line per switch decision, in the file a later investigation reads.
+///
+/// The bridge that stops serving is the question a user asks after the fact
+/// ("the remote desktop died and the switch was off"), and until this existed
+/// the answer lived on a stderr a windowless launch cannot write to.
+fn lifecycle(action: &str, status: &Result<RemoteStatus, crate::Error>) {
+    match status {
+        Ok(status) => tracing::info!(event = "lifecycle", action = %action,
+            "remote: {action} (phase={:?}, reason={:?})",
+            status.phase,
+            status.reason
+        ),
+        Err(error) => {
+            tracing::error!(event = "lifecycle", action = %action, error = %error,"remote: {action} failed (local fault): {error}")
+        }
+    }
 }
 pub async fn add_device() -> Result<RemoteStatus, crate::Error> {
     match SUPERVISOR.add_device().await {
         Ok(status) => Ok(status),
         Err(error) => {
             // The GUI shows a classified sentence, so the cause itself has to
-            // reach a log or an "add failed" report has nothing to go on. `report`
-            // is what mirrors into `desktop.log`; the crate's own `eprintln!` lines
-            // go to stderr, which a windowed launch does not keep.
-            crate::environment::report(&format!("remote: add device failed: {error}"));
+            // reach the component log so a windowed launch also retains the
+            // evidence behind an "add failed" report.
+            tracing::error!(event = "add_device", error = %error,"remote: add device failed: {error}");
             Err(error.into())
         }
     }

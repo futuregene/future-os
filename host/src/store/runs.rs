@@ -42,6 +42,12 @@ pub struct RunEventRecord {
     pub payload: Option<String>,
     pub sequence: i64,
     pub created_at: i64,
+    /// The Agent could not serve the window this record belongs to in full: the
+    /// caller's cursor predates what it still holds, so these events do not
+    /// continue from it. Carried on every record of such an answer — a consumer
+    /// must rebuild its projection from a full read instead of appending them.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -111,7 +117,7 @@ pub fn create_run(input: CreateRunInput) -> Result<RunRecord, crate::Error> {
     let id = input
         .id
         .filter(|id| !id.trim().is_empty())
-        .unwrap_or_else(|| create_id("run"));
+        .unwrap_or_else(create_run_id);
     let now = now_millis();
     let mut conn = connect()?;
     let tx = conn.transaction()?;
@@ -698,6 +704,7 @@ pub fn append_run_event(input: AppendRunEventInput) -> Result<RunEventRecord, cr
         payload: input.payload,
         sequence: input.sequence,
         created_at: now,
+        truncated: false,
     };
     if let Ok(mut buf) = RUN_EVENT_BUFFER.lock() {
         buf.entry(input.run_id.clone())
@@ -1403,6 +1410,21 @@ mod tests {
             model_id: None,
         })
         .expect("create run");
+        let generated = create_run(CreateRunInput {
+            id: None,
+            thread_id: "thread".to_string(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("create native UUID run");
+        let parsed = uuid::Uuid::parse_str(&generated.id).expect("generated run UUID");
+        assert_eq!(parsed.get_version(), Some(uuid::Version::Random));
+        assert_eq!(parsed.to_string(), generated.id);
+        assert!(
+            get_run("run_activity").unwrap().is_some(),
+            "caller-supplied opaque IDs stay unchanged"
+        );
 
         let conn = connect().expect("connect");
         let activity: Option<i64> = conn
@@ -1497,6 +1519,7 @@ mod tests {
                 payload: None,
                 sequence,
                 created_at: sequence,
+                truncated: false,
             });
         }
         run_id
@@ -1534,6 +1557,7 @@ mod tests {
             payload: Some(payload.to_string()),
             sequence,
             created_at: sequence,
+            truncated: false,
         }
     }
 
@@ -2259,6 +2283,7 @@ mod tests {
             payload: payload.map(str::to_string),
             sequence,
             created_at: sequence,
+            truncated: false,
         }
     }
 

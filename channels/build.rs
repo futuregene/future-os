@@ -11,6 +11,12 @@
 use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rerun-if-env-changed=FUTURE_VERSION");
+    let version = std::env::var("FUTURE_VERSION")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| std::env::var("CARGO_PKG_VERSION").unwrap());
+    println!("cargo:rustc-env=FUTURE_CHANNEL_VERSION={version}");
     println!("cargo:rerun-if-env-changed=REGENERATE_PROTO");
     // Re-run when the proto source changes, so `make generate-proto` after a
     // proto edit is not skipped by Cargo's build-script cache (the env var

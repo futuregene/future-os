@@ -9,7 +9,7 @@ impl Manager {
     /// Extract the display text of a user entry's content (first text block),
     /// rendered as plain text and truncated to ~40 visible columns for the
     /// session list.
-    fn summary_first_message(entry: &SessionEntry) -> Option<String> {
+    pub(crate) fn summary_first_message(entry: &SessionEntry) -> Option<String> {
         let content_val = entry.content.as_ref()?;
         let text: String = if let Some(arr) = content_val.as_array() {
             // First text block only — a later one is the agent-injected
@@ -87,9 +87,22 @@ impl Manager {
     }
 
     pub fn list_all(&self) -> Result<Vec<SessionSummary>> {
-        let mut summaries = Vec::new();
-        for id in self.storage()?.ids(false)? {
-            let (rows, timestamp, query_count) = self.storage()?.summary_rows(&id)?;
+        let store = self.storage()?;
+        let (batch, legacy) =
+            super::content::reader::Snapshot::batch_summaries(store, store.ids(false)?)?;
+        let mut summaries = Vec::with_capacity(batch.len() + legacy.len());
+        for row in batch {
+            if row.needs_preview_fallback {
+                summaries.push(super::content::reader::Snapshot::summary(
+                    store,
+                    &row.summary.id,
+                )?);
+            } else {
+                summaries.push(row.summary);
+            }
+        }
+        for id in legacy {
+            let (rows, timestamp, query_count) = store.summary_rows(&id)?;
             let mut entries = rows
                 .into_iter()
                 .map(|row| serde_json::from_str::<SessionEntry>(&row))
@@ -105,7 +118,14 @@ impl Manager {
             summary.query_count = query_count;
             summaries.push(summary);
         }
-        summaries.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
+        // ids() is id-ordered. Preserve that deterministic tie-break across
+        // the separate canonical/legacy assembly paths as well as timestamps.
+        summaries.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
         Ok(summaries)
     }
 }
@@ -114,6 +134,254 @@ impl Manager {
 mod tests {
     use super::*;
     use crate::utils::generate_id;
+
+    #[test]
+    fn canonical_list_uses_thin_metadata_and_only_the_first_user_text_field() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = Manager::new(root.path().join("sessions"));
+        let store = manager.storage().unwrap();
+        store.reserve_segmented("s").unwrap();
+        store.replace("s",vec![
+            serde_json::json!({"id":"info","type":"session_info","timestamp":"2026-10-26T00:00:00Z","content":{"cwd":"/synthetic","model":"mock","session_name":"named","parent_session_id":"parent","system_prompt":"rules".repeat(10000),"source_meta":{"provenance":"source".repeat(5000)}}}),
+            serde_json::json!({"id":"u","type":"user","role":"user","timestamp":"2026-10-26T00:00:01Z","content":[{"type":"text","text":"[other](futureos://session/parent) 这个会话的主题"},{"type":"image_url","image_url":{"url":"data:image/png;base64,".repeat(3000)}}]}),
+            serde_json::json!({"id":"a","type":"assistant","role":"assistant","timestamp":"2026-10-26T00:00:02Z","content":"irrelevant answer".repeat(10000)}),
+        ]).unwrap();
+        let expected = Manager::summary_from_session(&manager.load("s").unwrap());
+        store.db.call(|db| {
+            db.execute_batch("DROP VIEW entry_records; DROP VIEW resolved_message_blocks; DROP VIEW block_records")?;
+            db.execute("DELETE FROM content_segments WHERE content_id IN (SELECT content_id FROM content_references WHERE session_id='s' AND (owner_id IN ('info','a') OR field='/content/1/image_url'))",[])?;
+            Ok(())
+        }).unwrap();
+        let actual = manager.list_all().unwrap().remove(0);
+        assert_eq!(
+            serde_json::to_value(&actual).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+        assert_eq!(actual.first_message.as_deref(), Some("这个会话的主题"));
+        assert!(
+            manager.load("s").is_err(),
+            "unused fields in the fixture must actually be unreadable"
+        );
+    }
+
+    #[test]
+    fn canonical_listing_uses_bounded_read_jobs_instead_of_one_per_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Manager::new(dir.path().join("sessions"));
+        let store = manager.storage().unwrap();
+        for index in 0..40 {
+            let id = format!("bulk-{index:02}");
+            store.reserve_segmented(&id).unwrap();
+            store
+                .replace(
+                    &id,
+                    vec![
+                        serde_json::json!({"id":format!("{id}-info"),"type":"session_info","timestamp":"2026-10-26T00:00:00Z","content":{"cwd":"/bulk","model":"mock"}}),
+                        serde_json::json!({"id":format!("{id}-user"),"type":"user","role":"user","timestamp":"2026-10-26T00:00:01Z","content":format!("question {index}")}),
+                    ],
+                )
+                .unwrap();
+        }
+        let (batch, legacy) = super::super::content::reader::Snapshot::batch_summaries(
+            store,
+            store.ids(false).unwrap(),
+        )
+        .unwrap();
+        assert!(legacy.is_empty());
+        assert_eq!(batch.len(), 40);
+        assert_eq!(
+            batch
+                .iter()
+                .filter(|row| row.needs_preview_fallback)
+                .count(),
+            0,
+            "plain inline titles must not fall back"
+        );
+        assert!(batch
+            .iter()
+            .any(|row| row.summary.first_message.as_deref() == Some("question 39")));
+        let before = store.db.metrics()["readerJob"]["count"].as_u64().unwrap();
+        let summaries = manager.list_all().unwrap();
+        let after = store.db.metrics()["readerJob"]["count"].as_u64().unwrap();
+        assert_eq!(summaries.len(), 40);
+        assert!(summaries
+            .iter()
+            .any(|summary| summary.first_message.as_deref() == Some("question 39")));
+        assert!(
+            after - before <= 3,
+            "40 canonical summaries used {} read jobs; expected listing and id enumeration only",
+            after - before
+        );
+    }
+
+    #[test]
+    fn bulk_listing_reads_a_referenced_first_message_without_a_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Manager::new(dir.path().join("sessions"));
+        let store = manager.storage().unwrap();
+        store.reserve_segmented("referenced-title").unwrap();
+        let title = format!("needle {}", "长文本".repeat(8_000));
+        store
+            .replace(
+                "referenced-title",
+                vec![
+                    serde_json::json!({"id":"info","type":"session_info","timestamp":"2026-10-26T00:00:00Z","content":{"cwd":"/bulk","model":"mock"}}),
+                    serde_json::json!({"id":"u","type":"user","role":"user","timestamp":"2026-10-26T00:00:01Z","content":[{"type":"text","text":title}]}),
+                ],
+            )
+            .unwrap();
+        let exact =
+            super::super::content::reader::Snapshot::summary(store, "referenced-title").unwrap();
+        let (batch, legacy) = super::super::content::reader::Snapshot::batch_summaries(
+            store,
+            store.ids(false).unwrap(),
+        )
+        .unwrap();
+        assert!(legacy.is_empty());
+        assert!(!batch[0].needs_preview_fallback);
+        let listed = manager
+            .list_all()
+            .unwrap()
+            .into_iter()
+            .find(|summary| summary.id == "referenced-title")
+            .unwrap();
+        assert_eq!(listed.first_message, exact.first_message);
+        assert!(listed
+            .first_message
+            .as_deref()
+            .is_some_and(|title| title.starts_with("needle 长文本")));
+    }
+
+    #[test]
+    fn bulk_listing_matches_exact_titles_for_image_only_and_multiple_text_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Manager::new(dir.path().join("sessions"));
+        let store = manager.storage().unwrap();
+        let info = |id: &str| serde_json::json!({"id":format!("{id}-info"),"type":"session_info","timestamp":"2026-10-26T00:00:00Z","content":{"cwd":"/bulk","model":"mock"}});
+
+        store.reserve_segmented("image-first").unwrap();
+        store
+            .replace(
+                "image-first",
+                vec![
+                    info("image-first"),
+                    serde_json::json!({"id":"image","type":"user","role":"user","timestamp":"2026-10-26T00:00:01Z","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}}]}),
+                    serde_json::json!({"id":"later","type":"user","role":"user","timestamp":"2026-10-26T00:00:02Z","content":"not the first title"}),
+                ],
+            )
+            .unwrap();
+
+        let mut blocks = (0..11)
+            .map(|index| serde_json::json!({"type":"future_block","index":index}))
+            .collect::<Vec<_>>();
+        blocks[2] =
+            serde_json::json!({"type":"text","text":format!("first text {}", "一".repeat(8_000))});
+        blocks[10] =
+            serde_json::json!({"type":"text","text":format!("later text {}", "二".repeat(8_000))});
+        store.reserve_segmented("numeric-fields").unwrap();
+        store
+            .replace(
+                "numeric-fields",
+                vec![
+                    info("numeric-fields"),
+                    serde_json::json!({"id":"many","type":"user","role":"user","timestamp":"2026-10-26T00:00:01Z","content":blocks}),
+                ],
+            )
+            .unwrap();
+
+        store.reserve_segmented("blank-reference").unwrap();
+        store
+            .replace(
+                "blank-reference",
+                vec![
+                    info("blank-reference"),
+                    serde_json::json!({"id":"blank","type":"user","role":"user","timestamp":"2026-10-26T00:00:01Z","content":"\n ".repeat(12_000)}),
+                ],
+            )
+            .unwrap();
+
+        let listed = manager.list_all().unwrap();
+        for id in ["image-first", "numeric-fields", "blank-reference"] {
+            let exact = super::super::content::reader::Snapshot::summary(store, id).unwrap();
+            let bulk = listed.iter().find(|summary| summary.id == id).unwrap();
+            assert_eq!(
+                bulk.first_message, exact.first_message,
+                "title mismatch for {id}"
+            );
+        }
+        assert_eq!(
+            listed
+                .iter()
+                .find(|summary| summary.id == "numeric-fields")
+                .unwrap()
+                .first_message
+                .as_deref()
+                .map(|title| &title[.."first text".len()]),
+            Some("first text")
+        );
+    }
+
+    /// A first message whose text never left the entries row.
+    ///
+    /// Canonical writers externalize a long body into `content_references` and
+    /// blank the block text, so the listing reads the title page by page. But a
+    /// row written before that externalization (or restored from one) carries
+    /// the text inline in `entries.content_json`, and the listing has to read
+    /// that shape too — otherwise an old session loses its preview entirely.
+    #[test]
+    fn bulk_listing_reads_a_first_message_stored_inline_in_its_entries_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Manager::new(dir.path().join("sessions"));
+        let store = manager.storage().unwrap();
+        store.reserve_segmented("inline-title").unwrap();
+        store
+            .replace(
+                "inline-title",
+                vec![
+                    serde_json::json!({"id":"info","type":"session_info","timestamp":"2026-10-26T00:00:00Z","content":{"cwd":"/bulk","model":"mock"}}),
+                    serde_json::json!({"id":"u","type":"user","role":"user","timestamp":"2026-10-26T00:00:01Z","content":"where is the log?"}),
+                ],
+            )
+            .unwrap();
+        // The pre-externalization shape: the text is in the entries row itself,
+        // with no reference and no block text beside it.
+        store
+            .db
+            .call(|db| {
+                let sql = "UPDATE entries SET content_json=?1 WHERE entry_type='user'";
+                db.execute(sql, [serde_json::json!("where is the log?").to_string()])?;
+                let sql = "DELETE FROM content_references \
+                           WHERE owner_kind='entry' AND field LIKE '/content/%/text'";
+                db.execute(sql, [])?;
+                let sql = "UPDATE message_blocks SET text=NULL";
+                db.execute(sql, [])?;
+                Ok(())
+            })
+            .unwrap();
+
+        let exact =
+            super::super::content::reader::Snapshot::summary(store, "inline-title").unwrap();
+        assert_eq!(exact.first_message.as_deref(), Some("where is the log?"));
+        let (batch, legacy) = super::super::content::reader::Snapshot::batch_summaries(
+            store,
+            store.ids(false).unwrap(),
+        )
+        .unwrap();
+        assert!(legacy.is_empty());
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].summary.first_message, exact.first_message);
+        assert!(
+            !batch[0].needs_preview_fallback,
+            "inline text is the preview; nothing is left for the caller to resolve"
+        );
+        let listed = manager
+            .list_all()
+            .unwrap()
+            .into_iter()
+            .find(|summary| summary.id == "inline-title")
+            .unwrap();
+        assert_eq!(listed.first_message.as_deref(), Some("where is the log?"));
+    }
 
     fn temp_manager(tag: &str) -> (std::path::PathBuf, Manager) {
         let dir = std::env::temp_dir().join(format!("future-{tag}-{}", generate_id()));

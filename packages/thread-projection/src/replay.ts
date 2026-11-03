@@ -1,3 +1,6 @@
+import { contentRangeStart } from "./contentRange";
+import { copyEventPayload } from "./eventPayload";
+
 /**
  * Reading a run's event log back from a host — the wire contract, not a client.
  *
@@ -92,7 +95,7 @@ export function normalizeReplayEvent(raw: unknown): ReplayEvent | null {
     : typeof record.coalesced_count === "number"
       ? record.coalesced_count
       : undefined;
-  return {
+  return copyEventPayload(record, {
     type: text(record.type),
     data: text(record.data),
     runId: text(record.runId) || text(record.run_id),
@@ -102,7 +105,7 @@ export function normalizeReplayEvent(raw: unknown): ReplayEvent | null {
       ? { eventId: text(record.eventId) || text(record.event_id) }
       : {}),
     ...(text(record.timestamp) ? { timestamp: text(record.timestamp) } : {}),
-  };
+  });
 }
 
 export function normalizeReplayEvents(raw: unknown): ReplayEvent[] {
@@ -127,15 +130,27 @@ export function normalizeReplayEvents(raw: unknown): ReplayEvent[] {
  * catches a garbled or reordered reply.
  */
 export function tailCoversRange(
-  events: readonly { idx?: number }[],
+  events: readonly { idx?: number; data?: string; coalescedCount?: number }[],
   since: number,
   watermark: number | undefined,
   rawEvents: number | undefined,
 ): boolean {
   const trimmed = Number.isSafeInteger(rawEvents) && (rawEvents as number) >= 0;
   const raw = trimmed ? (rawEvents as number) : events.length;
-  if (watermark !== undefined && watermark !== since + raw) return false;
-  if (!trimmed) return !events.some((event, index) => event.idx !== since + 1 + index);
+  if (trimmed && watermark !== undefined && watermark !== since + raw) return false;
+  if (!trimmed) {
+    let cursor=since;
+    for (const event of events) {
+      const idx=event.idx;
+      if (idx === undefined || !Number.isSafeInteger(idx) || idx <= cursor) return false;
+      const first=contentRangeStart(event.data) ?? idx;
+      if (first > cursor + 1 || first < 0 || first > idx) return false;
+      // Legacy coalescing has no byte offsets, so it cannot authorize overlap.
+      if (first < cursor + 1 && contentRangeStart(event.data) === undefined) return false;
+      cursor=idx;
+    }
+    return watermark === undefined || cursor === watermark;
+  }
   let previous = since;
   return events.every((event) => {
     const idx = event.idx;

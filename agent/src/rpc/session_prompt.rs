@@ -6,7 +6,7 @@ use std::sync::Arc;
 use super::prompt_helpers::build_user_message;
 use super::prompt_helpers::{
     approve_tool_path_if_present, build_user_message_with_model_context, prepare_session_tool_call,
-    run_event_to_sse,
+    run_event_to_sse_for_storage,
 };
 use super::ServerSession;
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,6 +22,8 @@ struct ScheduledPromptPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ScheduledSettingsSnapshot {
     settings_schema_version: u32,
+    #[serde(default)]
+    fusion_enabled: bool,
     model: String,
     thinking_level: String,
     cwd: String,
@@ -36,6 +38,47 @@ struct ScheduledSettingsSnapshot {
 pub(super) struct AcceptedRunSnapshot {
     run_loop: crate::agent::Loop,
     settings: ScheduledSettingsSnapshot,
+}
+
+/// O(1) admission identity for the session cache. Later queued inputs must not
+/// change which message prefix a background run snapshots for its first turn.
+struct RunInputBoundary {
+    length: usize,
+    tail: Option<String>,
+}
+impl RunInputBoundary {
+    fn capture(messages: &[crate::types::AgentMessage]) -> Self {
+        Self {
+            length: messages.len(),
+            tail: messages
+                .last()
+                .and_then(|message| message.journal_entry_id())
+                .map(str::to_owned),
+        }
+    }
+    fn snapshot(
+        &self,
+        messages: &[crate::types::AgentMessage],
+        interrupt: &std::sync::atomic::AtomicBool,
+    ) -> Result<Vec<crate::types::AgentMessage>> {
+        anyhow::ensure!(
+            messages.len() == self.length
+                && messages
+                    .last()
+                    .and_then(|message| message.journal_entry_id())
+                    == self.tail.as_deref(),
+            "accepted run input changed before its model snapshot was prepared"
+        );
+        let mut snapshot = Vec::with_capacity(messages.len());
+        for message in messages {
+            anyhow::ensure!(
+                !interrupt.load(std::sync::atomic::Ordering::Relaxed),
+                "run cancelled while preparing its input context"
+            );
+            snapshot.push(message.clone());
+        }
+        Ok(snapshot)
+    }
 }
 
 /// Textual parts of one user turn. `message` is the exact user-authored text;
@@ -204,14 +247,25 @@ impl ServerSession {
         if self.deleting {
             return Err(crate::runtime::RunQueueError::Deleting.into());
         }
-        let receipt_fingerprint = crate::session::compaction_ops::canonical_hash(
-            &serde_json::json!({
-                "message":prompt.message,"modelContext":prompt.model_context,"images":images,"attachments":attachments
-            }),
-        )?;
+        if self
+            .history_reset_in_progress
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            anyhow::bail!("session history reset is in progress");
+        }
         let persistence_unavailable = |error: anyhow::Error| {
-            crate::runtime::RunQueueError::PersistenceUnavailable(error.to_string())
+            crate::runtime::RunQueueError::PersistenceUnavailable(format!("{error:#}"))
         };
+        if !self.ephemeral {
+            self.session_manager
+                .ensure_execution_allowed(&self.session_id)
+                .map_err(persistence_unavailable)?;
+        }
+        let fingerprint_input = serde_json::json!({
+            "message":prompt.message,"modelContext":prompt.model_context,"images":images,"attachments":attachments
+        });
+        let receipt_fingerprint =
+            crate::session::compaction_ops::canonical_hash(&fingerprint_input)?;
         if !self.ephemeral && !self.scheduler.knows_request(client_request_id) {
             if let Some((run, sequence, fingerprint)) = self
                 .session_manager
@@ -240,20 +294,27 @@ impl ServerSession {
                     .map_err(persistence_unavailable)?
                     .has_events(&self.session_id, run_id)
                     .map_err(persistence_unavailable)?;
-                let transcript_exists = self
-                    .session_manager
-                    .load(&self.session_id)
-                    .ok()
-                    .is_some_and(|session| {
-                        session.entries.iter().any(|entry| {
-                            entry
-                                .content
-                                .as_ref()
-                                .and_then(|content| content.get("run_id"))
-                                .and_then(serde_json::Value::as_str)
-                                == Some(run_id)
+                let transcript_exists = if self.broadcaster.uses_segmented_storage() {
+                    self.session_manager
+                        .storage()
+                        .map_err(persistence_unavailable)?
+                        .has_transcript_run(&self.session_id, run_id)
+                        .map_err(persistence_unavailable)?
+                } else {
+                    self.session_manager
+                        .load(&self.session_id)
+                        .ok()
+                        .is_some_and(|session| {
+                            session.entries.iter().any(|entry| {
+                                entry
+                                    .content
+                                    .as_ref()
+                                    .and_then(|content| content.get("run_id"))
+                                    .and_then(serde_json::Value::as_str)
+                                    == Some(run_id)
+                            })
                         })
-                    });
+                };
                 let admitted = self
                     .session_manager
                     .has_queued_receipt_run(&self.session_id, run_id)
@@ -272,8 +333,30 @@ impl ServerSession {
         {
             return Err(crate::runtime::RunQueueError::PersistenceUnavailable(error).into());
         }
+        let fusion_enabled = future_fusion::fusion_prompt(prompt.message).is_some();
+        if fusion_enabled {
+            anyhow::ensure!(
+                crate::fusion::settings_enabled()?,
+                "Fusion is disabled in settings"
+            );
+            anyhow::ensure!(
+                self.created_by != "fusion",
+                "Recursive Fusion is prohibited"
+            );
+            anyhow::ensure!(
+                !future_fusion::fusion_prompt(prompt.message)
+                    .unwrap_or_default()
+                    .is_empty(),
+                "Use /fusion followed by a task"
+            );
+            anyhow::ensure!(
+                crate::fusion::available(),
+                "Fusion is unavailable: start or upgrade the FutureOS host"
+            );
+        }
         let settings = ScheduledSettingsSnapshot {
             settings_schema_version: 1,
+            fusion_enabled,
             model: self.model.clone(),
             thinking_level: self.thinking_level.clone(),
             cwd: self.cwd.clone(),
@@ -427,10 +510,24 @@ impl ServerSession {
         {
             return Err(crate::runtime::RunQueueError::PersistenceUnavailable(error).into());
         }
-        let requests = self.scheduler.queued();
-        let request = requests
-            .first()
-            .cloned()
+        // Anything that has waited too long stops being automatic here, at the
+        // one moment it could start by itself. It stays queued and visible; a
+        // person releasing it is the only way it runs.
+        let parked = self.scheduler.park_stale();
+        if !parked.is_empty() {
+            tracing::info!(
+                event = "queued_runs_parked",
+                session_id = %self.session_id,
+                runs = ?parked
+                    .iter()
+                    .map(|parked| (parked.run_id.as_str(), parked.reason.as_str()))
+                    .collect::<Vec<_>>(),
+                "queued prompts parked for the reader to release"
+            );
+        }
+        let request = self
+            .scheduler
+            .next_startable()
             .ok_or_else(|| anyhow::anyhow!("there is no queued run to start"))?;
         let mut payload: ScheduledPromptPayload = serde_json::from_value(request.payload.clone())?;
         // Follow-up coalescing (opt-in per request via `enqueue_coalescing`):
@@ -464,6 +561,7 @@ impl ServerSession {
                     .push_str(&trailing_payload.model_context);
                 payload.images.extend(trailing_payload.images);
                 payload.attachments.extend(trailing_payload.attachments);
+                payload.settings.fusion_enabled |= trailing_payload.settings.fusion_enabled;
             }
             // The front request keeps the run identity it was acknowledged with
             // (run id, sequence, client request id) — only the effective settings
@@ -482,6 +580,9 @@ impl ServerSession {
                 snapshot.ok_or_else(|| anyhow::anyhow!("accepted run snapshot is unavailable"))?;
             // Keep the payload's own copy of the effective settings consistent, so a
             // later reader sees the configuration this run actually uses.
+            let fusion_enabled = payload.settings.fusion_enabled;
+            let mut snapshot = snapshot;
+            snapshot.settings.fusion_enabled = fusion_enabled;
             payload.settings = snapshot.settings.clone();
             debug_assert_eq!(snapshot.settings.model, payload.settings.model);
             #[cfg(test)]
@@ -588,6 +689,10 @@ impl ServerSession {
         accepted_snapshot: Option<AcceptedRunSnapshot>,
         coalesced_run_ids: &[String],
     ) -> Result<crate::runtime::RunLease> {
+        if !self.ephemeral {
+            self.session_manager
+                .ensure_execution_allowed(&self.session_id)?;
+        }
         let accepted_settings = accepted_snapshot
             .as_ref()
             .map(|snapshot| &snapshot.settings);
@@ -603,9 +708,14 @@ impl ServerSession {
         let run_auto_compaction = accepted_settings
             .map(|settings| settings.auto_compaction)
             .unwrap_or(self.auto_compaction);
-        let run_no_context_files = accepted_settings
-            .map(|settings| settings.no_context_files)
-            .unwrap_or(self.no_context_files);
+        let fusion_enabled = accepted_settings
+            .map(|settings| settings.fusion_enabled)
+            .unwrap_or_else(|| future_fusion::fusion_prompt(prompt.message).is_some());
+        let fusion_inner = self.created_by == "fusion";
+        let run_no_context_files = fusion_inner
+            || accepted_settings
+                .map(|settings| settings.no_context_files)
+                .unwrap_or(self.no_context_files);
         let run_permission_level = accepted_settings
             .map(|settings| settings.permission_level.clone())
             .unwrap_or_else(|| self.permission_level.clone());
@@ -627,6 +737,16 @@ impl ServerSession {
             cwd_path,
             crate::utils::is_future_managed_dir(cwd_path),
         )?;
+        // Command admission normally loaded history already, but it drops the
+        // session write lock before this handler runs. The idle-release worker
+        // can clear the cache in that gap, and scheduled starts do not pass
+        // through command admission at all. Restore it while this run holds the
+        // write lock; otherwise an empty cache would be mistaken for a new
+        // session and the initial full save could replace the old transcript.
+        self.ensure_history_loaded()?;
+        // A cold handle may have loaded neither history nor its checkpoint.
+        // Both are no-ops on the normal hot path.
+        self.ensure_checkpoint_loaded()?;
         let (system_prompt, verbose, mut run_loop) = if let Some(snapshot) = accepted_snapshot {
             let mut run_loop = snapshot.run_loop;
             self.swap_token_counters_into_loop(&mut run_loop);
@@ -674,6 +794,10 @@ impl ServerSession {
             snapshot.active_checkpoint = shared.active_checkpoint.clone();
             (system_prompt, shared.verbose, snapshot)
         };
+        // Every run snapshot updates the session-owned checkpoint cell directly.
+        // A queued/accepted snapshot may predate the previous run's checkpoint,
+        // so reconnect it here rather than trusting its independent copy.
+        run_loop.active_checkpoint = self.active_checkpoint.clone();
         run_loop.session_id = self.session_id.clone();
         run_loop.cumulative_input_tokens = self.tokens_in.clone();
         run_loop.cumulative_output_tokens = self.tokens_out.clone();
@@ -811,10 +935,9 @@ impl ServerSession {
             None => (None, None),
         };
 
-        // Log the user message so the run log shows the question alongside
-        // the answer (thinking/output blocks already land via eprint_log!).
+        // Diagnostics describe the request; conversation bodies stay in the journal.
         if verbose && !user_text.is_empty() {
-            tracing::info!("[user] {user_text}");
+            tracing::debug!(input_bytes = user_text.len(), "user input received");
         }
 
         // Persist immediately so the GUI can see the user message (and any
@@ -871,8 +994,9 @@ impl ServerSession {
 
         // Clone shared state for the background task
         let messages_arc = self.messages.clone();
-        let initial_messages = messages_arc.read().clone();
+        let input_boundary = RunInputBoundary::capture(&messages_arc.read());
         let broadcaster = self.broadcaster.clone();
+        let segmented_storage = broadcaster.uses_segmented_storage();
         let runtime = self.runtime.clone();
         let task_lease = run_lease.clone();
         let session_manager = self.session_manager.clone();
@@ -899,10 +1023,22 @@ impl ServerSession {
         let session_name = self.session_name.clone();
         let created_by = self.created_by.clone();
         let creator_id = self.creator_id.clone();
-        let source_meta = self.source_meta.clone();
+        let source_meta = if segmented_storage {
+            serde_json::Value::Null
+        } else {
+            self.source_meta.clone()
+        };
         let auto_compaction = self.auto_compaction;
-        let append_system_prompt = self.append_system_prompt.clone();
-        let custom_system_prompt = self.custom_system_prompt.clone();
+        let append_system_prompt = if segmented_storage {
+            String::new()
+        } else {
+            self.append_system_prompt.clone()
+        };
+        let custom_system_prompt = if segmented_storage {
+            String::new()
+        } else {
+            self.custom_system_prompt.clone()
+        };
         run_loop.clear_interrupt();
         let mut approval_gate = self.approval_gate.clone();
         let is_ephemeral = self.ephemeral;
@@ -924,8 +1060,86 @@ impl ServerSession {
             None => crate::sandbox::ResolvedSandbox::disabled(&session_cwd),
         });
 
+        if fusion_inner {
+            let execution = crate::fusion::inner_execution(
+                &self.source_meta,
+                &session_id,
+                &run_lease.run_id,
+                &run_model,
+                &run_thinking_level,
+            )?
+            .ok_or_else(|| anyhow::anyhow!("Fusion session is missing its immutable source"))?;
+            let live_window = self
+                .model_registry
+                .read()
+                .resolve(&run_model)
+                .map(|model| model.context_window)
+                .unwrap_or(0);
+            anyhow::ensure!(
+                live_window > 0
+                    && execution.settings.context_window > 0
+                    && execution.settings.context_window <= live_window as usize,
+                "Fusion context capacity changed or is unknown; request was not sent"
+            );
+            let snapshot = execution.snapshot;
+            anyhow::ensure!(
+                std::path::Path::new(&snapshot.root).canonicalize()?
+                    == std::path::Path::new(&session_cwd).canonicalize()?,
+                "Fusion session workspace differs from snapshot"
+            );
+            run_loop.tools = if execution.file_tools {
+                crate::fusion::inner_tools()
+            } else {
+                Vec::new()
+            };
+            run_loop.fusion_context = Some(crate::fusion::ContextScope::Inner(Arc::new(snapshot)));
+            run_loop.config.max_turns = 0; // Phase deadline owns multi-turn work, not report size.
+                                           // Fusion Host owns the bounded retry policy; do not multiply it here.
+            run_loop.config.max_retries = 0;
+            // Enforce capacity on every request, including accumulated tool turns.
+            run_loop.provider = Arc::new(crate::fusion::ContextProvider {
+                provider: run_loop.provider.clone(),
+                settings: execution.settings,
+            });
+            run_loop.parallel_tools = false;
+        } else if fusion_enabled {
+            anyhow::ensure!(
+                crate::fusion::settings_enabled()?,
+                "Fusion is disabled in settings"
+            );
+            anyhow::ensure!(crate::fusion::available(), "Fusion host is unavailable");
+            let identity = self.session_manager.storage()?.storage_identity()?;
+            run_loop
+                .tools
+                .retain(|tool| tool.def.function.name != "fusion");
+            run_loop.tools.push(crate::fusion::main_tool());
+            run_loop.parallel_tools = false;
+            run_loop.fusion_context = Some(crate::fusion::ContextScope::Parent {
+                parent: future_fusion::Parent {
+                    database_id: format!(
+                        "{}:{}",
+                        identity.database_id, identity.restore_generation
+                    ),
+                    session_id: session_id.clone(),
+                    run_id: run_lease.run_id.clone(),
+                    tool_call_id: String::new(),
+                },
+                workspace: std::path::PathBuf::from(&session_cwd),
+                store: future_fusion::Store::existing(&crate::utils::future_home())?,
+                sandbox: sandbox.clone(),
+                cancelled: run_loop.interrupt_flag(),
+            });
+            run_loop.system_prompt.push('\n');
+            run_loop
+                .system_prompt
+                .push_str(future_fusion::DISCUSSION_POLICY);
+            run_loop.system_prompt.push('\n');
+            run_loop.config.system_prompt = run_loop.system_prompt.clone();
+        }
+
         // Auto is an approval reviewer, never a new OS sandbox tier. A failed
         // sandbox probe always retains the existing human Manual flow.
+        let mut review_initializer = None;
         if run_sandbox_policy
             .as_ref()
             .is_some_and(|policy| policy.model_reviewer)
@@ -933,29 +1147,55 @@ impl ServerSession {
         {
             run_loop.tool_review_annotations =
                 Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
-            let (review_request, review_history, review_source) = (
+            let (review_request, review_source) = (
                 prompt.message.to_string(),
-                &initial_messages[..initial_messages.len() - 1],
                 user_entry_id.as_deref().unwrap_or_default(),
             );
             approval_gate = approval_gate.for_run(
                 review_request,
-                review_history,
+                &[],
                 review_source,
                 run_loop.interrupt_flag(),
                 run_loop.tool_review_annotations.clone(),
             );
+            review_initializer = Some(approval_gate.clone());
         }
 
         // Build per-session StreamContext (callbacks) — these are session-
         // specific closures and must NOT be stored on the shared Loop.
         let save_messages = messages_arc.clone();
         let save_persistence = self.persistence.clone();
+        let save_broadcaster = broadcaster.clone();
         let persisted_run_id = run_lease.run_id.clone();
+        let persisted_epoch = run_lease.epoch;
         let persisted_execution_cwd = session_cwd.clone();
         let review_gate = approval_gate.clone();
         let save_closure: crate::agent::PersistCallback =
             Arc::new(move |msg: &mut crate::types::AgentMessage| {
+                if save_broadcaster.uses_segmented_storage()
+                    && save_broadcaster.persistence_error().is_some()
+                {
+                    // Recovery owns the committed prefix. A failed stream must
+                    // not publish a whole in-memory body past that watermark.
+                    return;
+                }
+                if msg.role == "tool" && msg.journal_entry_id().is_none() {
+                    if let Some(tool) = msg.content.iter().find_map(|block| match block {
+                        crate::types::ContentBlock::ToolResult { tool_call_id, .. } => {
+                            Some(tool_call_id.as_str())
+                        }
+                        _ => None,
+                    }) {
+                        if let Some(entry_id) = save_broadcaster.take_tool_result_entry_id(tool) {
+                            msg.metadata
+                                .get_or_insert_with(serde_json::Map::new)
+                                .insert(
+                                    crate::types::AgentMessage::JOURNAL_ENTRY_ID_KEY.into(),
+                                    serde_json::json!(entry_id),
+                                );
+                        }
+                    }
+                }
                 msg.ensure_journal_entry_id();
                 review_gate.observe_review_message(msg);
                 if is_ephemeral {
@@ -972,6 +1212,29 @@ impl ServerSession {
                 metadata
                     .entry("execution_cwd".to_string())
                     .or_insert_with(|| serde_json::Value::String(persisted_execution_cwd.clone()));
+                if metadata.contains_key(crate::types::AgentMessage::STREAM_BLOCKS_KEY) {
+                    metadata.insert(
+                        crate::types::AgentMessage::STREAM_EPOCH_KEY.into(),
+                        serde_json::json!(persisted_epoch),
+                    );
+                }
+                if save_broadcaster.uses_segmented_storage() {
+                    let result = if msg.role == "assistant" {
+                        crate::session::content::stream_entry::StreamEntry::from_assistant(
+                            msg,
+                            &persisted_run_id,
+                            persisted_epoch,
+                        )
+                        .and_then(|entry| save_persistence.append_stream(entry))
+                    } else {
+                        save_persistence
+                            .append(vec![crate::session::agent_message_to_compact_entry(msg)])
+                    };
+                    if let Err(error) = result {
+                        save_broadcaster.fail_persistence(error);
+                    }
+                    return;
+                }
                 let persisted = msg.clone();
                 save_messages.write().push(persisted.clone());
                 let entry = crate::session::agent_message_to_entry(&persisted);
@@ -987,7 +1250,40 @@ impl ServerSession {
             });
         #[cfg(test)]
         let checkpoint_callback_for_test = checkpoint_callback.clone();
+        let barrier_broadcaster = broadcaster.clone();
+        let barrier_persistence = self.persistence.clone();
+        let durability_barrier: crate::agent::DurabilityCallback = Arc::new(move || {
+            let broadcaster = barrier_broadcaster.clone();
+            let persistence = barrier_persistence.clone();
+            Box::pin(async move {
+                broadcaster.flush_journal_async().await?;
+                let result = tokio::task::spawn_blocking(move || persistence.barrier())
+                    .await
+                    .map_err(anyhow::Error::from)
+                    .and_then(|result| result);
+                if let Err(error) = &result {
+                    broadcaster.fail_persistence(error);
+                }
+                result
+            })
+        });
+        let failure_messages = messages_arc.clone();
+        let failure_broadcaster = broadcaster.clone();
+        let on_failure_messages: crate::agent::FailureMessagesCallback =
+            Arc::new(move |messages| {
+                if failure_broadcaster.persistence_error().is_none() {
+                    let previous = {
+                        let mut current = failure_messages.write();
+                        std::mem::replace(&mut *current, messages)
+                    };
+                    drop(previous);
+                }
+            });
         let stream_ctx = crate::agent::StreamContext {
+            segmented_storage: broadcaster.uses_segmented_storage(),
+            on_failure_messages:broadcaster.uses_segmented_storage().then_some(on_failure_messages),
+            durability_barrier: broadcaster.uses_segmented_storage().then_some(durability_barrier),
+            durability_failed: Default::default(),
             // Use the bare model ID from the Loop — the LLM API expects just
             // the model name, not the "provider/model" display format stored
             // on ServerSession.
@@ -1013,6 +1309,14 @@ impl ServerSession {
         let approval_sandbox = sandbox.clone();
         let permission_level = run_permission_level.clone();
         run_loop.config.before_tool_call = Some(Arc::new(move |tool_name, tool_id, arguments| {
+            if fusion_inner {
+                return (!future_fusion::INNER_TOOL_NAMES.contains(&tool_name)).then(|| {
+                    crate::types::ToolCallResult {
+                        result: format!("Fusion is read-only; tool `{tool_name}` is prohibited"),
+                        is_error: true,
+                    }
+                });
+            }
             match permission_level.as_str() {
                 "all" => {
                     // Legacy tool access does not grant extra OS sandbox
@@ -1148,15 +1452,39 @@ impl ServerSession {
                     on_sandboxed: Some(on_sandboxed),
                 },
                 async {
+                    // The accepted input's identity is frozen above, but its
+                    // owned model snapshot is prepared after releasing the
+                    // ServerSession command lock and off Tokio's worker threads.
+                    let source = messages_arc.clone();
+                    let interrupt = run_loop.interrupt_flag();
+                    let child_work = crate::service::work::process_child_work();
+                    let initial_messages = tokio::task::spawn_blocking(move || {
+                        let _child_work = child_work;
+                        let messages = input_boundary.snapshot(&source.read(), &interrupt)?;
+                        if let Some(gate) = review_initializer {
+                            gate.initialize_review_history(
+                                &messages[..messages.len().saturating_sub(1)],
+                            );
+                        }
+                        anyhow::Ok(messages)
+                    })
+                    .await
+                    .map_err(|error| anyhow::anyhow!("run input preparation failed: {error}"))??;
                     let be = broadcaster.clone();
+                    let segmented = be.uses_segmented_storage();
                     run_loop
                         .run_streaming_with_messages(
                             initial_messages,
                             &stream_ctx,
                             |_| {},
                             move |event| {
-                                if let Some(event) = run_event_to_sse(event) {
-                                    be.broadcast(event);
+                                if let Some(event) = run_event_to_sse_for_storage(event, segmented)
+                                {
+                                    if segmented {
+                                        be.broadcast_deferred(event);
+                                    } else {
+                                        be.broadcast(event);
+                                    }
                                 }
                             },
                             Some(interrupt_rx),
@@ -1177,8 +1505,31 @@ impl ServerSession {
             // stream cut off) — surfaced on `run_terminal` / `agent_end` when
             // the run ended incomplete.
             let stream_truncation = run_loop.stream_truncation.lock().clone();
+            let abandoned_tokens =
+                (tokens_out.load(std::sync::atomic::Ordering::Relaxed) - out_start).max(0);
+            let abandoned_ms = run_start.elapsed().as_millis() as i64;
+            if !is_ephemeral && broadcaster.uses_segmented_storage() {
+                if let Err(error) = broadcaster.flush_journal_async().await {
+                    abandon_run_for_persistence(
+                        &broadcaster,
+                        &runtime,
+                        &task_lease,
+                        &format!("{error:#}"),
+                        abandoned_tokens,
+                        abandoned_ms,
+                    );
+                    return;
+                }
+            }
             if let Some(error) = broadcaster.persistence_error() {
-                let _ = runtime.mark_persistence_degraded(&task_lease, &error);
+                abandon_run_for_persistence(
+                    &broadcaster,
+                    &runtime,
+                    &task_lease,
+                    &error,
+                    abandoned_tokens,
+                    abandoned_ms,
+                );
                 return;
             }
             if !runtime.begin_finalizing(&task_lease) {
@@ -1195,7 +1546,11 @@ impl ServerSession {
                 Ok(mut final_messages) => {
                     reconcile_run_identity(&mut final_messages, &task_lease.run_id);
                     // Update shared messages so next prompt includes the full context
-                    *messages_arc.write() = final_messages;
+                    let previous = {
+                        let mut current = messages_arc.write();
+                        std::mem::replace(&mut *current, final_messages)
+                    };
+                    drop(previous);
                     None
                 }
                 Err(error) => Some(format!("{error:#}")),
@@ -1237,8 +1592,6 @@ impl ServerSession {
                     .map(|value| value.error_message())
             });
             let commit_truncation = stream_truncation.clone();
-            let maintenance_manager = session_manager.clone();
-            let maintenance_session_id = session_id.clone();
             let child_work = crate::service::work::process_child_work();
             // Test-only seam, read before the closure takes the writer (see
             // `SessionPersistence::cancel_next_commit`): a cancelled blocking join
@@ -1253,15 +1606,17 @@ impl ServerSession {
 
                 // Preserve parent_session_id from the existing session on disk.
                 let parent_session_id = session_manager
-                    .load(&session_id)
-                    .map(|s| s.parent_session_id)
+                    .parent_session_id(&session_id)
+                    .ok()
+                    .flatten()
                     .unwrap_or_default();
 
                 // Build the authoritative session_info snapshot that records the
                 // session's cumulative metadata at this run boundary. Auto-
                 // generate session_name from the first user message when not set
                 // explicitly (matches first_message in list_sessions).
-                let resolved_name = if session_name.is_empty() {
+                let automatic_name = session_name.is_empty();
+                let resolved_name = if automatic_name {
                     messages_arc
                         .read()
                         .iter()
@@ -1274,7 +1629,6 @@ impl ServerSession {
                 };
                 let total_cost = *cumulative_cost.lock();
                 let mut info = serde_json::json!({
-                    "cwd": persisted_session_cwd,
                     "tokens_in": tokens_in.load(Ordering::Relaxed),
                     "tokens_out": tokens_out.load(Ordering::Relaxed),
                     "tokens_cache_r": tokens_cache_r.load(Ordering::Relaxed),
@@ -1288,21 +1642,33 @@ impl ServerSession {
                     "cost_split_complete": cost_split_complete
                         .load(std::sync::atomic::Ordering::Relaxed),
                     "session_name": resolved_name,
-                    "auto_compaction": auto_compaction,
-                    "append_system_prompt": append_system_prompt,
-                    "system_prompt": custom_system_prompt,
-                    "parent_session_id": parent_session_id,
-                    "thinking_level": session_thinking,
-                    "model": session_model,
                 });
-                if !created_by.is_empty() {
-                    info["created_by"] = serde_json::Value::String(created_by);
+                if segmented_storage && !automatic_name {
+                    // A frozen explicit title is not a run-owned counter. A
+                    // mid-run rename/clear must retain the control-plane value.
+                    info.as_object_mut()
+                        .expect("run metadata object")
+                        .remove("session_name");
                 }
-                if !creator_id.is_empty() {
-                    info["creator_id"] = serde_json::Value::String(creator_id);
-                }
-                if !source_meta.is_null() {
-                    info["source_meta"] = source_meta;
+                if !segmented_storage {
+                    if let serde_json::Value::Object(controls) = serde_json::json!({
+                        "cwd":persisted_session_cwd,"auto_compaction":auto_compaction,
+                        "append_system_prompt":append_system_prompt,"system_prompt":custom_system_prompt,
+                        "parent_session_id":parent_session_id,"thinking_level":session_thinking,"model":session_model,
+                    }) {
+                        info.as_object_mut()
+                            .expect("run metadata object")
+                            .extend(controls);
+                    }
+                    if !created_by.is_empty() {
+                        info["created_by"] = serde_json::Value::String(created_by);
+                    }
+                    if !creator_id.is_empty() {
+                        info["creator_id"] = serde_json::Value::String(creator_id);
+                    }
+                    if !source_meta.is_null() {
+                        info["source_meta"] = source_meta;
+                    }
                 }
                 let info_entry = crate::session::SessionEntry::session_info(
                     info,
@@ -1364,6 +1730,11 @@ impl ServerSession {
                 match session_persistence.commit_run(vec![info_entry.clone(), terminal.clone()]) {
                     Ok(()) => anyhow::Ok(()),
                     Err(commit_error) => {
+                        if session_manager.storage()?.storage_format(&session_id)?
+                            == crate::session::content::FORMAT_VERSION
+                        {
+                            return Err(commit_error.context("canonical run commit failed; committed prefix retained without full-history rewrite"));
+                        }
                         tracing::warn!(
                             run_id = %commit_run_id,
                             "append-only run commit refused ({commit_error}); healing with full rewrite"
@@ -1416,7 +1787,7 @@ impl ServerSession {
                          {}",
                         terminal_state
                     );
-                    broadcaster.broadcast(crate::rpc::SseEvent {
+                    broadcaster.broadcast_deferred(crate::rpc::SseEvent {
                         event_type: "agent_end".to_string(),
                         data: serde_json::json!({
                             "type": "agent_end",
@@ -1436,28 +1807,29 @@ impl ServerSession {
                 ) => Some(format!("persistence task failed: {reason}")),
             };
             if let Some(error) = persistence_error {
-                let _ = runtime.mark_persistence_degraded(&task_lease, &error);
                 tracing::error!(
                     run_id = %task_lease.run_id,
                     "Session persistence commit failed: {error}"
                 );
-                broadcaster.broadcast(crate::rpc::SseEvent {
-                    event_type: "persistence_error".to_string(),
-                    data: serde_json::json!({"error": &error}).to_string(),
-                    ..Default::default()
-                });
-                broadcaster.broadcast(crate::rpc::SseEvent {
-                    event_type: "agent_end".to_string(),
-                    data: serde_json::json!({
-                        "type": "agent_end",
-                        "state": crate::session::RUN_STATE_ERROR,
-                        "error": format!("Session persistence failed: {error}"),
-                        "usage": { "output_tokens": run_output_tokens },
-                        "duration_ms": run_duration_ms
-                    })
-                    .to_string(),
-                    ..Default::default()
-                });
+                // The journal may already be failed, in which case an ordinary
+                // broadcast would be dropped before any subscriber sees it —
+                // the same silent stop as the admission path above.
+                abandon_run_for_persistence(
+                    &broadcaster,
+                    &runtime,
+                    &task_lease,
+                    &error,
+                    run_output_tokens,
+                    run_duration_ms,
+                );
+                return;
+            }
+
+            if !is_ephemeral && broadcaster.uses_segmented_storage() {
+                if let Err(error) = broadcaster.publish_committed_terminal().await {
+                    let _ = runtime.mark_persistence_degraded(&task_lease, &format!("{error:#}"));
+                    tracing::error!(%error, "could not publish the durably committed terminal");
+                }
                 return;
             }
 
@@ -1490,7 +1862,7 @@ impl ServerSession {
                             "detected_by": t.detected_by,
                         });
                     }
-                    broadcaster.broadcast(crate::rpc::SseEvent {
+                    broadcaster.broadcast_deferred(crate::rpc::SseEvent {
                         event_type: "agent_end".to_string(),
                         data: data.to_string(),
                         ..Default::default()
@@ -1498,12 +1870,12 @@ impl ServerSession {
                 }
                 Some(full_error) => {
                     tracing::error!("Agent loop error: {}", full_error);
-                    broadcaster.broadcast(crate::rpc::SseEvent {
+                    broadcaster.broadcast_deferred(crate::rpc::SseEvent {
                         event_type: "error".to_string(),
                         data: serde_json::json!({"error": &full_error}).to_string(),
                         ..Default::default()
                     });
-                    broadcaster.broadcast(crate::rpc::SseEvent {
+                    broadcaster.broadcast_deferred(crate::rpc::SseEvent {
                         event_type: "agent_end".to_string(),
                         data: serde_json::json!({
                             "type": "agent_end",
@@ -1517,18 +1889,12 @@ impl ServerSession {
                     });
                 }
             }
-            // The transcript terminal and agent_end event are now durable, but
-            // buffered deltas for this run may still be queued. Compaction
-            // publishes a snapshot and retires the run's raw rows, which makes
-            // those late deltas unappendable, so drain first.
-            // This completion is the only trigger. Missed or failed attempts
-            // keep the raw journal; startup and idle work never retry them.
+            // Persist the admitted tail, with no completion-time snapshot,
+            // body scan, token deletion or background compaction request.
             if !is_ephemeral && broadcaster.persistence_error().is_none() {
-                if let Err(error) = broadcaster.flush_journal() {
-                    tracing::warn!(%error, "could not drain the event journal before compaction");
+                if let Err(error) = broadcaster.flush_journal_async().await {
+                    tracing::warn!(%error,"could not drain the event journal at completion");
                 }
-                maintenance_manager
-                    .request_journal_compaction(&maintenance_session_id, &task_lease.run_id);
             }
         };
         #[cfg(test)]
@@ -1605,12 +1971,6 @@ impl ServerSession {
         // compaction and, because it lives on the per-run snapshot, cannot
         // affect an already streaming response.
         r#loop.preflight_context_check = true;
-        let checkpoint = self
-            .session_manager
-            .load(&self.session_id)
-            .ok()
-            .and_then(|session| crate::session::latest_context_checkpoint(&session.entries));
-        *r#loop.active_checkpoint.lock() = checkpoint;
     }
 
     /// Read cwd-scoped context fresh for a run or explicit config reload.
@@ -1996,6 +2356,48 @@ impl TerminalCommitAbort {
             Self::Panicked(detail)
         }
     }
+}
+
+/// Abandon a run whose journal can no longer accept events, telling the client.
+///
+/// The run stays `persistence_degraded`: a settled outcome has to be recorded
+/// durably, and durability is exactly what failed, so it must not be invented
+/// here. What this fixes is the failure being **silent**. The append path drops
+/// every event once the journal is failed — including the `agent_end` the
+/// normal completion path would send — so a run stopped by storage went quiet
+/// mid-stream and only a client-side timeout noticed. Measured 2026-10-31
+/// 20:04:58Z: `run_ebdcad4959…` hit the admission age limit, its durability
+/// barrier failed 16 ms later, and nothing ever reached the client.
+///
+/// The terminal is published live and explicitly not durable
+/// (`broadcast_unpersisted`); the alternative is a subscriber waiting for an
+/// ending that can never be written.
+fn abandon_run_for_persistence(
+    broadcaster: &crate::rpc::SseBroadcaster,
+    runtime: &crate::runtime::SessionRuntime,
+    lease: &crate::runtime::RunLease,
+    error: &str,
+    output_tokens: i64,
+    duration_ms: i64,
+) {
+    let _ = runtime.mark_persistence_degraded(lease, error);
+    broadcaster.broadcast_unpersisted(crate::rpc::SseEvent {
+        event_type: "persistence_error".to_string(),
+        data: serde_json::json!({"error": error}).to_string(),
+        ..Default::default()
+    });
+    broadcaster.broadcast_unpersisted(crate::rpc::SseEvent {
+        event_type: "agent_end".to_string(),
+        data: serde_json::json!({
+            "type": "agent_end",
+            "state": crate::session::RUN_STATE_ERROR,
+            "error": format!("Session persistence failed: {error}"),
+            "usage": { "output_tokens": output_tokens },
+            "duration_ms": duration_ms
+        })
+        .to_string(),
+        ..Default::default()
+    });
 }
 
 /// Reconcile run identity across a run's final in-memory history before it

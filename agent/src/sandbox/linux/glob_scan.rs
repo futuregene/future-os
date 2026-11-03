@@ -631,7 +631,7 @@ mod tests {
             let (_, visited) =
                 scan_with_budget(&patterns, "pre_launch", &|| false, SCAN_TIME).unwrap();
             assert!(visited > 100_000);
-            eprintln!(
+            crate::console::eprintln!(
                 "{label}: visited={visited}, elapsed_ms={}",
                 start.elapsed().as_millis()
             );

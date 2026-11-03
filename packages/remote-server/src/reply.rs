@@ -42,21 +42,59 @@ pub fn with_base64_page(mut header: Value, body: &[u8]) -> Value {
 
 /// The one size guard and gzip policy both encoders share.
 fn encode_plain_reply(plain: Vec<u8>, gzip_enabled: bool) -> Vec<u8> {
-    // Enforce the decoded JSON budget too: compressing a larger reply would
-    // still be rejected by Mobile's decompression guard. Negotiated read pages
-    // reach here as small chunks; legacy/other oversized replies fail explicitly
+    // Compress first when the connection asked for it: the bound that matters is
+    // what the secure channel has to seal, and a directory-sized body that
+    // compresses under it is deliverable even though its plain form is not. The
+    // reader's own guard is the bomb guard on the decoded size, which is eight
+    // times this — so a catalogue the host can seal is one a client can read.
+    //
+    // A client that never declared `reply_gzip_v1` keeps the strict pre-compression
+    // check below, exactly as before.
+    let body = if gzip_enabled {
+        compress_json(plain)
+    } else {
+        plain
+    };
+    // Enforce the decoded JSON budget too: an oversized body fails explicitly
     // rather than being dropped by NATS and making the client time out.
-    if plain.len() > future_remote_crypto::MAX_PLAINTEXT {
+    if body.len() > future_remote_crypto::MAX_PLAINTEXT {
         return serde_json::to_vec(&json!({
             "type": "response", "success": false, "data": null,
             "error": "remote_reply_too_large"
         }))
         .expect("size error serializes");
     }
-    if !gzip_enabled || plain.len() < REMOTE_JSON_GZIP_THRESHOLD_BYTES {
+    body
+}
+
+/// Below this a pushed body is not worth compressing.
+///
+/// Much lower than a reply's floor (32 KB) because of what a catalogue packet
+/// looks like: measured on this protocol's rows, a one-row delta is 546 bytes and
+/// still shrinks by a third, a five-row one by four fifths, and a twenty-row one
+/// by 93% — JSON whose keys repeat every row compresses far better than the
+/// "small bodies do not compress" rule of thumb assumes. The cost of trying is a
+/// few microseconds; the floor only keeps the header off bodies where the check
+/// below would decide there is nothing to gain anyway.
+pub(crate) const PUSH_FLOOR_BYTES: usize = 256;
+
+/// gzip a JSON body when that actually makes it smaller.
+///
+/// The one compression policy both carriers share — replies, which only compress
+/// for a client that declared `reply_gzip_v1`, and pushes, where every client
+/// that reads them decodes through a decoder that sniffs the gzip magic. Below
+/// the floor the header would cost more than the body saves; an incompressible
+/// body is returned untouched so a caller never pays for trying.
+pub(crate) fn compress_json(plain: Vec<u8>) -> Vec<u8> {
+    compress_json_from(plain, REMOTE_JSON_GZIP_THRESHOLD_BYTES)
+}
+
+/// [`compress_json`] with the floor supplied: pushes use
+/// [`PUSH_FLOOR_BYTES`], replies keep their larger one.
+pub(crate) fn compress_json_from(plain: Vec<u8>, floor: usize) -> Vec<u8> {
+    if plain.len() < floor {
         return plain;
     }
-
     let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
     if encoder.write_all(&plain).is_err() {
         return plain;
@@ -76,15 +114,43 @@ mod tests {
     use flate2::read::GzDecoder;
     use std::io::Read;
     #[test]
+    /// A reply past the seal limit is refused when the client cannot inflate it,
+    /// and delivered when it can.
+    ///
+    /// The guard is on what the secure channel has to carry, not on the plain
+    /// size: a directory-sized body that compresses under the limit is a body a
+    /// client can read, which is what raises the catalogue ceiling without
+    /// paging. An oversized body that does *not* compress still fails explicitly.
     fn oversized_reply_is_an_explicit_bounded_error_even_with_gzip() {
-        let body = json!({"success": true, "data": "x".repeat(2 * 1024 * 1024)});
-        for gzip in [false, true] {
-            let bytes = encode_reply_payload_with_gzip(&body, gzip);
-            assert!(bytes.len() < 1024);
-            let value: Value = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(value["success"], false);
-            assert_eq!(value["error"], "remote_reply_too_large");
+        let compressible = json!({"success": true, "data": "x".repeat(2 * 1024 * 1024)});
+        // No gzip: the plain body is what would have to be sealed.
+        let refused: Value =
+            serde_json::from_slice(&encode_reply_payload_with_gzip(&compressible, false)).unwrap();
+        assert_eq!(refused["success"], false);
+        assert_eq!(refused["error"], "remote_reply_too_large");
+        // Gzip: it fits, and what arrives is still the caller's document.
+        let encoded = encode_reply_payload_with_gzip(&compressible, true);
+        assert_eq!(&encoded[..2], &[0x1f, 0x8b]);
+        assert!(encoded.len() < future_remote_crypto::MAX_PLAINTEXT);
+        let mut decoded = Vec::new();
+        GzDecoder::new(encoded.as_slice())
+            .read_to_end(&mut decoded)
+            .unwrap();
+        let restored: Value = serde_json::from_slice(&decoded).unwrap();
+        assert_eq!(restored, compressible);
+        // Incompressible and oversized: still an explicit, bounded refusal.
+        let mut noise = Vec::new();
+        let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+        for _ in 0..future_remote_crypto::MAX_PLAINTEXT + 4096 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            noise.push((state & 0xff) as u8);
         }
+        let incompressible = json!({ "success": true, "data": noise });
+        let refused: Value =
+            serde_json::from_slice(&encode_reply_payload_with_gzip(&incompressible, true)).unwrap();
+        assert_eq!(refused["error"], "remote_reply_too_large");
     }
     #[test]
     fn remote_json_gzip_is_automatic_thresholded_and_standard() {
@@ -149,5 +215,54 @@ mod tests {
         let carried = with_base64_page(header, &[0xfb, 0xff, 0x00]);
         assert_eq!(carried["readChunk"]["data"], json!("-_8A"));
         assert_eq!(carried["readChunk"]["totalBytes"], json!(3));
+    }
+
+    /// A push is compressed only when that actually helps, and what comes out is
+    /// still a body every client can read: they sniff the gzip magic and inflate
+    /// (`plain_json_bytes`, `decodeRemoteJson`), so the packet needs no
+    /// negotiation.
+    #[test]
+    fn a_catalogue_sized_body_is_compressed_and_still_readable() {
+        let row = json!({
+            "sessionId": "0b6a1c2e-7777-8888-9999-000011112222",
+            "title": "解释一下这个握手为什么带整份会话目录",
+            "status": "completed",
+        });
+        let body = json!({ "sessions": vec![row; 400] });
+        let plain = serde_json::to_vec(&body).unwrap();
+        assert!(plain.len() > REMOTE_JSON_GZIP_THRESHOLD_BYTES);
+
+        let compressed = compress_json(plain.clone());
+        assert_eq!(&compressed[..2], &[0x1f, 0x8b], "must be real gzip");
+        assert!(
+            compressed.len() * 4 < plain.len(),
+            "a catalogue should shrink to a fraction: {} -> {}",
+            plain.len(),
+            compressed.len()
+        );
+        let decoded: Value = serde_json::from_slice(
+            &future_remote_protocol::json::plain_json_bytes(&compressed).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decoded, body);
+    }
+
+    /// Below the threshold the header costs more than the body saves, and an
+    /// incompressible body is left alone so no caller pays for trying.
+    #[test]
+    fn small_and_incompressible_bodies_are_left_alone() {
+        let small = serde_json::to_vec(&json!({ "sessionId": "s1" })).unwrap();
+        assert_eq!(compress_json(small.clone()), small);
+
+        let mut noise = Vec::new();
+        let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+        for _ in 0..REMOTE_JSON_GZIP_THRESHOLD_BYTES * 2 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            noise.push((state & 0xff) as u8);
+        }
+        let untouched = compress_json(noise.clone());
+        assert_eq!(untouched.len(), noise.len(), "no gain, no compression");
     }
 }

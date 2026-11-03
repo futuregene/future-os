@@ -20,7 +20,7 @@
 | [通道 provider 契约](guide/channels-provider-contract.zh-CN.md)（[en](guide/channels-provider-contract.md)） | 新增通道：provider 契约、入站/出站边界、配置、错误、测试与覆盖率要求 |
 | [Desktop Agent](guide/desktop-agent.zh-CN.md)（[en](guide/desktop-agent.md)） | 默认内置/外部服务、退出中断范围、CLI 接入、开发启动、日志与升级恢复 |
 | [主机模式](guide/desktop-host.zh-CN.md)（[en](guide/desktop-host.md)） | 前台 `future host` 启动、平台登录二维码、用 `future remote devices add` 配对、Ctrl+C、无 GUI 服务器构建与排障 |
-| [域名解析](guide/dns-resolution.zh-CN.md)（[en](guide/dns-resolution.md)） | 静态 musl CLI 在没有 `/etc/resolv.conf` 时如何解析名字、候选路径、`FUTURE_DNS_SERVER` / `FUTURE_RESOLV_CONF`、NSS 限制与实测结论 |
+| [域名解析](guide/dns-resolution.zh-CN.md)（[en](guide/dns-resolution.md)） | 静态 musl 构建在没有 `/etc/resolv.conf` 时如何解析名字——哪些客户端会挂上解析器、候选路径、`FUTURE_DNS_SERVER` / `FUTURE_RESOLV_CONF`、NSS 限制，以及不覆盖的是什么（NATS 中继） |
 | [Headless 发布验收](testing/headless-release-acceptance.zh-CN.md)（[en](testing/headless-release-acceptance.md)） | 最终成功 CI、打包签名、真实安装升级、性能与同候选验收遗留清单 |
 | [Headless unsigned 下载与结果](testing/headless-unsigned-results.zh-CN.md)（[en](testing/headless-unsigned-results.md)） | 实际 dev 包、公开地址、SHA-256、CLI/sidecar 和静态/旧 Linux 验证 |
 | [目录布局](guide/directory-layout.zh-CN.md)（[en](guide/directory-layout.md)） | `~/.future/` 下各目录职责（agent、channels、TUI、GUI、goal） |
@@ -40,7 +40,10 @@
 | [Goal 控制面](architecture/goal-control-plane.zh-CN.md)（[en](architecture/goal-control-plane.md)） | `future-goal` — 目标/todos/门禁/监控、should-run 内核、配额、事件溯源、交付闭环、多 agent、supervisor/worker 消息、web dashboard |
 | [长程证据账本](architecture/long-run-evidence-ledger.zh-CN.md)（[en](architecture/long-run-evidence-ledger.md)） | 长程 goal 目标问责记录 — 墙钟、花费、验证结果、每个已关闭目标的显式边界 |
 | [定时任务](architecture/tasks.zh-CN.md)（[en](architecture/tasks.md)） | `future-tasks` — 可复用提示词 + 触发器（按计划或随时手动）、全权限运行、确定性 `next_due` 内核、运行台账与提示词版本历史 |
+| [Fusion 开发设计](architecture/fusion.zh-CN.md)（[en](architecture/fusion.md)） | 待实现的 `/fusion` 主流程思考工具、聚焦决策与内层只读讨论、持久化复盘诊断、桌面/移动/终端三端支持及 Windows/macOS/Linux 验收 |
 | [SQLite 迁移](architecture/sqlite-migration.zh-CN.md)（[en](architecture/sqlite-migration.md)） | Agent/Desktop SQLite 存储布局与迁移策略 |
+| [精简会话存储开发计划](architecture/stream-storage-development.zh-CN.md)（[en](architecture/stream-storage-development.md)） | 2026-10-27 review 修订：直接替换未发布布局，紧凑变更与历史迁移复测；待实现 |
+| [会话存储空间基线](architecture/stream-storage-space-baselines.zh-CN.md)（[en](architecture/stream-storage-space-baselines.md)） | 原始调查、上一版两次合成测量、实际结构审计和内存原型；旧记录保留不覆盖 |
 | [Desktop 内置 Agent 开发计划](architecture/embedded-agent-development.zh-CN.md)（[en](architecture/embedded-agent-development.md)） | 进程内完整 Agent、服务与宿主生命周期、实例锁、退出清理、升级安装、开发工具及分阶段验收 |
 | [Agent 启动仲裁与自愈](architecture/agent-supervision.zh-CN.md)（[en](architecture/agent-supervision.md)） | 同一数据根下 `future agent` 与 `future host` 谁启动 Agent：实例锁仲裁、让位而非失败、有界等待、崩溃熔断，以及 TUI 为何只连接（D11） |
 | [回复结果语义](architecture/response-outcomes.zh-CN.md)（[en](architecture/response-outcomes.md)） | 回复结束的结果语义（停止 / 拒答 / 过滤 / 暂停） |
@@ -50,6 +53,12 @@
 | [RPC crate](architecture/rpc.zh-CN.md)（[en](architecture/rpc.md)） | `packages/rpc` — protobuf 线上契约（唯一事实来源） |
 | [远程下载分档](architecture/remote-download-tiers.zh-CN.md)（[en](architecture/remote-download-tiers.md)） | 桌面保存副本不是手机下载：按客户端分档（手机 10 MiB、桌面 512 MiB）、桌面档去掉了什么、旧 host 的受匹配拒绝文案及其验收证据 |
 
+## 设计（`design/`）
+
+| 文档 | 内容 |
+|---|---|
+| [工作区与会话：分页加载与归档设计](design/workspace-thread-archive-and-paging.zh-CN.md)（[en](design/workspace-thread-archive-and-paging.md)） | 定稿设计：树级归档与统一的"无活跃会话"前置规则、工作区归档与容器唤醒、只读详情、首次归档引导，以及工作区列表/工作区对话/临时对话的 keyset 分页 |
+
 ## 内部文档（`internals/`）
 
 桌面应用与移动客户端的分模块工作文档：产品语义、数据模型、各平台沙箱、连接与远程行为、上下文压缩、移动端构建与平台对齐记录，以及 TUI 测试框架约定。
@@ -57,7 +66,7 @@
 - [desktop/](internals/desktop/PRODUCT.md) — 产品语义、数据模型（`ER.md`）、颜色、沙箱（macOS/Windows/Linux）、连接与远程、嵌入式终端、压缩（文档地图见 `desktop/CLAUDE.md`）
 - [compaction/](internals/compaction/compaction.zh-CN.md) — 运行时上下文压缩：两个策略及其参数、生产请求形状、开发指南（`compaction-development.zh-CN.md`）、检索接口，以及两个实验——闭卷（`compaction-closed-book-experiment.zh-CN.md`）与开卷（`compaction-open-book-experiment.zh-CN.md`）
 - [mobile/](internals/mobile/README.md) — 移动端构建/TestFlight、iOS 平台对齐、流式同步设计与测量、鸿蒙兼容（带日期的审计与测量报告见 `archives/verification/`）
-- [skill_reco/](internals/skill_reco/harness.zh-CN.md) — 技能推荐：[评测](internals/skill_reco/evaluation.zh-CN.md)、[运行框架](internals/skill_reco/harness.zh-CN.md) 与[集成方案](internals/skill_reco/integration-plan.zh-CN.md)（历史设计记录）
+- [skill_reco/](internals/skill_reco/harness.zh-CN.md) — 技能推荐：[评测](internals/skill_reco/evaluation.zh-CN.md)、[运行框架](internals/skill_reco/harness.zh-CN.md)、[集成方案](internals/skill_reco/integration-plan.zh-CN.md)（历史设计记录），以及[换一个决策模型在同一批题上打分](internals/skill_reco/decider-comparison.zh-CN.md)
 - [agent/](internals/agent/README.zh-CN.md) — gRPC 后端（`agent/`）的模块地图：turn loop、工具、LLM 层、会话、沙箱，以及改每一项前该读什么
 - [host](internals/host.zh-CN.md) — `future-host`（无 GUI 的共享后端：store、agent bridge、tasks、remote、identity）的模块地图
 - [Desktop NATS 桥](internals/desktop-nats.md)
@@ -116,6 +125,12 @@ DMG、Windows 便携 zip 与 Linux 便携 tarball。它们是**活文档**——
   [缓存重开测量](archives/verification/streaming-sync-warm-measurement.zh-CN.md) 与性能/问题报告、去身份测量 JSON
 - [testing/](archives/testing/) — 被取代的覆盖率战役任务记录快照，整体移出
   `testing/`；同属非用户文档仅英文例外
+
+## 提案（`proposals/`）
+
+- [superagent-borrowing.zh-CN.md](proposals/superagent-borrowing.zh-CN.md)（[en](proposals/superagent-borrowing.md)）—
+  借鉴 `deepseek-ai/dsh-superagent-prototype` 的哪些部分、不借哪些，以及每条的
+  代价、验收与回退。**未立项**：各项等 owner 决定。
 
 ## 维护者文档（`maintainers/`）
 

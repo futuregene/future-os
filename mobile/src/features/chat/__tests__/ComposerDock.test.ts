@@ -8,6 +8,8 @@ import { SkillPicker } from "../components/SkillPicker";
 import { SessionPicker } from "../components/SessionPicker";
 import { SkillSuggestionCard } from "../components/SkillSuggestionCard";
 import { SkillDetailsDialog } from "../components/SkillDetailsDialog";
+import { SendChoiceSheet } from "../components/SendChoiceSheet";
+import { SendQueuePanel } from "../components/SendQueuePanel";
 import { PendingApprovalCard } from "../messages/PendingApprovalCard";
 import { deleteTemporaryAttachment } from "../../../remote/files";
 import { resources } from "../../../i18n/locales";
@@ -22,7 +24,7 @@ jest.mock("react-native", () => {
   });
 });
 
-jest.mock("lucide-react-native", () => Object.fromEntries(["ArrowDown", "ChevronDown", "CircleAlert", "FileText", "Info", "Lightbulb", "MessageCircle", "Paperclip", "Send", "Slash", "Square", "X"].map(name => [name, () => null])));
+jest.mock("lucide-react-native", () => Object.fromEntries(["ArrowDown", "Check", "ChevronDown", "CircleAlert", "FileText", "Info", "Lightbulb", "ListPlus", "MessageCircle", "Paperclip", "Pencil", "RotateCcw", "Send", "Slash", "Square", "Trash2", "X", "Zap"].map(name => [name, () => null])));
 // The composer takes `t` as a prop, but the details dialog and the surfaces
 // below it call `useTranslation` themselves. Standing up the real i18n module
 // would drag expo-localization into a component test; the translations are
@@ -35,7 +37,13 @@ jest.mock("react-i18next", () => ({
 jest.mock("react-native-safe-area-context", () =>
   jest.requireActual("react-native-safe-area-context/jest/mock").default);
 jest.mock("../messages/PendingApprovalCard", () => ({ PendingApprovalCard: jest.fn(() => null) }));
-jest.mock("../../../remote/RemoteContext", () => ({ useRemote: jest.fn() }));
+const mockRemoteControls = {
+  capabilities: new Set<string>(), desktopReadable: false, desktopSettingsRevision: 0,
+  getFusionSettings: jest.fn(),
+};
+jest.mock("../../../remote/RemoteContext", () => ({
+  useRemote: jest.fn(), useRemoteControls: () => mockRemoteControls,
+}));
 jest.mock("../../../remote/files", () => ({ deleteTemporaryAttachment: jest.fn() }));
 // The picker itself is replaced, but its sizing helpers are the real ones: the
 // composer's height budget is what's under test here.
@@ -152,7 +160,10 @@ test("streaming keeps the next draft through updates and completion without subm
     act(() => input().props.onSubmitEditing());
     expect(send).not.toHaveBeenCalled();
     expect(button("chat.send")).toBeUndefined();
-    expect(button("chat.stop")).toBeDefined();
+    // A draft while the run streams turns the send slot into a question — hold
+    // it in the queue, or interrupt and send — so Stop is not the only control.
+    expect(button("chat.stop")).toBeUndefined();
+    expect(button("chat.chooseSend")).toBeDefined();
     for (let i = 0; i < 20; i++) {
       act(() => tree.update(createElement(Harness, { streaming: true })));
     }
@@ -813,3 +824,124 @@ test("images the model cannot take are called out on the pending row and above t
     supported.unmount();
   }
 });
+
+// What the selector shows is the effort the conversation actually runs at. The
+// host clamps a level the selected model no longer offers, so displaying the
+// stored one would claim an effort the run does not have.
+test("the thinking selector shows the model's own starting level for a stored one it dropped", () => {
+  const props = {
+    message: "", setMessage: jest.fn(), attachments: [], setAttachments: jest.fn(),
+    supportsImages: true, activeModelLabel: "Pro", t: (key: string) => key,
+    remote: {
+      draft: false, selectedSessionId: "s1", desktopOnline: true,
+      connectionPresentation: { level: "connected" },
+      // The model narrowed its levels after "high" was stored for this session.
+      models: [{ id: "pro", provider: "future", thinkingLevels: ["default", "off", "low"], defaultThinkingLevel: "default" }],
+      modelId: "future/pro", thinkingLevel: "high", streaming: false, abort: jest.fn(),
+    },
+    openAttachmentMenu: jest.fn(), send: jest.fn(), atLatest: true, scrollToLatest: jest.fn(),
+    pendingApprovals: [], approvalSubmitting: null, approvalError: null,
+    decideApproval: jest.fn(), selector: null, setSelector: jest.fn(),
+  } as unknown as ComponentProps<typeof ComposerDock>;
+  let tree!: ReactTestRenderer;
+  act(() => { tree = create(createElement(ComposerDock, props as never)); });
+  try {
+    const thinking = () => tree.root.findAll(node => typeof node.props.accessibilityLabel === "string"
+      && node.props.accessibilityLabel.startsWith("chat.thinkingLevel: "))[0]!;
+    expect(thinking().props.accessibilityLabel).toBe("chat.thinkingLevel: default");
+    expect(tree.root.findAllByType(Text).some(node => node.props.children === "thinking.high")).toBe(false);
+
+    // A level the model does offer is shown as itself.
+    act(() => { tree.update(createElement(ComposerDock, { ...props, remote: { ...props.remote, thinkingLevel: "low" } } as never)); });
+    expect(thinking().props.accessibilityLabel).toBe("chat.thinkingLevel: low");
+  } finally {
+    act(() => tree.unmount());
+  }
+});
+
+test("a streaming draft's send slot asks the queue question, and both rows reach the screen", async () => {
+  const enqueueDraft = jest.fn(() => true);
+  const abort = jest.fn(async () => {});
+  const { tree, pressable, unmount } = mountDock({
+    message: "下一条",
+    enqueueDraft,
+    remote: {
+      draft: false, selectedSessionId: "s1", desktopOnline: true,
+      connectionPresentation: { level: "connected" }, models: [], modelId: "model",
+      streaming: true, busy: false, abort, capabilities: new Set(),
+    },
+  });
+  try {
+    // Something is in the field, so the slot can no longer be only "stop".
+    expect(pressable("chat.stop")).toBeUndefined();
+    expect(pressable("chat.send")).toBeUndefined();
+    const choose = pressable("chat.chooseSend")!;
+    act(() => choose.props.onPress());
+    expect(tree.root.findByType(SendChoiceSheet).props.open).toBe(true);
+
+    act(() => tree.root.findByType(SendChoiceSheet).props.onQueue());
+    expect(enqueueDraft).toHaveBeenCalledTimes(1);
+    expect(tree.root.findByType(SendChoiceSheet).props.open).toBe(false);
+    expect(abort).not.toHaveBeenCalled();
+
+    // The interrupt row hands the draft over first, then ends the run: the
+    // flush that follows the run sends what was on screen.
+    act(() => pressable("chat.chooseSend")!.props.onPress());
+    await act(async () => tree.root.findByType(SendChoiceSheet).props.onInterruptAndSend());
+    expect(enqueueDraft).toHaveBeenCalledTimes(2);
+    expect(abort).toHaveBeenCalledTimes(1);
+    expect(enqueueDraft.mock.invocationCallOrder[1]!).toBeLessThan(
+      abort.mock.invocationCallOrder[0]!,
+    );
+  } finally {
+    unmount();
+  }
+});
+
+test("an empty field with a queue waiting stops, and says the queue goes with it", async () => {
+  const abort = jest.fn(async () => {});
+  const { tree, pressable, unmount } = mountDock({
+    message: "",
+    queueItems: [{ attachmentCount: 0, content: "held", id: "q1" }],
+    remote: {
+      draft: false, selectedSessionId: "s1", desktopOnline: true,
+      connectionPresentation: { level: "connected" }, models: [], modelId: "model",
+      streaming: true, busy: false, abort, capabilities: new Set(),
+    },
+  });
+  try {
+    expect(pressable("chat.chooseSend")).toBeUndefined();
+    await act(async () => pressable("chat.stopAndSendQueue")!.props.onPress());
+    expect(abort).toHaveBeenCalledTimes(1);
+  } finally {
+    unmount();
+  }
+});
+
+test("the queue panel shows what is waiting and edits reach the screen's store", () => {
+  const onQueueUpdate = jest.fn();
+  const onQueueRemove = jest.fn();
+  const { tree, unmount } = mountDock({
+    message: "",
+    queueItems: [
+      { attachmentCount: 0, content: "顺手把这个也改了", id: "q1" },
+      { attachmentCount: 2, content: "", id: "q2" },
+    ],
+    queueFailed: true,
+    onQueueRetry: jest.fn(),
+    onQueueRemove,
+    onQueueUpdate,
+  });
+  try {
+    const panel = tree.root.findByType(SendQueuePanel);
+    expect(panel.props.failed).toBe(true);
+    expect(panel.props.items.map((item: { id: string }) => item.id)).toEqual(["q1", "q2"]);
+    act(() => panel.props.onUpdate("q1", "改好了"));
+    expect(onQueueUpdate).toHaveBeenCalledWith("q1", "改好了");
+    act(() => panel.props.onRemove("q2"));
+    expect(onQueueRemove).toHaveBeenCalledWith("q2");
+  } finally {
+    unmount();
+  }
+});
+

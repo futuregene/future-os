@@ -398,6 +398,36 @@ mod tests {
         });
         assert_eq!(loser, RuntimeInstall::AlreadyInstalled);
     }
+
+    /// The slow losing path: a competing installer claims the slot *while* this
+    /// one is building, so the runtime exists and must be discarded rather than
+    /// left running behind a slot that holds somebody else's handle.
+    ///
+    /// The discard itself is `shutdown_background`, which is what makes the
+    /// loser safe to run from async code; what is asserted here is what the
+    /// call *returns* and what the slot keeps — the winner's handle.
+    #[test]
+    fn a_loser_that_already_built_its_runtime_reports_the_winner() {
+        let slot: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
+        let winner = unused_handle();
+        let outcome = provide_into(&slot, "test-channel-late-loser", || {
+            // The fast-path check already passed; the race is lost right here.
+            slot.set(winner.clone()).expect("the slot is still empty");
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("loser test runtime")
+        });
+        assert_eq!(outcome, RuntimeInstall::AlreadyInstalled);
+        // `set` succeeds once, and the closure's own `set` is the one that took
+        // it, so the handle the slot holds can only be the winner's; the loser's
+        // runtime was discarded instead of being parked behind it.
+        assert_eq!(
+            install_into(&slot, unused_handle()),
+            RuntimeInstall::AlreadyInstalled,
+            "the slot stayed claimed by the winner"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -568,5 +598,25 @@ mod integration_tests {
             .expect("an Agent that answers the handshake is ready");
         assert_eq!(info.version, crate::build_info::VERSION);
         assert_eq!(info.agent_instance_id, "mock-agent");
+    }
+
+    /// The process-wide driver runtime is installed once and can be asked
+    /// whether it exists — the entry's own question before it decides to build
+    /// one. The mock fixture is the installer here, so a second install from
+    /// inside an async test reports the existing runtime instead of replacing it
+    /// (replacing it would strand every channel already driving on the first).
+    #[tokio::test]
+    async fn the_process_driver_runtime_is_installed_once_and_reports_itself() {
+        let _mock = mock_agent();
+        assert!(
+            channel_runtime_installed(),
+            "the fixture installs the process driver runtime"
+        );
+        assert_eq!(
+            install_channel_runtime(tokio::runtime::Handle::current()),
+            RuntimeInstall::AlreadyInstalled,
+            "a later installer is told so rather than taking the slot"
+        );
+        assert!(channel_runtime_installed());
     }
 }

@@ -19,7 +19,7 @@ use crate::workbench::state::{self, ActivityKind, GitRow, PanelId, WorkbenchData
 use crate::workbench::syntax;
 use crate::workbench::theme::Palette;
 use crate::workbench::widgets;
-use crate::workbench::{launchpad, panels, Overlay, Workbench, COMMANDS, HELP_KEYS};
+use crate::workbench::{launchpad, panels, Overlay, Workbench, HELP_KEYS, OVERLAY_CLOSE};
 
 /// Compose one frame.
 pub(crate) fn compose(
@@ -81,32 +81,62 @@ pub(crate) fn compose(
         paint(&mut rows, frame.body, lines);
         workbench.set_cursor(cursor);
     } else {
+        // The queue band needs its rows *before* the conversation is painted:
+        // it takes them from the conversation's bottom, exactly like a draft
+        // that grew the composer. `0` room means the box would leave the chat
+        // nothing, and then the band is not drawn at all (`/queue` still is).
+        let queue_lines = queue_band(
+            workbench,
+            data,
+            &palette,
+            frame.body.w as usize,
+            frame
+                .body
+                .h
+                .saturating_sub(composer_extra)
+                .saturating_sub(3) as usize,
+        );
+        let queue_rows = queue_lines.len() as u16;
+        let conversation_rect = Rect::new(
+            frame.body.x,
+            frame.body.y,
+            frame.body.w,
+            frame
+                .body
+                .h
+                .saturating_sub(composer_extra)
+                .saturating_sub(queue_rows),
+        );
         // The band is claimed *before* it is painted: a link inside the
         // conversation registers its own cells while painting, and a region
         // claimed later would sit on top of them and answer every click with
         // "the chat" instead of with the link that was clicked.
         workbench.hit_map().push(frame.body, "chat");
-        let lines = conversation(
-            workbench,
-            data,
-            &palette,
-            Rect::new(
+        let lines = conversation(workbench, data, &palette, conversation_rect);
+        paint(&mut rows, conversation_rect, lines);
+        if queue_rows > 0 {
+            // Directly above the composer, and inside the conversation's band:
+            // one row per prompt the agent has accepted but not started.
+            let band = Rect::new(
                 frame.body.x,
-                frame.body.y,
+                conversation_rect.bottom(),
                 frame.body.w,
-                frame.body.h.saturating_sub(composer_extra),
-            ),
-        );
-        paint(
-            &mut rows,
-            Rect::new(
-                frame.body.x,
-                frame.body.y,
-                frame.body.w,
-                frame.body.h.saturating_sub(composer_extra),
-            ),
-            lines,
-        );
+                queue_rows,
+            );
+            for (index, (id, _)) in queue_lines.iter().enumerate() {
+                if let Some(id) = id {
+                    workbench.hit_map().push(
+                        Rect::new(band.x, band.y.saturating_add(index as u16), band.w, 1),
+                        id.clone(),
+                    );
+                }
+            }
+            paint(
+                &mut rows,
+                band,
+                queue_lines.into_iter().map(|(_, line)| line).collect(),
+            );
+        }
     }
 
     if let (Some(sidebar), Some(divider)) = (frame.sidebar, frame.divider) {
@@ -144,15 +174,24 @@ pub(crate) fn compose(
         // The composer's title counts the images waiting to be sent: the box
         // itself has no room for a line, and an attachment that is invisible
         // until the prompt is sent is one the reader cannot check.
+        //
+        // While a compaction holds the session the title says *that* instead:
+        // `enter` will not send (the agent refuses a prompt until the
+        // checkpoint lands), and a box that looks ready would take the draft as
+        // a send that silently did nothing.
         let images = data.input.editor.image_attachment_count();
-        let title = if images == 0 {
-            t(workbench.lang, Key::InputHintChat).to_string()
+        let hint = t(workbench.lang, Key::InputHintChat);
+        // The count is the picture's door, so the painter keeps the two halves
+        // apart: the hit map needs the cells the count covers, and the hint is
+        // what says where they start.
+        let attachments = (images > 0 && !data.compacting)
+            .then(|| i18n::render(workbench.lang, Key::AttachmentsInDraft, &[&images]));
+        let title = if data.compacting {
+            t(workbench.lang, Key::ComposerCompacting).to_string()
+        } else if let Some(attachments) = &attachments {
+            format!("{hint}{attachments}")
         } else {
-            format!(
-                "{}{}",
-                t(workbench.lang, Key::InputHintChat),
-                i18n::render(workbench.lang, Key::AttachmentsInDraft, &[&images])
-            )
+            hint.to_string()
         };
         let (input_lines, cursor_column, cursor_row) = widgets::input_box(
             &palette,
@@ -175,13 +214,35 @@ pub(crate) fn compose(
             frame.input.h.saturating_add(composer_extra),
         );
         workbench.hit_map().push(input_rect, "input");
+        // The attachment count on the box's title is the picture's own door: a
+        // draft's image is invisible until it is sent (`[Image #n]` is a
+        // marker, not the picture), so the cells that count it open the
+        // preview box — the click the `/preview` verb used to spell.
+        if let Some(attachments) = &attachments {
+            if let Some((x, w)) =
+                widgets::title_tail_cells(frame.input.w as usize, hint, attachments)
+            {
+                workbench.hit_map().push(
+                    Rect::new(
+                        frame.input.x.saturating_add(x),
+                        frame.input.y.saturating_sub(composer_extra),
+                        w,
+                        1,
+                    ),
+                    "input.attachments",
+                );
+            }
+        }
         paint(&mut rows, input_rect, input_lines);
         if workbench.overlay.is_none() {
             // The box is drawn at `frame.input.x`; the cursor has to be offset
             // by the same column or it lands in the rail's cells (the bug that
             // only showed once the rail was on the left, where `x` is not 0).
+            // `- 2`, not `- 1`: the last column of a framed row is its right
+            // border, and a caret parked on the border of a full line reads as
+            // a stray block in the rail's gutter.
             let column =
-                (cursor_column as usize).min(frame.input.w.saturating_sub(1) as usize) as u16;
+                (cursor_column as usize).min(frame.input.w.saturating_sub(2) as usize) as u16;
             // The cursor's row is the box's own (it counts the title rule), not
             // "the last row the box grew to": a cursor above the draft's last
             // line sits above the box's bottom, and the two only coincide when
@@ -255,14 +316,7 @@ pub(crate) fn compose(
             paint_overlay(&mut rows, &palette, lines, columns);
             workbench.set_cursor(None);
         }
-        Some(
-            overlay @ (Overlay::Approval
-            | Overlay::Diff
-            | Overlay::History
-            | Overlay::Tree
-            | Overlay::Fork
-            | Overlay::Worktree),
-        ) => {
+        Some(overlay @ (Overlay::Approval | Overlay::Diff | Overlay::Fork | Overlay::Worktree)) => {
             let lines = workflow_box(workbench, data, &palette, w, h, overlay);
             paint_overlay(&mut rows, &palette, lines, columns);
             workbench.set_cursor(None);
@@ -365,8 +419,21 @@ fn splice(base: &str, piece: &str, at: usize, width: usize) -> String {
 
 /// Paint a centred overlay: each row is composited over the frame, so the
 /// surface behind it stays visible at the edges.
+///
+/// A row the painter left blank is that margin, not a row it painted: a box
+/// starts below its own top margin, and painting that margin as a full-width
+/// panel row put a lighter band over the page above every floating box — a
+/// rectangle nothing in the box held, while the same rows below it were the
+/// page's. Blank rows *after* the first painted one are still painted: a
+/// full-height box (`/git`, the queue, the review surface) pads its own body,
+/// and that padding is the box, not a margin.
 fn paint_overlay(rows: &mut [String], palette: &Palette, lines: Vec<String>, columns: usize) {
+    let mut painted = false;
     for (index, line) in lines.iter().enumerate() {
+        if !painted && line.chars().all(|cell| cell == ' ') {
+            continue;
+        }
+        painted = true;
         if let Some(slot) = rows.get_mut(index) {
             *slot = palette.on(palette.panel, &fit(line, columns), columns);
         }
@@ -385,20 +452,34 @@ fn header(
 ) -> (Vec<String>, Vec<DoorSpan>) {
     let compact = frame.compact;
     // The right corner is a *composition*, never a cut string: each candidate is
-    // whole (dot, app, version), and the widest one that fits is drawn. Cutting
+    // whole (dot, version), and the widest one that fits is drawn. Cutting
     // a joined `● already-connected` is what once left a lone `●已` behind — a
     // Hanzi is two cells, so even a cell-accurate cut can strand half a word.
     // Everything in the corner is ASCII for the same reason: it degrades to its
     // dot cleanly, and the Chinese label lives in the status bar.
     let right_avail = (columns / 2).min((columns.saturating_sub(40)).max(columns / 3));
-    let right = header_right(palette, data, right_avail);
-    let right_width = width(&right);
-    // The surface's two doors, beside the title: the files panel and the
-    // repository browser. They are drawn only when a title still fits next to
-    // them — the header's job is naming the conversation, and a strip of
-    // controls that pushed the name off the edge would trade the point of the
-    // row for its tools.
+    let corner = header_right(palette, data, right_avail);
+    // The surface's doors, beside the title: the chat list, then the two panel
+    // browsers. A door is drawn only while a title still fits next to it — the
+    // header's job is naming the conversation — and they are given up from the
+    // tail, so the chat list is the last one standing: it is the only door with
+    // no other pointer route (the rail is a keyboard surface, and a narrow frame
+    // does not even put it beside the conversation).
+    //
+    // A door carries its chord — `[ctrl+r] 会话` — and it is the only place some
+    // of them are named: the footer's hint row leaves the chat list out for
+    // exactly this reason (see `hint_row`), so the header is where that key is
+    // learned.
     let doors: Vec<Door> = vec![
+        Door {
+            id: "header.sessions",
+            text: header_button(
+                palette,
+                keys,
+                preferences::Action::Sessions,
+                t(lang, Key::TabSessions),
+            ),
+        },
         Door {
             id: "header.files",
             text: header_button(
@@ -419,23 +500,29 @@ fn header(
         .into_iter()
         .filter(|door| !door.text.is_empty())
         .collect();
-    let group = doors
-        .iter()
-        .map(|door| door.text.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
-    let room_for_left = if compact { 12 } else { 24 };
-    // Two cells either side of the group: one gap is what keeps it from reading
-    // as the tail of a truncated title, the other from reading as the corner's.
-    let reserve = right_width
-        + usize::from(right_width > 0)
-        + width(&group)
-        + usize::from(!group.is_empty()) * 4;
-    let doors: Vec<Door> = if columns >= reserve + room_for_left {
-        doors
+    // The title's floor, in cells. A narrow row cannot spare the wide one: `24`
+    // is a share of a comfortable row, and on a 50-column frame it would be
+    // nearly half of it — the reason the chat list used to vanish on exactly the
+    // screens with no other way to reach it.
+    let room_for_left = if compact || columns < layout::NARROW_WIDTH as usize {
+        12
     } else {
-        Vec::new()
+        24
     };
+    // The row is one budget claimed by three things — the corner, the doors and
+    // the title — and `fit_row` spends it on the doors first: a door is function
+    // a reader can aim at, while the brand also stands in the window title and
+    // `future --version` answers for the build.
+    let brand_width = width("FUTURE OS · ") + usize::from(!compact);
+    let (right, doors, brand) = fit_row(
+        corner,
+        widgets::status_dot(palette, data.connected),
+        &doors,
+        columns,
+        room_for_left,
+        brand_width,
+    );
+    let right_width = width(&right);
     let button = doors
         .iter()
         .map(|door| door.text.as_str())
@@ -458,11 +545,15 @@ fn header(
         } else {
             data.session.title.clone()
         };
-        let left = format!(
-            "{} {}",
-            palette.strong(palette.accent, "FUTURE OS"),
-            palette.dim(&format!("· {title}"))
-        );
+        let left = if brand {
+            format!(
+                "{} {}",
+                palette.strong(palette.accent, "FUTURE OS"),
+                palette.dim(&format!("· {title}"))
+            )
+        } else {
+            format!(" {}", palette.dim(&title))
+        };
         let left = fit(&left, left_width);
         let left_width = width(&left);
         let pad = columns.saturating_sub(left_width + before + button_width + after + right_width);
@@ -494,11 +585,15 @@ fn header(
     } else {
         format!("{} · @{}", data.session.cwd, data.session.branch)
     };
-    let left = format!(
-        " {} {}",
-        palette.strong(palette.accent, "FUTURE OS"),
-        palette.dim(&format!("· {title} · {workspace}"))
-    );
+    let left = if brand {
+        format!(
+            " {} {}",
+            palette.strong(palette.accent, "FUTURE OS"),
+            palette.dim(&format!("· {title} · {workspace}"))
+        )
+    } else {
+        format!(" {}", palette.dim(&format!("{title} · {workspace}")))
+    };
     let left = fit(&left, left_width);
     let left_width = width(&left);
     let pad = columns.saturating_sub(left_width + before + button_width + after + right_width);
@@ -522,6 +617,7 @@ fn header(
 
 /// One door in the header: the chord and label it paints, and the hit region it
 /// claims (`id`, the name the pointer is resolved against).
+#[derive(Clone)]
 struct Door {
     id: &'static str,
     text: String,
@@ -574,29 +670,71 @@ fn header_button(
     )
 }
 
+/// The header's one row, resolved: how much of the corner is drawn, which doors
+/// fit beside the title, and whether the brand still rides in front of it.
+///
+/// The row is one budget, and the buttons come first: the whole group is tried
+/// with the richest decoration that fits — the brand and the build number, the
+/// brand alone, then neither — and only then with doors from the tail, and never
+/// with decoration again. A name that came back as the row narrowed would read as
+/// a glitch, and a row short of a button is short of the name as well.
+fn fit_row(
+    corner: String,
+    dot: String,
+    doors: &[Door],
+    columns: usize,
+    room_for_left: usize,
+    brand_width: usize,
+) -> (String, Vec<Door>, bool) {
+    for (right, brand) in [(&corner, true), (&dot, true), (&dot, false)] {
+        let floor = room_for_left + if brand { brand_width } else { 0 };
+        if columns >= row_reserve(doors, width(right)) + floor {
+            return (right.clone(), doors.to_vec(), brand);
+        }
+    }
+    for keep in (0..doors.len()).rev() {
+        let kept = &doors[..keep];
+        if columns >= row_reserve(kept, width(&dot)) + room_for_left {
+            return (dot.clone(), kept.to_vec(), false);
+        }
+    }
+    (dot, Vec::new(), false)
+}
+
+/// What a row costs beside the title: the corner, the doors as one painted run,
+/// and the gaps that keep the three from reading as one word. Two cells either
+/// side of the doors — one gap keeps the group from reading as the tail of a
+/// truncated title, the other from reading as the corner's.
+fn row_reserve(doors: &[Door], right_width: usize) -> usize {
+    let group = door_group_width(doors);
+    right_width + usize::from(right_width > 0) + group + usize::from(group > 0) * 4
+}
+
+/// How wide a run of doors paints: the buttons and the single spaces between.
+fn door_group_width(doors: &[Door]) -> usize {
+    doors.iter().map(|door| width(&door.text)).sum::<usize>() + doors.len().saturating_sub(1)
+}
+
 /// The header's right corner: the widest whole composition that fits `avail`.
 ///
+/// The build number, and nothing else: the name is already on the left of this
+/// row and in the window title, while a version is what a bug report needs. The
+/// corner degrades to its dot — the connection state — when even that is too
+/// wide.
+///
 /// ```text
-/// v1.2.3 ● future-tui  →  ● future-tui  →  v1.2.3 ●  →  ●
+/// v1.2.3 ●  →  ●
 /// ```
 fn header_right(palette: &Palette, data: &WorkbenchData, avail: usize) -> String {
     let point = widgets::status_dot(palette, data.connected);
-    let app = palette.dim(&data.app_name);
-    let version = if data.version.is_empty() {
-        None
-    } else {
-        Some(palette.dim(&format!("v{}", data.version)))
-    };
     let mut candidates: Vec<String> = Vec::new();
-    match &version {
-        Some(version) => {
-            candidates.push(format!("{point} {app} {version}"));
-            candidates.push(format!("{point} {app}"));
-            candidates.push(format!("{point} {version}"));
-        }
-        None => candidates.push(format!("{point} {app}")),
+    if !data.version.is_empty() {
+        candidates.push(format!(
+            "{point} {}",
+            palette.dim(&format!("v{}", data.version))
+        ));
     }
-    candidates.push(point.clone());
+    candidates.push(point);
     candidates
         .into_iter()
         .find(|candidate| width(candidate) <= avail)
@@ -609,7 +747,7 @@ fn header_right(palette: &Palette, data: &WorkbenchData, avail: usize) -> String
 ///
 /// The frame is text and a bitmap is not: the terminal places it at a cell, out
 /// of band. So the box asks for one here and the driver writes it after the
-/// frame (`run::paint_image`), which is the only place that owns the terminal.
+/// frame (`run::paint_images`), which is the only place that owns the terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImageRequest {
     /// A hash of the bytes that will be transmitted (the file, and the crop of
@@ -625,6 +763,18 @@ pub struct ImageRequest {
     /// The part of the image being shown, in pixels: the whole picture at 1x,
     /// the window a zoomed picture has been panned to otherwise.
     pub crop: (usize, usize, usize, usize),
+}
+
+/// A placement and the pixels it shows.
+///
+/// The two travel together because the driver needs both and the surface is the
+/// only side that has them at the same time: the frame knows the cells (it laid
+/// the rows out) and the data knows the picture. The pixels are an `Arc` inside
+/// [`ImagePixels`], so carrying them per frame copies nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlacedPicture {
+    pub request: ImageRequest,
+    pub pixels: image_view::ImagePixels,
 }
 
 /// The window of a picture that a zoomed, panned box shows, in pixels.
@@ -717,6 +867,37 @@ fn wrap_words(text: &str, line_width: usize) -> Vec<String> {
     out
 }
 
+/// The hit id a transcript stop answers to.
+///
+/// Two namespaces, because a control shares its row with nothing but itself:
+/// the rows that *open* something (a folded reply, a burst of work, a call's
+/// body, a thinking marker) keep `chat.row.<row>`, while the control under a
+/// message — copy, which changes nothing on screen — says what was pressed. A
+/// shared id would make a click resolve to whichever stop the hit map saw
+/// first.
+fn stop_region_id(stop: &crate::components::chat_area::RowStop) -> String {
+    use crate::components::chat_area::RowAction;
+    match stop.action {
+        RowAction::Copy { .. } => format!("chat.button.{}.copy", stop.row),
+        RowAction::Process { .. }
+        | RowAction::Burst { .. }
+        | RowAction::Tool { .. }
+        | RowAction::Thinking { .. } => format!("chat.row.{}", stop.row),
+    }
+}
+
+/// What one `/fork` row says about its message: the first words of it, as one
+/// line.
+///
+/// The row is a *label*, not the message: a markdown heading's `#` and the
+/// blank lines between paragraphs are structure, and a frame that shows them
+/// verbatim makes a column of `###` where the reader wants to recognise their
+/// own question.
+fn fork_preview(text: &str) -> String {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    collapsed.trim_start_matches('#').trim_start().to_string()
+}
+
 fn conversation(
     workbench: &mut Workbench,
     data: &WorkbenchData,
@@ -733,6 +914,10 @@ fn conversation(
     // reads as a clipped message rather than as a prompt waiting below it.
     let gap = usize::from(rows > 1);
     let visible = rows.saturating_sub(gap);
+    // The key handler's ceiling is this number's other half: the transcript
+    // band is measured here, and `Workbench::scroll` subtracts it from the row
+    // count (see `chat_window`).
+    workbench.chat_window = visible;
     // One definition of the conversation's text width, shared with the driver
     // that wraps the transcript — see `layout::chat_inner`.
     let padding = layout::chat_padding(area.w);
@@ -742,45 +927,88 @@ fn conversation(
     workbench.chat_inner = inner;
     let messages = &data.messages;
     let total = messages.len();
-    // `chat_scroll` counts rows up from the tail; it is clamped so a stale
-    // offset from a longer conversation cannot index past the start.
-    let mut offset = workbench.chat_scroll_offset().min(total);
-    // Scrolling up costs one row to the "↑ 更早" badge, so the last reachable
-    // offset is one short of the first message.
-    if total > visible && offset + visible >= total {
-        offset = total - visible + 1;
-    }
+    // `chat_scroll` counts rows up from the tail; it is clamped to the offset
+    // that puts the oldest row on the band's top row, so a stale offset from a
+    // longer conversation — or from a taller band before the composer grew —
+    // paints the top of the transcript instead of blank rows over it.
+    let ceiling = total.saturating_sub(visible);
+    let mut offset = workbench.chat_scroll_offset().min(ceiling);
     // The rows the reader can actually read at `offset`: the window, less the
     // row the badge takes off its bottom.
-    let shown_window = |offset: usize| -> (usize, usize) {
+    // The rows a frame at `offset` actually paints: the window, minus the oldest
+    // row when the `↑ 更早` marker is standing in front of it. The marker takes
+    // one of the window's rows instead of the newest message — see the `badge`
+    // note below — so every cursor walk that reveals a row has to know where
+    // the painted window really starts.
+    let painted_window = |offset: usize| -> (usize, usize) {
         let end = total.saturating_sub(offset);
         let start = end.saturating_sub(visible);
-        let end = if start > 0 {
-            end.saturating_sub(1)
-        } else {
-            end
-        };
-        (start, end)
+        (start.saturating_add(usize::from(start > 0)), end)
     };
-    // `tab` can walk the cursor to a span far above or below the window, and a
+    // `tab` can walk the cursor to a stop far above or below the window, and a
     // highlight nobody can see is not a cursor: the transcript follows it, the
-    // way a search result brings itself into view.
-    if let Some(row) = workbench.selected_link(data).map(|(_, span)| span.row) {
-        let row = row.min(total.saturating_sub(1));
-        let (start, end) = shown_window(offset);
-        if row < start || row >= end {
-            // Two rows of room below it: one is the badge's, one is the row
-            // itself, so the selection is never the line that gets dropped.
-            offset = total.saturating_sub((row + 2).min(total));
-            workbench.set_chat_scroll(offset);
+    // way a search result brings itself into view. Only a cursor that *moved*,
+    // though — the frame cannot tell one that just arrived from one the reader
+    // left behind, and following the second one every frame is what made the
+    // wheel spring back up the transcript instead of down it (see
+    // [`Workbench::take_stop_reveal`]).
+    if workbench.take_stop_reveal() {
+        if let Some(row) = workbench.selected_stop_row(data) {
+            let row = row.min(total.saturating_sub(1));
+            let (start, end) = painted_window(offset);
+            if row < start {
+                // Up to it, not past it: a stop the walk stepped back to
+                // belongs on the window's top row, and dropping the page a
+                // screen further buries the rows the reader was about to read.
+                // A top row is inside the ceiling by construction (`ceiling` is
+                // the offset that puts the oldest row there), so this one needs
+                // no clamp of its own.
+                // One row less than the window: the marker takes one of them,
+                // so the row walked to lands on the window's first message row.
+                offset = total
+                    .saturating_sub(row.saturating_add(visible.saturating_sub(1)).min(total))
+                    .min(ceiling);
+            } else if row >= end {
+                // Two rows of room below it: one is the badge's, one is the row
+                // itself, so the selection is never the line that gets dropped.
+                // Clamped to the ceiling in the same frame: an offset past it
+                // paints blank rows over the top of the transcript, and the next
+                // frame then has to walk itself back — a second jump for a
+                // reader who only pressed `tab`.
+                offset = total
+                    .saturating_sub(row.saturating_add(2).min(total))
+                    .min(ceiling);
+            }
         }
     }
     workbench.set_chat_scroll(offset);
     let end = total.saturating_sub(offset);
     let start = end.saturating_sub(visible);
-    // The span the cursor is on, cloned: the paint below needs `workbench` for
-    // its hit regions, and the list it came from borrows it.
-    let selected = workbench.selected_link(data);
+    // The `↑ 更早` row costs one of the window's rows, and it stands in for the
+    // oldest one: the window keeps its *bottom* (so the newest row is always
+    // painted when the view follows the tail) and the row above the window's
+    // top is what the marker says is there. Without this the marker was an extra
+    // row that `truncate(visible)` paid for by dropping the newest message — the
+    // last line of a long conversation was one the reader could not see.
+    let badge = usize::from(start > 0);
+    let shown = visible.saturating_sub(badge);
+    let first = start.saturating_add(badge);
+    // The stop the cursor is on, and the half of it that is a link: the paint
+    // below needs `workbench` for its hit regions, and the lists it came from
+    // borrow it.
+    let selected_span = match workbench.selected_stop(data) {
+        Some(crate::workbench::ChatStop::Link(index)) => workbench
+            .link_spans(data)
+            .get(index)
+            .map(|span| (span.row, span.start, span.end)),
+        _ => None,
+    };
+    // A row under the cursor is marked the same way a link is: the glyphs it is
+    // made of reverse, so the highlight sits on the label rather than on a band.
+    let selected_row_marked = match workbench.selected_stop(data) {
+        Some(crate::workbench::ChatStop::Row(stop)) => Some((stop.row, stop.start, stop.end)),
+        _ => None,
+    };
     // Every span on a painted row answers a click, not just the one the cursor
     // is on: the pointer names its own target, and a link a reader can see but
     // not click is the one thing a terminal hyperlink cannot express (the
@@ -791,14 +1019,19 @@ fn conversation(
         spans
             .iter()
             .enumerate()
-            .filter(|(_, span)| span.row >= start && span.row < end)
+            .filter(|(_, span)| span.row >= first && span.row < end)
             .map(|(index, span)| (index, span.clone()))
             .collect()
     };
-    let badge = usize::from(start > 0);
-    let shown = end.saturating_sub(start);
+    // The transcript's own rows that answer a click, in the same window.
+    let visible_rows: Vec<crate::components::chat_area::RowStop> = data
+        .row_stops
+        .iter()
+        .filter(|stop| stop.row >= first && stop.row < end)
+        .cloned()
+        .collect();
     let mut lines: Vec<String> = Vec::new();
-    if start > 0 {
+    if badge > 0 {
         lines.push(fit(
             &format!(" {} ", palette.dim(t(workbench.lang, Key::ChatOlderHint))),
             columns,
@@ -806,11 +1039,16 @@ fn conversation(
     }
     let pad = visible.saturating_sub(badge + shown);
     let mut marked: Option<String>;
-    for (index, line) in messages.iter().enumerate().skip(start).take(shown) {
+    for (index, line) in messages.iter().enumerate().skip(first).take(shown) {
         let mut text = line.as_str();
-        if let Some((_, span)) = &selected {
-            if span.row == index {
-                marked = Some(super::links::highlight(line, span.start, span.end));
+        if let Some((row, from, to)) = selected_row_marked {
+            if row == index {
+                marked = Some(super::links::highlight(line, from, to));
+                text = marked.as_deref().unwrap_or(line);
+            }
+        } else if let Some((row, from, to)) = selected_span {
+            if row == index {
+                marked = Some(super::links::highlight(line, from, to));
                 text = marked.as_deref().unwrap_or(line);
             }
         }
@@ -820,7 +1058,7 @@ fn conversation(
             .y
             .saturating_add(pad as u16)
             .saturating_add(badge as u16)
-            .saturating_add((index - start) as u16);
+            .saturating_add((index - first) as u16);
         for (span_index, span) in visible_links.iter().filter(|(_, span)| span.row == index) {
             let from = span.start.min(inner);
             let to = span.end.min(inner);
@@ -835,6 +1073,23 @@ fn conversation(
                         1,
                     ),
                     format!("chat.link.{span_index}"),
+                );
+            }
+        }
+        for stop in visible_rows.iter().filter(|stop| stop.row == index) {
+            let from = stop.start.min(inner);
+            let to = stop.end.min(inner);
+            if to > from {
+                workbench.hit_map().push(
+                    Rect::new(
+                        area.x
+                            .saturating_add(padding as u16)
+                            .saturating_add(from as u16),
+                        y,
+                        (to - from) as u16,
+                        1,
+                    ),
+                    stop_region_id(stop),
                 );
             }
         }
@@ -866,6 +1121,108 @@ fn conversation(
     out
 }
 
+/// How many queued prompts the band above the composer lists before it counts
+/// the rest in one row. A band is a preview, not a queue manager — the count in
+/// its title and `/queue` are what the rest of a long queue gets.
+const QUEUE_BAND_ITEMS: usize = 4;
+
+/// The rows of the queue band, as `(hit id, row)` pairs.
+///
+/// A prompt listed here is one the agent accepted and has not started yet: it
+/// is deliberately absent from the transcript (`ChatArea::waits_in_queue`), so
+/// this band is the whole answer to "did my message go?". One row per prompt, in
+/// the order the agent will run them; `room` is how many rows the band may take
+/// from the conversation.
+///
+/// It is a **box**, like the composer under it and the rail beside it: bare
+/// dimmed lines on the canvas read as a continuation of the transcript, which
+/// is what made the first version look pasted over the conversation. The title
+/// carries the count (`排队 2 条 · 当前回复结束后一起发送`) and the door to the
+/// manager sits on the rule's right end, where a panel's close chip sits.
+fn queue_band(
+    workbench: &Workbench,
+    data: &WorkbenchData,
+    palette: &Palette,
+    columns: usize,
+    room: usize,
+) -> Vec<(Option<String>, String)> {
+    // Two rules, a title and at least one prompt row: below that there is no
+    // box to draw, and `/queue` is still a keystroke away.
+    if data.queue.is_empty() || room < 3 || columns < 12 {
+        return Vec::new();
+    }
+    let lang = workbench.lang;
+    let title = i18n::render(lang, Key::QueueBandTitle, &[&data.queue.len()]);
+    // The count is the one word worth colour: it is what the reader came to
+    // check, and the rest of the title only says when they go out.
+    let count = data.queue.len().to_string();
+    let (before, after) = title
+        .split_once(count.as_str())
+        .map_or((title.as_str(), ""), |(before, after)| (before, after));
+    let title = format!(
+        "{}{}{}",
+        palette.dim(before),
+        palette.strong(palette.amber, &count),
+        palette.dim(after)
+    );
+    // The door to the manager, on the rule's right end. Wide boxes get it; a
+    // narrow one keeps the count, which is the part it cannot say elsewhere.
+    let manage = t(lang, Key::QueueBandManage);
+    // One cell of rule is kept between the chip and the title, and the chip
+    // itself starts with a space so it never touches the right corner.
+    let chip = (width(&title) + width(manage) + 6 <= columns)
+        .then(|| palette.text(palette.iris, &format!(" {manage}")));
+    let mut rows: Vec<(Option<String>, String)> = Vec::new();
+    rows.push((
+        Some("queue.open".to_string()),
+        widgets::box_top_with_chip(palette, columns, &title, chip.as_deref()),
+    ));
+    // The box needs both rules before it can list anything.
+    let item_room = room - 2;
+    let shown = if data.queue.len() <= item_room.min(QUEUE_BAND_ITEMS) {
+        data.queue.len()
+    } else {
+        // The `… more` row is one of the rows the list could have used, so the
+        // band keeps promising a number that is true of what it does not show.
+        item_room
+            .saturating_sub(1)
+            .min(QUEUE_BAND_ITEMS)
+            .min(data.queue.len() - 1)
+    };
+    for (index, item) in data.queue.iter().take(shown).enumerate() {
+        // A queued prompt is shown as one line: the queue is a list of prompts,
+        // not a second transcript. A draft that did include newlines keeps its
+        // shape as a `↵` so the row still says where they are.
+        let text = item.text.replace('\n', " ↵ ");
+        let content = format!(
+            " {}{}",
+            palette.dim(&format!("{}. ", index + 1)),
+            palette.body(&text)
+        );
+        rows.push((
+            Some(format!("queue.band.{index}")),
+            widgets::box_row(palette, &content, columns),
+        ));
+    }
+    let rest = data.queue.len().saturating_sub(shown);
+    if rest > 0 {
+        // Not a prompt: the count row is nobody's verb, so it takes no hit.
+        rows.push((
+            None,
+            widgets::box_row(
+                palette,
+                &format!(
+                    "  {}",
+                    palette.dim(&i18n::render(lang, Key::QueueBandMore, &[&rest]))
+                ),
+                columns,
+            ),
+        ));
+    }
+    rows.push((None, widgets::box_bottom(palette, columns)));
+    rows
+}
+
 fn queue_box(
     workbench: &mut Workbench,
     data: &WorkbenchData,
@@ -879,11 +1236,11 @@ fn queue_box(
     workbench
         .hit_map()
         .push(Rect::new(0, 0, columns as u16, h), "overlay.surface");
-    let mut rows = vec![widgets::box_top(
-        palette,
-        columns,
-        t(workbench.lang, Key::QueueTitle),
-    )];
+    let lang = workbench.lang;
+    let (top, close) =
+        widgets::box_top_with_close(palette, columns, t(lang, Key::QueueTitle), lang);
+    let mut rows = vec![top];
+    claim_close(workbench, 0, 0, close);
     rows.push(widgets::box_row(
         palette,
         t(workbench.lang, Key::QueueHint),
@@ -953,7 +1310,15 @@ fn delete_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> V
     ];
     let geometry = box_geometry(w, h, 60, content.len());
     claim_box(workbench, &geometry);
-    framed(palette, t(lang, Key::DeleteTitle), content, w, h, &geometry)
+    framed(
+        palette,
+        t(lang, Key::DeleteTitle),
+        content,
+        w,
+        h,
+        &geometry,
+        Chrome::Panel(lang),
+    )
 }
 
 fn workflow_box(
@@ -983,31 +1348,21 @@ fn workflow_box(
     let (title_key, hint_key) = match overlay {
         Overlay::Approval => (Key::ApprovalTitle, Key::ApprovalHint),
         Overlay::Diff => (Key::DiffTitle, Key::DiffHint),
-        Overlay::History => (Key::HistoryTitle, Key::HistoryHint),
-        Overlay::Tree => (Key::TreeTitle, Key::TreeHint),
         Overlay::Fork => (Key::ForkTitle, Key::ForkHint),
         Overlay::Worktree => (Key::WorktreeTitle, Key::WorktreeHint),
         _ => unreachable!(),
     };
-    let mut rows = vec![widgets::box_top(
-        palette,
-        columns,
-        t(workbench.lang, title_key),
-    )];
+    let lang = workbench.lang;
+    let (top, close) = widgets::box_top_with_close(palette, columns, t(lang, title_key), lang);
     if overlay == Overlay::Diff {
         return diff_review_box(workbench, data, palette, h, w, columns);
     }
+    let mut rows = vec![top];
+    claim_close(workbench, left as u16, 0, close);
     if overlay != Overlay::Approval {
         rows.push(widgets::box_row(
             palette,
             t(workbench.lang, hint_key),
-            columns,
-        ));
-    }
-    if overlay == Overlay::History {
-        rows.push(widgets::box_row(
-            palette,
-            &format!("> {}", workbench.history_query),
             columns,
         ));
     }
@@ -1019,34 +1374,6 @@ fn workflow_box(
         return indent(rows, left, w as usize);
     }
     let body = match overlay {
-        Overlay::History => {
-            let sessions = workflows::filtered_sessions(&data.sessions, &workbench.history_query);
-            if sessions.is_empty() {
-                vec![t(workbench.lang, Key::HistoryEmpty).into()]
-            } else {
-                // One table for the whole list, so the workspace and age
-                // columns line up down the rows instead of starting wherever
-                // each title ended (`#` read as ragged text before this).
-                workflows::session_table(
-                    &sessions,
-                    workbench.workflow_index,
-                    columns.saturating_sub(4),
-                )
-            }
-        }
-        Overlay::Tree => workflows::tree_sessions(&data.sessions)
-            .iter()
-            .enumerate()
-            .map(|(index, (row, depth))| {
-                let indent = "  ".repeat(*depth);
-                workflows::record_line(
-                    index == workbench.workflow_index,
-                    &indent,
-                    &[&row.title, &row.id],
-                    columns.saturating_sub(4),
-                )
-            })
-            .collect(),
         Overlay::Fork => {
             if data.fork_points.is_empty() {
                 vec![t(workbench.lang, Key::ForkEmpty).into()]
@@ -1055,11 +1382,23 @@ fn workflow_box(
                     .iter()
                     .enumerate()
                     .map(|(index, point)| {
-                        let number = format!("{}. ", index + 1);
-                        let text = point.text.replace('\n', " ↵ ");
+                        // Whose message it is, then the text: a fork after a
+                        // question and a fork after an answer are different
+                        // points in the same list, and the label is the only
+                        // thing telling them apart.
+                        let role = match point.role {
+                            crate::workbench::state::ForkRole::Assistant => {
+                                t(workbench.lang, Key::ForkRoleAssistant)
+                            }
+                            crate::workbench::state::ForkRole::User => {
+                                t(workbench.lang, Key::ForkRoleUser)
+                            }
+                        };
+                        let prefix = format!("{}. {role} · ", index + 1);
+                        let text = fork_preview(&point.text);
                         workflows::record_line(
                             index == workbench.workflow_index,
-                            &number,
+                            &prefix,
                             &[&text],
                             columns.saturating_sub(4),
                         )
@@ -1099,10 +1438,7 @@ fn workflow_box(
     // and a long title would otherwise fold into two rows — the marker then
     // jumps two rows per press and the entries seem to skip. The detail
     // overlays are prose and keep wrapping.
-    let body = if matches!(
-        overlay,
-        Overlay::History | Overlay::Tree | Overlay::Fork | Overlay::Worktree
-    ) {
+    let body = if matches!(overlay, Overlay::Fork | Overlay::Worktree) {
         body.into_iter()
             .map(|line| fit(&line, columns.saturating_sub(4)))
             .collect()
@@ -1128,10 +1464,7 @@ fn workflow_box(
     .into_iter()
     .enumerate()
     {
-        if matches!(
-            overlay,
-            Overlay::History | Overlay::Tree | Overlay::Fork | Overlay::Worktree
-        ) {
+        if matches!(overlay, Overlay::Fork | Overlay::Worktree) {
             workbench.hit_map().push(
                 Rect::new(
                     (left + 1) as u16,
@@ -1225,12 +1558,12 @@ fn sidebar_rows(
             )
         })
         .collect();
-    lines.push(widgets::tab_strip(
-        palette,
-        &tabs,
-        workbench.sidebar_focus,
-        columns,
-    ));
+    // The rail's collapse button owns its outer edge: on the left that is
+    // column 0, so the strip starts one cell in — a tab painted over the button
+    // would take the click that hides the rail.
+    let inset = usize::from(workbench.sidebar_position == preferences::SidebarPosition::Left);
+    let strip = widgets::tab_strip(palette, &tabs, columns.saturating_sub(inset));
+    lines.push(fit(&format!("{}{strip}", " ".repeat(inset)), columns));
     // The rail's own collapse button, on the edge it will leave from: one column
     // at the outer edge, in the same place whether the rail is here or gone (see
     // the spine `compose` paints). A reader who aims at the arrow twice — once
@@ -1254,7 +1587,7 @@ fn sidebar_rows(
         );
     }
     // Each tab registers its own click region; tab labels are ` label ` wide.
-    let mut x: u16 = if workbench.sidebar_focus { 1 } else { 0 };
+    let mut x: u16 = inset as u16;
     for panel in PanelId::TABS {
         let tab_width = width(panel.label(workbench.lang)) as u16 + 2;
         workbench.hit_map().push(
@@ -1263,13 +1596,11 @@ fn sidebar_rows(
         );
         x = x.saturating_add(tab_width + 1);
     }
-    // A focused rail says which two keys walk it from here: `shift+←→` the
-    // tabs, `shift+↑↓` the conversations, with the chat following the cursor.
-    // `↑↓` alone only moves the list cursor and `⏎` only opens what it stands
-    // on, so a reader who guessed wrong learns the chords here. It costs the
-    // list one row and saves the guesswork, so it is only shown while the rail
-    // actually owns the keys.
-    let footer = usize::from(workbench.sidebar_focus && area.h >= 4);
+    // The rail says which keys work on it. Every one of them lives behind
+    // `shift`: the rail never holds the keyboard, so `↑↓` are the transcript's
+    // and a reader who presses them here scrolls the conversation, not this
+    // list. It costs the list one row and saves that guesswork.
+    let footer = usize::from(area.h >= 4);
     let content = Rect::new(area.x, area.y + 1, area.w, area.h - 1 - footer as u16);
     let index = workbench.panel.index();
     let view = panels::PanelView {
@@ -1278,7 +1609,7 @@ fn sidebar_rows(
     };
     let lang = workbench.lang;
     let panel = workbench.panel;
-    let folded = workbench.folded_workspaces.clone();
+    let folded = workbench.rail.clone();
     let frame = workbench.spinner_frame();
     let body = panels::render_with(
         panel,
@@ -1294,8 +1625,7 @@ fn sidebar_rows(
     );
     lines.extend(body);
     if footer == 1 {
-        let hint = fit(t(lang, Key::RailHint), columns);
-        lines.push(fit(&palette.dim(&hint), columns));
+        lines.push(rail_hint(lang, palette, columns));
     }
     lines.truncate(area.h as usize);
     // A rail row carries no background of its own, the same as the chat beside
@@ -1309,6 +1639,12 @@ fn sidebar_rows(
 
 // ─── activity / status / hint ──────────────────────────────────────────────
 
+/// Cells the activity row keeps for what the session is doing — the spinner,
+/// the kind, and a short detail after it — before its usage tail may claim
+/// width. Without a floor the six-figure token counts would be the only text on
+/// a narrow row, and "what is happening" is the row's first job.
+const ACTIVITY_LEFT_CELLS: usize = 22;
+
 fn activity_row(
     workbench: &mut Workbench,
     data: &WorkbenchData,
@@ -1317,17 +1653,13 @@ fn activity_row(
 ) -> Vec<String> {
     let activity = &data.activity;
     let spinner = if activity.is_busy() {
-        let glyph = if workbench.motion_enabled() {
-            format!("{} ", widgets::spinner(workbench.spinner_frame()))
-        } else {
-            "… ".into()
-        };
+        let glyph = format!("{} ", widgets::spinner(workbench.spinner_frame()));
         palette.text(palette.amber, &glyph)
     } else {
         palette.dim("· ")
     };
     let kind = match activity.kind {
-        ActivityKind::Idle => palette.dim("idle"),
+        ActivityKind::Idle => palette.dim(t(workbench.lang, Key::ActivityIdle)),
         ActivityKind::Thinking => {
             palette.text(palette.amber, t(workbench.lang, Key::ActivityThinking))
         }
@@ -1335,12 +1667,22 @@ fn activity_row(
         ActivityKind::Streaming => {
             palette.text(palette.accent, t(workbench.lang, Key::ActivityStreaming))
         }
+        // The clock is inside the label: a compaction makes no tool calls, so
+        // the `· {n} 工具` tail below would count a zero at it.
+        ActivityKind::Compacting => palette.text(
+            palette.amber,
+            &i18n::render(
+                workbench.lang,
+                Key::ActivityCompacting,
+                &[&activity.elapsed_secs],
+            ),
+        ),
     };
     let mut left = format!(" {spinner}{kind}");
     if !activity.detail.is_empty() {
         left.push_str(&palette.dim(&format!(" {}", activity.detail)));
     }
-    if activity.is_busy() || activity.tools > 0 {
+    if activity.kind != ActivityKind::Compacting && (activity.is_busy() || activity.tools > 0) {
         left.push_str(&palette.dim(&i18n::render(
             workbench.lang,
             Key::ActivityTools,
@@ -1349,9 +1691,9 @@ fn activity_row(
     }
     let right = widgets::rate(
         palette,
-        data.usage.tps,
-        data.usage.cache_pct,
+        &data.usage,
         workbench.lang,
+        columns.saturating_sub(ACTIVITY_LEFT_CELLS),
     );
     let right_width = width(&right);
     let left = fit(&left, columns.saturating_sub(right_width + 1));
@@ -1367,7 +1709,7 @@ fn status_row(
 ) -> Vec<String> {
     let usage = data.usage;
     let model = if data.model.is_empty() {
-        "no model".to_string()
+        t(lang, Key::StatusNoModel).to_string()
     } else {
         data.model.clone()
     };
@@ -1388,7 +1730,7 @@ fn status_row(
             if data.effort.is_empty() {
                 "—"
             } else {
-                &data.effort
+                i18n::effort_label(lang, &data.effort).unwrap_or(&data.effort)
             },
             mode
         ))
@@ -1407,6 +1749,30 @@ fn status_row(
     let left = fit(&left, columns.saturating_sub(right_width + 1));
     let pad = columns.saturating_sub(width(&left) + right_width);
     vec![fit(&format!("{left}{}{right}", " ".repeat(pad)), columns)]
+}
+
+/// The rail's own key hints: whole parts, dropped from the tail when the rail is
+/// narrower than they are.
+///
+/// The rail is the one band the reader resizes, so its hint row has to survive a
+/// drag: a chord cut in half (`shift+pgU`) is not a hint, and a rail 24 columns
+/// wide cannot hold three of them. What survives is the front of the list — the
+/// step keys first, because they are the ones a reader who just pressed `↑`
+/// needs.
+fn rail_hint(lang: Language, palette: &Palette, columns: usize) -> String {
+    let parts = [
+        t(lang, Key::RailHintStep),
+        t(lang, Key::RailHintPage),
+        t(lang, Key::RailHintTabs),
+    ];
+    let mut keep = parts.len();
+    loop {
+        let row = format!(" {}", parts[..keep].join(" · "));
+        if width(&row) <= columns || keep == 0 {
+            return fit(&palette.dim(&row), columns);
+        }
+        keep -= 1;
+    }
 }
 
 /// The one-line key hints, dropped **whole** from the tail when the terminal is
@@ -1428,18 +1794,26 @@ fn hint_row(
     // where it went; the cells it frees are what keep both `ctrl+q` and
     // `ctrl+n` on the row in English at 120 columns.
     //
-    // `esc` is not listed either: it is the key that leaves *whatever the reader
-    // is in* — an overlay, the queue, a scrolled-back transcript — so a hint
-    // that spelled it named one of the five things it does, and the boxes that
-    // answer it print it in their own hint row (`FilesHint`, `PickerHint*`).
+    // The chat list (`ctrl+r 会话`) is not listed either: the header's own door
+    // beside the title spells `[ctrl+r] 会话`, so a hint here would be the same
+    // key taught twice on one screen. Its cells went to the entries above.
+    //
+    // `esc` leads the row because it is the one key whose meaning is a *place*
+    // rather than a door: it walks the reader back — to the newest message from a
+    // transcript they scrolled away from, out of an overlay or a menu that is
+    // covering the chat. Two jobs, one key, so the label names both and the row
+    // shows it whether or not either is true right now: a reader who has to
+    // discover `esc` by pressing it in a box is the reader this line is for. The
+    // boxes that answer it still print it in their own hint row (`FilesHint`,
+    // `PickerHint*`, `HelpFooter`) — this is the surface's own copy, not theirs.
     //
     // `?` is a literal rather than `Action::Help`'s chord: help has no chord on
     // purpose (a printable key that opens a box cannot also be typed into the
     // draft), so the row names the character that opens it, as the help
     // overlay's own inline table does.
-    let wide = [
+    let wide: Vec<(&str, Key)> = vec![
+        ("esc", Key::HintBackToChat),
         (workbench.keys.key(Action::Sidebar), Key::HintSidebar),
-        (workbench.keys.key(Action::Sessions), Key::HintSessions),
         (workbench.keys.key(Action::Palette), Key::HintCommands),
         (workbench.keys.key(Action::Preferences), Key::HintSettings),
         (workbench.keys.key(Action::NewSession), Key::HintNewChat),
@@ -1453,7 +1827,9 @@ fn hint_row(
         .filter(|(key, _)| !key.is_empty())
         .collect();
     let parts: &[(&str, Key)] = if compact {
-        &wide[..4.min(wide.len())]
+        // Compact keeps the head of the row — `esc` and the three doors after it
+        // — rather than squeezing all six into cells that cannot hold them.
+        &wide[..5.min(wide.len())]
     } else {
         &wide
     };
@@ -1492,8 +1868,23 @@ fn framed(
     w: u16,
     h: u16,
     geometry: &BoxGeometry,
+    chrome: Chrome,
 ) -> Vec<String> {
-    paint_box(palette, title, content, w, h, geometry)
+    paint_box(palette, title, content, w, h, geometry, chrome)
+}
+
+/// What a box's top border carries, beyond its title.
+///
+/// Every panel gets the close chip ([`widgets::box_top_with_close`]); the mention
+/// menu is the one box drawn with [`Chrome::Plain`], because it is a completion
+/// list that closes as the reader types rather than a panel they opened — a
+/// close button there would be a button for something that was never "open".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Chrome {
+    /// A panel: the chip, labelled in this language.
+    Panel(Language),
+    /// The bare rule.
+    Plain,
 }
 
 /// Where a centred box lands. One struct for the painter and for anything that
@@ -1506,6 +1897,22 @@ struct BoxGeometry {
     left: u16,
     top: u16,
 }
+
+/// The cells a palette row gives its label (the verb or the skill name).
+const PALETTE_LABEL_CELLS: usize = 20;
+
+/// The narrowest frame the palette splits into two columns on.
+///
+/// Below it a column would hold a truncated label and no description, which is
+/// worse than one list: the split is a *widening*, not the layout.
+const PALETTE_SPLIT_MIN_WIDTH: u16 = 96;
+
+/// The widest the split gets: two readable columns and the gap between them,
+/// and no wider — a box that filled the frame would stop reading as one.
+const PALETTE_SPLIT_BOX: u16 = 120;
+
+/// The cells between the verbs and the skills.
+const PALETTE_SPLIT_GAP: usize = 2;
 
 /// The box's width for a terminal of `w`: the requested width, never narrower
 /// than 40 columns (a box narrower than that cannot hold a row and its value),
@@ -1531,11 +1938,27 @@ fn box_geometry(w: u16, h: u16, min_width: u16, content_len: usize) -> BoxGeomet
 /// the box's own rows: a row registered later still wins at its own cells, and
 /// everything else in the box (its title rule, its padding, its hints) answers
 /// as the overlay instead of leaking through to the page underneath.
+///
+/// The close chip on the box's top border is claimed here too, because every
+/// box that claims a surface paints the same chip at the same place — see
+/// [`widgets::close_cells`], which the painter and this map both read.
 fn claim_box(workbench: &mut Workbench, geometry: &BoxGeometry) {
     workbench.hit_map().push(
         Rect::new(geometry.left, geometry.top, geometry.w, geometry.h),
         "overlay.surface",
     );
+    let cells = widgets::close_cells(geometry.w as usize, workbench.lang);
+    claim_close(workbench, geometry.left, geometry.top, cells);
+}
+
+/// Register the close chip drawn at `(left, top)`, as [`widgets::close_cells`]
+/// places it on a `columns`-wide top border.
+fn claim_close(workbench: &mut Workbench, left: u16, top: u16, cells: Option<(u16, u16)>) {
+    if let Some((x, w)) = cells {
+        workbench
+            .hit_map()
+            .push(Rect::new(left.saturating_add(x), top, w, 1), OVERLAY_CLOSE);
+    }
 }
 
 /// Shift an overlay's rows right by `left` so the box is *drawn* where its hit
@@ -1570,15 +1993,35 @@ fn controls_row(
     inner: usize,
     images: bool,
 ) -> (String, Vec<(&'static str, u16)>) {
+    // The width is measured the way the row is laid out — display columns,
+    // where a Hanzi is two cells. Counting `chars()` put every region left of
+    // its own label (`[缩小]` claimed four cells and paints six) and each later
+    // button drifted further: in Chinese the row looked live, and a click on
+    // `[上一张]` landed on the counter beside it and did nothing at all.
     fn segment(
         row: &mut String,
         regions: &mut Vec<(&'static str, u16)>,
+        inner: usize,
         id: &'static str,
         plain: &str,
         painted: String,
     ) {
-        row.push_str(&painted);
-        regions.push((id, plain.chars().count().max(1) as u16));
+        let painted_w = width(plain).max(1);
+        let used: usize = regions.iter().map(|(_, w)| usize::from(*w)).sum();
+        let room = inner.saturating_sub(used);
+        if room == 0 {
+            // Clipped off the box: a target for text nobody can see is a trap.
+            return;
+        }
+        if painted_w <= room {
+            row.push_str(&painted);
+            regions.push((id, painted_w as u16));
+        } else {
+            // Only the part that fits is painted, so only that part is a
+            // target — and it is a whole one, not half a Hanzi.
+            row.push_str(&ansi::clip(&painted, room));
+            regions.push((id, room as u16));
+        }
     }
 
     let lang = workbench.lang;
@@ -1591,6 +2034,7 @@ fn controls_row(
     segment(
         &mut row,
         &mut regions,
+        inner,
         "overlay.surface",
         " ",
         " ".to_string(),
@@ -1601,6 +2045,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             super::ZOOM_OUT,
             &out_label,
             if out_live {
@@ -1613,6 +2058,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             "overlay.surface",
             &zoom_label,
             palette.dim(&zoom_label),
@@ -1622,6 +2068,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             super::ZOOM_IN,
             &in_label,
             if in_live {
@@ -1635,6 +2082,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             super::ZOOM_FIT,
             &fit_label,
             if fit_live {
@@ -1646,6 +2094,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             "overlay.surface",
             "   ",
             "   ".to_string(),
@@ -1657,6 +2106,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             super::PREV_IMAGE,
             &prev_label,
             if prev_live {
@@ -1669,6 +2119,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             "overlay.surface",
             &counter,
             palette.dim(&counter),
@@ -1678,6 +2129,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             super::NEXT_IMAGE,
             &next_label,
             if next_live {
@@ -1687,34 +2139,10 @@ fn controls_row(
             },
         );
     }
-    let visible: String = {
-        // Clip to the box: the frame is text, and a row longer than the box
-        // would push its own border off the edge.
-        let mut width = 0usize;
-        let mut out = String::new();
-        let mut escape = false;
-        for ch in row.chars() {
-            if escape {
-                out.push(ch);
-                if ch == 'm' {
-                    escape = false;
-                }
-                continue;
-            }
-            if ch == '\x1b' {
-                escape = true;
-                out.push(ch);
-                continue;
-            }
-            if width >= inner {
-                break;
-            }
-            width += 1;
-            out.push(ch);
-        }
-        out
-    };
-    (visible, regions)
+    // Clip to the box: the frame is text, and a row longer than the box would
+    // push its own border off the edge. `fit` clips by display columns, which
+    // is what the segments above were measured in.
+    (fit(&row, inner), regions)
 }
 
 fn paint_box(
@@ -1724,6 +2152,7 @@ fn paint_box(
     w: u16,
     h: u16,
     geometry: &BoxGeometry,
+    chrome: Chrome,
 ) -> Vec<String> {
     let inner = geometry.w.saturating_sub(2) as usize;
     let mut lines: Vec<String> = Vec::with_capacity(h as usize);
@@ -1731,12 +2160,14 @@ fn paint_box(
     for _ in 0..geometry.top {
         lines.push(fit("", w as usize));
     }
+    let top = match chrome {
+        Chrome::Panel(lang) => {
+            widgets::box_top_with_close(palette, geometry.w as usize, title, lang).0
+        }
+        Chrome::Plain => widgets::box_top(palette, geometry.w as usize, title),
+    };
     lines.push(fit(
-        &format!(
-            "{}{}",
-            " ".repeat(geometry.left as usize),
-            widgets::box_top(palette, geometry.w as usize, title)
-        ),
+        &format!("{}{}", " ".repeat(geometry.left as usize), top),
         w as usize,
     ));
     for row in content
@@ -1776,11 +2207,14 @@ fn diff_review_box(
 ) -> Vec<String> {
     use crate::workbench::workflows;
     let left = (w as usize).saturating_sub(columns) / 2;
-    let mut rows = vec![widgets::box_top(
+    let (top, close) = widgets::box_top_with_close(
         palette,
         columns,
         t(workbench.lang, Key::DiffTitle),
-    )];
+        workbench.lang,
+    );
+    let mut rows = vec![top];
+    claim_close(workbench, left as u16, 0, close);
     rows.push(widgets::box_row(
         palette,
         t(workbench.lang, Key::DiffHint),
@@ -1924,7 +2358,12 @@ fn git_box(
     h: u16,
 ) -> Vec<String> {
     use crate::workbench::workflows;
-    let columns = (w as usize).clamp(1, 132);
+    // The panel is the screen. A git browser reads two long documents side by
+    // side — a graph whose subjects run past the divider, and a patch whose
+    // lines are source code — and the old 132-column cap left the widest
+    // terminals with a narrow window in the middle of an empty page. The
+    // split's balance is the reader's, by dragging the divider.
+    let columns = (w as usize).max(1);
     let left = (w as usize).saturating_sub(columns) / 2;
     // Claim the box before anything inside it, so a click on the title rule or
     // a blank row belongs to the panel and not to the page behind it.
@@ -1937,19 +2376,38 @@ fn git_box(
         Some(repo) if !repo.is_empty() => format!(" git · {repo} "),
         _ => " git ".to_string(),
     };
-    let mut rows = vec![widgets::box_top(palette, columns, &title)];
+    let (top, close) = widgets::box_top_with_close(palette, columns, &title, lang);
+    let mut rows = vec![top];
+    claim_close(workbench, left as u16, 0, close);
 
-    // The tab strip. Its four labels are the four number keys, painted in the
-    // order `GitSection::ALL` lists them, so what a reader sees and what `3`
-    // selects are the same list.
+    // The tab strip. Its labels are the number keys, painted in the order
+    // `GitSection::ALL` lists them, so what a reader sees and what `5` selects
+    // are the same list. The numbers are dropped rather than the tabs when the
+    // box is too narrow to spell both: six sections at 60 columns would
+    // otherwise hide the last two, and a hidden tab is a key nobody presses.
     let section = data.git.as_ref().map(|git| git.section);
+    let labels: Vec<(state::GitSection, String)> = state::GitSection::ALL
+        .iter()
+        .map(|candidate| (*candidate, t(lang, git_tab_key(*candidate)).to_string()))
+        .collect();
+    let numbered: usize = labels
+        .iter()
+        .enumerate()
+        .map(|(index, (_, label))| width(&format!("{}. {label}", index + 1)) + 2)
+        .sum::<usize>()
+        + 2 * labels.len().saturating_sub(1);
+    let numbered = numbered <= columns.saturating_sub(2);
     let mut strip = String::new();
     let mut spans: Vec<(usize, usize)> = Vec::new();
-    for (index, candidate) in state::GitSection::ALL.iter().enumerate() {
+    for (index, (candidate, text)) in labels.iter().enumerate() {
         if index > 0 {
             strip.push_str("  ");
         }
-        let label = format!("{}. {}", index + 1, t(lang, git_tab_key(*candidate)));
+        let label = if numbered {
+            format!("{}. {text}", index + 1)
+        } else {
+            text.clone()
+        };
         let start = width(&strip);
         let painted = if section == Some(*candidate) {
             palette.strong(palette.iris, &format!(" {label} "))
@@ -2000,11 +2458,11 @@ fn git_box(
     // One painted row of the list at a given width. The width is the pane's, so
     // a narrow box drops the tail of a field instead of letting `fit` cut a
     // field in the middle (which reads as a different value).
-    let row_text = |index: usize, width: usize| -> String {
+    let row_text = |index: usize, offset: usize, width: usize| -> String {
         let Some(row) = git.rows.get(index) else {
             return String::new();
         };
-        git_row_line(palette, row, width, index == cursor)
+        git_row_line(palette, row, offset, width, index == cursor)
     };
     if git.rows.is_empty() {
         rows.push(widgets::box_row(
@@ -2045,15 +2503,13 @@ fn git_box(
 
     if split {
         let inner = columns.saturating_sub(2);
-        // The list gets a little under half the box: the graph, a subject and
-        // its refs need the room, and the patch beside it wraps instead of being
-        // cut — so a narrower detail costs a line break, not a value.
-        let left_w = (inner * 44 / 100)
-            .clamp(28, 64)
-            .min(inner.saturating_sub(12));
+        // The list's share is the reader's, dragged on the divider; both panes
+        // keep a floor so neither can be squeezed to nothing.
+        let left_w = workbench.git_list_width(inner);
         // `│` plus one cell of air on either side, inside the border: the row's
         // content must be exactly `inner` cells or `box_row` clips its tail.
         let right_w = inner.saturating_sub(left_w + 4);
+        workbench.set_git_geometry(inner, left_w);
         let body_rows = available.max(1);
         workbench.set_list_page(body_rows.saturating_sub(1));
         let first = cursor
@@ -2062,6 +2518,7 @@ fn git_box(
         let detail = git_detail_pane(
             palette,
             &detail_lines,
+            workbench.git_detail_x,
             right_w.saturating_sub(2),
             scroll,
             body_rows.saturating_sub(1),
@@ -2075,11 +2532,17 @@ fn git_box(
             body_rows.saturating_sub(1),
         );
         let detail_x = (left + 1 + left_w + 4) as u16;
+        // The divider is a handle, not a rule: it is where the width ratio is
+        // set, so it gets a hit region of its own on every body row.
+        let divider_x = detail_x.saturating_sub(2);
         for index in 0..body_rows {
             let left_text = if index == 0 {
                 list_title.clone()
             } else {
-                fit(&row_text(first + index - 1, left_w), left_w)
+                fit(
+                    &row_text(first + index - 1, workbench.git_list_x, left_w),
+                    left_w,
+                )
             };
             let right_text = if index == 0 {
                 detail_title.clone()
@@ -2101,6 +2564,9 @@ fn git_box(
                 ),
                 columns,
             ));
+            workbench
+                .hit_map()
+                .push(Rect::new(divider_x, y, 1, 1), "git.divider");
             if index > 0 && first + index - 1 < git.rows.len() {
                 workbench.hit_map().push(
                     Rect::new((left + 1) as u16, y, left_w as u16, 1),
@@ -2119,6 +2585,7 @@ fn git_box(
         let detail = git_detail_pane(
             palette,
             &detail_lines,
+            workbench.git_detail_x,
             columns.saturating_sub(4),
             scroll,
             body_rows,
@@ -2153,12 +2620,12 @@ fn git_box(
             if first + index >= git.rows.len() {
                 break;
             }
-            let line = row_text(first + index, columns.saturating_sub(4));
-            rows.push(widgets::box_row(
-                palette,
-                &fit(&line, columns.saturating_sub(4)),
-                columns,
-            ));
+            let line = row_text(
+                first + index,
+                workbench.git_list_x,
+                columns.saturating_sub(4),
+            );
+            rows.push(widgets::box_row(palette, &line, columns));
             workbench.hit_map().push(
                 Rect::new((left + 1) as u16, y, columns.saturating_sub(2) as u16, 1),
                 format!("git.row.{}", first + index),
@@ -2175,11 +2642,10 @@ fn git_box(
 
 /// When the `/git` box splits into list and detail.
 ///
-/// Higher than the diff review's 92 on purpose: the list needs the graph (four
-/// to eight cells) beside a subject, and a patch wrapped narrower than about
-/// fifty cells breaks nearly every line. Below this the panel shows one pane at
-/// a time and `tab` gives the patch the whole width, which reads better than two
-/// cramped halves.
+/// Nothing wraps in either pane any more — overlong rows pan with `←`/`→` —
+/// so the gate is about reading two documents at once: below about a hundred
+/// columns each half is narrower than a commit subject plus its graph, and one
+/// pane at a time with `tab` is the better use of the cells.
 const GIT_SPLIT_COLUMNS: usize = 108;
 
 /// The tab label of one section — the same string the tab strip, the pane title
@@ -2190,6 +2656,8 @@ fn git_tab_key(section: state::GitSection) -> Key {
         state::GitSection::Refs => Key::GitTabRefs,
         state::GitSection::Status => Key::GitTabStatus,
         state::GitSection::Stash => Key::GitTabStash,
+        state::GitSection::Worktrees => Key::GitTabWorktrees,
+        state::GitSection::Branches => Key::GitTabBranches,
     }
 }
 
@@ -2202,6 +2670,8 @@ fn git_empty_key(section: state::GitSection) -> Key {
         state::GitSection::Refs => Key::GitEmptyRefs,
         state::GitSection::Status => Key::GitCleanStatus,
         state::GitSection::Stash => Key::GitEmptyStash,
+        state::GitSection::Worktrees => Key::GitEmptyWorktrees,
+        state::GitSection::Branches => Key::GitEmptyBranches,
     }
 }
 
@@ -2242,27 +2712,42 @@ fn lane_colour(palette: &Palette, lane: usize) -> u8 {
 
 /// Paint the log's graph gutter, one colour per lane.
 ///
-/// `git log --graph` puts lane `n` at column `2n` — a glyph and a cell of air —
-/// so a glyph's lane is its column divided by two, and a branch keeps one colour
-/// for as long as it keeps one column. The glyphs are swapped for box-drawing
-/// twins (`●`, `│`, `╱`, `╲`) so a run of verticals reads as one line instead of
-/// a dotted column of `|`. Counting *characters* is counting cells here because
-/// the prefix is git's own graph vocabulary (`* | / \ _` and spaces): the
-/// subject travels after the record separator in `parse_log`, so no free text
-/// ever reaches this string.
+/// A lane is at column `2n` and the cell to its right carries the connection
+/// toward the next lane, so a glyph's lane is its column divided by two: a
+/// branch keeps one colour for as long as it keeps one column. Vertical runs are
+/// `│` and `●` rather than `|` and `*` so a lane reads as one line instead of a
+/// dotted column, and a connection is drawn with verticals, horizontals and
+/// elbows only — a diagonal would say two lanes crossed where they in fact
+/// join.
+///
+/// Counting *characters* is counting cells here because the gutter is this
+/// file's own vocabulary (`o M ● │ ─ ┐ ┘ ┤ ┬ ┴` and spaces): the subject
+/// travels after the record separator in `parse_log`, so no free text ever
+/// reaches this string.
 fn paint_graph(palette: &Palette, prefix: &str) -> String {
+    // The commit's lane colours its horizontal: one connection, one colour. A
+    // line repainted per segment would read as a different branch at every
+    // elbow it passes.
+    let mine = prefix
+        .chars()
+        .position(|glyph| glyph == 'o' || glyph == 'M')
+        .map(|at| at / 2);
     let mut out = String::new();
     for (column, glyph) in prefix.chars().enumerate() {
-        let colour = lane_colour(palette, column / 2);
+        let lane = column / 2;
+        let colour = lane_colour(palette, lane);
         let painted = match glyph {
-            '*' => palette.strong(colour, "●"),
-            '|' => palette.text(colour, "│"),
-            '/' => palette.text(colour, "╱"),
-            '\\' => palette.text(colour, "╲"),
-            // git's horizontal filler: an empty slot where two lanes meet.
-            '_' => palette.text(colour, "─"),
-            // The lane separator and anything git adds later: left as it is, so
-            // an unknown glyph is visible rather than silently dropped.
+            // A commit, and a commit that joins lines: tig's two, in the lane's
+            // own colour so a branch keeps one colour from tip to junction.
+            'o' | 'M' => palette.strong(colour, &glyph.to_string()),
+            // The badge other sections put in the gutter ("this is the one you
+            // are on"), which is not a graph node.
+            '●' => palette.strong(colour, "●"),
+            '│' => palette.text(colour, "│"),
+            '─' => palette.text(lane_colour(palette, mine.unwrap_or(lane)), "─"),
+            '┐' | '┘' | '┤' | '┬' | '┴' => palette.text(colour, &glyph.to_string()),
+            // The lane separator and anything a later glyph adds: left as it
+            // is, so an unknown glyph is visible rather than silently dropped.
             other => other.to_string(),
         };
         out.push_str(&painted);
@@ -2313,62 +2798,132 @@ fn paint_decorations(palette: &Palette, text: &str) -> String {
     out
 }
 
-/// One line of the `/git` list: the marker, the graph in its lanes, then the
-/// row's fields each in the colour its kind earns. The selected row is a band
-/// across the whole pane, so the eye finds it without reading the marker — and
-/// the band keeps every field's own colour (a reset inside the row is re-opened
-/// on the band, not left to the panel's background).
-fn git_row_line(palette: &Palette, row: &GitRow, columns: usize, selected: bool) -> String {
-    let columns = columns.max(1);
-    let graph = paint_graph(palette, &row.prefix);
-    if row.key.is_none() {
-        // The graph continuing through a column: painted in the gutter, never
-        // selectable, so it gets no arrow.
-        return fit(&format!("  {graph}"), columns);
+/// `columns` cells of `text` starting at `offset` — the horizontal scroll of a
+/// pane that does not wrap.
+///
+/// The window is the pane's whole width: [`slice_cols`] keeps the styling of
+/// what it keeps and turns a wide glyph cut by the window into spaces, so the
+/// row still measures exactly `columns` and the two panes cannot drift apart.
+fn pane_window(text: &str, offset: usize, columns: usize) -> String {
+    if columns == 0 {
+        return String::new();
     }
-    let marker = if selected {
-        palette.strong(palette.accent, "› ")
-    } else {
-        "  ".to_string()
-    };
-    let lead = row
-        .pieces
-        .first()
-        .map(|piece| piece.replace('\n', " ↵ "))
-        .unwrap_or_default();
-    let head = format!(
-        "{marker}{graph}{}",
-        paint_kind(palette, row.kind(0), &lead, selected)
-    );
-    let band = |line: &str| {
-        if selected {
-            palette.on(selection_band(palette), line, columns)
-        } else {
-            line.to_string()
-        }
-    };
-    if width(&head) > columns {
-        // The lead field alone is too wide: shorten it, and keep the marker and
-        // the graph inside the row.
-        return band(&fit(&head, columns));
-    }
-    let mut line = head;
-    for (index, piece) in row.pieces.iter().enumerate().skip(1) {
-        let plain = format!(" · {piece}");
-        if width(&line) + width(&plain) > columns {
-            break;
-        }
-        line.push_str(&palette.dim(" · "));
-        line.push_str(&paint_kind(palette, row.kind(index), piece, selected));
-    }
-    band(&line)
+    let end = offset.saturating_add(columns);
+    crate::workbench::ansi::pad(
+        &crate::workbench::ansi::slice_cols(text, offset, end),
+        columns,
+    )
 }
 
-/// The detail pane's window onto its body: the body wrapped to `width`,
-/// scrolled to `scroll` and coloured row by row.
+/// How much of a pane the subject must keep before the log's date-time and
+/// committer columns are worth painting. A title cut to a few cells is not a
+/// title, and those columns say what the detail pane beside the list already
+/// says in full.
+const MIN_SUBJECT: usize = 12;
+
+/// The log's columns, cut from the right until the row can hold them *and*
+/// [`MIN_SUBJECT`] cells of subject — a column is painted whole or not at all,
+/// so a narrow box loses the committer first and the date-time last. Each cell is
+/// already padded to its column's width, so dropping one from the right cannot
+/// move what is left.
+///
+/// One space between columns, not two: the cells are already padded, and a
+/// second space only pushes the graph — and with it every lane — away from the
+/// name it belongs to.
+fn log_columns(palette: &Palette, columns: &[String], graph_width: usize, pane: usize) -> String {
+    let mut kept = columns;
+    loop {
+        if kept.is_empty() {
+            return String::new();
+        }
+        let width: usize = kept.iter().map(|cell| ansi::width(cell)).sum();
+        // One separator between the cells and one before the graph.
+        let needed = width + kept.len() + graph_width + MIN_SUBJECT;
+        if needed <= pane {
+            break;
+        }
+        kept = &kept[..kept.len() - 1];
+    }
+    let mut text = String::new();
+    for (index, cell) in kept.iter().enumerate() {
+        if index > 0 {
+            text.push(' ');
+        }
+        text.push_str(cell);
+    }
+    text.push(' ');
+    palette.dim(&text)
+}
+
+/// One line of the `/git` list: the marker, the date-time and committer
+/// columns, the graph in its lanes, then the row's fields each in the colour its
+/// kind earns. The selected row is a band across the whole pane, so the eye
+/// finds it without reading the marker — and the band keeps every field's own
+/// colour (a reset inside the row is re-opened on the band, not left to the
+/// panel's background).
+///
+/// The row is composed whole and then panned to `offset`: nothing is dropped
+/// for being too wide, so `→` reaches the tail of a subject that runs past the
+/// divider instead of finding it cut off — except the columns, which are dropped
+/// whole when the pane cannot hold them *and* a readable subject.
+fn git_row_line(
+    palette: &Palette,
+    row: &GitRow,
+    offset: usize,
+    columns: usize,
+    selected: bool,
+) -> String {
+    let columns = columns.max(1);
+    // The gutter is padded to the widest lane in the page, so whatever follows
+    // it — the refs, then the subject — starts in the same cell on every row.
+    // Each lane already owns two cells (a glyph and the air beside it), so the
+    // padding ends in the one cell that separates the drawing from the fields.
+    let graph = paint_graph(palette, &row.prefix);
+    let side = log_columns(palette, &row.columns, ansi::width(&row.prefix), columns);
+    let full = if row.key.is_none() {
+        // The graph continuing through a column: painted in the gutter, never
+        // selectable, so it gets no arrow.
+        format!("  {side}{graph}")
+    } else {
+        let marker = if selected {
+            palette.strong(palette.accent, "› ")
+        } else {
+            "  ".to_string()
+        };
+        let lead = row
+            .pieces
+            .first()
+            .map(|piece| piece.replace('\n', " ↵ "))
+            .unwrap_or_default();
+        let mut line = format!(
+            "{marker}{side}{graph}{}",
+            paint_kind(palette, row.kind(0), &lead, selected)
+        );
+        for (index, piece) in row.pieces.iter().enumerate().skip(1) {
+            line.push_str(&palette.dim(" · "));
+            line.push_str(&paint_kind(palette, row.kind(index), piece, selected));
+        }
+        line
+    };
+    let visible = pane_window(&full, offset, columns);
+    if selected {
+        palette.on(selection_band(palette), &visible, columns)
+    } else {
+        visible
+    }
+}
+
+/// The detail pane's window onto its body: the body panned to `offset` and
+/// scrolled to `scroll`, one row per line of the patch.
+///
+/// Nothing wraps: a patch line is source, and folding it at the divider turns
+/// one logical row into two rows that a difference highlight and a `+`/`-` run
+/// both read as separate changes. The pane pans instead, so an overlong line
+/// is complete once the reader presses `→`.
 struct GitDetailPane {
     rows: Vec<String>,
-    /// How many painted rows the whole body is at this width.
+    /// How many painted rows the whole body is: one per line, since the lines
+    /// are not folded.
     total: usize,
     /// The body row the window starts on — `scroll` clamped, so scrolling never
     /// runs past the end into a blank pane.
@@ -2378,19 +2933,19 @@ struct GitDetailPane {
 fn git_detail_pane(
     palette: &Palette,
     body: &[String],
+    offset: usize,
     width: usize,
     scroll: usize,
     height: usize,
 ) -> GitDetailPane {
     let height = height.max(1);
-    let wrapped = crate::workbench::workflows::wrapped_indexed(body, width.max(1));
-    let total = wrapped.len();
+    let total = body.len();
     let first = scroll.min(total.saturating_sub(height));
-    let rows = wrapped
-        .into_iter()
+    let rows = body
+        .iter()
         .skip(first)
         .take(height)
-        .map(|(source, chunk)| git_detail_line(palette, &body[source], chunk))
+        .map(|source| pane_window(&git_detail_line(palette, source), offset, width.max(1)))
         .collect();
     GitDetailPane { rows, total, first }
 }
@@ -2416,12 +2971,12 @@ fn git_detail_title(
 
 /// One painted row of the detail pane.
 ///
-/// `source` is the body line this row was wrapped from, not the row itself: a
-/// patch row is classified by what its whole line is, and the tail a wrap cut
-/// off keeps the colour of the line it belongs to. The order of the tests is the
-/// format's own precedence — `---`/`+++` are file headers before they are
-/// removed and added lines.
-fn git_detail_line(palette: &Palette, source: &str, chunk: String) -> String {
+/// The row is painted whole and panned by its caller, so the classification
+/// below sees the *entire* source line: the format's own precedence puts
+/// `---`/`+++` file headers before removed and added lines, and a difference
+/// header never changes meaning because the reader scrolled sideways.
+fn git_detail_line(palette: &Palette, source: &str) -> String {
+    let chunk = source.to_string();
     if source.starts_with("commit ") {
         return palette.strong(palette.amber, &chunk);
     }
@@ -2541,7 +3096,9 @@ fn files_box(
         "" => t(lang, Key::FilesTitle).to_string(),
         root => format!("{} · {root}", t(lang, Key::FilesTitle)),
     };
-    let mut rows = vec![widgets::box_top(palette, columns, &title)];
+    let (top, close) = widgets::box_top_with_close(palette, columns, &title, lang);
+    let mut rows = vec![top];
+    claim_close(workbench, left as u16, 0, close);
     // The box is the frame's full height: a tree is read by scrolling it.
     let available = (h as usize).saturating_sub(3);
     if available == 0 {
@@ -2587,7 +3144,9 @@ fn files_box(
             workbench.hit_map(),
             lang,
             frame,
-            &panels::Folded::new(),
+            // A tree is filtered by nothing but its own expansion: the rail's
+            // folds belong to its two conversation panels.
+            &panels::Folded::default(),
             "files.row.",
         )
     };
@@ -2616,11 +3175,13 @@ fn help_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec
         )
     };
     // A key table lists keys. An action with no chord has a typed door instead
-    // (`/queue`, `/lang`, `/copy`, `/refresh`…), and those are listed further
-    // down under the commands — so printing an empty-key row here (one per
-    // chordless action, standing in the same column as the chords) spent a line
-    // saying "there is nothing to say". The shortcut *editor* still lists every
-    // action: that screen exists to give the chordless ones a chord.
+    // (`/queue`, `/lang`, `/copy`, `/refresh`…), and the palette (`/`, `ctrl+p`)
+    // is where every verb is spelled — so printing an empty-key row here (one
+    // per chordless action, standing in the same column as the chords) spent a
+    // line saying "there is nothing to say", and reprinting the palette's own
+    // list below the table spent thirty-five more on a box the reader opens to
+    // find a key. The shortcut *editor* still lists every action: that screen
+    // exists to give the chordless ones a chord.
     let mut group = None;
     for action in ACTIONS {
         let key = workbench.keys.key(action);
@@ -2649,15 +3210,11 @@ fn help_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec
     for (key, description) in HELP_KEYS {
         content.push(row(key, t(lang, description), palette));
     }
-    content.push(String::new());
-    content.push(palette.strong(palette.iris, t(lang, Key::PalettePanelTitle)));
-    for (command, description) in COMMANDS {
-        content.push(format!(
-            "   {}  {}",
-            palette.text(palette.iris, &fit(command, 18)),
-            palette.body(t(lang, description))
-        ));
-    }
+    // The verbs are not repeated here: the palette is one key away (`/` or
+    // `ctrl+p`, spelled in the inline table above), and a second copy of that
+    // list under the key table turned a box about keys into a scroll of
+    // thirty-five commands the reader had not asked for.
+    //
     // The window: the overlay scrolls rather than growing past the screen.
     let visible = h.saturating_sub(5) as usize;
     let max_scroll = content.len().saturating_sub(visible);
@@ -2666,7 +3223,15 @@ fn help_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec
     let content: Vec<String> = content.into_iter().skip(scroll).collect();
     let geometry = box_geometry(w, h, 72, content.len());
     claim_box(workbench, &geometry);
-    framed(palette, t(lang, Key::HelpTitle), content, w, h, &geometry)
+    framed(
+        palette,
+        t(lang, Key::HelpTitle),
+        content,
+        w,
+        h,
+        &geometry,
+        Chrome::Panel(lang),
+    )
 }
 
 fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec<String> {
@@ -2691,7 +3256,6 @@ fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
             PreferenceRow::Mouse => enabled(workbench.mouse_capture, lang).to_string(),
             PreferenceRow::Notifications => enabled(workbench.notify.enabled, lang).to_string(),
             PreferenceRow::NotificationBell => enabled(workbench.notify.bell, lang).to_string(),
-            PreferenceRow::Motion => enabled(workbench.reduced_motion, lang).to_string(),
             // The two menus show what is in force: the language *preference*
             // (so a reader on `system` is not told they chose Chinese) and the
             // palette id the surface is actually painting.
@@ -2708,8 +3272,7 @@ fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
             | PreferenceRow::SidebarVisible
             | PreferenceRow::Mouse
             | PreferenceRow::Notifications
-            | PreferenceRow::NotificationBell
-            | PreferenceRow::Motion => format!("‹ {value} ›"),
+            | PreferenceRow::NotificationBell => format!("‹ {value} ›"),
             PreferenceRow::Language | PreferenceRow::Theme => format!("{value} ›"),
             PreferenceRow::Shortcuts | PreferenceRow::Reset => value,
         };
@@ -2772,6 +3335,7 @@ fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
         w,
         h,
         &geometry,
+        Chrome::Panel(lang),
     )
 }
 
@@ -2859,6 +3423,7 @@ fn keybindings_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
         w,
         h,
         &geometry,
+        Chrome::Panel(lang),
     )
 }
 
@@ -2897,19 +3462,24 @@ fn preview_box(
 
     let Some(preview) = data.preview.as_ref() else {
         let title = t(lang, Key::PreviewNothing).to_string();
-        return paint_box(
+        return preview_surface(
             palette,
             &title,
             vec![palette.dim(&format!(" {}", t(lang, Key::PreviewNothing)))],
             w,
             h,
             &geometry,
+            lang,
         );
     };
     let zoom = workbench.preview_zoom;
     let scroll = workbench.preview_scroll;
     let mut content: Vec<String> = Vec::new();
     let hint = match preview {
+        state::PreviewView::Loading { .. } => {
+            content.push(palette.dim(&format!(" {}", t(lang, Key::PreviewLoading))));
+            t(lang, Key::PreviewHintText)
+        }
         state::PreviewView::Image { path, pixels } => {
             // A picture is shown either at its own resolution, by the terminal's
             // image protocol, or not at all.
@@ -2921,8 +3491,10 @@ fn preview_box(
             // (`ImageRequest`, painted by the driver after this frame), and a
             // terminal that cannot gets the picture's facts and an honest
             // sentence instead of a mosaic.
-            let images = crate::terminal_image::get_capabilities().images
-                == crate::terminal_image::ImageProtocol::Kitty;
+            let images = !matches!(
+                crate::terminal_image::get_capabilities().images,
+                crate::terminal_image::ImageProtocol::None
+            );
             // One row of the box is its controls: zoom, fit, and the folder's
             // previous/next picture. They are text, so the picture starts below
             // them — a bitmap cannot share a cell with a glyph.
@@ -2945,15 +3517,18 @@ fn preview_box(
                 let crop = crop_of(pixels, cells_w, cells_h, pan, shown_w, shown_h);
                 let left = (inner.saturating_sub(shown_w) / 2) as u16;
                 let top = (picture_h.saturating_sub(shown_h) / 2) as u16;
-                workbench.image_request = Some(ImageRequest {
-                    // The *source* is what a repaint must not retransmit; the
-                    // placement is the part that is cheap to repeat.
-                    source: image_source_key(path, pixels, crop),
-                    x: geometry.left + 1 + left,
-                    y: geometry.top + 2 + top,
-                    columns: shown_w as u16,
-                    rows: shown_h as u16,
-                    crop,
+                workbench.image_requests.push(PlacedPicture {
+                    request: ImageRequest {
+                        // The *source* is what a repaint must not retransmit; the
+                        // placement is the part that is cheap to repeat.
+                        source: image_source_key(path, pixels, crop),
+                        x: geometry.left + 1 + left,
+                        y: geometry.top + 2 + top,
+                        columns: shown_w as u16,
+                        rows: shown_h as u16,
+                        crop,
+                    },
+                    pixels: pixels.clone(),
                 });
                 // The box keeps its own background under the bitmap: the frame
                 // is text, and the picture is a layer above it.
@@ -2989,7 +3564,12 @@ fn preview_box(
         state::PreviewView::Markdown { text, .. } => {
             let mut renderer = crate::components::markdown::MarkdownRenderer::new();
             let lines = renderer.render_text(text, inner.saturating_sub(2));
-            let window = window(&lines, scroll, content_h);
+            let (start, window) = window(&lines, scroll, content_h);
+            // The offset the window settled on is written back: the painter's
+            // clamp alone would leave the state ahead of the paint, and the next
+            // `pageUp` would be spent walking that gap instead of the document
+            // (the same reason the transcript and `/git` clamp their own offset).
+            workbench.preview_scroll = start;
             content.extend(window.into_iter().map(|line| format!(" {line}")));
             t(lang, Key::PreviewHintText)
         }
@@ -2999,11 +3579,12 @@ fn preview_box(
             if lines.is_empty() {
                 content.push(palette.dim(&format!(" {}", t(lang, Key::PreviewEmptyFile))));
             }
-            let window = window(
+            let (start, window) = window(
                 lines,
                 scroll,
                 content_h.saturating_sub(usize::from(*truncated)),
             );
+            workbench.preview_scroll = start;
             content.extend(
                 window
                     .into_iter()
@@ -3028,6 +3609,13 @@ fn preview_box(
             t(lang, Key::PreviewHintText)
         }
     };
+    // The box is the screen less its two-row margin, whatever the document
+    // holds: a body that stopped where the *text* stopped would end the box
+    // early and leave the page underneath showing through below it, which is
+    // what the last page of a long file and a one-line error both used to do.
+    while content.len() < content_h {
+        content.push(String::new());
+    }
     content.push(String::new());
     content.push(palette.dim(&format!(" {hint}")));
 
@@ -3044,7 +3632,43 @@ fn preview_box(
         }
         _ => preview.name().to_string(),
     };
-    paint_box(palette, &title, content, w, h, &geometry)
+    preview_surface(palette, &title, content, w, h, &geometry, lang)
+}
+
+/// Paint the preview box, and cover the frame it sits in.
+///
+/// The box takes all but a two-row margin, so the margin is the only part of the
+/// page it does not own — and a margin that showed the conversation through it
+/// read as a box cut short, which is what a scrolled preview used to look like:
+/// the rows below the box were the chat's own rows, and as the document scrolled
+/// the band of chat under the box grew. Unlike a floating menu, a preview owns
+/// the whole frame while it is open: its margin is the surface's background, so
+/// nothing of the page is visible beside the box at any scroll position.
+fn preview_surface(
+    palette: &Palette,
+    title: &str,
+    content: Vec<String>,
+    w: u16,
+    h: u16,
+    geometry: &BoxGeometry,
+    lang: Language,
+) -> Vec<String> {
+    let surface = |line: String| {
+        if line.chars().all(|cell| cell == ' ') {
+            palette.panel_row("", w as usize)
+        } else {
+            line
+        }
+    };
+    let mut lines: Vec<String> =
+        paint_box(palette, title, content, w, h, geometry, Chrome::Panel(lang))
+            .into_iter()
+            .map(surface)
+            .collect();
+    while lines.len() < h as usize {
+        lines.push(palette.panel_row("", w as usize));
+    }
+    lines
 }
 
 /// A previewed line with its syntax runs in the palette's token colours.
@@ -3066,12 +3690,23 @@ fn painted(palette: &Palette, line: &syntax::Line) -> String {
 }
 
 /// `height` lines starting at `scroll`, clamped to the end of the text.
-fn window<T: Clone>(lines: &[T], scroll: usize, height: usize) -> Vec<T> {
+/// `height` lines starting at `scroll`, clamped to the last *full* page — and
+/// the start it settled on, so the caller can store it back.
+///
+/// Clamping to the last row instead (the old `lines.len() - 1`) let the offset
+/// run past the end: every press after that painted fewer rows than the box
+/// holds, so the text climbed its own band while the box shrank under it and
+/// the conversation showed through below — and coming back up had to pay the
+/// whole overshoot before the document moved at all.
+fn window<T: Clone>(lines: &[T], scroll: usize, height: usize) -> (usize, Vec<T>) {
     if lines.is_empty() || height == 0 {
-        return Vec::new();
+        return (0, Vec::new());
     }
-    let start = scroll.min(lines.len().saturating_sub(1));
-    lines[start..(start + height).min(lines.len())].to_vec()
+    let start = scroll.min(lines.len().saturating_sub(height));
+    (
+        start,
+        lines[start..(start + height).min(lines.len())].to_vec(),
+    )
 }
 
 fn palette_box(
@@ -3081,12 +3716,22 @@ fn palette_box(
     w: u16,
     h: u16,
 ) -> Vec<String> {
-    let lang = workbench.lang;
     let rows = workbench.palette_rows(data);
-    let query = workbench.palette_query.clone();
     let selection = workbench.palette_index.min(rows.len().saturating_sub(1));
     let room = h.saturating_sub(6) as usize;
     workbench.set_list_page(room);
+    // Two columns, verbs on the left and the agent's skills on the right, once
+    // the frame leaves each list a readable description. The lists are disjoint
+    // by construction (a command never reaches the model, a skill is a prompt
+    // token it expands), so putting them side by side costs no ordering: the
+    // single list below is what a narrow frame — or a filter that leaves one
+    // kind — still gets.
+    let commands = rows.iter().take_while(|row| !row.is_skill()).count();
+    if w >= PALETTE_SPLIT_MIN_WIDTH && commands > 0 && commands < rows.len() {
+        return palette_columns(workbench, palette, &rows, commands, selection, w, h);
+    }
+    let lang = workbench.lang;
+    let query = workbench.palette_query.clone();
     // Keep the highlighted entry inside the window.
     let start = selection.saturating_sub(room.saturating_sub(1));
     let shown = rows.len().saturating_sub(start).min(room);
@@ -3112,15 +3757,7 @@ fn palette_box(
     claim_box(workbench, &geometry);
 
     let mut content: Vec<String> = Vec::new();
-    content.push(format!(
-        " {} {}",
-        palette.text(palette.accent, "❯"),
-        if query.is_empty() {
-            palette.dim(t(lang, Key::PaletteFilter))
-        } else {
-            palette.body(&query)
-        }
-    ));
+    content.push(palette_filter_line(palette, &query, lang, false));
     content.push(String::new());
     if rows.is_empty() {
         content.push(palette.dim(t(lang, Key::PaletteEmpty)));
@@ -3139,22 +3776,12 @@ fn palette_box(
             }));
             line += 1;
         }
-        let marker = if index == selection { "›" } else { " " };
-        let label = if row.is_skill() {
-            format!("/{}", row.label())
-        } else {
-            row.label().to_string()
-        };
-        let body = format!(
-            " {marker} {}  {}",
-            palette.text(palette.iris, &fit(&label, 20)),
-            palette.dim(row.description())
-        );
-        content.push(if index == selection {
-            palette.strong(palette.fg, &body)
-        } else {
-            body
-        });
+        content.push(palette_row_line(
+            palette,
+            row,
+            index == selection,
+            geometry.w.saturating_sub(2) as usize,
+        ));
         // Filter line, blank line, then the rows and their headings: the first
         // entry sits on the box's fourth line.
         workbench.hit_map().push(
@@ -3175,8 +3802,205 @@ fn palette_box(
         w,
         h,
         &geometry,
+        Chrome::Panel(lang),
     )
 }
+
+/// The filter line both palette layouts open with. `split` picks the hint that
+/// names the keys of the layout it sits in: `←`/`→` step between the columns,
+/// and on a narrow frame there are no columns to step between.
+fn palette_filter_line(palette: &Palette, query: &str, lang: Language, split: bool) -> String {
+    format!(
+        " {} {}",
+        palette.text(palette.accent, "❯"),
+        if query.is_empty() {
+            palette.dim(t(
+                lang,
+                if split {
+                    Key::PaletteFilterSplit
+                } else {
+                    Key::PaletteFilter
+                },
+            ))
+        } else {
+            palette.body(query)
+        }
+    )
+}
+
+/// One row of either layout: the selection marker, the label, its description.
+///
+/// `columns` is the whole width the row may use (one column, or the box), so the
+/// description gets whatever the label and the two gaps leave — which is what
+/// makes a two-column row truncate instead of pushing its neighbour off the box.
+fn palette_row_line(
+    palette: &Palette,
+    row: &crate::workbench::PaletteRow,
+    selected: bool,
+    columns: usize,
+) -> String {
+    let marker = if selected { "›" } else { " " };
+    let label = if row.is_skill() {
+        format!("/{}", row.label())
+    } else {
+        row.label().to_string()
+    };
+    // Cells spent before the description: the marker and the space either side
+    // of it, the label column, and the gap after it.
+    let chrome = 3 + PALETTE_LABEL_CELLS + 2;
+    let description = columns.saturating_sub(chrome).max(8);
+    let body = format!(
+        " {marker} {}  {}",
+        palette.text(palette.iris, &fit(&label, PALETTE_LABEL_CELLS)),
+        palette.dim(&fit(row.description(), description))
+    );
+    let body = if selected {
+        palette.strong(palette.fg, &body)
+    } else {
+        body
+    };
+    ansi::pad(&body, columns)
+}
+
+/// The two-column palette: the surface's verbs on the left, the agent's skills
+/// on the right, each with its own heading and its own window.
+///
+/// The selection stays one linear list (commands, then skills) because that is
+/// what `↑`/`↓` walk and what the palette's index means; the columns are only a
+/// second way to *see* it. `←`/`→` step between the columns, landing on the
+/// neighbour's row at the same visual line.
+#[allow(clippy::too_many_arguments)]
+fn palette_columns(
+    workbench: &mut Workbench,
+    palette: &Palette,
+    rows: &[crate::workbench::PaletteRow],
+    commands: usize,
+    selection: usize,
+    w: u16,
+    h: u16,
+) -> Vec<String> {
+    let lang = workbench.lang;
+    let (left, right) = rows.split_at(commands);
+    // The two headings share the first body line, so each column shows one row
+    // fewer than the single-column palette has room for.
+    let rows_room = h.saturating_sub(7) as usize;
+    workbench.set_list_page(rows_room);
+    let left_selected = selection < commands;
+    let left_start = if left_selected {
+        list_start(selection, left.len(), rows_room)
+    } else {
+        0
+    };
+    let right_start = if left_selected {
+        0
+    } else {
+        list_start(selection - commands, right.len(), rows_room)
+    };
+    let shown = left
+        .len()
+        .saturating_sub(left_start)
+        .min(rows_room)
+        .max(right.len().saturating_sub(right_start).min(rows_room));
+    let geometry = box_geometry(w, h, PALETTE_SPLIT_BOX, 3 + shown);
+    claim_box(workbench, &geometry);
+    let inner = geometry.w.saturating_sub(2) as usize;
+    let left_column = inner.saturating_sub(PALETTE_SPLIT_GAP) / 2;
+    let right_column = inner.saturating_sub(PALETTE_SPLIT_GAP) - left_column;
+
+    let mut content: Vec<String> = Vec::new();
+    content.push(palette_filter_line(
+        palette,
+        &workbench.palette_query,
+        lang,
+        true,
+    ));
+    content.push(String::new());
+    content.push(format!(
+        "{}{}{}",
+        ansi::pad(
+            &palette.dim(t(lang, Key::PaletteCommandsHeading)),
+            left_column
+        ),
+        " ".repeat(PALETTE_SPLIT_GAP),
+        palette.dim(t(lang, Key::PaletteSkillsHeading)),
+    ));
+    for offset in 0..shown {
+        let drawn = |column: &[crate::workbench::PaletteRow],
+                     start: usize,
+                     base: usize,
+                     width: usize,
+                     palette: &Palette| {
+            column
+                .get(start + offset)
+                .map(|row| {
+                    let index = base + start + offset;
+                    palette_row_line(palette, row, index == selection, width)
+                })
+                .unwrap_or_else(|| " ".repeat(width))
+        };
+        let left_line = drawn(left, left_start, 0, left_column, palette);
+        let right_line = drawn(right, right_start, commands, right_column, palette);
+        content.push(format!(
+            "{left_line}{}{right_line}",
+            " ".repeat(PALETTE_SPLIT_GAP)
+        ));
+        // The left column starts at the box's inner left; the right one after
+        // the gap. A click is resolved against the same columns the rows were
+        // painted in.
+        let line = geometry.top + 4 + offset as u16;
+        if left.get(left_start + offset).is_some() {
+            workbench.hit_map().push(
+                Rect::new(geometry.left + 1, line, left_column as u16, 1),
+                format!("palette.row.{}", left_start + offset),
+            );
+        }
+        if right.get(right_start + offset).is_some() {
+            workbench.hit_map().push(
+                Rect::new(
+                    geometry.left + 1 + (left_column + PALETTE_SPLIT_GAP) as u16,
+                    line,
+                    right_column as u16,
+                    1,
+                ),
+                format!("palette.row.{}", commands + right_start + offset),
+            );
+        }
+    }
+    framed(
+        palette,
+        t(lang, Key::PaletteTitle),
+        content,
+        w,
+        h,
+        &geometry,
+        Chrome::Panel(lang),
+    )
+}
+
+/// The first row of a `room`-tall window that keeps `selection` visible.
+fn list_start(selection: usize, len: usize, room: usize) -> usize {
+    if room == 0 {
+        return 0;
+    }
+    selection
+        .min(len.saturating_sub(1))
+        .saturating_sub(room.saturating_sub(1))
+}
+
+/// The most candidates a mention menu shows at once. The menu completes one
+/// line of the draft, so it is a picker, not a file browser: a box that grew
+/// with the terminal would cover the conversation it is completing, and one
+/// that showed only a handful sent the reader scrolling through a long list of
+/// conversations. Sixteen rows is the middle — enough to recognise a target
+/// without moving, small enough that the draft and the transcript stay beside
+/// it.
+const MENTION_MAX_ROWS: usize = 16;
+
+/// The rows the mention box spends on everything except its candidates: the
+/// border pair, the query line, the blank under it, and the hint under its own
+/// blank.
+const MENTION_CHROME: usize = 6;
+
 /// `#[allow(clippy::too_many_arguments)]` is not needed: the box is one shape.
 fn mention_box(
     workbench: &mut Workbench,
@@ -3208,7 +4032,18 @@ fn mention_box(
         .map(|m| m.index)
         .unwrap_or(0)
         .min(rows.len().saturating_sub(1));
-    let room = h.saturating_sub(6) as usize;
+    // How many candidates the box can show, and where its window starts.
+    //
+    // Both come from *one* number: the space between the frame's top rule and
+    // the composer's own edge. The window used to be derived from the terminal's
+    // height while the box itself was capped at twelve lines, so the window
+    // "scrolled" through rows the box had already cut — `↓` past the eighth
+    // candidate moved a highlight nobody could see and the list read as frozen.
+    // A window derived from what the box can actually paint cannot drift from it.
+    let ceiling = (input_top as usize).saturating_sub(1);
+    let room = ceiling
+        .saturating_sub(MENTION_CHROME)
+        .clamp(1, MENTION_MAX_ROWS);
     let start = selection.saturating_sub(room.saturating_sub(1));
     let shown = rows.len().saturating_sub(start).min(room);
 
@@ -3258,12 +4093,13 @@ fn mention_box(
 
     // Above the composer and never on it: the menu completes the line the
     // reader is still typing, so it must not cover the draft, the composer's own
-    // frame, the status bar or the hints. Its height is bounded (a long candidate
-    // list scrolls inside the window) so it cannot reach the header either.
+    // frame, the status bar or the hints. Its height is bounded by the same
+    // ceiling the window was measured against, so a row the box paints is always
+    // a row the reader can reach with `↓`.
     let mut geometry = box_geometry(column.w, h, box_w, content.len());
     geometry.left = column.x + (column.w.saturating_sub(box_w)) / 2;
     geometry.w = box_w;
-    geometry.h = geometry.h.min(12);
+    geometry.h = geometry.h.min(ceiling.max(3) as u16);
     geometry.top = input_top.saturating_sub(geometry.h).max(1);
 
     workbench.hit_map().push(
@@ -3290,7 +4126,15 @@ fn mention_box(
         );
     }
     (
-        framed(palette, kind.title(lang), content, w, h, &geometry),
+        framed(
+            palette,
+            kind.title(lang),
+            content,
+            w,
+            h,
+            &geometry,
+            Chrome::Plain,
+        ),
         geometry,
     )
 }
@@ -3421,6 +4265,12 @@ fn picker_box(
         geometry.h,
     );
     workbench.hit_map().push(body, "picker.body");
+    claim_close(
+        workbench,
+        geometry.left,
+        geometry.top,
+        widgets::close_cells(geometry.w as usize, workbench.lang),
+    );
     let rows_y = geometry.top.saturating_add(3);
     for display in start..end {
         let Some(ordinal) = view.ordinal(display) else {
@@ -3445,6 +4295,7 @@ fn picker_box(
         w,
         h,
         &geometry,
+        Chrome::Panel(workbench.lang),
     )
 }
 
@@ -3469,7 +4320,7 @@ fn panel_box(
         scroll: workbench.panel_scroll[index],
         selected: workbench.sidebar_index,
     };
-    let folded = workbench.folded_workspaces.clone();
+    let folded = workbench.rail.clone();
     let frame = workbench.spinner_frame();
     let body = panels::render_with(
         panel,
@@ -3485,7 +4336,7 @@ fn panel_box(
     );
     let geometry = box_geometry(w, h, PANEL_WIDTH, body.len());
     claim_box(workbench, &geometry);
-    framed(palette, title, body, w, h, &geometry)
+    framed(palette, title, body, w, h, &geometry, Chrome::Panel(lang))
 }
 
 /// Width the full-screen panel asks for (`ctrl+b` on a terminal too narrow for
@@ -3529,11 +4380,57 @@ mod tests {
 
     fn data(version: &str) -> WorkbenchData {
         WorkbenchData {
-            app_name: "future-tui".into(),
             version: version.into(),
             connected: true,
             ..WorkbenchData::default()
         }
+    }
+
+    /// While a compaction holds the session the frame says so twice: the
+    /// activity row names it (with the clock in the label — a compaction makes
+    /// no tool calls to count), and the composer's title is the answer to "why
+    /// does enter not send".
+    #[test]
+    fn a_compacting_session_names_itself_on_the_row_and_the_composer() {
+        let mut data = crate::workbench::demo::chat();
+        data.compacting = true;
+        data.activity = crate::workbench::state::Activity {
+            kind: crate::workbench::state::ActivityKind::Compacting,
+            detail: String::new(),
+            elapsed_secs: 12,
+            tools: 0,
+        };
+        let mut workbench = Workbench::new();
+        let lang = workbench.lang;
+        let rows = workbench.render(&data, 120, 38);
+        let painted: Vec<String> = rows.iter().map(|row| plain(row)).collect();
+        let joined = painted.join("\n");
+        assert!(
+            joined.contains(&crate::workbench::i18n::render(
+                lang,
+                Key::ActivityCompacting,
+                &[&12u64]
+            )),
+            "the row names the compaction and its clock:\n{joined}"
+        );
+        assert!(
+            !joined.contains("· 0 工具") && !joined.contains("· 0 tools"),
+            "a compaction makes no calls, so the tally is not drawn:\n{joined}"
+        );
+        assert!(
+            joined.contains(t(lang, Key::ComposerCompacting)),
+            "the composer says why nothing is sending:\n{joined}"
+        );
+        // …and a session that is not compacting keeps its ordinary title.
+        data.compacting = false;
+        let rows = workbench.render(&data, 120, 38);
+        let joined: Vec<String> = rows.iter().map(|row| plain(row)).collect();
+        let joined = joined.join("\n");
+        assert!(
+            !joined.contains(t(lang, Key::ComposerCompacting)),
+            "{joined}"
+        );
+        assert!(joined.contains(t(lang, Key::InputHintChat)), "{joined}");
     }
 
     /// The mention menu's own frame is one rectangle: the left border is in one
@@ -3548,7 +4445,8 @@ mod tests {
             "parser 里有个 off-by-one".into(),
             "把 <= 改成 < 之后".into(),
             "四十一 个用例全过".into(),
-        ];
+        ]
+        .into();
         let mut workbench = Workbench::new();
         let mut editor = data.input.editor.clone();
         editor.set("#", 1);
@@ -3628,6 +4526,102 @@ mod tests {
             seen += 1;
         }
         assert!(seen >= 3, "the box has rows to check: {seen}");
+    }
+
+    /// The window the menu paints is the window `↓` moves through.
+    ///
+    /// It used to be measured against the terminal's height while the box itself
+    /// was capped at twelve lines, so the highlight walked past the last painted
+    /// candidate: every further `↓` moved a row nobody could see and the list
+    /// read as frozen, and the hint under the rows was cut away by the same cap.
+    /// Both come from one number now — the space above the composer.
+    #[test]
+    fn the_mention_window_follows_the_highlight_and_keeps_its_hint() {
+        let session = |index: usize| crate::workbench::state::SessionRow {
+            id: format!("s{index:02}"),
+            title: format!("会话 {index:02}"),
+            workspace: "future-os".into(),
+            age: "1m".into(),
+            current: index == 0,
+            parent_id: None,
+            streaming: false,
+            created_at_ms: 0,
+            pinned: false,
+        };
+        let mut data = crate::workbench::demo::chat();
+        data.sessions = (0..24).map(session).collect();
+        let mut editor = data.input.editor.clone();
+        editor.set("#", 1);
+        data.input = crate::workbench::state::InputView::from_editor(editor, String::new());
+        let mut workbench = Workbench::new();
+        let render = |workbench: &mut Workbench| workbench.render(&data, 120, 40);
+        // The candidates the box actually paints, as the rows it made
+        // clickable: the rail lists sessions too, so counting titles in the
+        // whole frame could not tell the box's rows from the sidebar's.
+        let painted = |workbench: &mut Workbench, rows: &[String]| {
+            let text = plain(&rows.join("\n"));
+            let mut ys: Vec<(u16, String)> = workbench
+                .hits()
+                .regions()
+                .iter()
+                .filter(|(_, id)| id.starts_with("mention.row."))
+                .map(|(rect, id)| (rect.y, id.clone()))
+                .collect();
+            ys.sort();
+            (text, ys)
+        };
+
+        // The box asks for more rows than the old eight-row cap allowed, and the
+        // hint under them is part of it rather than clipped off it.
+        let rows = render(&mut workbench);
+        let lang = workbench.lang;
+        let (first, candidates) = painted(&mut workbench, &rows);
+        let shown = candidates.len();
+        assert!(shown > 8, "only {shown} candidates are painted: {first}");
+        assert!(shown <= MENTION_MAX_ROWS, "{shown} candidates");
+        assert!(
+            first.contains(t(lang, Key::MentionHintSession)),
+            "the hint is painted under the rows: {first}"
+        );
+
+        // Every painted candidate is a click target, and stepping past the last
+        // of them scrolls the list instead of losing the highlight: the window
+        // keeps the selection on its own last row.
+        for _ in 0..shown {
+            workbench.handle(crate::workbench::WbEvent::Key("down".into()), &data);
+        }
+        let index = workbench.mention.as_ref().map(|m| m.index).unwrap_or(0);
+        assert_eq!(index, shown, "every `↓` moved the highlight");
+        let rows = render(&mut workbench);
+        let (scrolled, candidates) = painted(&mut workbench, &rows);
+        assert_eq!(candidates.len(), shown, "the window kept its size");
+        let last = candidates.last().expect("the bottom candidate");
+        assert_eq!(
+            last.1,
+            format!("mention.row.{index}"),
+            "the highlight stays on the bottom row of the window: {candidates:?}"
+        );
+        assert!(
+            plain(&rows[last.0 as usize]).contains(&format!("会话 {index:02}")),
+            "the highlighted candidate {index} is painted: {scrolled}"
+        );
+
+        // A one-line draft leaves the whole ceiling free, so a tall terminal
+        // shows the full cap — the demo's own draft is several lines long, which
+        // is the case above.
+        let mut short = data.clone();
+        let mut editor = short.input.editor.clone();
+        editor.set("#", 1);
+        short.input = crate::workbench::state::InputView::from_editor(editor, String::new());
+        let mut workbench = Workbench::new();
+        workbench.render(&short, 120, 40);
+        let shown = workbench
+            .hits()
+            .regions()
+            .iter()
+            .filter(|(_, id)| id.starts_with("mention.row."))
+            .count();
+        assert_eq!(shown, MENTION_MAX_ROWS, "a one-line draft shows the cap");
     }
 
     /// The composer's box is as tall as the draft it draws, never as tall as
@@ -3788,7 +4782,7 @@ mod tests {
     fn the_transcript_keeps_a_blank_row_above_the_prompt() {
         let mut workbench = Workbench::new();
         let mut data = crate::workbench::demo::chat();
-        data.messages = vec!["the only line".into()];
+        data.messages = vec!["the only line".into()].into();
         let rows = conversation(&mut workbench, &data, &FUTURE_DARK, Rect::new(0, 0, 60, 6));
         assert_eq!(rows.len(), 6);
         assert!(
@@ -3902,21 +4896,25 @@ mod tests {
     }
 
     #[test]
-    fn the_header_corner_degrades_piece_by_piece_and_never_cuts_a_word() {
+    fn the_header_corner_is_the_build_number_and_degrades_to_its_dot() {
         let data = data("0.0.2-9f0a8b76c+local");
         // Every width lands on one of the whole candidates, never on its
-        // prefix: `● future-tui v0.0.2-9f0a8…` in the corner is exactly what
-        // the piecewise ladder exists to prevent.
+        // prefix: `● v0.0.2-9f0a8b…` in the corner is exactly what the piecewise
+        // ladder exists to prevent.
         let full = plain(&header_right(&FUTURE_DARK, &data, 60));
-        assert!(full.contains("future-tui"));
-        assert!(full.contains("v0.0.2-9f0a8b76c+local"));
-
-        let app_only = plain(&header_right(&FUTURE_DARK, &data, 20));
-        assert!(app_only.contains("future-tui"), "{app_only:?}");
-        assert!(!app_only.contains("0.0.2"), "{app_only:?}");
+        assert!(full.contains("v0.0.2-9f0a8b76c+local"), "{full:?}");
+        // The binary's name is not repeated here: the header's left end already
+        // says what this is, and the corner is the one place a build number can
+        // live without costing the conversation its name.
+        assert!(!full.contains("future-tui"), "{full:?}");
 
         let dot = plain(&header_right(&FUTURE_DARK, &data, 3));
         assert_eq!(dot, "●");
+
+        // A build with no version string has nothing to say but its state.
+        let mut bare = data.clone();
+        bare.version.clear();
+        assert_eq!(plain(&header_right(&FUTURE_DARK, &bare, 60)), "●");
 
         for avail in 0..80usize {
             let corner = plain(&header_right(&FUTURE_DARK, &data, avail));
@@ -3926,15 +4924,123 @@ mod tests {
             );
             assert!(width(&corner) <= avail, "avail {avail}: {corner:?}");
         }
-        // The whole header keeps the corner at the seam too.
+        // The whole header keeps the corner at the seam too: wide enough for the
+        // doors, the brand and the build number, it ends on the build number.
         let mut workbench = Workbench::new();
-        let rows = workbench.render(&data, 90, 24);
+        let rows = workbench.render(&data, 140, 24);
         let row = plain(&rows[0]);
         assert!(
             row.trim_end().ends_with("v0.0.2-9f0a8b76c+local"),
             "{row:?}"
         );
         assert!(!row.contains("已"), "{row:?}");
+        // Ten cells narrower, the corner is what pays: the doors and the brand
+        // stay, the build number goes, and nothing is cut in half on the way.
+        let rows = workbench.render(&data, 90, 24);
+        let row = plain(&rows[0]);
+        assert!(!row.contains("v0.0.2"), "{row:?}");
+        assert!(row.trim_end().ends_with('●'), "{row:?}");
+    }
+
+    /// The header's one row is one budget, and a button is what it protects: the
+    /// whole group is drawn with as much decoration as fits, then with fewer
+    /// doors — the chat list last, because the rail is a keyboard surface a narrow
+    /// frame does not show beside the conversation.
+    #[test]
+    fn the_header_gives_up_the_version_and_the_brand_before_the_chat_list() {
+        let doors = [
+            Door {
+                id: "header.sessions",
+                text: "x".repeat(13),
+            },
+            Door {
+                id: "header.files",
+                text: "x".repeat(13),
+            },
+            Door {
+                id: "header.git",
+                text: "x".repeat(12),
+            },
+        ];
+        let corner = "● v0.11.0".to_string();
+        let dot = "●".to_string();
+        let ids = |kept: &[Door]| kept.iter().map(|door| door.id).collect::<Vec<_>>();
+        for (columns, expect, brand, version) in [
+            (
+                120usize,
+                vec!["header.sessions", "header.files", "header.git"],
+                true,
+                true,
+            ),
+            (
+                89,
+                vec!["header.sessions", "header.files", "header.git"],
+                true,
+                true,
+            ),
+            (
+                88,
+                vec!["header.sessions", "header.files", "header.git"],
+                true,
+                false,
+            ),
+            (
+                70,
+                vec!["header.sessions", "header.files", "header.git"],
+                false,
+                false,
+            ),
+            (60, vec!["header.sessions", "header.files"], false, false),
+            (50, vec!["header.sessions"], false, false),
+            (40, Vec::new(), false, false),
+        ] {
+            let (right, kept, has_brand) =
+                fit_row(corner.clone(), dot.clone(), &doors, columns, 24, 11);
+            assert_eq!(ids(&kept), expect, "{columns}");
+            assert_eq!(has_brand, brand, "{columns}");
+            assert_eq!(right == corner, version, "{columns}");
+        }
+        // Monotone in width, and always a prefix of the priority order: the one
+        // way this can drift is a rung that costs more than the one below it,
+        // which would make a wider terminal lose a button.
+        let mut seen = (0usize, false, false);
+        for columns in 0..=160usize {
+            let (right, kept, brand) =
+                fit_row(corner.clone(), dot.clone(), &doors, columns, 24, 11);
+            assert!(kept.len() >= seen.0, "{columns}: lost a door");
+            assert!(!seen.1 || brand, "{columns}: lost the brand");
+            assert!(!seen.2 || right == corner, "{columns}: lost the version");
+            assert_eq!(ids(&kept), ids(&doors[..kept.len()]), "{columns}");
+            seen = (kept.len(), brand, right == corner);
+        }
+    }
+
+    #[test]
+    fn the_activity_row_pays_for_its_usage_tail_out_of_its_own_width() {
+        let mut workbench = Workbench::new();
+        workbench.set_language(crate::workbench::i18n::LanguagePreference::Zh);
+        let data = crate::workbench::demo::chat();
+        for columns in [120usize, 80, 60, 40, 24] {
+            let row = plain(&activity_row(&mut workbench, &data, &FUTURE_DARK, columns)[0]);
+            assert_eq!(width(&row), columns, "{columns}: {row:?}");
+            // The hit rate is the tail's floor at every width: it is the one
+            // usage number no panel repeats.
+            assert!(row.trim_end().ends_with("命中 96%"), "{columns}: {row:?}");
+        }
+        // Wide enough for all three counts, in the order they are read.
+        let wide = plain(&activity_row(&mut workbench, &data, &FUTURE_DARK, 120)[0]);
+        assert!(
+            wide.contains("输入 812.4k · 输出 24.8k · 缓存 780.0k · 命中 96%"),
+            "{wide:?}"
+        );
+        // Narrow: the counts step aside rather than squeezing out what the
+        // session is doing.
+        let narrow = plain(&activity_row(&mut workbench, &data, &FUTURE_DARK, 40)[0]);
+        assert!(!narrow.contains("输入"), "{narrow:?}");
+        assert!(
+            narrow.contains("idle") || narrow.contains('·'),
+            "{narrow:?}"
+        );
     }
 
     #[test]
@@ -3958,26 +5064,35 @@ mod tests {
         assert!(wide.contains("ctrl+q"), "{wide:?}");
         assert!(wide.contains("ctrl+n"), "{wide:?}");
         assert!(!wide.contains("\u{2014}"), "{wide:?}");
-        // `esc` is not on the row: it leaves whatever the reader is in, and the
-        // box that answers it prints it in its own hint. The row ends on `?`
-        // instead — a character, not a chord, and the way into this list.
+        // `esc` is the head of the row: the one key whose job is a *place* rather
+        // than a door (back to the newest message, or out of the box the reader is
+        // in), so it is taught whether or not the reader is in one of those places.
+        // The row still ends on `?` — a character, not a chord, and the way into
+        // this list.
+        assert!(wide.trim_start().starts_with("esc "), "{wide:?}");
         assert_eq!(
             wide.trim_end().split(" · ").last().map(str::trim),
             Some("? 帮助"),
             "{wide:?}"
         );
+        // The chat list is the header's to teach: the door beside the title
+        // spells it, so the hint row leaves it out.
+        assert!(!wide.contains("ctrl+r"), "{wide:?}");
         // Narrow keeps the head of the row whole and drops the tail, and never
-        // cuts a hint in half. Measured at a width where the dropped entry is
-        // gone in *both* languages: the Chinese labels are half as wide as the
-        // English ones, so a 40-column row that ends after `ctrl+r` in English
-        // still reaches `ctrl+p` in Chinese.
+        // cuts a hint in half. The head is `esc` now, so that is what the narrowest
+        // rows keep: the way out survives the doors, because a reader who cannot
+        // see the doors can still press `/` — but nothing else spells `esc`.
         let narrow = plain(&hint_row(&workbench, &FUTURE_DARK, 40, true)[0]);
-        assert!(narrow.contains("ctrl+d"), "{narrow:?}");
-        assert!(narrow.contains("ctrl+r"), "{narrow:?}");
-        let narrow = plain(&hint_row(&workbench, &FUTURE_DARK, 24, true)[0]);
+        assert!(narrow.contains("esc"), "{narrow:?}");
         assert!(narrow.contains("ctrl+d"), "{narrow:?}");
         assert!(
             !narrow.contains("ctrl+p"),
+            "the doors give up their cells first: {narrow:?}"
+        );
+        let narrow = plain(&hint_row(&workbench, &FUTURE_DARK, 24, true)[0]);
+        assert!(narrow.contains("esc"), "{narrow:?}");
+        assert!(
+            !narrow.contains("ctrl+d"),
             "whole hints are dropped: {narrow:?}"
         );
         assert!(
@@ -4021,9 +5136,9 @@ mod tests {
     #[test]
     fn the_graph_paints_one_colour_per_lane() {
         let palette = FUTURE_DARK;
-        let graph = paint_graph(&palette, "| * ");
-        assert_eq!(plain(&graph), "│ ● ", "the glyphs are the drawing ones");
-        assert_eq!(width(&graph), 4, "a repainted gutter is as wide as git's");
+        let graph = paint_graph(&palette, "│ ● ");
+        assert_eq!(plain(&graph), "│ ● ", "the drawing is already cells");
+        assert_eq!(width(&graph), 4, "a lane is a glyph and the air beside it");
         assert_ne!(
             lane_colour(&palette, 0),
             lane_colour(&palette, 1),
@@ -4044,10 +5159,19 @@ mod tests {
             graph.contains("\x1b[1m"),
             "the commit glyph is bold, so a tip stands out from its lane"
         );
-        assert_eq!(
-            plain(&paint_graph(&palette, "|\\ ")),
-            "│╲ ",
-            "a merge's fork is drawn, not typed"
+        // A fork is an elbow and a horizontal, and the horizontal keeps the
+        // commit's own colour: one connection, one colour.
+        assert_eq!(plain(&paint_graph(&palette, "●─┐ ")), "●─┐ ");
+        assert_eq!(plain(&paint_graph(&palette, "●─│─┘ ")), "●─│─┘ ");
+        assert_eq!(plain(&paint_graph(&palette, "●─┤ ")), "●─┤ ");
+        let elbow = paint_graph(&palette, "●─┐ ");
+        assert!(
+            elbow.contains(&format!("\x1b[38;5;{}m─", lane_colour(&palette, 0))),
+            "the horizontal is the commit's lane colour: {elbow:?}"
+        );
+        assert!(
+            elbow.contains(&format!("\x1b[38;5;{}m┐", lane_colour(&palette, 1))),
+            "the lane it opens keeps its own: {elbow:?}"
         );
     }
 
@@ -4060,23 +5184,12 @@ mod tests {
         let palette = FUTURE_DARK;
         let row = GitRow {
             key: Some("abc1234".into()),
-            prefix: "* ".into(),
-            pieces: vec![
-                "fix(tui): one row".into(),
-                "HEAD -> main, tag: v1".into(),
-                "abc1234".into(),
-                "2026-10-27".into(),
-                "Ada".into(),
-            ],
-            kinds: vec![
-                state::GitKind::Plain,
-                state::GitKind::Decoration,
-                state::GitKind::Sha,
-                state::GitKind::Meta,
-                state::GitKind::Meta,
-            ],
+            columns: vec!["2026-10-27 09:15".into(), "Ada".into()],
+            prefix: "● ".into(),
+            pieces: vec!["HEAD -> main, tag: v1".into(), "fix(tui): one row".into()],
+            kinds: vec![state::GitKind::Decoration, state::GitKind::Plain],
         };
-        let selected = git_row_line(&palette, &row, 100, true);
+        let selected = git_row_line(&palette, &row, 0, 100, true);
         assert_eq!(width(&selected), 100, "the band fills the pane");
         // The band is *derived* from the panel (`selection_band` steps away from
         // it), not taken from `border`: pinning it to a literal or to another
@@ -4086,26 +5199,85 @@ mod tests {
             "the selection is a background, not just an arrow: {selected:?}"
         );
         let marked = plain(&selected);
-        assert!(marked.starts_with("› ● fix(tui): one row"), "{marked:?}");
+        assert!(
+            marked
+                .starts_with("› 2026-10-27 09:15 Ada ● HEAD -> main, tag: v1 · fix(tui): one row"),
+            "{marked:?}"
+        );
         for (colour, what) in [
-            (palette.amber, "the sha"),
             (palette.green, "the decorations"),
-            (palette.muted, "the date"),
+            (palette.muted, "the date-time and committer columns"),
         ] {
             assert!(
                 selected.contains(&format!("\x1b[38;5;{colour}m")),
                 "{what} keep their colour inside the band: {selected:?}"
             );
         }
-        let idle = git_row_line(&palette, &row, 100, false);
+        let idle = git_row_line(&palette, &row, 0, 100, false);
         assert!(
             !idle.contains("\x1b[48;5;"),
             "an unselected row paints no background: {idle:?}"
         );
         assert!(
-            plain(&idle).starts_with("  ● fix(tui): one row"),
+            plain(&idle)
+                .starts_with("  2026-10-27 09:15 Ada ● HEAD -> main, tag: v1 · fix(tui): one row"),
             "{idle:?}"
         );
+    }
+
+    /// The columns are dropped whole when the pane cannot hold them *and* a
+    /// readable subject: a title cut to eight cells is not a title, and the
+    /// detail pane beside the list says the same thing in full. They come back
+    /// as one unit, never half of one.
+    #[test]
+    fn a_narrow_pane_drops_the_columns_and_keeps_the_subject() {
+        let palette = FUTURE_DARK;
+        let row = GitRow {
+            key: Some("abc1234".into()),
+            columns: vec!["2026-10-27 09:15".into(), "Ada".into()],
+            prefix: "● ".into(),
+            pieces: vec!["fix(tui): one row per record".into()],
+            kinds: vec![state::GitKind::Plain],
+        };
+        let narrow = plain(&git_row_line(&palette, &row, 0, 30, false));
+        assert_eq!(width(&narrow), 30, "the pane is filled: {narrow:?}");
+        assert!(
+            narrow.starts_with("  ● fix(tui): one row"),
+            "the subject starts where the columns were: {narrow:?}"
+        );
+        assert!(!narrow.contains("2026"), "{narrow:?}");
+        // One step wider and the committer comes back only if it also leaves
+        // room for the subject; in between, the date-time stands alone.
+        let middle = plain(&git_row_line(&palette, &row, 0, 34, false));
+        assert!(middle.starts_with("  2026-10-27 09:15 ● fix"), "{middle:?}");
+        assert!(!middle.contains("Ada"), "{middle:?}");
+        let wide = plain(&git_row_line(&palette, &row, 0, 80, false));
+        assert!(wide.starts_with("  2026-10-27 09:15 Ada ● "), "{wide:?}");
+    }
+
+    /// The refs column is one cell in every row: the gutter is kept at the page's
+    /// widest drawing, so a commit whose own lanes end early still starts its
+    /// refs — and its subject — where the row above it does.
+    #[test]
+    fn the_row_starts_its_refs_in_one_cell() {
+        let palette = FUTURE_DARK;
+        let row = |prefix: &str| GitRow {
+            key: Some("abc1234".into()),
+            columns: Vec::new(),
+            prefix: prefix.into(),
+            pieces: vec!["origin/main · Merge branch 'x'".into()],
+            kinds: vec![state::GitKind::Plain],
+        };
+        let wide = plain(&git_row_line(&palette, &row("● │ │       "), 0, 60, false));
+        let narrow = plain(&git_row_line(&palette, &row("●           "), 0, 60, false));
+        // Columns, not bytes: the box glyphs are three bytes wide and one cell.
+        let start = |line: &str| ansi::width(line.split("origin/main").next().unwrap());
+        assert_eq!(
+            start(&wide),
+            start(&narrow),
+            "two rows, two drawings, one refs column: {wide:?} / {narrow:?}"
+        );
+        assert_eq!(start(&wide), 14, "marker, gutter and one cell of air");
     }
 
     /// The band has to exist in every palette: it is a member of the one ordered
@@ -4173,7 +5345,7 @@ mod tests {
         .iter()
         .map(|line| line.to_string())
         .collect();
-        let pane = git_detail_pane(&palette, &body, 60, 0, 20);
+        let pane = git_detail_pane(&palette, &body, 0, 60, 0, 20);
         assert_eq!(pane.total, body.len(), "nothing wraps at 60 cells");
         assert_eq!(pane.first, 0);
         let colour_of = |row: &str| {
@@ -4203,23 +5375,27 @@ mod tests {
 
         // The offset stops at the last screenful — the whole body is visible
         // from there, and the title says which rows are on screen.
-        let last = git_detail_pane(&palette, &body, 60, 999, 4);
+        let last = git_detail_pane(&palette, &body, 0, 60, 999, 4);
         assert_eq!(last.first, body.len() - 4);
         assert_eq!(last.rows.len(), 4);
         let title = git_detail_title(&palette, true, "Detail", &last, 4);
         assert_eq!(plain(&title), "› Detail · 6-9/9", "{title:?}");
 
-        // A narrow pane wraps, and every tail keeps its line's colour.
-        let wrapped = git_detail_pane(
-            &palette,
-            &["+one two three four five six".into()],
-            10,
-            0,
-            10,
+        // A narrow pane does not wrap: one body line is one row, the row is
+        // exactly the pane's width, and `→` moves the window along the line
+        // while every column of it keeps the line's own colour.
+        let line = "+one two three four five six".to_string();
+        let narrow = git_detail_pane(&palette, std::slice::from_ref(&line), 0, 10, 0, 4);
+        assert_eq!(narrow.total, 1, "a long line is one row, not a stack");
+        assert_eq!(width(&narrow.rows[0]), 10);
+        assert_eq!(colour_of(&narrow.rows[0]), Some("green"));
+        assert_eq!(plain(&narrow.rows[0]), "+one two t");
+        let panned = git_detail_pane(&palette, &[line], 10, 10, 0, 4);
+        assert_eq!(plain(&panned.rows[0]), "hree four ");
+        assert_eq!(
+            colour_of(&panned.rows[0]),
+            Some("green"),
+            "green after a pan"
         );
-        assert!(wrapped.total > 1, "it wraps: {}", wrapped.total);
-        for row in &wrapped.rows {
-            assert_eq!(colour_of(row), Some("green"), "a tail stays green: {row:?}");
-        }
     }
 }

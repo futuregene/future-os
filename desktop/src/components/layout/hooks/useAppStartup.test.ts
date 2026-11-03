@@ -87,3 +87,45 @@ describe("useAppStartup", () => {
     hook.unmount();
   });
 });
+
+describe("startup deadlines", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("admits offline when account verification never settles", async () => {
+    vi.useFakeTimers();
+    vi.mocked(getFutureAuthState).mockReturnValue(new Promise(() => {}));
+    vi.mocked(listAgentProviders).mockResolvedValue(PROVIDERS);
+    const hook = renderHook(() => useAppStartup(true));
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(hook.current).toEqual({ phase: "ready", auth: { status: "unavailable", profile: null }, providers: PROVIDERS });
+    hook.unmount();
+  });
+
+  it("ends a hung settings request, retries, and ignores the old response", async () => {
+    vi.useFakeTimers();
+    const old = deferred<ProvidersView>();
+    vi.mocked(getFutureAuthState).mockResolvedValue(AUTHENTICATED);
+    vi.mocked(listAgentProviders).mockReturnValueOnce(old.promise).mockResolvedValue(PROVIDERS);
+    let attempt = 0;
+    const hook = renderHook(() => useAppStartup(true, attempt));
+    await act(async () => vi.advanceTimersByTimeAsync(15000));
+    expect(hook.current).toEqual({ phase: "failed", reason: "providersTimeout" });
+    attempt += 1;
+    hook.rerender();
+    await flushAsync();
+    expect(hook.current).toEqual({ phase: "ready", auth: AUTHENTICATED, providers: PROVIDERS });
+    await act(async () => old.resolve({ builtin: [], custom: [] }));
+    expect(hook.current).toEqual({ phase: "ready", auth: AUTHENTICATED, providers: PROVIDERS });
+    hook.unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("clears deadline timers when the startup surface unmounts", async () => {
+    vi.useFakeTimers();
+    vi.mocked(getFutureAuthState).mockReturnValue(new Promise(() => {}));
+    vi.mocked(listAgentProviders).mockReturnValue(new Promise(() => {}));
+    const hook = renderHook(() => useAppStartup(true));
+    hook.unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});

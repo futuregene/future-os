@@ -27,11 +27,17 @@ export function subscribeShutdownProgress(callback: (progress: ShutdownProgress)
   return listen<ShutdownProgress>("desktop-shutdown-progress", event => callback(event.payload)).catch(() => () => {});
 }
 
+export interface AgentStartupProgress {
+  stage: "preparing" | "loading_models" | "reserving_endpoint" | "opening_storage" | "backing_up_storage" | "upgrading_storage" | "recovering_sessions" | "binding_endpoint";
+  elapsedMs: number;
+}
+
 export interface AgentStatus {
   phase: AgentStatusPhase;
   desktopVersion: string;
   agentVersion: string | null;
   error?: string;
+  startup?: AgentStartupProgress;
   shutdown?: ShutdownProgress;
 }
 

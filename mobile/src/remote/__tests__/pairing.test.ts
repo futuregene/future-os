@@ -74,6 +74,9 @@ function lastFetchBody(): Record<string, unknown> {
 describe("claimPairingCode", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // The fallback case below clears the mocked model so the platform name is
+    // used; `clearAllMocks` does not put a mock module's own property back.
+    (Device as { modelName: string | null }).modelName = "iPhone 15";
     mockedLoadDeviceId.mockResolvedValue(null);
     globalThis.fetch = jest.fn().mockResolvedValue(
       jsonResponse({

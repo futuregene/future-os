@@ -1,6 +1,21 @@
 use super::*;
 
 #[test]
+fn a_startup_token_cannot_interrupt_the_ready_database_writer() {
+    let root = tempfile::tempdir().unwrap();
+    let cancellation = crate::service::StartupCancellation::default();
+    let database =
+        Database::open_cancellable(&root.path().join("agent.db"), cancellation.clone()).unwrap();
+    cancellation.cancel();
+    database
+        .call(|db| {
+            db.execute("INSERT INTO sessions(id) VALUES ('ordinary-write')", [])?;
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
 fn a_foreign_or_unrecognized_database_is_refused_instead_of_adopted() {
     let dir = tempfile::tempdir().unwrap();
 
@@ -27,6 +42,40 @@ fn a_foreign_or_unrecognized_database_is_refused_instead_of_adopted() {
         Err(error) => error.to_string(),
     };
     assert!(error.contains("unrecognized database"), "{error}");
+}
+
+#[test]
+fn a_database_that_answers_to_our_id_without_a_schema_version_is_preserved() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("half-identified.db");
+    let connection = Connection::open(&path).unwrap();
+    // It carries the Agent's application id but no schema version, and a table
+    // the Agent schema does not own. Adopting it would run `CREATE IF NOT EXISTS`
+    // over somebody's data and then report an empty history for it.
+    connection
+        .execute_batch(&format!(
+            "PRAGMA application_id = {}; CREATE TABLE entries(id INTEGER);",
+            0x46555452
+        ))
+        .unwrap();
+    drop(connection);
+
+    let error = match Database::open(&path) {
+        Ok(_) => panic!("a half-identified database must not be adopted"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("incomplete schema identity"), "{error}");
+
+    // The refusal is a preservation act: the table is still there, unmodified.
+    let preserved = Connection::open(&path).unwrap();
+    let entries: i64 = preserved
+        .query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE name='entries'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(entries, 1, "the refusal must not rewrite the file");
 }
 
 #[test]
@@ -191,8 +240,10 @@ fn a_non_busy_transaction_failure_is_returned_instead_of_retried() {
             // An open write transaction makes the second BEGIN fail with a
             // plain SQLite error, which is not a busy condition.
             let first = super::begin_write_transaction(connection)?;
-            let error = super::begin_write_transaction(connection)
-                .expect_err("a second BEGIN IMMEDIATE cannot succeed");
+            let error = match super::begin_write_transaction(connection) {
+                Ok(_) => panic!("a second BEGIN IMMEDIATE cannot succeed"),
+                Err(error) => error,
+            };
             drop(first);
             Ok(error.to_string())
         })

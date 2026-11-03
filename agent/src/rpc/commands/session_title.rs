@@ -84,9 +84,12 @@ fn title_exchanges(messages: &[AgentMessage]) -> Vec<Exchange> {
 /// Shared by the complete and the truncated finish, so a response cut off at
 /// the output limit is used rather than thrown away.
 fn finish_title(text: &str) -> Result<String> {
-    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    // A title the model writes is read as text too: one that answers
+    // `**缓存失效排查**` or `` `缓存失效排查` `` names the same session as one
+    // that answers plainly, and no title is drawn as markdown.
+    let normalized = future_rpc::title::plain_title_text(text);
     let title = crate::session::truncate_visible(
-        normalized.trim_matches(['\"', '\'', '`', '“', '”']),
+        normalized.trim_matches(['\"', '\'', '“', '”']),
         crate::session::SESSION_TITLE_MAX_WIDTH,
     );
     if title.trim().is_empty() {
@@ -156,6 +159,9 @@ pub(super) fn handle(state: &AppState, cmd: &RpcCommand) -> String {
             "en" => "English",
             _ => bail!("Unsupported title language"),
         };
+        state
+            .session_manager
+            .ensure_execution_allowed(&cmd.session_id)?;
         let stored = state.session_manager.load(&cmd.session_id)?;
         // Do not hydrate a cold session: hydration can replace and persist its model.
         let model_id = state
@@ -259,6 +265,20 @@ mod tests {
         let title = suggest(&provider, "m", "[]".to_string(), "Simplified Chinese")
             .await
             .expect("a truncated response still names the conversation");
+        assert_eq!(title, "缓存失效排查");
+    }
+
+    /// A model may answer in markdown however plainly it was asked: `**` and
+    /// backticks are marks, not part of the name.
+    #[tokio::test]
+    async fn a_markdown_answer_is_read_as_plain_text() {
+        let provider = provider(vec![
+            text_delta("**缓存失效排查**"),
+            finish(FinishReason::Stop),
+        ]);
+        let title = suggest(&provider, "m", "[]".to_string(), "Simplified Chinese")
+            .await
+            .expect("a marked-up response still names the conversation");
         assert_eq!(title, "缓存失效排查");
     }
 
@@ -766,6 +786,7 @@ mod tests {
         use crate::session::{Session, SessionEntry};
         use std::io::{Read, Write};
 
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         // Serve exactly one chat-completions response and then exit.

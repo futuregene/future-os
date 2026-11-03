@@ -26,8 +26,8 @@ use crate::rpc::provider_types::{
     parse_providers_response, validate_provider_input, ProviderInfo, ProviderInput,
 };
 use crate::rpc::types::{
-    AgentEvent, ModelInfo, ProjectedRunEvent, RpcSessionState, RunAck, SessionEntriesPage,
-    SessionSummary,
+    AgentEvent, CompactAck, ModelInfo, ProjectedRunEvent, RpcSessionState, RunAck,
+    SessionEntriesPage, SessionSummary,
 };
 use future_rpc::connection::ConnectionError;
 use future_rpc::proto::{Attachment, RpcCommand, StreamEvent, StreamRequest};
@@ -72,9 +72,22 @@ const HEARTBEAT_MS: u64 = 10_000;
 const HEARTBEAT_MS: u64 = 50;
 /// How long `call` waits for the event stream to deliver its first frame.
 const CALL_CONNECT_WAIT_MS: u64 = 5_000;
-/// User exchanges per backward history page. Matches the desktop's remote
-/// history page: small enough that a page is far below the wire cap even with
-/// whole (unbounded) tool outputs in it, large enough to fill a screen or two.
+/// Exchanges in a conversation's *first* page — the read a switch waits for.
+///
+/// Three, not ten: what a reader needs the moment a conversation opens is its
+/// tail, and the rest is a scroll away. Measured on a 147-conversation store, a
+/// first read costs **33.7 ms median instead of 49.3 ms**, and on the
+/// conversations where it bites at all it ships 62 rows instead of 193 (26
+/// instead of 66, 82 instead of 124). It does *not* help a conversation whose
+/// history is one or two huge turns — there three exchanges already is the
+/// whole transcript, and the page is bounded by the entries in it, not by their
+/// number (541 rows, 310 ms either way); that one needs a page bounded by rows.
+const HISTORY_TAIL_EXCHANGES: i64 = 3;
+
+/// User exchanges per page *above* the tail, and the size every page used to be.
+///
+/// A page-up is deliberate and a reader wants a screenful for it, so it still
+/// asks for ten while the first page asks for three.
 const HISTORY_PAGE_EXCHANGES: i64 = 10;
 
 /// `String(Date.now())` — millisecond epoch, used as the request correlation id.
@@ -425,10 +438,14 @@ impl GrpcClient {
 
     // ─── Session management ────────────────────────────────────────────
 
-    /// `newSession(opts?)` — `new_session` with `createdBy: "tui"`; the
-    /// sessionId field is left empty so the agent generates a fresh ID.
+    /// `newSession(opts?)` — `new_session` with `createdBy: "tui"`.
+    ///
+    /// `session_id` is the id the caller wants the session to have; `None`
+    /// lets the agent mint one. A chat names its scratch directory after the
+    /// session id, so it has to mint the id itself (see `Live::new_session`).
     pub async fn new_session(
         &self,
+        session_id: Option<&str>,
         cwd: Option<&str>,
         model_id: Option<&str>,
         level: Option<&str>,
@@ -437,6 +454,7 @@ impl GrpcClient {
             .map(|p| p.display().to_string())
             .unwrap_or_default();
         let cmd = RpcCommand {
+            session_id: session_id.unwrap_or("").to_string(),
             cwd: cwd.unwrap_or(&default_cwd).to_string(),
             model_id: model_id.unwrap_or("").to_string(),
             level: level.unwrap_or("").to_string(),
@@ -493,14 +511,13 @@ impl GrpcClient {
         Ok(result)
     }
 
-    /// `getForkMessages()` for an explicit session — `{messages: [...]}`.
-    pub async fn get_fork_messages(&self) -> Result<Value, String> {
-        self.call("get_fork_messages", RpcCommand::default()).await
-    }
-
-    pub async fn fork_messages_for(&self, session_id: &str) -> Result<Value, String> {
+    /// `getForkEntries()` for an explicit session — `{entries: [...]}`, every
+    /// persisted question *and* answer a `/fork` can stop after, in transcript
+    /// order. The ones a still-running reply is writing are left out by the
+    /// agent, which is what makes the prompt of the live turn the newest point.
+    pub async fn fork_entries_for(&self, session_id: &str) -> Result<Value, String> {
         self.call(
-            "get_fork_messages",
+            "get_fork_entries",
             RpcCommand {
                 session_id: session_id.to_string(),
                 ..Default::default()
@@ -509,12 +526,22 @@ impl GrpcClient {
         .await
     }
 
+    /// Fork `session_id` so the child ends **with the chosen message**.
+    ///
+    /// `through_entry` is the mode that says exactly that: the parent's entries
+    /// up to and including `entry_id`, and nothing after it. The picker lists
+    /// both kinds of message, so both kinds are points — picking a question
+    /// stops the child at the question (a clean place to ask again), picking an
+    /// answer stops it at the answer. (`through_turn` would extend a question's
+    /// fork to the answer it produced, which is no longer what the reader chose:
+    /// the answer is its own row in the same list.)
     pub async fn fork_from(&self, session_id: &str, entry_id: &str) -> Result<Value, String> {
         self.call(
             "fork",
             RpcCommand {
                 session_id: session_id.to_string(),
                 entry_id: entry_id.to_string(),
+                mode: "through_entry".to_string(),
                 created_by: "tui".to_string(),
                 ..Default::default()
             },
@@ -578,6 +605,20 @@ impl GrpcClient {
         busy_policy: &str,
         attachments: Vec<Attachment>,
     ) -> Result<RunAck, String> {
+        if let Some(task) = future_fusion::fusion_prompt(message) {
+            if task.is_empty() {
+                return Err("Use /fusion followed by a task".into());
+            }
+            let capability = self
+                .call("get_fusion_status", RpcCommand::default())
+                .await?;
+            if capability["enabled"] == false {
+                return Err("Fusion is disabled in settings".into());
+            }
+            if capability["available"] != true {
+                return Err("Fusion is unavailable: start or upgrade the FutureOS host".into());
+            }
+        }
         let request_id = uuid_hex();
         let cmd = RpcCommand {
             message: message.to_string(),
@@ -598,6 +639,58 @@ impl GrpcClient {
             st.runs.insert(ack.run_id.clone(), RunStatus::Queued);
         }
         Ok(ack)
+    }
+
+    pub async fn fusion_settings(
+        &self,
+        patch: Option<future_fusion::SettingsPatch>,
+    ) -> Result<future_fusion::Settings, String> {
+        let (command, fields) = if let Some(patch) = patch {
+            (
+                "update_fusion_settings",
+                RpcCommand {
+                    fusion_settings_json: serde_json::to_string(&patch)
+                        .map_err(|error| error.to_string())?,
+                    ..Default::default()
+                },
+            )
+        } else {
+            ("get_fusion_settings", RpcCommand::default())
+        };
+        serde_json::from_value(self.call(command, fields).await?).map_err(|error| error.to_string())
+    }
+
+    pub async fn fusion_discussion(&self, step: &str, offset: i64) -> Result<Value, String> {
+        self.call(
+            "get_fusion",
+            RpcCommand {
+                entry_id: step.into(),
+                offset: Some(offset),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// Is a turn in flight this client started? The interrupt chord reads it:
+    /// a stop with nothing running is nothing (`Live::abort`).
+    pub fn has_active_run(&self) -> bool {
+        self.inner.state.lock().active_run_id.is_some()
+    }
+
+    /// Publish a run the agent's `get_state` named as in flight.
+    ///
+    /// [`Self::set_current_session_id`] clears the run bookkeeping because the
+    /// id it held belonged to the session the client is leaving. That is right
+    /// for a real switch and wrong for the attach path: there the state being
+    /// installed *is* the new session's, and dropping its live run left the
+    /// interrupt chord (`ctrl+c`) a no-op on a terminal that had just attached
+    /// to a session already streaming.
+    pub fn adopt_active_run(&self, run_id: &str) {
+        let mut st = self.inner.state.lock();
+        st.active_run_id = Some(run_id.to_string());
+        st.last_run_id = Some(run_id.to_string());
+        st.runs.insert(run_id.to_string(), RunStatus::Running);
     }
 
     /// `abort()`.
@@ -642,13 +735,36 @@ impl GrpcClient {
     /// caller that asks about a session it then fails to open has to re-read
     /// its own (`get_state`, i.e. the addressed-by-current form).
     pub async fn get_state_of(&self, session_id: &str) -> Result<RpcSessionState, String> {
+        let state = self.fetch_state_of(session_id).await?;
+        self.adopt_state(&state);
+        Ok(state)
+    }
+
+    /// The read half of [`Self::get_state_of`], with no bookkeeping.
+    ///
+    /// A switch the driver does not wait for reads state from another task
+    /// (see `Live::start_step_switch`), and two such reads can finish out of
+    /// order: the answer a reader has already stepped past must not move this
+    /// client's run map, so the fetch is separated from the adoption — the
+    /// thread that owns the client adopts the answer it keeps, and only that
+    /// one.
+    pub async fn fetch_state_of(&self, session_id: &str) -> Result<RpcSessionState, String> {
         let command = RpcCommand {
             session_id: session_id.to_string(),
             ..Default::default()
         };
         let resp = self.call("get_state", command).await?;
-        let state: RpcSessionState = serde_json::from_value(resp).map_err(|e| e.to_string())?;
+        serde_json::from_value(resp).map_err(|e| e.to_string())
+    }
 
+    /// The bookkeeping half of [`Self::get_state_of`]: record the agent
+    /// instance, the run map and the active run of the state just read.
+    ///
+    /// Idempotent for one state — a caller may adopt a state it also fetched
+    /// through [`Self::get_state_of`] — except for the lost-queued-run tally,
+    /// which is only appended to when the agent instance changed, so a caller
+    /// adopts each answer exactly once.
+    pub fn adopt_state(&self, state: &RpcSessionState) {
         let mut st = self.inner.state.lock();
         if let (Some(prev), Some(cur)) = (&st.agent_instance_id, &state.agent_instance_id) {
             if prev != cur {
@@ -675,8 +791,6 @@ impl GrpcClient {
         for queued in &state.queued_runs {
             st.runs.insert(queued.run_id.clone(), RunStatus::Queued);
         }
-        drop(st);
-        Ok(state)
     }
 
     /// `getMessages()` — the session's whole in-memory context in one
@@ -688,20 +802,42 @@ impl GrpcClient {
     }
 
     /// The tail of a session's display history — page 1 of the backward read.
+    /// The tail of a session's display history — page 1 of the backward read.
+    ///
+    /// `ExchangeStart::Anywhere`: this is the read a switch waits for, and a page
+    /// is bounded by rows and bytes as well as exchanges now. Completing the
+    /// exchange would hand back the whole of a turn with hundreds of rows in it —
+    /// exactly what the row ceiling exists to stop — so the tail page is taken as
+    /// the agent cut it, and the reader scrolls up for the rest.
     pub async fn session_tail_page(&self, session_id: &str) -> Result<SessionEntriesPage, String> {
-        self.session_entries_page(session_id, i64::MAX, HISTORY_PAGE_EXCHANGES)
-            .await
+        self.session_entries_page_from(
+            session_id,
+            i64::MAX,
+            HISTORY_TAIL_EXCHANGES,
+            future_rpc::history::ExchangeStart::Anywhere,
+        )
+        .await
     }
 
     /// The page above an already loaded one: same size, resuming at the
     /// exclusive `before` cursor the previous page returned.
+    ///
+    /// Also `ExchangeStart::Anywhere`: a page is bounded by rows and bytes now,
+    /// and completing an exchange would undo that bound (it fetches the whole
+    /// turn back). A page-up therefore reads what the agent cut, and the next one
+    /// continues above it.
     pub async fn session_older_page(
         &self,
         session_id: &str,
         before: i64,
     ) -> Result<SessionEntriesPage, String> {
-        self.session_entries_page(session_id, before, HISTORY_PAGE_EXCHANGES)
-            .await
+        self.session_entries_page_from(
+            session_id,
+            before,
+            HISTORY_PAGE_EXCHANGES,
+            future_rpc::history::ExchangeStart::Anywhere,
+        )
+        .await
     }
 
     /// One backward page of a session's display history
@@ -722,13 +858,31 @@ impl GrpcClient {
         before: i64,
         limit: i64,
     ) -> Result<SessionEntriesPage, String> {
+        self.session_entries_page_from(
+            session_id,
+            before,
+            limit,
+            future_rpc::history::ExchangeStart::Complete,
+        )
+        .await
+    }
+
+    /// [`Self::session_entries_page`], naming what the page may do to the
+    /// exchange it starts in (see [`SessionEntriesPage`]'s first page).
+    async fn session_entries_page_from(
+        &self,
+        session_id: &str,
+        before: i64,
+        limit: i64,
+        start: future_rpc::history::ExchangeStart,
+    ) -> Result<SessionEntriesPage, String> {
         let cmd = RpcCommand {
             session_id: session_id.to_string(),
             before: Some(before),
             limit: Some(limit),
             ..Default::default()
         };
-        let page = future_rpc::history::read_page(cmd, |command| async move {
+        let page = future_rpc::history::read_page_from(cmd, start, |command| async move {
             let value = self.call("get_session_entries", command).await?;
             serde_json::from_value::<future_rpc::payloads::SessionEntriesPage<Value>>(value)
                 .map_err(|e| format!("invalid history page: {e}"))
@@ -784,14 +938,20 @@ impl GrpcClient {
             .await
     }
 
-    /// `compact(customInstructions?)` — returns the result string.
-    pub async fn compact(&self, custom_instructions: Option<&str>) -> Result<String, String> {
+    /// `compact(customInstructions?)` — the agent's acknowledgement.
+    ///
+    /// The answer only says the compaction was accepted (and names its
+    /// operation): the work runs on the agent's worker, and the token counts
+    /// come with `compaction_committed` on the event stream.
+    pub async fn compact(&self, custom_instructions: Option<&str>) -> Result<CompactAck, String> {
         let cmd = RpcCommand {
             custom_instructions: custom_instructions.unwrap_or("").to_string(),
             ..Default::default()
         };
         let resp = self.call("compact", cmd).await?;
-        Ok(resp.as_str().unwrap_or("").to_string())
+        serde_json::from_value::<CompactAck>(resp).map_err(|error| {
+            format!("the agent acknowledged the compaction in a shape this client does not read: {error}")
+        })
     }
 
     /// `setCwd(cwd)`.
@@ -1184,27 +1344,40 @@ impl GrpcClient {
 
 /// One-shot `ExecuteCommand` with a deadline (mirrors the CLI port; the TS
 /// client reuses a channel, per-call connect is equivalent for our use).
+///
+/// Both futures are `Box::pin`ned, and that is load-bearing: the connect (TCP
+/// plus the readiness handshake, a unary call of its own) and the command are
+/// debug-build tonic/hyper state machines of a few hundred kilobytes, and an
+/// `async fn` that awaits them inline keeps that state in its own frame. Every
+/// caller up the chain then pays for it — measured on the test binary:
+/// `Live::apply`'s frame 708 KiB inline against 316 KiB boxed, `Live::command`
+/// 620 KiB against 248 KiB, `run::quit` 780 KiB against 344 KiB. A single TUI
+/// test needed 1.9 MiB of the 2 MiB stack a `cargo test` thread gets and died
+/// there on x86-64 CI (`a_launchpad_submit_creates_the_session_and_sends_the_prompt`,
+/// stack overflow, SIGABRT); boxed, the same test needs 1.05 MiB. A release
+/// build's frames are a fraction of that, so the shipped surface never noticed
+/// — but the depth is not free, and the tests are where it lands.
 async fn execute_unary(addr: &str, cmd: RpcCommand, timeout_secs: u64) -> Result<Value, String> {
-    let mut client = future_rpc::connection::connect_verified(
+    let mut client = Box::pin(future_rpc::connection::connect_verified(
         addr,
         future_rpc::connection::EXPECTED_AGENT_VERSION,
         Duration::from_secs(timeout_secs.min(5)),
         Duration::from_secs(5),
-    )
+    ))
     .await
     .map_err(|error| error.to_string())?;
-    let response = client
-        .execute_command(future_rpc::command_policy::request_with_timeout(cmd))
-        .await
-        .map_err(|status| {
-            let msg = status.message();
-            if msg.is_empty() {
-                status.to_string()
-            } else {
-                msg.to_string()
-            }
-        })?
-        .into_inner();
+    let response =
+        Box::pin(client.execute_command(future_rpc::command_policy::request_with_timeout(cmd)))
+            .await
+            .map_err(|status| {
+                let msg = status.message();
+                if msg.is_empty() {
+                    status.to_string()
+                } else {
+                    msg.to_string()
+                }
+            })?
+            .into_inner();
 
     if !response.success {
         return Err(if response.error.is_empty() {
@@ -1625,7 +1798,10 @@ async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
         tokio::select! {
             msg = stream.message() => {
                 match msg {
-                    Ok(Some(event)) => {
+                    Ok(Some(mut event)) => {
+                        if future_rpc::content_body::hydrate_stream_event(&mut client, session, &mut event).await.is_err() {
+                            return StreamExit::Lost;
+                        }
                         let raw_data: Map<String, Value> = if event.data.is_empty() {
                             Map::new()
                         } else {
@@ -2225,6 +2401,12 @@ pub(crate) mod tests {
             .unwrap_or_else(|| panic!("no {command_type} request was sent"))
     }
 
+    /// [`last_request`] for another test module: the surface lives in
+    /// `workbench::live`, and only this module can reach the mock's log.
+    pub(crate) fn last_request_of(mock: &ApiMock, command_type: &str) -> RpcCommand {
+        last_request(&mock.requests, command_type)
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn provider_configuration_calls_send_the_documented_wire_shape() {
         let mock = ApiMock {
@@ -2767,6 +2949,43 @@ pub(crate) mod tests {
         (mock, seen)
     }
 
+    /// The same mock, taking `delay_ms` to answer each unary command: the slow
+    /// agent a surface has to stay usable against. The answer table is the same
+    /// `pub(crate)` field, so a test can move it between calls.
+    pub(crate) fn api_mock_slow(
+        pairs: &[(&str, &str)],
+        delay_ms: u64,
+    ) -> (ApiMock, Arc<std::sync::Mutex<Vec<String>>>) {
+        let (mock, seen) = api_mock_answering(pairs);
+        (
+            ApiMock {
+                unary_delay_ms: delay_ms,
+                ..mock
+            },
+            seen,
+        )
+    }
+
+    /// The same mock, with one command answering `success: false`.
+    pub(crate) fn api_mock_failing(
+        pairs: &[(&str, &str)],
+        command: &str,
+        error: &str,
+    ) -> (ApiMock, Arc<std::sync::Mutex<Vec<String>>>) {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let data: StdHashMap<String, String> = pairs
+            .iter()
+            .map(|(kind, body)| ((*kind).to_string(), (*body).to_string()))
+            .collect();
+        let mock = ApiMock {
+            data_by_type: Arc::new(std::sync::Mutex::new(data)),
+            fail_with: StdHashMap::from([(command.to_string(), error.to_string())]),
+            seen: seen.clone(),
+            ..Default::default()
+        };
+        (mock, seen)
+    }
+
     /// A mock whose answer table the caller keeps, so one command can answer
     /// differently later in the same test — `get_state` before and after a
     /// session switch, say. The table starts empty (`api_mock_answering` fills
@@ -2781,6 +3000,10 @@ pub(crate) mod tests {
     }
 
     pub(crate) async fn spawn_api_mock(mock: ApiMock) -> String {
+        // Every socket-using test in this crate comes through here, and the
+        // process needs more descriptors than a default shell grants once they
+        // run in parallel (see `test_env::ensure_fd_headroom`).
+        crate::test_env::ensure_fd_headroom();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let incoming = TcpIncoming::from_listener(listener, true, None).unwrap();
@@ -3034,17 +3257,21 @@ pub(crate) mod tests {
             "the page addresses its own session"
         );
         assert_eq!(cmd.before, Some(i64::MAX));
-        assert_eq!(cmd.limit, Some(10));
+        assert_eq!(
+            cmd.limit,
+            Some(3),
+            "the first page is the conversation's tail, not ten exchanges of it"
+        );
         assert_eq!(cmd.offset, None, "the forward cursor must not be sent");
         assert_eq!(tail.entries.len(), 1);
         assert!(tail.has_more);
         assert_eq!(tail.next_offset, 42);
 
-        // The next page resumes at the cursor, at the same size.
+        // The next page resumes at the cursor, at the paging size.
         client.session_older_page("sess-1", 42).await.unwrap();
         let cmd = last_request(&requests, "get_session_entries");
         assert_eq!(cmd.before, Some(42));
-        assert_eq!(cmd.limit, Some(10));
+        assert_eq!(cmd.limit, Some(10), "a deliberate page-up asks for ten");
         client.disconnect();
     }
 
@@ -3148,7 +3375,6 @@ pub(crate) mod tests {
                 ("switch_session".into(), "{\"cancelled\":false}".into()),
                 ("fork".into(), "{\"sessionId\":\"s-fork\"}".into()),
                 ("clone".into(), "{\"sessionId\":\"s-clone\"}".into()),
-                ("get_fork_messages".into(), "{\"messages\":[]}".into()),
                 (
                     "list_sessions".into(),
                     "{\"sessions\":[{\"id\":\"s1\",\"cwd\":\"/tmp\",\"updatedAt\":\"2026-01-01\",\"model\":\"m\"}, {\"bad\":true}]}"
@@ -3163,7 +3389,7 @@ pub(crate) mod tests {
 
         // new_session with a sessionId updates the current session.
         let v = client
-            .new_session(None, Some("m"), Some("high"))
+            .new_session(None, None, Some("m"), Some("high"))
             .await
             .unwrap();
         assert_eq!(v.get("sessionId").and_then(Value::as_str), Some("s-new"));
@@ -3181,7 +3407,6 @@ pub(crate) mod tests {
         assert_eq!(client.get_current_session_id(), "s-clone");
 
         // Plain calls.
-        client.get_fork_messages().await.unwrap();
         client.set_session_name("name").await.unwrap();
         let sessions = client.list_sessions().await.unwrap();
         assert_eq!(sessions.len(), 1); // the malformed entry is dropped
@@ -3208,7 +3433,7 @@ pub(crate) mod tests {
         let (client, _events, _conn) = GrpcClient::new(&addr);
         client.set_current_session_id("s-old");
 
-        client.new_session(None, None, None).await.unwrap();
+        client.new_session(None, None, None, None).await.unwrap();
         assert_eq!(client.get_current_session_id(), "s-new");
         // Other commands still inherit the current session id (routing).
         client.get_state().await.unwrap();
@@ -3223,6 +3448,35 @@ pub(crate) mod tests {
             seen.iter()
                 .any(|(t, sid)| t == "get_state" && sid == "s-new"),
             "other commands keep routing by session id, saw {seen:?}"
+        );
+        client.disconnect();
+    }
+
+    /// A chat names its scratch directory after the session id, so the id the
+    /// caller mints is the id the agent must open — not one of its own.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_session_sends_the_session_id_the_caller_minted() {
+        let seen_sessions = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let addr = spawn_api_mock(ApiMock {
+            data_by_type: Arc::new(std::sync::Mutex::new(StdHashMap::from([(
+                "new_session".into(),
+                "{\"sessionId\":\"minted-id\"}".into(),
+            )]))),
+            seen_sessions: seen_sessions.clone(),
+            ..Default::default()
+        })
+        .await;
+        let (client, _events, _conn) = GrpcClient::new(&addr);
+
+        client
+            .new_session(Some("minted-id"), Some("/work/chat/x"), None, None)
+            .await
+            .unwrap();
+        let seen = seen_sessions.lock().unwrap().clone();
+        assert!(
+            seen.iter()
+                .any(|(t, sid)| t == "new_session" && sid == "minted-id"),
+            "the minted id must reach the agent, saw {seen:?}"
         );
         client.disconnect();
     }

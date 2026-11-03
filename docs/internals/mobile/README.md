@@ -76,10 +76,16 @@ development and distribution maintenance.
 - The session list's header is two rows: a desktop picker (a chosen machine shows
   its own glyph and name, the name on up to two lines, and the row takes a line
   of its own at the reader's largest text size), the list-actions menu `⋯`
-  (search, batch selection), the connection dot and settings; the row under it
-  belongs entirely to the page switch (recent / workspaces / conversations). The search
-  field and the batch bar still replace that lower row, so the header — machine,
-  connection, settings — stays visible while typing or selecting.
+  (search, batch selection) and settings; the row under it belongs entirely to
+  the page switch (recent / workspaces / conversations). The search field and
+  the batch bar still replace that lower row, so the header — machine, tools,
+  settings — stays visible while typing or selecting. The connection dot is not
+  a control of its own: it sits at the end of the picker's trigger, and the sheet
+  that trigger opens is both the machine choice and the connection's own
+  explanation — the dot's state in words, the reason, and the action that reaches
+  the machines again. Two controls beside each other meant the header paid two
+  touch targets and the reader had to guess which one to tap when something was
+  wrong, when both were answers to the same question.
 - The workspace picker in the new-conversation dialog can register a directory
   on the connected desktop as a workspace. The user types the host path (the
   phone has no folder picker for the desktop); the directory must already exist,
@@ -96,6 +102,19 @@ development and distribution maintenance.
   and reads, so late replies cannot undo a newer pin state.
 - Paginated history loading, deduplication by `(runId, idx)`, and real-time
   event backfill via `get_events_since` after reconnection.
+- The 15-second "loading messages" state is a **display-only guard**, and what it
+  covers is narrower than it looks. It spans one conversation's *first commit* —
+  the whole `get_state → history → replay` sequence — not a single request. It
+  cancels nothing: the lane keeps retrying behind it, no request is aborted, and
+  the button under the timeout message is what actually restarts the lane. And it
+  is disarmed the moment anything is committed, because the cold open publishes a
+  history preview before replay is awaited; a stall after that shows the sync
+  notice above the transcript, never the spinner and this timeout again. Reading
+  it as "the lane gave up" is therefore wrong in both directions: a spinner that
+  never becomes this message means the first commit never happened *and* the
+  guard is not running (a backgrounded screen defers `restart`, which makes
+  Retry a no-op), while a timeout followed by messages on its own is the lane
+  recovering normally.
 - Pick images from the system photo library or shoot with the system camera;
   add file attachments through the system file picker; a message carries at most
   10 attachments in total, images included; download session attachments and
@@ -421,11 +440,15 @@ Whether the phone has anything to read is the phone's own question rather than
 the open machine's: while any paired desktop answers, the list stays on screen —
 even when the machine whose conversation is open is the one that is down — and
 the whole-page connecting/disconnected state appears only when none of them
-answers. The status popover's own block says the same: with some machines
-answering and some not, it reports the set ("Some desktops are not connected",
-the connected count, Reconnect all) rather than the open machine's state, and
-only when every machine answers — or none does — does that one machine's own
-copy stand.
+answers. The status block at the top of the device sheet says the same: with some
+machines answering and some not, it reports the set ("Some desktops are not
+connected", the connected count, Reconnect all) rather than the open machine's
+state, and only when every machine answers — or none does — does that one
+machine's own copy stand. The rows under it are where "which machine" is read:
+each carries its own dot and state, and a machine that answers while another
+device holds it wears the same yellow as the trigger, with the takeover on that
+row. With a single machine the block is already its answer and the row keeps
+just its name.
 
 Each desktop in the list has a pencil button to rename it; the name is saved
 locally only and never synced to the Desktop or platform; clearing the name

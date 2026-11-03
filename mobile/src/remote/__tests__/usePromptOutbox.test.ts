@@ -8,7 +8,7 @@ import { loadPendingPrompt, savePendingPrompt } from "../pendingPromptStorage";
 import { emptyTimeline } from "@future-os/remote-client/timeline";
 import { modelReference, type ConnectionPhase, type MobileAttachment, type PromptAck, type RemoteCredentials } from "../types";
 import type { SyncEngine } from "@future-os/remote-client/syncEngine";
-import { usePromptOutbox } from "../usePromptOutbox";
+import { deliveryCommandId, usePromptOutbox } from "../usePromptOutbox";
 
 const mockData = new Map<string, string>();
 
@@ -108,7 +108,6 @@ describe("usePromptOutbox recovery", () => {
     };
     const credentialsRef = { current: credentials as RemoteCredentials | null };
     const selectedRef = { current: "session-1" };
-    const streamingRef = { current: {} };
     const conversationEpochRef = { current: 1 };
     const syncEngineRef = { current: null };
     const setSelectedSessionId = jest.fn();
@@ -123,7 +122,6 @@ describe("usePromptOutbox recovery", () => {
         clientRef,
         credentialsRef,
         selectedRef,
-        streamingRef,
         compactingRef: { current: {} },
         conversationEpochRef,
         syncEngineRef,
@@ -334,7 +332,6 @@ describe("usePromptOutbox readiness edges", () => {
     const refreshSessions = jest.fn(async () => {});
     const reconcileSession = jest.fn();
     const selectedRef = { current: "session-1" };
-    const streamingRef = { current: {} };
     const compactingRef = { current: {} };
     const conversationEpochRef = { current: 1 };
     const syncEngineRef = { current: null };
@@ -346,7 +343,6 @@ describe("usePromptOutbox readiness edges", () => {
         clientRef,
         credentialsRef,
         selectedRef,
-        streamingRef,
         compactingRef,
         conversationEpochRef,
         syncEngineRef,
@@ -528,7 +524,6 @@ describe("usePromptOutbox sendMessage", () => {
     const clientRef = { current: client as RemoteClient | null };
     const credentialsRef = { current: credentials };
     const selectedRef = { current: "session-1" };
-    const streamingRef = { current: {} as Record<string, boolean> };
     const compactingRef = { current: {} as Record<string, boolean> };
     const conversationEpochRef = { current: 1 };
     const syncEngineRef = { current: (opts.engine ?? null) as SyncEngine | null };
@@ -547,7 +542,6 @@ describe("usePromptOutbox sendMessage", () => {
         clientRef,
         credentialsRef,
         selectedRef,
-        streamingRef,
         compactingRef,
         conversationEpochRef,
         syncEngineRef,
@@ -583,7 +577,6 @@ describe("usePromptOutbox sendMessage", () => {
       clientRef,
       credentialsRef,
       selectedRef,
-      streamingRef,
       compactingRef,
       conversationEpochRef,
       syncEngineRef,
@@ -700,10 +693,17 @@ describe("usePromptOutbox sendMessage", () => {
     expect(mockedUploadAttachments).not.toHaveBeenCalled();
   });
 
-  it("rejects a send while the target session is streaming", async () => {
+  // A stale "still streaming" flag used to refuse every later message with a
+  // generic failure toast: the projection lags a run that already ended, and
+  // with automatic resume retired (#1355) nothing ever cleared it. The send now
+  // proceeds and the desktop answers for itself.
+  it("sends even while this client still believes the session is streaming", async () => {
     const h = await mountSend();
-    h.streamingRef.current["session-1"] = true;
-    await expect(h.result.sendMessage("hi")).rejects.toThrow("send_streaming");
+    await act(async () => h.result.sendMessage("hi"));
+    expect(h.requestRetry).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "prompt" }),
+      "session-1",
+    );
   });
 
   it("stops delivery when pairing changes during an attachment upload", async () => {
@@ -982,6 +982,102 @@ describe("usePromptOutbox sendMessage", () => {
     });
     await expect(loadPendingPrompt(credentials.pairId)).resolves.toBeNull();
   });
+
+  /**
+   * A queued message that failed on the link is delivered twice unless every
+   * attempt at it carries the command id the first one minted: the desktop looks a
+   * prompt up by that id and by nothing else, so a fresh one is a second prompt in
+   * a second run, charged again.
+   */
+  it("sends nothing under a command id the desktop has already accepted", async () => {
+    const requestRetry = jest.fn(async (request: { type: string; promptId?: string }) =>
+      request.type === "get_prompt_receipt" && request.promptId === "prompt-delivered"
+        ? { data: ack() }
+        : { data: null });
+    const h = await mountSend({ requestRetry, engine: fakeEngine() });
+    await act(async () => {
+      await h.result.sendMessage("already there", [], undefined, { commandId: "prompt-delivered" });
+    });
+    // The receipt answers for it; the prompt itself is never written.
+    expect(requestRetry).toHaveBeenCalledWith(
+      { type: "get_prompt_receipt", promptId: "prompt-delivered" },
+      "list",
+    );
+    expect(requestRetry).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "prompt" }),
+      expect.anything(),
+    );
+    await expect(loadPendingPrompt(credentials.pairId)).resolves.toBeNull();
+  });
+
+  it("keeps the record on a recoverable failure and reports the command id that owns it", async () => {
+    const requestRetry = jest.fn(async () => {
+      throw new Error("not_connected");
+    });
+    const h = await mountSend({ requestRetry });
+    let failure: unknown;
+    await act(async () => {
+      await h.result.sendMessage("still mine").catch((error: unknown) => { failure = error; });
+    });
+    const saved = await loadPendingPrompt(credentials.pairId);
+    // The record is what the outbox replays after an app kill, so it stays…
+    expect(saved?.text).toBe("still mine");
+    // …and the id it holds travels back, so a retry sends this message and not a copy.
+    expect(deliveryCommandId(failure)).toBe(saved?.commandId);
+    expect(deliveryCommandId(failure)).not.toBeNull();
+  });
+
+  it("writes one prompt for one command id, however often it is retried", async () => {
+    let delivered = false;
+    const requestRetry = jest.fn(async (request: { type: string; id?: string }) => {
+      if (request.type === "get_prompt_receipt")
+        return { data: delivered ? ack() : null };
+      delivered = true;
+      return { data: ack() };
+    });
+    const h = await mountSend({ requestRetry });
+    await act(async () => {
+      await h.result.sendMessage("one only", [], undefined, { commandId: "prompt-kept" });
+    });
+    await act(async () => {
+      await h.result.sendMessage("one only", [], undefined, { commandId: "prompt-kept" });
+    });
+    const prompts = requestRetry.mock.calls.filter(([request]) =>
+      (request as { type: string }).type === "prompt");
+    expect(prompts).toHaveLength(1);
+    expect((prompts[0]![0] as { id: string }).id).toBe("prompt-kept");
+  });
+
+  it("still rejects with a failure it cannot tag", async () => {
+    const requestRetry = jest.fn(async () => {
+      throw Object.freeze(new Error("not_connected"));
+    });
+    const h = await mountSend({ requestRetry });
+    let failure: unknown;
+    await act(async () => {
+      await h.result.sendMessage("frozen").catch((error: unknown) => { failure = error; });
+    });
+    // A failure that cannot carry the id reaches the caller unchanged; the retry
+    // then mints a fresh one, which is the behaviour from before this fix.
+    expect((failure as Error).message).toBe("not_connected");
+    expect(deliveryCommandId(failure)).toBeNull();
+  });
+
+  it("reports no command id for a refusal, and clears the record as before", async () => {
+    const requestRetry = jest.fn(async (request: { type: string }) => {
+      if (request.type === "get_prompt_receipt") return { data: null };
+      throw new Error("boom");
+    });
+    const h = await mountSend({ requestRetry });
+    let failure: unknown;
+    await act(async () => {
+      await h.result.sendMessage("refused").catch((error: unknown) => { failure = error; });
+    });
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe("boom");
+    expect(deliveryCommandId(failure)).toBeNull();
+    await expect(loadPendingPrompt(credentials.pairId)).resolves.toBeNull();
+  });
 });
 
 describe("usePromptOutbox continueRun", () => {
@@ -996,7 +1092,6 @@ describe("usePromptOutbox continueRun", () => {
     const clientRef = { current: client as RemoteClient | null };
     const credentialsRef = { current: credentials };
     const selectedRef = { current: "session-1" };
-    const streamingRef = { current: {} as Record<string, boolean> };
     const conversationEpochRef = { current: 1 };
     const syncEngineRef = { current: null as SyncEngine | null };
     const setSelectedSessionId = jest.fn();
@@ -1014,7 +1109,6 @@ describe("usePromptOutbox continueRun", () => {
         clientRef,
         credentialsRef,
         selectedRef,
-        streamingRef,
         compactingRef: { current: {} },
         conversationEpochRef,
         syncEngineRef,
@@ -1172,7 +1266,6 @@ describe("usePromptOutbox recovery error handling", () => {
     const clientRef = { current: client as RemoteClient | null };
     const credentialsRef = { current: credentials };
     const selectedRef = { current: "session-1" };
-    const streamingRef = { current: {} as Record<string, boolean> };
     const conversationEpochRef = { current: 1 };
     const syncEngineRef = { current: null as SyncEngine | null };
     const setSelectedSessionId = jest.fn();
@@ -1189,7 +1282,6 @@ describe("usePromptOutbox recovery error handling", () => {
         clientRef,
         credentialsRef,
         selectedRef,
-        streamingRef,
         compactingRef: { current: {} },
         conversationEpochRef,
         syncEngineRef,
@@ -1412,7 +1504,6 @@ describe("usePromptOutbox delivery edges", () => {
         clientRef,
         credentialsRef,
         selectedRef,
-        streamingRef: { current: {} },
         compactingRef: { current: {} },
         conversationEpochRef: { current: 1 },
         syncEngineRef,

@@ -1,6 +1,6 @@
 import { classifyAgentError } from "@future-os/thread-projection";
 import { describe, expect, it } from "vitest";
-import { canContinueResponse, isCompletedWithoutReply, responseTerminationError } from "./agentMessageFormatters";
+import { buildAgentFailureTitle, friendlyAgentError, isCompletedWithoutReply, responseTerminationError } from "./agentMessageFormatters";
 
 describe("response outcomes", () => {
   it.each([
@@ -23,8 +23,6 @@ describe("response outcomes", () => {
   it("shows a neutral empty-reply notice only after completion without useful output", () => {
     const message = { id: "synthetic", role: "assistant" as const, status: "complete" as const, content: "", authorKey: "author.researchCopilot", createdAt: "2026-01-01", segments: [{ id: "thinking", kind: "thinking" as const, text: "synthetic draft" }] };
     expect(isCompletedWithoutReply(message)).toBe(true);
-    expect(canContinueResponse({ ...message, runError: "[MODEL_PAUSED]" })).toBe(false);
-    expect(canContinueResponse({ ...message, runError: "[OUTPUT_LIMIT]" })).toBe(true);
     expect(isCompletedWithoutReply({ ...message, content: "answer" })).toBe(false);
     expect(isCompletedWithoutReply({ ...message, status: "streaming" })).toBe(false);
     expect(isCompletedWithoutReply({ ...message, status: "failed" })).toBe(false);
@@ -100,8 +98,31 @@ describe("classifyAgentError", () => {
 
   it("strips the request-size diagnostic tail when no JSON message field exists", () => {
     const result = classifyAgentError("API request failed (HTTP 400): code=bad_request, message=\"odd\". Request: 2 messages, 16 KB.");
-    expect(result.key).toBe("agent:failure.run");
+    expect(result.key).toBe("agent:failure.badRequest");
     expect(result.params?.message).toBe("API request failed (HTTP 400): code=bad_request, message=\"odd\".");
+  });
+
+  it("shows a rejected request's provider message instead of retry advice", () => {
+    const raw = "LLM API request failed (HTTP 400): {\"error\":{\"message\":\"Invalid model: gemini-9-pro\"}}";
+    expect(friendlyAgentError(raw)).toContain("Invalid model: gemini-9-pro");
+    // A key with no locale entry would render as the key itself.
+    expect(buildAgentFailureTitle(raw)).not.toContain("agent:failure.");
+  });
+
+  it("names the endpoint and the transport failure that ended a run", () => {
+    // The exact message a custom endpoint produced: reqwest's transport chain,
+    // no HTTP status, so nothing above this point classifies it.
+    const raw = "error sending request for url (https://hpc-api.westlake.edu.cn/v1/chat/completions): client error (Connect): tls handshake eof";
+    expect(classifyAgentError(raw)).toEqual({
+      key: "agent:failure.network",
+      params: { message: "hpc-api.westlake.edu.cn: tls handshake eof" },
+    });
+    // The visible notice carries that detail instead of bare retry advice.
+    expect(friendlyAgentError(raw)).toContain("hpc-api.westlake.edu.cn: tls handshake eof");
+  });
+
+  it("shows an unknown failure's own wording instead of bare retry advice", () => {
+    expect(friendlyAgentError("context cache unreadable: cache v3")).toContain("context cache unreadable: cache v3");
   });
 
   it("handles empty input", () => {

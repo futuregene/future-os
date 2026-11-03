@@ -21,6 +21,35 @@ pub async fn session_presence(ids: Vec<String>) -> Result<SessionPresence, crate
     session_presence_with_client(&mut client, ids).await
 }
 
+/// How long a fence waits before treating `missing` as a fact.
+///
+/// The agent answers presence on a lane that does not queue behind its ordered
+/// writer (it used to, which is how one long writer job stalled every read for
+/// 18–38 s). What that costs is ordering: a session whose placeholder commit is
+/// still queued reads `missing` for a moment. A session that is genuinely gone
+/// stays gone, so one bounded second look — never a loop — separates the race
+/// from the verdict. `deleted` and `import_failed` are decisions and are never
+/// retried.
+pub const PRESENCE_RECHECK_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// Presence for a caller for whom `missing` means "refuse this command".
+///
+/// Asks twice: immediately, then once after [`PRESENCE_RECHECK_DELAY`] when the
+/// first answer was `missing` and a commit could still be in flight. Every other
+/// status is returned as-is, so a deleted or unimported conversation is refused
+/// without the delay.
+pub async fn require_present_with_client(
+    client: &mut super::client::AgentClient,
+    session_id: &str,
+) -> Result<SessionPresence, crate::Error> {
+    let first = session_presence_with_client(client, vec![session_id.to_string()]).await?;
+    if first.sessions[0].status != "missing" {
+        return Ok(first);
+    }
+    tokio::time::sleep(PRESENCE_RECHECK_DELAY).await;
+    session_presence_with_client(client, vec![session_id.to_string()]).await
+}
+
 pub async fn session_presence_with_client(
     client: &mut super::client::AgentClient,
     ids: Vec<String>,
@@ -71,7 +100,7 @@ pub async fn verify_thread_source_with_client(
     thread_id: &str,
     session_id: &str,
 ) -> Result<SessionPresence, crate::Error> {
-    let presence = session_presence_with_client(client, vec![session_id.into()]).await?;
+    let presence = require_present_with_client(client, session_id).await?;
     if presence.sessions[0].status != "present" {
         return Err("Conversation source is unavailable; restore the matching Agent database before continuing.".into());
     }
@@ -192,6 +221,15 @@ mod tests {
         let mock = mock_agent();
         let workspace = seed_workspace(home.path(), "missing-source");
         let thread = seed_thread(&workspace.id, Some("session"));
+        mock.push_data(
+            "get_session_presence",
+            json!({"databaseId":"some-database","restoreGeneration":"generation",
+            "sessions":[{"sessionId":"session","status":"missing"}]}),
+        );
+        // The fence confirms a `missing` answer before refusing: presence no
+        // longer queues behind the agent's ordered writer, so a session whose
+        // placeholder commit is still queued reads `missing` for a moment. A
+        // session that really has no row answers `missing` again.
         mock.push_data(
             "get_session_presence",
             json!({"databaseId":"some-database","restoreGeneration":"generation",

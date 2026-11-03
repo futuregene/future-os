@@ -1,4 +1,11 @@
-# FutureOS Workbench TUI — Design and Implementation Spec v1 (frozen contract)
+# FutureOS Workbench TUI — Design and Implementation Spec v1 (historical design record)
+
+> **Historical design record.** This page preserves the v1 contract used to build
+> the full-screen workbench. The implementation has since amended it in several
+> places (sidebar width, header bands, image protocols, panel inventory), so its
+> constants and P1 status are not the current acceptance contract. For the
+> shipped behaviour use [the TUI guide](../guide/tui.md); for the source of truth
+> read `tui/src/workbench/` and its tests.
 
 > Goal: on top of the existing `future-tui` (Rust, hand-rolled ANSI rendering,
 > gRPC client), add a **full-screen workbench** interface that matches the core
@@ -6,9 +13,9 @@
 > multiple sessions / skills / remote). **The agent's gRPC interface is not
 > changed.**
 
-This file is the frozen contract between workers: type names, file names, layout
-constants, key bindings and acceptance commands may not diverge. The
-implementation may extend it, but may not change its meaning.
+This file was the v1 frozen contract between workers: type names, file names,
+layout constants, key bindings and acceptance commands. It is kept to explain the
+original decisions; the current guide and code supersede the values below.
 
 ---
 
@@ -141,16 +148,16 @@ Content — a conversation, a session title, a path — is never translated.
 
 | Semantic | dark | light | one-dark | one-light | high-contrast | dracula | Use |
 |---|---|---|---|---|---|---|
-| bg | 232 | 254 | 232 | 231 | 16 | 232 | canvas |
-| panel | 234 | 252 | 234 | 254 | 17 | 234 | menu, picker and overlay fill (the rail, the chat and the composer keep the canvas) |
+| bg | 232 | 254 | 235 | 255 | 16 | 235 | canvas |
+| panel | 234 | 252 | 236 | 231 | 233 | 236 | menu, picker and overlay fill (the rail, the chat and the composer keep the canvas) |
 | border | 238 | 246 | 240 | 250 | 250 | 239 | borders, dividers |
 | fg | 252 | 236 | 249 | 236 | 231 | 255 | body text |
-| muted | 245 | 240 | 245 | 241 | 246 | 245 | secondary notes |
+| muted | 245 | 240 | 247 | 241 | 246 | 247 | secondary notes |
 | accent | 80 (teal) | 30 | 75 | 25 | 51 | 141 | brand, selection, progress |
 | iris | 111 | 62 | 73 | 30 | 123 | 117 | links, active tab |
 | amber | 179 | 130 | 180 | 130 | 226 | 228 | thinking, warning |
 | green | 114 | 28 | 108 | 28 | 46 | 84 | success |
-| red | 203 | 124 | 168 | 160 | 196 | 203 | error, danger |
+| red | 203 | 124 | 174 | 160 | 196 | 204 | error, danger |
 | purple | 141 | 91 | 176 | 91 | 213 | 212 | sub-agent / skills |
 
 The table above is the six palettes the contract froze, and those numbers are
@@ -163,40 +170,67 @@ renditions of five of them — are the same `Palette` shape in
 
 Two rules hold across the whole table, pinned by
 `workbench::theme::tests::text_roles_clear_aa_on_their_own_canvas` and
-`every_dark_canvas_is_the_same_near_black`:
+`every_palette_paints_its_own_canvas`:
 
-- **The canvas is the surface's, and it is black.** The frame paints `bg` on
-every row to the last column (`workbench::run::canvas_rows`). It used to paint
-only the panels, so the canvas was whatever the reader's terminal profile drew
-— Ghostty ships `#282c34`, a mid slate — and every dark theme read washed out
-regardless of the palette. Every dark palette now uses the same near-black
-`232` with `panel` one step above (`234`); `high-contrast` keeps true black
-(`16`/`17`). A theme's identity is its hues, not a lighter canvas.
+- **The canvas is the surface's, and it is the theme's own.** The frame paints
+`bg` on every row to the last column (`workbench::run::canvas_rows`). It used
+to paint only the panels, so the canvas was whatever the reader's terminal
+profile drew — Ghostty ships `#282c34`, a mid slate — and every dark theme read
+washed out regardless of the palette. It then became one shared near-black
+(`232`) behind every dark palette, which made twenty-two themes read as one
+theme with different accents. Each palette now carries the nearest 256-colour
+step to its own background, the one `desktop/src/theme/palettes.json` paints
+for that theme; `panel` is the first step above the canvas that reads as
+raised (> 1.1:1). `dark` keeps the near-black it shipped with and
+`high-contrast` keeps true black. A 256-colour terminal can express a *tinted*
+dark background only as a saturated primary (`17` is `#00005f`, `23` is
+`#005f5f`), so the hue of, say, Solarized's `#002b36` is not available as a
+canvas; what the table can carry is lightness and temperature.
+
+| id | bg | panel | | id | bg | panel |
+|---|---|---|---|---|---|---|
+| dark | 232 `#080808` | 234 | | one-dark | 235 `#262626` | 236 |
+| light | 254 `#e4e4e4` | 252 | | one-light | 255 `#eeeeee` | 231 |
+| high-contrast | 16 `#000000` | 233 | | dracula | 235 `#262626` | 236 |
+| ayu | 235 `#262626` | 236 | | catppuccin | 233 `#121212` | 235 |
+| catppuccin-light | 255 `#eeeeee` | 231 | | everforest | 236 `#303030` | 237 |
+| everforest-light | 230 `#ffffd7` | 254 | | gruvbox | 234 `#1c1c1c` | 235 |
+| gruvbox-light | 223 `#ffd7af` | 230 | | kanagawa | 234 `#1c1c1c` | 235 |
+| nightfox | 235 `#262626` | 236 | | nord | 236 `#303030` | 237 |
+| rose-pine | 234 `#1c1c1c` | 235 | | rose-pine-light | 255 `#eeeeee` | 231 |
+| solarized | 234 `#1c1c1c` | 235 | | solarized-light | 254 `#e4e4e4` | 230 |
+| tokyo-night | 234 `#1c1c1c` | 235 | | vesper | 233 `#121212` | 235 |
+
 - **Every text role clears WCAG AA (4.5:1)** against both the canvas and the
 panel, and `fg` clears 7:1 on the canvas. This is what lifted `muted` — at
 2.9:1 on `one-dark`'s and `dracula`'s own panel it was decoration rather than
-text — and, where a dark palette's accent colour sat below 4.0, that colour too
-(`gruvbox` iris, `nord` red, `solarized` purple).
+text — and, where moving a canvas up the ramp dropped a role below the floor,
+that role too: `muted` on ten of the dark palettes, `red` on five
+(`one-dark`, `dracula`, `kanagawa`, `everforest`, `nord`), `purple` on four
+(`kanagawa`, `everforest`, `nord`, `solarized`), and `everforest-light`'s
+`muted`. Each lifted value keeps its hue family; the notes beside them in
+`theme.rs` record what was raised and by how much.
 
 The **light** palettes keep their hues because the numbers are shared with the
-desktop app's table; only their `fg`/`muted` were lifted. Four of them still
+desktop app's table; only their `fg`/`muted` were lifted. Several of them still
 carry an accent below AA on their own canvas, reported rather than silently
-changed: `light` accent 30 (2.8:1), iris 62 (3.3:1), amber 130 (3.1:1), green
-28 (3.1:1); `one-light` iris 30 (3.4:1), amber 130 (3.7:1), green 28 (3.7:1);
-`catppuccin-light` iris 31 (3.6:1), purple 99 (3.5:1); `everforest-light` iris
-66 (3.4:1), green 64 (3.7:1), red 131 (3.9:1), purple 132 (3.8:1);
-`gruvbox-light` iris 66 (2.9:1), amber 94 (4.3:1), purple 95 (4.1:1);
-`rose-pine-light` red 131 (3.9:1), purple 99 (3.5:1); `solarized-light` iris 30
-(3.4:1), purple 61 (4.4:1). Raising them means editing the desktop's palette
-table as well, which is a separate change.
+changed: `light` accent 30 (3.4:1), iris 62 (4.0:1), amber 130 (3.7:1), green
+28 (3.7:1); `one-light` iris 30 (3.8:1), amber 130 (4.1:1), green 28 (4.1:1);
+`catppuccin-light` accent 62 (4.4:1), iris 31 (3.6:1), green 28 (4.1:1), purple
+99 (3.5:1); `everforest-light` iris 66 (3.9:1), green 64 (4.1:1), red 131
+(4.4:1), purple 132 (4.3:1); `gruvbox-light` iris 66 (2.9:1), amber 94
+(4.3:1), purple 95 (4.1:1); `rose-pine-light` red 131 (3.9:1), purple 99
+(3.5:1); `solarized-light` iris 30 (3.4:1), purple 61 (4.4:1). Raising them
+means editing the desktop's palette table as well, which is a separate change.
 
 Every palette mirrors `crate::themes`' colours wherever the inline
 `Theme` has the same semantic (`accent`, `fg`, `border`, `dim`, `error`,
 `success`, `md_link`, `md_heading`, `md_code`), except where the inline value
 was below AA on this surface's canvas and the workbench lifted it (`muted`,
-and three dark palettes' accent colours). `bg` and `panel` are the workbench's
-own, because a full-screen canvas paints an explicit background step where the
-inline theme inherits the terminal's. Ids older workbench builds
+and the accents listed above). `bg` and `panel` are the workbench's own: they
+follow each theme's real background rather than the inline theme's, because a
+full-screen canvas paints an explicit background step where the inline theme
+inherits the terminal's. Ids older workbench builds
 wrote (`future-dark`, `future-light`) still resolve, to `dark` and `light`.
 
 There is no logo or icon in the TUI. The chat header's wordmark `FUTURE OS`
@@ -278,16 +312,22 @@ model picker commits the model **and** the slider's level together (`SetModel` +
 state (connection dot, version) stays, the transcript goes, and the first
 message creates the session with whatever model/effort the launchpad shows.
 
-A launchpad with nothing staged names the **product defaults**, not the values of
-the conversation `/new` left behind: the plain chat (no workspace — the agent's
-own `agent/workspace`, the directory the rail's 对话会话 section files, created on
-the way), the agent's default model and the level that model starts at (both read
-from `list_models`: `isDefault`, `defaultThinkingLevel` — the same resolution
-`new_session` performs), and 完全访问 (`off`). Carrying the previous
-conversation's directory, model and approval into the next one made `/new` a copy
-of what came before instead of a fresh start — and the default approval is
-applied to the created session rather than only named, so a chip never names a
-mode the session will not run under.
+The launchpad's workspace comes from one of two places: `/new` (`ctrl+n`)
+**inherits the workspace the conversation was just in** — a new conversation
+starts in the project the reader was working in — while a chat is not inherited,
+because the next message mints its own chat directory. A fresh start uses the
+**TUI process's start directory** (`cd project && future tui`), and a launch
+from one of the app's own scratch directories (or an explicit 对话会话 choice) is
+the **plain chat**: no workspace, running under the desktop app's own
+`~/.future/workspaces/chat/<session id>` (the directory the rail's 对话会话
+section files; the TUI mints the id and creates the directory when the session is
+created). The model and effort chips still name the **product defaults**, not the
+previous conversation's values (both read from `list_models`: `isDefault`,
+`defaultThinkingLevel` — the same resolution `new_session` performs), and
+approval is 完全访问 (`off`). Carrying the previous conversation's model and
+approval into the next one made `/new` a copy of what came before instead of a
+fresh start — and the default approval is applied to the created session rather
+than only named, so a chip never names a mode the session will not run under.
 
 With no session attached — the launchpad, or a TUI started against an agent that
 has none — `enter` in a picker **stages** the choice instead of sending it: the
@@ -307,17 +347,19 @@ well. `/thinking` lists the six levels, `/mode` the desktop composer's four
 approval tiers with their one-line explanations, and `/workspace` every
 directory this client has a conversation in plus a first row that creates one
 from the path typed into its search line (`enter` there is `set_cwd`, the same
-verb as choosing an existing one). Under that typed row sits the one row that is
-not a directory: 对话会话, a plain chat — the conversation nobody picked a
-workspace for. `enter` there parks the session in the agent's own
-`agent/workspace` (the directory the rail's 对话会话 section already names), or
-stages it for the session the next message creates, and the app makes that
-directory itself: a directory the reader typed is theirs to have created, and a
-typo deserves the agent's error, but this path is nobody's to make. The
-approval tiers are the desktop's own
-values — manual / sandboxed / automatic review / full access; there is no
-separate TUI "permission level" chip, because no other client offers that
-choice.
+verb as choosing an existing one); `/workspace <path>` prefills that search line
+with the argument, so the command lands on the directory it names rather than on
+an empty list. Under that typed row sits the one row that is not a directory:
+对话会话, a plain chat — the conversation nobody picked a workspace for. `enter`
+there stages "no workspace" while nothing is attached (the first message mints
+`~/.future/workspaces/chat/<id>`, the TUI's own id, and creates the directory),
+or moves an attached session to its own chat directory named the same way — the
+prefix the rail's 对话会话 section recognises. The app makes that directory
+itself: a directory the reader typed is theirs to have created, and a typo
+deserves the agent's error, but this path is nobody's to make. The approval tiers
+are the desktop's own values — manual / sandboxed / automatic review / full
+access; there is no separate TUI "permission level" chip, because no other client
+offers that choice.
 
 Rows are painted and registered as hit regions from one list and one geometry
 (`screen::picker_box` over `box_geometry`), which is what makes a click land on
@@ -329,21 +371,25 @@ the row under the pointer rather than one beside it.
 `shift`): `ctrl+o` model chooser; `ctrl+t` thinking-effort chooser; `ctrl+s`
 approval-mode chooser; `ctrl+l` workspace chooser; `ctrl+f` the files panel
 (this session's own workspace); `ctrl+g` the git browser; `ctrl+d` the rail's
-open/focus/hide; `ctrl+q` preferences; `ctrl+v` read the clipboard (an image becomes a draft attachment, text is pasted); `tab`/`shift+tab` step
+open/focus/hide; `ctrl+q` preferences; `ctrl+v` (`alt+v` on Windows) read the clipboard (an image becomes a draft attachment, text is pasted); `tab`/`shift+tab` step
 the conversation's links and pictures (`enter` opens the one under the cursor —
 browser, that conversation, or the preview box), and on the launchpad move between
 the prompt and its chips; `/` command palette; `?` help; `esc` close one layer at
 a time. `shift+←`/`shift+→` walk the rail's two tabs and do the
 sidebar's open/focus/hide job when the rail is closed.
 
-No default is `alt` — on macOS Option composes a character unless the reader
+`ctrl+v` is the one default that is not the same chord on every platform: Windows
+reads the clipboard on `alt+v`, because Windows Terminal binds `ctrl+v` to its own
+paste — text only, never an image — so that key never reaches the app there. The
+typed door `/paste` exists on all of them.
+
+No other default is `alt` — on macOS Option composes a character unless the reader
 turns on "Use Option as Meta" — and the letters left over after the collisions
 run out, so the remaining actions have **no chord**: deleting a conversation (`/delete`, or
 `delete` in the rail — it asks first), the queue (`/queue` — the prompts sent
 while a run was in flight), the interface language (`/lang`), a refresh
 (`/refresh`), copy (`/copy`), mouse capture (`/mouse`), the newest attachment
-(`/preview`), the rail's two panels (a click, or `shift+←`/`shift+→`), and
-reduced motion (the preferences overlay). The
+(a click on the count the composer's title carries), the rail's two panels (a click, or `shift+←`/`shift+→`). The
 help overlay prints `—` in the key column for those. The collisions are the
 reason: a terminal sends Backspace, Tab, `\n` and Enter for `ctrl+h`/`i`/`j`/`m`;
 `ctrl+a`/`ctrl+b` are the `screen` and `tmux` prefixes; `ctrl+z` is suspend;
@@ -361,7 +407,9 @@ No **default** is a function key: `F1`–`F12` need an `Fn` modifier on a laptop
 and are absent on a compact keyboard. Rebinding to an F key or to `alt` stays
 supported — only the shipped defaults are `ctrl`.
 The help overlay lists `ACTIONS` **grouped** (chats / choices / panels /
-interface), then the non-rebindable inline keys, then the commands.
+interface), then the non-rebindable inline keys. The verbs are not reprinted
+there: the palette lists them with their descriptions, and the inline table
+names its key (`/`, `ctrl+p`).
 
 A held `shift+↑`/`shift+↓` is one switch, not one per key repeat: the key returns
 `WbAction::SessionStep(delta)`, the driver reads the whole input burst and
@@ -379,6 +427,19 @@ unchanged keeps the rows it is compared against, and one that changed rebuilds
 the transcript. That pair replaces the three sequential round trips a switch used
 to take — `switch_session`, `get_state`, then the page — because `get_state`
 already hydrates the session it is asked about.
+
+### Remembered folds
+
+The rail paints no search line: both tabs list conversations, and searching them
+is the history picker's job — `ctrl+r` (`Action::Sessions`) opens it with a
+filter line of its own, the same three fields (title, workspace, id) matched
+case-insensitively. `/` from the rail is the palette's key, exactly as it is
+from the prompt, and the rail's footer names only its own chords
+(`shift+←→` the tabs, `shift+↑↓` the conversations).
+
+A fold (`enter` on a workspace heading, or a click on one) outlives the process:
+the paths are written to `~/.future/tui/settings.json` as `foldedWorkspaces`, and
+the next start hides their conversations before anything is pressed.
 
 ### Pictures in a text surface
 

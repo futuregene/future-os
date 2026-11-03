@@ -1,6 +1,7 @@
 //! Application-independent Remote wire contract.
 
 mod command_generated;
+pub mod diagnostics;
 pub mod files;
 pub mod handshake;
 pub mod invitation;
@@ -10,10 +11,19 @@ pub use command_generated::{IncomingCmd, UploadReference};
 pub use future_remote_crypto as crypto;
 
 /// Clients that declare this capability implement lean event/history reads.
+pub const SEGMENTED_CONTENT_FEATURE: &str = "segmented_content_v1";
 pub const LEAN_EVENTS_FEATURE: &str = "lean_events_v1";
 
 pub const EVENT_COALESCING_FEATURE: &str = "event_coalescing_v1";
 pub const CATALOG_ACTIVITY_FEATURE: &str = "catalog_activity_v1";
+/// A client that applies *row-level* catalogue deltas.
+///
+/// Declaring it promises something the wire depends on: a `state.sessions`
+/// packet may then carry `full: false` with only the rows that changed and the
+/// ids that left, and the client is the half that keeps the rest. A client that
+/// does not declare it keeps receiving whole snapshots, byte for byte as before
+/// — reading a delta as a snapshot would make every absent row look deleted.
+pub const CATALOG_DELTA_FEATURE: &str = "catalog_delta_v1";
 pub const REPLY_GZIP_FEATURE: &str = "reply_gzip_v1";
 
 /// Clients that declare this capability keep proving they are still there:

@@ -591,6 +591,27 @@ the host uses it to say "a computer is connected", so it is deliberately not a
 `features` entry; an older host ignores both fields and the UI falls back to
 "unknown device".
 
+**Which build, and where it is stuck.** The same `secure_ready` also carries
+`deviceVersion` — the client's own build string, opaque here (the phone's baked-in
+`VERSION`, a desktop's release tag) — and the periodic `client_presence` beat may
+carry `syncStage` (`get_state` / `history` / `replay`), the reconcile step that
+client last failed at. Neither is a capability and neither is a gate: no version
+is compared against a minimum, an absent field reads as "unknown build" or
+"nothing to report", and a host that does not know the fields answers exactly as
+before. They exist because a stuck remote conversation could not say who was on
+the other end or which step died: a phone cannot report its package version at
+runtime, and a disconnection leaves nothing behind to inspect later.
+
+**Whether the desktop was slow, or the link was.** The client's stage names the
+step that failed, not who spent the time. So the desktop measures every business
+command it executes and appends a row to `~/.future/app/logs/desktop.log` when a
+command takes at least one second or fails: `remote command slow:
+type=get_session_entries session=… elapsed=…ms`, with the reply's byte count on
+binary pages and the error string when there is one (heartbeat commands never
+report). A phone that times out while no slow row appears here is a transport
+symptom; a slow row names the exact read that was expensive. The row identifies
+the command, never the content it returned.
+
 **Credentials and ownership.** The client's credential book is entirely
 separate from the host's: `~/.future/remote_peers.json` (new; the host side's
 `remote_pairing.json` is unchanged). The two answer opposite questions ("who

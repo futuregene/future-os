@@ -43,6 +43,7 @@ export function RemoteHubView({
   leftPanelExpanded,
   onOpenRemoteSession,
   onReconnectRemoteAll,
+  onRefreshLabels,
   onRefreshPeers,
   onRefreshRemote,
   onToggleLeftPanel,
@@ -61,6 +62,16 @@ export function RemoteHubView({
    * for the machines it is supposed to keep live — so this page only asks for it.
    */
   onReconnectRemoteAll: () => Promise<void>;
+  /**
+   * Re-read the paired computers alone, without asking their hosts for anything.
+   *
+   * A machine's name and icon are this computer's own record of it, stored in the
+   * local credential book, so that is the whole of what saving one can move. The
+   * full re-read below would also fetch every connected host's conversations over
+   * the network, which is the difference between a save that lands and one that
+   * sits on a round trip per machine.
+   */
+  onRefreshLabels: () => Promise<void>;
   /**
    * Re-read the paired computers after an action on this page changed one.
    *
@@ -142,6 +153,7 @@ export function RemoteHubView({
             onOpenSettings={setSettingsFor}
             onReconnectAll={onReconnectRemoteAll}
             onRefresh={onRefreshPeers}
+            onRefreshLabels={onRefreshLabels}
             peers={peers}
           />
         </Direction>

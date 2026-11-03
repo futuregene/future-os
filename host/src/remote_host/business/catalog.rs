@@ -6,11 +6,15 @@ use super::reply;
 
 pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
     match cmd.cmd_type.as_str() {
-        "list_sessions" => match crate::remote_host::catalog::sessions("") {
+        // A pull, not a tick: served from the snapshot the publisher's last tick
+        // computed when it is under a second old (see `sessions_catalog_cached`).
+        "list_sessions" => match crate::remote_host::catalog::sessions_catalog_cached("")
+            .map(|catalog| (catalog.payload, catalog.signature))
+        {
             Some((payload, _)) => reply(sink, true, payload, None).await,
             None => reply(sink, false, Value::Null, Some("catalog_unavailable")).await,
         },
-        "list_workspaces" => match crate::remote_host::catalog::workspaces() {
+        "list_workspaces" => match crate::remote_host::catalog::workspaces_cached() {
             Some((payload, _)) => reply(sink, true, payload, None).await,
             None => reply(sink, false, Value::Null, Some("catalog_unavailable")).await,
         },

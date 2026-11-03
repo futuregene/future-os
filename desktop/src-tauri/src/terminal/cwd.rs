@@ -172,7 +172,7 @@ pub fn resolve_initial_cwd(configured: Option<&str>) -> Result<ResolvedCwd, CwdE
                 })
             }
             Err(error) => {
-                eprintln!(
+                tracing::warn!(event = "resolve_initial_cwd", trimmed = %trimmed, error = %error,
                     "FutureOS: terminal cwd {trimmed} is unusable ({error}); starting in home"
                 );
             }

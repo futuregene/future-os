@@ -26,6 +26,7 @@ const panels = vi.hoisted(() => ({
   fileArtifacts: null as unknown,
   fileTree: null as unknown,
   inspect: null as unknown,
+  fusion: null as unknown,
   review: null as unknown,
   runs: null as unknown,
 }));
@@ -80,6 +81,15 @@ vi.mock("../../features/runs/RunInspectPanel", async () => {
     RunInspectPanel: (props: unknown) => {
       panels.inspect = props;
       return createElement("div", { "data-panel": "inspect" });
+    },
+  };
+});
+vi.mock("../../features/fusion/FusionDiscussionPanel", async () => {
+  const { createElement } = await import("react");
+  return {
+    FusionDiscussionPanel: (props: unknown) => {
+      panels.fusion = props;
+      return createElement("div", { "data-panel": "fusion" });
     },
   };
 });
@@ -152,7 +162,7 @@ function thread(id: string, overrides: Partial<StoredThread> = {}): StoredThread
 const chatThread = thread("t1", { workspaceId: "w-t1" });
 const chatWorkspace = { id: "w-t1", kind: "user", name: "Chat", path: "/tmp/chat" } as unknown as StoredWorkspace;
 const run = { id: "r1", status: "completed" } as unknown as StoredRun;
-const tool = { id: "tool-1", runId: "r1" } as unknown as StoredToolCall;
+const tool = { id: "tool-1", runId: "r1", name: "shell" } as unknown as StoredToolCall;
 const artifact = { id: "art-1", name: "out.md" } as unknown as StoredArtifact;
 const overview = { files: [{ path: "src/a.ts" }] } as unknown as GitReview;
 const capabilities = { changePreview: "unsupported", isGitWorkspace: true } as unknown as WorkspaceReviewCapabilities;
@@ -195,6 +205,7 @@ beforeEach(() => {
   panels.fileArtifacts = null;
   panels.fileTree = null;
   panels.inspect = null;
+  panels.fusion = null;
   panels.review = null;
   panels.runs = null;
   mocks.abortRun.mockClear();
@@ -693,6 +704,31 @@ describe("context panel tab seeding", () => {
 });
 
 describe("context panel inspect events", () => {
+  it("opens a discussion before the projected tool list arrives and clears it on thread change", () => {
+    const p = baseProps({ expanded: false });
+    const view = mount(<ContextPanel {...p} />);
+    act(() => window.dispatchEvent(new CustomEvent("futureos:inspect-fusion", { detail: { runId: "r1", toolCallId: "f1" } })));
+    expect(p.onTabChange).toHaveBeenCalledWith("runs");
+    expect(p.onToggleExpanded).toHaveBeenCalledTimes(1);
+    view.rerender(<ContextPanel {...p} activeTab="runs" expanded />);
+    expect(recorded("fusion")).toMatchObject({ runId: "r1", toolCallId: "f1" });
+    view.rerender(<ContextPanel {...p} activeTab="runs" expanded activeThread={thread("other")} />);
+    expect(view.container.querySelector("[data-panel=fusion]")).toBeNull();
+    view.unmount();
+  });
+
+  it("routes a Fusion tool from Runs to its dedicated panel", () => {
+    mocks.data = { runs: [run], toolsByRun: { r1: [{ ...tool, name: "fusion" }] } };
+    const p = baseProps({ activeTab: "runs" });
+    const view = mount(<ContextPanel {...p} />);
+    act(() => recorded("runs").onInspectTool!("tool-1"));
+    expect(p.onTabChange).toHaveBeenCalledWith("runs");
+    view.rerender(<ContextPanel {...p} activeTab="runs" />);
+    expect(recorded("fusion")).toMatchObject({ runId: "r1", toolCallId: "tool-1" });
+    expect(view.container.querySelector("[data-panel=inspect]")).toBeNull();
+    view.unmount();
+  });
+
   it("opens the panel and selects a run on inspect-run", () => {
     mocks.data = { runs: [run], toolsByRun: { r1: [tool] } };
     const p = baseProps({ activeTab: "files" });

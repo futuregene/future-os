@@ -4,12 +4,42 @@ Agent 的唯一运行时存储为 `~/.future/agent/agent.db`；Desktop 继续使
 
 ## 自动导入
 
-TUI 与 Desktop 共用 Agent 的存储升级代码。已发布的 SQLite schema 2、3、4、5、6
-均可直接升级到 schema 7，升级前在 `agent/backups/` 保存经校验的快照。
+TUI 与 Desktop 共用 Agent 的存储升级代码。已发布的 SQLite schema 2–7
+均可直接升级到 schema 8，升级前在 `agent/backups/` 保存经校验的快照。
 准入按来源版本校验历史结构：schema 2–4 尚无 `run_snapshots`，保全旧库后由迁移建表；
 schema 5 及之后必须保有已有快照，缺失权威历史仍明确报错。仅包含技能表的引导数据库
 同样保留安装记录和卸载墓碑。回归夹具冻结历史提交中的真实 DDL，不用当前结构改写版本号
 冒充旧库。
+
+技能注册表与会话存储共用同一份版本准入边界，包括 schema 7。
+在 Agent 首次升级前执行技能命令，不会改变已有会话历史或卸载墓碑。
+
+### 启动进度与运行恢复隔离
+
+内嵌 Host 的 180 秒预算衡量持续没有实际进展的时间，不限制升级总耗时。
+SQLite 校验、备份、迁移期间的执行进度，以及完成的有界导入／恢复工作会续期；
+读取启动状态不会续期。取消启动可中断 SQLite 语句，进入正常服务前移除启动回调，
+避免旧启动令牌影响后续写入。
+
+明确属于单个 run 的恢复数据错误，保留为 `runs.status='recovery_failed'`，
+诊断写入 `runs.error`。原始历史与流事实保留，其他会话可继续启动。
+问题会话拒绝直接或排队输入、压缩、fork、标题模型调用，以及取消／看门狗补造终态。
+SQLite 故障、磁盘错误、启动取消和未知 worker 故障仍传播，不伪装成局部历史问题。
+`future doctor` 报告 `failedRunRecoveries`。
+
+停止所有 Agent 所有者、修复或恢复对应数据后，显式执行
+`future agent --retry-session-recovery 会话ID`。重试前保留经校验的快照，
+只重试已隔离的 run，不执行模型或工具；再次失败仍保持隔离。
+可用 `--migration-source` 指向隔离副本进行维护验证。
+
+重复发现旧来源时，一次目录查询读取已处理导入、墓碑和原生身份，
+在排序前过滤已知文件；无变化时不再逐文件进入 writer、不写完成标记、不强制 checkpoint。
+后来恢复的文件仍会被发现，导入事务内再次检查准入状态。
+
+Agent 常规 CI 现包含已发布版本升级的进程终止／SQLITE_FULL、确认前缀的崩溃／写锁／
+writer panic、真实 UUID 的典型及 1/10 MiB 正文负载，以及 1/4/16 会话的共享写入／读取／
+准入观测。各平台上传存储观测 JSON。耗时数据不是原生 GUI 测量或普遍延迟保证；
+真实断电和实际文件系统写满仍不由注入 SQLite 故障代替。
 
 新版 Agent 在实例锁保护下、对外服务前导入旧 `sessions/*.jsonl` 与所属 `run-events/` 文件。每次启动会重新发现后来恢复的文件，逐会话记录仍阻止重复导入、自动重试跳过项和复活已删除项。每个会话独立事务：成功数据与导入记录一起提交；实质性损坏使整个会话跳过，其他会话继续。只允许可确认的截断尾行保留完整前缀并记录警告；磁盘、SQLite 等全局故障停止启动。
 
@@ -80,9 +110,12 @@ future agent --retry-session-import 会话ID --migration-source /绝对路径/�
 
 ## 数据库准入与升级契约
 
-Desktop 使用 application_id `0x46554150`、user_version `3`。已知旧版 Desktop
+Desktop 使用 application_id `0x46554150`、user_version `4`。已知旧版 Desktop
 布局以及 CLI 先创建的设置/工作区数据库，通过原有发布迁移链接入。
 `app_schema_migrations` 记录新契约的校验和；`app_database_identity` 保存数据库身份与恢复代次。
+契约 4 以事务删除已无生产读写的 `workspace_files`、`reference_targets`、
+`object_references`，以及与唯一约束重复的 `idx_review_snapshots_run`；保留对象链接解析、
+磁盘文件搜索、review 数据和旧会话归档。此迁移不执行历史压缩或 `VACUUM`。
 历史迁移标识保持不变。已接入的数据库在服务前校验核心列、外键目标和会话绑定唯一索引，
 不再重放历史破坏性清理。行级孤立 run 仍可被发现、对账及终止。
 

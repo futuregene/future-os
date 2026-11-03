@@ -20,6 +20,11 @@ pub(super) struct MemoryHost {
     /// that "cancelling" reached the platform at all.
     pub revoked_invitations: Mutex<Vec<String>>,
     pub catalog_reads: Mutex<Vec<String>>,
+    /// What this host reports as its catalogue, when a check is about what
+    /// travels in a presence rather than about the read path. `None` is the
+    /// default (a machine that reports nothing) and keeps every other fixture
+    /// behaving exactly as before.
+    pub directory: Mutex<Option<(Value, Value)>>,
     pub catalog_pause: Mutex<
         Option<(
             tokio::sync::oneshot::Sender<()>,
@@ -103,7 +108,9 @@ impl StateHost for MemoryHost {
         "fixture_epoch".into()
     }
     fn sessions(&self, _: &str) -> Option<(Value, String)> {
-        None
+        let directory = self.directory.lock().unwrap();
+        let (sessions, _) = directory.as_ref()?;
+        Some((sessions.clone(), sessions.to_string()))
     }
     fn sessions_catalog(&self, pair: &str) -> Option<SessionsCatalog> {
         self.catalog_reads.lock().unwrap().push(pair.into());
@@ -114,7 +121,9 @@ impl StateHost for MemoryHost {
         None
     }
     fn workspaces(&self) -> Option<(Value, String)> {
-        None
+        let directory = self.directory.lock().unwrap();
+        let (_, workspaces) = directory.as_ref()?;
+        Some((workspaces.clone(), workspaces.to_string()))
     }
     fn catalog_revisions(&self) -> (String, u64, u64) {
         ("fixture_epoch".into(), 0, 0)

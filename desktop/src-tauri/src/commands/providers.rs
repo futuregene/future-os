@@ -48,6 +48,16 @@ pub async fn delete_custom_provider(
     agent_providers::delete_custom_provider(id).await
 }
 
+/// Detect which thinking levels the provider in the editor accepts. One level
+/// per call: the GUI probes the implicit `default` first (which proves the
+/// endpoint, key and model id), then each candidate level.
+#[tauri::command]
+pub async fn probe_thinking_level(
+    input: agent_providers::ThinkingLevelProbeInput,
+) -> Result<agent_providers::ThinkingLevelProbeOutcome, crate::AppError> {
+    agent_providers::probe_thinking_level(input).await
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::await_holding_lock)]
@@ -63,7 +73,8 @@ mod tests {
                 update_builtin_provider_key,
                 update_builtin_provider,
                 set_builtin_provider_base_url,
-                delete_custom_provider
+                delete_custom_provider,
+                probe_thinking_level
             ],
             &[
                 "upsert_custom_provider",
@@ -71,6 +82,7 @@ mod tests {
                 "update_builtin_provider",
                 "set_builtin_provider_base_url",
                 "delete_custom_provider",
+                "probe_thinking_level",
             ],
         );
     }
@@ -131,6 +143,22 @@ mod tests {
         .expect("atomic update");
         assert!(agent.served("upsert_provider", ""));
         assert!(view.builtin.iter().any(|p| p.id == "deepseek"));
+
+        // thinking-level detection: one level per call, against the form the
+        // editor holds (nothing is saved before a probe).
+        let outcome = probe_thinking_level(agent_providers::ThinkingLevelProbeInput {
+            api: "openai-completions".to_string(),
+            base_url: "https://api.acme.com/v1".to_string(),
+            api_key: None,
+            provider_id: Some("acme".to_string()),
+            model_id: "qwen".to_string(),
+            level: Some("high".to_string()),
+        })
+        .await
+        .expect("probe");
+        assert!(agent.served("probe_thinking_level", ""));
+        assert_eq!(outcome.level, "high");
+        assert!(outcome.ok);
 
         // delete
         let view = delete_custom_provider("acme".to_string())

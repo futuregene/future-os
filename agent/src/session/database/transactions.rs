@@ -3,6 +3,22 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::time::Duration;
 
+pub(crate) struct DurableTransaction<'connection>(rusqlite::Transaction<'connection>);
+impl<'connection> std::ops::Deref for DurableTransaction<'connection> {
+    type Target = rusqlite::Transaction<'connection>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl DurableTransaction<'_> {
+    pub(crate) fn commit(self) -> rusqlite::Result<()> {
+        let start = std::time::Instant::now();
+        let result = self.0.commit();
+        super::metrics::commit(start.elapsed(), result.is_ok());
+        result
+    }
+}
+
 fn is_lock_contention(error: &rusqlite::Error) -> bool {
     matches!(
         error,
@@ -14,9 +30,7 @@ fn is_lock_contention(error: &rusqlite::Error) -> bool {
 
 /// Acquire the write lock before reading. Retrying BEGIN preserves ownership
 /// of the write payload and avoids read-then-upgrade SQLITE_BUSY_SNAPSHOT.
-pub(crate) fn begin_write_transaction(
-    connection: &Connection,
-) -> Result<rusqlite::Transaction<'_>> {
+pub(crate) fn begin_write_transaction(connection: &Connection) -> Result<DurableTransaction<'_>> {
     const ATTEMPTS: usize = 4;
     let mut delay = Duration::from_millis(20);
     let mut attempt = 0;
@@ -29,7 +43,7 @@ pub(crate) fn begin_write_transaction(
             connection,
             rusqlite::TransactionBehavior::Immediate,
         ) {
-            Ok(transaction) => return Ok(transaction),
+            Ok(transaction) => return Ok(DurableTransaction(transaction)),
             Err(error) if attempt < ATTEMPTS && is_lock_contention(&error) => {
                 std::thread::sleep(delay);
                 delay *= 2;

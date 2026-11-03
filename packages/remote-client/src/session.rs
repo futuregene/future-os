@@ -273,12 +273,18 @@ pub const SELECTIVE_EVENTS_FEATURE: &str = "selective_events_v1";
 ///   `sessions_activity`). The packet is then the only writer of a remote row's
 ///   ordering timestamp on this side: a live event moves no row, because a
 ///   client clock in that value is a row the next packet moves back.
-pub const DECLARED_FEATURES: [&str; 7] = [
+pub const DECLARED_FEATURES: [&str; 9] = [
     "event_coalescing_v1",
+    future_remote_protocol::SEGMENTED_CONTENT_FEATURE,
     "reply_gzip_v1",
     SELECTIVE_EVENTS_FEATURE,
     future_remote_protocol::LEAN_EVENTS_FEATURE,
     CATALOG_ACTIVITY_FEATURE,
+    // Row-level catalogue deltas. This client applies them (`sessions_delta`,
+    // see `catalog_domain` and the desktop's `handleCatalog`), which is what the
+    // declaration promises: a packet may then carry only the rows that changed,
+    // and the reader is the half that keeps the rest.
+    future_remote_protocol::CATALOG_DELTA_FEATURE,
     // The promise that goes with this declaration: beats while this client is
     // here, a goodbye when it leaves. A host that knows it presumes this client
     // gone when the beats lapse, which is what keeps the Remote page from saying
@@ -649,8 +655,18 @@ impl PeerSession {
             format!("p.{}.xfer.down.*.chunk.*", self.pair_id),
         )
         .await?;
-        // SUB enqueueing is not broker readiness. A different connection may
-        // publish immediately after connect returns; wait for the ordered PONG.
+        // SUB enqueueing is not broker readiness, and this flush does not make it
+        // so: `Client::flush()` writes the buffered frames and awaits no
+        // acknowledgement (async-nats 0.50 has no ping/pong round trip on it). It
+        // buys exactly one thing — the `SUB` frames are on the socket, not in a
+        // buffer the client might still be batching — so the window in which a
+        // publish from another connection can beat our registration is as small
+        // as this process can make it. What it does not buy: a host publishing
+        // in that window still loses the event (NATS Core has no replay), which
+        // is why a redelivery-shaped gap is healed by `get_events_since` and why
+        // a test that publishes immediately after connect must wait for the
+        // broker's own subscription table (`FakeNats::wait_for_sub`), not for
+        // this call to return.
         tokio::time::timeout(request_budget(), self.client.flush())
             .await
             .map_err(|_| {
@@ -1243,6 +1259,7 @@ pub async fn connect(
     // The pairing's token URL records whether its self-hosted relay declared
     // plaintext transport. Platform/HTTPS pairings continue to require TLS.
     // Test-only plaintext fixtures still validate loopback before connecting.
+    let plaintext = creds.token_url.starts_with("http://");
     let options = if environment.insecure_loopback() {
         let endpoint = url::Url::parse(&creds.nats_url)
             .map_err(|_| crate::Error::Message("remote_test_endpoint_invalid".into()))?;
@@ -1255,12 +1272,33 @@ pub async fn connect(
             ));
         }
         options
-    } else if creds.token_url.starts_with("http://") {
+    } else if plaintext {
         options
     } else {
         options.require_tls(true)
     };
-    let client = options.connect(&creds.nats_url).await.map_err(|error| {
+    // `async-nats` resolves inside itself and offers no hook to replace that, so
+    // when this process has its own resolver the address is resolved here and
+    // the connection is pinned to the name it was resolved from; see
+    // [`crate::relay_endpoint`].
+    let endpoint = future_relay_endpoint::for_connect(
+        &creds.nats_url,
+        environment.root_bundle.as_deref(),
+        plaintext,
+    )
+    .await
+    .map_err(|error| {
+        if error.transient {
+            crate::Error::RemoteTransport(error.message)
+        } else {
+            crate::Error::Message(error.message)
+        }
+    })?;
+    let options = match endpoint.tls {
+        Some(config) => options.tls_client_config(config),
+        None => options,
+    };
+    let client = options.connect(&endpoint.url).await.map_err(|error| {
         // Two different kinds of failure, which need two different responses from
         // the caller: an authorization failure will never succeed on a retry (the
         // credential is the problem), while everything else on this leg — a
@@ -1320,7 +1358,9 @@ pub async fn connect(
             // valid. `IK` proves the same local identity against the pinned
             // key; it is not a TOFU or plaintext fallback.
             Err(error) => {
-                eprintln!("remote_peer: pairing handshake failed ({error}); retrying with IK");
+                future_remote_protocol::remote_log!(
+                    "remote_peer: pairing handshake failed ({error}); retrying with IK"
+                );
             }
         }
     }
@@ -1339,6 +1379,22 @@ pub async fn connect(
         session,
         consumed_invitation: false,
     })
+}
+
+/// Decode the sealed confirmation body: JSON, or the same JSON gzipped.
+///
+/// The phone's decode path has always sniffed for gzip (`decodeRemoteJson`),
+/// and this client did not — it called `serde_json::from_slice` directly, so a
+/// host that compressed a directory-sized confirmation would have failed here
+/// as `remote_secure_channel_invalid`: a stage name that says nothing about the
+/// encoding. Accepting both forms is what makes compressing that body possible
+/// later, because an endpoint may only start sending gzip once every client
+/// that reads the body can take it — this is the desktop/TUI half of that
+/// condition. Nothing on the wire changes today: a host that sends plain JSON
+/// is decoded exactly as before.
+fn decode_confirmation(bytes: &[u8]) -> Result<Value, crate::Error> {
+    future_remote_protocol::json::decode_reply(bytes)
+        .map_err(|_| crate::Error::Message("remote_secure_channel_invalid".into()))
 }
 
 /// One handshake exchange. `pairing` selects `Noise_XXpsk0` (with `secret`);
@@ -1446,8 +1502,7 @@ async fn handshake(
     let confirmation = channel
         .open("handshake-confirm", &encrypted)
         .map_err(|_| crate::Error::Message("remote_secure_channel_invalid".into()))?;
-    let confirmation: Value = serde_json::from_slice(&confirmation)
-        .map_err(|_| crate::Error::Message("remote_secure_channel_invalid".into()))?;
+    let confirmation = decode_confirmation(&confirmation)?;
     let confirmed = Confirmed::from_confirmation(&confirmation, &creds.pair_id)?;
 
     let control = std::sync::Arc::new(std::sync::Mutex::new(Control::from_presence(
@@ -1614,8 +1669,10 @@ mod tests {
             SELECTIVE_EVENTS_FEATURE,
             future_remote_protocol::LEAN_EVENTS_FEATURE,
             CATALOG_ACTIVITY_FEATURE,
+            future_remote_protocol::CATALOG_DELTA_FEATURE,
             future_remote_protocol::CLIENT_PRESENCE_FEATURE,
             future_remote_protocol::READ_BINARY_FEATURE,
+            future_remote_protocol::SEGMENTED_CONTENT_FEATURE,
         ] {
             assert!(
                 DECLARED_FEATURES.contains(&expected),
@@ -1624,10 +1681,12 @@ mod tests {
         }
         let legacy = [
             "event_coalescing_v1",
+            "segmented_content_v1",
             "reply_gzip_v1",
             "selective_events_v1",
             "lean_events_v1",
             "catalog_activity_v1",
+            "catalog_delta_v1",
             "client_presence_v1",
         ];
         let binary = future_remote_protocol::READ_BINARY_FEATURE;
@@ -1650,10 +1709,12 @@ mod tests {
             json!({ "features": declared_features(&confirmed) })["features"],
             json!([
                 "event_coalescing_v1",
+                "segmented_content_v1",
                 "reply_gzip_v1",
                 "selective_events_v1",
                 "lean_events_v1",
                 "catalog_activity_v1",
+                "catalog_delta_v1",
                 "client_presence_v1",
                 "read_binary_v1"
             ])
@@ -2036,5 +2097,43 @@ mod retry_policy_tests {
             !session::retryable_command(&json!({})),
             "a body with no command type is not a command"
         );
+    }
+
+    /// A confirmation is JSON, and a host that compresses it is still a host
+    /// this client can talk to.
+    ///
+    /// Both halves matter: the plain body is what every host sends today, so it
+    /// must decode exactly as before; the gzipped body is what a host may send
+    /// once this decode (and the phone's, which already sniffs) is in the field.
+    /// A body that is neither still fails as the same stage error it always did.
+    #[test]
+    fn a_confirmation_decodes_plain_or_compressed() {
+        use std::io::Write;
+
+        let confirmation = json!({
+            "confirmed": true,
+            "pairId": "pair_confirm",
+            "bridgeInstanceId": "bridge_confirm",
+            "features": ["client_presence_v1"],
+            "presence": {"online": true, "pairId": "pair_confirm", "bridgeInstanceId": "bridge_confirm"},
+        });
+        let plain = serde_json::to_vec(&confirmation).unwrap();
+        assert_eq!(session::decode_confirmation(&plain).unwrap(), confirmation);
+
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(&plain).unwrap();
+        let compressed = encoder.finish().unwrap();
+        assert_eq!(
+            &compressed[..2],
+            &[0x1f, 0x8b],
+            "the fixture must be real gzip"
+        );
+        assert_eq!(
+            session::decode_confirmation(&compressed).unwrap(),
+            confirmation
+        );
+
+        let error = session::decode_confirmation(b"not json").unwrap_err();
+        assert_eq!(error.to_string(), "remote_secure_channel_invalid");
     }
 }

@@ -26,6 +26,9 @@ mod instance;
 pub mod launch;
 #[cfg(all(test, windows, feature = "gui"))]
 mod test_process;
+/// Test-only seams; absent from a default build (`test-support` is not in `default`).
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 /// Sandbox children enter the existing Agent helper before constructing GUI
 /// or headless state. The helper never starts a service or takes its lock.
@@ -68,7 +71,6 @@ pub use commands::dispatch_update_helper;
 #[cfg(feature = "gui")]
 use commands::*;
 use error::AppError;
-
 /// Process-wide lock for tests that mutate the global `HOME` env var
 /// (`auth_store` and the shadow-review smoke test). `HOME` is process-global, so
 /// those tests must run one at a time or they clobber each other's paths.
@@ -156,14 +158,17 @@ mod gui {
     fn activate_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
         use tauri::Manager;
         let Some(window) = app.get_webview_window("main") else {
-            crate::host_environment::report("main window is missing during activation");
+            tracing::error!(
+                event = "activate_main_window",
+                "main window is missing during activation"
+            );
             return;
         };
         if let Err(error) = window.unminimize() {
-            crate::host_environment::report(&format!("main window could not be restored: {error}"));
+            tracing::warn!(event = "activate_main_window", error = %error,"main window could not be restored: {error}");
         }
         if let Err(error) = window.show() {
-            crate::host_environment::report(&format!("main window could not be shown: {error}"));
+            tracing::error!(event = "activate_main_window", error = %error,"main window could not be shown: {error}");
         }
         #[cfg(target_os = "windows")]
         {
@@ -180,19 +185,20 @@ mod gui {
                         // ShowWindow returns the PREVIOUS visibility, not success.
                         let _ = ShowWindow(hwnd, SW_SHOW);
                         if !IsWindowVisible(hwnd).as_bool() {
-                            crate::host_environment::report(
-                                "main window remained hidden after native show",
+                            tracing::error!(
+                                event = "activate_main_window",
+                                "main window remained hidden after native show"
                             );
                         }
                     }
                 },
-                Err(error) => crate::host_environment::report(&format!(
-                    "main window handle is unavailable: {error}"
-                )),
+                Err(error) => {
+                    tracing::warn!(event = "activate_main_window", error = %error,"main window handle is unavailable: {error}")
+                }
             }
         }
         if let Err(error) = window.set_focus() {
-            crate::host_environment::report(&format!("main window could not be focused: {error}"));
+            tracing::warn!(event = "activate_main_window", error = %error,"main window could not be focused: {error}");
         }
     }
 
@@ -992,7 +998,7 @@ mod gui {
                 if let Err(error) =
                     menu::build_macos_menu(app.handle()).and_then(|m| app.set_menu(m).map(|_| ()))
                 {
-                    eprintln!("FutureOS menu setup failed: {error}");
+                    tracing::warn!(event = "run_with", error = %error,"FutureOS menu setup failed: {error}");
                 }
                 #[cfg(target_os = "macos")]
                 set_macos_dock_icon();
@@ -1026,6 +1032,9 @@ mod gui {
                 app_build_info,
                 set_window_caption_colors,
                 get_agent_status,
+                get_fusion,
+                get_fusion_settings,
+                update_fusion_settings,
                 check_app_update,
                 app_maintenance_status,
                 acknowledge_update_repair,
@@ -1038,6 +1047,7 @@ mod gui {
                 read_text_file_preview,
                 inspect_attachment,
                 read_native_clipboard_file_paths,
+                read_native_clipboard_image,
                 validate_image_attachment,
                 prepare_image_preview,
                 generate_image_thumbnail,
@@ -1057,6 +1067,7 @@ mod gui {
                 update_builtin_provider,
                 set_builtin_provider_base_url,
                 delete_custom_provider,
+                probe_thinking_level,
                 start_future_login,
                 poll_future_login,
                 logout_future_provider,
@@ -1089,6 +1100,9 @@ mod gui {
                 fork_thread,
                 get_session_entries,
                 get_session_entries_page,
+                begin_session_history_transfer,
+                read_session_history_transfer,
+                release_session_history_transfer,
                 get_thread_agent_state,
                 compact_thread_context,
                 list_streaming_thread_ids,
@@ -1103,6 +1117,9 @@ mod gui {
                 list_latest_run_infos,
                 update_run_status,
                 abort_run,
+                session_queue,
+                cancel_queued_run,
+                release_queued_run,
                 list_run_events,
                 list_run_events_bulk,
                 list_run_events_since,
@@ -1191,23 +1208,38 @@ mod gui {
         // so the next launch can say what happened instead of leaving a window
         // that appeared and vanished.
         if let Err(error) = initialize_process_state(&app) {
-            crate::host_environment::report(&format!("startup failed: {error}"));
+            tracing::error!(event = "run_with", error = %error,"startup failed: {error}");
             startup.failed();
+            retire_logging(&app);
             return Err(error);
         }
-        // Keep the Windows console attached until startup errors can be reported.
-        #[cfg(target_os = "windows")]
-        unsafe {
-            let _ = windows::Win32::System::Console::FreeConsole();
-        }
+        // Keep inherited terminal handles valid for the process lifetime. GUI
+        // launches have already redirected missing streams during preparation;
+        // detaching here would invalidate handles we deliberately preserved.
         startup.enter("event loop");
         app.run(dispatch_run_event);
         // Returning here means the loop ended without a panic, which is the
         // other half of the evidence `crash_log` records: a launch that left
         // this line and no crash entry exited on purpose, while one that left
         // neither still died silently.
-        crate::host_environment::report("event loop returned; the process is exiting");
+        tracing::info!(
+            event = "run_with",
+            "event loop returned; the process is exiting"
+        );
         Ok(())
+    }
+
+    struct HostLogging(std::sync::Mutex<Option<future_logging::FileGuard>>);
+
+    fn retire_logging<R: tauri::Runtime, M: tauri::Manager<R>>(app: &M) {
+        if let Some(logging) = app.try_state::<HostLogging>() {
+            let guard = logging
+                .0
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+            drop(guard);
+        }
     }
 
     /// The startup steps that need no window: the shared GUI/headless lock, the
@@ -1235,8 +1267,13 @@ mod gui {
         // startup failure is diagnosable from, and a read-only install or a full
         // disk must not turn "no log" into "no window".
         startup.enter("host log");
-        if let Err(error) = crate::host_environment::start_logging() {
-            crate::host_environment::report(&format!("host log unavailable: {error}"));
+        match crate::host_environment::start_logging() {
+            Ok(logging) => {
+                tauri::Manager::manage(app, HostLogging(std::sync::Mutex::new(Some(logging))));
+            }
+            Err(error) => {
+                tracing::warn!(event = "initialize_process_state", error = %error,"host log unavailable: {error}")
+            }
         }
         crate::runtime::set(tauri::async_runtime::handle().inner().clone());
         agent_bridge::install_channel_runtime();
@@ -1247,7 +1284,7 @@ mod gui {
         store::initialize_app_store()?;
         startup.enter("terminal server");
         if let Err(error) = terminal::server::bind() {
-            eprintln!("FutureOS terminal server bind failed: {error}");
+            tracing::error!(event = "initialize_process_state", error = %error,"FutureOS terminal server bind failed: {error}");
         }
         Ok(())
     }
@@ -1280,7 +1317,7 @@ mod gui {
                 let handle = app_handle.clone();
                 crate::runtime::spawn_native(move || {
                     if let Err(error) = agent_supervisor::start_agent_supervision(&handle) {
-                        eprintln!("FutureOS Agent startup failed: {error}");
+                        tracing::error!(event = "dispatch_run_event_with_confirmation", error = %error,"FutureOS Agent startup failed: {error}");
                         return;
                     }
                     if crate::desktop_shutdown::is_stopping() {
@@ -1289,7 +1326,7 @@ mod gui {
                     start_backend_background(handle);
                 });
                 if let Err(error) = terminal::server::serve() {
-                    eprintln!("FutureOS terminal server failed to start: {error}");
+                    tracing::error!(event = "dispatch_run_event_with_confirmation", error = %error,"FutureOS terminal server failed to start: {error}");
                 }
             }
             // ⌘Q / the menu's "Quit FutureOS" / a programmatic `app.exit()` come
@@ -1315,6 +1352,9 @@ mod gui {
                 // The ordinary exit path already waited outside the UI thread.
                 // Unexpected OS exits can only request best-effort background stop.
                 let _ = crate::desktop_shutdown::begin("exit");
+                // Global app handles may retain managed state after the event
+                // loop exits. Explicitly retire and flush the host file worker.
+                retire_logging(app_handle);
             }
             _ => {}
         }
@@ -1377,7 +1417,7 @@ mod gui {
             // doesn't query sessions that no longer exist. Self-gates on
             // agent reachability (skips when the agent is down).
             if let Err(error) = store::reconcile_orphan_sessions().await {
-                eprintln!("FutureOS orphan-session reconcile failed: {error}");
+                tracing::warn!(event = "start_backend_background", error = %error,"FutureOS orphan-session reconcile failed: {error}");
             }
             // Rows mirrored by older builds for sessions that were
             // created but never prompted are empty conversations
@@ -1386,11 +1426,15 @@ mod gui {
             match store::reconcile_empty_conversations().await {
                 Ok(0) => {}
                 Ok(removed) => {
-                    eprintln!("FutureOS: removed {removed} empty conversation(s)");
+                    tracing::info!(
+                        event = "start_backend_background",
+                        removed = removed,
+                        "FutureOS: removed {removed} empty conversation(s)"
+                    );
                     crate::emit_threads_updated();
                 }
                 Err(error) => {
-                    eprintln!("FutureOS empty-conversation reconcile failed: {error}")
+                    tracing::warn!(event = "start_backend_background", error = %error,"FutureOS empty-conversation reconcile failed: {error}")
                 }
             }
             // Rows produced by older startup convergence builds are
@@ -1405,9 +1449,8 @@ mod gui {
             // the same conversation two continuation prompts.
             agent_bridge::reconcile_pending_approvals().await;
         });
-        // Shadow-review maintenance (consistency check + crash recovery) runs
-        // off the launch path so it never delays the window.
-        crate::runtime::spawn_native(shadow_review::run_startup_maintenance);
+        // Historical review is loaded only for the conversation being viewed.
+        // Startup must not walk every snapshot or recapture old workspaces.
         // `future remote devices add` asks this process for an invitation, because
         // only a process that can serve the new pairing may mint one. Started here,
         // with the rest of the window's background work, so it is up as soon as the
@@ -1440,13 +1483,19 @@ mod gui {
         crate::runtime::spawn(async {
             match remote::enable().await {
                 Ok(status) if matches!(status.phase, remote::RemotePhase::Ready) => {
-                    eprintln!("FutureOS remote auto-connect: connected")
+                    tracing::info!(
+                        event = "spawn_remote_auto_connect",
+                        "FutureOS remote auto-connect: connected"
+                    )
                 }
-                Ok(status) => eprintln!(
+                Ok(status) => tracing::debug!(
+                    event = "spawn_remote_auto_connect",
                     "FutureOS remote auto-connect: deferred ({:?})",
                     status.reason
                 ),
-                Err(error) => eprintln!("FutureOS remote auto-connect failed: {error}"),
+                Err(error) => {
+                    tracing::warn!(event = "spawn_remote_auto_connect", error = %error,"FutureOS remote auto-connect failed: {error}")
+                }
             }
         });
     }
@@ -1765,6 +1814,93 @@ mod gui {
         }
     }
 
+    /// Every host event the desktop presents, and the entry points behind them.
+    ///
+    /// `present_host_event` is the only sink `future_host` calls for committed backend changes
+    /// (`future_host::events::attach`), so the match is the list of things a GUI may not
+    /// silently drop. These cases assert the **routing** — which entry point each variant
+    /// reaches — because the process-global `APP_HANDLE` is unset in this binary: `run_with`
+    /// is its only writer and no test starts the real app.
+    #[cfg(test)]
+    mod host_event_tests {
+        use super::*;
+        use std::sync::atomic::Ordering;
+
+        /// The premise every case below rests on. If a future test starts the real app, the
+        /// handle becomes a process-global no test can reset, and the `None` arms these
+        /// cases exercise would stop being exercised without any of them turning red.
+        #[test]
+        fn no_running_app_means_no_process_global_handle() {
+            assert!(
+                APP_HANDLE.get().is_none(),
+                "the GUI handle has no reset; a test that starts the real app must not run in this binary"
+            );
+        }
+
+        /// The one variant whose effect survives a missing handle: it allocates the
+        /// process-global revision inside `emit_thread_runtime_updated` and queues the batch.
+        /// The revision moving forward is what says the arm *routed* instead of returning.
+        #[test]
+        fn a_runtime_update_event_reaches_the_coalescing_channel() {
+            let before = NEXT_RUNTIME_REVISION.load(Ordering::Relaxed);
+            present_host_event(future_host::events::Event::ThreadRuntimeUpdated {
+                thread_id: "thread-a".into(),
+                run_id: "run-1".into(),
+                status: "running".into(),
+                reset_projection: false,
+            });
+            assert!(
+                NEXT_RUNTIME_REVISION.load(Ordering::Relaxed) > before,
+                "the event must reach emit_thread_runtime_updated, the only allocator of revisions"
+            );
+        }
+
+        /// Every variant of `future_host::events::Event`, in the order the enum declares them.
+        /// A missing handle is not an error for any of them: the backend publishes committed
+        /// state whether or not a window is listening.
+        #[test]
+        fn every_other_event_is_accepted_without_a_window() {
+            use future_host::events::Event;
+            present_host_event(Event::CloseThreadTerminals("thread-a"));
+            present_host_event(Event::AgentSettings {
+                session_id: "sess",
+                thread_id: "thread-a",
+                event_type: "model_changed",
+                data: "{}",
+            });
+            present_host_event(Event::ReviewUpdated("thread-a"));
+            present_host_event(Event::RemoteActivity("thread-a"));
+            present_host_event(Event::ThreadsUpdated);
+            present_host_event(Event::TasksUpdated);
+            present_host_event(Event::ControlClaimed);
+            present_host_event(Event::ThreadActivity {
+                thread_id: "thread-a",
+                last_message_at: 7,
+            });
+            present_host_event(Event::ApprovalsUpdated {
+                thread_id: "thread-a",
+                approval_request_id: "req-1",
+            });
+            present_host_event(Event::Notification {
+                name: "notice",
+                payload: serde_json::json!({"threadId": "thread-a"}),
+            });
+        }
+
+        /// The entry points the rest of the crate calls *directly* (scheduler, store writes,
+        /// the remote bridge) rather than through an event. Same contract, and the same
+        /// handle-less premise — these are what a startup path calls before the window is up.
+        #[test]
+        fn the_emit_entry_points_are_noops_before_a_window_exists() {
+            emit_review_updated("thread-a");
+            emit_remote_activity("thread-a");
+            emit_threads_updated();
+            emit_tasks_updated();
+            emit_thread_activity("thread-a", 11);
+            emit_approvals_updated("thread-a", "req-1");
+        }
+    }
+
     #[cfg(test)]
     mod startup_paths_tests {
         use super::*;
@@ -1860,6 +1996,10 @@ mod gui {
             child: impl FnOnce(),
         ) -> Option<(std::process::ExitStatus, String)> {
             if std::env::var_os(marker).is_some() {
+                // These isolated paths bypass real application startup. Install
+                // its subscriber so INFO/WARN/ERROR and deferred DEBUG events
+                // remain observable by the descriptor captures below.
+                future_logging::prepare(future_logging::Component::Desktop, "0.0.0", true, false);
                 child();
                 return None;
             }
@@ -1872,6 +2012,7 @@ mod gui {
                 .env(marker, "1")
                 .env("HOME", &child_home)
                 .env_remove("FUTURE_HOME")
+                .env_remove("RUST_LOG")
                 .output()
                 .expect("spawn the isolated test process");
             let _ = std::fs::remove_dir_all(&child_home);
@@ -2194,6 +2335,12 @@ mod gui {
         /// does not invalidate this fixture.
         #[tokio::test]
         async fn an_auto_connect_that_connects_is_reported_as_connected() {
+            // This asserts a fresh launch. Other entry fixtures install
+            // process-lifetime services which changing HOME cannot reset;
+            // keep the startup body in its own process, with all assertions.
+            if future_host::test_support::reexec_test() {
+                return;
+            }
             use crate::remote::{test_support::MockPlatform, RemotePhase};
 
             let _home = crate::auth_store::test_support::HomeGuard::new("auto-connect-ready");
@@ -2247,8 +2394,9 @@ mod gui {
                     break;
                 }
                 let message = format!(
-                    "the ready arm never ran; last status {status:?}, last error {:?}",
-                    status.reason
+                    "the ready arm never ran; last status {status:?}, last error {:?}, platform requests {:?}",
+                    status.reason,
+                    platform.requests()
                 );
                 assert!(std::time::Instant::now() < deadline, "{message}");
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -2282,6 +2430,13 @@ mod gui {
             use tauri::Manager;
 
             let _home = crate::auth_store::test_support::HomeGuard::new("process-state");
+            // Exercise process-state setup after the entry point's logging preparation.
+            future_logging::prepare(
+                future_logging::Component::Desktop,
+                build_info::VERSION,
+                true,
+                false,
+            );
             let app = tauri::test::mock_app();
             initialize_process_state(&app).expect("initialize process state");
 

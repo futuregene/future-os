@@ -9,6 +9,10 @@ them from there:
   files mirror its resolution logic.
 - `npm-install-if-needed.mjs` — checks the workspace install stamp and runs `npm install`
   only when the dependency tree changed.
+- `scan_replacement_chars.py` — read-only scan of the Agent's stored session deltas for
+  U+FFFD, so "garbled output" can be traced to an upstream dropped character or to local
+  byte damage. Run by hand when someone reports it; not part of CI. See
+  [how to read a hit](../docs/guide/session-history.md#replacement-characters-in-stored-text).
 
 ## build/
 

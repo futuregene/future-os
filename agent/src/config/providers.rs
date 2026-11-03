@@ -373,7 +373,7 @@ fn restore_file(path: &Path, snapshot: Option<&[u8]>, owner_only: bool) {
     };
     if let Err(error) = result {
         // A `NotFound` remove just means the file was never created — fine.
-        eprintln!(
+        tracing::error!(event = "restore_file", error = %error,
             "FutureOS: config rollback could not restore {}: {error}",
             path.display()
         );

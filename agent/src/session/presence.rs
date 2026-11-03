@@ -7,7 +7,8 @@ use serde_json::json;
 impl Manager {
     /// Catalogue diagnostics only: no history bodies, API keys or paths.
     pub(crate) fn storage_health(&self) -> Result<serde_json::Value> {
-        self.storage()?.db.call(move |db| {
+        let store = self.storage()?;
+        let mut result=store.db.read(move |db| {
             let tx = db.transaction()?;
             let schema: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
             let mut result = json!({"schemaVersion":schema});
@@ -16,6 +17,7 @@ impl Manager {
                 ("deletedSessions", "SELECT count(*) FROM session_tombstones"),
                 ("failedImports", "SELECT count(*) FROM legacy_imports WHERE status='skipped'"),
                 ("unrecoverableQueuedInputs", "SELECT count(*) FROM queued_run_receipts WHERE status='recovery_failed'"),
+                ("failedRunRecoveries", "SELECT count(*) FROM runs WHERE status='recovery_failed'"),
                 ("pendingQueuedInputs", "SELECT count(*) FROM queued_run_receipts WHERE status IN ('queued','cancel_requested')"),
                 ("catalogueConflicts", "SELECT count(*) FROM session_tombstones t JOIN sessions s ON s.id=t.session_id WHERE s.revision>=0"),
             ] {
@@ -36,16 +38,27 @@ impl Manager {
             }
             tx.commit()?;
             Ok(result)
-        })
+        })?;
+        result["io"] = store.db.metrics();
+        Ok(result)
     }
 
+    /// Read on the fence lane: the answer decides whether a caller may
+    /// proceed, so it must not queue behind a history page (the shared read
+    /// pool) or behind a writer job — where it lived until the writer was
+    /// measured holding it for 18–38 s while four remote commands waited.
+    ///
+    /// The cost of leaving the writer's queue is ordering, not freshness: a
+    /// reader sees every committed write, but not one still queued. The desktop
+    /// treats `missing` as a first answer to confirm, not a verdict — see
+    /// `agent_bridge::presence::require_present`.
     pub(crate) fn session_presence(&self, ids: &[String]) -> Result<serde_json::Value> {
         ensure!(
             ids.len() <= future_rpc::session_deletion::MAX_DELETE_SESSIONS,
             "too many session ids"
         );
         let ids = ids.to_vec();
-        self.storage()?.db.call(move |db| {
+        self.storage()?.db.fence(move |db| {
             let tx = db.transaction()?;
             let database: String = tx.query_row(
                 "SELECT value FROM storage_meta WHERE key='database_id'",
@@ -59,6 +72,7 @@ impl Manager {
             )?;
             let mut results = Vec::new();
             for id in ids {
+                let key = super::identity::BoundIdentity::session(&tx, &id)?;
                 // Presence answers ONE question: does this id belong to this
                 // database? Any row in `sessions` is proof that it does —
                 // including the `revision=-1` placeholder `bind_events` writes
@@ -82,7 +96,7 @@ impl Manager {
                      EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND revision>=0),
                      EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1),
                      EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')",
-                        [&id],
+                        [&key],
                         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                     )?;
                 ensure!(

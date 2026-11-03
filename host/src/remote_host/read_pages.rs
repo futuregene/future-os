@@ -141,6 +141,7 @@ impl<'a> PagedReply<'a> {
                 && matches!(
                     cmd.cmd_type.as_str(),
                     "get_session_entries"
+                        | "get_event_content_range"
                         | "get_events_since"
                         | "get_messages"
                         | "list_session_files"

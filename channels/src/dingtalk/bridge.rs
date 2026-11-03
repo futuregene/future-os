@@ -6,6 +6,7 @@ use super::dingtalk_rest::DingtalkRestClient;
 use super::dingtalk_ws::DingtalkEvent;
 use crate::config::AgentConfig;
 use crate::grpc_client::{AgentClient, AgentEvent};
+use crate::session_store::SessionStore;
 use anyhow::Result;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -23,12 +24,19 @@ pub struct DingtalkBridge {
     processed: RwLock<VecDeque<String>>,
     /// One Agent session per DingTalk conversation. Sharing a single cached
     /// session across chats would leak context; creating one per message would
-    /// make supersede_session a no-op.
-    session_ids: RwLock<HashMap<String, String>>,
+    /// make supersede_session a no-op. Persisted, because the supervisor
+    /// rebuilds this bridge on every reconnect (and every Agent reconnect) —
+    /// an in-memory map gave each chat a brand-new session each time, dropping
+    /// the conversation and the user's `/model` and `/effort`.
+    sessions: SessionStore,
 }
 
 impl DingtalkBridge {
-    pub async fn new(agent_cfg: Arc<AgentConfig>, dingtalk_cfg: DingtalkConfig) -> Result<Self> {
+    pub async fn new(
+        agent_cfg: Arc<AgentConfig>,
+        dingtalk_cfg: DingtalkConfig,
+        data_dir: std::path::PathBuf,
+    ) -> Result<Self> {
         let dingtalk = DingtalkRestClient::new(
             &dingtalk_cfg.domain,
             &dingtalk_cfg.client_id,
@@ -43,7 +51,7 @@ impl DingtalkBridge {
             agent_cfg,
             gen_counters: RwLock::new(HashMap::new()),
             processed: RwLock::new(VecDeque::new()),
-            session_ids: RwLock::new(HashMap::new()),
+            sessions: SessionStore::new(data_dir.join("sessions.json")),
         })
     }
 
@@ -198,17 +206,14 @@ impl DingtalkBridge {
                 // Abort current session (if any) then create a fresh one.
                 // Hold agent lock once to avoid "agent is busy" from an
                 // in-flight prompt.
-                let old_sid = self.session_ids.read().await.get(conversation_key).cloned();
+                let old_sid = self.cached_session(conversation_key);
                 let mut agent = self.agent.write().await;
                 if let Some(ref sid) = old_sid {
                     let _ = agent.abort(sid).await;
                 }
                 match agent.new_session(&self.agent_cfg.cwd, "dingtalk").await {
                     Ok(sid) => {
-                        self.session_ids
-                            .write()
-                            .await
-                            .insert(conversation_key.to_string(), sid.clone());
+                        self.sessions.set_session_id(conversation_key, None, &sid);
                         reply_md("New Session", &format!("**Session:** `{}`", sid));
                     }
                     Err(e) => reply_md("Error", &format!("**Error:** {}", e)),
@@ -323,15 +328,23 @@ impl DingtalkBridge {
         Ok(())
     }
 
+    /// The session already mapped to this conversation, if any. A reset `/new`
+    /// leaves an empty placeholder, which is not a session.
+    fn cached_session(&self, conversation_key: &str) -> Option<String> {
+        self.sessions
+            .get(conversation_key, None)
+            .filter(|session_id| !session_id.is_empty())
+    }
+
     /// Return this conversation's Agent session, or create it on first use.
     async fn get_or_create_session(&self, conversation_key: &str) -> Result<String> {
-        if let Some(sid) = self.session_ids.read().await.get(conversation_key).cloned() {
+        if let Some(sid) = self.cached_session(conversation_key) {
             return Ok(sid);
         }
         let mut agent = self.agent.write().await;
         // Two first messages for one chat can race past the read above. The
         // Agent write lock serializes session creation, so recheck after it.
-        if let Some(sid) = self.session_ids.read().await.get(conversation_key).cloned() {
+        if let Some(sid) = self.cached_session(conversation_key) {
             return Ok(sid);
         }
         let sid = agent.new_session(&self.agent_cfg.cwd, "dingtalk").await?;
@@ -349,10 +362,7 @@ impl DingtalkBridge {
                 .set_permission_level(&sid, &self.agent_cfg.permission_level)
                 .await;
         }
-        self.session_ids
-            .write()
-            .await
-            .insert(conversation_key.to_string(), sid.clone());
+        self.sessions.set_session_id(conversation_key, None, &sid);
         Ok(sid)
     }
 
@@ -599,7 +609,6 @@ mod tests {
     /// Bridge over mock gRPC + mock DingTalk REST (token route + webhook).
     async fn make_bridge(label: &str, state: MockState, extra_routes: Vec<HttpRoute>) -> Fixture {
         ts::ensure_crypto_provider();
-        let _ = label;
         let mut routes = vec![
             HttpRoute::json(
                 TOKEN_ROUTE,
@@ -624,9 +633,12 @@ mod tests {
             thinking_level: "high".into(),
             permission_level: "all".into(),
         });
-        let bridge = DingtalkBridge::new(agent_cfg, cfg)
-            .await
-            .expect("bridge builds over mocks");
+        // A store per fixture: the session map is persisted now, and a test
+        // must never read or write the real `~/.future`.
+        let bridge =
+            DingtalkBridge::new(agent_cfg, cfg, ts::temp_dir(&format!("dingtalk-{label}")))
+                .await
+                .expect("bridge builds over mocks");
         Fixture {
             bridge,
             grpc,
@@ -1345,7 +1357,8 @@ mod tests {
             thinking_level: String::new(),
             permission_level: String::new(),
         });
-        assert!(DingtalkBridge::new(agent_cfg, cfg).await.is_err());
+        let data_dir = ts::temp_dir("dingtalk-no-agent");
+        assert!(DingtalkBridge::new(agent_cfg, cfg, data_dir).await.is_err());
     }
 
     // ─── truncate helpers ────────────────────────────────────────────────────
@@ -1476,7 +1489,8 @@ mod tests {
             thinking_level: String::new(),
             permission_level: String::new(),
         });
-        let bridge = DingtalkBridge::new(agent_cfg, cfg).await.unwrap();
+        let data_dir = ts::temp_dir("dingtalk-no-defaults");
+        let bridge = DingtalkBridge::new(agent_cfg, cfg, data_dir).await.unwrap();
         bridge
             .handle_event(event(&base, "m1", "hello"))
             .await

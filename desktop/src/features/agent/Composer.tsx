@@ -4,10 +4,12 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { ContextToolOption, MentionEditorHandle, SkillMentionOption } from "./MentionEditor";
 import type { SessionMentionOption } from "./sessionMention";
+import { fusionTask } from "@future-os/thread-projection";
 import { Paperclip, TriangleAlert, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { modelKey, modelOption } from "../../integrations/agent/agentClient";
+import { useFusionAvailability } from "../../integrations/fusion/settings";
 import { useSkillCatalog } from "../../integrations/skills/useSkillCatalog";
 import { cn } from "../../lib/cn";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
@@ -85,12 +87,13 @@ interface ComposerProps {
   futureSessionStatus?: string;
   onChangeApprovalTier?: (value: ApprovalTier) => void;
   /**
-   * A reply is streaming. The send button becomes an interrupt button and
-   * submission (button + Enter) is blocked until the stream ends — but the
-   * editor stays editable so the user can draft the next message early. Keep this
-   * separate from `disabled`: `disabled` locks the editor, so folding the
-   * streaming state into it (as the call site used to do) would prevent that
-   * early drafting.
+   * A reply is streaming. Submission (button + Enter) does not send while it
+   * streams, but the editor stays editable so the next message can be drafted
+   * early. What the send button becomes then depends on the caller: with no send
+   * queue it is the interrupt control (the old rule); with one (`onEnqueue`) it
+   * asks whether to hold the draft in the queue or interrupt and send it now.
+   * Keep this separate from `disabled`: `disabled` locks the editor, so folding
+   * the streaming state into it would prevent that early drafting.
    */
   sending?: boolean;
   /** Interrupt the in-flight reply (only meaningful while `sending`). */
@@ -164,6 +167,18 @@ interface ComposerProps {
    * message is taken away from the reader.
    */
   onQueue?: (payload: ComposerSendPayload) => boolean;
+  /**
+   * This conversation's send queue (see `lib/sendQueue`) — the other answer to
+   * "a send while the run is still going".
+   *
+   * With this present, a send during a run is no longer refused: the send button
+   * becomes a choice between holding the draft in the queue and interrupting the
+   * run to send it now. Returning `false` keeps the draft in the editor (the
+   * queue refused it), which is the difference between "not now" and "lost".
+   */
+  onEnqueue?: (payload: ComposerSendPayload) => boolean | void;
+  /** How many messages this conversation is already holding for the run. */
+  queueCount?: number;
 }
 
 function ComposerImpl({
@@ -194,11 +209,16 @@ function ComposerImpl({
   triggers = true,
   controls = "full",
   onQueue,
+  onEnqueue,
+  queueCount = 0,
 }: ComposerProps) {
   const { t, i18n } = useTranslation("agent");
   // The editor is non-controlled (see MentionEditor); we only mirror its empty
   // state to enable/disable the send button.
   const [inputEmpty, setInputEmpty] = useState(true);
+  // The send button's menu, while a run streams: hold the draft in the queue, or
+  // interrupt the run and send it now (see `onEnqueue`).
+  const [queueChoiceOpen, setQueueChoiceOpen] = useState(false);
   // An async onSend is in flight (see ComposerProps.onSend) — block re-submits
   // until it settles.
   const [sendPending, setSendPending] = useState(false);
@@ -221,7 +241,7 @@ function ComposerImpl({
   const [installingSkill, setInstallingSkill] = useState(false);
   const editorRef = useRef<MentionEditorHandle | null>(null);
   const captureOperation = useOperationLifetime(draftKey);
-  const { attachments, attachmentsRef, setAttachments, attachError, setAttachError, dragState, addAttachmentPaths, attachPastedFiles, handleAttachFiles, removeAttachment }
+  const { attachments, attachmentsRef, setAttachments, attachError, setAttachError, dragState, addAttachmentPaths, attachPastedFiles, attachNativeClipboardImage, handleAttachFiles, removeAttachment }
     = useComposerAttachments({ disabled, onDragStateChange, captureOperation });
   const sendStateRef = useCommittedRef({ disabled, sending, compactionPending, onSend });
   useEffect(() => {
@@ -232,31 +252,21 @@ function ComposerImpl({
     setInstallingSkill(false);
     setSendPending(false);
     setContextActionPending(false);
+    setQueueChoiceOpen(false);
   }, [draftKey]);
 
+  const fusionAvailable = useFusionAvailability();
   const contextTools = useMemo<ContextToolOption[]>(() => {
+    const fusion = { id: "fusion", name: "/fusion", description: t("fusion.enableDescription"), searchText: "fusion 讨论 多模型 思考" };
     if (!onCompactContext || sending || compactionPending)
-      return [];
-    return [{
+      return fusionAvailable ? [fusion] : [];
+    return [...(fusionAvailable ? [fusion] : []), {
       id: "compact",
       name: t("composer.compactContext"),
       description: t("composer.compactContextDescription"),
       searchText: "compact compaction compress context 压缩 上下文",
     }];
-  }, [compactionPending, onCompactContext, sending, t]);
-  const handleContextToolSelect = useCallback((toolId: string) => {
-    if (toolId !== "compact" || !onCompactContext || compactionPending)
-      return;
-    const isCurrent = captureOperation();
-    const result = onCompactContext();
-    if (result) {
-      setContextActionPending(true);
-      result.catch(() => {}).finally(() => {
-        if (isCurrent())
-          setContextActionPending(false);
-      });
-    }
-  }, [captureOperation, compactionPending, onCompactContext]);
+  }, [compactionPending, onCompactContext, sending, t, fusionAvailable]);
 
   const catalog = useSkillCatalog();
   const skills = useMemo<SkillMentionOption[]>(() => {
@@ -297,6 +307,26 @@ function ComposerImpl({
     lastTextRef.current = text;
     saveComposerDraft(key, { attachments: attachmentsRef.current, text });
   }, [attachmentsRef, draftKeyRef]);
+
+  const handleContextToolSelect = useCallback((toolId: string) => {
+    if (toolId === "fusion") {
+      const current = editorRef.current?.getContent() ?? "";
+      editorRef.current?.restore(`/fusion ${fusionTask(current) ?? current}`);
+      saveDraft();
+      return;
+    }
+    if (toolId !== "compact" || !onCompactContext || compactionPending)
+      return;
+    const isCurrent = captureOperation();
+    const result = onCompactContext();
+    if (result) {
+      setContextActionPending(true);
+      result.catch(() => {}).finally(() => {
+        if (isCurrent())
+          setContextActionPending(false);
+      });
+    }
+  }, [captureOperation, saveDraft, compactionPending, onCompactContext]);
 
   // Load this conversation's draft when it becomes active. Continuous saves
   // (editor onChange + the attachments effect) keep the outgoing conversation's
@@ -390,6 +420,14 @@ function ComposerImpl({
 
   function submitValue() {
     const trimmed = (editorRef.current?.getContent() ?? "").trim();
+    if (fusionTask(trimmed) !== null && !fusionAvailable) {
+      emitFutureEvent("toast", { message: t("fusion.disabled"), tone: "error" });
+      return;
+    }
+    if (fusionTask(trimmed) === "") {
+      editorRef.current?.restore("/fusion ");
+      return;
+    }
     // Block submission while a reply streams (the send button is already an
     // abort button then), while context compaction is running, and while an
     // async send is in flight. The editor intentionally remains enabled so the
@@ -425,6 +463,14 @@ function ComposerImpl({
       // can see it and decide.
       return;
     }
+    // A run is streaming and this conversation keeps a send queue: sending is a
+    // choice the reader has to make, so the button's menu asks it instead of the
+    // draft going nowhere (`queueDraft`). The draft stays in the box until they
+    // pick, and nothing is taken away from it here.
+    if (onEnqueue && sending && !disabled && !compactionPending && !sendPending) {
+      setQueueChoiceOpen(true);
+      return;
+    }
     if (
       disabled
       || sendPending
@@ -440,7 +486,7 @@ function ComposerImpl({
     // (install, dismiss, or send again); anything else (timeout, no match,
     // error) sends normally.
     const reco = skillRecommendation;
-    if (reco) {
+    if (reco && fusionTask(trimmed) === null) {
       // A card is on screen and not yet acted on: a plain send means "send
       // without it" — the same thing the card's secondary button does. The
       // send button stays live here (only the recommender wait disables it),
@@ -481,6 +527,58 @@ function ComposerImpl({
   }
 
   /**
+   * Take the submitted draft out of the box now that it has gone somewhere
+   * else — delivered, or held by the send queue.
+   *
+   * Only what was submitted is dropped. The editor stays editable throughout a
+   * delivery (and a queue hand-over is instant), so a revision typed meanwhile,
+   * or another conversation's composer, is never touched.
+   */
+  function clearSubmittedDraft(submittedDraftKey: string | null | undefined, submittedAttachments: readonly MessageAttachment[]) {
+    editorRef.current?.clear();
+    lastTextRef.current = "";
+    const remaining = attachmentsRef.current.filter(item => !submittedAttachments.includes(item));
+    attachmentsRef.current = remaining;
+    setAttachments(remaining);
+    setAttachError(null);
+    if (remaining.length === 0 && submittedDraftKey)
+      clearComposerDraft(submittedDraftKey);
+  }
+
+  /**
+   * Hand the draft to this conversation's send queue, and optionally end the run
+   * it is waiting for.
+   *
+   * The queue takes it *before* the interrupt, so the flush that runs once the
+   * run settles sends exactly what was on screen: the queue joined with this
+   * message, as one message. Interrupting first would race the flush against a
+   * draft that had not been handed over yet.
+   */
+  function queueDraft(interrupt: boolean) {
+    setQueueChoiceOpen(false);
+    if (disabled || compactionPending || sendPending || !onEnqueue)
+      return;
+    const editor = editorRef.current;
+    if (!editor)
+      return;
+    const submittedText = editor.getContent();
+    const trimmed = submittedText.trim();
+    const submittedDraftKey = draftKeyRef.current;
+    const submittedAttachments = attachmentsRef.current;
+    if (!trimmed && submittedAttachments.length === 0)
+      return;
+    const taken = onEnqueue({ attachments: submittedAttachments, content: trimmed });
+    // Refused (the queue is full): the text stays in the box, for the reason the
+    // panel's own queue refuses a message it cannot hold.
+    if (taken === false)
+      return;
+    clearSubmittedDraft(submittedDraftKey, submittedAttachments);
+    historyCursor.push(trimmed);
+    if (interrupt)
+      onAbort?.();
+  }
+
+  /**
    * The real send path, reached only once no recommendation is holding the
    * draft. Kept separate from `submitValue` so the intercept can fall through to
    * it without re-running the evaluation — calling `submitValue` recursively
@@ -514,14 +612,7 @@ function ComposerImpl({
     const dropSubmittedDraft = () => {
       if (!isCurrent() || !editorRef.current || draftKeyRef.current !== submittedDraftKey)
         return;
-      editorRef.current.clear();
-      lastTextRef.current = "";
-      const remaining = attachmentsRef.current.filter(item => !submittedAttachments.includes(item));
-      attachmentsRef.current = remaining;
-      setAttachments(remaining);
-      setAttachError(null);
-      if (remaining.length === 0 && submittedDraftKey)
-        clearComposerDraft(submittedDraftKey);
+      clearSubmittedDraft(submittedDraftKey, submittedAttachments);
     };
     /**
      * Put the submitted draft back after a rejected delivery (rationale on
@@ -713,6 +804,7 @@ function ComposerImpl({
         onContextToolSelect={handleContextToolSelect}
         onPasteAttachmentPaths={paths => void addAttachmentPaths(paths)}
         onPasteFiles={files => void attachPastedFiles(files)}
+        onPasteEmpty={() => void attachNativeClipboardImage()}
         // Kept off the dictation layer: there the box holds one spoken sentence
         // at a time and the arrows belong to the remote control.
         history={triggers ? historyCursor : undefined}
@@ -742,6 +834,15 @@ function ComposerImpl({
               sendPending={sendPending}
               recommendPending={recommendPending}
               compactionPending={Boolean(compactionPending)}
+              queue={onEnqueue
+                ? {
+                    choiceOpen: queueChoiceOpen,
+                    count: queueCount,
+                    onChoiceOpenChange: setQueueChoiceOpen,
+                    onEnqueue: () => queueDraft(false),
+                    onInterruptAndSend: () => queueDraft(true),
+                  }
+                : undefined}
             />
           )}
     </form>
