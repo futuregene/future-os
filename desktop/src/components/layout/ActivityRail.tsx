@@ -116,6 +116,8 @@ interface ActivityRailProps {
   onOpenArchivedThread?: (thread: StoredThread) => void;
   /** Archive the selected conversations (whole trees) from the selection toolbar. */
   onBatchArchiveThreads?: (threads: StoredThread[]) => void;
+  /** Restore the selected archived conversations from the archived view's toolbar. */
+  onBatchRestoreThreads?: (threads: StoredThread[]) => Promise<void>;
   /**
    * The first-archive guide: a coachmark anchored to the archive entry.
    *
@@ -244,6 +246,7 @@ export function ActivityRail({
   onRestoreWorkspace,
   onOpenArchivedThread,
   onBatchArchiveThreads,
+  onBatchRestoreThreads,
   archiveGuide,
   archivePulse,
   onShowArchiveGuide,
@@ -380,6 +383,20 @@ export function ActivityRail({
   // The archived view's own paged streams (shelved workspaces + shelved
   // conversations), loaded when the entry is first opened.
   const archiveView = useArchiveView();
+  /**
+   * The archived view's rows, as the selection addresses them.
+   *
+   * One scope for the whole shelved list — it is one flat list, and a batch
+   * there means "put these back" rather than "the conversations under this
+   * heading". The rows come from the archived stream, not the store, so they
+   * are offered to the selection explicitly.
+   */
+  const archiveViewThreads = archiveView.threads;
+  const archivedThreadScopes = useMemo(
+    () => new Map(archiveViewThreads.map(thread => [thread.id, "archived"] as const)),
+    [archiveViewThreads],
+  );
+
   const refreshArchiveView = archiveView.refresh;
   // Archived workspace groups the reader has expanded to browse.
   const [expandedArchivedWorkspaces, setExpandedArchivedWorkspaces] = useState<Set<string>>(() => new Set());
@@ -399,10 +416,6 @@ export function ActivityRail({
       return next;
     });
   }, []);
-  // The workspace a conversation belongs to, for the archived rows' subtitle.
-  const workspaceNameOf = useCallback((thread: StoredThread): string | null => {
-    return workspaces.find(workspace => workspace.id === thread.workspaceId)?.name ?? null;
-  }, [workspaces]);
   const archivedTreeMembers = useCallback((thread: StoredThread): number => {
     let members = 1;
     for (const candidate of archiveView.threads) {
@@ -886,9 +899,13 @@ export function ActivityRail({
     // own scopes: one workspace or the chat section in the tree, and the whole
     // flat list in the recent view — where a pin is a marker rather than a
     // section, so a pinned row joins the batch instead of being lifted out of it.
-    pinnedAreShortcuts: railView !== "recent",
+    pinnedAreShortcuts: railView !== "recent" && railView !== "archived",
     remoteScopes: railView === "recent" ? recentRemoteScopes : remoteScopes,
-    threadScopes: railView === "recent" ? recentThreadScopes : threadScopes,
+    threadScopes: railView === "recent"
+      ? recentThreadScopes
+      : railView === "archived"
+        ? archivedThreadScopes
+        : threadScopes,
     visibleRemoteRows: railView === "recent"
       ? recentRemoteRows
       : mergedMode
@@ -896,9 +913,11 @@ export function ActivityRail({
         : visibleRemoteRows,
     visibleThreads: railView === "recent"
       ? recentThreads
-      : mergedMode
-        ? filteredVisibleThreads
-        : visibleThreads,
+      : railView === "archived"
+        ? archiveViewThreads
+        : mergedMode
+          ? filteredVisibleThreads
+          : visibleThreads,
   });
 
   const showListTools = !selectionMode || Boolean(onChangeDeviceFilter && remotePeers.length > 0);
@@ -1643,6 +1662,16 @@ export function ActivityRail({
                                 </div>
                                 <div className="space-y-0.5">
                                   <ArchivedSectionHeading
+                                    action={archiveView.threads.length > 0 && !selectionMode
+                                      ? (
+                                          <ChatSectionMenu
+                                            label={t("activityRail.archivedThreadsActions")}
+                                            open={chatSectionMenuOpen}
+                                            onOpenChange={setChatSectionMenuOpen}
+                                            onSelect={() => enterSelectionMode("archived")}
+                                          />
+                                        )
+                                      : null}
                                     icon={<MessageSquare className="size-3.5" />}
                                     label={t("activityRail.archivedThreadsHeader")}
                                   />
@@ -1655,9 +1684,12 @@ export function ActivityRail({
                                           members={archivedTreeMembers(thread)}
                                           onDelete={onDeleteThread}
                                           onOpen={onOpenArchivedThread ?? onSelectThread}
+                                          onRename={onRenameThread}
                                           onRestore={onRestoreThread}
+                                          onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
+                                          selected={selectedThreadIds.has(thread.id)}
+                                          selectionMode={threadSelectionMode(thread)}
                                           thread={thread}
-                                          workspaceName={workspaceNameOf(thread)}
                                         />
                                       ))}
                                   {archiveView.hasMoreThreads
@@ -1940,8 +1972,11 @@ export function ActivityRail({
                   {selectionMode
                     ? (
                         <ActivityRailSelectionToolbar
-                          onArchive={selectedLocalThreads.length > 0
-                            ? () => onBatchArchiveThreads?.(selectedLocalThreads)
+                          onArchive={railView === "archived" || !onBatchArchiveThreads
+                            ? undefined
+                            : () => onBatchArchiveThreads(selectedLocalThreads)}
+                          onRestore={railView === "archived" && onBatchRestoreThreads
+                            ? () => void onBatchRestoreThreads(selectedLocalThreads)
                             : undefined}
                           selectedCount={selectedCount}
                           totalCount={totalCount}

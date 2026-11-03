@@ -1116,6 +1116,30 @@ function ReadyAppShell({
     }
   }
 
+  /**
+   * Restore a batch of archived conversations.
+   *
+   * Each selection is its own tree (the backend restores a tree from any
+   * member), so a batch is a loop of tree restores; the archived view is
+   * re-read once at the end, not once per row.
+   */
+  async function restoreArchivedThreads(threads: StoredThread[]) {
+    const failures: string[] = [];
+    for (const thread of threads) {
+      try {
+        await restoreThreadTree(thread.id);
+      }
+      catch (error) {
+        failures.push(`${thread.title}: ${errorMessage(error)}`);
+      }
+    }
+    emitFutureEvent("archive-changed", undefined);
+    await refreshStore();
+    if (failures.length > 0) {
+      emitFutureEvent("toast", { message: failures[0]!, tone: "error" });
+    }
+  }
+
   /** Open a shelved conversation read-only (its banner carries the restore). */
   function handleOpenArchivedThread(thread: StoredThread) {
     selectThread(thread);
@@ -1600,6 +1624,7 @@ function ReadyAppShell({
     onRestoreWorkspace: handleRestoreWorkspace,
     onOpenArchivedThread: handleOpenArchivedThread,
     onBatchArchiveThreads: archiveThreads,
+    onBatchRestoreThreads: restoreArchivedThreads,
     archiveGuide: {
       visible: archiveGuideVisible,
       onDismiss: () => setArchiveGuideVisible(false),

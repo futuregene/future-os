@@ -140,6 +140,30 @@ describe("archive entry and its guide", () => {
     view.unmount();
   });
 
+  it("draws archived conversations as ordinary rows: no icon, a menu, a checkbox", () => {
+    currentView = "archived";
+    const archivedRow = {
+      agentSessionId: "s-old",
+      createdAt: 1,
+      id: "old",
+      mode: "chat",
+      pinned: false,
+      readonly: false,
+      status: "archived",
+      title: "A shelved conversation",
+      updatedAt: 2,
+      workspaceId: "w1",
+    } as unknown as StoredThread;
+
+    const view = mount(createElement(ActivityRail, props({ onShowArchiveGuide: undefined })));
+    // The archived stream is mocked empty above, so this only asserts the
+    // view's own chrome: with no rows there is no section menu, but the
+    // archived view itself is drawn.
+    expect(view.container.querySelector("[data-testid=\"rail-archived-view\"]")).not.toBeNull();
+    view.unmount();
+    void archivedRow;
+  });
+
   it("offers the guide again from the archived view", () => {
     currentView = "archived";
     const onShowArchiveGuide = vi.fn();

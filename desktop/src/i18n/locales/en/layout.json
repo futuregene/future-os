@@ -87,7 +87,9 @@
     "loadMoreWorkspaces": "Load more workspaces",
     "archiveSelected": "Archive",
     "loading": "Loading…",
-    "archiveGuideAgain": "Show the archive guide again"
+    "archiveGuideAgain": "Show the archive guide again",
+    "archivedThreadsActions": "Archived conversation actions",
+    "restoreSelected": "Restore"
   },
   "appShell": {
     "storeInitFailed": "FutureOS local storage failed to initialize: ",

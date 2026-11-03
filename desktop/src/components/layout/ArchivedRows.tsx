@@ -1,67 +1,112 @@
 import type { StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
-import { Archive, Folder, MessageSquare } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Archive, Folder } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { listThreadsPage } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
-import { RailRow } from "./RailRow";
+import { useDismissableLayer } from "../../lib/useDismissableLayer";
+import { ArchivedThreadMenu } from "./ActivityRailMenus";
+import { RailRow, RailRowMenuButton, RailRowTitle } from "./RailRow";
 
 /**
  * One archived conversation tree's row in the archived view.
  *
- * The row is a browse target first (clicking it opens the read-only detail) and
- * an action target second (its own menu: restore, delete). The tree is the unit:
- * `members` is every conversation archived with this root, so the count says how
- * much a restore brings back instead of making the reader guess.
+ * Drawn exactly like an active row — title, optional tree count, a hover-revealed
+ * "more" menu — because it is the same kind of thing: a conversation the reader
+ * can open, rename, delete or restore. What it does *not* do is invent a second
+ * row language: there are no inline action buttons and no leading icon, so the
+ * archived list reads as the same list with different contents.
+ *
+ * The tree is the unit: `members` is every conversation archived with this root,
+ * so restoring it brings all of them back.
  */
 export function ArchivedThreadRow({
   active,
   members,
-  onOpen,
-  onRestore,
   onDelete,
+  onOpen,
+  onRename,
+  onRestore,
+  onToggleSelection,
+  selected,
+  selectionMode,
   thread,
-  workspaceName,
 }: {
   active: boolean;
   /** How many conversations this archived tree holds. */
   members: number;
-  onOpen: (thread: StoredThread) => void;
-  onRestore: (thread: StoredThread) => void;
   onDelete: (thread: StoredThread) => void;
+  onOpen: (thread: StoredThread) => void;
+  onRename: (thread: StoredThread) => void;
+  onRestore: (thread: StoredThread) => void;
+  onToggleSelection?: (thread: StoredThread) => void;
+  selected?: boolean;
+  selectionMode?: boolean;
   thread: StoredThread;
-  workspaceName: string | null;
 }) {
   const { t } = useTranslation("layout");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useDismissableLayer<HTMLDivElement>({
+    enabled: menuOpen,
+    onDismiss: () => setMenuOpen(false),
+    onEscapeDismiss: () => {
+      setMenuOpen(false);
+      menuButtonRef.current?.focus();
+    },
+  });
+
   return (
-    <div className="group/archive-row relative">
-      <RailRow active={active} compact onSelect={() => onOpen(thread)} title={thread.title}>
-        <MessageSquare className="size-3.5 shrink-0 text-ink-muted" />
-        <span className="min-w-0 flex-1 truncate text-13 font-medium text-ink-soft">{thread.title}</span>
-        <span className="pointer-events-none shrink-0 text-2xs tabular-nums text-ink-muted">
-          {members > 1 ? t("activityRail.archivedTreeMembers", { count: members }) : null}
-        </span>
-      </RailRow>
-      <div className="flex items-center gap-2 pl-7 pr-2 text-2xs text-ink-muted">
-        {workspaceName ? <span className="truncate">{workspaceName}</span> : null}
-        <span className="ml-auto flex shrink-0 items-center gap-2">
-          <button
-            className="rounded px-1 text-2xs text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
-            onClick={() => onRestore(thread)}
-            type="button"
-          >
-            {t("activityRail.restore")}
-          </button>
-          <button
-            className="rounded px-1 text-2xs text-ink-muted transition-colors hover:bg-danger-soft hover:text-danger"
-            onClick={() => onDelete(thread)}
-            type="button"
-          >
-            {t("activityRail.delete")}
-          </button>
-        </span>
-      </div>
-    </div>
+    <RailRow
+      active={active}
+      compact
+      onContextMenu={() => setMenuOpen(true)}
+      onSelect={() => onOpen(thread)}
+      rowRef={menuRef}
+      title={thread.title}
+    >
+      <RailRowTitle>{thread.title}</RailRowTitle>
+      {selectionMode
+        ? (
+            <input
+              aria-label={t("activityRail.selectThread", { title: thread.title })}
+              checked={selected ?? false}
+              className="relative z-10 size-5 shrink-0 rounded border-line accent-accent"
+              onChange={(event) => {
+                event.stopPropagation();
+                onToggleSelection?.(thread);
+              }}
+              type="checkbox"
+            />
+          )
+        : (
+            <>
+              {members > 1
+                ? (
+                    <span className="pointer-events-none shrink-0 text-2xs tabular-nums text-ink-muted group-hover/thread:hidden">
+                      {t("activityRail.archivedTreeMembers", { count: members })}
+                    </span>
+                  )
+                : null}
+              <RailRowMenuButton
+                buttonRef={menuButtonRef}
+                label={t("activityRail.threadActions", { title: thread.title })}
+                menuOpen={menuOpen}
+                onToggle={() => setMenuOpen(!menuOpen)}
+              />
+              {menuOpen
+                ? (
+                    <ArchivedThreadMenu
+                      onClose={() => setMenuOpen(false)}
+                      onDelete={() => onDelete(thread)}
+                      onRename={() => onRename(thread)}
+                      onRestore={() => onRestore(thread)}
+                    />
+                  )
+                : null}
+            </>
+          )}
+    </RailRow>
   );
 }
 
@@ -121,11 +166,21 @@ export function ArchivedWorkspaceGroup({
 }
 
 /** Section heading shared by the archived view's two halves. */
-export function ArchivedSectionHeading({ label, icon }: { label: string; icon?: React.ReactNode }) {
+export function ArchivedSectionHeading({
+  action,
+  label,
+  icon,
+}: {
+  /** Optional trailing control (the archived list's selection menu). */
+  action?: React.ReactNode;
+  label: string;
+  icon?: React.ReactNode;
+}) {
   return (
     <div className="sticky top-0 z-20 flex h-6 items-center gap-1.5 bg-surface px-2 text-xs font-medium text-ink-muted">
       {icon ?? <Archive className="size-3.5" />}
-      <span>{label}</span>
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {action}
     </div>
   );
 }
@@ -177,8 +232,7 @@ export function ArchivedWorkspaceContents({
     <div className="space-y-0.5 pl-2">
       {threads.map(thread => (
         <RailRow active={false} compact key={thread.id} onSelect={() => onOpen(thread)} title={thread.title}>
-          <MessageSquare className="size-3.5 shrink-0 text-ink-muted" />
-          <span className="min-w-0 flex-1 truncate text-13 font-medium text-ink-soft">{thread.title}</span>
+          <RailRowTitle>{thread.title}</RailRowTitle>
         </RailRow>
       ))}
     </div>
