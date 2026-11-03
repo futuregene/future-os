@@ -1042,3 +1042,90 @@ fn read_ledger_still_hard_fails_on_structural_errors() {
     drop(f2);
     assert!(store2.events("g2").is_err());
 }
+
+// ── h3-C3: the zombie advisory is a CONSECUTIVE streak, not a lifetime sum ──
+
+/// `LLM_ZOMBIE_TURN_THRESHOLD` is documented as *consecutive* turns without a
+/// write-class tool, but the count was a lifetime total: every idle turn ever
+/// recorded for the todo stayed in the folded vector, so a todo that stalled
+/// once and then worked kept a permanent "N turns with no write-class tool"
+/// advisory (and `status --format json` serialised the whole history). A turn
+/// that does write breaks the streak, and the next idle turn starts at one.
+#[test]
+fn a_productive_turn_resets_the_zombie_streak() {
+    let (_d, root) = fresh_store("zombie-streak");
+    let mut store = Store::open(&root).unwrap();
+    registered_goal(&mut store, "gz");
+    add(&mut store, "gz", "t1");
+
+    let idle_turn = |idle_secs: u64, ts: u64| Event::TurnNoProgress {
+        goal_id: "gz".into(),
+        todo_id: "t1".into(),
+        agent_id: None,
+        idle_secs,
+        tool_calls_total: 0,
+        ts,
+    };
+    let advisory = |goal: &Goal| {
+        future_goal::decision::todo_signals(goal, goal.todo("t1").expect("t1 exists"))
+    };
+
+    // Two idle turns trip the threshold (2): the advisory is on.
+    store.append(idle_turn(900, 10)).unwrap();
+    store.append(idle_turn(900, 11)).unwrap();
+    let goal = store.replay("gz").unwrap().unwrap();
+    assert!(
+        advisory(&goal)
+            .iter()
+            .any(|signal| signal.contains("no write-class tool")),
+        "two idle turns must surface the zombie advisory: {:?}",
+        advisory(&goal)
+    );
+
+    // A productive turn — one write-class tool — breaks the streak.
+    let mut productive = run_record("t1", "completed", 12);
+    productive.tools = vec!["write".to_string()];
+    store
+        .append(Event::RunRecorded {
+            goal_id: "gz".into(),
+            record: productive,
+            ts: 12,
+        })
+        .unwrap();
+    let goal = store.replay("gz").unwrap().unwrap();
+    assert!(
+        goal.turn_no_progress
+            .iter()
+            .all(|record| record.todo_id != "t1"),
+        "the folded records are the CURRENT streak; progress clears it: {:?}",
+        goal.turn_no_progress
+    );
+    assert!(
+        !advisory(&goal)
+            .iter()
+            .any(|signal| signal.contains("no write-class tool")),
+        "a stale zombie advisory must not survive real progress: {:?}",
+        advisory(&goal)
+    );
+
+    // …and the next idle turn is a streak of ONE, well under the threshold.
+    store.append(idle_turn(900, 13)).unwrap();
+    let goal = store.replay("gz").unwrap().unwrap();
+    assert!(
+        !advisory(&goal)
+            .iter()
+            .any(|signal| signal.contains("no write-class tool")),
+        "one idle turn after progress is below the threshold: {:?}",
+        advisory(&goal)
+    );
+    // A second one crosses it again — the streak is counted, not suppressed.
+    store.append(idle_turn(900, 14)).unwrap();
+    let goal = store.replay("gz").unwrap().unwrap();
+    assert!(
+        advisory(&goal)
+            .iter()
+            .any(|signal| signal.contains("no write-class tool")),
+        "a fresh streak of two must speak again: {:?}",
+        advisory(&goal)
+    );
+}

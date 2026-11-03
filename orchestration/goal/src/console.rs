@@ -4855,7 +4855,9 @@ pub async fn notify_dead_holders(store: &mut Store, goal_id: &str) -> Result<()>
 ///   SIGKILL'd/crashed worker executes no code, so it cannot self-report).
 ///   This is the single supervision signal the single-process model needs:
 ///   the orchestrator is the only live actor, and this sweep is what lets a
-///   dead worker surface without a cron.
+///   dead worker surface without a cron. A run that DOES reach its exit path
+///   has already given its claim back (`run_turns` → `release_run_claim`), so
+///   what remains here is exactly the claim nobody is tending.
 async fn supervise_after_run(store: &mut Store, goal_id: &str) -> Result<()> {
     // Dead-holder sweep is best-effort: a lost notification must never fail
     // the run that already wrote back.
@@ -4884,6 +4886,89 @@ fn app_title_language() -> Option<String> {
 
 #[allow(clippy::too_many_arguments)]
 async fn run_turns(
+    client: &mut crate::agent_client::AgentClient,
+    store: &mut Store,
+    goal_id: &str,
+    session_id: &str,
+    max_turns: u32,
+    lease_secs: u64,
+    agent_id: Option<&str>,
+    max_incomplete_retries: u32,
+    force_workspace: bool,
+    last_failure_kind: &mut Option<crate::state::FailureKind>,
+    executed_turn: &mut bool,
+    auto_title: bool,
+    created_session: bool,
+    worker_config: &crate::worker_config::WorkerConfig,
+) -> Result<()> {
+    let result = run_turns_inner(
+        client,
+        store,
+        goal_id,
+        session_id,
+        max_turns,
+        lease_secs,
+        agent_id,
+        max_incomplete_retries,
+        force_workspace,
+        last_failure_kind,
+        executed_turn,
+        auto_title,
+        created_session,
+        worker_config,
+    )
+    .await;
+    // The claim taken by `claim_selected_with_lease` is the RUN's lease, stamped
+    // with this process's pid (lease liveness). A run that RETURNS is not a dead
+    // holder: it hands the claim back here, on every exit path — validated
+    // closure, science failure, operator stop, transport error — so the
+    // supervision sweep's `host_died` note keeps meaning "a claim nobody is
+    // tending any more". A SIGKILLed or crashed run executes none of this, so its
+    // claim stays behind with a dead pid and is still reported.
+    release_run_claim(store, goal_id, agent_id, std::process::id());
+    result
+}
+
+/// Give back every todo claim this run process still holds (see [`run_turns`]).
+///
+/// Scoped to the exact holder — this process's pid plus the run's agent id — so a
+/// claim another worker already stole or reclaimed is never released from here. A
+/// todo this run completed needs nothing (`Todo::complete` clears its claim) and
+/// an anonymous run never claimed at all.
+///
+/// A refused release is a lost ledger write, not a lost run: the caller is on its
+/// way out and the claim's lease still lapses on its TTL.
+fn release_run_claim(store: &mut Store, goal_id: &str, agent_id: Option<&str>, holder_pid: u32) {
+    let Some(agent_id) = agent_id else {
+        return;
+    };
+    let Ok(Some(goal)) = store.replay(goal_id) else {
+        return;
+    };
+    let held: Vec<String> = goal
+        .todos
+        .iter()
+        .filter(|todo| {
+            todo.status == TodoStatus::Open
+                && todo.claimed_by.as_deref() == Some(agent_id)
+                && todo.holder_pid == Some(holder_pid)
+        })
+        .map(|todo| todo.id.clone())
+        .collect();
+    for todo_id in held {
+        if let Err(error) = store.append(Event::TodoReleased {
+            goal_id: goal_id.to_string(),
+            todo_id: todo_id.clone(),
+            agent_id: agent_id.to_string(),
+            ts: now_epoch(),
+        }) {
+            eprintln!("goal: could not release the run's claim on {todo_id}: {error:#}");
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_turns_inner(
     client: &mut crate::agent_client::AgentClient,
     store: &mut Store,
     goal_id: &str,
@@ -12814,6 +12899,179 @@ mod verify_failure_reason_tests {
             reason.len() < VERIFY_REASON_CHARS + 200,
             "len {}",
             reason.len()
+        );
+    }
+}
+
+/// h3-C2 — the run-scoped claim must not outlive the run that took it.
+///
+/// `claim_selected_with_lease` stamps the claim with the RUN process's pid so a
+/// dead holder can be detected (`work_items::task_lease::dead_holder_todos` →
+/// `host_died` supervisor note). A bounded segment that ends WITHOUT completing
+/// its todo used to leave that claim behind, so the next sweep read the exited
+/// run's pid and told the supervisor the worker had died — for a run that had
+/// finished normally. These tests drive the real loop (claim + writeback) and
+/// pin both halves: a finished segment gives its claim back, a holder that
+/// really died is still reported.
+#[cfg(test)]
+mod run_claim_release_tests {
+    use super::*;
+    use crate::state::{Goal, Todo, TodoStatus};
+    use crate::store::{Event, Store};
+    use scripted_agent::{ev, spawn_mock, MockState};
+
+    /// A pid that cannot be alive: above every platform's pid range, so the
+    /// `kill -0` / `OpenProcess` probe fails without touching a real process.
+    const DEAD_PID: u32 = i32::MAX as u32;
+
+    fn worker_config() -> crate::worker_config::WorkerConfig {
+        crate::worker_config::WorkerConfig {
+            model: "future/test-model".to_string(),
+            thinking_level: "medium".to_string(),
+            source: crate::worker_config::ConfigSource::Default,
+        }
+    }
+
+    /// One runnable advancement todo plus a registered peer — the shape an
+    /// `--agent-id` run needs (`decision/identity.rs` fails closed otherwise).
+    fn goal_with_todo() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path().to_str().unwrap()).unwrap();
+        store.register(&Goal::new("g", "obj", "/tmp")).unwrap();
+        store
+            .append(Event::GoalStarted {
+                goal_id: "g".into(),
+                ts: 1,
+            })
+            .unwrap();
+        store
+            .append(Event::AgentRegistered {
+                goal_id: "g".into(),
+                agent_id: "agent-a".into(),
+                workspaces: vec![],
+                ts: 2,
+            })
+            .unwrap();
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("t1", "work"),
+                ts: 3,
+            })
+            .unwrap();
+        (dir, store)
+    }
+
+    fn host_died_notes(store: &Store) -> Vec<String> {
+        store
+            .events("g")
+            .unwrap()
+            .into_iter()
+            .filter_map(|stored| match stored.event {
+                Event::SupervisorNote {
+                    note_kind, message, ..
+                } if note_kind == "host_died" => Some(message),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_run_that_ends_without_completing_gives_its_claim_back() {
+        let (_dir, mut store) = goal_with_todo();
+        // A turn that FAILS: the bounded segment ends, the todo stays open with
+        // no completion — the exact shape the sweep used to call `host_died`.
+        let (addr, state) = spawn_mock(MockState {
+            events: vec![
+                ev("mock-run-1", 0, "text_chunk", "{\"text\":\"partial\"}"),
+                ev("mock-run-1", 1, "error", "{\"error\":\"model refused\"}"),
+            ],
+            ..Default::default()
+        })
+        .await;
+        let mut client = crate::agent_client::AgentClient::connect(&addr)
+            .await
+            .expect("the scripted mock is reachable");
+        let mut last_failure_kind = None;
+        let mut executed = false;
+        let worker_config = worker_config();
+        let result = run_turns(
+            &mut client,
+            &mut store,
+            "g",
+            "session-1",
+            1,
+            3600,
+            Some("agent-a"),
+            0,
+            false,
+            &mut last_failure_kind,
+            &mut executed,
+            false,
+            true,
+            &worker_config,
+        )
+        .await;
+        assert!(
+            executed,
+            "the turn must reach the model, otherwise no claim was taken and the \
+             release below proves nothing: {result:?} (prompts: {})",
+            state.lock().unwrap_or_else(|e| e.into_inner()).prompts
+        );
+
+        // The claim really happened…
+        let claimed = store.events("g").unwrap().into_iter().any(
+            |stored| matches!(&stored.event, Event::TodoClaimed { todo_id, .. } if todo_id == "t1"),
+        );
+        assert!(
+            claimed,
+            "the run must take the claim (that is what the pid-liveness sweep reads)"
+        );
+        // …and the todo is still open, so the run left the claim behind.
+        let goal = store.replay("g").unwrap().unwrap();
+        let todo = goal.todo("t1").unwrap();
+        assert_eq!(
+            todo.status,
+            TodoStatus::Open,
+            "the segment must end WITHOUT completing the todo (that is the case under test)"
+        );
+        assert!(
+            todo.claimed_by.is_none(),
+            "a run that ended must give its claim back; still claimed by {:?} (holder pid {:?})",
+            todo.claimed_by,
+            todo.holder_pid
+        );
+
+        // The post-run sweep finds nothing to report for a finished segment…
+        crate::agents::supervision::record_dead_holders(&mut store, "g").unwrap();
+        assert!(
+            host_died_notes(&store).is_empty(),
+            "a finished segment must not be reported as host_died: {:?}",
+            host_died_notes(&store)
+        );
+
+        // …while a holder that really died (SIGKILL right after claiming, so it
+        // never reached its release) is still reported.
+        store
+            .append(Event::TodoClaimed {
+                goal_id: "g".into(),
+                todo_id: "t1".into(),
+                agent_id: "agent-a".into(),
+                lease_expires_at: now_epoch() + 3600,
+                holder_pid: Some(DEAD_PID),
+                ts: now_epoch(),
+            })
+            .unwrap();
+        crate::agents::supervision::record_dead_holders(&mut store, "g").unwrap();
+        let notes = host_died_notes(&store);
+        assert_eq!(
+            notes.len(),
+            1,
+            "a genuinely dead holder must still be reported: {notes:?}"
+        );
+        assert!(
+            notes[0].contains("host_died") && notes[0].contains("t1"),
+            "the note must name the todo and the cause: {notes:?}"
         );
     }
 }
