@@ -56,8 +56,8 @@ desktop/src/features/terminal/
 
 socket 上：
 
-* **server → client**：PTY 原始字节的二进制帧，外加一个控制帧——`0x00` 后跟
-  UTF-8 JSON `{cursor, start, exitCode?}`；
+* **server → client**：二进制帧，首个字节是帧类型：`0x01` + PTY 原始字节（原样转发，
+  开头的 NUL 也保留），或 `0x00` + UTF-8 JSON `{cursor, start, exitCode?}`（控制帧）；
 * **client → server**：二进制或文本帧，按 UTF-8 解码（非法 UTF-8 丢弃、绝不替换
   ——损坏的字节不能被敲进 shell）。
 

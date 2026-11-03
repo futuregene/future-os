@@ -702,6 +702,12 @@ fn wrap_ascii_fast(text: &str, width: usize) -> Vec<String> {
     }
 }
 
+/// Wraps `text` so that **every returned line is at most `width` cells** — the
+/// invariant callers build on (`render_table` composes a row out of wrapped
+/// cells and relies on the row still fitting the frame).
+///
+/// A glyph wider than `width` itself cannot be laid out at all and is dropped;
+/// a caller that must keep such a glyph has to ask for a width it fits in.
 pub fn wrap_text_with_ansi(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return Vec::new();
@@ -742,6 +748,15 @@ pub fn wrap_text_with_ansi(text: &str, width: usize) -> Vec<String> {
         // Grab one grapheme
         let grapheme = text[i..].graphemes(true).next().unwrap();
         let gw = grapheme_width(grapheme);
+
+        // A glyph wider than the whole line (a 2-cell CJK glyph asked for a
+        // one-cell line) fits nowhere — not even at the start of a fresh line.
+        // Emitting it anyway broke the `<= width` invariant and produced an
+        // empty lead-in line besides, so it is dropped here instead.
+        if gw > width {
+            i += grapheme.len();
+            continue;
+        }
 
         if current_width + gw <= width {
             tail_start = current_line.len();
@@ -802,8 +817,12 @@ pub fn wrap_text_with_ansi(text: &str, width: usize) -> Vec<String> {
         lines.push(current_line + &finalize_line(&tracker));
     }
 
-    // `lines` is never empty here: empty input takes the ASCII fast path,
-    // and any grapheme/escape processed above leaves a non-empty line.
+    // Input whose every glyph was dropped (width 1 against CJK) yields one
+    // empty line rather than none, matching the ASCII fast path: callers map
+    // one row per line (`Input::build_visual_layout`).
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
     lines
 }
 
@@ -1462,6 +1481,30 @@ mod tests {
         );
         assert!(lines[1].starts_with("中。"), "{lines:?}");
         assert_eq!(lines.concat(), text);
+    }
+
+    /// The one contract every caller relies on: a wrapped line is at most
+    /// `width` cells. A double-width glyph asked for a one-cell line fits
+    /// nowhere at all, so it must not be emitted onto that line (it used to be
+    /// pushed onto the fresh line unconditionally, after an empty line).
+    #[test]
+    fn a_glyph_wider_than_the_whole_line_is_never_emitted() {
+        for text in ["中", "中文", "a中b", "\x1b[31m中\x1b[0m", "🦀"] {
+            let lines = wrapped_plain(text, 1);
+            assert!(
+                !lines.is_empty(),
+                "{text:?}: a non-empty input yielded no line"
+            );
+            for line in &lines {
+                assert!(
+                    visible_width(line) <= 1,
+                    "{text:?} wrapped at width 1 emitted {} cells: {line:?} (lines {lines:?})",
+                    visible_width(line)
+                );
+            }
+        }
+        // At a width the glyph does fit, nothing is dropped.
+        assert_eq!(wrapped_plain("中", 2), vec!["中"]);
     }
 
     #[test]

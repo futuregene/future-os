@@ -229,6 +229,55 @@ it("stops listening once unmounted", async () => {
   expect(listRemotePeers).not.toHaveBeenCalled();
 });
 
+/**
+ * Re-reading the machines alone.
+ *
+ * A machine's name and icon are this computer's own record of it — the write
+ * (`remote_peer_set_label`) edits the local credential book and never reaches
+ * the desktop — so the machine list is the whole of what saving one has to wait
+ * for. The catalogue half of `refresh` costs a round trip per connected host,
+ * each bounded by the client's command timeout and retried, so saving a label
+ * through it sat on the network for a write that never left this computer. What
+ * is asserted here is that the short read reaches no host, and still draws the
+ * name.
+ */
+describe("re-reading the machines alone", () => {
+  it("reaches no host, and draws a name from the list", async () => {
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+    fetchRemoteSessions.mockClear();
+    listRemoteWorkspaces.mockClear();
+
+    listRemotePeers.mockResolvedValue([peer({ name: "Old laptop" })]);
+    await act(async () => {
+      await hook.current.refreshPeers();
+    });
+    await settle();
+
+    expect(hook.current.peers[0]!.name).toBe("Old laptop");
+    expect(fetchRemoteSessions).not.toHaveBeenCalled();
+    expect(listRemoteWorkspaces).not.toHaveBeenCalled();
+  });
+
+  it("is a different read from the full refresh, which does ask", async () => {
+    // The contrast is the point: if `refresh` ever stopped reading catalogue
+    // here, the rows on the shared list would still look right in this suite and
+    // be wrong on screen.
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+    fetchRemoteSessions.mockClear();
+    listRemoteWorkspaces.mockClear();
+
+    await act(async () => {
+      await hook.current.refresh();
+    });
+    await settle();
+
+    expect(fetchRemoteSessions).toHaveBeenCalledWith("desktop_a");
+    expect(listRemoteWorkspaces).toHaveBeenCalledWith("desktop_a");
+  });
+});
+
 describe("push catalog", () => {
   it("applies a pushed sessions snapshot without fetching", async () => {
     const hook = renderHook(() => useRemotePeers(true));
@@ -685,16 +734,12 @@ describe("heartbeat self-heal", () => {
     hook.unmount();
   });
 
-  it("re-reads for a lost snapshot, then again on the next tick (see module-desktop.md §8.6)", async () => {
-    // CHARACTERISATION of the current behaviour, not of the design: the presence
-    // path calls `ensureGate` → `gate.authenticate(epoch)` on *every* tick, and
-    // `authenticate` clears the applied revisions — so the revision comparison
-    // that follows always sees the -1 floor and every tick heals, i.e. a peer
-    // list + catalogue read per heartbeat (the host publishes presence every 3 s;
-    // `remote/publisher.rs::presence_tick`). The `gate.accept(...)` below the
-    // comparison cannot suppress the next tick, which is what its comment claims.
-    // Asserted as-is so the fix (authenticate only when the epoch *changes*) is a
-    // deliberate, visible test change — see module-desktop.md §8.6.
+  it("re-reads once for a lost snapshot, and not again on a tick that restates it", async () => {
+    // Was a characterisation of the defect: every presence tick re-read because
+    // `authenticate` cleared the applied revisions and the comparison ran
+    // against a ledger no snapshot ever wrote. Both are fixed, so the heal is
+    // one read per *lost* revision rather than one per heartbeat (the host
+    // publishes presence every 3 s; `remote/publisher.rs::presence_tick`).
     const hook = renderHook(() => useRemotePeers(true));
     await settle();
     fetchRemoteSessions.mockClear();
@@ -704,9 +749,76 @@ describe("heartbeat self-heal", () => {
     await settle();
     expect(fetchRemoteSessions).toHaveBeenCalledTimes(1);
 
+    // The same revision again: the gate holds what the heal recorded, so there
+    // is nothing left to chase and no catalogue read is spent.
     pushKind("presence", "desktop_a", heartbeat);
     await settle();
-    expect(fetchRemoteSessions).toHaveBeenCalledTimes(2);
+    expect(fetchRemoteSessions).toHaveBeenCalledTimes(1);
+    hook.unmount();
+  });
+
+  it("does not re-read when a heartbeat restates the revision a catalogue packet already applied", async () => {
+    // The two halves of the heal share one ledger or it cannot work: the
+    // snapshot that advances the gate is the *catalogue* packet, and the
+    // heartbeat that reports the same revision must then see nothing to heal.
+    // A second ledger (or an `authenticate` that wipes the revisions on every
+    // tick) makes each heartbeat a full catalogue read per host.
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+
+    // Establish the epoch and both domains' floors: the first heartbeat heals
+    // once, which is what records them.
+    pushKind("presence", "desktop_a", {
+      catalogVersion: { epoch: "epoch_1", sessions: 5, workspaces: 5 },
+    });
+    await settle();
+    fetchRemoteSessions.mockClear();
+
+    // A pushed snapshot at revision 6 is applied by the gate…
+    pushKind("catalog", "desktop_a", {
+      domain: "sessions",
+      version: { epoch: "epoch_1", revision: 6 },
+      sessions: [],
+    });
+    await settle();
+    expect(fetchRemoteSessions).not.toHaveBeenCalled();
+
+    // …so the heartbeat that follows at 6 has nothing to heal.
+    pushKind("presence", "desktop_a", {
+      catalogVersion: { epoch: "epoch_1", sessions: 6, workspaces: 5 },
+    });
+    await settle();
+
+    expect(fetchRemoteSessions).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+
+  it("counts a delta against the sessions revision the heartbeat reports", async () => {
+    // Deltas and activity packets are the sessions catalogue in pieces: they
+    // must advance the same bucket, or a heartbeat naming the revision they
+    // carry looks like a lost snapshot and reads the whole list anyway.
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+    pushKind("presence", "desktop_a", {
+      catalogVersion: { epoch: "epoch_1", sessions: 5, workspaces: 5 },
+    });
+    await settle();
+    fetchRemoteSessions.mockClear();
+
+    pushKind("catalog", "desktop_a", {
+      domain: "sessions_delta",
+      version: { epoch: "epoch_1", revision: 6 },
+      rows: [],
+      removed: [],
+    });
+    await settle();
+
+    pushKind("presence", "desktop_a", {
+      catalogVersion: { epoch: "epoch_1", sessions: 6, workspaces: 5 },
+    });
+    await settle();
+
+    expect(fetchRemoteSessions).not.toHaveBeenCalled();
     hook.unmount();
   });
 

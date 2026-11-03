@@ -2001,6 +2001,21 @@ fn apply(goal: &mut Goal, event: Event) {
                 &summary,
                 ts,
             );
+            // O3: the LLM-zombie signal is a CONSECUTIVE streak of turns with no
+            // write-class tool (`LLM_ZOMBIE_TURN_THRESHOLD`), so a turn that did
+            // write breaks it. The ledger stays append-only — the projection
+            // drops this todo's accumulated idle-turn records here, which is
+            // what makes `goal.turn_no_progress` (and the count
+            // `decision::stall` reads, and `status --format json`) the current
+            // streak instead of a lifetime total that never decays.
+            if record
+                .tools
+                .iter()
+                .any(|tool| crate::agent_client::is_write_class_tool(tool))
+            {
+                goal.turn_no_progress
+                    .retain(|np| np.todo_id != record.todo_id);
+            }
         }
         Event::TodoClaimed {
             todo_id,
@@ -2233,9 +2248,10 @@ fn apply(goal: &mut Goal, event: Event) {
             consecutive,
             ts,
         }),
-        // O3: idle-turn no-progress records fold into goal state
-        // (append-only) — visible in `status` so orchestrators can see the
-        // breach without replaying the raw ledger.
+        // O3: idle-turn no-progress records fold into goal state — visible in
+        // `status` so orchestrators can see the breach without replaying the
+        // raw ledger. The vector is the current streak per todo (a productive
+        // turn drops it, see the RunRecorded arm above).
         Event::TurnNoProgress {
             goal_id,
             todo_id,

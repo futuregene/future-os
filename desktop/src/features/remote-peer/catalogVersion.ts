@@ -27,6 +27,12 @@ export class CatalogVersionGate {
 
   /** Set the epoch from the handshake / presence; resets applied revisions. */
   authenticate(epoch: string): void {
+    // Presence repeats its epoch on every tick (the host publishes every 3 s),
+    // so re-authenticating with the epoch already in force would clear the
+    // ledger each time — and the heal comparison that follows would then always
+    // see the -1 floor. Only a *changed* epoch (re-pair, reconnect) resets.
+    if (this.epoch === epoch)
+      return;
     this.epoch = epoch;
     this.revisions.clear();
   }

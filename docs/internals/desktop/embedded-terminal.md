@@ -62,8 +62,9 @@ Control routes are JSON over HTTP; output is a WebSocket.
 
 On the socket:
 
-* **server → client**: binary frames of raw PTY bytes, plus one control frame —
-  `0x00` followed by UTF-8 JSON `{cursor, start, exitCode?}`;
+* **server → client**: binary frames, each one type byte plus its payload:
+  `0x01` + raw PTY bytes (forwarded verbatim, leading NUL included), or `0x00` +
+  UTF-8 JSON `{cursor, start, exitCode?}` for the control frame;
 * **client → server**: binary or text frames, decoded as UTF-8 (invalid UTF-8 is
   dropped, never replaced — a broken byte must not be typed into a shell).
 

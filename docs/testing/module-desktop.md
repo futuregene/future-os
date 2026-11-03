@@ -822,25 +822,24 @@ defined` in 6 of its 41 tests — the suite was green *because* the measurement
    (with the two seams stubbed) and the observer-less path by the pre-existing
    file.
 
-10. **Every presence heartbeat costs a peer-list + catalogue read (reported, not
-changed).** The host publishes presence every 3 s
-(`remote/publisher.rs::presence_tick`). On each tick `useRemotePeers` calls
+10. **Every presence heartbeat cost a peer-list + catalogue read — FIXED
+2026-11-03 (h10-C1).** The host publishes presence every 3 s
+(`remote/publisher.rs::presence_tick`). Three faults compounded: the tick called
 `ensureGate(desktopId, epoch)` → `gate.authenticate(epoch)`, and `authenticate`
-**clears the applied revisions**; the `readNumber`-vs-`gate.revision(domain)`
-comparison that follows therefore always sees the `-1` floor, so any positive
-revision heals → `void refresh()` → one read per tick per paired host. The
-`gate.accept(…, true)` immediately below it, and its comment ("so a stale
-heartbeat does not keep re-triggering heals"), cannot have that effect, because
-the next tick wipes what it recorded. The intended cadence is the 60 s catalogue
-backstop.
-
-   Not changed here: it is a behaviour change in a hook whose push protocol is
-   shared with the phone, and this unit's mandate is coverage. The natural fix is
-   to authenticate only when the epoch *changes* (`CatalogVersionGate` exposes no
-   epoch getter today, so it needs one — and its mobile twin is
-   `mobile/src/remote/catalogVersion.ts`). Pinned by a characterisation test
-   ("re-reads for a lost snapshot, then again on the next tick") so the fix shows
-   up as a deliberate test change rather than silently.
+**cleared the applied revisions**, so the `readNumber`-vs-`gate.revision(domain)`
+comparison always saw the `-1` floor; the compared gate lived in a module-level
+map while accepted snapshots wrote the hook's own `gatesRef`, so even a cleared-
+once ledger could only hold the last revision *healed*; and `sessions_delta`
+advanced a bucket of its own name, so a heartbeat naming the sessions revision
+after a delta still looked ahead. The fix is the phone's shape
+(`mobile/src/remote/useSessionCatalog.ts`): **one** gate for accept and compare,
+`authenticate` short-circuits when the epoch is unchanged (the mobile twin's
+`if (this.epoch === epoch) return`), and every conversations packet —
+snapshot, delta, activity — advances the `sessions` bucket. Pinned by
+"does not re-read when a heartbeat restates the revision a catalogue packet
+already applied" and "counts a delta against the sessions revision the heartbeat
+reports"; the old characterisation test now asserts one read per *lost*
+revision instead of one per tick.
 
 11. **`ImagePreview`'s space-to-pan affordance is documented but not wired, and
 the state behind it is read only by its own re-entry guard — RESOLVED 2026-10-17:
@@ -1267,9 +1266,10 @@ supervisor's own example used a relative prefix). Use an absolute scope:
    that the *cheapest* counterexample may be to change the harness rather than to
    build a fixture, whenever the waived reason is an absolute about *phases*
    (a commit, an effect, a tick) rather than about a value.
-4. Decide §8.10 (a read per presence heartbeat) and §8.11 (the space-to-pan
-   affordance) with the module owner; both are product decisions, and **§8.11 is
-   now the module's only open item that blocks the objective** — its 4 lines are
+4. Decide §8.11 (the space-to-pan affordance) with the module owner; §8.10 (a
+   read per presence heartbeat) was resolved on 2026-11-03 as a defect, not a
+   product choice (h10-C1, fixed). **§8.11 is now the module's only open item that
+   blocks the objective** — its 4 lines are
    registered OPEN, not waived (§5), so the campaign's claim for this module is
    *covered or waived except 4 lines awaiting a product decision*. The resolution
    is one of the two the owner named: wire the documented "hold space and drag"
