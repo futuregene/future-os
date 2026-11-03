@@ -114,6 +114,10 @@ const FORWARDED_EVENTS: &[&str] = &[
     "model_changed",
     "thinking_level_changed",
     "permission_level_changed",
+    // The approval tier lives on the *session*, not on the app default the
+    // composer writes, so the webview has to hear the agent's own change to
+    // stop advertising a tier the session does not have.
+    "sandbox_policy_changed",
     "session_name_changed",
     "cwd_changed",
     "config_reloaded",
@@ -2690,6 +2694,10 @@ mod tests {
             "session_name_changed",
             "cwd_changed",
             "config_reloaded",
+            // The approval tier is a value on the session, and the composer
+            // renders it: a replay repeating the last one is what makes the
+            // badge agree with the agent after a reconnect.
+            "sandbox_policy_changed",
         ] {
             assert!(
                 forwards_to_webview(event_type, EventOrigin::Replay),

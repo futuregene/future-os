@@ -2,6 +2,7 @@ import type { MessageAttachment } from "@future-os/thread-projection";
 import type { FormEvent } from "react";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
+import type { ApprovalChipTier } from "./composer/ComposerControls";
 import type { ContextToolOption, MentionEditorHandle, SkillMentionOption } from "./MentionEditor";
 import type { SessionMentionOption } from "./sessionMention";
 import { fusionTask } from "@future-os/thread-projection";
@@ -83,7 +84,7 @@ interface ComposerProps {
   onModelChange?: (modelId: string) => void;
   thinkingLevel?: string;
   onThinkingLevelChange?: (thinkingLevel: string) => void;
-  approvalTier?: ApprovalTier;
+  approvalTier?: ApprovalChipTier;
   futureSessionStatus?: string;
   onChangeApprovalTier?: (value: ApprovalTier) => void;
   /**

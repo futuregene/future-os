@@ -225,7 +225,8 @@
       "manual": "Manual",
       "sandbox": "Sandboxed",
       "off": "Full access",
-      "auto": "Automatic review"
+      "auto": "Automatic review",
+      "unknown": "Per session"
     },
     "approvalTierDesc": {
       "sandboxLinuxWriteOnly": "Upgrade system Bubblewrap and restart FutureOS to enable full sandbox protection.",

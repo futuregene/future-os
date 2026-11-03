@@ -128,6 +128,24 @@ describe("agentStateCache fetch/cache", () => {
     });
   });
 
+  it("parses the session's own approval tier and follows its change event", async () => {
+    invokeMock.mockResolvedValue(statePayload({ sandboxTier: "manual" }));
+    expect((await getAgentState("t-tier")).sandboxTier).toBe("manual");
+
+    // An agent too old to report a tier (or a session that never chose one)
+    // must read as null, not as a fabricated "off": the composer falls back to
+    // the app default only when this is absent.
+    invokeMock.mockResolvedValue(statePayload({ sandboxTier: null }));
+    expect((await getAgentState("t-tier-none")).sandboxTier).toBeNull();
+
+    // The agent's own broadcast is the live half: it arrives for a change made
+    // by any client, including ones this app never drove.
+    invokeMock.mockResolvedValue(statePayload({ sessionId: "s-tier", sandboxTier: "manual" }));
+    await getAgentState("t-tier-event");
+    emit({ sessionId: "s-tier", _eventType: "sandbox_policy_changed", tier: "off", mode: "off", configuredMode: "off", reviewer: "user" });
+    expect(getCachedAgentState("t-tier-event")?.sandboxTier).toBe("off");
+  });
+
   it("parses session usage and degrades an older agent honestly", async () => {
     invokeMock.mockResolvedValue(statePayload({
       usage: {

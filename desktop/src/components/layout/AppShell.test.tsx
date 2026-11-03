@@ -370,6 +370,9 @@ vi.mock("./hooks/useModelSelection", () => ({
     changeThinkingLevel: vi.fn(),
     modelsEmptyReason: undefined,
     selectedThinkingLevel: "medium",
+    // undefined = this thread's agent state reports no tier, so the composer
+    // falls back to the app-wide default under test.
+    sessionApprovalTier: undefined,
     syncSelection: vi.fn(),
   }),
 }));
