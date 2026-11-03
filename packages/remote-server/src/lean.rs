@@ -522,15 +522,21 @@ pub fn lean_entries(entries: &mut Value) {
                     }
                 }
                 "tool_call" => {
-                    // The file kinds keep only what their row label reads; every
+                    // Only the keys this row's label is read from survive; every
                     // other name (shell, and any tool this client has never
-                    // heard of — it renders those as shell) loses the whole key.
-                    let keeps_path =
-                        matches!(block["name"].as_str(), Some("read" | "write" | "edit"));
+                    // heard of — it renders those as shell) loses the whole key,
+                    // because the client fetches a shell-family row's command by
+                    // its identity when the row is opened. `fusion` is a
+                    // modelled kind whose label is neither: see
+                    // `LABEL_ARGUMENT_KEYS`.
+                    let keeps_label = matches!(
+                        block["name"].as_str(),
+                        Some("read" | "write" | "edit" | "fusion")
+                    );
                     let Some(fields) = block.as_object_mut() else {
                         continue;
                     };
-                    if !keeps_path {
+                    if !keeps_label {
                         fields.remove("arguments");
                         continue;
                     }
@@ -540,7 +546,7 @@ pub fn lean_entries(entries: &mut Value) {
                     // A non-object argument list (a model that emitted the call
                     // as JSON text) is not ours to reshape.
                     if let Some(arguments) = arguments.as_object_mut() {
-                        arguments.retain(|key, _| PATH_ARGUMENT_KEYS.contains(&key.as_str()));
+                        arguments.retain(|key, _| LABEL_ARGUMENT_KEYS.contains(&key.as_str()));
                     }
                 }
                 // Every other block kind is forwarded verbatim, so a future
@@ -551,9 +557,11 @@ pub fn lean_entries(entries: &mut Value) {
     }
 }
 
-/// The argument keys a file row's target (`path`) is derived from. A shell
-/// row's `command` is fetched on demand instead — see `lean_entries`.
-const PATH_ARGUMENT_KEYS: [&str; 3] = ["path", "file_path", "filePath"];
+/// The argument keys a tool row's label is derived from, mirroring the client's
+/// `targetFromArgs` (`packages/thread-projection/src/group.ts`): a path for the
+/// file kinds, the question for a `fusion` consultation. A shell row's
+/// `command` is fetched on demand instead — see `lean_entries`.
+const LABEL_ARGUMENT_KEYS: [&str; 4] = ["path", "file_path", "filePath", "question"];
 
 #[cfg(test)]
 mod tests {
@@ -1144,6 +1152,24 @@ mod tests {
         }
     }
 
+    /// A `fusion` consultation's only label is its question, so a lean *history*
+    /// page must keep it: the lean *live* lane already does (fusion is in neither
+    /// `BODY_BEARING_TOOLS` nor `FETCHED_LABEL_TOOLS`), and a call that lost it
+    /// here would render as the bare word `fusion` until the row was opened.
+    #[test]
+    fn lean_entries_keeps_a_fusion_question() {
+        let question = "Which storage engine should the ledger use?";
+        let mut entries = json!([{"id": "a1", "kind": "assistant", "role": "assistant",
+            "createdAtMs": 1, "blocks": [
+            {"kind": "tool_call", "name": "fusion", "toolCallId": "c9",
+             "arguments": {"question": question, "context": "c".repeat(2000)}},
+        ]}]);
+        lean_entries(&mut entries);
+        let block = &entries[0]["blocks"][0];
+        assert_eq!(block["toolCallId"], json!("c9"));
+        assert_eq!(block["arguments"], json!({"question": question}));
+    }
+
     /// Fail closed on anything unrecognized: an argument list that is not an
     /// object, blocks that are not an array, and block kinds this code has never
     /// heard of all pass through untouched.
@@ -1191,6 +1217,14 @@ mod tests {
                 "edit",
                 json!({"filePath": "/a/b", "command": "not read", "edits": []}),
                 json!({"filePath": "/a/b"}),
+            ),
+            // A fusion consultation is a modelled kind
+            // (`packages/thread-projection/src/group.ts`), and its row is
+            // labelled by `args.question` — not by a path or a command.
+            (
+                "fusion",
+                json!({"question": "Which engine?", "context": "a".repeat(2000)}),
+                json!({"question": "Which engine?"}),
             ),
         ] {
             let mut entries = json!([{"id": "e", "kind": "assistant", "blocks": [
@@ -1397,12 +1431,16 @@ mod tests {
                     ),
                     "tool_call" => {
                         let kept = block["arguments"].as_object();
-                        if matches!(block["name"].as_str(), Some("read" | "write" | "edit")) {
-                            // A file row keeps exactly the keys its target is
-                            // derived from.
+                        if matches!(
+                            block["name"].as_str(),
+                            Some("read" | "write" | "edit" | "fusion")
+                        ) {
+                            // A label-bearing row keeps exactly the keys its
+                            // target is derived from — a path, or a fusion's
+                            // question.
                             for key in kept.into_iter().flatten() {
                                 assert!(
-                                    PATH_ARGUMENT_KEYS.contains(&key.0.as_str()),
+                                    LABEL_ARGUMENT_KEYS.contains(&key.0.as_str()),
                                     "argument {key:?} is not one the target derivation reads"
                                 );
                             }
