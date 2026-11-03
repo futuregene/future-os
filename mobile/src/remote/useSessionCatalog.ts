@@ -132,7 +132,12 @@ export function useSessionCatalog(
   }, []);
   const modelsRef = useRef<RemoteModel[]>([]);
   const sessionRefreshRef = useRef<{
-    client: RemoteClient; epoch: number; dirty: boolean; promise: Promise<void>;
+    client: RemoteClient;
+    epoch: number;
+    dirty: boolean;
+    /** Whether the flight in progress is a self-heal read (see `readSessions`). */
+    keepOptimistic: boolean;
+    promise: Promise<void>;
   } | null>(null);
   const modelRecoveryRef = useRef<{
     generation: number;
@@ -305,12 +310,24 @@ export function useSessionCatalog(
     [],
   );
 
-  const readSessions = useCallback(async () => {
+  /**
+   * Re-read the catalogue.
+   *
+   * `keepOptimistic` decides what this read may do to a locally set title. A
+   * read started right after a rename was acknowledged (`rename` below) may
+   * retire the overlay outright — the desktop has already mirrored the name. A
+   * read the *client* started on its own clock (the slow self-heal) must not:
+   * that one can arrive while the rename is still in flight, and clearing the
+   * overlay there would put the old title back on screen. It passes no
+   * `overridesAtRead`, so the same code path keeps every overlay the desktop has
+   * not confirmed yet.
+   */
+  const readSessions = useCallback(async (keepOptimistic = false) => {
     const client = clientRef.current;
     if (!client) return;
     const epoch = catalogEpoch.current;
     const revision = ++revisions.current.sessions;
-    const overridesAtRead = titleOverridesRef.current;
+    const overridesAtRead = keepOptimistic ? undefined : titleOverridesRef.current;
     markSync("sessions", "syncing");
     try {
       const response = await client.requestRetry<SessionsData>({ type: "list_sessions" }, "list");
@@ -336,27 +353,40 @@ export function useSessionCatalog(
 
   // Coalesce terminal/approval bursts without losing a change that arrived
   // after the in-flight server snapshot: one trailing read refreshes it.
-  const refreshSessions = useCallback((): Promise<void> => {
-    const client = clientRef.current;
-    if (!client) return Promise.resolve();
-    const epoch = catalogEpoch.current;
-    const pending = sessionRefreshRef.current;
-    if (pending?.client === client && pending.epoch === epoch) {
-      pending.dirty = true;
-      return pending.promise;
-    }
-    const flight = { client, epoch, dirty: false, promise: Promise.resolve() };
-    sessionRefreshRef.current = flight;
-    flight.promise = (async () => {
-      do {
-        flight.dirty = false;
-        await readSessions();
-      } while (flight.dirty && clientRef.current === client && catalogEpoch.current === epoch);
-    })().finally(() => {
-      if (sessionRefreshRef.current === flight) sessionRefreshRef.current = null;
-    });
-    return flight.promise;
-  }, [clientRef, readSessions]);
+  const refreshSessions = useCallback(
+    (options?: { keepOptimistic?: boolean }): Promise<void> => {
+      const keepOptimistic = options?.keepOptimistic === true;
+      const client = clientRef.current;
+      if (!client) return Promise.resolve();
+      const epoch = catalogEpoch.current;
+      const pending = sessionRefreshRef.current;
+      if (pending?.client === client && pending.epoch === epoch) {
+        pending.dirty = true;
+        // A self-heal read must not be upgraded into an authoritative one (nor
+        // the reverse) by whichever call happened to coalesce into it.
+        pending.keepOptimistic = pending.keepOptimistic && keepOptimistic;
+        return pending.promise;
+      }
+      const flight = {
+        client,
+        epoch,
+        dirty: false,
+        keepOptimistic,
+        promise: Promise.resolve(),
+      };
+      sessionRefreshRef.current = flight;
+      flight.promise = (async () => {
+        do {
+          flight.dirty = false;
+          await readSessions(flight.keepOptimistic);
+        } while (flight.dirty && clientRef.current === client && catalogEpoch.current === epoch);
+      })().finally(() => {
+        if (sessionRefreshRef.current === flight) sessionRefreshRef.current = null;
+      });
+      return flight.promise;
+    },
+    [clientRef, readSessions],
+  );
 
   const refreshModels = useCallback(async () => {
     markSync("models", "syncing");

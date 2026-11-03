@@ -22,7 +22,10 @@ impl BusinessHost for DesktopHost {
         Box::pin(async move {
             // Measure the desktop's half of every remote command, so a phone's
             // load timeout can be told apart from a slow relay: no slow row
-            // logged here means the desktop answered quickly.
+            // logged here means the desktop answered quickly. The row splits
+            // its own elapsed into execution and reply (see
+            // `command_diagnostics`), because the reply's publish+flush is the
+            // transport and must not be read as desktop work.
             let kind = command.cmd_type.clone();
             let session = command.session_id.clone();
             let started = std::time::Instant::now();
@@ -33,12 +36,12 @@ impl BusinessHost for DesktopHost {
                     Ok(page) => sink.send_binary(page.header, page.body).await,
                     Err(error) => sink.send(false, Value::Null, Some(error)).await,
                 }
-                command_diagnostics::report(&kind, &session, started.elapsed(), &outcome);
+                command_diagnostics::report(&kind, &session, started, started.elapsed(), &outcome);
                 return;
             }
             let paged = read_pages::PagedReply::new(&command, &sink);
             business::execute(command, &paged).await;
-            command_diagnostics::report(&kind, &session, started.elapsed(), &outcome);
+            command_diagnostics::report(&kind, &session, started, started.elapsed(), &outcome);
         })
     }
 }

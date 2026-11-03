@@ -76,6 +76,75 @@ describe("useSessionCatalog", () => {
     expect(result.current.sessions.map(item => item.sessionId)).toEqual(["latest"]);
   });
 
+  /**
+   * The slow self-heal read must not undo a name this phone just set.
+   *
+   * Both halves matter and they pull in opposite directions: the read may not
+   * clobber an overlay the desktop has not confirmed (a rename in flight), and a
+   * change the desktop *has* made must still arrive. `keepOptimistic` is what
+   * separates them — it is the same override path, entered from the client's own
+   * clock instead of from the acknowledgement.
+   */
+  test("a self-heal read keeps a title this phone set and the desktop has not confirmed", async () => {
+    request.mockImplementation((command: { type: string }) =>
+      command.type === "list_sessions"
+        ? Promise.resolve({ data: { sessions: [session("s1")] } })
+        : Promise.resolve({ data: {} }),
+    );
+    render();
+    await act(async () => {
+      await result.current.refreshSessions();
+    });
+    expect(result.current.sessions[0]?.title).toBe("Title s1");
+
+    // The rename's own trailing read fails (a connection lost right after), so
+    // the overlay is what the phone is showing.
+    request.mockImplementation((command: { type: string }) => {
+      if (command.type === "list_sessions") return Promise.reject(new Error("offline"));
+      return Promise.resolve({ data: {} });
+    });
+    await act(async () => {
+      await result.current.rename("s1", "本地改的名字");
+    });
+    expect(result.current.sessions.find(item => item.sessionId === "s1")?.title).toBe("本地改的名字");
+
+    // The self-heal read now answers with the desktop's older copy.
+    request.mockImplementation((command: { type: string }) =>
+      command.type === "list_sessions"
+        ? Promise.resolve({ data: { sessions: [session("s1")] } })
+        : Promise.resolve({ data: {} }),
+    );
+    await act(async () => {
+      await result.current.refreshSessions({ keepOptimistic: true });
+    });
+    expect(result.current.sessions.find(item => item.sessionId === "s1")?.title).toBe("本地改的名字");
+  });
+
+  test("a self-heal read shows a rename the desktop did make", async () => {
+    request.mockImplementation((command: { type: string }) =>
+      command.type === "list_sessions"
+        ? Promise.resolve({ data: { sessions: [session("s1")] } })
+        : Promise.resolve({ data: {} }),
+    );
+    render();
+    await act(async () => {
+      await result.current.refreshSessions({ keepOptimistic: true });
+    });
+    expect(result.current.sessions[0]?.title).toBe("Title s1");
+
+    request.mockImplementation((command: { type: string }) =>
+      command.type === "list_sessions"
+        ? Promise.resolve({
+            data: { sessions: [{ ...session("s1"), title: "桌面改的名字" }] },
+          })
+        : Promise.resolve({ data: {} }),
+    );
+    await act(async () => {
+      await result.current.refreshSessions({ keepOptimistic: true });
+    });
+    expect(result.current.sessions[0]?.title).toBe("桌面改的名字");
+  });
+
   test("a replaced client starts a fresh refresh without waiting for the old flight", async () => {
     let finish!: (value: unknown) => void;
     request.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));

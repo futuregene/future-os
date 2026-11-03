@@ -13,8 +13,16 @@
 //! component log, including `desktop.log` when embedded in Desktop. A phone
 //! timeout with no slow command logged here is a transport
 //! problem; a slow command here names exactly which read was expensive.
+//!
+//! A row splits its own elapsed time, because "the desktop executed slowly" and
+//! "the reply took a long time to leave" are different faults and the total
+//! alone cannot tell them apart: `elapsed` is measured across the handler *and*
+//! the reply's publish+flush, so an uplink that stalls the flush is recorded as
+//! an expensive read. `exec=` ends where the handler first handed bytes to the
+//! sink; `send=` is the remainder — publish, flush and the broker's
+//! acknowledgement, which is transport.
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use future_remote_server::services::ReplySink;
 use futures::future::BoxFuture;
@@ -43,6 +51,10 @@ pub(super) struct CommandOutcome {
     /// The chunk payload of a binary read page. A JSON reply's size is not
     /// measured: computing it would serialize every reply just for telemetry.
     bytes: Option<usize>,
+    /// When the handler first handed reply bytes to this sink — the boundary
+    /// between the desktop's own work and the transport that carries the
+    /// answer. `None` means the command never replied (dropped by a fence).
+    sent_at: Option<Instant>,
 }
 
 /// A sink that forwards every reply and records what it carried.
@@ -65,6 +77,7 @@ impl ReplySink for ObservedSink<'_> {
     fn send<'a>(&'a self, success: bool, data: Value, error: Option<String>) -> BoxFuture<'a, ()> {
         {
             let mut outcome = self.outcome.lock().unwrap();
+            outcome.sent_at.get_or_insert_with(Instant::now);
             outcome.success = Some(success);
             outcome.error = error.clone();
             if let Some(bytes) = read_chunk_bytes(&data) {
@@ -80,6 +93,7 @@ impl ReplySink for ObservedSink<'_> {
     fn send_binary<'a>(&'a self, header: Value, body: Vec<u8>) -> BoxFuture<'a, ()> {
         {
             let mut outcome = self.outcome.lock().unwrap();
+            outcome.sent_at.get_or_insert_with(Instant::now);
             outcome.success = Some(true);
             outcome.error = None;
             outcome.bytes = Some(body.len());
@@ -103,6 +117,7 @@ fn read_chunk_bytes(data: &Value) -> Option<usize> {
 pub(super) fn report_line(
     cmd_type: &str,
     session_id: &str,
+    started: Instant,
     elapsed: Duration,
     outcome: &Mutex<CommandOutcome>,
 ) -> Option<String> {
@@ -114,10 +129,20 @@ pub(super) fn report_line(
     if !slow && outcome.error.is_none() {
         return None;
     }
+    // The split this row exists for; both halves are omitted when the command
+    // never replied, because then there is no boundary to report.
+    let halves = match outcome.sent_at {
+        Some(sent_at) => {
+            let exec = sent_at.saturating_duration_since(started);
+            let send = elapsed.saturating_sub(exec);
+            format!(" exec={}ms send={}ms", exec.as_millis(), send.as_millis())
+        }
+        None => String::new(),
+    };
     // Session and run identify the read, never its content: what a diagnostic
     // needs is *which* command was expensive, not what it returned.
     Some(format!(
-        "remote command {}: type={} session={} elapsed={}ms{}{}{}",
+        "remote command {}: type={} session={} elapsed={}ms{}{}{}{}",
         if slow { "slow" } else { "failed" },
         cmd_type,
         if session_id.is_empty() {
@@ -126,6 +151,7 @@ pub(super) fn report_line(
             session_id
         },
         elapsed.as_millis(),
+        halves,
         match outcome.bytes {
             Some(bytes) => format!(" bytes={bytes}"),
             None => String::new(),
@@ -146,10 +172,11 @@ pub(super) fn report_line(
 pub(super) fn report(
     cmd_type: &str,
     session_id: &str,
+    started: Instant,
     elapsed: Duration,
     outcome: &Mutex<CommandOutcome>,
 ) {
-    if let Some(line) = report_line(cmd_type, session_id, elapsed, outcome) {
+    if let Some(line) = report_line(cmd_type, session_id, started, elapsed, outcome) {
         tracing::warn!(
             event = "remote_command_diagnostic",
             command = cmd_type,
@@ -170,6 +197,7 @@ mod tests {
             success,
             error: error.map(str::to_owned),
             bytes,
+            sent_at: None,
         }
     }
 
@@ -178,10 +206,12 @@ mod tests {
             success: outcome.success,
             error: outcome.error.clone(),
             bytes: outcome.bytes,
+            sent_at: outcome.sent_at,
         });
         report_line(
             cmd_type,
             "s1",
+            Instant::now(),
             Duration::from_millis(elapsed_ms as u64),
             &outcome,
         )
@@ -237,10 +267,12 @@ mod tests {
             success: Some(false),
             error: Some("agent offline".into()),
             bytes: None,
+            sent_at: None,
         });
         let line = report_line(
             "get_session_entries",
             "s1",
+            Instant::now(),
             Duration::from_millis(42),
             &outcome,
         )
@@ -249,21 +281,51 @@ mod tests {
         assert!(line.contains("session=s1"), "{line}");
         assert!(line.contains("elapsed=42ms"), "{line}");
         assert!(line.contains("error=agent offline"), "{line}");
+        // A command that never replied has no boundary to split on, and must not
+        // claim the whole elapsed time was execution.
+        assert!(!line.contains("exec="), "{line}");
 
         let outcome = Mutex::new(CommandOutcome {
             success: Some(true),
             error: None,
             bytes: Some(4096),
+            sent_at: None,
         });
         let line = report_line(
             "get_read_chunk",
             "s1",
+            Instant::now(),
             Duration::from_millis(2500),
             &outcome,
         )
         .expect("a slow command is reported");
         assert!(line.starts_with("remote command slow:"), "{line}");
         assert!(line.contains("bytes=4096"), "{line}");
+    }
+
+    /// The reason this module exists, now answerable: a page the desktop read in
+    /// 42 ms is not a desktop fault when the row's other 3.1 s is the reply
+    /// leaving. Before the split, both cases read `elapsed=3177ms`.
+    #[test]
+    fn a_slow_row_says_which_half_was_slow() {
+        let started = Instant::now();
+        let outcome = Mutex::new(CommandOutcome {
+            success: Some(true),
+            error: None,
+            bytes: None,
+            sent_at: Some(started + Duration::from_millis(42)),
+        });
+        let line = report_line(
+            "get_session_entries",
+            "s1",
+            started,
+            Duration::from_millis(3177),
+            &outcome,
+        )
+        .expect("a slow command is reported");
+        assert!(line.contains("elapsed=3177ms"), "{line}");
+        assert!(line.contains("exec=42ms"), "{line}");
+        assert!(line.contains("send=3135ms"), "{line}");
     }
 
     #[test]
@@ -295,6 +357,7 @@ mod tests {
         let recorder = Recorder::default();
         let outcome = Arc::new(Mutex::new(CommandOutcome::default()));
         let sink = ObservedSink::new(&recorder, &outcome);
+        let before = Instant::now();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -330,5 +393,9 @@ mod tests {
         assert_eq!(outcome.success, Some(true), "the last reply wins");
         assert_eq!(outcome.error, None, "the last reply wins");
         assert_eq!(outcome.bytes, Some(128), "the binary body, not the header");
+        assert!(
+            outcome.sent_at.is_some_and(|at| at >= before),
+            "the first reply is where execution ends"
+        );
     }
 }
