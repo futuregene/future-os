@@ -194,6 +194,14 @@ describe("lastRunReview banners", () => {
     expect(bannerTexts()[0]).toContain("This run's change snapshot is unavailable");
   });
 
+  it("explains missing execution boundaries without offering an impossible retry", async () => {
+    const onRetry = vi.fn();
+    await mount({ review: runReview({ snapshotStatus: "incomplete", confidence: "incomplete" }), onRetry });
+    expect(bannerTexts()[0]).toContain("Its exact changes cannot be reconstructed");
+    expect([...container.querySelectorAll("button")].some(button => button.textContent === "Retry")).toBe(false);
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+
   it("offers a retry on an incomplete snapshot and reports the in-flight state", async () => {
     const onRetry = vi.fn();
     await mount({ review: runReview({ snapshotStatus: "incomplete" }), onRetry });

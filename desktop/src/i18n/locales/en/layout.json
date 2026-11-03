@@ -152,6 +152,13 @@
     "start": "Get started",
     "communitySubtitle": "Configure your own model provider to get started."
   },
+  "appStartup": {
+    "loading": "Loading account and provider settings",
+    "failed": "Could not load startup settings",
+    "providersTimeout": "The Agent is connected, but provider settings did not respond. Try again.",
+    "providersFailed": "Provider settings could not be read. Check the Agent connection and try again.",
+    "retry": "Try again"
+  },
   "agentStatus": {
     "noResponse": "Future Agent is not responding yet",
     "noResponseHint": "No startup status received for 15 seconds. Still trying to connect.",
