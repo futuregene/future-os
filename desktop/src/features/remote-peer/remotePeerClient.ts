@@ -460,6 +460,19 @@ export async function promptRemoteConversation(
    * the cached ack instead of running the prompt twice.
    */
   commandId?: string,
+  /**
+   * What this send means while the conversation already has a run in flight, in
+   * the Agent's own vocabulary (`enqueue_if_busy` | `enqueue_coalescing` |
+   * `supersede_session`).
+   *
+   * A client that says nothing keeps the host's legacy refusal ("this session is
+   * still running"), which is why a send made *while it streams* has to name a
+   * policy to land anywhere. `enqueue_coalescing` is the one a queue uses: the
+   * session holds the prompt on a durable receipt and folds consecutive ones into
+   * a single turn, so the queue lives on the machine that runs it rather than in
+   * this window's memory.
+   */
+  busyPolicy?: string,
 ): Promise<RemoteConversationIds> {
   const provider = !sessionId && fresh?.modelId ? remoteModelProvider(fresh.modelId) : null;
   const ack = await requestRemotePeer<Record<string, unknown>>(
@@ -477,6 +490,11 @@ export async function promptRemoteConversation(
       ...(attachments.length > 0
         ? { attachments: attachments.map(uploadId => ({ uploadId })) }
         : {}),
+      // Absent rather than empty when unnamed: an empty policy is the host's own
+      // "say nothing", but sending the key at all is how a reader of the wire
+      // (and the schema) can tell a client that decided from one that predates
+      // the field.
+      ...(busyPolicy ? { busyPolicy } : {}),
     },
     sessionId || "new",
   );

@@ -169,8 +169,9 @@ interface ComposerProps {
    */
   onQueue?: (payload: ComposerSendPayload) => boolean;
   /**
-   * This conversation's send queue (see `lib/sendQueue`) — the other answer to
-   * "a send while the run is still going".
+   * This conversation's send queue — the other answer to "a send while the run is
+   * still going". The row itself belongs to the Agent (`agentQueue`); this is the
+   * composer's own hand-over, not a queue held here.
    *
    * With this present, a send during a run is no longer refused: the send button
    * becomes a choice between holding the draft in the queue and interrupting the
