@@ -8,6 +8,7 @@ import type { DesktopConnection } from "./useDesktopConnection";
 import { useDesktopManagement } from "./useDesktopManagement";
 import { usePromptOutbox } from "./usePromptOutbox";
 import { useSessionCatalog } from "./useSessionCatalog";
+import { useCatalogSelfHeal } from "./useCatalogSelfHeal";
 import { useTimelineController } from "./useTimelineController";
 import { DEFAULT_THINKING_LEVEL } from "./types";
 import type {
@@ -120,6 +121,10 @@ export function useDesktopRuntime({
   }, [desktopId, label]);
 
   const catalog = useSessionCatalog(clientRef, selectedRef, onTaskFinished);
+  // The slow self-heal read. Only while the app is in front (a backgrounded
+  // phone runs no timer), and never allowed to retire a title this phone just
+  // set — see `refreshSessions`' `keepOptimistic`.
+  useCatalogSelfHeal(() => catalog.refreshSessions({ keepOptimistic: true }), { foreground });
   const {
     sessions,
     setTitleOverrides,
