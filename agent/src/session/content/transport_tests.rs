@@ -429,7 +429,10 @@ fn storage_identity_fails_when_the_metadata_rows_are_missing() {
         })
         .unwrap();
     let error = store.storage_identity().unwrap_err();
-    assert!(format!("{error:#}").contains("no rows"), "{error:#}");
+    // The error names the key it could not find: the identity is read as one
+    // statement now, so "no rows" alone would not say which half is missing.
+    let message = format!("{error:#}");
+    assert!(message.contains("restore_generation"), "{message}");
     store
         .db
         .call(|db| {
@@ -437,7 +440,9 @@ fn storage_identity_fails_when_the_metadata_rows_are_missing() {
             Ok(())
         })
         .unwrap();
-    assert!(store.storage_identity().is_err());
+    let error = store.storage_identity().unwrap_err();
+    let message = format!("{error:#}");
+    assert!(message.contains("database_id"), "{message}");
 }
 
 #[test]

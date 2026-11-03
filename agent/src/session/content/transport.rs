@@ -309,17 +309,41 @@ fn resolve_scoped(
         Encoding::parse(&encoding)?,
     ))
 }
+/// The database identity a read must stay consistent with.
+///
+/// One prepared statement, asked through the connection's statement cache: this
+/// runs on every fresh read connection (and on every scope check), so the parse
+/// it used to pay twice is the whole cost on the hot path.
 pub(crate) fn storage_identity(db: &rusqlite::Connection) -> Result<StorageIdentity> {
-    Ok(StorageIdentity {
-        database_id: db.query_row(
-            "SELECT value FROM storage_meta WHERE key='database_id'",
-            [],
-            |row| row.get(0),
-        )?,
-        restore_generation: db.query_row(
-            "SELECT value FROM storage_meta WHERE key='restore_generation'",
-            [],
-            |row| row.get(0),
-        )?,
-    })
+    let mut statement = db.prepare_cached(
+        "SELECT key, value FROM storage_meta WHERE key IN ('database_id','restore_generation')",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut identity = StorageIdentity {
+        database_id: String::new(),
+        restore_generation: String::new(),
+    };
+    for row in rows {
+        let (key, value) = row?;
+        match key.as_str() {
+            "database_id" => identity.database_id = value,
+            "restore_generation" => identity.restore_generation = value,
+            _ => {}
+        }
+    }
+    let missing: Vec<&str> = [
+        ("database_id", identity.database_id.is_empty()),
+        ("restore_generation", identity.restore_generation.is_empty()),
+    ]
+    .into_iter()
+    .filter_map(|(key, missing)| missing.then_some(key))
+    .collect();
+    anyhow::ensure!(
+        missing.is_empty(),
+        "storage identity is missing {}",
+        missing.join(", ")
+    );
+    Ok(identity)
 }
