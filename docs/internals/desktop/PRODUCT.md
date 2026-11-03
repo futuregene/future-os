@@ -857,12 +857,18 @@ parked for the reader to start rather than spent automatically. The waiting rows
 are listed above the composer, read from the Agent: taking one back cancels it
 (editing it cancels and re-sends the corrected text, since the Agent has no
 update-in-place), and a parked row offers to start now. Interrupting
-sends the draft as its own turn. The phone still keeps its queue in local
-storage, so a restart holds it (attachments the OS has cleaned up are dropped on
-the way back) and an uninstall takes it with everything else; the desktop app's
-view of another computer's conversation still queues in that app's memory. The
-terminal has no send queue, and the Vibe
-panel's input layer keeps its own hand-back queue (see `VIBE.md` §5.4).
+sends the draft as its own turn.
+
+The same rule holds for every client that drives a conversation: this app's view
+of another computer's conversation and the phone both hand a queued message to
+the session that will run it (`enqueue_coalescing`, and the remote prompt's
+`busyPolicy`), then read the waiting rows back from that host's `get_queue` —
+delete cancels the run id, edit cancels and re-sends, a parked row is released.
+No client keeps a queue of its own: a message written on the phone survives the
+app being closed or uninstalled because it was never the phone's, and the
+controlling computer going away does not strand it either. The terminal has no
+send queue, and the Vibe panel's input layer keeps its own hand-back queue (see
+`VIBE.md` §5.4).
 
 History display and persistence rules:
 
