@@ -18,6 +18,7 @@ pub struct Manager {
     pub dir: PathBuf,
     store: OnceLock<SqliteStore>,
     initialization: parking_lot::Mutex<()>,
+    pub(in crate::session) history_rebuild: parking_lot::Mutex<()>,
     stopping: std::sync::atomic::AtomicBool,
     /// Bounded LRU for legacy whole-history reads, keyed by transcript revision.
     /// Paged reads use the persisted display index directly.
@@ -40,6 +41,7 @@ impl Manager {
             dir,
             store: OnceLock::new(),
             initialization: parking_lot::Mutex::new(()),
+            history_rebuild: parking_lot::Mutex::new(()),
             display_projection_cache: parking_lot::Mutex::new(Vec::new()),
             history_fragments: parking_lot::Mutex::new(Default::default()),
             history_pages: parking_lot::Mutex::new(super::history::paging::PageCache::new()),
@@ -174,7 +176,7 @@ impl Manager {
     /// model input or authorize new tools from a silently truncated prefix.
     pub fn ensure_execution_allowed(&self, session: &str) -> Result<()> {
         let session = session.to_owned();
-        self.storage()?.db.read(move |db| {
+        self.storage()?.db.fence(move |db| {
             use rusqlite::OptionalExtension;
             let session = super::identity::BoundIdentity::session(db, &session)?;
             let failed: Option<super::identity::BoundIdentity> = db.query_row(

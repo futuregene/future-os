@@ -98,8 +98,9 @@ impl Database {
                                 // thread as every write, so it is one of the
                                 // things a stalled caller can be waiting for.
                                 let started = std::time::Instant::now();
+                                let job = slow::Job::new("writer", "reclaim");
                                 let slice = reclaim_space_when_idle(&mut connection);
-                                slow::report("reclaim", started.elapsed(), Duration::ZERO);
+                                job.report(started.elapsed(), Duration::ZERO, slice.is_ok(), None);
                                 match slice {
                                     Ok(done) => {
                                         reclaim_error_reported = false;
@@ -168,22 +169,60 @@ impl Database {
         })
     }
 
+    #[track_caller]
     pub(crate) fn call<T: Send + 'static>(
         &self,
         operation: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        self.call_as("other", operation)
+        self.call_as("write", operation)
     }
 
     /// A writer job that names itself, so a job holding the thread long enough
     /// to stall its callers can be pointed at. Every production caller that can
     /// plausibly own seconds of work names itself; the rest keep `call`'s
-    /// `job=other`, which is itself the answer when such a row appears.
+    /// `job=write` with a source location, which is itself the answer when such a row appears.
+    #[track_caller]
     pub(crate) fn call_as<T: Send + 'static>(
         &self,
         job: &'static str,
         operation: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     ) -> Result<T> {
+        self.call_inner(job, false, operation)
+    }
+
+    /// Only disposable projection work may follow a read request's cancellation.
+    #[track_caller]
+    pub(crate) fn call_derived<T: Send + 'static>(
+        &self,
+        job: &'static str,
+        operation: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        self.call_inner(job, true, operation)
+    }
+
+    #[track_caller]
+    fn call_inner<T: Send + 'static>(
+        &self,
+        job: &'static str,
+        cancellable: bool,
+        operation: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let job_info = slow::Job::new("writer", job);
+        let request = request::Context::current().map(|context| {
+            if cancellable {
+                context
+            } else {
+                context.durable()
+            }
+        });
+        if cancellable {
+            if let Some(request) = &request {
+                request.check()?;
+            }
+        }
+        let waiting_request = request.clone();
+        let running = Arc::new(AtomicBool::new(false));
+        let work_running = running.clone();
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         let queued = std::time::Instant::now();
         let metrics = self.inner.metrics.clone();
@@ -193,36 +232,44 @@ impl Database {
             .as_ref()
             .ok_or_else(|| anyhow!("SQLite worker is closed"))?
             .try_send(Box::new(move |connection| {
+                work_running.store(true, Ordering::Release);
                 let waited = queued.elapsed();
                 metrics.writer_queue.record(waited, true);
                 let started = std::time::Instant::now();
-                let result = operation(connection);
+                let result = match request.as_ref().filter(|_| cancellable) {
+                    Some(request) => request.run(connection, operation),
+                    None => operation(connection),
+                };
                 let elapsed = started.elapsed();
                 metrics.writer_job.record(elapsed, result.is_ok());
-                slow::report(job, elapsed, waited);
+                job_info.report(elapsed, waited, result.is_ok(), request.as_ref());
                 let _ = reply_tx.send(result);
             }))
             .map_err(|error| match error {
                 mpsc::TrySendError::Full(_) => anyhow!("SQLite operation queue is full"),
                 mpsc::TrySendError::Disconnected(_) => anyhow!("SQLite worker is unavailable"),
             })?;
-        reply_rx.recv().context("SQLite operation interrupted")?
+        job_info.wait(&reply_rx, running, waiting_request.as_ref())
     }
 
-    /// Read jobs never queue behind transcript writes or background maintenance.
+    /// Ordinary bulk reads. Tiny authorization reads use the fence lane.
+    #[track_caller]
     pub(crate) fn read<T: Send + 'static>(
         &self,
         operation: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        let queued = std::time::Instant::now();
-        let metrics = self.inner.metrics.clone();
-        self.inner.readers.call(move |connection| {
-            metrics.reader_queue.record(queued.elapsed(), true);
-            let started = std::time::Instant::now();
-            let result = operation(connection);
-            metrics.reader_job.record(started.elapsed(), result.is_ok());
-            result
-        })
+        self.read_as("read", operation)
+    }
+
+    #[track_caller]
+    pub(crate) fn read_as<T: Send + 'static>(
+        &self,
+        name: &'static str,
+        operation: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        self.inner
+            .readers
+            .call("reader", name, self.inner.metrics.clone(), operation)
     }
 
     pub(crate) fn metrics(&self) -> serde_json::Value {
@@ -266,6 +313,7 @@ impl Database {
     /// write, but not one still queued. Callers that mutate and then read in the
     /// same sequence keep `call`; a fence gets a second look instead (see
     /// `agent_bridge::presence`).
+    #[track_caller]
     pub(crate) fn fence<T: Send + 'static>(
         &self,
         operation: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
@@ -283,7 +331,7 @@ impl Database {
                 }
             }
         };
-        lane.call(operation)
+        lane.call("fence", "fence", self.inner.metrics.clone(), operation)
     }
 
     /// Non-blocking hint. Idle worker slices give queued foreground writes
@@ -298,6 +346,7 @@ mod connection;
 mod metrics;
 mod readers;
 mod reclamation;
+pub(crate) mod request;
 mod schema;
 mod slow;
 mod snapshots;

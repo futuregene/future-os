@@ -472,7 +472,7 @@ fn compaction_display_row(manager: &Manager, id: &str) -> serde_json::Value {
     serde_json::from_str(&payload).unwrap()
 }
 
-fn session_with_checkpoint() -> (Manager, Session) {
+fn session_with_checkpoint() -> (tempfile::TempDir, Manager, Session) {
     let dir = tempfile::tempdir().unwrap();
     let manager = Manager::new(dir.path().join("sessions"));
     let mut session = Session::new("/synthetic", "mock");
@@ -493,7 +493,7 @@ fn session_with_checkpoint() -> (Manager, Session) {
         .entries
         .push(SessionEntry::new_assistant(json!("answer"), Vec::new()));
     manager.save(&session).unwrap();
-    (manager, session)
+    (dir, manager, session)
 }
 
 /// The divider a client draws is built from `payload.checkpoint`: its identity
@@ -540,7 +540,7 @@ fn a_compaction_shape_keeps_the_checkpoint_the_divider_prints() {
 /// counts, which is what the body-less fallback serves to a client.
 #[test]
 fn the_display_index_carries_the_checkpoint_counts_and_identity() {
-    let (manager, session) = session_with_checkpoint();
+    let (_dir, manager, session) = session_with_checkpoint();
     let payload = compaction_display_row(&manager, &session.id);
     assert_eq!(payload["checkpoint"]["checkpointId"], "cp_1");
     assert_eq!(payload["checkpoint"]["tokensBefore"], 62203);
@@ -554,7 +554,7 @@ fn the_display_index_carries_the_checkpoint_counts_and_identity() {
 /// is what says whether a session's derived rows are current.
 #[test]
 fn a_version_one_row_is_rebuilt_on_its_next_read() {
-    let (manager, session) = session_with_checkpoint();
+    let (_dir, manager, session) = session_with_checkpoint();
     let id = session.id;
     // Exactly what the previous projection produced, plus its version stamp.
     manager.test_execute(&format!(

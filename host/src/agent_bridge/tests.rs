@@ -2030,17 +2030,14 @@ mod pipeline_tests {
             "the backend settles the run row"
         );
 
-        // A freshly created session receives the caller's model + thinking.
+        // Creation carries the selection; sending a first prompt must not
+        // repeat model/thinking mutations after the session has been published.
         let new_session = &fixture.mock.requests_of("new_session")[0];
         assert_eq!(new_session.cwd, fixture.workspace.path);
-        assert_eq!(
-            fixture.mock.requests_of("set_model")[0].model_id,
-            "future/k3"
-        );
-        assert_eq!(
-            fixture.mock.requests_of("set_thinking_level")[0].level,
-            "high"
-        );
+        assert_eq!(new_session.model_id, "future/k3");
+        assert_eq!(new_session.level, "high");
+        assert!(fixture.mock.requests_of("set_model").is_empty());
+        assert!(fixture.mock.requests_of("set_thinking_level").is_empty());
         let prompt = &fixture.mock.requests_of("prompt")[0];
         assert_eq!(prompt.message, message);
         assert_eq!(

@@ -34,7 +34,7 @@ impl Snapshot {
         store: &SqliteStore,
         sessions: Vec<String>,
     ) -> Result<(Vec<BatchSummary>, Vec<String>)> {
-        store.db.read(move |db| {
+        store.db.read_as("session_summaries", move |db| {
             let tx = db.transaction()?;
             let mut canonical = Vec::new();
             let mut legacy = Vec::new();
@@ -186,7 +186,7 @@ impl Snapshot {
 
     pub(crate) fn summary(store: &SqliteStore, session: &str) -> Result<SessionSummary> {
         let session = session.to_owned();
-        let (scope,raw,model,time,created,count,first)=store.db.read(move |db| {
+        let (scope,raw,model,time,created,count,first)=store.db.read_as("session_summaries", move |db| {
             let tx=db.transaction()?;
             let scope=Self::capture_from(&tx,&session)?;
             let session=BoundIdentity::session(&tx,&session)?;
@@ -234,7 +234,7 @@ impl Snapshot {
         }
         scope.verify(store)?;
         let check = scope.clone();
-        store.db.read(move |db| {
+        store.db.read_as("session_summaries", move |db| {
             let tx = db.transaction()?;
             check.check(&tx)?;
             ensure!(

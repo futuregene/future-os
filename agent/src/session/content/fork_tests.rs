@@ -220,19 +220,31 @@ fn identity_only_fork_does_not_materialize_unselected_checkpoints_or_message_bod
     input.point = ForkPoint::ThroughEntry("a".into());
     let fork = manager.create_fork_identity(input).unwrap();
     assert!(fork.created);
+    // Runtime metadata intentionally excludes historical message headers.
+    // Check the fork's selected identities directly, without hydrating bodies.
+    let id = fork.session_id.clone();
+    let (assistants, checkpoints) = store
+        .db
+        .read(move |db| {
+            let key = crate::session::identity::BoundIdentity::session(db, &id)?;
+            Ok((
+                db.query_row(
+                    "SELECT count(*) FROM entries WHERE session_id=?1 AND entry_type='assistant'",
+                    [&key],
+                    |row| row.get::<_, i64>(0),
+                )?,
+                db.query_row(
+                    "SELECT count(*) FROM entries WHERE session_id=?1 AND entry_type='compaction'",
+                    [&key],
+                    |row| row.get::<_, i64>(0),
+                )?,
+            ))
+        })
+        .unwrap();
+    assert_eq!(assistants, 1);
+    assert_eq!(checkpoints, 0);
     let metadata = manager.load_metadata(&fork.session_id).unwrap();
-    assert_eq!(
-        metadata
-            .entries
-            .iter()
-            .filter(|entry| entry.entry_type == "assistant")
-            .count(),
-        1
-    );
-    assert!(metadata
-        .entries
-        .iter()
-        .all(|entry| entry.entry_type != "compaction"));
+    assert_eq!(metadata.parent_session_id, "s");
 }
 
 fn hidden(store: &SqliteStore, id: &str) -> String {

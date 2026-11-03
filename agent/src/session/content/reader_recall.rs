@@ -163,7 +163,7 @@ impl Snapshot {
         let mut matches = Vec::new();
         loop {
             let check = scope.clone();
-            let rows=store.db.read(move |db| {
+            let rows=store.db.read_as("history_search", move |db| {
                 let tx=db.transaction()?;check.check(&tx)?;
                 let mut statement=tx.prepare_cached("SELECT position,entry_id,role,run_id,timestamp_ms FROM entries WHERE session_id=?1 AND position<?2 AND entry_type IN ('user','assistant','tool') ORDER BY position DESC LIMIT 64")?;
                 let rows=statement.query_map(params![check.session,before],|row|Ok((Entry {position:row.get(0)?,id:row.get(1)?},row.get::<_,Option<String>>(2)?,row.get::<_,Option<BoundIdentity>>(3)?,row.get::<_,Option<i64>>(4)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -205,7 +205,7 @@ impl Snapshot {
         limit: i64,
     ) -> Result<Value> {
         let (session, id) = (session.to_owned(), id.to_owned());
-        let (scope,entry,kind,role,run,time)=store.db.read(move |db| {
+        let (scope,entry,kind,role,run,time)=store.db.read_as("history_search", move |db| {
             let tx=db.transaction()?;
             let scope=Self::capture_from(&tx,&session)?;
             let id=BoundIdentity::entry(&tx,&session,&id)?;
@@ -275,7 +275,7 @@ impl Snapshot {
         let mut total = 0i64;
         loop {
             let (scope, locator) = (self.clone(), entry.clone());
-            let rows=store.db.read(move |db| {
+            let rows=store.db.read_as("history_search", move |db| {
                 let tx=db.transaction()?;scope.check(&tx)?;
                 let mut query=tx.prepare_cached("SELECT b.ordinal,b.kind,b.tool_call_id,b.tool_name,b.is_error,
                     coalesce(length(CAST(CASE WHEN b.kind='tool_call' THEN b.arguments_json ELSE b.text END AS BLOB)),0),
