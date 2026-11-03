@@ -483,6 +483,7 @@ mod tests {
             file_count: 1,
             total_bytes: 1,
             ignored_count: 0,
+            ignored_paths: None,
             omitted_count: 0,
             error_message: None,
         })
@@ -502,6 +503,7 @@ mod tests {
             file_count: 1,
             total_bytes: 1,
             ignored_count: 0,
+            ignored_paths: None,
             omitted_count: 0,
             error_message: None,
         })
@@ -651,6 +653,7 @@ mod tests {
                 file_count: 1,
                 total_bytes: 1,
                 ignored_count: 0,
+                ignored_paths: None,
                 omitted_count: 0,
                 error_message: None,
             })
@@ -690,6 +693,7 @@ mod tests {
                 file_count: 1,
                 total_bytes: 1,
                 ignored_count: 0,
+                ignored_paths: None,
                 omitted_count: 0,
                 error_message: None,
             })
@@ -751,6 +755,7 @@ mod tests {
                 file_count: 1,
                 total_bytes: 1,
                 ignored_count: 0,
+                ignored_paths: None,
                 omitted_count: 0,
                 error_message: None,
             })
@@ -798,6 +803,7 @@ mod tests {
             file_count: 0,
             total_bytes: 0,
             ignored_count: 0,
+            ignored_paths: None,
             omitted_count: 0,
             error_message: None,
         })
@@ -845,6 +851,7 @@ mod tests {
                 file_count: 1,
                 total_bytes: 1,
                 ignored_count: 0,
+                ignored_paths: None,
                 omitted_count: 0,
                 error_message: None,
             })
@@ -881,6 +888,7 @@ mod tests {
                 file_count: 1,
                 total_bytes: 1,
                 ignored_count: 0,
+                ignored_paths: None,
                 omitted_count: 0,
                 error_message: None,
             })

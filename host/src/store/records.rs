@@ -83,6 +83,10 @@ pub struct CreateReviewSnapshotInput {
     pub file_count: i64,
     pub total_bytes: i64,
     pub ignored_count: i64,
+    /// JSON list of the ignore-rule exclusions `ignored_count` counts: each
+    /// skipped path with the rule that excluded it. Empty for a snapshot that
+    /// left nothing out.
+    pub ignored_paths: Option<String>,
     pub omitted_count: i64,
     pub error_message: Option<String>,
 }

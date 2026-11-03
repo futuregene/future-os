@@ -124,6 +124,9 @@ CREATE TABLE IF NOT EXISTS review_snapshots (
     file_count INTEGER NOT NULL DEFAULT 0,
     total_bytes INTEGER NOT NULL DEFAULT 0,
     ignored_count INTEGER NOT NULL DEFAULT 0,
+    -- JSON list of the ignore-rule exclusions behind ignored_count:
+    -- [{"path":"bugfind/h1.md","rule":"info/exclude:12:/bugfind/"}].
+    ignored_paths TEXT,
     omitted_count INTEGER NOT NULL DEFAULT 0,
     error_message TEXT,
     created_at INTEGER NOT NULL,
@@ -309,6 +312,7 @@ pub(super) const ADDED_COLUMNS: &[(&str, &str)] = &[
     ),
     ("review_changesets", "overlapped INTEGER NOT NULL DEFAULT 0"),
     ("review_changesets", "error_message TEXT"),
+    ("review_snapshots", "ignored_paths TEXT"),
     ("review_file_changes", "previous_path TEXT"),
     ("review_file_changes", "binary INTEGER NOT NULL DEFAULT 0"),
     ("review_file_changes", "before_size INTEGER"),

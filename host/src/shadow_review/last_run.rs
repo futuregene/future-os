@@ -131,6 +131,7 @@ mod tests {
             file_count: 0,
             total_bytes: 0,
             ignored_count: 0,
+            ignored_paths: None,
             omitted_count: 0,
             error_message: None,
             created_at: 0,
