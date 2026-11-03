@@ -53,10 +53,7 @@ pub fn get_workspace_review_capabilities(
 }
 
 pub fn get_last_run_review(thread_id: String) -> Result<Option<LastRunReviewData>, crate::Error> {
-    let Some(changeset) = store::get_last_run_changeset(&thread_id)? else {
-        return Ok(None);
-    };
-    Ok(Some(shadow_review::build_last_run_review(changeset)?))
+    shadow_review::load_last_run_review(&thread_id)
 }
 
 pub fn retry_run_review(run_id: String) -> Result<Option<LastRunReviewData>, crate::Error> {

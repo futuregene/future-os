@@ -46,6 +46,9 @@ pub fn capture(
     let mut over_limit = false;
 
     for path in &candidates {
+        if crate::request_scope::is_stopping() {
+            return Err("Snapshot capture cancelled because the host is stopping.".into());
+        }
         if staged.len() >= limits.max_candidate_files {
             over_limit = true;
             omitted += 1;

@@ -4,12 +4,10 @@
 //! store + git reads — no agent involvement — so it lives in the review subsystem
 //! rather than the thin command layer.
 
-use std::path::Path;
-
 use serde::Serialize;
 
 use crate::store;
-use crate::{git_review, Error};
+use crate::Error;
 
 /// The "last-run changes" payload for a Thread (§10.3).
 #[derive(Debug, Serialize)]
@@ -33,13 +31,6 @@ pub fn build_last_run_review(
         .as_deref()
         .and_then(|run_id| store::get_run(run_id).ok().flatten());
 
-    let is_git = changeset
-        .workspace_id
-        .as_deref()
-        .and_then(|id| store::get_workspace(id).ok().flatten())
-        .map(|workspace| git_review::is_git_workspace(Path::new(&workspace.path)))
-        .unwrap_or(false);
-
     let before = changeset
         .run_id
         .as_deref()
@@ -49,7 +40,7 @@ pub fn build_last_run_review(
         .as_deref()
         .and_then(|run_id| store::get_review_snapshot(run_id, "after").ok().flatten());
 
-    let snapshot_status = derive_snapshot_status(is_git, &changeset, &before, &after);
+    let snapshot_status = derive_snapshot_status(&changeset, &before, &after);
 
     Ok(LastRunReviewData {
         snapshot_status,
@@ -61,10 +52,9 @@ pub fn build_last_run_review(
     })
 }
 
-/// Derive `snapshotStatus` (§8.5). Non-git Workspaces collapse `partial` /
-/// `incomplete` to `unavailable` (§6.7).
+/// Derive status entirely from the saved review, even when its workspace has
+/// moved. Missing boundaries remain incomplete for Git and plain directories.
 fn derive_snapshot_status(
-    is_git: bool,
     changeset: &store::ReviewChangesetRecord,
     before: &Option<store::ReviewSnapshotRecord>,
     after: &Option<store::ReviewSnapshotRecord>,
@@ -81,10 +71,13 @@ fn derive_snapshot_status(
         .map(|s| s.status != "failed")
         .unwrap_or(false);
     if !after_ok {
-        return if is_git { "incomplete" } else { "unavailable" }.to_string();
+        return "incomplete".to_string();
+    }
+    if changeset.completeness == "incomplete" {
+        return "incomplete".to_string();
     }
     if changeset.completeness == "partial" {
-        return if is_git { "partial" } else { "unavailable" }.to_string();
+        return "partial".to_string();
     }
     "complete".to_string()
 }
@@ -145,84 +138,30 @@ mod tests {
     }
 
     #[test]
-    fn derive_snapshot_status_covers_all_branches() {
-        let cs = changeset("complete");
-        // before missing / failed → unavailable
-        assert_eq!(
-            derive_snapshot_status(true, &cs, &None, &Some(snapshot("complete"))),
-            "unavailable"
-        );
-        assert_eq!(
-            derive_snapshot_status(
-                true,
-                &cs,
-                &Some(snapshot("failed")),
-                &Some(snapshot("complete"))
+    fn status_describes_recorded_boundaries_without_a_workspace_probe() {
+        for (before, after, completeness, expected) in [
+            (None, Some("complete"), "complete", "unavailable"),
+            (Some("failed"), Some("complete"), "complete", "unavailable"),
+            (Some("complete"), None, "complete", "incomplete"),
+            (Some("complete"), Some("failed"), "complete", "incomplete"),
+            (
+                Some("complete"),
+                Some("complete"),
+                "incomplete",
+                "incomplete",
             ),
-            "unavailable"
-        );
-        // after missing / failed → incomplete (git) / unavailable (non-git)
-        assert_eq!(
-            derive_snapshot_status(true, &cs, &Some(snapshot("complete")), &None),
-            "incomplete"
-        );
-        assert_eq!(
-            derive_snapshot_status(
-                true,
-                &cs,
-                &Some(snapshot("complete")),
-                &Some(snapshot("failed"))
-            ),
-            "incomplete"
-        );
-        assert_eq!(
-            derive_snapshot_status(
-                false,
-                &cs,
-                &Some(snapshot("complete")),
-                &Some(snapshot("failed"))
-            ),
-            "unavailable"
-        );
-        // partial → partial (git) / unavailable (non-git)
-        let partial = changeset("partial");
-        assert_eq!(
-            derive_snapshot_status(
-                true,
-                &partial,
-                &Some(snapshot("complete")),
-                &Some(snapshot("complete"))
-            ),
-            "partial"
-        );
-        assert_eq!(
-            derive_snapshot_status(
-                false,
-                &partial,
-                &Some(snapshot("complete")),
-                &Some(snapshot("complete"))
-            ),
-            "unavailable"
-        );
-        // complete → complete
-        assert_eq!(
-            derive_snapshot_status(
-                true,
-                &cs,
-                &Some(snapshot("complete")),
-                &Some(snapshot("complete"))
-            ),
-            "complete"
-        );
-        assert_eq!(
-            derive_snapshot_status(
-                false,
-                &cs,
-                &Some(snapshot("complete")),
-                &Some(snapshot("complete"))
-            ),
-            "complete"
-        );
+            (Some("complete"), Some("complete"), "partial", "partial"),
+            (Some("complete"), Some("complete"), "complete", "complete"),
+        ] {
+            assert_eq!(
+                derive_snapshot_status(
+                    &changeset(completeness),
+                    &before.map(snapshot),
+                    &after.map(snapshot)
+                ),
+                expected
+            );
+        }
     }
 
     #[test]

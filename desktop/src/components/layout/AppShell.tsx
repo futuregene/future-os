@@ -74,6 +74,7 @@ import { ToastHost } from "../ui/ToastHost";
 import { ActivityRail } from "./ActivityRail";
 import { AgentStatusGate } from "./AgentStatusGate";
 import { AppShellDialogs } from "./AppShellDialogs";
+import { AppStartupGate } from "./AppStartupGate";
 import { ContextPanel } from "./ContextPanel";
 import {
   defaultNewConversationTarget,
@@ -123,15 +124,14 @@ export function AppShell() {
     || agentStatus.phase === "incompatible") {
     return <AgentStatusGate showWait={agentStatus.showWait} status={agentStatus} />;
   }
-  return <StartingAppShell agentStatus={agentStatus} />;
+  return <StartingAppShell />;
 }
 
-function StartingAppShell({ agentStatus }: { agentStatus: ReturnType<typeof useAgentStatus> }) {
-  const startup = useAppStartup(true);
-  if (startup.phase === "pending")
-    return <AgentStatusGate showWait={agentStatus.showWait} status={{ ...agentStatus, phase: "starting" }} />;
-  if (startup.phase === "failed")
-    return <AgentStatusGate status={{ ...agentStatus, phase: "unavailable" }} />;
+function StartingAppShell() {
+  const [attempt, setAttempt] = useState(0);
+  const startup = useAppStartup(true, attempt);
+  if (startup.phase !== "ready")
+    return <AppStartupGate onRetry={() => setAttempt(current => current + 1)} startup={startup} />;
   return <ReadyAppShell initialAuth={startup.auth} initialProviders={startup.providers} />;
 }
 

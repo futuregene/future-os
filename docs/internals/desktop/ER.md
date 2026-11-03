@@ -682,8 +682,8 @@ Constraint `UNIQUE(run_id, phase)`.
 
 **Extended `review_changesets`**: `source_kind` (`run_snapshot` /
 `native_git`), `workspace_id`, `before_snapshot_id`, `after_snapshot_id`,
-`binary_files`, `omitted_files`, `completeness` (`complete` / `partial`),
-`confidence` (`normal` / `recovered`), `overlapped` (0/1), `error_message`.
+`binary_files`, `omitted_files`, `completeness` (`complete` / `partial` / `incomplete`),
+`confidence` (`normal` / `incomplete`, plus legacy `recovered`), `overlapped` (0/1), `error_message`.
 `run_snapshot` changesets do not participate in apply/discard; the old
 `status` column is not used for them.
 
@@ -696,12 +696,9 @@ binary files record only size / mime, no diff.
 
 **Derived state**: the API layer derives `RunReview.snapshotStatus`
 (`complete` / `partial` / `incomplete` / `unavailable`) from the snapshot
-`status` + changeset `completeness` — not persisted. Non-Git workspaces use the
-simplified tier, producing only `complete` or `unavailable` (any
-before/after/diff failure collapses to `unavailable`); `partial` /
-`incomplete` / `recovered` appear only in Git workspaces. `overlapped`
-(concurrent-window overlap) is orthogonal to those states and passed through
-separately.
+`status` + changeset `completeness` — not persisted. Git and plain-directory
+reviews share these states; the reader does not probe the current workspace.
+`overlapped` (concurrent-window overlap) is orthogonal and passed through separately.
 
 ### 4.11 Artifact
 
@@ -1074,21 +1071,23 @@ Key trade-offs:
   (`review_file_changes.diff`); shadow commits / trees degrade into
   discardable caches. Even if the real repo later gets `git gc`'d, moved, or
   the shadow repo cleaned, stored diffs still display.
-- **Honest attribution**: snapshots can only compute "what changed in the
-  workspace during the run window", not absolutely distinguish Agent / user /
-  formatter — the underlying semantic is workspace_delta; concurrent Run
-  overlaps mark `overlapped`, failures mark `unavailable`; restart recovery
-  tiers by whether the after snapshot needs re-capture — if after was captured
-  while running and only post-hoc materialization was incomplete, recover as
-  `normal` (delta fully attributable); only when after must be re-captured
-  after restart is it marked `recovered`; never lie about attribution or fake
-  "no changes".
-- **Two reliability tiers**: Git workspaces borrow the real repo's object store
-  for acceleration plus the full reliability machinery (`partial` /
-  `incomplete` / `recovered` / restart recovery); non-Git workspaces use the
-  simplified tier (failure = `unavailable`, and over-size directories get the
-  red line `changePreview = unsupported_too_large` turning preview off),
-  trading for implementation simplicity.
+- **Honest attribution**: snapshots describe workspace changes during the Run,
+  including concurrent user/tool edits; overlapping windows mark `overlapped`.
+  Before and after are captured at execution time. A missing after remains
+  `incomplete`; opening history never captures today's workspace as an old end
+  or settles a Run that the Agent may still own. Legacy `recovered` rows retain
+  their historical confidence label.
+- **Demand-driven history**: startup performs no review sweep. Opening the
+  last-run panel selects only that conversation's latest ended Run, returns
+  persisted diffs directly, or materializes its saved boundaries if the previous
+  process exited before projection. Reads and finalization serialize per Run.
+  Git and plain directories both report `partial` / `incomplete`; oversized
+  plain directories still disable capture with `unsupported_too_large`.
+- **Bounded work**: shadow Git commands and lock waits respond to Host shutdown
+  and have a 30-second limit. Commands spool input/output to temporary files to
+  avoid pipe backpressure, cap each output stream at 64 MiB, and kill/reap only
+  their own child on cancellation. Review IPC uses tracked blocking work rather
+  than the window thread.
 - **Scope and retention**: only `thread.mode = workspace` wires into Shadow
   Review; ordinary Chats keep using Artifacts and create no shadow data. Each
   Thread keeps the latest 10 changesets by default; beyond that old refs and DB

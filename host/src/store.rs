@@ -70,9 +70,8 @@ pub use markdown_refs::resolve_markdown_references;
 pub use records::*;
 pub use review_snapshots::{
     create_review_snapshot, get_last_run_changeset, get_review_snapshot, get_run_changeset,
-    list_snapshots_with_commits, list_unmaterialized_runs, mark_run_overlapped,
-    mark_snapshot_failed, prune_thread_changesets, upsert_run_changeset, ReviewChangesetRecord,
-    ReviewFileChangeRecord, ReviewSnapshotRecord,
+    latest_review_run, mark_run_overlapped, mark_snapshot_failed, prune_thread_changesets,
+    upsert_run_changeset, ReviewChangesetRecord, ReviewFileChangeRecord, ReviewSnapshotRecord,
 };
 pub use runs::{
     active_run_sessions, advance_tool_projection, clear_all_run_events_files,

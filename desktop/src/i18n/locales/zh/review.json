@@ -25,6 +25,7 @@
     "overlapped": "本轮运行期间该工作区有其他运行，部分变更可能来自并发运行",
     "recovered": "应用重启后恢复的快照，变更归属可能不精确",
     "partial": "部分文件因大小限制未生成 diff",
+    "missingBoundary": "本轮未保存完整的执行前后快照，无法还原准确变更。",
     "incomplete": "本轮快照不完整，可点击重试",
     "unavailable": "本轮变更快照不可用",
     "retrying": "重试中…",

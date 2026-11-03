@@ -50,7 +50,7 @@
   {
     "file": "agent/src/cli.rs",
     "function": "run_from_args",
-    "macro": "println",
+    "macro": "crate::console::println",
     "tokens": "\"{}\" , serde_json :: json ! ({ \"sessionId\" : id , \"recovery\" : \"completed\" , \"executionResumed\" : false })",
     "count": 1,
     "reason": "Agent CLI maintenance JSON response"

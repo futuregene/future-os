@@ -440,6 +440,13 @@ and after each Run and diffing them, read-only throughout: it writes no
 commit / index / ref / object into the user's real Git repository and creates
 no `.git` in non-Git directories (implementation in ER.md §4.10, §6.8).
 
+Historical review is loaded for the conversation being viewed; app startup
+never checks every conversation's snapshots. Existing saved diffs open directly.
+If projection was interrupted, it can be rebuilt from the saved before/after
+pair. A missing boundary remains incomplete, with an explanation that exact
+changes cannot be reconstructed; the app does not capture today's workspace
+as an old Run's after snapshot or offer a retry that cannot repair that absence.
+
 "Last-round changes" overlays status hints at the top as applicable:
 
 - **Concurrent**: other Runs ran concurrently in this workspace during this
