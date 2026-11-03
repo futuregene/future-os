@@ -275,6 +275,8 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             } else {
                 DEFAULT_MESSAGE_PAGE_LIMIT
             };
+            let mut slice_offset = offset;
+            let mut sought = false;
             let data = if cmd.chunked_read && offset == 0 {
                 crate::agent_bridge::get_events_since_page_until(
                     cmd.session_id.clone(),
@@ -284,6 +286,43 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                     cmd.replay_until_idx,
                 )
                 .await
+            } else if cmd.chunked_read && cmd.since_idx == -1 && offset > 0 {
+                // A continuation page is a cursor read, not a second full replay.
+                // `offset` counts the events already delivered from the run's
+                // start, and a settled run's log is dense from 0, so the page
+                // after it starts at `offset - 1`. The seek answer is used only
+                // when it really begins there: a gapped or multi-epoch log falls
+                // back to the full read, which is the old behaviour spelled out.
+                let seek = (offset - 1) as i64;
+                let page = crate::agent_bridge::get_events_since_page_until(
+                    cmd.session_id.clone(),
+                    cmd.run_id.clone(),
+                    seek,
+                    limit,
+                    cmd.replay_until_idx,
+                )
+                .await;
+                match page {
+                    Ok(page)
+                        if page["events"]
+                            .as_array()
+                            .and_then(|events| events.first())
+                            .and_then(|event| event["idx"].as_i64())
+                            == Some(offset as i64) =>
+                    {
+                        slice_offset = 0;
+                        sought = true;
+                        Ok(page)
+                    }
+                    _ => {
+                        crate::agent_bridge::get_events_since(
+                            cmd.session_id.clone(),
+                            cmd.run_id.clone(),
+                            cmd.since_idx,
+                        )
+                        .await
+                    }
+                }
             } else {
                 crate::agent_bridge::get_events_since(
                     cmd.session_id.clone(),
@@ -318,7 +357,18 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         });
                     }
                     let agent_has_more = data["hasMore"].as_bool().unwrap_or(false);
-                    let mut page = paginate_events(data, offset, limit);
+                    let mut page = paginate_events(data, slice_offset, limit);
+                    if sought {
+                        // The seek returned the page itself, so `paginate_events`
+                        // numbered it from 0. A caller that asked for `offset`
+                        // must get the same pagination envelope as a full read
+                        // did, or its next request repeats this page forever.
+                        let delivered = page["events"].as_array().map_or(0, |events| events.len());
+                        let total = watermark.saturating_add(1);
+                        page["offset"] = json!(offset);
+                        page["nextOffset"] = json!(offset + delivered);
+                        page["total"] = json!(total);
+                    }
                     page["watermark"] = json!(watermark);
                     page["nextSinceIdx"] = page["events"]
                         .as_array()
