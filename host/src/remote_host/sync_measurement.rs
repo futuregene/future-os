@@ -837,6 +837,33 @@ async fn serve_real_snapshot() {
         .unwrap();
     let origin = format!("http://127.0.0.1:{port}");
     crate::install_rustls_provider();
+    // The Agent channel runtime is an entry-owned precondition (host extraction,
+    // #1259): `agent_client` runs the shared channel's connect/verify on a
+    // process-lifetime runtime that each entry installs
+    // (`desktop/src-tauri/src/lib.rs`, `cli/src/headless/mod.rs`). This harness
+    // is a Desktop test that moved into `future-host`, where a lib test is the
+    // entry and nothing installed one — so every business command answered
+    // "Entry must configure the Agent channel runtime before starting services"
+    // and the documented `measure-sync-browser.py` flow produced no numbers.
+    //
+    // Same shape the Desktop installs: a one-worker runtime parked on a thread
+    // that never returns, because tonic binds the h2 driver to whichever runtime
+    // first touches the channel and a test-scoped handle would take it down with
+    // this test.
+    let _ = crate::agent_client::provide_channel_runtime("sync-measurement-agent-channel", || {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .thread_name("sync-measurement-agent-channel")
+            .build()
+            .expect("build the measurement's Agent channel runtime")
+    });
+    // The app store is entry-owned as well: Desktop migrates it at startup
+    // (`desktop/src-tauri/src/lib.rs:1284`) and the headless entry does the same
+    // (`cli/src/headless/mod.rs:335`). A lib test is an entry, so this harness
+    // has to migrate the isolated HOME's store before serving; without it every
+    // command that touches `threads` answered "no such table: threads".
+    crate::store::initialize_app_store().expect("initialize the isolated app store");
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
         .await
         .unwrap();
