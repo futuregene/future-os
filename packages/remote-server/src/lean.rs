@@ -480,6 +480,7 @@ pub fn lean_replay_page(page: &mut Value, lean: bool) {
 /// | reasoning body | 25.6-32.2% |
 /// | tool-result body | 22.0-26.5% |
 /// | tool-call arguments | 12.3-17.8% (of which shell commands are most) |
+/// | shell facts in `metadata` (`attempts[].output`, `command`, `cwd`) | 37-42% of what the three above leave behind |
 ///
 /// Each is unread rather than merely unrendered, which is what makes this a
 /// removal:
@@ -496,6 +497,8 @@ pub fn lean_replay_page(page: &mut Value, lean: bool) {
 /// - `foldToolEntry` reads a result block's `toolCallId` and `isError` and
 ///   nothing else.
 /// - A reasoning block's body is only ever rendered when the row is expanded.
+/// - A shell entry repeats its output and its command in `metadata`: see
+///   [`narrow_shell_result`].
 ///
 /// Nothing here adds, removes or reorders an entry or a block: entries keep their
 /// identity and count, so the page's `nextOffset`/`hasMore`/flush-cursor logic
@@ -505,54 +508,105 @@ pub fn lean_entries(entries: &mut Value) {
         return;
     };
     for entry in entries {
-        let Some(blocks) = entry.get_mut("blocks").and_then(Value::as_array_mut) else {
+        if let Some(blocks) = entry.get_mut("blocks").and_then(Value::as_array_mut) {
+            for block in blocks {
+                match block["kind"].as_str().unwrap_or_default() {
+                    // The body goes; the block stays, so the row still appears.
+                    "reasoning" => {
+                        if let Some(fields) = block.as_object_mut() {
+                            fields.remove("text");
+                        }
+                    }
+                    "tool_result" => {
+                        if let Some(fields) = block.as_object_mut() {
+                            fields.remove("text");
+                        }
+                    }
+                    "tool_call" => {
+                        // Only the keys this row's label is read from survive; every
+                        // other name (shell, and any tool this client has never
+                        // heard of — it renders those as shell) loses the whole key,
+                        // because the client fetches a shell-family row's command by
+                        // its identity when the row is opened. `fusion` is a
+                        // modelled kind whose label is neither: see
+                        // `LABEL_ARGUMENT_KEYS`.
+                        let keeps_label = matches!(
+                            block["name"].as_str(),
+                            Some("read" | "write" | "edit" | "fusion")
+                        );
+                        let Some(fields) = block.as_object_mut() else {
+                            continue;
+                        };
+                        if !keeps_label {
+                            fields.remove("arguments");
+                            continue;
+                        }
+                        let Some(arguments) = fields.get_mut("arguments") else {
+                            continue;
+                        };
+                        // A non-object argument list (a model that emitted the call
+                        // as JSON text) is not ours to reshape.
+                        if let Some(arguments) = arguments.as_object_mut() {
+                            arguments.retain(|key, _| LABEL_ARGUMENT_KEYS.contains(&key.as_str()));
+                        }
+                    }
+                    // Every other block kind is forwarded verbatim, so a future
+                    // vocabulary the client renders is never silently reshaped.
+                    _ => {}
+                }
+            }
+        }
+        // A shell entry's output and command ride a second time in `metadata`,
+        // outside the blocks the loop above already trimmed.
+        narrow_shell_result(entry);
+    }
+}
+
+/// Trim the shell facts a lean client never reads.
+///
+/// A finished shell call appears twice on one entry: the tool-result block's
+/// `text` carries the captured output, and `metadata.shell_result.attempts[]`
+/// carries it again per attempt. The block's copy is dropped above; this is the
+/// second one, and on a real three-exchange page it was the **largest single
+/// survivor of the trim** — 39,280 of the 116,102 bytes that remained, with the
+/// `command` (9,459) and `cwd` (1,170) beside it the same duplication in
+/// miniature: a shell row's command is fetched by identity when the row is
+/// opened (its `tool_call.arguments` are gone for exactly that reason), and the
+/// entry already carries `metadata.execution_cwd`.
+///
+/// The values are emptied rather than removed. The client validates this
+/// envelope and then reads only facts out of it (`status`, `exit_code`,
+/// `is_error`, `attempts[].{status,exit_code,duration_ms}` — what decides a tool
+/// row's status line). A missing string fails that validation in
+/// `shellResult()` (`packages/thread-projection/src/shellResult.ts`), which
+/// would silently fall the row back to `isError`-only; an empty one keeps the
+/// envelope valid and the facts intact.
+fn narrow_shell_result(entry: &mut Value) {
+    let Some(facts) = entry
+        .get_mut("metadata")
+        .and_then(|metadata| metadata.get_mut("shell_result"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    // Only a result this trim can identify is reshaped: a shape from a newer or
+    // older agent is forwarded byte-for-byte rather than emptied into something
+    // the client's validator would reject.
+    if !facts.get("status").is_some_and(Value::is_string) {
+        return;
+    }
+    for key in ["command", "cwd"] {
+        if facts.get(key).is_some_and(Value::is_string) {
+            facts.insert(key.to_owned(), Value::String(String::new()));
+        }
+    }
+    let attempts = facts.get_mut("attempts").and_then(Value::as_array_mut);
+    for attempt in attempts.into_iter().flatten() {
+        let Some(attempt) = attempt.as_object_mut() else {
             continue;
         };
-        for block in blocks {
-            match block["kind"].as_str().unwrap_or_default() {
-                // The body goes; the block stays, so the row still appears.
-                "reasoning" => {
-                    if let Some(fields) = block.as_object_mut() {
-                        fields.remove("text");
-                    }
-                }
-                "tool_result" => {
-                    if let Some(fields) = block.as_object_mut() {
-                        fields.remove("text");
-                    }
-                }
-                "tool_call" => {
-                    // Only the keys this row's label is read from survive; every
-                    // other name (shell, and any tool this client has never
-                    // heard of — it renders those as shell) loses the whole key,
-                    // because the client fetches a shell-family row's command by
-                    // its identity when the row is opened. `fusion` is a
-                    // modelled kind whose label is neither: see
-                    // `LABEL_ARGUMENT_KEYS`.
-                    let keeps_label = matches!(
-                        block["name"].as_str(),
-                        Some("read" | "write" | "edit" | "fusion")
-                    );
-                    let Some(fields) = block.as_object_mut() else {
-                        continue;
-                    };
-                    if !keeps_label {
-                        fields.remove("arguments");
-                        continue;
-                    }
-                    let Some(arguments) = fields.get_mut("arguments") else {
-                        continue;
-                    };
-                    // A non-object argument list (a model that emitted the call
-                    // as JSON text) is not ours to reshape.
-                    if let Some(arguments) = arguments.as_object_mut() {
-                        arguments.retain(|key, _| LABEL_ARGUMENT_KEYS.contains(&key.as_str()));
-                    }
-                }
-                // Every other block kind is forwarded verbatim, so a future
-                // vocabulary the client renders is never silently reshaped.
-                _ => {}
-            }
+        if attempt.get("output").is_some_and(Value::is_string) {
+            attempt.insert("output".to_owned(), Value::String(String::new()));
         }
     }
 }
@@ -1827,12 +1881,65 @@ mod shell_attempts_tests {
             json!({"tool_id":"t","shell_result":facts,"text":"last output [exit: 0]"}).to_string();
         let lean: Value =
             serde_json::from_str(&lean_event_data("tool_end", &data).unwrap()).unwrap();
+        // The live lane is one message per call, not a page: it keeps the
+        // envelope whole and drops only the duplicated text body.
         assert_eq!(lean["shell_result"], facts);
         assert!(lean.get("text").is_none());
         let mut entries = json!([{"metadata":{"shell_result":facts},"blocks":[{"kind":"tool_result","toolCallId":"t","text":"summary","isError":true}]}]);
         lean_entries(&mut entries);
-        assert_eq!(entries[0]["metadata"]["shell_result"], facts);
+        let narrowed = &entries[0]["metadata"]["shell_result"];
+        // The facts survive untouched — they are what the row's status line is
+        // read from — and the bodies that were repeated here are gone.
+        for fact in ["status", "exit_code", "duration_ms", "is_error"] {
+            assert_eq!(*narrowed.get(fact).unwrap(), facts[fact], "{fact}");
+        }
+        assert_eq!(narrowed["attempts"][0]["exit_code"], json!(7));
+        assert_eq!(narrowed["attempts"][1]["escalated"], json!(true));
+        assert_eq!(narrowed["attempts"][0]["output"], json!(""));
+        assert_eq!(narrowed["attempts"][1]["output"], json!(""));
+        assert_eq!(narrowed["command"], json!(""));
+        assert_eq!(narrowed["cwd"], json!(""));
+        assert_eq!(entries[0]["blocks"][0]["text"], Value::Null);
         assert_eq!(entries[0]["blocks"][0]["isError"], true);
+    }
+
+    /// A `shell_result` this trim cannot identify is left alone: a shape from a
+    /// newer or older agent must arrive intact rather than be emptied into
+    /// something the client's validator rejects.
+    #[test]
+    fn an_unfamiliar_shell_result_is_forwarded_untouched() {
+        let mut entries = json!([
+            {"metadata": {"shell_result": "not an object"}},
+            {"metadata": {"shell_result": {"command": "action"}}},
+            {"metadata": {"other": 1}},
+            {"id": "no-metadata"},
+            // no `blocks` at all: the metadata trim must still run
+            {"metadata": {"shell_result": {"status": "exited", "command": "a", "cwd": "/r",
+                "attempts": [{"output": "kept"}, {"output": 7}]}}},
+        ]);
+        lean_entries(&mut entries);
+        assert_eq!(
+            entries[0]["metadata"]["shell_result"],
+            json!("not an object")
+        );
+        assert_eq!(
+            entries[1]["metadata"]["shell_result"],
+            json!({"command": "action"})
+        );
+        assert_eq!(entries[2]["metadata"], json!({"other": 1}));
+        assert_eq!(entries[3], json!({"id": "no-metadata"}));
+        // An identified result is narrowed; an attempt whose `output` is not a
+        // string is left as it came.
+        assert_eq!(entries[4]["metadata"]["shell_result"]["command"], json!(""));
+        assert_eq!(entries[4]["metadata"]["shell_result"]["cwd"], json!(""));
+        assert_eq!(
+            entries[4]["metadata"]["shell_result"]["attempts"][0]["output"],
+            json!("")
+        );
+        assert_eq!(
+            entries[4]["metadata"]["shell_result"]["attempts"][1]["output"],
+            json!(7)
+        );
     }
 }
 

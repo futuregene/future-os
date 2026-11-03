@@ -606,11 +606,16 @@ runtime, and a disconnection leaves nothing behind to inspect later.
 step that failed, not who spent the time. So the desktop measures every business
 command it executes and appends a row to `~/.future/app/logs/desktop.log` when a
 command takes at least one second or fails: `remote command slow:
-type=get_session_entries session=… elapsed=…ms`, with the reply's byte count on
-binary pages and the error string when there is one (heartbeat commands never
-report). A phone that times out while no slow row appears here is a transport
-symptom; a slow row names the exact read that was expensive. The row identifies
-the command, never the content it returned.
+type=get_session_entries session=… elapsed=…ms exec=…ms send=…ms`, with the
+reply's byte count on binary pages and the error string when there is one
+(heartbeat commands never report). `elapsed` spans the handler *and* the reply's
+publish+flush, which is why it is split: `exec` ends where the handler first
+handed bytes to the sink, and `send` is the remainder — the transport. A phone
+that times out while no slow row appears here is a transport symptom; a row
+that is slow in `send` is the same conclusion with the evidence attached; only a
+slow `exec` names an expensive read. The row identifies the command, never the
+content it returned. A command that never replied carries neither half: there is
+no boundary to measure.
 
 **Credentials and ownership.** The client's credential book is entirely
 separate from the host's: `~/.future/remote_peers.json` (new; the host side's
@@ -969,6 +974,7 @@ sessions (whole-session payloads, `scripts/measure/measure-lean-history.py`):
 | reasoning body | 25.6-32.2% |
 | tool-result body | 22.0-26.5% |
 | tool-call arguments beyond the four a target can come from | 12.3-17.8% |
+| shell facts repeated in `metadata` | 37-42% of what the three above leave |
 
 Together 67.1% / 72.7% / 68.4% of a whole session. `targetFromArgs` derives a tool
 row's text from `command`, `path`, `file_path` or `filePath` and reads **no other**
@@ -976,6 +982,20 @@ argument key for any tool name, so keeping exactly those four is
 behaviour-preserving; `foldToolEntry` reads a result block's `toolCallId` and
 `isError` and nothing else; a reasoning body is only rendered when its row is
 expanded.
+
+The fourth row is the one that outlived the first three: a finished shell call
+appears *twice* on one entry — once as the tool-result block's `text` (dropped
+above) and again as `metadata.shell_result` — so dropping the block body left the
+same output on the page. Measured on a real three-exchange page (109 entries, 39
+shell calls): 116,102 bytes of lean JSON, of which `attempts[].output` was 39,280,
+`command` 9,459 and `cwd` 1,170 — the largest single survivor. Those three are
+now emptied (the command is a shell row's label and is fetched by identity when
+the row is opened; `cwd` already rides the entry as `metadata.execution_cwd`),
+which takes that page to **64,540 bytes** and its gzipped reply from 37,364 to
+**15,227 bytes**. The values are emptied rather than removed because the client
+validates this envelope and falls the row back to `isError`-only if a string is
+missing; a `shell_result` whose `status` is not a string is not this trim's to
+reshape and is forwarded byte-for-byte.
 
 What a phone actually pays is smaller than the whole session, and it is measured
 on **the page the phone asks for** (the newest `HISTORY_PAGE_USER_EXCHANGES`
