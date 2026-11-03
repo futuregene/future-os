@@ -22,6 +22,7 @@ import { useAppLifecycle } from "./useAppLifecycle";
 import { useDesktopManagement } from "./useDesktopManagement";
 import { useDesktopRuntime, type DesktopRuntime } from "./useDesktopRuntime";
 import { usePairedDesktops } from "./usePairedDesktops";
+import type { SessionQueueRow } from "./sessionQueue";
 import type { TimelineState } from "@future-os/remote-client/timeline";
 import type { CatalogEntry } from "./mergeSessions";
 import { DEFAULT_THINKING_LEVEL } from "./types";
@@ -184,11 +185,27 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
     onUploadProgress?: (completedBytes: number, totalBytes: number) => void,
     /**
      * The command id the message already has, for a caller re-attempting a
-     * delivery (the send queue). Omitted by the composer, which is a new message
-     * every time it sends.
+     * delivery. Omitted by the composer, which is a new message every time it
+     * sends.
+     *
+     * `busyPolicy` travels to the session with the prompt: `enqueue_coalescing`
+     * means "hold it and run it at the turn boundary", which is how a send made
+     * while a reply streams is queued by the session rather than by this phone.
      */
-    options?: { commandId?: string },
+    options?: { busyPolicy?: string; commandId?: string },
   ): Promise<void>;
+  /**
+   * The conversation's waiting messages, as the session holds them.
+   *
+   * Read-only on purpose: a queue belongs to the conversation on the desktop, so
+   * this is that queue's own list, not a copy the phone could disagree with. An
+   * empty session id (a draft nothing was sent to yet) has nothing waiting.
+   */
+  getQueue(sessionId: string): Promise<SessionQueueRow[]>;
+  /** Take one waiting message back out, before it leaves. */
+  cancelQueuedRun(sessionId: string, runId: string): Promise<void>;
+  /** Start a parked waiting row now, because the reader asked for it. */
+  releaseQueuedRun(sessionId: string, runId: string): Promise<void>;
   /** Request manual context compaction; resolves with the operation to correlate. */
   compactContext(): Promise<{ sessionId: string; operationId: string }>;
   /** Await that operation's terminal outcome (never rejects; `timeout` on expiry). */
@@ -550,6 +567,13 @@ function machineSurface(
     newConversation: runtime?.conversation.newConversation ?? noop,
     closeConversation: runtime?.closeConversation ?? (() => undefined),
     sendMessage: runtime?.outbox.sendMessage ?? noop,
+    getQueue: runtime?.queue?.get ?? (async () => []),
+    cancelQueuedRun: runtime?.queue?.cancel ?? (async () => {
+      throw new Error("not_connected");
+    }),
+    releaseQueuedRun: runtime?.queue?.release ?? (async () => {
+      throw new Error("not_connected");
+    }),
     compactContext: runtime?.conversation.compactContext ?? (async () => {
       throw new Error("not_connected");
     }),
@@ -1121,6 +1145,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     activeRuntime?.management,
     activeRuntime?.outbox.continueRun,
     activeRuntime?.outbox.sendMessage,
+    activeRuntime?.queue,
     activeRuntime?.selectedSessionId,
     activeRuntime?.selectedTitle,
     activeRuntime?.skillsRevision,

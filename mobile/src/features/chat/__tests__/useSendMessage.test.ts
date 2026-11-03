@@ -1,6 +1,6 @@
 import { createElement, useLayoutEffect } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { useSendMessage, type SendMessageApi } from "../useSendMessage";
+import { useSendMessage, QUEUED_SEND_POLICY, type SendMessageApi } from "../useSendMessage";
 import { showToast } from "../utils";
 import type { HistoryAttachment, MobileAttachment, TimelineItem } from "../../../remote/types";
 
@@ -54,6 +54,7 @@ function mount(options: {
   attachments?: MobileAttachment[];
   sessionRefs?: import("../../../remote/types").SessionReferenceMap;
   compactionPending?: boolean;
+  streaming?: boolean;
 }) {
   const setMessage = jest.fn();
   const setAttachments = jest.fn();
@@ -62,6 +63,7 @@ function mount(options: {
     remote: options.remote, t: t as never, message: options.message ?? "", attachments: options.attachments ?? [],
     setMessage, setAttachments, setTransferProgress, sessionRefs: options.sessionRefs ?? {},
     compactionPending: options.compactionPending ?? false,
+    streaming: options.streaming ?? false,
   };
   act(() => {
     if (tree) tree.update(createElement(SendHarness, { input }));
@@ -103,7 +105,7 @@ describe("sending", () => {
     });
     const { setAttachments, setMessage, setTransferProgress } = mount({ remote, message: "  hello  " });
     await act(async () => { await api.send(); });
-    expect(remote.sendMessage).toHaveBeenCalledWith("hello", [], expect.any(Function));
+    expect(remote.sendMessage).toHaveBeenCalledWith("hello", [], expect.any(Function), undefined);
     expect(setMessage).toHaveBeenCalledWith("");
     expect(setAttachments).toHaveBeenCalledWith([]);
     // Nailed to the end, whatever happens next.
@@ -112,6 +114,23 @@ describe("sending", () => {
     expect(setTransferProgress.mock.calls[0]).toEqual([null]);
     report(3, 12);
     expect(setTransferProgress).toHaveBeenCalledWith(0.25);
+  });
+
+  test("a send made while the reply streams is queued by the session, not refused here", async () => {
+    const remote = remoteFor();
+    mount({ remote, message: "next one", streaming: true });
+    await act(async () => { await api.send(); });
+    // `enqueue_coalescing`: hold it on the session and run it at the boundary.
+    expect(remote.sendMessage).toHaveBeenCalledWith(
+      "next one", [], expect.any(Function), { busyPolicy: QUEUED_SEND_POLICY },
+    );
+  });
+
+  test("an idle send carries no busy policy, so a busy session answers with a reason", async () => {
+    const remote = remoteFor();
+    mount({ remote, message: "hello", streaming: false });
+    await act(async () => { await api.send(); });
+    expect(remote.sendMessage).toHaveBeenCalledWith("hello", [], expect.any(Function), undefined);
   });
 
   test("a send with attachments starts the progress bar at zero", async () => {
@@ -131,7 +150,7 @@ describe("sending", () => {
     const { setMessage } = mount({ remote, message: "ask #Fix the flaky test", sessionRefs: refs });
     await act(async () => { await api.send(); });
     expect(remote.sendMessage).toHaveBeenCalledWith(
-      "ask [Fix the flaky test](futureos://session/sess-1)", [], expect.any(Function),
+      "ask [Fix the flaky test](futureos://session/sess-1)", [], expect.any(Function), undefined,
     );
     expect(setMessage).toHaveBeenCalledWith("");
   });
@@ -162,7 +181,7 @@ describe("sending", () => {
     const remote = remoteFor();
     mount({ remote, message: "old draft" });
     await act(async () => { await api.send("old draft /future-web"); });
-    expect(remote.sendMessage).toHaveBeenCalledWith("old draft /future-web", [], expect.any(Function));
+    expect(remote.sendMessage).toHaveBeenCalledWith("old draft /future-web", [], expect.any(Function), undefined);
   });
 
   test.each([
@@ -246,7 +265,7 @@ describe("retrying a failed answer", () => {
       expect.objectContaining({
         localUri: "file:///tmp/shot.png", name: "shot.png", kind: "image", mimeType: "image/png",
       }),
-    ]);
+    ], undefined, undefined);
   });
 
   test("a retry of a desktop-side file asks the desktop for it and reuses its cache", async () => {
@@ -267,7 +286,7 @@ describe("retrying a failed answer", () => {
         transferName: "doc.pdf.transfer", mimeType: "application/pdf",
         originalSize: 99, transferSize: 99,
       }),
-    ]);
+    ], undefined, undefined);
   });
 
   test("a retry downloads a file the phone has not cached yet", async () => {
@@ -281,7 +300,7 @@ describe("retrying a failed answer", () => {
     expect(remote.downloadAttachment).toHaveBeenCalledTimes(1);
     expect(remote.sendMessage).toHaveBeenCalledWith("here", [
       expect.objectContaining({ localUri: "file:///cache/downloaded.bin" }),
-    ]);
+    ], undefined, undefined);
   });
 
   test("a retry that cannot re-attach the file says so instead of failing silently", async () => {
@@ -308,7 +327,17 @@ describe("retrying a failed answer", () => {
     ];
     mount({ remote });
     await act(async () => { api.retryMessage(assistant({ id: "a2" })); await Promise.resolve(); });
-    expect(remote.sendMessage).toHaveBeenCalledWith("second", []);
+    expect(remote.sendMessage).toHaveBeenCalledWith("second", [], undefined, undefined);
+  });
+
+  test("a retry while the reply streams is queued by the session, not refused", async () => {
+    const remote = remoteFor();
+    remote.timeline.items = [userMessage({ id: "u1", text: "again" }), assistant({ id: "a1" })];
+    mount({ remote, streaming: true });
+    await act(async () => { api.retryMessage(assistant({ id: "a1" })); await Promise.resolve(); });
+    expect(remote.sendMessage).toHaveBeenCalledWith(
+      "again", [], undefined, { busyPolicy: QUEUED_SEND_POLICY },
+    );
   });
 
   test("a retry with no user message above it does nothing", async () => {

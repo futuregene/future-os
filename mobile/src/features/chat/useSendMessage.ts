@@ -28,6 +28,16 @@ export interface SendMessageApi {
 export type FailureText = { key: string; params?: Record<string, unknown> };
 
 /**
+ * What a send means while this conversation is still answering.
+ *
+ * `enqueue_coalescing` is the Agent's own answer: hold the prompt on a durable
+ * receipt and run it at the turn boundary, folding consecutive ones into one
+ * run. The phone used to keep that queue itself, which made it a copy of the
+ * session's list that only this device could see (and lost on an uninstall).
+ */
+export const QUEUED_SEND_POLICY = "enqueue_coalescing";
+
+/**
  * Say what actually happened instead of one catch-all sentence.
  *
  * "Message failed to send" was covering four different things — the desktop
@@ -72,6 +82,14 @@ export interface SendMessageOptions {
   setTransferProgress: (value: number | null) => void;
   sessionRefs?: SessionReferenceMap;
   compactionPending?: boolean;
+  /**
+   * Whether this conversation reads as still answering.
+   *
+   * The composer's own reading of the run (the timeline half of the context): a
+   * send made under it is handed to the session with a queueing policy instead
+   * of being refused.
+   */
+  streaming: boolean;
 }
 
 export function useSendMessage(options: SendMessageOptions): SendMessageApi {
@@ -79,18 +97,26 @@ export function useSendMessage(options: SendMessageOptions): SendMessageApi {
   const { captureOperation } = useConversationOperation(options.remote);
   const send = useCallback(async (override?: string) => {
     const { remote, t, message, attachments, setMessage, setAttachments, setTransferProgress,
-      sessionRefs = {}, compactionPending = false } = inputRef.current;
+      sessionRefs = {}, compactionPending = false, streaming } = inputRef.current;
     if (compactionPending || remote.compacting) { showToast(t("chat.compacting")); return; }
     const draftValue = (override ?? message).trim();
     const value = expandSessionReferences(draftValue, sessionRefs);
     if (!value && !attachments.length) return;
     const isCurrent = captureOperation();
     const sameText = () => [message.trim(), draftValue].includes(inputRef.current.message.trim());
+    // A message written while a reply streams is not refused here: it is handed
+    // to the session with a policy that says what it means, and the session holds
+    // it until the turn boundary. `streaming` is this phone's reading of the
+    // conversation, which can lag the desktop — a stale `true` is harmless (an
+    // idle session simply runs the prompt), and a stale `false` leaves the legacy
+    // refusal, which the reader is told about instead of being queued behind a
+    // run they cannot see.
+    const busyPolicy = streaming ? QUEUED_SEND_POLICY : undefined;
     setTransferProgress(attachments.length ? 0 : null);
     try {
       await remote.sendMessage(value, attachments, (done, total) => {
         if (isCurrent()) setTransferProgress(total > 0 ? done / total : null);
-      });
+      }, busyPolicy ? { busyPolicy } : undefined);
       if (!isCurrent()) return;
       if (sameText()) setMessage("");
       const submitted = new Set(attachments.map(item => item.localUri));
@@ -148,7 +174,12 @@ export function useSendMessage(options: SendMessageOptions): SendMessageApi {
                 mobilePreviewUnsupported: attachment.mobilePreviewUnsupported,
               });
             }
-            if (isCurrent()) await remote.sendMessage(prev.text, retryAttachments);
+            if (isCurrent()) {
+              // A retry while the reply streams is the same decision a send is:
+              // the session holds it rather than refusing it.
+              await remote.sendMessage(prev.text, retryAttachments, undefined,
+                inputRef.current.streaming ? { busyPolicy: QUEUED_SEND_POLICY } : undefined);
+            }
           })().catch((error: unknown) => {
             if (!isCurrent()) return;
             const failure = sendFailureText(error, undefined);
