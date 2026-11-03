@@ -1,3 +1,29 @@
+// Flake note (2026-11-03, unreproduced).
+//
+// This suite once reported `29 passed; 1 failed` in the run immediately after a
+// `cargo fmt` rebuilt the test binary in a worktree that was also running a
+// measurement agent; the failing test's name was not captured. Thirty runs
+// afterwards were green — 20 with the default parallel harness and 10 with
+// `--test-threads=1`, all `30 passed` — so nothing here reproduces on demand,
+// and nothing was changed on the strength of one unnamed failure.
+//
+// If it recurs, read the test name the harness prints before anything else, then
+// look at these three, which depend on real timing rather than stored state:
+//
+//   * `a_concurrent_append_never_produces_an_inconsistent_snapshot` — a background
+//     appender racing the fold. Fails as a snapshot whose events disagree with
+//     the journal, not as a timeout.
+//   * `transactions::a_pinned_reader_blocks_the_checkpoint_but_not_the_reclamation`
+//     — asserts a reader is still in flight when the checkpointer runs. Fails as
+//     the checkpoint succeeding.
+//   * `scheduling::a_start_folds_the_backlog_and_a_failed_fold_is_not_retried` —
+//     watches a retry clock. Fails as an extra or missing attempt.
+//
+// The snapshot cache added for replay reads is *not* a suspect for this suite:
+// `run_snapshot_cache` is written only from `broadcaster::replay::run_snapshot`,
+// which none of these tests call, and that write is the only one off-thread
+// (`spawn_blocking`); the cache helpers these tests do exercise go through the
+// synchronous `db.call_as` queue.
 use super::*;
 use crate::rpc::SseBroadcaster;
 use serde_json::json;
@@ -611,3 +637,136 @@ mod scheduling;
 mod transactions;
 #[path = "journal_compaction_tests/validation.rs"]
 mod validation;
+
+// ---- run snapshot cache (D): hit is the fold, everything else is a miss ----
+
+#[test]
+fn a_cached_fold_is_byte_identical_to_folding_the_journal() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("agent.db");
+    let store = fixture(&path, "completed", 40);
+    let page = store.replay_page("s", "run", -1, false, None).unwrap();
+    let last = page.events.last().unwrap().clone();
+    let folded = crate::rpc::run_snapshot::fold_events(page.events.clone());
+    let snapshot = RunJournalSnapshot {
+        run_id: "run".into(),
+        epoch: last.epoch,
+        run_sequence: last.run_sequence,
+        cursor: last.idx,
+        events: folded.clone(),
+    };
+    let epoch = store.run_epoch("s", "run").unwrap().unwrap();
+    assert_eq!(epoch, snapshot.epoch);
+    assert!(store
+        .cached_run_snapshot("s", "run", epoch)
+        .unwrap()
+        .is_none());
+
+    store.store_run_snapshot_cache("s", &snapshot).unwrap();
+    let cached = store
+        .cached_run_snapshot("s", "run", epoch)
+        .unwrap()
+        .expect("a stored fold is a hit");
+    assert_eq!(
+        serde_json::to_string(&cached).unwrap(),
+        serde_json::to_string(&snapshot).unwrap(),
+        "the cached fold must be the same bytes the fold produced"
+    );
+    // And the same events the raw journal folds to, not merely the same row.
+    assert_eq!(
+        serde_json::to_string(&cached.events).unwrap(),
+        serde_json::to_string(&folded).unwrap()
+    );
+    assert_eq!(cached.cursor, last.idx);
+}
+
+#[test]
+fn a_cache_from_another_epoch_is_a_miss() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("agent.db");
+    let store = fixture(&path, "completed", 5);
+    let snapshot = RunJournalSnapshot {
+        run_id: "run".into(),
+        epoch: 0,
+        run_sequence: 1,
+        cursor: 6,
+        events: vec![SseEvent {
+            run_id: "run".into(),
+            idx: 6,
+            ..SseEvent::new("agent_end", json!({"state":"completed"}))
+        }],
+    };
+    store.store_run_snapshot_cache("s", &snapshot).unwrap();
+    assert!(store.cached_run_snapshot("s", "run", 0).unwrap().is_some());
+
+    // A restart/fork moves the run's epoch; the fold taken before it describes a
+    // prefix that is no longer this run's projection.
+    store
+        .append_events(
+            "s",
+            vec![serde_json::to_value(SseEvent {
+                run_id: "run".into(),
+                idx: 7,
+                epoch: 1,
+                ..SseEvent::new("agent_end", json!({"state":"completed"}))
+            })
+            .unwrap()],
+        )
+        .unwrap();
+    let epoch = store.run_epoch("s", "run").unwrap().unwrap();
+    assert_eq!(epoch, 1);
+    assert!(store
+        .cached_run_snapshot("s", "run", epoch)
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn a_cache_written_by_an_older_fold_is_a_miss() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("agent.db");
+    let store = fixture(&path, "completed", 3);
+    let snapshot = RunJournalSnapshot {
+        run_id: "run".into(),
+        epoch: 0,
+        run_sequence: 1,
+        cursor: 4,
+        events: vec![SseEvent {
+            run_id: "run".into(),
+            idx: 4,
+            ..SseEvent::new("agent_end", json!({"state":"completed"}))
+        }],
+    };
+    store.store_run_snapshot_cache("s", &snapshot).unwrap();
+    // The row a previous build would have written after changing the fold.
+    store
+        .db
+        .call(|db| {
+            db.execute("UPDATE run_snapshot_cache SET version=?1", params![-1])?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(store.cached_run_snapshot("s", "run", 0).unwrap().is_none());
+}
+
+#[test]
+fn a_corrupt_cached_row_falls_back_instead_of_failing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("agent.db");
+    let store = fixture(&path, "completed", 3);
+    store
+        .db
+        .call(|db| {
+            db.execute(
+                "INSERT INTO run_snapshot_cache(session_id,run_id,version,epoch,cursor,payload)
+                 VALUES ('s','run',?1,0,4,'{\"run_id\":\"run\"}')",
+                params![SNAPSHOT_CACHE_VERSION],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        store.cached_run_snapshot("s", "run", 0).unwrap().is_none(),
+        "an unreadable row must be a miss, never an error"
+    );
+}

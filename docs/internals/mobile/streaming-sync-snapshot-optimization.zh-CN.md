@@ -128,3 +128,19 @@ python3 scripts/measure/measure-sync-browser.py --test-binary <上一步test exe
 ```
 
 浏览器打开 ready.json 的 URL，点击 A/B 按钮。结束后停止本次 runner，确认其两个子进程停止及私有 SQLite 副本删除；保留去身份指标，清理临时日志与 bundle。
+
+
+## 远程重放分页：客户端真实发的是什么
+
+`readRunReplay`（桌面与手机共用）按**游标**翻页，不按字节偏移：第一页是
+`sinceIdx=-1, offset=0, limit=1000` 且带 `preferSnapshot`，之后每一页都是
+`sinceIdx=<上一页最后一条的 idx>, offset=0`（`packages/thread-projection/src/replay.ts:385-390`，
+因为每次回复都带 `watermark` —— `host/src/remote_host/business/history.rs:372`）。
+
+只有当对端回复里没有 watermark（旧 bridge 的兼容形状）时，`offset` 才会递增
+（`0, 1000, 2000 …`，`replay.ts:392-395`）。所以"让 `offset > 0` 也走游标读"的改动
+拆掉的是这条形状上的 O(历史) 陷阱，**不改变今天桌面/手机的打开耗时**。
+
+不要把 `offset_1000/5000/136277` 的数字当热路径性能引用——那是兼容分支的形状。
+真实的打开成本是首屏快照折叠（136k 事件的 run、没有已缓存折叠时 4.1 s），
+后续每页的成本是这一页自身的字节（debug 构建下约 120 ms / 1000 条事件）。

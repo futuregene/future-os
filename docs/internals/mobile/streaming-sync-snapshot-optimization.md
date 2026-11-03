@@ -236,3 +236,23 @@ Open the ready.json URL in the browser and click the A/B button. Afterwards
 stop this run's runner, confirm its two child processes stopped and the private
 SQLite copy was deleted; keep the de-identified metrics and clean up the
 temporary logs and bundle.
+
+
+## Remote replay paging: what the client actually sends
+
+`readRunReplay` (shared by Desktop and mobile) pages a run by **cursor**, not by
+byte offset: the first request is `sinceIdx=-1, offset=0, limit=1000` with
+`preferSnapshot`, and every later request is `sinceIdx=<last idx of the previous
+page>, offset=0` (`packages/thread-projection/src/replay.ts:385-390`, taken
+because every reply carries `watermark` —
+`host/src/remote_host/business/history.rs:372`).
+
+`offset` only advances (`0, 1000, 2000 …`, `replay.ts:392-395`) when a peer does
+not answer with a watermark — the compatibility shape for an older bridge. A
+change that makes `offset > 0` a cursor read therefore removes an O(history) trap
+on that shape; it does **not** change today's Desktop/mobile open latency.
+
+Do not quote `offset_1000/5000/136277` timings as hot-path numbers: they are the
+compatibility branch's shape. The real first-open cost is the snapshot fold
+(4.1 s on a 136k-event run with no cached fold), and a later page costs its own
+bytes (~120 ms per 1000 events in a debug build).

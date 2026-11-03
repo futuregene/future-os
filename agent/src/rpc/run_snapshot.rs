@@ -4,7 +4,7 @@
 use super::SseEvent;
 use serde_json::Value;
 
-pub(super) fn fold_events(events: Vec<SseEvent>) -> Vec<SseEvent> {
+pub(crate) fn fold_events(events: Vec<SseEvent>) -> Vec<SseEvent> {
     if events.iter().any(|event| {
         serde_json::from_str::<Value>(&event.data)
             .ok()

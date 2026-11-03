@@ -81,6 +81,94 @@ impl RunJournalSnapshot {
     }
 }
 
+/// Version of the fold this cache entry was produced by.
+///
+/// Bump it when `fold_events` changes shape: a row written by an older algorithm
+/// is then a miss (the reader folds instead), never a stale projection served to
+/// a client that expects today's format.
+pub(crate) const SNAPSHOT_CACHE_VERSION: i64 = 1;
+
+impl SqliteStore {
+    /// The run's newest epoch, or `None` when it has no events left to fold.
+    ///
+    /// The epoch is part of the cache's identity: a restart or fork bumps it,
+    /// and a fold taken before that is not this run's projection any more.
+    pub(crate) fn run_epoch(&self, session: &str, run: &str) -> Result<Option<i64>> {
+        let (session, run) = (session.to_owned(), run.to_owned());
+        self.db.read(move |db| {
+            Ok(db
+                .query_row(
+                    "SELECT epoch FROM run_events WHERE session_id=?1 AND run_id=?2
+                     ORDER BY epoch DESC LIMIT 1",
+                    params![session, run],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?)
+        })
+    }
+
+    /// A fold kept for this exact run and epoch, if one is cached and valid.
+    ///
+    /// Every mismatch is a miss rather than an error: a cache that cannot be
+    /// trusted must never fail a read the journal could still answer.
+    pub(crate) fn cached_run_snapshot(
+        &self,
+        session: &str,
+        run: &str,
+        epoch: i64,
+    ) -> Result<Option<RunJournalSnapshot>> {
+        let (session, stored_run) = (session.to_owned(), run.to_owned());
+        let row: Option<(i64, i64, i64, String)> = self.db.read(move |db| {
+            Ok(db
+                .query_row(
+                    "SELECT version,epoch,cursor,payload FROM run_snapshot_cache
+                     WHERE session_id=?1 AND run_id=?2",
+                    params![session, stored_run],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .optional()?)
+        })?;
+        let Some((version, stored_epoch, cursor, payload)) = row else {
+            return Ok(None);
+        };
+        if version != SNAPSHOT_CACHE_VERSION || stored_epoch != epoch {
+            return Ok(None);
+        }
+        let Ok(snapshot) = serde_json::from_str::<RunJournalSnapshot>(&payload) else {
+            return Ok(None);
+        };
+        if snapshot.validate(run, cursor).is_err() {
+            return Ok(None);
+        }
+        Ok(Some(snapshot))
+    }
+
+    /// Keep a fold beside the journal so the next open of this run does not
+    /// repeat it. Never deletes anything — the raw journal stays authoritative
+    /// and reclaimable (`run_snapshots` is the row that means "compact me").
+    pub(crate) fn store_run_snapshot_cache(
+        &self,
+        session: &str,
+        snapshot: &RunJournalSnapshot,
+    ) -> Result<()> {
+        let payload = serde_json::to_string(snapshot)?;
+        let (session, run) = (session.to_owned(), snapshot.run_id.clone());
+        let (version, epoch, cursor) = (SNAPSHOT_CACHE_VERSION, snapshot.epoch, snapshot.cursor);
+        self.db.call_as("run_snapshot_cache", move |db| {
+            db.execute(
+                "INSERT INTO run_snapshot_cache(session_id,run_id,version,epoch,cursor,payload)
+                 VALUES (?1,?2,?3,?4,?5,?6)
+                 ON CONFLICT(session_id,run_id) DO UPDATE SET
+                     version=excluded.version,epoch=excluded.epoch,
+                     cursor=excluded.cursor,payload=excluded.payload",
+                params![session, run, version, epoch, cursor, payload],
+            )?;
+            Ok(())
+        })?;
+        Ok(())
+    }
+}
+
 pub(crate) struct RunReplayPage {
     pub known: bool,
     pub events: Vec<SseEvent>,
