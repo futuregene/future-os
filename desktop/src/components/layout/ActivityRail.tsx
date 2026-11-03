@@ -1972,13 +1972,11 @@ export function ActivityRail({
                   {selectionMode
                     ? (
                         <ActivityRailSelectionToolbar
-                          onArchive={railView === "archived"
+                          onArchive={railView === "archived" || !onBatchArchiveThreads
                             ? undefined
-                            : selectedLocalThreads.length > 0
-                              ? () => onBatchArchiveThreads?.(selectedLocalThreads)
-                              : undefined}
-                          onRestore={railView === "archived" && selectedLocalThreads.length > 0
-                            ? () => void onBatchRestoreThreads?.(selectedLocalThreads)
+                            : () => onBatchArchiveThreads(selectedLocalThreads)}
+                          onRestore={railView === "archived" && onBatchRestoreThreads
+                            ? () => void onBatchRestoreThreads(selectedLocalThreads)
                             : undefined}
                           selectedCount={selectedCount}
                           totalCount={totalCount}
