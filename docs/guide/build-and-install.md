@@ -113,11 +113,43 @@ make package-desktop    # named DMG in the repository root; raw bundles in targe
 scripts/build/build-desktop-macos.sh  # local DMG; auto-signs when a Developer ID certificate is available
 ```
 
+`make install*` writes into `PREFIX`, and on darwin that prefix is always
+`/opt/homebrew/bin` — it is not probed per architecture. On Apple Silicon that is Homebrew's
+default location and it is writable by the user, so no sudo is needed; an Intel Mac keeps
+Homebrew in `/usr/local`, and when `/opt/homebrew/bin` does not exist the install only fails
+once the whole build has finished. Override the prefix up front:
+
+```bash
+make install-desktop PREFIX="$HOME/.future/bin"
+make install-skills
+echo 'export PATH="$HOME/.future/bin:$PATH"' >> "$HOME/.zshrc"   # make `future` resolvable
+```
+
+`install-desktop` is `tauri build --no-bundle` underneath, so it installs two bare binaries,
+`future` and `futureos` — **there is no `.app` bundle**: nothing is registered with Launch
+Services, `open -a FutureOS` does not work, and you start it by running `futureos`.
+Restarting is therefore "quit normally, then run it again" — quitting goes through the cleanup
+flow, so do not end the process with SIGKILL; see
+[Desktop agent: quit, restart and upgrade](desktop-agent.md). For a `.app` or a DMG, use
+`make package-desktop` or `scripts/build/build-desktop-macos.sh`.
+
 `scripts/build/build-desktop-macos.sh` builds the unified `future` CLI sidecar together
 with the GUI. It automatically uses a single `Developer ID Application` identity
 from the macOS Keychain. Signed output is `FutureOS_<version>_<arch>.dmg`;
 if no unambiguous identity is available, output ends in `-unsigned.dmg`. Run it with `--help` for
 certificate selection, output-directory and Apple notarization options.
+
+### macOS release artifacts
+
+The release manifest `latest.json` has two sections with different jobs. `platforms` is what
+the in-app updater (Tauri updater) reads: both `darwin-aarch64` and `darwin-x86_64` point at
+`.app.tar.gz`, and no DMG appears there. `assets` holds the installable artifacts — on darwin
+the DMGs — and the install script takes its URL and SHA-256 from that section. The DMG
+filenames are `FutureOS_<version>_aarch64.dmg` and `FutureOS_<version>_x64.dmg`: Intel uses
+`x64` in the filename while the manifest key is `x86_64`, so taking the wrong one is a 404.
+The repository declares no minimum macOS version (the `bundle.macOS` block in
+`tauri.conf.json` sets only the signing identity); take the supported range from that
+release's notes.
 
 ## Linux (Debian/Ubuntu)
 
