@@ -1901,15 +1901,14 @@ test("the merged list files each machine's conversations under their workspace h
 });
 
 /**
- * A machine is named on the heading that owns the group, not on every line of
- * it.
+ * A machine is named on the heading that owns the group, and on every row of it.
  *
- * A workspace heading carries its machine's glyph, so a conversation under that
- * heading drawing it again is the same glyph on every row of the group — and it
- * is the width those titles need, on a rail that has none to spare. The rule is
- * the desktop rail's, which passes the group's answer down to its rows.
+ * The row is what the reader points at — searched for, scrolled to, or half of a
+ * folded group — so a row without the mark belonged to no machine in particular
+ * unless the heading happened to be in view. The rule is the desktop rail's,
+ * which draws the row's mark the same way.
  */
-test("a workspace heading names its machine, and its conversations do not repeat it", () => {
+test("a workspace heading names its machine, and so does every row under it", () => {
   renderMerged([
     mergedRow("desk-a", "a1", "Local plan"),
     mergedRow("desk-b", "b1", "Remote plan", { workspaceId: "w9", workspaceName: "Review" }),
@@ -1918,12 +1917,11 @@ test("a workspace heading names its machine, and its conversations do not repeat
 
   expect(headingGlyphs("Project", "desk-a")).toBe(1);
   expect(headingGlyphs("Review", "desk-b")).toBe(1);
-  // Two conversations on that machine, in one group: the glyph stays on the
-  // heading rather than appearing three times down the group.
-  expect(rowGlyphs("Remote plan", "desk-b")).toBe(0);
-  expect(rowGlyphs("Remote review", "desk-b")).toBe(0);
-  expect(rowGlyphs("Local plan", "desk-a")).toBe(0);
-  expect(sourceGlyphs("desk-b")).toBe(1);
+  expect(rowGlyphs("Remote plan", "desk-b")).toBe(1);
+  expect(rowGlyphs("Remote review", "desk-b")).toBe(1);
+  expect(rowGlyphs("Local plan", "desk-a")).toBe(1);
+  // Three places on that machine's group: its heading and both of its rows.
+  expect(sourceGlyphs("desk-b")).toBe(3);
 });
 
 /**
@@ -1956,8 +1954,39 @@ test("a conversation with no heading above it keeps its machine's glyph", () => 
   ]);
   // Above the groups: no heading carries it, so the row does.
   expect(rowGlyphs("Pinned elsewhere", "desk-b")).toBe(1);
-  // Under the heading: it does not.
-  expect(rowGlyphs("Remote plan", "desk-b")).toBe(0);
+  // Under the heading: the row carries it too.
+  expect(rowGlyphs("Remote plan", "desk-b")).toBe(1);
+});
+
+/**
+ * The ordinary single-machine list marks its rows too.
+ *
+ * It is built from the connected desktop's own catalogue, where a source looked
+ * like the same fact repeated on every line — so its rows carried none, and they
+ * were the only rows on the phone that came from nowhere. The machine is named
+ * on every row and every heading whether the picker above the list happens to be
+ * the only place the name appears; on a phone every conversation is on a remote
+ * desktop, and which one is the reader's question about the line, not the list.
+ */
+test("a single-machine list marks every row and heading with the machine", () => {
+  mockRemote.workspaces = [{ id: "w1", name: "Project", path: "/tmp/project" }];
+  mockRemote.sessions = [
+    { sessionId: "w1a", threadId: "tw1", title: "Plan", mode: "workspace", workspaceId: "w1", streaming: false },
+    { sessionId: "c1", threadId: "tc1", title: "Chat", streaming: false },
+  ];
+  act(() => tree.update(createElement(SessionList, {
+    tab: "workspace",
+    empty: null,
+    onMenu,
+    onTabChange,
+    commandsFor: testCommandsFor,
+    ref: listRef,
+    activeDesktopId: "desk-a",
+    icons: new Map([["desk-a", "laptop"]]),
+  })));
+
+  expect(headingGlyphs("Project", "desk-a")).toBe(1);
+  expect(rowGlyphs("Plan", "desk-a")).toBe(1);
 });
 
 /**
@@ -2392,7 +2421,7 @@ test("two machines' same-named workspace folds one at a time", () => {
   expect(mergedTitles()).toEqual(["Local plan"]);
 });
 
-test("a row's own machine is named only when several machines are in the list", () => {
+test("a row names its machine whether the list holds one machine or several", () => {
   renderMerged([
     mergedRow("desk-a", "a1", "Local plan"),
     mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
@@ -2405,15 +2434,20 @@ test("a row's own machine is named only when several machines are in the list", 
       && typeof node.props.accessibilityLabel === "string"
       && node.props.accessibilityLabel.startsWith("desk-"),
   ).map(node => [node.props.accessibilityLabel, node.findAllByType(PeerIconGlyph).length]);
+  // Multiple machines: the mark says which one this row is on.
   expect(glyphs()).toContainEqual(["desk-b", 1]);
 
-  // One machine: the selector above the list already names it, and every row
-  // repeating its glyph would take the width the title needs.
+  // One machine: the selector above the list names it for the list, and the row
+  // and heading name it for the line. Gating the glyph on "more than one machine"
+  // left these rows indistinguishable from rows of the phone's own machine.
   renderMerged(
     [mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" })],
     "desk-b",
   );
-  expect(glyphs()).toEqual([]);
+  const single = glyphs();
+  expect(single).toContainEqual(["desk-b", 1]);
+  // The heading and the row under it each name the machine.
+  expect(single).toHaveLength(2);
 });
 
 /**

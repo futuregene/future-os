@@ -345,11 +345,15 @@ it("draws a fork under the conversation it hangs under", async () => {
 });
 
 /**
- * Filtered to one machine, the badge on every row repeats the selector directly
- * above the list — and it is the row's title that pays for it. The machine is
- * still named by the selector, so nothing is lost.
+ * A remote row says which machine it is on, under every filter.
+ *
+ * The badge used to be withheld when the list was filtered to one machine,
+ * because the selector directly above names it — but the selector says what the
+ * list is *showing*, not where the line being read lives. With the badge gone a
+ * remote row and a local one were the same row, and the owner of a conversation
+ * was a fact the reader had to reconstruct from the filter.
  */
-it("drops the per-row machine badge when one machine is selected", async () => {
+it("keeps the per-row machine badge when one machine is selected", async () => {
   const remote = conversation({
     desktopId: "desktop_a",
     id: "sess_a",
@@ -385,20 +389,21 @@ it("drops the per-row machine badge when one machine is selected", async () => {
     rows: [remote],
     threadById: new Map(),
   });
-  expect(single.container.querySelectorAll("[data-testid='remote-source-icon']")).toHaveLength(0);
+  expect(single.container.querySelectorAll("[data-testid='remote-source-icon']")).toHaveLength(1);
   // The row is still there, and still says which conversation it is.
   expect(single.container.textContent).toContain("a conversation on the host");
   await single.unmount();
 });
 
 /**
- * This machine's own section is *not* a machine the user selected, so filtering
- * to it keeps the badges: the rows shown are all local, but the point of the
- * badge is to distinguish rows, and a local-only list has nothing to distinguish.
- * (There are no remote rows to badge in that filter anyway — asserted so the
- * rule is not read as "hide badges whenever the filter is not `all`".)
+ * This machine's own rows carry no badge, under any filter.
+ *
+ * The badge is the machine a row came from, and this machine's own rows come
+ * from here: the selector it sits under already names this machine. (There are
+ * no remote rows in this filter either — asserted so the rule is not read as
+ * "badge every row regardless of where it came from".)
  */
-it("keeps the badge on a mixed list even when the filter is not `all`", async () => {
+it("leaves this machine's own rows unbadged, whatever the filter", async () => {
   const peers = [{
     agentAvailable: true,
     bridgeInstanceId: "bridge_1",
@@ -455,8 +460,8 @@ it("hides a group's rows when the state says it is collapsed", async () => {
     rows,
     threadById: new Map(),
   });
-  // Rows are counted by their frame: a row under a heading that already names
-  // the machine does not repeat its icon, which is the point of that rule.
+  // Rows are counted by their frame: each one carries its machine's icon, which
+  // is a mark of its own inside the row and not part of how many rows there are.
   const visible = () => open.container.querySelectorAll("div[class*='group/thread']").length;
   // The heading is a group's, with the local one's shape: a fold control, the
   // folder, the name, and this machine's icon after it.
@@ -826,14 +831,15 @@ it("offers a menu and a new-chat control on a remote workspace heading", async (
 });
 
 /**
- * The machine is named once per group, not on every row under it.
+ * A conversation carries its machine even under a heading that names it.
  *
- * A row's icon repeated what the heading directly above it already said, and the
- * row paid for the repetition out of the width its title needs. A conversation in
- * the chat section still carries it: that section spans machines, so there it
- * qualifies the row.
+ * The heading used to be the only place a group's machine was marked, on the
+ * argument that repeating it down the group would be the same glyph on every
+ * line. The row is what the reader points at, though — with the mark only on the
+ * heading, a row read on its own (searched for, scrolled to, half of a folded
+ * group) belonged to no machine in particular.
  */
-it("does not repeat the machine on a row whose group heading already names it", async () => {
+it("names the machine on a row and on the heading above it", async () => {
   const peers = [peer("desktop_a", "Studio iMac")];
   const view = await render({
     peers,
@@ -853,10 +859,10 @@ it("does not repeat the machine on a row whose group heading already names it", 
     threadById: new Map(),
   });
 
-  // The workspace group's heading carries it, so its row does not...
+  // The workspace group's heading carries it, and so does the row under it...
   const rows = [...view.container.querySelectorAll("div[class*='group/thread']")];
   const inWorkspace = rows.find(row => (row.textContent || "").includes("in a workspace"))!;
-  expect(inWorkspace.querySelector("[data-testid='remote-source-icon']")).toBeNull();
+  expect(inWorkspace.querySelector("[data-testid='remote-source-icon']")).not.toBeNull();
   // ...and the chat section, which has no heading of its own, still does.
   const inChats = rows.find(row => (row.textContent || "").includes("a chat"))!;
   expect(inChats.querySelector("[data-testid='remote-source-icon']")).not.toBeNull();
@@ -943,8 +949,8 @@ it("takes the batch's checkbox on a host's row, and ticks instead of opening it"
   await view.unmount();
 });
 
-/** With one machine selected nothing needs naming, on a heading or a row. */
-it("drops the machine from headings too when one machine is selected", async () => {
+/** The machine stays on headings too when one machine is selected. */
+it("keeps the machine on headings when one machine is selected", async () => {
   const view = await render({
     filter: { kind: "device", desktopId: "desktop_a" },
     peers: [peer("desktop_a", "Studio iMac")],
@@ -964,8 +970,8 @@ it("drops the machine from headings too when one machine is selected", async () 
   });
 
   const heading = view.container.querySelector("[data-testid='merged-group-heading']")!;
-  expect(heading.closest("div[class*='group']")!.querySelector("span[aria-hidden]")).toBeNull();
-  expect(view.container.querySelector("[data-testid='remote-source-icon']")).toBeNull();
+  expect(heading.closest("div[class*='group']")!.querySelector("span[aria-hidden]")).not.toBeNull();
+  expect(view.container.querySelector("[data-testid='remote-source-icon']")).not.toBeNull();
   await view.unmount();
 });
 

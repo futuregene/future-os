@@ -1297,7 +1297,7 @@
         ]
       },
       "remote-single-device": {
-        "note": "Filtered to one machine: the rows drop the badge the selector already states.",
+        "note": "Filtered to one machine: every row and its group heading still carry that machine's badge. The selector names what the list is showing, not where the line being read lives.",
         "url": "http://localhost:5299/shot/?lang=zh",
         "steps": [
           {
@@ -1319,7 +1319,7 @@
             "wait": 1800
           },
           {
-            "eval": "(() => { const t = document.body.innerText; const badges = document.querySelectorAll(\"[data-testid='remote-source-icon']\"); if (badges.length > 0) throw new Error('a single machine is selected, yet ' + badges.length + ' rows repeat its badge'); if (!t.includes('重画森林图并核对置信区间')) throw new Error('that machine conversations are not listed'); })()"
+            "eval": "(() => { const t = document.body.innerText; const rows = [...document.querySelectorAll(\"div[class*='group/thread']\")]; const badges = document.querySelectorAll(\"[data-testid='remote-source-icon']\"); if (rows.length === 0) throw new Error('the filtered list drew no rows'); if (badges.length !== rows.length) throw new Error('a remote row has no machine badge: ' + badges.length + ' badges for ' + rows.length + ' rows'); const heading = document.querySelector(\"[data-testid='merged-group-heading']\"); if (!heading) throw new Error('the host workspace heading is missing'); if (!heading.closest('div').querySelector('span[aria-hidden]')) throw new Error('the heading under a single-machine filter lost its machine'); if (!t.includes('重画森林图并核对置信区间')) throw new Error('that machine conversations are not listed'); })()"
           },
           {
             "shot": "d-remote-single-device.png"
