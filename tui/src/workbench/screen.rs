@@ -275,8 +275,12 @@ pub(crate) fn compose(
         // attention colour the activity row already uses for "something is going
         // on", and the words themselves say which of the two it was.
         let row = match data.notice.as_deref() {
+            // The band is one row; a notice that arrives with line breaks in it
+            // (the update message used to be two sentences) is joined into one
+            // sentence first, because a control character in a row is a line
+            // break in the middle of the frame — see [`ansi::one_line`].
             Some(notice) => vec![fit(
-                &palette.text(palette.amber, &format!(" {notice}")),
+                &palette.text(palette.amber, &format!(" {}", ansi::one_line(notice))),
                 columns,
             )],
             None => hint_row(workbench, &palette, columns, frame.compact),
@@ -5041,6 +5045,46 @@ mod tests {
             narrow.contains("idle") || narrow.contains('·'),
             "{narrow:?}"
         );
+    }
+
+    /// A notice is painted on the footer's *single* hint row, so a line break
+    /// inside it is a line break in the middle of the frame.
+    ///
+    /// The startup update notice used to be two sentences joined by `\n`: the
+    /// row was measured as if the break were one column, then written out with
+    /// the break in it, and the terminal answered with a hard line feed — every
+    /// row below shifted, and the second sentence landed on top of the status
+    /// row. Nothing in a frame row may be a control character.
+    #[test]
+    fn a_line_break_in_a_notice_never_reaches_the_frame() {
+        let two_lines = "Update available: v0.0.2-107+nightly → v0.0.2-108+nightly.\n\
+                         To update, re-run the official installer: \
+                         https://dl.future-os.cn/install.sh";
+        for columns in [120u16, 60, 24] {
+            let mut data = crate::workbench::demo::chat();
+            data.notice = Some(two_lines.into());
+            let mut workbench = Workbench::new();
+            let rows = workbench.render(&data, columns, 40);
+            for (index, row) in rows.iter().enumerate() {
+                let text = plain(row);
+                assert_eq!(width(row), columns as usize, "row {index}: {text:?}");
+                assert!(
+                    !text.chars().any(char::is_control),
+                    "row {index} carries a control character: {text:?}"
+                );
+            }
+            // The sentence the break separated is still on the notice's row, as
+            // one sentence — not dropped, and not pushed onto another row.
+            let footer = plain(rows.last().unwrap());
+            assert!(footer.contains("Update available"), "{footer:?}");
+        }
+        // A short two-line notice keeps both halves, joined on the one row.
+        let mut data = crate::workbench::demo::chat();
+        data.notice = Some("saved\nretry later".into());
+        let mut workbench = Workbench::new();
+        let rows = workbench.render(&data, 120, 40);
+        let footer = plain(rows.last().unwrap()).trim_end().to_string();
+        assert!(footer.ends_with("saved · retry later"), "{footer:?}");
     }
 
     #[test]
