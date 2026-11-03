@@ -6,6 +6,11 @@ export function disconnectedCopy(
   reason?: string,
   error?: string | null,
 ) {
+  // First, and ahead of every error string: this state is not a transport
+  // detail to be re-classified, it is the phone's own finding that nothing
+  // answered, and the page has to say that rather than "the network has a
+  // problem".
+  if (presentation.customerState === "desktopNotServing") return "notServing";
   if (presentation.customerState === "disconnected") {
     switch (reason) {
       case "user_disconnect": return "manual";

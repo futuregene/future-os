@@ -22,6 +22,7 @@ import { ActionMenu } from "../../components/ActionMenu";
 import type { MachineStatus, MachineSummary } from "../../remote/desktopStatus";
 import { RenameModal } from "../../features/chat/components/RenameModal";
 import { DisconnectedScreen } from "../DisconnectedScreen";
+import { connectionPresentation } from "../../remote/connectionPresentation";
 import { StandbyScreen } from "../StandbyScreen";
 import { SettingsLink } from "../../features/settings/SettingsPrimitives";
 import { SettingsScreen } from "../../features/settings/SettingsScreen";
@@ -495,6 +496,38 @@ test("a disconnected lone desktop keeps the reconnect page rather than the takeo
     mockRemote.connectionPresentation = connected;
     mockRemote.desktops = desktops;
     mockRemote.presence = presence;
+  }
+});
+
+/**
+ * The reported case, at the screen that decides which page is drawn.
+ *
+ * A phone that has never reached this desktop has no list to keep and nothing
+ * running behind the page: the yellow "connecting" page it used to sit on was
+ * describing work that was not happening. It now gets the red page, with the
+ * silence as its stated cause.
+ */
+test("a desktop that has never answered gets the terminal page, not the wait", () => {
+  const presentation = mockRemote.connectionPresentation;
+  const hasContent = mockRemote.hasConnectedContent;
+  const phase = mockRemote.phase;
+  mockRemote.connectionPresentation = connectionPresentation({
+    phase: "reconnecting",
+    desktopOnline: false,
+    desktopUnanswered: true,
+  }) as unknown as typeof mockRemote.connectionPresentation;
+  mockRemote.phase = "reconnecting";
+  mockRemote.hasConnectedContent = false;
+  try {
+    act(() => { tree.update(createElement(SessionsScreen, { onManageDesktops })); });
+    const page = tree.root.findAllByType(DisconnectedScreen);
+    expect(page).toHaveLength(1);
+    // Not the reconnecting variant: that one draws a spinner and "正在连接".
+    expect(page[0]!.props.reconnecting).toBe(false);
+  } finally {
+    mockRemote.connectionPresentation = presentation;
+    mockRemote.hasConnectedContent = hasContent;
+    mockRemote.phase = phase;
   }
 });
 
