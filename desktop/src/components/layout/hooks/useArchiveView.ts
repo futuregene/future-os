@@ -9,7 +9,11 @@ interface ArchiveViewState {
   nextCursor: string | null;
 }
 
-const PAGE_SIZE = 50;
+/**
+ * Ten, like every other list in the rail: one screenful plus a little, with
+ * "load more" one click away.
+ */
+const PAGE_SIZE = 10;
 
 export interface ArchiveView {
   workspaces: StoredWorkspace[];
@@ -23,12 +27,20 @@ export interface ArchiveView {
    * same toolbar as everything else.
    */
   workspaceThreads: Record<string, StoredThread[]>;
+  /** Per-workspace cursors, so a shelved workspace's own list pages too. */
+  workspaceNextCursor: Record<string, string | null>;
   loading: boolean;
   hasMoreThreads: boolean;
+  /** Whether the archived *workspace* list has another page. */
+  hasMoreWorkspaces: boolean;
+  /** Fetch the next page of the archived workspace list. */
+  loadMoreWorkspaces: () => Promise<void>;
   /** Read the archived lists once, when the entry is first opened. */
   ensureLoaded: () => void;
   /** Fetch one archived workspace's contents (once per group). */
   ensureWorkspaceThreads: (workspaceId: string) => void;
+  /** Fetch the next page of one archived workspace's contents. */
+  loadMoreWorkspaceThreads: (workspaceId: string) => Promise<void>;
   /** Fetch the next page of archived conversation trees. */
   loadMoreThreads: () => Promise<void>;
   /** Re-read the archived lists (after an archive/restore/delete). */
@@ -48,8 +60,10 @@ export function useArchiveView(): ArchiveView {
   const [workspaces, setWorkspaces] = useState<StoredWorkspace[]>([]);
   const [threads, setThreads] = useState<StoredThread[]>([]);
   const [workspaceThreads, setWorkspaceThreads] = useState<Record<string, StoredThread[]>>({});
+  const [workspaceNextCursor, setWorkspaceNextCursor] = useState<Record<string, string | null>>({});
   const [loading, setLoading] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [workspaceNextCursorForList, setWorkspaceNextCursorForList] = useState<string | null>(null);
   const stateRef = useRef<ArchiveViewState>({ loading: false, loaded: false, nextCursor: null });
   stateRef.current = { loading, loaded: stateRef.current.loaded, nextCursor };
 
@@ -64,6 +78,7 @@ export function useArchiveView(): ArchiveView {
         listThreadsPage("archived", null, PAGE_SIZE),
       ]);
       setWorkspaces(workspacePage.workspaces);
+      setWorkspaceNextCursorForList(workspacePage.nextCursor);
       setThreads(threadPage.threads);
       setNextCursor(threadPage.nextCursor);
       // Contents of workspaces that are still shelved are re-read for the ones
@@ -94,12 +109,14 @@ export function useArchiveView(): ArchiveView {
     setWorkspaceThreads((current) => {
       if (current[workspaceId])
         return current;
-      void listThreadsPage(`workspace-archived:${workspaceId}`, null, 50)
+      void listThreadsPage(`workspace-archived:${workspaceId}`, null, PAGE_SIZE)
         .then((page) => {
           setWorkspaceThreads(previous => ({ ...previous, [workspaceId]: page.threads }));
+          setWorkspaceNextCursor(previous => ({ ...previous, [workspaceId]: page.nextCursor }));
         })
         .catch(() => {
           setWorkspaceThreads(previous => ({ ...previous, [workspaceId]: [] }));
+          setWorkspaceNextCursor(previous => ({ ...previous, [workspaceId]: null }));
         });
       return current;
     });
@@ -143,15 +160,41 @@ export function useArchiveView(): ArchiveView {
     }
   }, []);
 
+  /** The next page of the archived workspace list. */
+  const loadMoreWorkspaces = useCallback(async () => {
+    if (stateRef.current.loading || workspaceNextCursorForList === null)
+      return;
+    const page = await listWorkspacesPage(true, workspaceNextCursorForList, PAGE_SIZE);
+    setWorkspaces(previous => [...previous, ...page.workspaces]);
+    setWorkspaceNextCursorForList(page.nextCursor);
+  }, [workspaceNextCursorForList]);
+
+  /** The next page of one shelved workspace's contents. */
+  const loadMoreWorkspaceThreads = useCallback(async (workspaceId: string) => {
+    const cursor = workspaceNextCursor[workspaceId] ?? null;
+    if (cursor === null)
+      return;
+    const page = await listThreadsPage(`workspace-archived:${workspaceId}`, cursor, PAGE_SIZE);
+    setWorkspaceThreads(previous => ({
+      ...previous,
+      [workspaceId]: [...(previous[workspaceId] ?? []), ...page.threads],
+    }));
+    setWorkspaceNextCursor(previous => ({ ...previous, [workspaceId]: page.nextCursor }));
+  }, [workspaceNextCursor]);
+
   return {
     workspaces,
     threads,
     workspaceThreads,
+    workspaceNextCursor,
     loading,
     hasMoreThreads: nextCursor !== null,
+    hasMoreWorkspaces: workspaceNextCursorForList !== null,
     ensureLoaded,
     ensureWorkspaceThreads,
+    loadMoreWorkspaces,
     loadMoreThreads,
+    loadMoreWorkspaceThreads,
     refresh,
   };
 }

@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/cn";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { ArchivedThreadMenu } from "./ActivityRailMenus";
+import { RailDisclosure } from "./RailChrome";
 import { RailRow, RailRowMenuButton, RailRowTitle } from "./RailRow";
 
 /**
@@ -151,15 +152,11 @@ export function ArchivedWorkspaceGroup({
           onOpenMenu();
         }}
       >
-        <button
-          aria-expanded={expanded}
-          aria-label={expanded ? t("activityRail.collapseWorkspace") : t("activityRail.expandWorkspace")}
-          className="inline-flex size-4 shrink-0 items-center justify-center rounded text-ink-muted hover:text-ink-soft"
-          onClick={onToggle}
-          type="button"
-        >
-          <span className="text-xs leading-none">{expanded ? "−" : "+"}</span>
-        </button>
+        {/* The same disclosure the active list's workspace headings fold with:
+            a +/− pair read as a different control from the chevron one row
+            above, and a group heading is a group heading whichever list it is
+            in. */}
+        <RailDisclosure collapsed={!expanded} label={expanded ? t("activityRail.collapseWorkspace") : t("activityRail.expandWorkspace")} onToggle={onToggle} />
         <Folder className="size-4 shrink-0 text-ink-soft" />
         <span className="min-w-0 flex-1 truncate text-13 font-semibold text-ink" title={workspace.name}>
           {workspace.name}
@@ -209,14 +206,19 @@ export function ArchivedEmpty({ label }: { label: string }) {
  * it read-only before the reader decides to restore anything.
  */
 export function ArchivedWorkspaceContents({
+  hasMore,
   loading,
+  onLoadMore,
   onOpen,
   onToggleSelection,
   selectedIds,
   selectionMode,
   threads,
 }: {
+  /** Whether this group's own list has another page. */
+  hasMore?: boolean;
   loading: boolean;
+  onLoadMore?: () => void;
   onOpen: (thread: StoredThread) => void;
   onToggleSelection?: (thread: StoredThread) => void;
   /** Ids of the rows ticked in a batch. */
@@ -252,6 +254,17 @@ export function ArchivedWorkspaceContents({
             : null}
         </RailRow>
       ))}
+      {hasMore
+        ? (
+            <button
+              className="w-full rounded-md px-2 py-1 text-left text-xs text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+              onClick={onLoadMore}
+              type="button"
+            >
+              {t("activityRail.loadMore")}
+            </button>
+          )
+        : null}
     </div>
   );
 }

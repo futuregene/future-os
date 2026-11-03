@@ -1745,7 +1745,10 @@ export function ActivityRail({
                                           workspace={workspace}
                                         >
                                           <ArchivedWorkspaceContents
+                                            hasMore={archiveView.workspaceNextCursor[workspace.id] !== null
+                                              && archiveView.workspaceNextCursor[workspace.id] !== undefined}
                                             loading={archiveView.loading}
+                                            onLoadMore={() => void archiveView.loadMoreWorkspaceThreads(workspace.id)}
                                             onOpen={onOpenArchivedThread ?? onSelectThread}
                                             onToggleSelection={toggleThreadSelection}
                                             selectedIds={selectedThreadIds}
@@ -1754,6 +1757,18 @@ export function ActivityRail({
                                           />
                                         </ArchivedWorkspaceGroup>
                                       ))}
+                                  {archiveView.hasMoreWorkspaces && archivedQuery.length === 0
+                                    ? (
+                                        <button
+                                          className="w-full rounded-md px-2 py-1 text-left text-xs text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+                                          data-testid="rail-archived-workspaces-more"
+                                          onClick={() => void archiveView.loadMoreWorkspaces()}
+                                          type="button"
+                                        >
+                                          {t("activityRail.loadMore")}
+                                        </button>
+                                      )
+                                    : null}
                                 </div>
                                 <div className="space-y-0.5">
                                   <ArchivedSectionHeading

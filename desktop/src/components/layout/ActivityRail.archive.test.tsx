@@ -45,10 +45,14 @@ vi.mock("./hooks/useArchiveView", () => ({
     ensureLoaded: () => {},
     ensureWorkspaceThreads: () => {},
     hasMoreThreads: false,
+    hasMoreWorkspaces: false,
     loadMoreThreads: async () => {},
+    loadMoreWorkspaceThreads: async () => {},
+    loadMoreWorkspaces: async () => {},
     loading: false,
     refresh: async () => {},
     threads: archivedThreads,
+    workspaceNextCursor: {},
     workspaceThreads: {},
     workspaces: archivedWorkspaces,
   }),
@@ -237,6 +241,22 @@ describe("archive entry and its guide", () => {
     expect(idleEntry.getAttribute("data-active")).toBeNull();
     expect(idleEntry.className).not.toContain("ring-1");
     idle.unmount();
+  });
+
+  it("folds an archived workspace with the same chevron as an active one", () => {
+    currentView = "archived";
+    archivedThreads.length = 0;
+    archivedWorkspaces.length = 0;
+    archivedWorkspaces.push({ id: "w-shelved", name: "Shelved project" });
+
+    const view = mount(createElement(ActivityRail, props()));
+    const heading = view.container.querySelector("[data-testid='rail-archived-view']")!;
+    // The +/− text pair is gone; the disclosure renders an svg chevron.
+    expect(heading.textContent).not.toContain("+");
+    expect(heading.querySelector("svg.lucide-chevron-right, svg.lucide-chevron-down")).not.toBeNull();
+    view.unmount();
+    archivedThreads.length = 0;
+    archivedWorkspaces.length = 0;
   });
 
   it("offers the guide again from the archived view", () => {
