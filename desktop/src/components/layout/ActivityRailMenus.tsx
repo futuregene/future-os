@@ -78,6 +78,53 @@ export function ThreadItemMenu({
 }
 
 /**
+ * An archived conversation's actions dropdown: restore / rename / delete.
+ *
+ * The same three things the row's own menu offers in the active list, in the
+ * archived list's vocabulary — a shelved conversation can be renamed and
+ * deleted exactly like a live one, and restoring it is what "archive" is
+ * reversed by. Rendered by the archived view's rows, which therefore need no
+ * inline action buttons.
+ */
+export function ArchivedThreadMenu({
+  onClose,
+  onDelete,
+  onRename,
+  onRestore,
+}: {
+  onClose: () => void;
+  onDelete: () => void;
+  onRename: () => void;
+  onRestore: () => void;
+}) {
+  const { t } = useTranslation("layout");
+  const { menuRef, dropUp } = useDropUpMenu();
+  useKeyboardOwner(true);
+
+  return (
+    <MenuPanel
+      ref={menuRef}
+      onKeyDown={handleMenuKeyDown}
+      role="menu"
+      className={cn(
+        "absolute right-1 z-40 w-36 p-1",
+        dropUp ? "bottom-7" : "top-7",
+      )}
+    >
+      <ThreadMenuItem icon={<Archive className="size-3.5" />} onClick={onRestore} onClose={onClose}>
+        {t("activityRail.restore")}
+      </ThreadMenuItem>
+      <ThreadMenuItem icon={<Pencil className="size-3.5" />} onClick={onRename} onClose={onClose}>
+        {t("activityRail.rename")}
+      </ThreadMenuItem>
+      <ThreadMenuItem danger icon={<Trash2 className="size-3.5" />} onClick={onDelete} onClose={onClose}>
+        {t("activityRail.delete")}
+      </ThreadMenuItem>
+    </MenuPanel>
+  );
+}
+
+/**
  * Workspace-header actions dropdown (rename / reveal in file manager /
  * select conversations / delete).
  */

@@ -87,7 +87,9 @@
     "loadMoreWorkspaces": "加载更多工作区",
     "archiveSelected": "归档",
     "loading": "加载中…",
-    "archiveGuideAgain": "再看一次归档提示"
+    "archiveGuideAgain": "再看一次归档提示",
+    "archivedThreadsActions": "已归档会话操作",
+    "restoreSelected": "恢复"
   },
   "appShell": {
     "storeInitFailed": "FutureOS 本地存储初始化失败：",
