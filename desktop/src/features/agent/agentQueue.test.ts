@@ -3,6 +3,7 @@ import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook } from "../../test/renderHook";
 import {
+  agentQueueNoticeReason,
   cancelAgentQueuedRun,
   fetchAgentQueue,
   isParkedRow,
@@ -41,7 +42,7 @@ describe("fetchAgentQueue", () => {
       recentTerminalAcks: [],
     });
 
-    const rows = await fetchAgentQueue("thread-1");
+    const { rows } = await fetchAgentQueue("thread-1");
 
     expect(mocks.invokeCommand).toHaveBeenCalledWith("session_queue", { threadId: "thread-1" });
     expect(rows.map(entry => entry.runId)).toEqual(["run-1", "run-2"]);
@@ -57,7 +58,7 @@ describe("fetchAgentQueue", () => {
       queued: [{ position: 1, text: "no id" }, row()],
     });
 
-    const rows = await fetchAgentQueue("thread-1");
+    const { rows } = await fetchAgentQueue("thread-1");
 
     expect(rows).toHaveLength(1);
     expect(rows[0]!.runId).toBe("run-1");
@@ -66,7 +67,40 @@ describe("fetchAgentQueue", () => {
   it("is empty for a conversation with no queue, not an error", async () => {
     mocks.invokeCommand.mockResolvedValue({});
 
-    await expect(fetchAgentQueue("thread-1")).resolves.toEqual([]);
+    await expect(fetchAgentQueue("thread-1")).resolves.toEqual({ acks: [], rows: [] });
+  });
+
+  /**
+   * The other half of the answer: rows that left the queue without running.
+   * Reading only `queued` is what let a cancelled or merged message disappear
+   * with nobody told.
+   */
+  it("reads why rows left the queue, and skips ones it cannot explain", async () => {
+    mocks.invokeCommand.mockResolvedValue({
+      queued: [],
+      recentTerminalAcks: [
+        { reason: "merged", runId: "run-1", state: "terminal" },
+        { reason: "cancelled", runId: "run-2", state: "terminal" },
+        { reason: "", runId: "run-3", state: "terminal" },
+        { reason: "superseded", state: "terminal" },
+      ],
+    });
+
+    const { acks } = await fetchAgentQueue("thread-1");
+
+    expect(acks).toEqual([
+      { reason: "merged", runId: "run-1", state: "terminal" },
+      { reason: "cancelled", runId: "run-2", state: "terminal" },
+    ]);
+  });
+
+  /** A reason this client has no sentence for is named, not dropped or invented. */
+  it("maps a reason to its sentence, and an unknown one to the catch-all", () => {
+    expect(agentQueueNoticeReason("merged")).toBe("merged");
+    expect(agentQueueNoticeReason("cancelled")).toBe("cancelled");
+    expect(agentQueueNoticeReason("superseded")).toBe("superseded");
+    expect(agentQueueNoticeReason("session_deleted")).toBe("session_deleted");
+    expect(agentQueueNoticeReason("something_new")).toBe("other");
   });
 });
 
@@ -137,6 +171,86 @@ describe("useAgentQueue", () => {
     });
 
     expect(harness.current.rows).toEqual([]);
+    harness.unmount();
+  });
+
+  /**
+   * A row that leaves the queue without running — folded into the turn ahead,
+   * taken back on another device, or lost with a deleted conversation — is not
+   * announced by the Agent as an event. Its terminal ack is the only trace, and
+   * reading it is what stops the message from vanishing unremarked.
+   */
+  it("says what became of a row that left the queue after the panel opened", async () => {
+    mocks.invokeCommand.mockResolvedValue({ queued: [row()], recentTerminalAcks: [] });
+    const harness = renderHook(() => useAgentQueue("thread-1", true));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(harness.current.notice).toBeNull();
+
+    mocks.invokeCommand.mockResolvedValue({
+      queued: [],
+      recentTerminalAcks: [{ reason: "merged", runId: "run-1", state: "terminal" }],
+    });
+    act(() => harness.current.refresh());
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(harness.current.rows).toEqual([]);
+    expect(harness.current.notice).toEqual({ count: 1, reason: "merged" });
+    harness.unmount();
+  });
+
+  /** The Agent's window holds older acks: those are not news for this view. */
+  it("does not announce acks that predate the panel, or say the same thing twice", async () => {
+    const oldAck = { reason: "cancelled", runId: "run-old", state: "terminal" };
+    mocks.invokeCommand.mockResolvedValue({ queued: [], recentTerminalAcks: [oldAck] });
+    const harness = renderHook(() => useAgentQueue("thread-1", true));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(harness.current.notice).toBeNull();
+
+    mocks.invokeCommand.mockResolvedValue({
+      queued: [],
+      recentTerminalAcks: [oldAck, { reason: "session_deleted", runId: "run-new", state: "terminal" }],
+    });
+    act(() => harness.current.refresh());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(harness.current.notice).toEqual({ count: 1, reason: "session_deleted" });
+
+    const shown = harness.current.notice;
+    act(() => harness.current.refresh());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(harness.current.notice).toBe(shown);
+    harness.unmount();
+  });
+
+  /** Removing a row is this window's own act: its ack would read as a fault. */
+  it("does not announce a removal this window made itself", async () => {
+    mocks.invokeCommand.mockResolvedValue({ queued: [row()], recentTerminalAcks: [] });
+    const harness = renderHook(() => useAgentQueue("thread-1", true));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    act(() => harness.current.forget("run-1"));
+    mocks.invokeCommand.mockResolvedValue({
+      queued: [],
+      recentTerminalAcks: [{ reason: "cancelled", runId: "run-1", state: "terminal" }],
+    });
+    act(() => harness.current.refresh());
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(harness.current.rows).toEqual([]);
+    expect(harness.current.notice).toBeNull();
     harness.unmount();
   });
 });

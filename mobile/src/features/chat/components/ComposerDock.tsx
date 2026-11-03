@@ -61,6 +61,7 @@ function ComposerDockView({
   onInstallSkill,
   onDismissSkill,
   queueItems = [],
+  queueNotice,
   onQueueUpdate,
   onQueueRemove,
   onQueueRelease,
@@ -110,6 +111,13 @@ function ComposerDockView({
    * fixed or taken back before it leaves.
    */
   queueItems?: readonly SendQueuePanelItem[];
+  /**
+   * One sentence about a row that left the queue without running.
+   *
+   * Drawn outside the panel because it matters most when the panel is empty: the
+   * row it is about is the one that is no longer there.
+   */
+  queueNotice?: string;
   /** Take one waiting message back out (a cancel of the session's run id). */
   onQueueRemove?: (id: string) => void;
   /** Replace one waiting message: the session has no rename, so cancel + send. */
@@ -296,8 +304,15 @@ function ComposerDockView({
           t={t}
         />
       ) : null}
+      {queueNotice ? (
+        <Text style={styles.queueNotice} testID="send-queue-notice">{queueNotice}</Text>
+      ) : null}
       {queueItems.length > 0 && (
         <SendQueuePanel
+          // The desktop's queue reports a message's text, never the files it was
+          // sent with, so the panel is told that rather than handed a count of
+          // zero the phone would have invented.
+          attachmentsUnreported
           items={queueItems}
           onRelease={id => onQueueRelease?.(id)}
           onRemove={id => onQueueRemove?.(id)}

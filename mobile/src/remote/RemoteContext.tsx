@@ -22,7 +22,7 @@ import { useAppLifecycle } from "./useAppLifecycle";
 import { useDesktopManagement } from "./useDesktopManagement";
 import { useDesktopRuntime, type DesktopRuntime } from "./useDesktopRuntime";
 import { usePairedDesktops } from "./usePairedDesktops";
-import type { SessionQueueRow } from "./sessionQueue";
+import type { SessionQueueSnapshot } from "./sessionQueue";
 import type { TimelineState } from "@future-os/remote-client/timeline";
 import type { CatalogEntry } from "./mergeSessions";
 import { DEFAULT_THINKING_LEVEL } from "./types";
@@ -195,13 +195,16 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
     options?: { busyPolicy?: string; commandId?: string },
   ): Promise<void>;
   /**
-   * The conversation's waiting messages, as the session holds them.
+   * The conversation's waiting messages, as the session holds them, and the
+   * reasons rows recently left the queue.
    *
    * Read-only on purpose: a queue belongs to the conversation on the desktop, so
    * this is that queue's own list, not a copy the phone could disagree with. An
-   * empty session id (a draft nothing was sent to yet) has nothing waiting.
+   * empty session id (a draft nothing was sent to yet) has nothing waiting. The
+   * acks are what say a row was folded into the turn ahead or dropped with a
+   * deleted conversation instead of just vanishing.
    */
-  getQueue(sessionId: string): Promise<SessionQueueRow[]>;
+  getQueue(sessionId: string): Promise<SessionQueueSnapshot>;
   /** Take one waiting message back out, before it leaves. */
   cancelQueuedRun(sessionId: string, runId: string): Promise<void>;
   /** Start a parked waiting row now, because the reader asked for it. */
@@ -567,7 +570,7 @@ function machineSurface(
     newConversation: runtime?.conversation.newConversation ?? noop,
     closeConversation: runtime?.closeConversation ?? (() => undefined),
     sendMessage: runtime?.outbox.sendMessage ?? noop,
-    getQueue: runtime?.queue?.get ?? (async () => []),
+    getQueue: runtime?.queue?.get ?? (async () => ({ acks: [], rows: [] })),
     cancelQueuedRun: runtime?.queue?.cancel ?? (async () => {
       throw new Error("not_connected");
     }),

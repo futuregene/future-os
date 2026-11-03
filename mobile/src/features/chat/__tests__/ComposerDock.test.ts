@@ -943,6 +943,8 @@ test("the queue panel shows what is waiting and its three verbs reach the screen
   try {
     const panel = tree.root.findByType(SendQueuePanel);
     expect(panel.props.items.map((item: { id: string }) => item.id)).toEqual(["run_a", "run_b"]);
+    // The desktop's queue never says which files a waiting message carries.
+    expect(panel.props.attachmentsUnreported).toBe(true);
     act(() => panel.props.onUpdate("run_a", "改好了"));
     expect(onQueueUpdate).toHaveBeenCalledWith("run_a", "改好了");
     act(() => panel.props.onRemove("run_b"));
@@ -950,6 +952,26 @@ test("the queue panel shows what is waiting and its three verbs reach the screen
     // A parked row is the one the reader can start by hand.
     act(() => panel.props.onRelease("run_b"));
     expect(onQueueRelease).toHaveBeenCalledWith("run_b");
+  } finally {
+    unmount();
+  }
+});
+
+/**
+ * A row can leave the desktop's queue without this screen asking; the sentence
+ * about it is drawn by the dock, not the panel, because it matters most once the
+ * panel is empty and gone.
+ */
+test("says why a row left the queue even when nothing is waiting", () => {
+  const { tree, unmount } = mountDock({
+    message: "",
+    queueItems: [],
+    queueNotice: "A waiting message was folded into the turn that just ran.",
+  });
+  try {
+    const notice = tree.root.findAllByProps({ testID: "send-queue-notice" })[0]!;
+    expect(notice.props.children).toContain("folded into the turn");
+    expect(tree.root.findAllByType(SendQueuePanel)).toHaveLength(0);
   } finally {
     unmount();
   }

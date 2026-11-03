@@ -38,7 +38,7 @@ import { ImageViewer } from "./components/ImageViewer";
 import { SessionUsageSheet } from "./components/SessionUsageSheet";
 import { NativeFileActionSheet } from "./components/NativeFileActionSheet";
 import { newestFirst } from "./timelineListModel";
-import { isParkedSessionQueueRow, useSessionQueue } from "../../remote/sessionQueue";
+import { isParkedSessionQueueRow, sessionQueueNoticeReason, useSessionQueue } from "../../remote/sessionQueue";
 import { showToast } from "./utils";
 
 const SYNC_NOTICE_MIN_MS = 750;
@@ -156,6 +156,8 @@ export function ChatScreen() {
   // visible to every device on the conversation.
   const sessionId = remote.selectedSessionId;
   const {
+    forget: forgetQueuedRow,
+    notice: queueNotice,
     rows: queuedRows,
     refresh: refreshQueue,
   } = useSessionQueue({
@@ -169,6 +171,9 @@ export function ChatScreen() {
 
   // Derived from the rows, which are already keyed to the session they were read
   // for — the panel cannot draw one conversation's queue under another's box.
+  // No attachment count: `get_queue` answers with a message's text and its
+  // acceptance time, never the files it was sent with, and a made-up zero would
+  // tell the reader a message was text-only when it may carry three photos.
   const queuePanelItems = useMemo(
     () => queuedRows.map(row => ({
       content: row.text,
@@ -177,6 +182,23 @@ export function ChatScreen() {
     })),
     [queuedRows],
   );
+
+  /**
+   * What to say about a row that left the queue without running.
+   *
+   * Without it a row cancelled elsewhere or folded into the turn ahead simply
+   * disappears, and the reader believes the message went out.
+   */
+  const queueNoticeText = useMemo(() => {
+    if (!queueNotice)
+      return undefined;
+    const sentence = t(`chat.queue.notice.${sessionQueueNoticeReason(queueNotice.reason)}`, {
+      reason: queueNotice.reason,
+    });
+    return queueNotice.count > 1
+      ? `${sentence} · ${t("chat.queue.notice.more", { count: queueNotice.count })}`
+      : sentence;
+  }, [queueNotice, t]);
 
   /**
    * Act on one waiting row, then re-read the queue whatever the answer was.
@@ -196,8 +218,10 @@ export function ChatScreen() {
 
   /** Delete: a cancel of the session's own run id. */
   const removeQueuedMessage = useCallback((id: string) => {
+    // This screen's own act: its ack is confirmation, not news.
+    forgetQueuedRow(id);
     changeQueue(() => remote.cancelQueuedRun(sessionId, id));
-  }, [changeQueue, remote, sessionId]);
+  }, [changeQueue, forgetQueuedRow, remote, sessionId]);
 
   /** "Send this one now": a parked row runs only when a person releases it. */
   const releaseQueuedMessage = useCallback((id: string) => {
@@ -209,17 +233,30 @@ export function ChatScreen() {
    * session, so the row is taken back and the new words sent in its place — which
    * also queues it behind whatever else is waiting, because that is where a new
    * message goes.
+   *
+   * The row's files do not come with it: `get_queue` reports a message's text,
+   * never the uploads it was sent with, so the panel says that in the editor
+   * instead of claiming a count nobody has. And if the re-send is refused after
+   * the cancel, the words go back into the box — the row is gone on the desktop
+   * by then, and losing the correction as well would leave nothing to retry.
    */
   const updateQueuedMessage = useCallback((id: string, content: string) => {
     const text = content.trim();
     // An empty edit is a deletion, and the panel already offers that.
     if (!text)
       return;
+    forgetQueuedRow(id);
     changeQueue(async () => {
       await remote.cancelQueuedRun(sessionId, id);
-      await remote.sendMessage(text, [], undefined, { busyPolicy: QUEUED_SEND_POLICY });
+      try {
+        await remote.sendMessage(text, [], undefined, { busyPolicy: QUEUED_SEND_POLICY });
+      }
+      catch (error) {
+        setMessage(current => current.trim() ? current : text);
+        throw error;
+      }
     });
-  }, [changeQueue, remote, sessionId]);
+  }, [changeQueue, forgetQueuedRow, remote, sessionId, setMessage]);
 
   /** Send, then read the queue: the row that send may have made is now real. */
   const sendAndReadQueue = useCallback(async (override?: string) => {
@@ -667,6 +704,7 @@ export function ChatScreen() {
                     onInstallSkill={installSuggestedSkill}
                     onDismissSkill={dismissSuggestedSkill}
                     queueItems={queuePanelItems}
+                    queueNotice={queueNoticeText}
                     onQueueUpdate={updateQueuedMessage}
                     onQueueRemove={removeQueuedMessage}
                     onQueueRelease={releaseQueuedMessage}

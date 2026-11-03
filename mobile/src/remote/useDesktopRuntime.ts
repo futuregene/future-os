@@ -11,7 +11,7 @@ import {
   cancelSessionQueuedRun,
   fetchSessionQueue,
   releaseSessionQueuedRun,
-  type SessionQueueRow,
+  type SessionQueueSnapshot,
 } from "./sessionQueue";
 import { useSessionCatalog } from "./useSessionCatalog";
 import { useCatalogSelfHeal } from "./useCatalogSelfHeal";
@@ -84,7 +84,7 @@ export interface DesktopRuntime {
    * row in the conversation they are now looking at.
    */
   queue: {
-    get(sessionId: string): Promise<SessionQueueRow[]>;
+    get(sessionId: string): Promise<SessionQueueSnapshot>;
     cancel(sessionId: string, runId: string): Promise<void>;
     release(sessionId: string, runId: string): Promise<void>;
   };

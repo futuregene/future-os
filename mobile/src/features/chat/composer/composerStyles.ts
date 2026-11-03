@@ -38,6 +38,17 @@ export const useStyles = createThemedStyles(theme => StyleSheet.create({
     paddingBottom: spacing.sm,
     backgroundColor: "transparent",
   },
+  /**
+   * A row left the queue without running: muted, above the panel it used to be
+   * in, and outside it so it is still there when the panel is empty.
+   */
+  queueNotice: {
+    marginHorizontal: spacing.md,
+    marginBottom: spacing.xs,
+    color: theme.colors.inkMuted,
+    fontSize: theme.font(11),
+    lineHeight: theme.font(16),
+  },
   composer: {
     borderWidth: 1,
     borderColor: theme.colors.line,

@@ -126,3 +126,41 @@ it("hides the start control when the queue cannot be started by hand", () => {
     panel.cleanup();
   }
 });
+
+/**
+ * A row read back from a session's queue carries text and an acceptance time,
+ * never the files it was sent with. Claiming "0" there told the reader a message
+ * was text-only when it may have carried files, and an edit — which is a removal
+ * and a re-send, the only kind there is — then dropped them with nobody warned.
+ */
+it("says what an edit costs when the queue does not report a message's files", () => {
+  const panel = renderPanel({
+    attachmentsUnreported: true,
+    items: [{ content: "look at this", id: "a" }],
+  });
+  try {
+    // No invented count on the row…
+    expect(panel.host.textContent).not.toContain("Attachments:");
+    act(() => panel.host.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
+    // …and the trade is named where it is made, before the save.
+    expect(panel.host.textContent).toContain("Saving sends the new text only");
+    expect(panel.props.onUpdate).not.toHaveBeenCalled();
+  }
+  finally {
+    panel.cleanup();
+  }
+});
+
+it("does not offer an edit for a message that is only files", () => {
+  // There is no text to correct, and an empty save is a removal: the bin beside
+  // it already says that plainly.
+  const panel = renderPanel({ items: [{ content: "", id: "files-only" }] });
+  try {
+    expect(panel.host.querySelector("[data-queue-edit]")).toBeNull();
+    expect(panel.host.querySelector("[data-queue-remove]")).not.toBeNull();
+    expect(panel.host.textContent).toContain("Attachments only");
+  }
+  finally {
+    panel.cleanup();
+  }
+});

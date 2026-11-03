@@ -53,14 +53,20 @@ vi.mock("./remotePeerClient", () => ({
  * `remoteQueue.test.ts`.
  */
 let queueRows: RemoteQueueRow[] = [];
+let queueNotice: { reason: string; count: number } | null = null;
 const refreshQueue = vi.fn<() => void>();
+const forgetQueued = vi.fn<(runId: string) => void>();
 const cancelQueued = vi.fn<(desktopId: string, sessionId: string, runId: string) => Promise<void>>();
 const releaseQueued = vi.fn<(desktopId: string, sessionId: string, runId: string) => Promise<void>>();
 vi.mock("./remoteQueue", () => ({
   // The value the real module defines (`remoteQueue.test.ts` holds it to this).
   QUEUED_SEND_POLICY: "enqueue_coalescing",
   isParkedRemoteQueueRow: (row: { state: string }) => row.state.startsWith("stale"),
-  useRemoteQueue: () => ({ refresh: refreshQueue, rows: queueRows }),
+  // The real reason mapping: a test asserting the sentence wants the mapping the
+  // composer uses, not a stub of it.
+  remoteQueueNoticeReason: (reason: string) =>
+    ["merged", "cancelled", "superseded", "session_deleted"].includes(reason) ? reason : "other",
+  useRemoteQueue: () => ({ forget: forgetQueued, notice: queueNotice, refresh: refreshQueue, rows: queueRows }),
   cancelRemoteQueuedRun: (...args: Parameters<typeof cancelQueued>) => cancelQueued(...args),
   releaseRemoteQueuedRun: (...args: Parameters<typeof releaseQueued>) => releaseQueued(...args),
 }));
@@ -229,7 +235,9 @@ beforeEach(() => {
   openDialog.mockReset().mockResolvedValue("/local/notes.txt");
   // The host's queue: empty unless a test says what that machine holds.
   queueRows = [];
+  queueNotice = null;
   refreshQueue.mockReset();
+  forgetQueued.mockReset();
   cancelQueued.mockReset().mockResolvedValue(undefined);
   releaseQueued.mockReset().mockResolvedValue(undefined);
 });
@@ -1747,6 +1755,102 @@ describe("a send made behind a running reply", () => {
     // at the next turn boundary, not here.
     expect(releaseQueued).toHaveBeenCalledWith("desktop_a", "sess_1", "run_9");
     await view.unmount();
+  });
+
+  /**
+   * A row can leave the host's queue without this window asking — folded into the
+   * turn ahead, taken back on the phone, lost with a deleted conversation. Without
+   * its terminal ack the row just disappears, and the reader believes the message
+   * went out.
+   */
+  it("says why a row left the queue, even when the panel is empty again", async () => {
+    queueRows = [];
+    queueNotice = { count: 1, reason: "merged" };
+    const view = await mount({ streaming: true });
+    try {
+      const notice = view.container.querySelector("[data-queue-notice]");
+      expect(notice).not.toBeNull();
+      expect(notice!.textContent).toContain("folded into the turn");
+      // The rows are gone; the sentence is the only thing left to read.
+      expect(view.container.querySelector("[data-send-queue]")).toBeNull();
+    }
+    finally {
+      await view.unmount();
+    }
+  });
+
+  it("names the count when a burst left the queue together", async () => {
+    queueNotice = { count: 3, reason: "session_deleted" };
+    const view = await mount({ streaming: true });
+    try {
+      const notice = view.container.querySelector("[data-queue-notice]")!.textContent;
+      expect(notice).toContain("went with the conversation");
+      expect(notice).toContain("3 messages left the queue");
+    }
+    finally {
+      await view.unmount();
+    }
+  });
+
+  /**
+   * The bin is this window's own act. Its ack would otherwise come back as
+   * "a waiting message was taken out of the queue" right after the reader took it
+   * out, which reads as a fault rather than as confirmation.
+   */
+  it("does not treat its own removal as news", async () => {
+    queueRows = [hostRow()];
+    const view = await mount({ streaming: true });
+    await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-remove]")!.click());
+    await settle();
+    expect(forgetQueued).toHaveBeenCalledWith("run_9");
+    await view.unmount();
+  });
+
+  /**
+   * The host's queue reports a message's text, never the files it was sent with,
+   * so the panel says that where an edit would drop them instead of printing a
+   * count it would have had to invent.
+   */
+  it("does not claim a file count the host never reported, and warns on edit", async () => {
+    queueRows = [hostRow()];
+    const view = await mount({ streaming: true });
+    try {
+      expect(view.container.querySelector("[data-send-queue]")!.textContent).not.toContain("Attachments:");
+      await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
+      expect(view.container.querySelector("[data-send-queue]")!.textContent)
+        .toContain("Saving sends the new text only");
+    }
+    finally {
+      await view.unmount();
+    }
+  });
+
+  /**
+   * The row is gone on the host once the cancel lands. A refusal of the re-send
+   * must not take the reader's corrected words with it.
+   */
+  it("keeps the corrected text when the host refuses the re-send", async () => {
+    queueRows = [hostRow()];
+    prompt.mockRejectedValue(new Error("prompt_too_large"));
+    const view = await mount({ streaming: true });
+    try {
+      await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
+      const box = view.container.querySelector<HTMLTextAreaElement>("[data-queue-item] textarea")!;
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+        setter.call(box, "fixed text");
+        box.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-save]")!.click());
+      await settle();
+
+      expect(cancelQueued).toHaveBeenCalledWith("desktop_a", "sess_1", "run_9");
+      expect(view.text()).toContain("prompt_too_large");
+      expect(view.input.value).toBe("fixed text");
+    }
+    finally {
+      await view.unmount();
+    }
   });
 
   it("keeps the draft, the reply and the error when the host refuses", async () => {

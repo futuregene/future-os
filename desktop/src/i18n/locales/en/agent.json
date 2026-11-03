@@ -199,12 +199,21 @@
       "attachmentsOnly": "Attachments only",
       "edit": "Edit queued message",
       "editLabel": "Queued message text",
+      "editDropsFiles": "Saving sends the new text only — the files this message was sent with are not part of the queue and will not come back.",
       "save": "Save",
       "cancel": "Cancel",
       "remove": "Remove from the queue",
       "retry": "Try again",
       "release": "Send this one now",
-      "full": "The send queue is full. Send or remove something first."
+      "full": "The send queue is full. Send or remove something first.",
+      "notice": {
+        "merged": "A waiting message was folded into the turn that just ran instead of running on its own.",
+        "cancelled": "A waiting message was taken out of the queue before it ran.",
+        "superseded": "A waiting message was replaced by a newer send.",
+        "session_deleted": "A waiting message went with the conversation it was queued in.",
+        "other": "A waiting message left the queue ({{reason}}).",
+        "more": "{{count}} messages left the queue"
+      }
     },
     "noFiles": "No matching files.",
     "noSkillMatches": "No matching skills.",
