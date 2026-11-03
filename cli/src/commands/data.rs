@@ -1446,6 +1446,7 @@ mod tests {
     /// long. A component is at most 255 bytes on every filesystem this lane
     /// runs on, so the padding is split into one component per remaining byte
     /// budget instead of overshooting into a path that cannot be created.
+    #[cfg(unix)]
     fn nested_home(root: &Path, target: usize) -> PathBuf {
         let mut current = root.to_path_buf();
         while current.as_os_str().len() < target {

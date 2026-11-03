@@ -329,7 +329,9 @@ fn stream_has_a_destination(stream: u32) -> bool {
     match unsafe { GetFileType(handle) } {
         FILE_TYPE_PIPE => true,
         FILE_TYPE_DISK => handle_accepts_a_write(handle),
-        FILE_TYPE_CHAR => !unsafe { GetConsoleWindow() }.is_null() && handle_accepts_a_write(handle),
+        FILE_TYPE_CHAR => {
+            !unsafe { GetConsoleWindow() }.is_null() && handle_accepts_a_write(handle)
+        }
         // `FILE_TYPE_UNKNOWN`, which is also the answer of a failed call: a
         // handle that cannot be classified is no better than having none.
         _ => false,
@@ -831,6 +833,7 @@ mod tests {
     }
 
     /// Environment naming the child half of [`a_write_to_a_dead_stream_survives`].
+    #[cfg(unix)]
     const FIXTURE_DEAD_STREAM: &str = "FUTURE_CONSOLE_DEAD_STREAM_FIXTURE";
 
     /// A write to a stream nobody reads is dropped, not fatal.

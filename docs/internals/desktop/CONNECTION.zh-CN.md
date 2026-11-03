@@ -166,6 +166,15 @@ type=get_session_entries session=… elapsed=…ms exec=…ms send=…ms`，二�
 只有 `exec` 慢才点名某次读取昂贵。日志只标识命令，不记录它返回的内容；从未回包的命令
 （被门禁丢掉）两半都不写——没有可测的边界。
 
+**是数据库慢，还是交给数据库的握手慢。** Agent 每次读历史页记一行
+（`history_page_read_completed`，达到 1 秒则同时记 `history_page_read_slow`），除
+`elapsed_ms` 外还有三个字段：`db_reads`、`db_job_ms`、`db_handoff_ms`。`db_reads` 是这一页
+往返数据库的次数——每个字段、每个块、每条正文各算一次，工具密集的 entry 要几十次，一页上万次量级。
+`db_job_ms` 是这些闭包里的实际工作量（即 `readerJob`/`readerQueue` 在进程级统计的那部分，这里按页归属）。
+`db_handoff_ms` 是往返里的其余部分：等池子里的读连接、把作业交给阻塞池、再唤醒回异步任务。
+它不被任何其它指标覆盖，且随进程内其它工作变长——所以同一页在裸 Agent 里 10 ms、在桌面内嵌的
+Agent 里 42 ms。
+
 **凭证与归属。** 客户端的凭证簿与宿主侧完全分开：
 `~/.future/remote_peers.json`（本次新增；宿主侧的 `remote_pairing.json` 不变）。
 两者回答的是相反的问题（“谁连我”与“我连谁”），共用一份文件会让界面读错状态。
