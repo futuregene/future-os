@@ -47,6 +47,13 @@ export interface SendPipelineDeps {
   // thread switch flips it false; every view-mutating step re-checks it so a
   // superseded send can't write stale state into the current thread.
   isCurrentSend: () => boolean;
+  /**
+   * What this send means while the conversation's run is still in flight: an
+   * Agent `BusyPolicy` value, or absent for the Agent's own default. Set only by
+   * the queued-send path (`useSendMessage.handleQueuedSend`); a plain send never
+   * races another run of its own conversation.
+   */
+  busyPolicy?: string;
 }
 
 /**
@@ -59,7 +66,7 @@ export interface SendPipelineDeps {
  * the `useSendMessage` wrapper that calls this.
  */
 export async function runSendPipeline(
-  { thread, modelId, thinkingLevel, setMessages, setRecentRun, refreshRecentRun, onThreadActivity, isCurrentSend, onAccepted }: SendPipelineDeps,
+  { thread, modelId, thinkingLevel, setMessages, setRecentRun, refreshRecentRun, onThreadActivity, isCurrentSend, onAccepted, busyPolicy }: SendPipelineDeps,
   { attachments, content }: ComposerSendPayload,
 ): Promise<void> {
   // Validate and prepare images before adding optimistic messages. A failed
@@ -190,6 +197,7 @@ export async function runSendPipeline(
       // is surfaced for the agent's own tools to read.
       attachments: attachmentInputs(importedAttachments),
       thinkingLevel,
+      ...(busyPolicy ? { busyPolicy } : {}),
     });
     acknowledge();
     await finalizeTemporaryAttachmentSources(preparedAttachments.temporarySources);
