@@ -221,6 +221,24 @@ describe("archive entry and its guide", () => {
     archivedThreads.length = 0;
   });
 
+  it("marks the archive entry unmistakably while the archived view is showing", () => {
+    currentView = "archived";
+    const active = mount(createElement(ActivityRail, props()));
+    const entry = active.container.querySelector("[data-testid=\"rail-archive-entry\"]")!;
+    expect(entry.getAttribute("data-active")).toBe("true");
+    expect(entry.className).toContain("ring-1");
+    expect(entry.className).toContain("text-accent");
+    active.unmount();
+
+    // …and it is quiet again once the list is back.
+    currentView = "workspace";
+    const idle = mount(createElement(ActivityRail, props()));
+    const idleEntry = idle.container.querySelector("[data-testid=\"rail-archive-entry\"]")!;
+    expect(idleEntry.getAttribute("data-active")).toBeNull();
+    expect(idleEntry.className).not.toContain("ring-1");
+    idle.unmount();
+  });
+
   it("offers the guide again from the archived view", () => {
     currentView = "archived";
     const onShowArchiveGuide = vi.fn();

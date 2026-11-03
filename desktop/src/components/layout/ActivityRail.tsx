@@ -1644,22 +1644,29 @@ export function ActivityRail({
                   {/*
                     The archive entry: a destination, not a third segment.
 
-                    Quiet by design — a small icon at the row's end, a notch below the
-                    switch's own weight, so it reads as "somewhere to go" rather
-                    than a shape of the daily list. The first archive pulses it once
-                    (with the guide bubble anchored beside it) so a reader learns
-                    where a shelved conversation went.
+                    Quiet at rest — a small icon at the row's end, a notch below the
+                    switch's own weight — but unmistakably *on* while the archived
+                    view is showing: the switch's two segments are both off then, so
+                    this icon is the only thing that can say which list the reader is
+                    looking at. A pale hover fill would not carry that, so the active
+                    state is the accent's own soft fill plus a ring.
+
+                    The first archive pulses it once (with the guide bubble anchored
+                    beside it) so a reader learns where a shelved conversation went.
                   */}
                   <span className="relative ml-auto shrink-0">
                     <button
                       aria-label={t("activityRail.viewArchived")}
                       aria-pressed={railView === "archived"}
                       className={cn(
-                        "inline-flex size-6 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft",
-                        railView === "archived" && "bg-surface-subtle text-ink",
+                        "inline-flex size-6 items-center justify-center rounded-md transition-colors",
+                        railView === "archived"
+                          ? "bg-accent-soft text-accent ring-1 ring-inset ring-accent/50"
+                          : "text-ink-muted hover:bg-surface-subtle hover:text-ink-soft",
                         archivePulse && "animate-archive-entry-pulse",
                       )}
                       data-testid="rail-archive-entry"
+                      data-active={railView === "archived" ? "true" : undefined}
                       onClick={() => setRailView(railView === "archived" ? "workspace" : "archived")}
                       title={t("activityRail.viewArchived")}
                       type="button"
