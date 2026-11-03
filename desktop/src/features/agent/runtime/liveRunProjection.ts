@@ -1,4 +1,4 @@
-import type { AgentMessage, AssistantRunProjection, MessageSegment, RunProjector } from "@future-os/thread-projection";
+import type { AgentMessage, AssistantRunProjection, MessageSegment, PreviewSyncStall, RunProjector } from "@future-os/thread-projection";
 import type { Dispatch, SetStateAction } from "react";
 import { compactionCheckpoints, createRunProjector } from "@future-os/thread-projection";
 import { listRunEventsSince } from "../../../integrations/storage/threadStore";
@@ -32,6 +32,13 @@ type RepairOutcome = "repaired" | "failed";
 const repairOutcomes = new Map<string, RepairOutcome>();
 const REPAIR_OUTCOMES_MAX = 64;
 
+/**
+ * Why a run's preview was abandoned for good (`repairOutcomes === "failed"`).
+ * Kept beside that verdict so the reply still on screen can say what stopped it
+ * updating instead of going quiet.
+ */
+const previewGiveUpReasons = new Map<string, string>();
+
 function markRepairOutcome(runId: string, outcome: RepairOutcome) {
   repairOutcomes.delete(runId);
   repairOutcomes.set(runId, outcome);
@@ -41,6 +48,128 @@ function markRepairOutcome(runId: string, outcome: RepairOutcome) {
     if (oldest === undefined)
       break;
     repairOutcomes.delete(oldest);
+    previewGiveUpReasons.delete(oldest);
+  }
+}
+
+/**
+ * How long a run's live preview may keep failing before the reply says so.
+ *
+ * The live tick is push-driven and coalesced to one projection per
+ * `LIVE_TICK_INTERVAL_MS` (100 ms, see `liveStreamTick`), so the streak is
+ * measured over many attempts rather than one: 5 s is ~50 consecutive failed
+ * ticks. A single racy read — a thread switch mid-flight, a reattach whose
+ * first read lands while the storage job holds the database — is one tick and
+ * the next one recovers well inside that window, so it stays silent. Measured
+ * 2026-11-03, the failure this note exists for was a journal that refused every
+ * read for *minutes* while the run kept streaming: far past 5 s, and the reader
+ * was left looking at a reply frozen mid-word with nothing to explain it.
+ */
+export const PREVIEW_STALL_AFTER_MS = 5_000;
+
+interface PreviewFailureStreak {
+  /** Epoch ms of the first failure after the last success. */
+  since: number;
+  attempts: number;
+  reason: string;
+}
+
+/**
+ * Consecutive preview failures per run. A success deletes the entry, so `since`
+ * is always "the last time this run's events were read successfully".
+ */
+const previewFailureStreaks = new Map<string, PreviewFailureStreak>();
+const PREVIEW_FAILURE_STREAKS_MAX = 64;
+
+/**
+ * Where in the preview a failure happened. It rides on the error so the caller
+ * that decides to show the note does not have to guess.
+ */
+type PreviewStage = "read" | "projection";
+
+/** Carries the stage separately so the note's raw line stays the cause itself. */
+class PreviewStageError extends Error {
+  constructor(readonly stage: PreviewStage, readonly cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "PreviewStageError";
+  }
+}
+
+function stageFailure(stage: PreviewStage, error: unknown): PreviewStageError {
+  return error instanceof PreviewStageError ? error : new PreviewStageError(stage, error);
+}
+
+/** Record a successful preview read: the streak (and any note) is over. */
+function recordPreviewSuccess(runId: string) {
+  previewFailureStreaks.delete(runId);
+}
+
+/**
+ * Record a failed preview attempt and answer with the note to show, or null
+ * while the streak is still short enough to be a blip.
+ */
+function recordPreviewFailure(runId: string, stage: PreviewStage, reason: string): PreviewSyncStall | null {
+  const now = Date.now();
+  const streak = previewFailureStreaks.get(runId);
+  const current: PreviewFailureStreak = {
+    since: streak?.since ?? now,
+    attempts: (streak?.attempts ?? 0) + 1,
+    reason,
+  };
+  // LRU touch; bound the ledger so a long session does not accumulate runs.
+  previewFailureStreaks.delete(runId);
+  previewFailureStreaks.set(runId, current);
+  while (previewFailureStreaks.size > PREVIEW_FAILURE_STREAKS_MAX) {
+    const oldest = previewFailureStreaks.keys().next().value;
+    /* v8 ignore next 2 -- size > MAX (>= 1) guarantees a first key exists */
+    if (oldest === undefined)
+      break;
+    previewFailureStreaks.delete(oldest);
+  }
+  if (now - current.since < PREVIEW_STALL_AFTER_MS)
+    return null;
+  return { stage, reason: current.reason, attempts: current.attempts, since: current.since };
+}
+
+/**
+ * Set — or clear — the sync note on the reply that carries this run. Touches
+ * only the streaming assistant row for that run: a settled reply is never given
+ * the note, and an unchanged note is left alone so a continuing streak does not
+ * re-render the reply on every failed tick.
+ */
+function withPreviewStall(
+  messages: AgentMessage[],
+  runId: string,
+  stall: PreviewSyncStall | null,
+): AgentMessage[] {
+  let changed = false;
+  const next = messages.map((message): AgentMessage => {
+    if (message.role !== "assistant" || message.runId !== runId || message.status !== "streaming")
+      return message;
+    const current = message.previewStalled ?? null;
+    const unchanged = stall === null
+      ? current === null
+      : current?.reason === stall.reason && current.attempts === stall.attempts;
+    if (unchanged)
+      return message;
+    changed = true;
+    return { ...message, previewStalled: stall ?? undefined };
+  });
+  // Returning the original array when nothing moved keeps a continuing streak
+  // from re-rendering the reply on every failed tick.
+  return changed ? next : messages;
+}
+
+/**
+ * Read a run's events for the live preview, naming the stage when the read is
+ * what failed. The read implementation itself is untouched.
+ */
+async function readRunEvents(runId: string, since: number) {
+  try {
+    return await listRunEventsSince(runId, since);
+  }
+  catch (error) {
+    throw stageFailure("read", error);
   }
 }
 
@@ -62,6 +191,8 @@ const FILE_TREE_INVALIDATING_EVENTS = new Set([
 export function resetRunProjection(runId: string) {
   liveProjectionCache.delete(runId);
   repairOutcomes.delete(runId);
+  previewGiveUpReasons.delete(runId);
+  previewFailureStreaks.delete(runId);
 }
 
 /**
@@ -116,7 +247,7 @@ async function projectRunForLivePreview(
     return null;
   const cached = liveProjectionCache.get(runId) ?? null;
   const since = cached?.projector.lastSequence ?? -1;
-  let events = await listRunEventsSince(runId, since);
+  let events = await readRunEvents(runId, since);
   if (!shouldApply())
     return null;
 
@@ -144,7 +275,7 @@ async function projectRunForLivePreview(
     // meaningless against the old projector: drop it and rebuild from the
     // full log once.
     liveProjectionCache.delete(runId);
-    events = await listRunEventsSince(runId, -1);
+    events = await readRunEvents(runId, -1);
     if (!shouldApply())
       return null;
   }
@@ -179,7 +310,9 @@ async function projectRunForLivePreview(
       liveProjectionCache.delete(runId);
       if (attempt.rebuilt || repairOutcomes.has(runId)) {
         markRepairOutcome(runId, "failed");
-        throw error;
+        const failure = stageFailure("projection", error);
+        previewGiveUpReasons.set(runId, failure.message);
+        throw failure;
       }
       markRepairOutcome(runId, "repaired");
       return projectRunForLivePreview(runId, shouldApply, { rebuilt: true });
@@ -414,8 +547,24 @@ export async function upsertStreamingPreview(
 ) {
   try {
     const projection = await projectRunForLivePreview(runId, shouldApply);
-    if (!projection)
+    if (!projection) {
+      // A preview that gave up on this run's durable log keeps refusing it, so
+      // the reply cannot grow again until a reset. That is a sustained failure,
+      // not a race: say so with the reason that ended the repairs.
+      const gaveUp = shouldApply() ? previewGiveUpReasons.get(runId) : undefined;
+      if (gaveUp !== undefined) {
+        const stall = recordPreviewFailure(runId, "projection", gaveUp);
+        if (stall) {
+          setMessages(current => withPreviewStall(
+            ensureLiveReply(current, runId, runStartedAt),
+            runId,
+            stall,
+          ));
+        }
+      }
       return;
+    }
+    recordPreviewSuccess(runId);
     const content = projection.content.trim();
 
     setMessages((current) => {
@@ -460,6 +609,9 @@ export async function upsertStreamingPreview(
         thinkingActive: projection.thinkingActive,
         reconnecting: projection.reconnecting,
         outputTokens: projection.outputTokens,
+        // A read that just succeeded ends the streak: the note goes away by
+        // itself, which is the whole point of it.
+        previewStalled: undefined,
       };
       // Replace in place — the old filter+append moved the bubble to the
       // array's end on every push (a DOM move when it wasn't last already).
@@ -472,8 +624,15 @@ export async function upsertStreamingPreview(
     // though — a run with no preview renders as a finished reply, so keep the
     // reply marked running and record why the projection was missing.
     warnLivePreviewFallback(runId, "projection threw", error);
-    if (shouldApply())
-      setMessages(current => ensureLiveReply(current, runId, runStartedAt));
+    if (!shouldApply())
+      return;
+    const failure = stageFailure("projection", error);
+    const stall = recordPreviewFailure(runId, failure.stage, failure.message);
+    setMessages(current => withPreviewStall(
+      ensureLiveReply(current, runId, runStartedAt),
+      runId,
+      stall,
+    ));
   }
 }
 
@@ -540,8 +699,19 @@ export async function updatePendingMessageFromRunEvents(
 ) {
   try {
     const projection = await projectRunForLivePreview(runId, shouldApply);
-    if (!projection)
+    if (!projection) {
+      // Same give-up verdict as the upsert path: the send's reply cannot grow
+      // again until a reset, so the reader gets told instead of watching a
+      // bubble that stopped mid-word.
+      const gaveUp = shouldApply() ? previewGiveUpReasons.get(runId) : undefined;
+      if (gaveUp !== undefined) {
+        const stall = recordPreviewFailure(runId, "projection", gaveUp);
+        if (stall)
+          setMessages(current => withPreviewStall(current, runId, stall));
+      }
       return;
+    }
+    recordPreviewSuccess(runId);
 
     setMessages((current) => {
       const existingIndex = current.findIndex(m => m.id === pendingId);
@@ -552,7 +722,7 @@ export async function updatePendingMessageFromRunEvents(
       if (!projection.content.trim() && projection.activityItems.length === 0
         && projection.segments.length === 0 && !projection.reconnecting
         && !current[existingIndex]!.reconnecting) {
-        return current;
+        return withPreviewStall(current, runId, null);
       }
       const updated: AgentMessage = {
         ...current[existingIndex]!,
@@ -562,13 +732,21 @@ export async function updatePendingMessageFromRunEvents(
         thinkingActive: projection.thinkingActive,
         reconnecting: projection.reconnecting,
         outputTokens: projection.outputTokens,
+        // The streak is over (see upsertStreamingPreview).
+        previewStalled: undefined,
       };
       // Replace in place (see upsertStreamingPreview).
       return current.map((message, index) => (index === existingIndex ? updated : message));
     });
   }
-  catch {
+  catch (error) {
     // Streaming preview is best-effort. The final assistant message still
-    // lands when the command returns.
+    // lands when the command returns — but a reply that stopped updating says
+    // why instead of freezing silently.
+    if (!shouldApply())
+      return;
+    const failure = stageFailure("projection", error);
+    const stall = recordPreviewFailure(runId, failure.stage, failure.message);
+    setMessages(current => withPreviewStall(current, runId, stall));
   }
 }
