@@ -58,6 +58,12 @@ entry point; the [wiki](wiki/en/Home.md) is the user-facing app guide.
 | [Channel test coverage](architecture/channels-test-coverage.md) ([中文](architecture/channels-test-coverage.zh-CN.md)) | What the channel framework's tests promise, and the handful of lines that are deliberately not covered, with the reason for each |
 | [RPC crate](architecture/rpc.md) ([中文](architecture/rpc.zh-CN.md)) | `packages/rpc` — the protobuf wire contract (single source of truth) |
 
+## Design (`design/`)
+
+| Doc | What it covers |
+|---|---|
+| [Workspace & conversation pagination and archive](design/workspace-thread-archive-and-paging.md) ([中文](design/workspace-thread-archive-and-paging.zh-CN.md)) | Finalized design: tree-level archiving with a uniform no-active-runs rule, workspace archive with container wake, read-only archived details, first-archive guide, and keyset pagination for the workspace list, workspace conversations and chats |
+
 ## Internals (`internals/`)
 
 Per-module working docs for the desktop app and the mobile client: product
