@@ -65,9 +65,10 @@ Each generated rule still has two selector forms:
 ```
 
 - `[data-palette="nord"]` matches the root **and** any element carrying the
-  attribute, which is how the Settings picker paints one preview card per theme
-  (see `features/settings/ThemePalettePicker.tsx`) while the app stays on its
-  active theme.
+  attribute, which is how the Settings picker paints a preview in a theme that
+  is not the active one (see `features/settings/ThemePalettePicker.tsx`): the
+  row shows a small swatch of the active theme until **Show all** opens the
+  catalogue of one card per theme.
 - The dark block needs both selectors: the root carries `.dark` and
   `data-palette` on the same element, a preview carries only `data-palette`
   inside a `.dark` ancestor. Neither may lose to `:root.dark`, which both forms

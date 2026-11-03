@@ -13,7 +13,9 @@
   },
   "theme": {
     "title": "Color theme",
-    "description": "Hues for surfaces, text and accents. Every theme follows the appearance above, so it has a light and a dark rendition.",
+    "description": "Hues for surfaces, text and accents; each follows the appearance above.",
+    "showAll": "Show all {{count}} color themes",
+    "collapse": "Show the current theme only",
     "palettes": {
       "futureos": {
         "name": "FutureOS",

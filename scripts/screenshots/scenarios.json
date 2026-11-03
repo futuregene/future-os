@@ -3080,7 +3080,7 @@
         ]
       },
       "settings-themes": {
-        "note": "Settings → General's color-theme picker: one card per palette, each painting itself while the app keeps the active theme. The assertion pins that separation — a card that inherited the app's surfaces would make every preview identical.",
+        "note": "Settings → General's color-theme picker, opened to the full catalogue: one card per palette, each painting itself while the app keeps the active theme. The assertion pins that separation — a card that inherited the app's surfaces would make every preview identical. The row ships collapsed onto the active palette, so the scenario taps the expand control first.",
         "steps": [
           {
             "wait": 900
@@ -3096,6 +3096,18 @@
           },
           {
             "wait": 1600
+          },
+          {
+            "eval": "(() => {\n        const cards = [...document.querySelectorAll('[role=radio][data-palette]')];\n        if (cards.length !== 0) throw new Error('the picker should open collapsed, shows ' + cards.length + ' cards');\n        const previews = [...document.querySelectorAll('[data-palette]')].filter(el => el !== document.documentElement);\n        if (previews.length !== 1 || previews[0].dataset.palette !== 'futureos') throw new Error('the collapsed row does not show the active palette: ' + previews.map(p => p.dataset.palette).join(','));\n        const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.innerText || '').startsWith('展开全部'));\n        if (!toggle || toggle.getAttribute('aria-expanded') !== 'false') throw new Error('the catalogue is not collapsed on open');\n      })()"
+          },
+          {
+            "shot": "d-settings-themes-collapsed.png"
+          },
+          {
+            "tapText": "展开全部"
+          },
+          {
+            "wait": 500
           },
           {
             "eval": "(() => {\n        const cards = [...document.querySelectorAll('[role=radio][data-palette]')];\n        const expected = [\"futureos\",\"ayu\",\"catppuccin\",\"dracula\",\"everforest\",\"gruvbox\",\"kanagawa\",\"nightfox\",\"nord\",\"one-dark\",\"rose-pine\",\"solarized\",\"tokyo-night\",\"vesper\"];\n        if (cards.length !== expected.length) throw new Error('expected ' + expected.length + ' palette cards, found ' + cards.length);\n        const got = cards.map(card => card.dataset.palette);\n        if (got.join(',') !== expected.join(',')) throw new Error('cards are ' + got.join(','));\n        const canvases = cards.map(card => getComputedStyle(card).getPropertyValue('--color-canvas').trim());\n        const unique = new Set(canvases);\n        if (unique.size !== expected.length) throw new Error('previews share surfaces: ' + JSON.stringify(canvases));\n        return { count: cards.length, canvases };\n      })()"
@@ -3119,7 +3131,7 @@
       },
       "settings-themes-dark": {
         "url": "http://localhost:5299/shot/?theme=dark&palette=catppuccin",
-        "note": "The same picker in a dark window with Catppuccin active: previews follow the rendition as well as the palette, and the app itself is on Catppuccin Mocha.",
+        "note": "The same picker in a dark window with Catppuccin active: previews follow the rendition as well as the palette, and the app itself is on Catppuccin Mocha. The catalogue is expanded first, since the row opens collapsed onto the active palette.",
         "steps": [
           {
             "wait": 900
@@ -3135,6 +3147,12 @@
           },
           {
             "wait": 1600
+          },
+          {
+            "tapText": "展开全部"
+          },
+          {
+            "wait": 500
           },
           {
             "eval": "(() => {\n        const root = document.documentElement;\n        if (!root.classList.contains('dark')) throw new Error('the harness did not boot dark');\n        const canvas = getComputedStyle(root).getPropertyValue('--color-canvas').trim();\n        if (canvas !== '#11111b') throw new Error('canvas is ' + canvas + ', expected Catppuccin Mocha');\n        const cards = [...document.querySelectorAll('[role=radio][data-palette]')];\n        const nord = cards.find(card => card.dataset.palette === 'nord');\n        if (!nord) throw new Error('no Nord card');\n        const nordCanvas = getComputedStyle(nord).getPropertyValue('--color-canvas').trim();\n        if (nordCanvas !== '#2e3440') throw new Error('the Nord card shows ' + nordCanvas + ', not its dark surface');\n        return { canvas, nordCanvas };\n      })()"
