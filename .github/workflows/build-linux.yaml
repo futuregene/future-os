@@ -226,7 +226,7 @@ jobs:
           set -euo pipefail
           : "${TAURI_SIGNING_PRIVATE_KEY:?TAURI_SIGNING_PRIVATE_KEY secret is required}"
           deb="release-assets/FutureOS_${FUTURE_ARTIFACT_VERSION}_${{ matrix.deb_arch }}.deb"
-          npm --prefix desktop exec -- tauri signer sign "$deb"
+          node scripts/release/updater-signature.mjs sign "$deb" "$FUTURE_VERSION"
           [[ -s "$deb.sig" ]] || {
             echo "Tauri produced no updater signature for $deb" >&2
             exit 1

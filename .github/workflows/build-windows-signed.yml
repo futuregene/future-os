@@ -440,6 +440,9 @@ jobs:
 
       - name: Stage artifacts
         shell: powershell
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           $stage = "release-assets"
           Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
@@ -455,7 +458,8 @@ jobs:
           $publishedVersion = "${{ steps.v.outputs.artifact_version }}"
           $output = Join-Path $stage "FutureOS_${publishedVersion}_x64-setup${suffix}.exe"
           Copy-Item $installers[0].FullName $output
-          Copy-Item "$($installers[0].FullName).sig" "$output.sig"
+          node scripts/release/updater-signature.mjs sign $output "${{ steps.v.outputs.version }}"
+          if ($LASTEXITCODE -ne 0) { throw "Updater signing failed (exit $LASTEXITCODE)." }
           $portable = "FutureOS_${publishedVersion}_windows_x64-portable${suffix}.zip"
           Copy-Item $portable (Join-Path $stage $portable)
 
