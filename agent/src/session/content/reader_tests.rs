@@ -679,3 +679,72 @@ fn a_pointer_the_reader_cannot_place_is_still_displayed() {
     assert!(!super::display_field(&blocks, "/content/1/other"));
     assert!(!super::display_field(&json!({"content": []}), "/prompt"));
 }
+
+/// The batched page read must produce exactly the JSON the per-entry path
+/// produces, for the same page — that equivalence is what lets one page cost
+/// four statements instead of ~40 per entry.
+#[test]
+fn a_display_page_is_the_same_json_as_materialising_each_entry() {
+    let (_dir, store) = store();
+    store
+        .append(
+            "s",
+            vec![
+                message("a"),
+                json!({"id":"tool_result","type":"tool","role":"tool",
+                    "timestamp":"2026-10-26T00:00:02+08:00","meta":{"run_id":"r"},
+                    "content":[{"type":"tool_result","tool_call_id":"tool","is_error":false,
+                        "text":"正文".repeat(50_000)}]}),
+                message("b"),
+            ],
+        )
+        .unwrap();
+    let snapshot = Snapshot::capture(&store, "s").unwrap();
+    let entries = snapshot.page(&store, -1).unwrap();
+    assert!(entries.len() >= 4, "the fixture must span several entries");
+
+    let one_by_one: Vec<Value> = entries
+        .iter()
+        .map(|entry| snapshot.display(&store, entry).unwrap())
+        .collect();
+    let batched = snapshot.display_page(&store, &entries).unwrap();
+    assert_eq!(batched.len(), one_by_one.len());
+    for (index, (batched, single)) in batched.iter().zip(&one_by_one).enumerate() {
+        assert_eq!(
+            batched, single,
+            "entry {index} differs between the two reads"
+        );
+    }
+}
+
+/// One page is one read: a row that cannot be read fails the whole page rather
+/// than silently shortening it. The response is the conversation's content, so a
+/// page that quietly dropped an entry would look like history that never existed.
+#[test]
+fn a_page_read_fails_as_a_whole_when_one_entry_disappeared() {
+    let (_dir, store) = store();
+    store.append("s", vec![message("a"), message("b")]).unwrap();
+    let snapshot = Snapshot::capture(&store, "s").unwrap();
+    let entries = snapshot.page(&store, -1).unwrap();
+    let doomed = entries.last().unwrap().position;
+
+    // The entries are pinned when the page is located; one of them vanishing
+    // before the bodies are read is exactly the race a page-sized read has to
+    // answer for.
+    store
+        .db
+        .call(move |db| {
+            db.execute(
+                "DELETE FROM entries WHERE session_id='s' AND position=?",
+                [doomed],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    let error = snapshot.display_page(&store, &entries).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("entry page changed during metadata read"),
+        "{error:#}"
+    );
+}
