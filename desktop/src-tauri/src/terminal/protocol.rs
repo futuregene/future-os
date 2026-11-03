@@ -1,11 +1,20 @@
 //! Wire helpers for the PTY WebSocket transport.
 //!
-//! Outbound frames are raw PTY bytes; exactly one kind of frame is *not*
-//! terminal output — a control frame, a `0x00` byte followed by UTF-8 JSON.
-//! That is the same shape opencode uses: the control frame carries the
-//! absolute output cursor after a replay, so a client can resume later, plus
-//! the fields this client needs to detect a truncated replay and to render a
-//! process exit.
+//! Every frame the server sends carries a one-byte type, and the payload follows
+//! it:
+//!
+//! * [`DATA_PREFIX`] — PTY output, raw bytes, forwarded verbatim.
+//! * [`CONTROL_PREFIX`] — a control frame, UTF-8 JSON ([`Meta`]).
+//!
+//! The headless daemon uses the control frame for the absolute output cursor
+//! after a replay (so a client can resume later), plus the fields this client
+//! needs to detect a truncated replay and to render a process exit.
+//!
+//! The type byte is what keeps the two apart. Without it the only discriminator
+//! was the payload's first byte, and NUL is valid UTF-8 (U+0000) that a PTY
+//! genuinely emits (`printf '\0hello'`, `cat` of a binary file): such a frame
+//! was read as a control frame, failed as JSON and was dropped whole — with the
+//! cursor that describes it.
 //!
 //! Frames are binary on the wire: the cursor counts *bytes*, and a client that
 //! counted decoded characters instead would drift on any non-ASCII output.
@@ -16,10 +25,12 @@ use serde::{Deserialize, Serialize};
 /// frames so a single WebSocket message stays small enough to stay responsive.
 pub const REPLAY_CHUNK: usize = 64 * 1024;
 
-/// The first byte of a control frame. Terminal output is never prefixed
-/// because PTY output starting with NUL is not valid UTF-8 text and a terminal
-/// would drop it anyway; opencode makes the same trade.
+/// The first byte of a control frame: UTF-8 JSON follows.
 pub const CONTROL_PREFIX: u8 = 0;
+
+/// The first byte of an output frame: raw PTY bytes follow, unescaped and
+/// unprefixed, so the client counts exactly what the terminal received.
+pub const DATA_PREFIX: u8 = 1;
 
 /// JSON payload of the control frame that follows every replay.
 ///
@@ -45,6 +56,18 @@ pub fn meta_frame(meta: &Meta) -> Vec<u8> {
     let mut out = Vec::with_capacity(json.len() + 1);
     out.push(CONTROL_PREFIX);
     out.extend_from_slice(&json);
+    out
+}
+
+/// Encode an output frame: `0x01` followed by the PTY's own bytes.
+///
+/// The payload is copied verbatim — a leading NUL included. Escaping or
+/// prefixing it here would make the client's byte arithmetic disagree with the
+/// host's cursor, which counts the bytes the terminal actually received.
+pub fn data_frame(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len() + 1);
+    out.push(DATA_PREFIX);
+    out.extend_from_slice(data);
     out
 }
 
@@ -118,6 +141,25 @@ mod tests {
         let joined: Vec<u8> = parts.concat();
         assert_eq!(joined, data);
         assert!(chunks(&[]).is_empty());
+    }
+
+    #[test]
+    fn an_output_frame_beginning_with_nul_is_output_not_control() {
+        // The frame a PTY read of `printf '\0hello'` produces. Its first payload
+        // byte is NUL — valid UTF-8, exactly what the terminal received — so a
+        // decoder keyed on the payload cannot tell it from a control frame.
+        let payload = b"\0hello\r\n";
+        let frame = data_frame(payload);
+        assert_eq!(frame[0], DATA_PREFIX);
+        assert_ne!(frame[0], CONTROL_PREFIX);
+        assert_eq!(&frame[1..], payload, "the payload is forwarded verbatim");
+        // And the control frame still says what it is, whatever its payload.
+        let control = meta_frame(&Meta {
+            cursor: 0,
+            start: 0,
+            exit_code: None,
+        });
+        assert_eq!(control[0], CONTROL_PREFIX);
     }
 
     #[test]
