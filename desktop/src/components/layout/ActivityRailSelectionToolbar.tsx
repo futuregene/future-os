@@ -1,15 +1,18 @@
-import { Trash2, X } from "lucide-react";
+import { Archive, Trash2, X } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../ui/Button";
 
 export function ActivityRailSelectionToolbar({
+  onArchive,
   onCancel,
   onDelete,
   onToggleAll,
   selectedCount,
   totalCount,
 }: {
+  /** Absent in a list that offers no archive action. */
+  onArchive?: () => void;
   onCancel: () => void;
   onDelete: () => void;
   onToggleAll: () => void;
@@ -61,6 +64,25 @@ export function ActivityRailSelectionToolbar({
             {t("activityRail.deleteSelected")}
           </span>
         </Button>
+        {onArchive
+          ? (
+              <Button
+                aria-label={t("activityRail.archiveSelected")}
+                className="activity-rail-selection-action shrink-0"
+                disabled={selectedCount === 0}
+                leftIcon={<Archive className="size-3.5" />}
+                onClick={onArchive}
+                size="sm"
+                title={t("activityRail.archiveSelected")}
+                type="button"
+                variant="secondary"
+              >
+                <span className="activity-rail-selection-action-label whitespace-nowrap">
+                  {t("activityRail.archiveSelected")}
+                </span>
+              </Button>
+            )
+          : null}
         <Button
           aria-label={t("common:cancel")}
           className="activity-rail-selection-action shrink-0"

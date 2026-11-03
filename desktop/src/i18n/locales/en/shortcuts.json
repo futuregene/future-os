@@ -48,7 +48,8 @@
       "search": "Filter the conversation list",
       "view": {
         "recent": "List recent conversations",
-        "workspace": "List workspaces"
+        "workspace": "List workspaces",
+        "archived": "List archived conversations"
       },
       "device": {
         "next": "Switch to the next device"

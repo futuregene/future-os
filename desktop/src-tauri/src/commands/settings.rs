@@ -38,6 +38,7 @@ mod tests {
             auto_connect_remote: Some(true),
             skill_guide_dismissed: None,
             skill_intro_dismissed: None,
+            archive_guide_seen: None,
             bell_on_complete: None,
             auto_title_first_turn: None,
             title_language: None,

@@ -486,6 +486,9 @@ impl Manager {
         let started = std::time::Instant::now();
         let mut cache_hit = false;
         let mut index_rebuilt = false;
+        // One page's round trips, counted so "this read is slow" can be split into
+        // "the database work was slow" and "we spent the time handing work to it".
+        let tally = std::sync::Arc::new(crate::session::content::reader::ReadTally::default());
         tracing::debug!(
             event = "history_page_read_started",
             session_id = id,
@@ -565,6 +568,7 @@ impl Manager {
         })?;
             if let Some(scope) = &mut page.snapshot {
                 scope.use_read_snapshot(snapshot);
+                scope.share_tally(tally.clone());
             }
             let (value, bytes) = materialize_display_page(
                 page,
@@ -584,19 +588,28 @@ impl Manager {
             Ok(value)
         })();
         let elapsed_ms = started.elapsed().as_millis() as u64;
+        let cost = tally.cost();
         match &result {
             Ok(value) => {
                 let entries = value
                     .get("entries")
                     .and_then(serde_json::Value::as_array)
                     .map_or(0, Vec::len);
+                // `db_reads` is how many round trips the page made to the database
+                // and `db_handoff_ms` is the part of them that was not database
+                // work (pool wait, handoff into the blocking pool, wake-up).
+                // `db_job_ms` is the work itself; the two together are the whole
+                // cost of talking to the database for this page.
                 tracing::debug!(
                     event = "history_page_read_completed",
                     session_id = id,
                     elapsed_ms,
                     entries,
                     cache_hit,
-                    index_rebuilt
+                    index_rebuilt,
+                    db_reads = cost.closures,
+                    db_job_ms = cost.job_micros / 1000,
+                    db_handoff_ms = cost.handoff_micros() / 1000
                 );
                 if elapsed_ms >= 1000 {
                     tracing::warn!(
@@ -605,7 +618,10 @@ impl Manager {
                         elapsed_ms,
                         entries,
                         cache_hit,
-                        index_rebuilt
+                        index_rebuilt,
+                        db_reads = cost.closures,
+                        db_job_ms = cost.job_micros / 1000,
+                        db_handoff_ms = cost.handoff_micros() / 1000
                     );
                 }
             }

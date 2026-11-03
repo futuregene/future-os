@@ -8,9 +8,12 @@ import { listStreamingThreadIds, prefetchAgentState } from "../../../integration
 import {
   getRecentOrCreateDefaultThread,
   initializeAppStore,
+  listActiveThreads,
   listLatestRunInfos,
-  listThreads,
-  listWorkspaces,
+  listPinnedThreads,
+  listPinnedWorkspaces,
+  listThreadsPage,
+  listWorkspacesPage,
 } from "../../../integrations/storage/threadStore";
 import { errorMessage } from "../../../lib/errors";
 import { usePolling } from "../../../lib/usePolling";
@@ -31,6 +34,24 @@ interface ThreadStreamingUpdate {
   revision: number;
   threadIds: string[];
 }
+
+/** One conversation list the rail draws, and its own cursor. */
+export type ThreadScopeKey = string;
+
+interface ScopeState {
+  /** Whether the first page of this scope has been requested. */
+  started: boolean;
+  /** Roots fetched so far, for the "load more" affordance. */
+  loadedRoots: number;
+  /** Cursor for the next page; null once the scope is exhausted. */
+  nextCursor: string | null;
+  loading: boolean;
+}
+
+/** How many roots one request asks for (the rail's page size). */
+const PAGE_ROOTS = 50;
+/** Workspace list page size (groups are few, but paging is paging). */
+const PAGE_WORKSPACES = 50;
 
 export function reduceThreadRunStatus(
   previous: ThreadRunStatuses,
@@ -134,20 +155,51 @@ export interface ThreadStore {
   threadStreamingStatuses: ThreadStreamingStatuses;
   loadingStore: boolean;
   storeError: string | null;
+  /** Which scopes have more roots than the rail currently holds. */
+  scopeHasMore: (scope: string) => boolean;
+  /** Whether the workspace list has another page. */
+  workspacesHasMore: boolean;
+  /** Fetch the next page of the workspace list. */
+  loadMoreWorkspaces: () => Promise<void>;
+  /** Whether a scope's first page is still in flight. */
+  scopeLoading: (scope: string) => boolean;
+  /** Fetch the next page of `scope` (or its first page). */
+  loadMore: (scope: string) => Promise<void>;
+  /** Make sure `scope` has been requested at least once (lazy workspace groups). */
+  ensureScope: (scope: string) => void;
   /**
-   * Reload threads + workspaces and reconcile the active thread (prefer the
-   * given id, else keep the current one if still selectable, else the first).
+   * Make a conversation the open one, merging it into the store first.
+   *
+   * The row may not be in any loaded page — an archived detail, or a task's
+   * conversation the tick loop just created — so the store holds it before the
+   * shell's `activeThread` lookup can find it.
+   */
+  selectThread: (thread: StoredThread) => void;
+  /**
+   * Reload the scopes already in the store, keeping their loaded depth — the
+   * mutation path (archive/restore/delete) and the `threads-updated` push.
    */
   refreshStore: (nextActiveThreadId?: string) => Promise<void>;
 }
 
 /**
- * Owns the local thread/workspace store: bootstrap (init + stale-approval
- * cleanup + recent/default thread), the threads/workspaces lists and the
- * derived active thread/workspace. Run status is driven primarily by the
- * `thread-runtime-updated` push event; a low-frequency (30s) reconciliation
- * pass backstops lost events / backend restarts. Cross-client streaming status
- * is also pushed after one initial snapshot.
+ * Owns the local thread/workspace store.
+ *
+ * **Paged by scope**, one paged stream per list the rail draws: `chat` (the
+ * chat section), `workspace:<id>` (one group), `recent` (the recent view's
+ * global stream) and `archived` (the archived view). A page is a set of complete
+ * fork trees, so the rail can build its tree from what it has without ever
+ * holding half a fork.
+ *
+ * Bootstrap loads only what the first screen needs: pinned conversations,
+ * pinned workspaces, one page of the workspace list, and one page of the chat
+ * section. A workspace group's conversations load when the group is first
+ * expanded; the archived view loads when the entry is opened.
+ *
+ * Run status is driven primarily by the `thread-runtime-updated` push event; a
+ * low-frequency (30s) reconciliation pass backstops lost events / backend
+ * restarts. Cross-client streaming status is also pushed after one initial
+ * snapshot.
  */
 export function useThreadStore(): ThreadStore {
   const [threads, setThreads] = useState<StoredThread[]>([]);
@@ -157,12 +209,22 @@ export function useThreadStore(): ThreadStore {
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [loadingStore, setLoadingStore] = useState(true);
   const [storeError, setStoreError] = useState<string | null>(null);
+  const [scopes, setScopes] = useState<Record<ThreadScopeKey, ScopeState>>({});
+  const [workspacesMore, setWorkspacesMore] = useState(false);
 
   // Mirror the active id into a ref so `refreshStore` can read the latest value
   // without listing it as a dependency — that kept it stable-free, recreating
   // it (and cascading to consumers) on every thread selection (B-14b).
   const activeThreadIdRef = useRef(activeThreadId);
   activeThreadIdRef.current = activeThreadId;
+  // The scopes the reader has actually opened, read by refreshStore so a
+  // reload costs exactly what is on screen.
+  const scopesRef = useRef(scopes);
+  scopesRef.current = scopes;
+  // The rows currently held, for the active conversation that survives a
+  // refresh even when its scope no longer lists it (an archived detail).
+  const threadsRef = useRef(threads);
+  threadsRef.current = threads;
 
   const activeThread = useMemo(
     () => threads.find(thread => thread.id === activeThreadId) ?? null,
@@ -180,9 +242,204 @@ export function useThreadStore(): ThreadStore {
     [threads],
   );
 
-  // usePolling doesn't cancel in-flight async, and refreshStore can overlap a
-  // poll tick — so guard against a slow run-status fetch landing after a newer
-  // one and overwriting it with stale data (incl. removed threads).
+  /** Merge fetched rows into the store, newest copy winning. */
+  const mergeThreads = useCallback((incoming: StoredThread[]) => {
+    if (incoming.length === 0)
+      return;
+    setThreads((previous) => {
+      const byId = new Map(previous.map(thread => [thread.id, thread] as const));
+      for (const thread of incoming) byId.set(thread.id, thread);
+      const next = [...byId.values()];
+      // A row that arrived with a newer state may change order; the rail sorts
+      // its own lists, so the array order only has to be stable.
+      return next;
+    });
+  }, []);
+
+  /**
+   * Fetch one page of `scope` and merge it.
+   *
+   * `reset` re-reads the scope from its first page (mutation path); otherwise
+   * the scope's cursor advances. Both keep `nextCursor` truthful, so "load
+   * more" appears exactly while the scope has more.
+   */
+  const fetchPage = useCallback(async (scope: ThreadScopeKey, reset: boolean) => {
+    const current = scopesRef.current[scope];
+    if (!reset && current && (!current.started || current.nextCursor === null))
+      return;
+    if (!reset && current?.loading)
+      return;
+    setScopes(previous => ({
+      ...previous,
+      [scope]: {
+        started: true,
+        loadedRoots: reset ? 0 : (previous[scope]?.loadedRoots ?? 0),
+        nextCursor: reset ? null : (previous[scope]?.nextCursor ?? null),
+        loading: true,
+      },
+    }));
+    try {
+      const cursor = reset ? null : (scopesRef.current[scope]?.nextCursor ?? null);
+      const page = await listThreadsPage(scope, cursor, PAGE_ROOTS);
+      mergeThreads(page.threads);
+      setScopes(previous => ({
+        ...previous,
+        [scope]: {
+          started: true,
+          loadedRoots: (previous[scope]?.loadedRoots ?? 0) + PAGE_ROOTS,
+          nextCursor: page.nextCursor,
+          loading: false,
+        },
+      }));
+    }
+    catch (error) {
+      setScopes(previous => ({
+        ...previous,
+        [scope]: {
+          started: previous[scope]?.started ?? false,
+          loadedRoots: previous[scope]?.loadedRoots ?? 0,
+          nextCursor: previous[scope]?.nextCursor ?? null,
+          loading: false,
+        },
+      }));
+      throw error;
+    }
+  }, [mergeThreads]);
+
+  const loadMore = useCallback(async (scope: string) => {
+    await fetchPage(scope, false);
+  }, [fetchPage]);
+
+  const ensureScope = useCallback((scope: string) => {
+    const state = scopesRef.current[scope];
+    if (state?.started)
+      return;
+    void fetchPage(scope, false).catch(() => {
+      // A failed first page leaves the scope unstarted; the next expansion or
+      // the next `threads-updated` retries. The rail shows its own spinner.
+    });
+  }, [fetchPage]);
+
+  const selectThread = useCallback((thread: StoredThread) => {
+    mergeThreads([thread]);
+    setActiveThreadId(thread.id);
+  }, [mergeThreads]);
+
+  const scopeHasMore = useCallback(
+    (scope: string) => {
+      const state = scopes[scope];
+      return Boolean(state?.started && state.nextCursor !== null);
+    },
+    [scopes],
+  );
+
+  const scopeLoading = useCallback((scope: string) => scopes[scope]?.loading ?? false, [scopes]);
+
+  /** The workspace list's next page (the first one is loaded at bootstrap). */
+  const workspaceCursorRef = useRef<string | null>(null);
+  const loadMoreWorkspaces = useCallback(async () => {
+    const cursor = workspaceCursorRef.current;
+    if (cursor === null)
+      return;
+    const page = await listWorkspacesPage(false, cursor, PAGE_WORKSPACES);
+    setWorkspaces(previous => [...previous, ...page.workspaces]);
+    workspaceCursorRef.current = page.nextCursor;
+    setWorkspacesMore(page.nextCursor !== null);
+  }, []);
+
+  // Guard against overlapping refreshes (rapid deletes/creates, each calling
+  // refreshStore): a slow page landing after a newer one would revive a stale
+  // list — briefly resurrecting a just-deleted thread and possibly
+  // re-selecting it. Newest call wins.
+  const refreshStoreGenRef = useRef(0);
+
+  /**
+   * Re-read the scopes the reader has opened, at the depth they were loaded.
+   *
+   * Not a full reload: each open scope is re-requested page by page until it
+   * reaches the roots it already held (or runs dry), so a restart-ordered list
+   * converges without paging a reader back to row one. The active id is
+   * re-derived the same way the unpaged store did it.
+   */
+  const refreshStore = useCallback(async (nextActiveThreadId?: string) => {
+    const generation = ++refreshStoreGenRef.current;
+    try {
+      const [pinned, pinnedWs, firstWorkspaces, active] = await Promise.all([
+        listPinnedThreads("recent"),
+        listPinnedWorkspaces(),
+        listWorkspacesPage(false, null, PAGE_WORKSPACES),
+        listActiveThreads(),
+      ]);
+      if (generation !== refreshStoreGenRef.current)
+        return;
+      setWorkspaces([...pinnedWs, ...firstWorkspaces.workspaces]);
+      workspaceCursorRef.current = firstWorkspaces.nextCursor;
+      setWorkspacesMore(firstWorkspaces.nextCursor !== null);
+
+      // Re-read every scope the reader has opened at the depth it held, and
+      // rebuild the row set from the answers instead of merging into it: a row
+      // that a page no longer returns (archived, deleted, moved) must leave the
+      // store, which merging alone can never express.
+      const rows: StoredThread[] = [...pinned, ...active];
+      const open = Object.entries(scopesRef.current).filter(([, state]) => state.started);
+      for (const [scope, state] of open) {
+        const wanted = Math.max(state.loadedRoots, PAGE_ROOTS);
+        let cursor: string | null = null;
+        let roots = 0;
+        for (;;) {
+          const page = await listThreadsPage(scope, cursor, PAGE_ROOTS);
+          if (generation !== refreshStoreGenRef.current)
+            return;
+          rows.push(...page.threads);
+          roots += PAGE_ROOTS;
+          cursor = page.nextCursor;
+          if (cursor === null || roots >= wanted)
+            break;
+        }
+        setScopes(previous => ({
+          ...previous,
+          [scope]: { started: true, loadedRoots: roots, nextCursor: cursor, loading: false },
+        }));
+      }
+
+      const byId = new Map(rows.map(thread => [thread.id, thread] as const));
+      // The conversation on screen stays addressable even when its scope no
+      // longer returns it (a just-archived detail stays open, read-only).
+      const currentActive = byId.get(activeThreadIdRef.current ?? "");
+      if (!currentActive && activeThreadIdRef.current) {
+        const stillKnown = threadsRef.current.find(thread => thread.id === activeThreadIdRef.current);
+        if (stillKnown)
+          byId.set(stillKnown.id, stillKnown);
+      }
+      setThreads([...byId.values()]);
+
+      const selectable = nextActiveThreadId ?? activeThreadIdRef.current;
+      if (selectable && byId.has(selectable)) {
+        setActiveThreadId(selectable);
+      }
+    }
+    catch (error) {
+      if (generation === refreshStoreGenRef.current)
+        setStoreError(errorMessage(error));
+    }
+  }, []);
+
+  // Keep the start-time ordering honest: a conversation that becomes active
+  // from another client is inserted by `listActiveThreads`, so the recent
+  // view's active stretch is complete even when its page does not hold it yet.
+  const refreshActiveThreads = useCallback(async () => {
+    try {
+      const active = await listActiveThreads();
+      mergeThreads(active);
+    }
+    catch {
+      // Transient — the next reconciliation pass retries.
+    }
+  }, [mergeThreads]);
+
+  // Run-status reconciliation is driven solely by the low-frequency pass
+  // below; `usePolling` doesn't cancel in-flight async, so a generation guard
+  // keeps a slow snapshot from overwriting a newer one.
   const runStatusGenRef = useRef(0);
   const refreshThreadRunStatuses = useCallback(async (nextThreads: StoredThread[]) => {
     const generation = ++runStatusGenRef.current;
@@ -234,38 +491,10 @@ export function useThreadStore(): ThreadStore {
     });
   }, []);
 
-  // Guard against overlapping refreshes (rapid deletes/creates, each calling
-  // refreshStore): a slow listThreads landing after a newer one would revive a
-  // stale list — briefly resurrecting a just-deleted thread and possibly
-  // re-selecting it. Newest call wins.
-  const refreshStoreGenRef = useRef(0);
-  const refreshStore = useCallback(async (nextActiveThreadId?: string) => {
-    const generation = ++refreshStoreGenRef.current;
-    const [nextThreads, nextWorkspaces] = await Promise.all([listThreads(), listWorkspaces()]);
-    if (generation !== refreshStoreGenRef.current) {
-      return;
-    }
-    const selectableThreads = nextThreads.filter(thread => thread.status === "active");
-    setThreads(nextThreads);
-    setWorkspaces(nextWorkspaces);
-    // Run-status reconciliation is driven solely by the low-frequency pass
-    // below. Kicking it off here too would duplicate every fetch.
-    const currentActiveThreadId = activeThreadIdRef.current;
-    if (nextActiveThreadId && selectableThreads.some(thread => thread.id === nextActiveThreadId)) {
-      setActiveThreadId(nextActiveThreadId);
-    }
-    else if (currentActiveThreadId && selectableThreads.some(thread => thread.id === currentActiveThreadId)) {
-      setActiveThreadId(currentActiveThreadId);
-    }
-    else {
-      setActiveThreadId(selectableThreads[0]?.id ?? null);
-    }
-  }, []);
-
   useEffect(() => {
     // Hand-rolled cancel guard (not useAsyncResource): a multi-step bootstrap
-    // (init store → recent thread → threads+workspaces) writing several
-    // states, not a single resource. See desktop/CLAUDE.md §4.
+    // (init store → recent thread → first pages) writing several states, not a
+    // single resource. See desktop/CLAUDE.md §4.
     // Stale-run convergence intentionally does NOT happen here: it lives in
     // the backend's setup (once per process). Bootstrap re-runs on every
     // webview reload, where the backend may still own live runs.
@@ -276,14 +505,37 @@ export function useThreadStore(): ThreadStore {
       try {
         await initializeAppStore();
         const recentThread = await getRecentOrCreateDefaultThread(i18n.t("common:newChat"));
-        const [nextThreads, nextWorkspaces] = await Promise.all([listThreads(), listWorkspaces()]);
+        const [pinned, pinnedWs, firstWorkspaces, firstChat, active] = await Promise.all([
+          listPinnedThreads("recent"),
+          listPinnedWorkspaces(),
+          listWorkspacesPage(false, null, PAGE_WORKSPACES),
+          listThreadsPage("chat", null, PAGE_ROOTS),
+          listActiveThreads(),
+        ]);
         if (cancelled) {
           return;
         }
-        setThreads(nextThreads);
-        setWorkspaces(nextWorkspaces);
-        // The reconciliation pass below ticks as soon as `activeThreads`
-        // becomes non-empty, so bootstrap needs no duplicate status fetch.
+        setWorkspaces([...pinnedWs, ...firstWorkspaces.workspaces]);
+        workspaceCursorRef.current = firstWorkspaces.nextCursor;
+        setWorkspacesMore(firstWorkspaces.nextCursor !== null);
+        setScopes({
+          chat: {
+            started: true,
+            loadedRoots: PAGE_ROOTS,
+            nextCursor: firstChat.nextCursor,
+            loading: false,
+          },
+        });
+        const byId = new Map<string, StoredThread>();
+        for (const thread of [...pinned, ...firstChat.threads, ...active]) {
+          byId.set(thread.id, thread);
+        }
+        // A restored session may live under a workspace or a chat page the
+        // reader will not open first; make sure the one we select is present.
+        if (!byId.has(recentThread.id)) {
+          byId.set(recentThread.id, recentThread);
+        }
+        setThreads([...byId.values()]);
         setActiveThreadId(recentThread.id);
         setStoreError(null);
       }
@@ -312,6 +564,9 @@ export function useThreadStore(): ThreadStore {
     enabled: activeThreads.length > 0,
     deps: [activeThreads, refreshThreadRunStatuses],
   });
+  // The recent view's active stretch must be whole even when its page does not
+  // hold a conversation another client just started.
+  usePolling(() => refreshActiveThreads(), 30_000, { deps: [refreshActiveThreads] });
   useEffect(() => {
     const unlisten = listen<ThreadRuntimeUpdateBatch>("thread-runtime-updated", (event) => {
       // A push is newer than any reconciliation query already in flight.
@@ -329,11 +584,10 @@ export function useThreadStore(): ThreadStore {
   }, []);
   // A conversation's activity stamp moved. Externally-driven runs (the CLI, a
   // scheduler, another machine) arrive this way and nowhere else: their row's
-  // age label is read from `lastMessageAt`, which used to stay at the value from
-  // before the run for the whole reply. Patch the one row — a full
-  // `refreshStore` at push frequency would reload the list out from under the
-  // reader (see `applyThreadActivity`). A row's *place* is its creation time,
-  // which this event never touches, so a push does not reorder the list.
+  // age label and its place in the list are read from `lastMessageAt`, which
+  // used to stay at the value from before the run for the whole reply. Patch
+  // the one row — a full `refreshStore` at push frequency would reload the
+  // list out from under the reader (see `applyThreadActivity`).
   useEffect(() => {
     const unlisten = listen<ThreadActivityUpdate>("thread-activity-updated", (event) => {
       setThreads(previous => applyThreadActivity(
@@ -399,13 +653,20 @@ export function useThreadStore(): ThreadStore {
     activeThreadId,
     activeThreads,
     activeWorkspace,
+    ensureScope,
+    loadMore,
+    loadMoreWorkspaces,
     loadingStore,
     refreshStore,
+    scopeHasMore,
+    scopeLoading,
+    selectThread,
     setActiveThreadId,
     storeError,
     threadRunStatuses,
     threadStreamingStatuses,
     threads,
     workspaces,
+    workspacesHasMore: workspacesMore,
   };
 }

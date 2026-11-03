@@ -8,6 +8,7 @@ import type { RemoteIndicator } from "./hooks/useRemoteStatus";
 import type { ThreadRunInfo } from "./hooks/useThreadStore";
 import type { TreeNode } from "./threadTree";
 import {
+  Archive,
   Blocks,
   ChevronDown,
   ChevronRight,
@@ -40,8 +41,11 @@ import { IconButton } from "../ui/IconButton";
 import { ActivityRailAccountFooter } from "./ActivityRailAccountFooter";
 import { ChatSectionMenu, WorkspaceHeaderMenu } from "./ActivityRailMenus";
 import { ActivityRailSelectionToolbar } from "./ActivityRailSelectionToolbar";
+import { ArchivedEmpty, ArchivedSectionHeading, ArchivedThreadRow, ArchivedWorkspaceContents, ArchivedWorkspaceGroup } from "./ArchivedRows";
+import { ArchiveGuideBubble } from "./ArchiveGuideBubble";
 import { ConversationSearch } from "./ConversationSearch";
 import { DeviceSelector } from "./DeviceSelector";
+import { useArchiveView } from "./hooks/useArchiveView";
 import { useCollapsedWorkspaces } from "./hooks/useCollapsedWorkspaces";
 import { usePendingApprovalCounts } from "./hooks/usePendingApprovalCounts";
 import { useRailSelection } from "./hooks/useRailSelection";
@@ -97,6 +101,42 @@ interface ActivityRailProps {
   onSelectWorkspace: (workspace: StoredWorkspace, threads: StoredThread[]) => void;
   onSelectThread: (thread: StoredThread) => void;
   onTogglePinThread: (thread: StoredThread) => void;
+  /**
+   * Archive a conversation tree from its row's menu.
+   *
+   * Absent means "this list has no archive column" — the shell supplies it, and
+   * the menu item is drawn only when it does.
+   */
+  onArchiveThread?: (thread: StoredThread) => void;
+  /** Archive a user workspace from its heading's menu. */
+  onArchiveWorkspace?: (workspace: StoredWorkspace) => void;
+  /** Restore a shelved workspace from the archived view. */
+  onRestoreWorkspace?: (workspace: StoredWorkspace) => void;
+  /** Open a shelved conversation read-only (the archived view's browse action). */
+  onOpenArchivedThread?: (thread: StoredThread) => void;
+  /** Archive the selected conversations (whole trees) from the selection toolbar. */
+  onBatchArchiveThreads?: (threads: StoredThread[]) => void;
+  /**
+   * The first-archive guide: a coachmark anchored to the archive entry.
+   *
+   * The shell owns when it appears (after the first successful archive, once per
+   * installation) and what acknowledging it writes; the rail only draws it.
+   */
+  archiveGuide?: {
+    visible: boolean;
+    onDismiss: () => void;
+    onView: () => void;
+  } | null;
+  /** True for a moment after an archive, to pulse the entry that just took it. */
+  archivePulse?: boolean;
+  /** Ask for a scope's first page (lazy workspace groups). */
+  ensureThreadScope?: (scope: string) => void;
+  /** Fetch the next page of a scope. */
+  loadMoreThreadScope?: (scope: string) => Promise<void>;
+  threadScopeHasMore?: (scope: string) => boolean;
+  threadScopeLoading?: (scope: string) => boolean;
+  workspacesHasMore?: boolean;
+  onLoadMoreWorkspaces?: () => Promise<void>;
   onToggleExpanded: () => void;
   /** Remote bridge connection state for the nav indicator dot. */
   remoteIndicator?: RemoteIndicator;
@@ -191,6 +231,19 @@ export function ActivityRail({
   onTogglePinWorkspace,
   onDeleteWorkspace,
   onRestoreThread,
+  onArchiveThread,
+  onArchiveWorkspace,
+  onRestoreWorkspace,
+  onOpenArchivedThread,
+  onBatchArchiveThreads,
+  archiveGuide,
+  archivePulse,
+  ensureThreadScope,
+  loadMoreThreadScope,
+  threadScopeHasMore,
+  threadScopeLoading,
+  workspacesHasMore,
+  onLoadMoreWorkspaces,
   onSelectWorkspace,
   onSelectThread,
   onTogglePinThread,
@@ -315,6 +368,59 @@ export function ActivityRail({
     setView: setRailView,
     view: railView,
   } = useRailView();
+  // The archived view's own paged streams (shelved workspaces + shelved
+  // conversations), loaded when the entry is first opened.
+  const archiveView = useArchiveView();
+  const refreshArchiveView = archiveView.refresh;
+  // Archived workspace groups the reader has expanded to browse.
+  const [expandedArchivedWorkspaces, setExpandedArchivedWorkspaces] = useState<Set<string>>(() => new Set());
+  const ensureArchivedLoaded = useCallback(() => {
+    archiveView.ensureLoaded();
+  }, [archiveView]);
+  useEffect(() => {
+    if (railView === "archived")
+      ensureArchivedLoaded();
+  }, [ensureArchivedLoaded, railView]);
+  const toggleArchivedWorkspace = useCallback((workspaceId: string) => {
+    setExpandedArchivedWorkspaces((current) => {
+      const next = new Set(current);
+      if (next.has(workspaceId))
+        next.delete(workspaceId);
+      else next.add(workspaceId);
+      return next;
+    });
+  }, []);
+  // The workspace a conversation belongs to, for the archived rows' subtitle.
+  const workspaceNameOf = useCallback((thread: StoredThread): string | null => {
+    return workspaces.find(workspace => workspace.id === thread.workspaceId)?.name ?? null;
+  }, [workspaces]);
+  const archivedTreeMembers = useCallback((thread: StoredThread): number => {
+    let members = 1;
+    for (const candidate of archiveView.threads) {
+      if (candidate.id === thread.id || !candidate.parentSessionId)
+        continue;
+      // Descendants share the lineage; count the ones whose chain reaches this
+      // thread through agent session ids.
+      let parent: string | null = candidate.parentSessionId;
+      let depth = 0;
+      while (parent && depth < 64) {
+        const owner: StoredThread | undefined = archiveView.threads.find(item => item.agentSessionId === parent);
+        if (!owner)
+          break;
+        if (owner.id === thread.id) {
+          members += 1;
+          break;
+        }
+        parent = owner.parentSessionId ?? null;
+        depth += 1;
+      }
+    }
+    return members;
+  }, [archiveView.threads]);
+  const restoreArchivedWorkspace = useCallback((workspace: StoredWorkspace) => {
+    onRestoreWorkspace?.(workspace);
+    void refreshArchiveView();
+  }, [onRestoreWorkspace, refreshArchiveView]);
   // Text search for the conversation list. Not persisted: the list is huge
   // and a leftover query after restart would feel like a stale filter.
   const [searchQuery, setSearchQuery] = useState("");
@@ -754,6 +860,7 @@ export function ActivityRail({
     handleRowSelect,
     isRemoteRowSelectable,
     isThreadInScope,
+    scopedThreads,
     selectAll,
     selectedCount,
     selectedRemoteKeys,
@@ -787,6 +894,12 @@ export function ActivityRail({
 
   const showListTools = !selectionMode || Boolean(onChangeDeviceFilter && remotePeers.length > 0);
 
+  /** The local conversations a batch currently holds (its remote half is the shell's). */
+  const selectedLocalThreads = useMemo(
+    () => scopedThreads.filter(thread => selectedThreadIds.has(thread.id)),
+    [scopedThreads, selectedThreadIds],
+  );
+
   /** Whether this thread should show a selection checkbox. */
   function threadSelectionMode(thread: StoredThread): boolean {
     return selectionMode && isThreadInScope(thread) && threadMatchesQuery(thread);
@@ -807,10 +920,15 @@ export function ActivityRail({
     return [...groups.filter(workspace => workspace.pinned), ...groups.filter(workspace => !workspace.pinned)]
       .map((workspace) => {
         const roots = workspaceRoots.filter(node => node.item.workspaceId === workspace.id);
+        const rows = visibleThreadRows(roots, expandedThreads);
         return {
           workspace,
-          rows: visibleThreadRows(roots, expandedThreads),
+          rows,
           threads: visibleThreadRows(roots, new Set(visibleThreads.map(thread => thread.id))).map(row => row.thread),
+          // Whether this group's own page has more trees behind it (the
+          // "load more" affordance is drawn under the group's rows).
+          more: threadScopeHasMore?.(`workspace:${workspace.id}`) ?? false,
+          loading: threadScopeLoading?.(`workspace:${workspace.id}`) ?? false,
         };
       })
       .filter((group) => {
@@ -824,7 +942,7 @@ export function ActivityRail({
         rows: group.rows.filter(({ thread }) => threadMatchesQuery(thread)),
         threads: group.threads.filter(thread => threadMatchesQuery(thread)),
       }));
-  }, [workspaceRoots, workspaces, expandedThreads, visibleThreads, threadMatchesQuery, normalizedQuery]);
+  }, [workspaceRoots, workspaces, expandedThreads, visibleThreads, threadMatchesQuery, normalizedQuery, threadScopeHasMore, threadScopeLoading]);
 
   const filteredPinnedThreads = useMemo(
     () => pinnedThreads.filter(({ thread }) => threadMatchesQuery(thread)),
@@ -925,6 +1043,7 @@ export function ActivityRail({
         onMenuOpenChange={handleThreadMenuOpenChange}
         onRenameThread={onRenameThread}
         onRestoreThread={onRestoreThread}
+        onArchiveThread={onArchiveThread}
         onSelectThread={handleRowSelect}
         onTogglePinThread={onTogglePinThread}
         onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
@@ -1209,7 +1328,13 @@ export function ActivityRail({
         <RailDisclosure
           collapsed={collapsed}
           label={collapsed ? t("activityRail.expandWorkspace") : t("activityRail.collapseWorkspace")}
-          onToggle={() => toggleWorkspaceCollapsed(workspace.id)}
+          onToggle={() => {
+            // Collapsing becomes real lazy loading: the group's conversations are
+            // fetched when the group is first opened, not before.
+            if (collapsed && ensureThreadScope)
+              ensureThreadScope(`workspace:${workspace.id}`);
+            toggleWorkspaceCollapsed(workspace.id);
+          }}
         />
         <button
           className="flex min-w-0 flex-1 items-center gap-1 text-left"
@@ -1237,6 +1362,7 @@ export function ActivityRail({
         <WorkspaceHeaderMenu
           open={openWorkspaceMenuId === workspace.id}
           workspace={workspace}
+          onArchive={onArchiveWorkspace}
           onDelete={onDeleteWorkspace}
           onOpenChange={open => setOpenWorkspaceMenuId(open ? workspace.id : null)}
           onRename={onRenameWorkspace}
@@ -1426,6 +1552,43 @@ export function ActivityRail({
                       view={railView}
                     />
                   </div>
+                  {/*
+                    The archive entry: a destination, not a third segment.
+
+                    Quiet by design — a small icon at the row's end, a notch below the
+                    switch's own weight, so it reads as "somewhere to go" rather
+                    than a shape of the daily list. The first archive pulses it once
+                    (with the guide bubble anchored beside it) so a reader learns
+                    where a shelved conversation went.
+                  */}
+                  <button
+                    aria-label={t("activityRail.viewArchived")}
+                    aria-pressed={railView === "archived"}
+                    className={cn(
+                      "ml-auto inline-flex size-6 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft",
+                      railView === "archived" && "bg-surface-subtle text-ink",
+                      archivePulse && "animate-archive-entry-pulse",
+                    )}
+                    data-testid="rail-archive-entry"
+                    onClick={() => setRailView(railView === "archived" ? "workspace" : "archived")}
+                    title={t("activityRail.viewArchived")}
+                    type="button"
+                  >
+                    <Archive className="size-3.5" />
+                  </button>
+                  {archiveGuide?.visible
+                    ? (
+                        <ArchiveGuideBubble
+                          onDismiss={archiveGuide.onDismiss}
+                          onView={() => {
+                            // "View archived" is the lesson: show the reader the
+                            // destination, not a description of it.
+                            setRailView("archived");
+                            archiveGuide.onView();
+                          }}
+                        />
+                      )
+                    : null}
                 </div>
                 <div className="flex min-h-0 flex-1 flex-col">
                   <div className="group relative -mx-2 flex min-h-0 flex-1">
@@ -1441,61 +1604,123 @@ export function ActivityRail({
                               <div className="px-2 py-1 text-xs text-ink-muted" data-testid="no-matches">{noMatchesText}</div>
                             )
                           : null}
+                        {railView === "archived"
+                          ? (
+                              <div className="space-y-3" data-testid="rail-archived-view">
+                                <div className="space-y-0.5">
+                                  <ArchivedSectionHeading
+                                    icon={<Folder className="size-3.5" />}
+                                    label={t("activityRail.archivedWorkspacesHeader")}
+                                  />
+                                  {archiveView.workspaces.length === 0
+                                    ? <ArchivedEmpty label={t("activityRail.archivedWorkspacesEmpty")} />
+                                    : archiveView.workspaces.map(workspace => (
+                                        <ArchivedWorkspaceGroup
+                                          count={null}
+                                          expanded={expandedArchivedWorkspaces.has(workspace.id)}
+                                          key={workspace.id}
+                                          onRestore={restoreArchivedWorkspace}
+                                          onToggle={() => toggleArchivedWorkspace(workspace.id)}
+                                          workspace={workspace}
+                                        >
+                                          <ArchivedWorkspaceContents
+                                            onOpen={onOpenArchivedThread ?? onSelectThread}
+                                            workspaceId={workspace.id}
+                                          />
+                                        </ArchivedWorkspaceGroup>
+                                      ))}
+                                </div>
+                                <div className="space-y-0.5">
+                                  <ArchivedSectionHeading
+                                    icon={<MessageSquare className="size-3.5" />}
+                                    label={t("activityRail.archivedThreadsHeader")}
+                                  />
+                                  {archiveView.threads.length === 0
+                                    ? <ArchivedEmpty label={t("activityRail.archivedThreadsEmpty")} />
+                                    : archiveView.threads.map(thread => (
+                                        <ArchivedThreadRow
+                                          active={thread.id === activeThreadId}
+                                          key={thread.id}
+                                          members={archivedTreeMembers(thread)}
+                                          onDelete={onDeleteThread}
+                                          onOpen={onOpenArchivedThread ?? onSelectThread}
+                                          onRestore={onRestoreThread}
+                                          thread={thread}
+                                          workspaceName={workspaceNameOf(thread)}
+                                        />
+                                      ))}
+                                  {archiveView.hasMoreThreads
+                                    ? (
+                                        <button
+                                          className="w-full rounded-md px-2 py-1 text-left text-xs text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+                                          onClick={() => void archiveView.loadMoreThreads()}
+                                          type="button"
+                                        >
+                                          {t("activityRail.loadMore")}
+                                        </button>
+                                      )
+                                    : null}
+                                </div>
+                              </div>
+                            )
+                          : null}
                         {/* One list component for both views and both list modes:
                             the recent view holds a host's rows and this machine's
                             together, which is exactly the merge, and the tree view
                             is the merge grouped by workspace. */}
-                        {mergedMode || railView === "recent"
-                          ? (
-                              <MergedRows
-                                activeKey={activeConversationKey}
-                                ageLabels={railView === "recent" ? recentAgeLabels : undefined}
-                                chatSectionCollapsed={chatSectionCollapsed}
-                                collapsedWorkspaces={collapsedWorkspaces}
-                                filter={deviceFilter}
-                                onChangedRemote={() => onRemoteConversationsChanged?.()}
-                                onDeletedRemote={conversation => onRemoteConversationDeleted(conversation)}
-                                onNewChat={() => onNewChat()}
-                                onNewChatInWorkspace={(desktopId, workspaceId) =>
-                                  onNewChatOnRemote?.(desktopId, workspaceId)}
-                                onNewWorkspace={onNewWorkspace}
-                                onNewWorkspaceOnRemote={onNewWorkspaceOnRemote}
-                                onOpenRemote={conversation => onOpenRemoteConversation?.(conversation)}
-                                onRenameRemote={conversation => onRenameRemoteConversation?.(conversation)}
-                                onRenameRemoteWorkspace={target => onRenameRemoteWorkspace?.(target)}
-                                onSelectChats={() => enterSelectionMode("chat")}
-                                onSelectWorkspaceChats={groupKey => enterSelectionMode(groupKey)}
-                                onToggleChatSection={() => setChatSectionCollapsed(value => !value)}
-                                onToggleRemoteExpanded={toggleRemoteThreadExpanded}
-                                onToggleWorkspace={toggleWorkspaceCollapsed}
-                                onToggleWorkspaceSection={() => setWorkspaceSectionCollapsed(value => !value)}
-                                peers={remotePeers}
-                                remoteSelection={{
-                                  selectable: isRemoteRowSelectable,
-                                  selected: row => selectedRemoteKeys.has(row.key),
-                                  toggle: toggleRemoteSelection,
-                                }}
-                                expandedRemoteRows={expandedRemoteThreads}
-                                rowMeta={railView === "recent" ? recent.meta : mergedRowTree.meta}
-                                rowRoots={mergedRowTree.roots}
-                                renderLocalGroupHeader={(workspaceId) => {
-                                  const found = visibleWorkspaceGroups.find(item => item.workspace.id === workspaceId);
-                                  return found ? renderWorkspaceHeader(found.workspace, found.threads) : null;
-                                }}
-                                renderLocalRow={renderLocalRow}
-                                recentMore={railView === "recent" ? recent.more : undefined}
-                                recentSections={railView === "recent" ? recent.sections : undefined}
-                                rows={railView === "recent" ? recent.rows : mergedRowTree.rows}
-                                selectionMode={selectionMode}
-                                threadById={threadById}
-                                view={railView === "recent" ? "recent" : "tree"}
-                                workspaceSectionCollapsed={workspaceSectionCollapsed}
-                                workspaces={mergedWorkspaces}
-                                onShowMoreRecent={() => setRecentLimit(current => current + RECENT_PAGE_SIZE)}
-                              />
-                            )
-                          : null}
-                        {railView === "recent" || mergedMode
+                        {railView === "archived"
+                          ? null
+                          : mergedMode || railView === "recent"
+                            ? (
+                                <MergedRows
+                                  activeKey={activeConversationKey}
+                                  ageLabels={railView === "recent" ? recentAgeLabels : undefined}
+                                  chatSectionCollapsed={chatSectionCollapsed}
+                                  collapsedWorkspaces={collapsedWorkspaces}
+                                  filter={deviceFilter}
+                                  onChangedRemote={() => onRemoteConversationsChanged?.()}
+                                  onDeletedRemote={conversation => onRemoteConversationDeleted(conversation)}
+                                  onNewChat={() => onNewChat()}
+                                  onNewChatInWorkspace={(desktopId, workspaceId) =>
+                                    onNewChatOnRemote?.(desktopId, workspaceId)}
+                                  onNewWorkspace={onNewWorkspace}
+                                  onNewWorkspaceOnRemote={onNewWorkspaceOnRemote}
+                                  onOpenRemote={conversation => onOpenRemoteConversation?.(conversation)}
+                                  onRenameRemote={conversation => onRenameRemoteConversation?.(conversation)}
+                                  onRenameRemoteWorkspace={target => onRenameRemoteWorkspace?.(target)}
+                                  onSelectChats={() => enterSelectionMode("chat")}
+                                  onSelectWorkspaceChats={groupKey => enterSelectionMode(groupKey)}
+                                  onToggleChatSection={() => setChatSectionCollapsed(value => !value)}
+                                  onToggleRemoteExpanded={toggleRemoteThreadExpanded}
+                                  onToggleWorkspace={toggleWorkspaceCollapsed}
+                                  onToggleWorkspaceSection={() => setWorkspaceSectionCollapsed(value => !value)}
+                                  peers={remotePeers}
+                                  remoteSelection={{
+                                    selectable: isRemoteRowSelectable,
+                                    selected: row => selectedRemoteKeys.has(row.key),
+                                    toggle: toggleRemoteSelection,
+                                  }}
+                                  expandedRemoteRows={expandedRemoteThreads}
+                                  rowMeta={railView === "recent" ? recent.meta : mergedRowTree.meta}
+                                  rowRoots={mergedRowTree.roots}
+                                  renderLocalGroupHeader={(workspaceId) => {
+                                    const found = visibleWorkspaceGroups.find(item => item.workspace.id === workspaceId);
+                                    return found ? renderWorkspaceHeader(found.workspace, found.threads) : null;
+                                  }}
+                                  renderLocalRow={renderLocalRow}
+                                  recentMore={railView === "recent" ? recent.more : undefined}
+                                  recentSections={railView === "recent" ? recent.sections : undefined}
+                                  rows={railView === "recent" ? recent.rows : mergedRowTree.rows}
+                                  selectionMode={selectionMode}
+                                  threadById={threadById}
+                                  view={railView === "recent" ? "recent" : "tree"}
+                                  workspaceSectionCollapsed={workspaceSectionCollapsed}
+                                  workspaces={mergedWorkspaces}
+                                  onShowMoreRecent={() => setRecentLimit(current => current + RECENT_PAGE_SIZE)}
+                                />
+                              )
+                            : null}
+                        {railView === "recent" || mergedMode || railView === "archived"
                           ? null
                           : (
                               <>
@@ -1526,6 +1751,7 @@ export function ActivityRail({
                                             onMenuOpenChange={handleThreadMenuOpenChange}
                                             onRenameThread={onRenameThread}
                                             onRestoreThread={onRestoreThread}
+                                            onArchiveThread={onArchiveThread}
                                             onSelectThread={handleRowSelect}
                                             onTogglePinThread={onTogglePinThread}
                                             onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
@@ -1561,7 +1787,7 @@ export function ActivityRail({
                                         <div className="px-2 py-1 text-xs text-ink-muted" data-testid="no-matches-workspace">{noMatchesText}</div>
                                       )
                                     : null}
-                                  {visibleWorkspaceGroups.map(({ workspace, threads: groupThreads, rows }) => {
+                                  {visibleWorkspaceGroups.map(({ workspace, threads: groupThreads, rows, more, loading }) => {
                                     const collapsed = collapsedWorkspaces.has(workspace.id);
                                     return (
                                       <div key={workspace.id} className="space-y-0.5">
@@ -1591,11 +1817,24 @@ export function ActivityRail({
                                                     onMenuOpenChange={handleThreadMenuOpenChange}
                                                     onRenameThread={onRenameThread}
                                                     onRestoreThread={onRestoreThread}
+                                                    onArchiveThread={onArchiveThread}
                                                     onSelectThread={handleRowSelect}
                                                     onTogglePinThread={onTogglePinThread}
                                                     onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
                                                   />
                                                 ))}
+                                                {more
+                                                  ? (
+                                                      <button
+                                                        className="w-full rounded-md px-2 py-1 text-left text-xs text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+                                                        disabled={loading}
+                                                        onClick={() => void loadMoreThreadScope?.(`workspace:${workspace.id}`)}
+                                                        type="button"
+                                                      >
+                                                        {t("activityRail.loadMore")}
+                                                      </button>
+                                                    )
+                                                  : null}
                                               </div>
                                             )
                                           : null}
@@ -1603,6 +1842,17 @@ export function ActivityRail({
                                     );
                                   })}
                                 </div>
+                                {workspacesHasMore
+                                  ? (
+                                      <button
+                                        className="mb-2 w-full rounded-md px-2 py-1 text-left text-xs text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+                                        onClick={() => void onLoadMoreWorkspaces?.()}
+                                        type="button"
+                                      >
+                                        {t("activityRail.loadMoreWorkspaces")}
+                                      </button>
+                                    )
+                                  : null}
                                 <div className="mt-3 flex flex-1 flex-col space-y-0.5">
                                   <div className="sticky top-0 z-20 flex h-6 items-center justify-between bg-surface px-2 text-xs font-medium text-ink-muted">
                                     <span>{t("activityRail.chatHeader")}</span>
@@ -1641,6 +1891,18 @@ export function ActivityRail({
                                     : null}
                                   <div className="shrink-0 space-y-0.5">
                                     {visibleChatThreads.map(({ thread, depth, hasChildren }) => renderLocalRow(thread, depth, hasChildren))}
+                                    {(threadScopeHasMore?.("chat") ?? false)
+                                      ? (
+                                          <button
+                                            className="w-full rounded-md px-2 py-1 text-left text-xs text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+                                            disabled={threadScopeLoading?.("chat") ?? false}
+                                            onClick={() => void loadMoreThreadScope?.("chat")}
+                                            type="button"
+                                          >
+                                            {t("activityRail.loadMore")}
+                                          </button>
+                                        )
+                                      : null}
                                   </div>
                                 </div>
                               </>
@@ -1655,6 +1917,9 @@ export function ActivityRail({
                   {selectionMode
                     ? (
                         <ActivityRailSelectionToolbar
+                          onArchive={selectedLocalThreads.length > 0
+                            ? () => onBatchArchiveThreads?.(selectedLocalThreads)
+                            : undefined}
                           selectedCount={selectedCount}
                           totalCount={totalCount}
                           onCancel={exitSelectionMode}

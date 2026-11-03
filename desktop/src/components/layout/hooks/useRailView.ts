@@ -3,13 +3,17 @@ import { useCallback, useEffect, useState } from "react";
 /**
  * Which list the activity rail shows.
  *
- * Two views over the same conversations, not two lists: the **tree** (workspaces
+ * Two switchable views over the same conversations — the **tree** (workspaces
  * and chats, which is the product's primary shape and stays the default) and
  * **recent** (every conversation by one clock, split by whether it is still
- * running). Switching views changes only how the rail draws the list it already
- * holds — nothing about a conversation's own fields or order in the tree.
+ * running) — plus **archived**, the shelved conversations and workspaces.
+ *
+ * Archived is deliberately *not* a switch segment: it is a quiet icon beside the
+ * switch, because it is a destination the reader visits, not a shape of the
+ * daily list. Switching views changes only how the rail draws the list it
+ * already holds — nothing about a conversation's own fields or order.
  */
-export type RailView = "workspace" | "recent";
+export type RailView = "workspace" | "recent" | "archived";
 
 /** The view the rail opens on: the tree, as it always has. */
 export const DEFAULT_RAIL_VIEW: RailView = "workspace";
@@ -19,7 +23,8 @@ export const DEFAULT_RAIL_VIEW: RailView = "workspace";
  *
  * A tuple rather than an array so the two ids cannot go missing: the switch
  * always offers both views, and the reader only ever chooses which one is on
- * the left.
+ * the left. "archived" is a view but never a segment, so the order stays a
+ * pair.
  */
 export type RailViewOrder = readonly [RailView, RailView];
 
@@ -34,7 +39,9 @@ function readRailView(): RailView {
     const raw = localStorage.getItem(STORAGE_KEY);
     // Anything unknown (an older build's value, a corrupt write) falls back to
     // the default rather than to an empty rail.
-    return raw === "recent" ? "recent" : DEFAULT_RAIL_VIEW;
+    if (raw === "recent" || raw === "archived")
+      return raw;
+    return DEFAULT_RAIL_VIEW;
   }
   catch {
     // Unavailable storage — the default, as if this were a first launch.
@@ -42,7 +49,8 @@ function readRailView(): RailView {
   }
 }
 
-function isRailView(value: unknown): value is RailView {
+/** The segments the switch draws — archived is an entry beside it, never one. */
+export function isSwitchSegment(value: RailView): boolean {
   return value === "workspace" || value === "recent";
 }
 
@@ -62,8 +70,8 @@ function readRailOrder(): RailViewOrder {
     if (
       Array.isArray(parsed)
       && parsed.length === 2
-      && isRailView(parsed[0])
-      && isRailView(parsed[1])
+      && (parsed[0] === "workspace" || parsed[0] === "recent")
+      && (parsed[1] === "workspace" || parsed[1] === "recent")
       && parsed[0] !== parsed[1]
     ) {
       return [parsed[0], parsed[1]];

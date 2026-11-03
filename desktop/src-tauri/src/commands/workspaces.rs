@@ -41,6 +41,35 @@ pub fn pin_workspace(
     future_host::workspaces::pin_workspace(input)
 }
 
+/// Shelve a user workspace; refuses while any conversation inside is running.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn archive_workspace(
+    workspace_id: String,
+) -> Result<store::WorkspaceRecord, crate::AppError> {
+    future_host::workspaces::archive_workspace(workspace_id).await
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub fn restore_workspace(workspace_id: String) -> Result<store::WorkspaceRecord, crate::AppError> {
+    future_host::workspaces::restore_workspace(workspace_id)
+}
+
+/// One page of the workspace list (`archived = true` is the archived view).
+#[cfg_attr(feature = "gui", tauri::command)]
+pub fn list_workspaces_page(
+    archived: bool,
+    cursor: Option<String>,
+    limit: i64,
+) -> Result<store::WorkspacesPage, crate::AppError> {
+    future_host::workspaces::list_workspaces_page(archived, cursor, limit)
+}
+
+/// The pinned user workspaces, whole.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub fn list_pinned_workspaces() -> Result<Vec<store::WorkspaceRecord>, crate::AppError> {
+    future_host::workspaces::list_pinned_workspaces()
+}
+
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn delete_workspace(
     workspace_id: String,

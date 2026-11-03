@@ -5,6 +5,10 @@ use crate::session::{identity::BoundIdentity, sqlite_store::SqliteStore};
 use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc,
+};
 
 #[derive(Clone)]
 pub(crate) struct Snapshot {
@@ -13,6 +17,58 @@ pub(crate) struct Snapshot {
     generation: i64,
     until: i64,
     read_snapshot: Option<crate::session::database::ReadSnapshot>,
+    /// Whether this lease has already passed the scope guard. See [`Self::check`].
+    checked: Arc<AtomicBool>,
+    /// Where one page's database round trips are counted. See [`ReadTally`].
+    tally: Arc<ReadTally>,
+}
+
+/// What one page read spent on database round trips.
+///
+/// `total` is the caller's side of every [`Snapshot::read`]: the wait for a
+/// pooled connection, the handoff into the blocking pool, the job, and the trip
+/// back. `job` is the part inside the closure, which is what
+/// `readerJob`/`readerQueue` already measure process-wide. The difference is the
+/// handoff — invisible to every existing metric, and the thing a page that opens
+/// one closure per field, block and body pays thousands of times.
+#[derive(Default)]
+pub(crate) struct ReadTally {
+    closures: AtomicU64,
+    total_micros: AtomicU64,
+    job_micros: AtomicU64,
+}
+
+/// One page's round-trip cost, in the units the log prints.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ReadCost {
+    pub closures: u64,
+    pub total_micros: u64,
+    pub job_micros: u64,
+}
+
+impl ReadCost {
+    /// Everything that is not the job: pool wait, handoff, wake-up.
+    pub(crate) fn handoff_micros(&self) -> u64 {
+        self.total_micros.saturating_sub(self.job_micros)
+    }
+}
+
+impl ReadTally {
+    fn record(&self, total: std::time::Duration, job: std::time::Duration) {
+        self.closures.fetch_add(1, Ordering::Relaxed);
+        self.total_micros
+            .fetch_add(total.as_micros() as u64, Ordering::Relaxed);
+        self.job_micros
+            .fetch_add(job.as_micros() as u64, Ordering::Relaxed);
+    }
+
+    pub(crate) fn cost(&self) -> ReadCost {
+        ReadCost {
+            closures: self.closures.load(Ordering::Relaxed),
+            total_micros: self.total_micros.load(Ordering::Relaxed),
+            job_micros: self.job_micros.load(Ordering::Relaxed),
+        }
+    }
 }
 #[derive(Debug, Clone)]
 pub(crate) struct Entry {
@@ -84,11 +140,13 @@ impl Snapshot {
             read_snapshot: None,
             identity: super::transport::storage_identity(db)?,
             generation: generation(db, &session)?,
-            until: db.query_row(
-                "SELECT coalesce(max(position),-1) FROM entries WHERE session_id=?1",
-                [&session],
-                |row| row.get(0),
-            )?,
+            checked: Arc::new(AtomicBool::new(false)),
+            tally: Arc::new(ReadTally::default()),
+            until: db
+                .prepare_cached(
+                    "SELECT coalesce(max(position),-1) FROM entries WHERE session_id=?1",
+                )?
+                .query_row([&session], |row| row.get(0))?,
         })
     }
 
@@ -96,16 +154,39 @@ impl Snapshot {
         self.read_snapshot = Some(snapshot);
     }
 
+    /// Count this page's round trips into `tally`.
+    pub(crate) fn share_tally(&mut self, tally: Arc<ReadTally>) {
+        self.tally = tally;
+    }
+
     fn read<T: Send + 'static>(
         &self,
         store: &SqliteStore,
         read: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        if let Some(snapshot) = &self.read_snapshot {
-            snapshot.read(read)
+        // Time both halves of one round trip: the caller's wait (pool, handoff,
+        // wake-up) and the closure's own execution on the database thread. The
+        // second number is what the process-wide metrics see; the first is what a
+        // page pays per closure and nobody measured before.
+        let started = std::time::Instant::now();
+        let job_micros = Arc::new(AtomicU64::new(0));
+        let observed = Arc::clone(&job_micros);
+        let timed = move |db: &mut Connection| {
+            let job = std::time::Instant::now();
+            let result = read(db);
+            observed.store(job.elapsed().as_micros() as u64, Ordering::Relaxed);
+            result
+        };
+        let result = if let Some(snapshot) = &self.read_snapshot {
+            snapshot.read(timed)
         } else {
-            store.db.read(read)
-        }
+            store.db.read(timed)
+        };
+        self.tally.record(
+            started.elapsed(),
+            std::time::Duration::from_micros(job_micros.load(Ordering::Relaxed)),
+        );
+        result
     }
 
     pub(crate) fn verify(&self, store: &SqliteStore) -> Result<()> {
@@ -113,9 +194,11 @@ impl Snapshot {
             snapshot.read(|_| Ok(()))?;
         }
         // The final authorization uses current data, not the leased old view:
-        // deletion/reset/restore must still invalidate the response.
+        // deletion/reset/restore must still invalidate the response. It is
+        // deliberately `check_now`: the lease-wide memo below belongs to the
+        // snapshot this read was served from, and would answer for it.
         let scope = self.clone();
-        store.db.read(move |db| scope.check(db))
+        store.db.read(move |db| scope.check_now(db))
     }
 
     /// Immutable entry identity plus the page's current derived annotations.
@@ -136,6 +219,26 @@ impl Snapshot {
     }
 
     pub(crate) fn check(&self, db: &Connection) -> Result<()> {
+        // Every closure of one page reuses the same leased WAL read transaction
+        // (`use_read_snapshot`), and these three answers cannot change inside
+        // one transaction. A page materializes one closure per field, block and
+        // body — measured at ~40 per entry — so asking again on each of them
+        // costs more than the read it guards: the two identity rows, the
+        // generation and the liveness row were 55% of a 371-entry page's CPU,
+        // almost all of it re-parsing the four statements. Ask once per lease;
+        // `verify` still re-reads current data before the response is served.
+        if self.read_snapshot.is_some() && self.checked.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        self.check_now(db)?;
+        if self.read_snapshot.is_some() {
+            self.checked.store(true, Ordering::Release);
+        }
+        Ok(())
+    }
+
+    /// The guard itself, against whatever connection is handed in.
+    pub(crate) fn check_now(&self, db: &Connection) -> Result<()> {
         ensure!(
             super::transport::storage_identity(db)? == self.identity,
             "transcript database generation changed"
@@ -144,7 +247,11 @@ impl Snapshot {
             generation(db, &self.session)? == self.generation,
             "transcript changed during paged read"
         );
-        let live:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND revision>=0) AND NOT EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1)",[&self.session],|row|row.get(0))?;
+        let live: bool = db
+            .prepare_cached(
+                "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND revision>=0) AND NOT EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1)",
+            )?
+            .query_row([&self.session], |row| row.get(0))?;
         ensure!(live, "session was deleted during paged read");
         Ok(())
     }
@@ -894,11 +1001,11 @@ fn decode(encoding: Encoding, raw: String) -> Result<Value> {
 }
 
 fn generation(db: &Connection, session: &BoundIdentity) -> Result<i64> {
-    Ok(db.query_row(
-        "SELECT coalesce((SELECT generation FROM content_history_versions WHERE session_id=?1),0)",
-        [session],
-        |row| row.get(0),
-    )?)
+    Ok(db
+        .prepare_cached(
+            "SELECT coalesce((SELECT generation FROM content_history_versions WHERE session_id=?1),0)",
+        )?
+        .query_row([session], |row| row.get(0))?)
 }
 
 fn set_field(entry: &mut Value, pointer: &str, value: Value) -> Result<()> {

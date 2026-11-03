@@ -161,6 +161,68 @@ pub fn restore_thread(thread_id: String) -> Result<store::ThreadRecord, crate::E
     store::restore_thread(&thread_id)
 }
 
+/// The Agent's resident streaming sessions, mapped to local thread ids. The
+/// archive precondition needs it: a run another client started has no local
+/// `runs` row, and shelving it would hide a live request.
+async fn streaming_thread_ids() -> Vec<String> {
+    // Agent unreachable answers empty (nothing is streaming that this Desktop
+    // can observe), which is the same tolerance `list_streaming_thread_ids`
+    // documents for the sidebar.
+    crate::agent_bridge::reconcile_streaming_observers()
+        .await
+        .unwrap_or_default()
+}
+
+/// Archive one fork tree, refusing while any member is running.
+pub async fn archive_thread_tree(thread_id: String) -> Result<store::ThreadRecord, crate::Error> {
+    let streaming = streaming_thread_ids().await;
+    store::archive_thread_tree(&thread_id, &streaming)
+}
+
+pub fn restore_thread_tree(thread_id: String) -> Result<store::ThreadRecord, crate::Error> {
+    store::restore_thread_tree(&thread_id)
+}
+
+/// Archive each selected tree, reporting the ones a running member kept back.
+pub async fn batch_archive_threads(
+    thread_ids: Vec<String>,
+) -> Result<store::BatchArchiveResult, crate::Error> {
+    let streaming = streaming_thread_ids().await;
+    store::batch_archive_threads(&thread_ids, &streaming)
+}
+
+/// One paged slice of a conversation list (`chat`, `workspace:<id>`, `recent`,
+/// `archived`). Pinned rows are not part of a page; see `list_pinned_threads`.
+pub fn list_threads_page(
+    scope: String,
+    cursor: Option<String>,
+    limit: i64,
+) -> Result<store::ThreadsPage, crate::Error> {
+    let scope = store::ThreadScope::parse(&scope)?;
+    store::list_threads_page(&scope, cursor.as_deref(), limit)
+}
+
+/// The pinned conversations of a scope, whole — the rail's shortcut section.
+pub fn list_pinned_threads(scope: String) -> Result<Vec<store::ThreadRecord>, crate::Error> {
+    let scope = store::ThreadScope::parse(&scope)?;
+    store::list_pinned_threads(&scope)
+}
+
+/// Every conversation whose run has not finished (or that the Agent is
+/// streaming right now) — the recent view's active stretch.
+pub async fn list_active_threads() -> Result<Vec<store::ThreadRecord>, crate::Error> {
+    let streaming = streaming_thread_ids().await;
+    store::list_active_threads(&streaming)
+}
+
+/// Server-side title/workspace search, split into active and archived results.
+pub fn search_threads(
+    query: String,
+    limit: i64,
+) -> Result<store::ThreadSearchResults, crate::Error> {
+    store::search_threads(&query, limit)
+}
+
 pub async fn delete_thread(
     input: store::DeleteThreadInput,
 ) -> Result<store::ThreadRecord, crate::Error> {

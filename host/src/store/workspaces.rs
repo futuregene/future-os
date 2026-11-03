@@ -13,7 +13,7 @@ const WORKSPACE_COLUMNS: &str = workspaces::COLUMNS;
 /// The row mapper for the desktop-only queries in this module (chat workspaces,
 /// read-back by id). The user-workspace rules shared with the CLI live in
 /// `future-app-workspaces`.
-fn workspace_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceRecord> {
+pub(super) fn workspace_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceRecord> {
     workspaces::from_row(row)
 }
 
@@ -153,6 +153,60 @@ pub fn pin_workspace(input: PinWorkspaceInput) -> Result<WorkspaceRecord, crate:
     // tick republishes it. Dirty-marked like every other workspace mutation.
     mark_catalog_dirty();
     Ok(workspace)
+}
+
+/// Shelve a user workspace: it leaves the default lists (and takes its
+/// conversations with it, by JOIN filter), while every conversation keeps its
+/// own status — restoring the workspace brings back exactly what it hid.
+///
+/// Like a conversation archive, this refuses while anything inside is still
+/// running: a hidden `waiting_approval` run is a request nobody can see. The
+/// container is marked with `archived_at` and loses its pin (the pinned section
+/// is an active-list shortcut).
+pub fn archive_workspace(
+    workspace_id: &str,
+    streaming_thread_ids: &[String],
+) -> Result<WorkspaceRecord, crate::Error> {
+    let conn = connect()?;
+    let workspace = loaded(get_workspace_in(&conn, workspace_id)?, "Workspace")?;
+    if workspace.kind != "user" {
+        return Err("Only user workspaces can be archived.".to_string().into());
+    }
+    if workspace.archived_at.is_some() {
+        return Ok(workspace);
+    }
+    let thread_ids: Vec<String> = {
+        let mut stmt =
+            conn.prepare("SELECT id FROM threads WHERE workspace_id = ?1 AND deleted_at IS NULL")?;
+        let rows = stmt.query_map(params![workspace_id], |row| row.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let conflicts = super::threads::active_members(thread_ids, streaming_thread_ids)?;
+    if !conflicts.is_empty() {
+        return Err(super::threads::archive_refusal(&conflicts));
+    }
+    let now = now_millis();
+    conn.execute(
+        "UPDATE workspaces SET archived_at = ?1, pinned = 0, updated_at = ?1
+         WHERE id = ?2 AND deleted_at IS NULL",
+        params![now, workspace_id],
+    )?;
+    mark_catalog_dirty();
+    loaded(get_workspace_in(&conn, workspace_id)?, "Workspace")
+}
+
+/// Bring a shelved workspace (and every conversation it was hiding) back into
+/// the default lists. Idempotent for a workspace that is already active.
+pub fn restore_workspace(workspace_id: &str) -> Result<WorkspaceRecord, crate::Error> {
+    let conn = connect()?;
+    loaded(get_workspace_in(&conn, workspace_id)?, "Workspace")?;
+    conn.execute(
+        "UPDATE workspaces SET archived_at = NULL, updated_at = ?1
+         WHERE id = ?2 AND deleted_at IS NULL",
+        params![now_millis(), workspace_id],
+    )?;
+    mark_catalog_dirty();
+    loaded(get_workspace_in(&conn, workspace_id)?, "Workspace")
 }
 
 pub fn rename_workspace(input: RenameWorkspaceInput) -> Result<WorkspaceRecord, crate::Error> {
