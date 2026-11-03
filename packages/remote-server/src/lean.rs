@@ -557,8 +557,23 @@ pub fn lean_entries(entries: &mut Value) {
             }
         }
         // A shell entry's output and command ride a second time in `metadata`,
-        // outside the blocks the loop above already trimmed.
+        // outside the blocks the loop above already trimmed — and so does the
+        // cwd, under a name no client reads.
         narrow_shell_result(entry);
+        narrow_execution_cwd(entry);
+    }
+}
+
+/// Drop `metadata.execution_cwd` for a lean page.
+///
+/// No client reads it: the two metadata keys any client touches are
+/// `attachments` (a user message's files) and `shell_result` (a tool row's
+/// status), and every other entry field reaches the UI through `blocks`, `run`,
+/// `usage` or `checkpoint`. A nine-command exchange costs 3,180 bytes of it on
+/// the measured page, which is 5% of what the trim leaves behind.
+fn narrow_execution_cwd(entry: &mut Value) {
+    if let Some(metadata) = entry.get_mut("metadata").and_then(Value::as_object_mut) {
+        metadata.remove("execution_cwd");
     }
 }
 
@@ -581,20 +596,47 @@ pub fn lean_entries(entries: &mut Value) {
 /// `shellResult()` (`packages/thread-projection/src/shellResult.ts`), which
 /// would silently fall the row back to `isError`-only; an empty one keeps the
 /// envelope valid and the facts intact.
+///
+/// What is left is mostly the envelope's own *names*: an ordinary result is 257
+/// bytes once the bodies are gone, of which the facts are about 40. On the
+/// measured page that was 10,031 of the 64,316 bytes left — the largest item
+/// after the trim, for something neither client renders. So the whole envelope
+/// goes when it cannot change the row, which the client's own rule decides: a
+/// present envelope sets `failed`/`completed` from `is_error`, and an absent one
+/// falls back to the result block's `isError`. They agree exactly when neither
+/// says failed, so that is the case the page no longer carries.
 fn narrow_shell_result(entry: &mut Value) {
-    let Some(facts) = entry
-        .get_mut("metadata")
-        .and_then(|metadata| metadata.get_mut("shell_result"))
+    // Everything the decision needs is read through a shared borrow: the trim
+    // below takes the mutable one, and both cannot overlap.
+    let decides = {
+        let Some(facts) = entry
+            .get("metadata")
+            .and_then(|metadata| metadata.get("shell_result"))
+            .and_then(Value::as_object)
+        else {
+            return;
+        };
+        // Only a result this trim can identify is reshaped: a shape from a newer
+        // or older agent is forwarded byte-for-byte rather than emptied into
+        // something the client's validator would reject.
+        if !facts.get("status").is_some_and(Value::is_string) {
+            return;
+        }
+        shell_facts_decide_the_row(facts, entry.get("blocks"))
+    };
+    let Some(metadata) = entry.get_mut("metadata").and_then(Value::as_object_mut) else {
+        return;
+    };
+    if !decides {
+        metadata.remove("shell_result");
+        return;
+    }
+    let Some(facts) = metadata
+        .get_mut("shell_result")
         .and_then(Value::as_object_mut)
     else {
         return;
     };
-    // Only a result this trim can identify is reshaped: a shape from a newer or
-    // older agent is forwarded byte-for-byte rather than emptied into something
-    // the client's validator would reject.
-    if !facts.get("status").is_some_and(Value::is_string) {
-        return;
-    }
     for key in ["command", "cwd"] {
         if facts.get(key).is_some_and(Value::is_string) {
             facts.insert(key.to_owned(), Value::String(String::new()));
@@ -609,6 +651,27 @@ fn narrow_shell_result(entry: &mut Value) {
             attempt.insert("output".to_owned(), Value::String(String::new()));
         }
     }
+}
+
+/// Whether this envelope is the thing that decides the row's status.
+///
+/// `foldToolEntry` (`packages/thread-projection/src/projection.ts`) reads
+/// `facts.is_error ? failed : completed` when the envelope is present and
+/// `block.isError ? failed` when it is not, and a tool row starts at
+/// `completed`. So the two paths agree unless one of them says failed — and
+/// only in that case is the envelope worth its bytes. `is_soft_fail` is not
+/// consulted by the client, so it does not qualify on its own.
+fn shell_facts_decide_the_row(
+    facts: &serde_json::Map<String, Value>,
+    blocks: Option<&Value>,
+) -> bool {
+    let failed = |value: Option<&Value>| value == Some(&Value::Bool(true));
+    failed(facts.get("is_error"))
+        || blocks
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|block| block["kind"] == "tool_result" && failed(block.get("isError")))
 }
 
 /// The argument keys a tool row's label is derived from, mirroring the client's
@@ -1928,17 +1991,55 @@ mod shell_attempts_tests {
         );
         assert_eq!(entries[2]["metadata"], json!({"other": 1}));
         assert_eq!(entries[3], json!({"id": "no-metadata"}));
-        // An identified result is narrowed; an attempt whose `output` is not a
-        // string is left as it came.
-        assert_eq!(entries[4]["metadata"]["shell_result"]["command"], json!(""));
-        assert_eq!(entries[4]["metadata"]["shell_result"]["cwd"], json!(""));
+        // A recognised result that decides nothing is dropped whole: no
+        // `is_error`, no failing result block, so the row would read the same
+        // from the block alone.
+        assert_eq!(entries[4]["metadata"], json!({}));
+    }
+
+    /// The two cases the page must still carry: a failed shell call (whose
+    /// `is_error` is what makes the row read failed) and a failing result block,
+    /// which the client's absent-envelope fallback would honour anyway — keeping
+    /// it makes both paths say the same thing instead of relying on one.
+    #[test]
+    fn shell_facts_survive_only_when_they_decide_the_row() {
+        let mut entries = json!([
+            // successful call: dropped, and the cwd with it
+            {"metadata": {"shell_result": {"status": "exited", "is_error": false,
+                "attempts": [{"output": "body"}]}, "execution_cwd": "/repo"},
+             "blocks": [{"kind": "tool_result", "toolCallId": "t", "isError": false}]},
+            // failed call: kept and narrowed
+            {"metadata": {"shell_result": {"status": "exited", "is_error": true,
+                "command": "action", "attempts": [{"output": "body"}]}},
+             "blocks": [{"kind": "tool_result", "toolCallId": "t", "isError": true}]},
+            // envelope says fine, the block says failed: kept, because dropping it
+            // would flip the row from completed to failed
+            {"metadata": {"shell_result": {"status": "exited", "is_error": false,
+                "command": "action"}},
+             "blocks": [{"kind": "tool_result", "toolCallId": "t", "isError": true}]},
+            // a `command` call keeps its exit code and nothing else that repeats
+            {"metadata": {"shell_result": {"status": "timed_out", "exit_code": null,
+                "is_error": true, "attempts": [{"output": "x", "escalated": true}]}},
+             "blocks": []},
+        ]);
+        lean_entries(&mut entries);
+        assert_eq!(entries[0]["metadata"], json!({}), "nothing read: both go");
+        let kept = &entries[1]["metadata"]["shell_result"];
+        assert_eq!(kept["is_error"], json!(true));
+        assert_eq!(kept["command"], json!(""));
+        assert_eq!(kept["attempts"][0]["output"], json!(""));
         assert_eq!(
-            entries[4]["metadata"]["shell_result"]["attempts"][0]["output"],
-            json!("")
+            entries[2]["metadata"]["shell_result"]["is_error"],
+            json!(false),
+            "a block failure keeps the envelope both paths agree on"
         );
         assert_eq!(
-            entries[4]["metadata"]["shell_result"]["attempts"][1]["output"],
-            json!(7)
+            entries[3]["metadata"]["shell_result"]["attempts"][0]["escalated"],
+            json!(true)
+        );
+        assert_eq!(
+            entries[3]["metadata"]["shell_result"]["attempts"][0]["output"],
+            json!("")
         );
     }
 }
