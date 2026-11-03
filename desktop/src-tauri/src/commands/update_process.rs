@@ -269,23 +269,21 @@ mod tests {
         );
     }
 
-    /// A helper that stops reading between `READY` and `COMMIT` leaves nobody to write to.
-    /// That is a failed commit — reported as one, not as a panic and not as a success.
+    /// A helper whose input is closed when it announces READY has nobody to receive COMMIT.
+    /// Report the failed delivery without claiming an installation happened.
     #[test]
     fn a_helper_that_stops_reading_before_the_commit_is_a_failed_commit() {
-        // The child closes **its** stdin and stays alive, so the parent's `COMMIT` meets a
-        // pipe with no readers — which is what makes this arm deterministic. A child that
-        // merely exits after `READY` races the parent: the write then succeeds into the pipe
-        // buffer and the failure moves to the completion read instead (measured in the full
-        // suite, where the first version of this case failed exactly that way).
+        // Close stdin before publishing READY. Reading READY then proves that
+        // the pipe has no readers. Publishing it first races the parent's
+        // COMMIT write against the close (Linux CI job 125825234738).
         let prepared = PreparedProcess::start({
             let mut command = Command::new("/bin/sh");
             command
                 .arg("-c")
-                .arg("printf 'READY\\n'; exec 0<&-; sleep 5");
+                .arg("exec 0<&-; printf 'READY\\n'; sleep 5");
             command
         })
-        .expect("READY arrives before the helper stops reading");
+        .expect("the helper closes its input before announcing READY");
         let completion = prepared.commit().expect("a failed write is still a result");
         assert!(!completion.ok);
         assert!(completion.restored, "nothing was replaced");

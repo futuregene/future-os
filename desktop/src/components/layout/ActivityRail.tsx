@@ -371,6 +371,10 @@ export function ActivityRail({
   // independent of the per-workspace group collapse above.
   const [workspaceSectionCollapsed, setWorkspaceSectionCollapsed] = useState(false);
   const [chatSectionCollapsed, setChatSectionCollapsed] = useState(false);
+  // The archived view's two sections fold like the active ones (one click each,
+  // no need to fold every workspace heading by hand).
+  const [archivedWorkspacesCollapsed, setArchivedWorkspacesCollapsed] = useState(false);
+  const [archivedThreadsCollapsed, setArchivedThreadsCollapsed] = useState(false);
   // Chat section header menu.
   const [chatSectionMenuOpen, setChatSectionMenuOpen] = useState(false);
   // Which list the rail shows: the tree (its own shape, and the default) or the
@@ -1707,53 +1711,72 @@ export function ActivityRail({
                               <div className="space-y-3" data-testid="rail-archived-view">
                                 <div className="space-y-0.5">
                                   <ArchivedSectionHeading
+                                    collapsed={archivedWorkspacesCollapsed}
                                     icon={<Folder className="size-3.5" />}
                                     label={t("activityRail.archivedWorkspacesHeader")}
+                                    onToggle={() => setArchivedWorkspacesCollapsed(value => !value)}
                                   />
-                                  {filteredArchivedWorkspaces.length === 0
-                                    ? (
-                                        <ArchivedEmpty
-                                          label={archivedQuery.length > 0
-                                            ? noMatchesText
-                                            : t("activityRail.archivedWorkspacesEmpty")}
-                                        />
-                                      )
-                                    : filteredArchivedWorkspaces.map(workspace => (
-                                        <ArchivedWorkspaceGroup
-                                          count={null}
-                                          expanded={expandedArchivedWorkspaces.has(workspace.id)}
-                                          key={workspace.id}
-                                          menu={(
-                                            <ArchivedWorkspaceMenu
-                                              open={openArchivedWorkspaceMenuId === workspace.id}
-                                              onDelete={onDeleteWorkspace}
-                                              onOpenChange={open => setOpenArchivedWorkspaceMenuId(open ? workspace.id : null)}
-                                              onRename={onRenameWorkspace}
-                                              onRestore={restoreArchivedWorkspace}
-                                              onReveal={() => void openPath(workspace.path).catch(() => {})}
-                                              onSelectConversations={() => enterSelectionMode(`archived-workspace:${workspace.id}`)}
-                                              workspace={workspace}
-                                            />
-                                          )}
-                                          onOpenMenu={() => setOpenArchivedWorkspaceMenuId(workspace.id)}
-                                          onToggle={() => {
-                                            const next = !expandedArchivedWorkspaces.has(workspace.id);
-                                            if (next)
-                                              archiveView.ensureWorkspaceThreads(workspace.id);
-                                            toggleArchivedWorkspace(workspace.id);
-                                          }}
-                                          workspace={workspace}
-                                        >
-                                          <ArchivedWorkspaceContents
-                                            loading={archiveView.loading}
-                                            onOpen={onOpenArchivedThread ?? onSelectThread}
-                                            onToggleSelection={toggleThreadSelection}
-                                            selectedIds={selectedThreadIds}
-                                            selectionMode={selectionMode && selectionScope === `archived-workspace:${workspace.id}`}
-                                            threads={archiveView.workspaceThreads[workspace.id]}
+                                  {archivedWorkspacesCollapsed
+                                    ? null
+                                    : filteredArchivedWorkspaces.length === 0
+                                      ? (
+                                          <ArchivedEmpty
+                                            label={archivedQuery.length > 0
+                                              ? noMatchesText
+                                              : t("activityRail.archivedWorkspacesEmpty")}
                                           />
-                                        </ArchivedWorkspaceGroup>
-                                      ))}
+                                        )
+                                      : filteredArchivedWorkspaces.map(workspace => (
+                                          <ArchivedWorkspaceGroup
+                                            count={null}
+                                            expanded={expandedArchivedWorkspaces.has(workspace.id)}
+                                            key={workspace.id}
+                                            menu={(
+                                              <ArchivedWorkspaceMenu
+                                                open={openArchivedWorkspaceMenuId === workspace.id}
+                                                onDelete={onDeleteWorkspace}
+                                                onOpenChange={open => setOpenArchivedWorkspaceMenuId(open ? workspace.id : null)}
+                                                onRename={onRenameWorkspace}
+                                                onRestore={restoreArchivedWorkspace}
+                                                onReveal={() => void openPath(workspace.path).catch(() => {})}
+                                                onSelectConversations={() => enterSelectionMode(`archived-workspace:${workspace.id}`)}
+                                                workspace={workspace}
+                                              />
+                                            )}
+                                            onOpenMenu={() => setOpenArchivedWorkspaceMenuId(workspace.id)}
+                                            onToggle={() => {
+                                              const next = !expandedArchivedWorkspaces.has(workspace.id);
+                                              if (next)
+                                                archiveView.ensureWorkspaceThreads(workspace.id);
+                                              toggleArchivedWorkspace(workspace.id);
+                                            }}
+                                            workspace={workspace}
+                                          >
+                                            <ArchivedWorkspaceContents
+                                              hasMore={archiveView.workspaceNextCursor[workspace.id] !== null
+                                                && archiveView.workspaceNextCursor[workspace.id] !== undefined}
+                                              loading={archiveView.loading}
+                                              onLoadMore={() => void archiveView.loadMoreWorkspaceThreads(workspace.id)}
+                                              onOpen={onOpenArchivedThread ?? onSelectThread}
+                                              onToggleSelection={toggleThreadSelection}
+                                              selectedIds={selectedThreadIds}
+                                              selectionMode={selectionMode && selectionScope === `archived-workspace:${workspace.id}`}
+                                              threads={archiveView.workspaceThreads[workspace.id]}
+                                            />
+                                          </ArchivedWorkspaceGroup>
+                                        ))}
+                                  {!archivedWorkspacesCollapsed && archiveView.hasMoreWorkspaces && archivedQuery.length === 0
+                                    ? (
+                                        <button
+                                          className="w-full rounded-md px-2 py-1 text-left text-xs text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+                                          data-testid="rail-archived-workspaces-more"
+                                          onClick={() => void archiveView.loadMoreWorkspaces()}
+                                          type="button"
+                                        >
+                                          {t("activityRail.loadMore")}
+                                        </button>
+                                      )
+                                    : null}
                                 </div>
                                 <div className="space-y-0.5">
                                   <ArchivedSectionHeading
@@ -1767,33 +1790,37 @@ export function ActivityRail({
                                           />
                                         )
                                       : null}
+                                    collapsed={archivedThreadsCollapsed}
                                     icon={<MessageSquare className="size-3.5" />}
                                     label={t("activityRail.archivedThreadsHeader")}
+                                    onToggle={() => setArchivedThreadsCollapsed(value => !value)}
                                   />
-                                  {filteredArchivedThreads.length === 0
-                                    ? (
-                                        <ArchivedEmpty
-                                          label={archivedQuery.length > 0
-                                            ? noMatchesText
-                                            : t("activityRail.archivedThreadsEmpty")}
-                                        />
-                                      )
-                                    : filteredArchivedThreads.map(thread => (
-                                        <ArchivedThreadRow
-                                          active={thread.id === activeThreadId}
-                                          key={thread.id}
-                                          members={archivedTreeMembers(thread)}
-                                          onDelete={onDeleteThread}
-                                          onOpen={onOpenArchivedThread ?? onSelectThread}
-                                          onRename={onRenameThread}
-                                          onRestore={onRestoreThread}
-                                          onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
-                                          selected={selectedThreadIds.has(thread.id)}
-                                          selectionMode={threadSelectionMode(thread)}
-                                          thread={thread}
-                                        />
-                                      ))}
-                                  {archiveView.hasMoreThreads
+                                  {archivedThreadsCollapsed
+                                    ? null
+                                    : filteredArchivedThreads.length === 0
+                                      ? (
+                                          <ArchivedEmpty
+                                            label={archivedQuery.length > 0
+                                              ? noMatchesText
+                                              : t("activityRail.archivedThreadsEmpty")}
+                                          />
+                                        )
+                                      : filteredArchivedThreads.map(thread => (
+                                          <ArchivedThreadRow
+                                            active={thread.id === activeThreadId}
+                                            key={thread.id}
+                                            members={archivedTreeMembers(thread)}
+                                            onDelete={onDeleteThread}
+                                            onOpen={onOpenArchivedThread ?? onSelectThread}
+                                            onRename={onRenameThread}
+                                            onRestore={onRestoreThread}
+                                            onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
+                                            selected={selectedThreadIds.has(thread.id)}
+                                            selectionMode={threadSelectionMode(thread)}
+                                            thread={thread}
+                                          />
+                                        ))}
+                                  {!archivedThreadsCollapsed && archiveView.hasMoreThreads
                                     ? (
                                         <button
                                           className="w-full rounded-md px-2 py-1 text-left text-xs text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"

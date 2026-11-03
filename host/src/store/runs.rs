@@ -186,15 +186,24 @@ pub fn has_active_run(thread_id: &str) -> Result<bool, crate::Error> {
 }
 
 pub fn list_runs(thread_id: &str) -> Result<Vec<RunRecord>, crate::Error> {
+    list_runs_in_window(thread_id, None, None)
+}
+
+/// Only materialize the runs that can overlap the displayed history page.
+pub fn list_runs_in_window(
+    thread_id: &str,
+    after: Option<i64>,
+    before: Option<i64>,
+) -> Result<Vec<RunRecord>, crate::Error> {
     let conn = connect()?;
     let columns = run_columns(&conn)?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT {columns}
-             FROM runs
-             WHERE thread_id = ?1
-             ORDER BY created_at DESC"
+        "SELECT {columns} FROM runs WHERE thread_id=?1
+        AND (?2 IS NULL OR coalesce(ended_at,updated_at)>=?2)
+        AND (?3 IS NULL OR coalesce(started_at,created_at)<=?3)
+        ORDER BY created_at DESC"
     ))?;
-    let rows = stmt.query_map(params![thread_id], run_from_row)?;
+    let rows = stmt.query_map(params![thread_id, after, before], run_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(crate::Error::from)
 }
@@ -1306,6 +1315,23 @@ mod tests {
             params![id, status],
         )
         .expect("insert run");
+    }
+
+    #[test]
+    fn history_window_keeps_overlapping_runs_and_excludes_unloaded_history() {
+        let (_home, conn) = guarded_conn("runs-window");
+        conn.execute_batch("INSERT INTO workspaces(id,name,kind,path,created_at,updated_at) VALUES('w','W','user','/tmp',1,1);
+            INSERT INTO threads(id,workspace_id,mode,title,created_at,updated_at) VALUES('t','w','chat','T',1,1);
+            INSERT INTO runs(id,thread_id,status,started_at,ended_at,created_at,updated_at) VALUES
+            ('old','t','completed',10,20,10,20),('overlap','t','completed',30,60,30,60),
+            ('active','t','running',70,NULL,70,90),('future','t','completed',110,120,110,120);") .unwrap();
+        let ids = list_runs_in_window("t", Some(50), Some(100))
+            .unwrap()
+            .into_iter()
+            .map(|run| run.id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["active", "overlap"]);
+        assert_eq!(list_runs("t").unwrap().len(), 4);
     }
 
     #[test]

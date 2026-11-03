@@ -26,6 +26,8 @@ impl AgentClient {
         command: RpcCommand,
     ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
         let _admitted = crate::request_scope::admit()?;
+        let started = std::time::Instant::now();
+        let command_name = command.r#type.clone();
         let prompt = command.r#type == "prompt";
         let session = command.session_id.clone();
         let requested = command.requested_run_id.clone();
@@ -36,6 +38,28 @@ impl AgentClient {
             .inner
             .execute_command(future_rpc::command_policy::request_with_timeout(command))
             .await;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        let success = result
+            .as_ref()
+            .is_ok_and(|response| response.get_ref().success);
+        if elapsed_ms >= 1000 {
+            tracing::warn!(
+                event = "agent_command_slow",
+                command = command_name,
+                session_id = session,
+                elapsed_ms,
+                success,
+                "Agent command exceeded its latency budget"
+            );
+        } else {
+            tracing::debug!(
+                event = "agent_command_completed",
+                command = command_name,
+                session_id = session,
+                elapsed_ms,
+                success
+            );
+        }
         if prompt {
             if let Ok(response) = &result {
                 if response.get_ref().success {

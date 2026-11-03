@@ -1,10 +1,11 @@
 import type { StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
-import { Archive, Folder } from "lucide-react";
+import { Archive, ChevronDown, ChevronRight, Folder } from "lucide-react";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/cn";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { ArchivedThreadMenu } from "./ActivityRailMenus";
+import { RailDisclosure } from "./RailChrome";
 import { RailRow, RailRowMenuButton, RailRowTitle } from "./RailRow";
 
 /**
@@ -151,15 +152,11 @@ export function ArchivedWorkspaceGroup({
           onOpenMenu();
         }}
       >
-        <button
-          aria-expanded={expanded}
-          aria-label={expanded ? t("activityRail.collapseWorkspace") : t("activityRail.expandWorkspace")}
-          className="inline-flex size-4 shrink-0 items-center justify-center rounded text-ink-muted hover:text-ink-soft"
-          onClick={onToggle}
-          type="button"
-        >
-          <span className="text-xs leading-none">{expanded ? "−" : "+"}</span>
-        </button>
+        {/* The same disclosure the active list's workspace headings fold with:
+            a +/− pair read as a different control from the chevron one row
+            above, and a group heading is a group heading whichever list it is
+            in. */}
+        <RailDisclosure collapsed={!expanded} label={expanded ? t("activityRail.collapseWorkspace") : t("activityRail.expandWorkspace")} onToggle={onToggle} />
         <Folder className="size-4 shrink-0 text-ink-soft" />
         <span className="min-w-0 flex-1 truncate text-13 font-semibold text-ink" title={workspace.name}>
           {workspace.name}
@@ -174,22 +171,58 @@ export function ArchivedWorkspaceGroup({
   );
 }
 
-/** Section heading shared by the archived view's two halves. */
+/**
+ * Section heading shared by the archived view's two halves.
+ *
+ * Laid out exactly like the active list's section headings — the label on the
+ * left, one control cluster at the right end — because the fold is the same
+ * gesture in both lists. The chevron used to sit before the label here, which
+ * put the one control a reader reaches for at the head of the section on the
+ * opposite side from where the rest of the rail keeps it.
+ */
 export function ArchivedSectionHeading({
   action,
+  collapsed,
   label,
   icon,
+  onToggle,
 }: {
   /** Optional trailing control (the archived list's selection menu). */
   action?: React.ReactNode;
+  /** Present when the section folds; the chevron only draws with `onToggle`. */
+  collapsed?: boolean;
   label: string;
   icon?: React.ReactNode;
+  /** Fold/unfold this section — the same one-click the active sections have. */
+  onToggle?: () => void;
 }) {
   return (
-    <div className="sticky top-0 z-20 flex h-6 items-center gap-1.5 bg-surface px-2 text-xs font-medium text-ink-muted">
-      {icon ?? <Archive className="size-3.5" />}
-      <span className="min-w-0 flex-1 truncate">{label}</span>
-      {action}
+    <div className="sticky top-0 z-20 flex h-6 items-center justify-between bg-surface px-2 text-xs font-medium text-ink-muted">
+      <span className="flex min-w-0 items-center gap-1.5">
+        {icon ?? <Archive className="size-3.5 shrink-0" />}
+        <span className="truncate">{label}</span>
+      </span>
+      {onToggle || action
+        ? (
+            <div className="flex items-center gap-0.5">
+              {onToggle
+                ? (
+                    <button
+                      aria-expanded={collapsed !== true}
+                      aria-label={label}
+                      className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+                      onClick={onToggle}
+                      title={label}
+                      type="button"
+                    >
+                      {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+                    </button>
+                  )
+                : null}
+              {action}
+            </div>
+          )
+        : null}
     </div>
   );
 }
@@ -209,14 +242,19 @@ export function ArchivedEmpty({ label }: { label: string }) {
  * it read-only before the reader decides to restore anything.
  */
 export function ArchivedWorkspaceContents({
+  hasMore,
   loading,
+  onLoadMore,
   onOpen,
   onToggleSelection,
   selectedIds,
   selectionMode,
   threads,
 }: {
+  /** Whether this group's own list has another page. */
+  hasMore?: boolean;
   loading: boolean;
+  onLoadMore?: () => void;
   onOpen: (thread: StoredThread) => void;
   onToggleSelection?: (thread: StoredThread) => void;
   /** Ids of the rows ticked in a batch. */
@@ -252,6 +290,17 @@ export function ArchivedWorkspaceContents({
             : null}
         </RailRow>
       ))}
+      {hasMore
+        ? (
+            <button
+              className="w-full rounded-md px-2 py-1 text-left text-xs text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+              onClick={onLoadMore}
+              type="button"
+            >
+              {t("activityRail.loadMore")}
+            </button>
+          )
+        : null}
     </div>
   );
 }

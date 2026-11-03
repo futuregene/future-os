@@ -45,10 +45,14 @@ vi.mock("./hooks/useArchiveView", () => ({
     ensureLoaded: () => {},
     ensureWorkspaceThreads: () => {},
     hasMoreThreads: false,
+    hasMoreWorkspaces: false,
     loadMoreThreads: async () => {},
+    loadMoreWorkspaceThreads: async () => {},
+    loadMoreWorkspaces: async () => {},
     loading: false,
     refresh: async () => {},
     threads: archivedThreads,
+    workspaceNextCursor: {},
     workspaceThreads: {},
     workspaces: archivedWorkspaces,
   }),
@@ -237,6 +241,58 @@ describe("archive entry and its guide", () => {
     expect(idleEntry.getAttribute("data-active")).toBeNull();
     expect(idleEntry.className).not.toContain("ring-1");
     idle.unmount();
+  });
+
+  it("folds an archived workspace with the same chevron as an active one", () => {
+    currentView = "archived";
+    archivedThreads.length = 0;
+    archivedWorkspaces.length = 0;
+    archivedWorkspaces.push({ id: "w-shelved", name: "Shelved project" });
+
+    const view = mount(createElement(ActivityRail, props()));
+    const heading = view.container.querySelector("[data-testid='rail-archived-view']")!;
+    // The +/− text pair is gone; the disclosure renders an svg chevron.
+    expect(heading.textContent).not.toContain("+");
+    expect(heading.querySelector("svg.lucide-chevron-right, svg.lucide-chevron-down")).not.toBeNull();
+    view.unmount();
+    archivedThreads.length = 0;
+    archivedWorkspaces.length = 0;
+  });
+
+  it("folds both archived sections with one click each", () => {
+    currentView = "archived";
+    archivedThreads.length = 0;
+    archivedThreads.push({
+      agentSessionId: "s-a",
+      createdAt: 1,
+      id: "a",
+      mode: "chat",
+      pinned: false,
+      readonly: false,
+      status: "archived",
+      title: "shelved one",
+      updatedAt: 2,
+      workspaceId: "w1",
+    } as unknown as StoredThread);
+
+    const view = mount(createElement(ActivityRail, props()));
+    const viewRoot = view.container.querySelector("[data-testid='rail-archived-view']")!;
+    const foldButtons = [...viewRoot.querySelectorAll("button[aria-expanded]")];
+    expect(foldButtons.length).toBeGreaterThanOrEqual(2);
+
+    // The conversations section folds away its rows.
+    expect(view.container.textContent).toContain("shelved one");
+    const threadHeading = foldButtons.find(button =>
+      button.getAttribute("aria-label")?.includes("已归档会话")
+      || button.getAttribute("aria-label")?.includes("Archived conversations"))!;
+    expect(threadHeading).toBeDefined();
+    act(() => threadHeading.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(view.container.textContent).not.toContain("shelved one");
+    // …and unfolds again.
+    act(() => threadHeading.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(view.container.textContent).toContain("shelved one");
+    view.unmount();
+    archivedThreads.length = 0;
   });
 
   it("offers the guide again from the archived view", () => {

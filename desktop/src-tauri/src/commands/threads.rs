@@ -35,10 +35,21 @@ pub fn mark_thread_opened(thread_id: String) -> Result<(), crate::AppError> {
 }
 
 #[tauri::command]
-pub fn create_thread(
+pub async fn create_thread(
     input: store::CreateThreadInput,
 ) -> Result<store::ThreadRecord, crate::AppError> {
-    future_host::application::threads::create_thread(input)
+    let started = std::time::Instant::now();
+    let result = future_host::runtime::run_blocking(move || {
+        future_host::application::threads::create_thread(input)
+    })
+    .await?;
+    tracing::debug!(
+        event = "desktop_storage_completed",
+        operation = "create_thread",
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        success = result.is_ok()
+    );
+    result
 }
 
 #[tauri::command]
@@ -353,8 +364,8 @@ mod tests {
     /// path runs first. Each assertion is on a value derived from the argument
     /// (the created title, the recency stamp the id was written to, the count
     /// for *this* conversation), so a dropped argument changes the answer.
-    #[test]
-    fn the_store_backed_thread_commands_forward_their_arguments() {
+    #[tokio::test]
+    async fn the_store_backed_thread_commands_forward_their_arguments() {
         let _home = init("cmd_threads_wave");
 
         let created = create_thread(store::CreateThreadInput {
@@ -365,6 +376,7 @@ mod tests {
             workspace_name: None,
             agent_session_id: None,
         })
+        .await
         .expect("create thread");
         assert_eq!(created.title, "Created");
         assert_eq!(created.mode, "chat");

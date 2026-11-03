@@ -19,6 +19,7 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection> {
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     crate::session::content::install_functions(&db)?;
+    db.set_prepared_statement_cache_capacity(256);
     db.busy_timeout(Duration::from_millis(250))?;
     db.pragma_update(None, "query_only", true)?;
     db.pragma_update(None, "foreign_keys", true)?;
@@ -88,23 +89,47 @@ impl Readers {
         Ok(pool)
     }
 
+    #[track_caller]
     pub(super) fn call<T: Send + 'static>(
         &self,
+        lane: &'static str,
+        name: &'static str,
+        metrics: Arc<super::metrics::Metrics>,
         operation: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     ) -> Result<T> {
+        let job_info = super::slow::Job::new(lane, name);
+        let request = super::request::Context::current();
+        if let Some(request) = &request {
+            request.check()?;
+        }
+        let work_request = request.clone();
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let work_running = running.clone();
+        let queued = std::time::Instant::now();
         let (reply, result) = mpsc::sync_channel(1);
         self.sender
             .lock()
             .as_ref()
             .ok_or_else(|| anyhow!("SQLite readers are closed"))?
             .try_send(Box::new(move |db| {
-                let _ = reply.send(operation(db));
+                work_running.store(true, std::sync::atomic::Ordering::Release);
+                let waited = queued.elapsed();
+                metrics.reader_queue.record(waited, true);
+                let started = std::time::Instant::now();
+                let result = match &work_request {
+                    Some(request) => request.run(db, operation),
+                    None => operation(db),
+                };
+                let elapsed = started.elapsed();
+                metrics.reader_job.record(elapsed, result.is_ok());
+                job_info.report(elapsed, waited, result.is_ok(), work_request.as_ref());
+                let _ = reply.send(result);
             }))
             .map_err(|error| match error {
                 mpsc::TrySendError::Full(_) => anyhow!("SQLite read queue is full"),
                 mpsc::TrySendError::Disconnected(_) => anyhow!("SQLite readers are unavailable"),
             })?;
-        result.recv().context("SQLite read interrupted")?
+        job_info.wait(&result, running, request.as_ref())
     }
 
     pub(super) fn shutdown(&self) -> Result<()> {

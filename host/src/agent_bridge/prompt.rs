@@ -284,64 +284,75 @@ pub(super) async fn agent_prompt_inner(
 
     // Create (or reuse) the agent session.
     let existing_cwd = workspace_path_for_thread(&thread_id)?;
-    let ensured = ensure_agent_session(
-        &mut command_client,
-        &stored_session_id,
-        &existing_cwd,
-        model_id.as_deref(),
-        thinking_level.as_deref(),
-    )
-    .await?;
-    let session_id = ensured.session_id;
-    let session_was_created = ensured.created;
+    let setup_started = std::time::Instant::now();
+    // run_blocking starts immediately and is tracked through Host shutdown.
+    // The snapshot and session setup can overlap; both finish before tools run.
+    let before_snapshot = run_id.as_ref().map(|run| {
+        let thread = thread_id.clone();
+        let run = run.clone();
+        crate::runtime::run_blocking(move || {
+            let started = std::time::Instant::now();
+            review::capture_before(&thread, &run);
+            tracing::debug!(
+                event = "prompt_start_stage",
+                stage = "review_before",
+                thread_id = thread,
+                run_id = run,
+                elapsed_ms = started.elapsed().as_millis() as u64
+            );
+        })
+    });
+    let setup = async {
+        let ensured = ensure_agent_session(
+            &mut command_client,
+            &stored_session_id,
+            &existing_cwd,
+            model_id.as_deref(),
+            thinking_level.as_deref(),
+        )
+        .await?;
+        let session_id = ensured.session_id;
+        let session_was_created = ensured.created;
 
-    // Identity is assigned exactly once. A bound conversation is never
-    // rebound by the prompt path; losing an Agent session is surfaced as an
-    // error above instead of silently replacing durable context. Commit the
-    // first binding before secondary setup, so a permission/config failure can
-    // retry the same session instead of leaking an unbound replacement.
-    if session_was_created {
-        crate::store::bind_thread_session_id(&thread_id, &session_id)?;
-    }
-    super::verify_thread_source_with_client(&mut command_client, &thread_id, &session_id).await?;
-    set_agent_permission_level(&mut command_client, &session_id, "workspace").await?;
-    set_agent_sandbox_policy(&mut command_client, &session_id, &thread_id).await?;
-
-    // Apply the prompt's model / thinking level ONLY when this call created a
-    // fresh session (its generated id differs from the stored one). For an
-    // existing session the agent already holds the authoritative model, and an
-    // explicit user change is pushed separately by `update_thread_model`'s own
-    // `set_model`. Re-applying the caller-supplied value on every prompt let a
-    // cold/expired agent-state cache silently switch an existing thread's model
-    // to the global last-picked one (the composer's fallback value).
-    if session_was_created {
-        if let Some(model_id) = model_id.filter(|value| !value.trim().is_empty()) {
-            command_client
-                .execute_command(set_model_command(model_id, session_id.clone()))
-                .await
-                .map_err(|error| format!("Unable to set Future Agent model: {error}"))?
-                .into_inner()
-                .ok_or_rpc_error("Future Agent rejected the model selection.")?;
+        // Identity is assigned exactly once. A bound conversation is never
+        // rebound by the prompt path; losing an Agent session is surfaced as an
+        // error above instead of silently replacing durable context. Commit the
+        // first binding before secondary setup, so a permission/config failure can
+        // retry the same session instead of leaking an unbound replacement.
+        if session_was_created {
+            crate::store::bind_thread_session_id(&thread_id, &session_id)?;
         }
+        super::verify_thread_source_with_client(&mut command_client, &thread_id, &session_id)
+            .await?;
+        set_agent_permission_level(&mut command_client, &session_id, "workspace").await?;
+        set_agent_sandbox_policy(&mut command_client, &session_id, &thread_id).await?;
 
-        if let Some(thinking_level) = thinking_level.filter(|value| !value.trim().is_empty()) {
-            command_client
-                .execute_command(set_thinking_level_command(
-                    thinking_level,
-                    session_id.clone(),
-                ))
-                .await
-                .map_err(|error| format!("Unable to set Future Agent thinking level: {error}"))?
-                .into_inner()
-                .ok_or_rpc_error("Future Agent rejected the thinking level selection.")?;
+        // new_session already receives model and thinking level atomically. Do
+        // not repeat two RPCs and their durable metadata writes before the prompt.
+        Ok::<_, crate::Error>(session_id)
+    }
+    .await;
+    tracing::debug!(
+        event = "prompt_start_stage",
+        stage = "session_setup",
+        thread_id,
+        run_id = run_id.as_deref().unwrap_or(""),
+        elapsed_ms = setup_started.elapsed().as_millis() as u64,
+        success = setup.is_ok()
+    );
+    if let Some(snapshot) = before_snapshot {
+        if let Err(error) = snapshot.await {
+            tracing::warn!(event = "prompt_review_unavailable", thread_id, %error);
         }
     }
-
-    // §6.1: before snapshot, after session/model setup but right before the
-    // prompt actually reaches the Agent.
-    if let Some(run_id) = run_id.as_deref() {
-        review::capture_before(&thread_id, run_id);
-    }
+    let session_id = setup?;
+    tracing::debug!(
+        event = "prompt_start_stage",
+        stage = "ready_to_send",
+        thread_id,
+        run_id = run_id.as_deref().unwrap_or(""),
+        elapsed_ms = setup_started.elapsed().as_millis() as u64
+    );
 
     // Save the message for auto-naming after the prompt completes.
     let user_message = message.clone();
