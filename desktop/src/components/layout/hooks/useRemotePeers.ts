@@ -4,6 +4,7 @@ import type { RemotePeer, RemotePeerEvent } from "../../../features/remote-peer/
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CatalogVersionGate } from "../../../features/remote-peer/catalogVersion";
+import { mergeRemoteSessionDelta } from "../../../features/remote-peer/mergeConversations";
 import { peerRevoked } from "../../../features/remote-peer/peerStatus";
 import { forgetHostCatalogue, warmHostCatalogue } from "../../../features/remote-peer/remoteHostCatalog";
 import {
@@ -679,8 +680,14 @@ function handleCatalog(
   // rows it does not mention are left exactly as they were, and a row this
   // catalogue has never held is left for the next catalogue read (a placeholder
   // would need a title we do not have).
-  if (domain !== "sessions" && domain !== "sessions_activity" && domain !== "workspaces")
+  if (
+    domain !== "sessions"
+    && domain !== "sessions_activity"
+    && domain !== "sessions_delta"
+    && domain !== "workspaces"
+  ) {
     return;
+  }
   const version = readVersion(obj.version);
 
   // Without an epoch we cannot authenticate the gate yet. Drop the snapshot
@@ -726,6 +733,29 @@ function handleCatalog(
       });
       return changed ? { ...catalog, sessions } : catalog;
     }));
+    return;
+  }
+
+  // A row-level delta: the rows that changed, the ids that left and the
+  // workspace dictionary they name. Applied by `mergeRemoteSessionDelta`, which
+  // is where the one rule that makes this safe lives — a row the packet does not
+  // mention is kept, and only `removed` deletes.
+  if (domain === "sessions_delta") {
+    const delta = {
+      rows: normalizeRemoteSessionRows(obj.rows),
+      removed: Array.isArray(obj.removed)
+        ? obj.removed.filter((id): id is string => typeof id === "string")
+        : [],
+      dictionary: obj.workspaces,
+      full: obj.full === true,
+    };
+    setCatalogs(current =>
+      current.map(catalog =>
+        catalog.desktopId === desktopId
+          ? { ...catalog, sessions: mergeRemoteSessionDelta(catalog.sessions, delta) }
+          : catalog,
+      ),
+    );
     return;
   }
 

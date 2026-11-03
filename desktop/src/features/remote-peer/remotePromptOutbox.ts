@@ -8,6 +8,13 @@ import { continueRemoteRun, getRemotePromptReceipt, promptRemoteConversation } f
  * localStorage keyed by desktop+session so the user can leave and come back.
  * Recovery checks `get_prompt_receipt` first: if the host already accepted the
  * command, the cached ack is returned without re-running it.
+ *
+ * That check is *recovery's* alone. A first delivery mints a fresh command id
+ * (`randomId`), so the host cannot have a receipt for it and asking costs a
+ * whole round trip the reader pays for on every send — the browser→relay→host
+ * leg is exactly what makes a remote send feel slow. The host also dedupes on
+ * the command id itself, so a duplicate arrival is still answered from its
+ * receipt even if this client never asks.
  */
 
 export interface PendingPrompt {
@@ -140,11 +147,20 @@ function setState(desktopId: string, sessionId: string, outbox: PendingOutbox): 
   savePendingOutbox(desktopId, sessionId, outbox);
 }
 
-async function deliverPrompt(desktopId: string, _sessionId: string, pending: PendingPrompt): Promise<PromptResult> {
-  // Check receipt first: the host may have already accepted this command.
-  const receipt = await getRemotePromptReceipt(desktopId, pending.commandId);
-  if (receipt) {
-    return receipt;
+async function deliverPrompt(
+  desktopId: string,
+  _sessionId: string,
+  pending: PendingPrompt,
+  checkReceipt: boolean,
+): Promise<PromptResult> {
+  // Only a re-delivery asks: the host may have accepted this command before the
+  // link dropped, and running it twice would duplicate the message. A first
+  // delivery's command id is minted a moment earlier and cannot have a receipt.
+  if (checkReceipt) {
+    const receipt = await getRemotePromptReceipt(desktopId, pending.commandId);
+    if (receipt) {
+      return receipt;
+    }
   }
   const result = await promptRemoteConversation(
     desktopId,
@@ -158,10 +174,17 @@ async function deliverPrompt(desktopId: string, _sessionId: string, pending: Pen
   return result;
 }
 
-async function deliverContinuation(desktopId: string, _sessionId: string, pending: PendingContinuation): Promise<unknown> {
-  const receipt = await getRemotePromptReceipt(desktopId, pending.commandId);
-  if (receipt) {
-    return receipt;
+async function deliverContinuation(
+  desktopId: string,
+  _sessionId: string,
+  pending: PendingContinuation,
+  checkReceipt: boolean,
+): Promise<unknown> {
+  if (checkReceipt) {
+    const receipt = await getRemotePromptReceipt(desktopId, pending.commandId);
+    if (receipt) {
+      return receipt;
+    }
   }
   return continueRemoteRun(desktopId, pending.sessionId, pending.runId, pending.commandId);
 }
@@ -172,6 +195,11 @@ async function deliverContinuation(desktopId: string, _sessionId: string, pendin
  * If delivery fails with a recoverable error the prompt is left in the outbox
  * and the promise rejects with that error. Non-recoverable errors clear the
  * persisted entry before rejecting.
+ *
+ * This is a *first* delivery: the command id is minted here, so it asks the host
+ * for no receipt (see the module doc). Asking is recovery's job, and one fewer
+ * round trip is one fewer round trip between the reader pressing send and the
+ * message appearing in the conversation.
  */
 export async function sendRemotePrompt(
   desktopId: string,
@@ -200,7 +228,7 @@ export async function sendRemotePrompt(
   setState(desktopId, sessionId, { ...outbox, prompt: pending });
 
   try {
-    const result = await deliverPrompt(desktopId, sessionId, pending);
+    const result = await deliverPrompt(desktopId, sessionId, pending, false);
     const updated = getState(desktopId, sessionId);
     if (updated.prompt?.commandId === commandId) {
       setState(desktopId, sessionId, { ...updated, prompt: null });
@@ -235,7 +263,7 @@ export async function sendRemoteContinuation(
   setState(desktopId, sessionId, { ...outbox, continuation: pending });
 
   try {
-    const result = await deliverContinuation(desktopId, sessionId, pending);
+    const result = await deliverContinuation(desktopId, sessionId, pending, false);
     const updated = getState(desktopId, sessionId);
     if (updated.continuation?.commandId === commandId) {
       setState(desktopId, sessionId, { ...updated, continuation: null });
@@ -260,7 +288,7 @@ export async function recoverRemoteOutbox(desktopId: string, sessionId: string):
 
   if (outbox.prompt) {
     try {
-      await deliverPrompt(desktopId, sessionId, outbox.prompt);
+      await deliverPrompt(desktopId, sessionId, outbox.prompt, true);
       const updated = getState(desktopId, sessionId);
       setState(desktopId, sessionId, { ...updated, prompt: null });
     }
@@ -271,7 +299,7 @@ export async function recoverRemoteOutbox(desktopId: string, sessionId: string):
 
   if (outbox.continuation) {
     try {
-      await deliverContinuation(desktopId, sessionId, outbox.continuation);
+      await deliverContinuation(desktopId, sessionId, outbox.continuation, true);
       const updated = getState(desktopId, sessionId);
       setState(desktopId, sessionId, { ...updated, continuation: null });
     }

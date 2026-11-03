@@ -15,7 +15,7 @@ use futures::future::BoxFuture;
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, Ordering},
         Arc, Mutex,
     },
     time::Duration,
@@ -146,6 +146,15 @@ macro_rules! define_supervisor {
             $visibility credential_refreshing: AtomicBool,
             $visibility runtime_reconnect_attempts: AtomicU8,
             $visibility runtime_failure_window_started: AtomicU64,
+            // The hour bucket (unix milliseconds / 3 600 000) the counters below
+            // belong to, and how many rebuild attempts it has already seen.
+            //
+            // The cooldown bounds the *cadence*; this bounds the *rate*. Without
+            // it a present-device ceiling of one attempt a minute would still be
+            // 1 440 tries a day against a relay that keeps refusing, and the
+            // absent tier would drift past the number this policy promises.
+            $visibility retry_hour: AtomicU64,
+            $visibility retry_hour_attempts: AtomicU16,
             $visibility web_reconnect_running: AtomicBool,
             $visibility web_reconnect_attempts: AtomicU8,
             $visibility web_owner: Mutex<Option<String>>,
@@ -202,6 +211,8 @@ impl Supervisor {
             credential_refreshing: AtomicBool::new(false),
             runtime_reconnect_attempts: AtomicU8::new(0),
             runtime_failure_window_started: AtomicU64::new(0),
+            retry_hour: AtomicU64::new(0),
+            retry_hour_attempts: AtomicU16::new(0),
             web_reconnect_running: AtomicBool::new(false),
             web_reconnect_attempts: AtomicU8::new(0),
             web_owner: Mutex::new(None),
@@ -311,6 +322,36 @@ impl Supervisor {
         self.shared_or_insert(pair_id).catalog_activity
     }
 
+    /// Record which lane this connection is declared on.
+    ///
+    /// The declaration decides it, not the first packet: a client that says it
+    /// applies deltas is on that lane from then on, and status should say so even
+    /// before anything has changed.
+    pub fn set_catalogue_lane(&self, pair_id: &str, lane: u8) {
+        self.shared_or_insert(pair_id)
+            .catalogue_lane
+            .store(lane, Ordering::Release);
+    }
+
+    /// Record one published catalogue packet and its sealed size.
+    pub fn note_catalogue_packet(&self, pair_id: &str, bytes: usize) {
+        let shared = self.shared_or_insert(pair_id);
+        shared.catalogue_packets.fetch_add(1, Ordering::AcqRel);
+        shared
+            .catalogue_bytes
+            .fetch_add(bytes as u64, Ordering::AcqRel);
+    }
+
+    /// What this connection has been sent on the catalogue lane, for status.
+    pub fn catalogue_traffic(&self, pair_id: &str) -> (u8, u64, u64) {
+        let shared = self.shared_or_insert(pair_id);
+        (
+            shared.catalogue_lane.load(Ordering::Acquire),
+            shared.catalogue_packets.load(Ordering::Acquire),
+            shared.catalogue_bytes.load(Ordering::Acquire),
+        )
+    }
+
     /// Whether the connection on `pair_id` declared the lean feed.
     /// Whether the client on `pair_id` applies row-level catalogue deltas.
     ///
@@ -349,6 +390,9 @@ impl Supervisor {
                 coalesce_events: Arc::new(AtomicBool::new(false)),
                 catalog_activity: Arc::new(AtomicBool::new(false)),
                 catalog_delta: Arc::new(AtomicBool::new(false)),
+                catalogue_lane: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+                catalogue_packets: Arc::new(AtomicU64::new(0)),
+                catalogue_bytes: Arc::new(AtomicU64::new(0)),
                 lean_events: Arc::new(AtomicBool::new(false)),
                 segmented_content: Arc::new(AtomicBool::new(false)),
                 content_refusals: Default::default(),
@@ -661,6 +705,12 @@ pub struct BridgeRuntimeShared {
     /// Whether this client keeps the rows a delta packet does not mention.
     /// The lane's whole safety is this declaration: without it the publisher
     /// sends whole snapshots, exactly as it did before the capability existed.
+    /// Catalogue packets and sealed bytes this connection has been sent,
+    /// and which lane they went out on. Read by `future remote status`, so
+    /// "did the delta capability actually take" has an answer.
+    pub catalogue_lane: Arc<std::sync::atomic::AtomicU8>,
+    pub catalogue_packets: Arc<AtomicU64>,
+    pub catalogue_bytes: Arc<AtomicU64>,
     pub catalog_delta: Arc<AtomicBool>,
     /// Whether this connection declared the lean feed. Per pairing like the
     /// others: trimming one device's history to fields another device asked to
@@ -766,6 +816,9 @@ impl Supervisor {
             coalesce_events: Arc::new(AtomicBool::new(false)),
             catalog_activity: Arc::new(AtomicBool::new(false)),
             catalog_delta: Arc::new(AtomicBool::new(false)),
+            catalogue_lane: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            catalogue_packets: Arc::new(AtomicU64::new(0)),
+            catalogue_bytes: Arc::new(AtomicU64::new(0)),
             lean_events: Arc::new(AtomicBool::new(false)),
             segmented_content: Arc::new(AtomicBool::new(false)),
             content_refusals: Default::default(),
@@ -806,6 +859,22 @@ pub const MAX_WEB_RECONNECT_ATTEMPTS: u8 = 3;
 pub const RUNTIME_COOLDOWN_BASE: Duration = Duration::from_secs(30);
 pub const RUNTIME_COOLDOWN_MAX: Duration = Duration::from_secs(600);
 
+/// The ceiling while a device is present: someone is holding the phone, and ten
+/// minutes of silence is indistinguishable from a broken product. One minute is
+/// still long enough that a relay refusing a dead grant is not hammered.
+pub const RUNTIME_COOLDOWN_PRESENT_MAX: Duration = Duration::from_secs(60);
+
+/// Attempts allowed per hour in each tier: the ceiling bounds the cadence, this
+/// bounds the rate. 60/h is what a one-minute ceiling means anyway, and it is
+/// the number the policy promises; the absent tier is a tenth of that. It runs
+/// one minute over because the bucket is latched on the attempt after the hour
+/// rolls, never before.
+pub const RUNTIME_HOURLY_ATTEMPTS_PRESENT: u16 = 60;
+pub const RUNTIME_HOURLY_ATTEMPTS_ABSENT: u16 = 12;
+/// One hour, as milliseconds — the bucket [`Supervisor::retry_hour_attempts`]
+/// counts in.
+pub const RUNTIME_HOUR_MS: u64 = 60 * 60 * 1_000;
+
 /// What the generation watcher should do about a generation that is still
 /// unhealthy.
 #[derive(Debug, PartialEq, Eq)]
@@ -823,9 +892,33 @@ pub enum ReconnectStep {
 /// budget answer [`RUNTIME_COOLDOWN_BASE`], and the doubling saturates long
 /// before `u8` runs out.
 pub fn cooldown_delay(attempts: u8) -> Duration {
+    cooldown_delay_for(attempts, false)
+}
+
+/// [`cooldown_delay`], tiered by whether a device is present.
+///
+/// Present tier doubles 30 s up to a **one-minute** ceiling: a reader who is
+/// holding the phone gets another attempt every minute instead of every ten.
+/// Absent tier keeps the ten-minute ceiling, because nothing is waiting on it and
+/// a credential the relay keeps refusing should not be re-presented in a tight
+/// loop.
+pub fn cooldown_delay_for(attempts: u8, present: bool) -> Duration {
     let over = attempts.saturating_sub(MAX_RUNTIME_RECONNECT_ATTEMPTS);
     let factor = 1u32 << over.min(5);
-    (RUNTIME_COOLDOWN_BASE * factor).min(RUNTIME_COOLDOWN_MAX)
+    let ceiling = if present {
+        RUNTIME_COOLDOWN_PRESENT_MAX
+    } else {
+        RUNTIME_COOLDOWN_MAX
+    };
+    (RUNTIME_COOLDOWN_BASE * factor).min(ceiling)
+}
+
+/// ±20 % on a wait, so devices that lost the same relay do not come back in
+/// lockstep. The supervisor's cooldown had no jitter at all while the NATS layer
+/// always had it.
+pub fn with_jitter(delay: Duration, random: f64) -> Duration {
+    let factor = 0.8 + random.clamp(0.0, 1.0) * 0.4;
+    Duration::from_millis((delay.as_millis() as f64 * factor) as u64)
 }
 
 /// Attempt now, or wait out a cooldown first.
@@ -835,12 +928,38 @@ pub fn cooldown_delay(attempts: u8) -> Duration {
 /// forgiven — `record_runtime_failure` starts a fresh window — so the burst is
 /// available again.
 pub fn reconnect_step(attempts: u8, window_started: u64, now: u64) -> ReconnectStep {
+    reconnect_step_for(attempts, window_started, now, false)
+}
+
+/// [`reconnect_step`], tiered by presence.
+pub fn reconnect_step_for(
+    attempts: u8,
+    window_started: u64,
+    now: u64,
+    present: bool,
+) -> ReconnectStep {
     if attempts >= MAX_RUNTIME_RECONNECT_ATTEMPTS
         && now.saturating_sub(window_started) <= RUNTIME_FAILURE_WINDOW_MS
     {
-        return ReconnectStep::Wait(cooldown_delay(attempts));
+        return ReconnectStep::Wait(cooldown_delay_for(attempts, present));
     }
     ReconnectStep::Attempt
+}
+
+/// Whether this hour bucket has spent its allowance.
+pub fn hourly_attempts_reached(attempts_this_hour: u16, present: bool) -> bool {
+    let cap = if present {
+        RUNTIME_HOURLY_ATTEMPTS_PRESENT
+    } else {
+        RUNTIME_HOURLY_ATTEMPTS_ABSENT
+    };
+    attempts_this_hour >= cap
+}
+
+/// Wait until the next hour bucket starts, so a spent allowance resumes then
+/// instead of never.
+pub fn wait_until_next_hour(now: u64) -> Duration {
+    Duration::from_millis(RUNTIME_HOUR_MS - (now % RUNTIME_HOUR_MS))
 }
 
 /// Single-slot view of the runtime map, for tests.

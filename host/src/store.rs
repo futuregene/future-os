@@ -85,6 +85,8 @@ pub use runs::{
 #[cfg(any(test, feature = "test-support"))]
 pub use runs::{append_run_event, flush_run_event_log_for_test, reset_run_event_writer_for_test};
 pub use skill_reco::{record_skill_reco, skill_reco_today, SkillRecoToday};
+/// Run-status vocabulary: terminal states, so callers stop re-listing them.
+pub use status::is_terminal_run_status;
 pub use thread_sources::{record_thread_source, thread_source};
 pub use threads::{
     archive_thread, bind_thread_session_id, create_thread, delete_thread, delete_thread_tree,
@@ -97,7 +99,7 @@ pub use threads::{
     update_thread_thinking_level, ThreadRecord,
 };
 pub use util::strip_verbatim_prefix;
-pub use util::{create_id, create_run_id, now_millis, take_catalog_dirty};
+pub use util::{catalog_dirty_peek, create_id, create_run_id, now_millis, take_catalog_dirty};
 pub use workspace_files::{search_workspace_files, WorkspaceFileResult, WorkspaceFileSearchInput};
 pub use workspaces::{
     create_workspace, delete_workspace, file_session_workspace, get_or_create_chat_workspace,

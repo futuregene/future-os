@@ -156,3 +156,83 @@ Two layers answer it, and both are needed:
 Rule for new code in this tree: a diagnostic emitted by a long-lived task goes
 through one of those three, and `grep -rn 'eprintln!'` finding your line means it
 does not.
+
+## Correction (2026-11-02): a console is not a writable stream
+
+The redirect described above was gated on `GetConsoleWindow()`, and that gate was
+wrong: it never fired in production. Evidence from one Desktop process
+(`app/logs/desktop.prev.log`, build `bbfee50e`):
+
+```
+06:22:07.572Z host starting ... pid=30816 mode=auto          # launched by a scheduled task
+06:22:08.780Z WARN terminal stream is unusable; ... error=拒绝访问 (os error 5)
+06:22:08.936Z Agent host finished ... phase=Failed("Embedded Agent worker panicked")
+```
+
+- The launch **had** a console window — a hidden one, created by the task's
+  PowerShell — while its stderr answered `os error 5` on every write. "Console
+  present" and "stream writable" are different questions, so the redirect was
+  skipped exactly where it was needed.
+- `desktop.stdio.log` did not exist for any launch, which is the plainest proof
+  the branch never ran: the redirect creates that file unconditionally.
+- What followed: a 1.4-second panic, then the watchdog restarted the Agent every
+  ten minutes for **thirteen hours** (84 recoveries, 06:22:26Z to 19:28:38Z),
+  reaching no user. Nothing in the UI said the Agent was dead.
+
+Three changes answer it, and the first is the one that makes the other two
+bearable:
+
+1. **A failed write must never end the task that wrote it.** `console::write_err`
+   / `write_out` degrade: the text goes to the host log, one line records that
+   output is unusable, and a write that fails there too is dropped. The Agent's
+   own diagnostics no longer use `eprintln!`/`println!` at all (16 production
+   sites moved to the tolerant macros), so the class of panic is gone rather than
+   covered.
+2. **The redirect asks whether a stream has a destination, not whether a console
+   exists.** `redirect_windowless_standard_streams` moves stderr/stdout to
+   `app/logs/desktop.stdio.log` for the streams that have nowhere else to go, and
+   leaves a stream its caller captured exactly where the caller put it (a `NUL`
+   device and a closed pipe answer the same question the same way; a captured pipe
+   is somebody's reader, and moving it would break `futureos | tee`). The Desktop
+   goes through it at process preparation, whatever console the launch inherited.
+3. **Recovery has a terminal state.** `future_rpc::supervision::RestartBudget`
+   allows three launches that never reach `Attached::Stable`; the third spends the
+   budget for good and no cooldown, late wake-up or `reset()` re-arms it. The
+   watchdog then stops, reports one line
+   (`Agent recovery gave up after N/3 attempts: <cause>; automatic retries stopped,
+   restart FutureOS`), sets `phase=restart_required` with the cause on the status
+   page, and shows **one** dialog per episode whose button restarts the app. A
+   headless host has no dialog: it logs and reports the status.
+
+Acceptance for this work is not "it starts from a window". It is: launched **by a
+scheduled task with a hidden window**, the process must create
+`app/logs/desktop.stdio.log`, keep `crash.log`'s entry count unchanged, and say so
+in the `host starting` line. The unit test that covers it spawns the child **with**
+a console on purpose (`console::tests::a_captured_stream_is_left_where_its_caller_put_it`);
+the earlier one used `CREATE_NO_WINDOW`, which is the branch that was already
+covered and the one production never used.
+
+### Temporary convention until this build is installed
+
+On a machine still running the old build, the only stable way to start the Desktop
+is **from a terminal that stays open** (measured: `WindowsTerminal` → `powershell` →
+`futureos.exe`, alive since 19:21:44 while four launches before it died within a
+second). Closing that terminal makes stderr unwritable again, which re-enters the
+silent restart loop. This is a workaround, not a fix: install the build that
+contains the changes above and the launch path stops mattering.
+
+### Pitfall: read `origin/dev-huichen` before implementing, not after
+
+This work was written against a base that had already moved. By the time it was
+ready, another session had replaced the redirect gate with the destination-based
+one above — which is strictly better, because it leaves a captured stream where
+its caller put it — and had migrated the plain `eprintln!` sites itself. The
+rebase then conflicted in exactly the files that mattered, and reconciling cost
+more than reading `origin` would have: one `git show origin/dev-huichen:<file>`
+before starting would have shown that the gate had changed, and the change would
+have been written once instead of twice.
+
+The rule this leaves: before touching a file this repository has recently been
+busy with, read the remote copy first (`git show origin/<branch>:<path>`), not the
+one in the working tree, and not after the code is written.
+

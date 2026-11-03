@@ -1575,3 +1575,19 @@ pub fn now_epoch() -> u64 {
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }
+
+/// Epoch **milliseconds** — the precision a deferral deadline needs
+/// (`todo update --resume-when 1` is one second, not "one second rounded down
+/// to the start of the current second").
+pub fn now_epoch_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Unix millis → `SystemTime` (the inverse of [`now_epoch_millis`], used by
+/// the replay fold so a stored deadline comes back as the exact instant).
+pub fn epoch_millis_as_time(ms: u64) -> SystemTime {
+    SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(ms)
+}

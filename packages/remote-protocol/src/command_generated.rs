@@ -15,6 +15,8 @@ pub struct IncomingCmd {
     pub cmd_type: String,
     pub session_id: String,
     pub message: String,
+    /// prompt: what a send means while this session already has a run in flight (enqueue_if_busy | enqueue_coalescing | supersede_session). Absent keeps the refusal legacy clients expect.
+    pub busy_policy: String,
     /// approval_decision
     pub entry_id: String,
     /// fork_session: the persisted user entry whose settled turn the phone forks at. The command's own `id` is the fork request identity (idempotent child).
@@ -114,6 +116,7 @@ impl Default for IncomingCmd {
             cmd_type: String::new(),
             session_id: String::new(),
             message: String::new(),
+            busy_policy: String::new(),
             entry_id: String::new(),
             source_entry_id: String::new(),
             mode: String::new(),

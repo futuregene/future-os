@@ -93,19 +93,22 @@ pub fn chunk(text: &str, limit: usize, unit: LengthUnit) -> Vec<String> {
     let mut open_fence: Option<String> = None;
 
     for line in split_lines(text) {
-        // A chunk that ends inside a block has to pay for its closing fence, so
-        // the usable width is the limit minus that overhead. Reserving it here
-        // is what makes the fence guarantee hold instead of degrading to "the
-        // fence only fits if we got lucky".
+        // A chunk that ends inside a block has to pay for its closing fence, and
+        // the chunk after it starts with the marker that reopens the block. Both
+        // come out of the limit: reserving only the closing fence let
+        // `close_chunk` reopen the block and then have a full-width piece
+        // appended on top of that marker, so the chunk came out `limit + 4`
+        // units long and the platform rejected it (telegram 4096 → 4100).
         let overhead = open_fence
             .as_deref()
             .map(|marker| unit.len(marker) + 1)
             .unwrap_or(0);
-        let budget = limit.saturating_sub(overhead).max(1);
+        let budget = limit.saturating_sub(overhead * 2).max(1);
 
-        // A line wider than the whole limit is pre-cut (at a character
-        // boundary); every piece but the last then fills a chunk exactly.
-        let pieces = cut_line(line, limit, unit);
+        // A line wider than the usable budget is pre-cut (at a character
+        // boundary); every piece but the last then fills a chunk exactly, and
+        // the reopened marker plus that piece still fit in the limit.
+        let pieces = cut_line(line, budget, unit);
         let last = pieces.len().saturating_sub(1);
         for (index, piece) in pieces.iter().enumerate() {
             if !current.is_empty() && unit.len(&current) + unit.len(piece) > budget {
@@ -261,6 +264,59 @@ mod tests {
         let lengths = len_of(&chunks, LengthUnit::Chars);
         assert!(chunks.len() > 1);
         assert!(lengths.iter().all(|len| *len <= 80), "{lengths:?}");
+    }
+
+    #[test]
+    fn a_fenced_long_line_still_respects_the_limit() {
+        // h4-C1: a chunk ended inside a fence is closed and the fence reopened
+        // into the next chunk, and that reopened marker was pushed into
+        // `current` *after* the budget check — so the piece that followed (up
+        // to `limit` units, from `cut_line`) landed on top of it and the chunk
+        // came out `limit + 4` units long. Telegram (4096) rejected 4100, which
+        // silently truncated the answer.
+        //
+        // The limit has to hold for every returned chunk, fence marker
+        // included, at an ordinary platform width and at a small one — with the
+        // no-fence control staying green so the fix cannot be "reserve
+        // everything".
+        let no_fence = format!("{}\n", "x".repeat(80));
+        let controls = len_of(&chunk(&no_fence, 40, LengthUnit::Chars), LengthUnit::Chars);
+        assert!(controls.iter().all(|len| *len <= 40), "{controls:?}");
+
+        for limit in [40usize, 4096] {
+            let long = "x".repeat(limit * 2);
+            let cases = [
+                format!("```\n{long}\nafter\n```\n"),
+                format!("```json\n{{\"data\":\"{long}\"}}\n```\n"),
+                format!("prose first\n```\n{long}\n```\ntrailing prose\n"),
+            ];
+            for text in cases {
+                let chunks = chunk(&text, limit, LengthUnit::Chars);
+                let lengths = len_of(&chunks, LengthUnit::Chars);
+                assert!(
+                    lengths.iter().all(|len| *len <= limit),
+                    "limit={limit}: {lengths:?}"
+                );
+                for chunk in &chunks {
+                    assert_eq!(
+                        chunk.matches("```").count() % 2,
+                        0,
+                        "unbalanced fence in {chunk:?}"
+                    );
+                }
+            }
+        }
+
+        // The narrow case from the report: a line only just under the limit,
+        // inside a fence, surrounded by short lines.
+        let text = format!(
+            "```\n{}\n{}\n{}\n```\n",
+            "s".repeat(8),
+            "L".repeat(38),
+            "t".repeat(8)
+        );
+        let lengths = len_of(&chunk(&text, 40, LengthUnit::Chars), LengthUnit::Chars);
+        assert!(lengths.iter().all(|len| *len <= 40), "{lengths:?}");
     }
 
     #[test]

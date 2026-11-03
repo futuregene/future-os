@@ -1521,6 +1521,43 @@ mod tests {
         assert!(names.contains(&"manual-future"), "{names:?}");
     }
 
+    /// The schedule a run writes back across a spring-forward gap keeps the task
+    /// in the tick's query instead of taking it off the schedule (h2-C1).
+    ///
+    /// `host/src/tasks.rs::claim` recomputes `next_due_at` exactly this way after
+    /// a scheduled run; `None` here is not "nothing today" but the store's
+    /// "no longer scheduled", which `SQL_DUE_TASKS` reads as never due again.
+    #[test]
+    fn a_daily_zone_task_stays_due_across_the_spring_forward_gap() {
+        let (_dir, s) = store();
+        let mut t = task("dst-daily");
+        t.timezone = Some("America/New_York".into());
+        t.trigger_json = serde_json::json!({"mode":"daily","time":"02:30"});
+        // 2026-03-07 02:30 EST — the last run before the clocks jump.
+        let ran_at: i64 = 1_772_868_600_000;
+        t.next_due_at = Some(ran_at);
+        s.insert_task(&t).unwrap();
+        assert_eq!(
+            s.list_due_tasks(ran_at).unwrap().len(),
+            1,
+            "the 03-07 slot is due"
+        );
+
+        // What the claim writes back after that run.
+        t.next_due_at = crate::kernel::next_due(&t, ran_at);
+        s.update_task(&t).unwrap();
+        assert_eq!(
+            t.next_due_at,
+            Some(1_773_037_800_000),
+            "2026-03-09 02:30 EDT, the next real 02:30"
+        );
+        assert_eq!(
+            s.list_due_tasks(1_773_037_800_000).unwrap().len(),
+            1,
+            "the task is still scheduled the day after the gap"
+        );
+    }
+
     // ─── runs ─────────────────────────────────────────────────────────────
 
     fn run_row(task_id: &str, status: RunStatus, started: i64) -> TaskRun {

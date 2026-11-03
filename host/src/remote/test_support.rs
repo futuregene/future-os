@@ -1227,8 +1227,16 @@ pub struct Published {
 }
 
 impl Published {
+    /// The document a subscriber would decode from this push.
+    ///
+    /// A catalogue packet arrives compressed once it is worth compressing (256
+    /// B and up), and every real reader inflates by sniffing the magic — so this
+    /// fixture does too, rather than asserting about bytes no client ever parses
+    /// in the gzipped form.
     pub fn json(&self) -> Value {
-        serde_json::from_slice(&self.payload).expect("published payload is JSON")
+        let plain = future_remote_protocol::json::plain_json_bytes(&self.payload)
+            .expect("published payload inflates");
+        serde_json::from_slice(&plain).expect("published payload is JSON")
     }
 }
 

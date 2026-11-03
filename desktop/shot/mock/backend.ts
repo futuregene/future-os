@@ -157,6 +157,105 @@ const threadList = threads.map(thread => ({ ...thread }));
 const workspaceList = workspaces.map(workspace => ({ ...workspace }));
 /** Staged session-history pages, read back in 64 KiB chunks (see `begin_session_history_transfer`). */
 const historyTransfers = new Map<string, Uint8Array>();
+
+/**
+ * The run a capture starts from the local composer: the journal it writes, and
+ * the pushes that tell the window to read it.
+ *
+ * Every other local send in this harness ended the moment `agent_prompt`
+ * answered, so there was no fixture for "a reply is being written" — and the
+ * states a reader is in *while* one is (the composer's send-while-running
+ * control, the send queue it fills) only exist during such a run. This one writes
+ * frames on a timer and resolves when the last has landed, which is exactly what
+ * the backend's stream lane does for a paired host (see `remoteStream.ts`).
+ */
+interface ShotRunEvent {
+  id: string;
+  runId: string;
+  eventType: string;
+  payload: string;
+  sequence: number;
+  createdAt: number;
+}
+
+const shotRunEvents = new Map<string, ShotRunEvent[]>();
+let shotRunSeq = 0;
+let shotEventSeq = 0;
+let shotRuntimeRevision = 0;
+
+/** What this fixture's reply says, split into the frames a run writes. */
+function shotRunFrames(prompt: string): Array<[string, Record<string, unknown>]> {
+  return [
+    ["agent_start", { started_at_ms: Date.now() }],
+    ["thinking_start", {}],
+    ["thinking_delta", { text: "先看这一轮要回答什么：" }],
+    ["thinking_delta", { text: "把读者的问题读一遍，再决定动不动文件。" }],
+    ["thinking_end", {}],
+    ["text_chunk", { text: "好，我先把" }],
+    ["text_chunk", { text: `「${prompt.slice(0, 16)}」` }],
+    ["text_chunk", { text: "拆成两步：" }],
+    ["text_chunk", { text: "先核对一遍现有结果，" }],
+    ["text_chunk", { text: "再按你说的改。" }],
+  ];
+}
+
+function appendShotRunEvent(runId: string, eventType: string, data: Record<string, unknown>): void {
+  const list = shotRunEvents.get(runId) ?? [];
+  list.push({
+    id: `shot_event_${++shotEventSeq}`,
+    runId,
+    eventType,
+    payload: JSON.stringify(data),
+    sequence: list.length,
+    createdAt: Date.now(),
+  });
+  shotRunEvents.set(runId, list);
+}
+
+function publishShotRun(threadId: string, runId: string, status: string, resetProjection = false): void {
+  void emit("thread-runtime-updated", {
+    updates: [{ threadId, runId, revision: ++shotRuntimeRevision, status, resetProjection }],
+  });
+}
+
+/**
+ * Answer a local prompt as a streamed run: frames on a timer, then the reply.
+ *
+ * A stop ends it where it stands — the run's row is what says so (`abort_run`
+ * marks it cancelled), so each tick checks it before writing again and hands back
+ * the text produced so far. That is what the backend does for a real abort, and
+ * it is what makes the app paint a stopped reply rather than a finished one.
+ */
+async function streamShotRun(args: any): Promise<Record<string, unknown>> {
+  const request = args?.request ?? {};
+  const runId = String(request.runId ?? "");
+  const threadId = String(request.threadId ?? "");
+  const sessionId = String(request.sessionId ?? `sess_shot_${Date.now()}`);
+  if (!runId || !threadId)
+    return { content: "", complete: true, sessionId };
+
+  const cancelled = () =>
+    String((runs.find(candidate => candidate.id === runId) as { status?: string } | undefined)?.status ?? "") === "cancelled";
+  let written = "";
+  const frames = shotRunFrames(String(request.message ?? ""));
+  for (const [eventType, data] of frames) {
+    await new Promise(resolve => setTimeout(resolve, 380));
+    if (cancelled())
+      break;
+    appendShotRunEvent(runId, eventType, data);
+    if (eventType === "text_chunk")
+      written += String(data.text ?? "");
+    publishShotRun(threadId, runId, "running");
+  }
+  if (cancelled()) {
+    publishShotRun(threadId, runId, "cancelled");
+    return { content: written, complete: false, sessionId };
+  }
+  await new Promise(resolve => setTimeout(resolve, 380));
+  publishShotRun(threadId, runId, "running");
+  appendShotRunEvent(runId, "agent_end", {});
+  return { content: written, complete: true, sessionId };
+}
 let historyTransferSeq = 0;
 /** The chunk size `historyTransfer.ts` insists on. */
 const HISTORY_CHUNK_BYTES = 64 * 1024;
@@ -568,19 +667,65 @@ const handlers: Record<string, (args: any) => unknown> = {
         return run ? { threadId, runId: run.id, status: run.status, endedAt: run.endedAt ?? null } : null;
       })
       .filter(Boolean),
-  create_run: args => ({
-    id: `run_${Date.now()}`,
-    threadId: args?.input?.threadId,
-    status: "running",
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  }),
-  update_run_status: () => null,
-  abort_run: () => null,
+  create_run: (args) => {
+    const run = {
+      id: `run_shot_${++shotRunSeq}`,
+      threadId: String(args?.input?.threadId ?? ""),
+      triggerMessageId: args?.input?.triggerMessageId ?? null,
+      status: "running",
+      modelProvider: args?.input?.modelProvider ?? "future",
+      modelId: args?.input?.modelId ?? "deepseek-v4-pro",
+      startedAt: Date.now(),
+      endedAt: null,
+      errorMessage: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    runs.unshift(run as never);
+    shotRunEvents.set(run.id, []);
+    publishShotRun(run.threadId, run.id, "running", true);
+    return run;
+  },
+  update_run_status: (args) => {
+    const run = runs.find(candidate => candidate.id === args?.input?.runId);
+    if (!run)
+      return null;
+    const status = String(args?.input?.status ?? run.status);
+    Object.assign(run as unknown as Record<string, unknown>, {
+      status,
+      errorMessage: args?.input?.errorMessage ?? null,
+      endedAt: status === "running" ? (run.endedAt ?? null) : Date.now(),
+      updatedAt: Date.now(),
+    });
+    publishShotRun(run.threadId, run.id, status);
+    return run;
+  },
+  /**
+   * A stop the backend honours on its own clock.
+   *
+   * The row turns `cancelled` a moment later, not inside the call: a real abort
+   * has to reach the running turn, be acked and settle the row, and the state a
+   * reader is in during that gap — reply still on screen, queue still waiting — is
+   * exactly what a capture of "interrupting" has to show.
+   */
+  abort_run: (args) => {
+    const run = runs.find(candidate => candidate.id === args?.runId);
+    if (!run)
+      return null;
+    setTimeout(() => {
+      Object.assign(run as unknown as Record<string, unknown>, { status: "cancelled", endedAt: Date.now(), updatedAt: Date.now() });
+      publishShotRun(run.threadId, run.id, "cancelled");
+    }, 900);
+    return run;
+  },
   archive_finished_runs: () => 2,
-  list_run_events: () => [],
-  list_run_events_since: () => [],
-  list_run_events_bulk: (args: any) => (args?.runIds ?? []).map((id: string) => [id, []]),
+  list_run_events: (args: any) => shotRunEvents.get(String(args?.runId ?? "")) ?? [],
+  list_run_events_since: (args: any) => {
+    const events = shotRunEvents.get(String(args?.runId ?? "")) ?? [];
+    const since = Number(args?.sinceSequence ?? -1);
+    return since < 0 ? events : events.filter(event => event.sequence > since);
+  },
+  list_run_events_bulk: (args: any) => (args?.runIds ?? []).map((id: string) => [id, shotRunEvents.get(id) ?? []]),
   list_tool_calls: args => toolCalls.filter(call => call.runId === args?.runId),
   list_tool_calls_bulk: (args: any) =>
     (args?.runIds ?? []).map((id: string) => [id, new URLSearchParams(window.location.search).has("fusion")
@@ -748,6 +893,15 @@ const handlers: Record<string, (args: any) => unknown> = {
 
   // ── Agent: models, providers, account ──────────────────────────────────
   list_agent_models: () => settingsModels(),
+  /**
+   * A local prompt, answered as a streamed run (see `streamShotRun`).
+   *
+   * The composer's send-while-running control and the send queue it fills exist
+   * only while this is in flight, so a capture of either needs a reply that
+   * takes seconds and writes itself out — the same lane a paired host's stream
+   * feeds (`remoteStream.ts`), on this machine's own conversation.
+   */
+  agent_prompt: async (args: any) => streamShotRun(args),
   sync_future_models: () => ({ synced: true, modelCount: models.length, revision: 42 }),
   list_agent_providers: () => providersView,
   upsert_custom_provider: () => providersView,

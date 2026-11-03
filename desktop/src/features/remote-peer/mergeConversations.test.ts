@@ -2,6 +2,7 @@ import type {
   DeviceFilter,
   LocalThreadLike,
   RemoteCatalog,
+  RemoteSessionRow,
   RemoteWorkspaceRow,
 } from "./mergeConversations";
 import { describe, expect, it } from "vitest";
@@ -11,6 +12,7 @@ import {
   groupMergedRows,
   localTimestamp,
   mergeConversations,
+  mergeRemoteSessionDelta,
   rowKey,
 } from "./mergeConversations";
 
@@ -784,5 +786,97 @@ describe("compareSource", () => {
     );
     expect(merged.map(row => row.desktopId)).toEqual([null, "desktop_a"]);
     expect(compareSource(merged[0]!.desktopId, merged[1]!.desktopId)).toBeLessThan(0);
+  });
+});
+
+describe("mergeRemoteSessionDelta", () => {
+  const row = (sessionId: string, extra: Partial<RemoteSessionRow> = {}): RemoteSessionRow => ({
+    sessionId,
+    title: `Title ${sessionId}`,
+    streaming: false,
+    lastMessageAt: 100,
+    ...extra,
+  });
+
+  it("keeps rows a packet does not mention — absence is not deletion", () => {
+    const merged = mergeRemoteSessionDelta([row("a", { lastMessageAt: 300 }), row("b")], {
+      rows: [row("a", { title: "renamed", lastMessageAt: 300 })],
+      removed: [],
+      full: false,
+    });
+    expect(merged.map(item => item.sessionId)).toEqual(["a", "b"]);
+    expect(merged[0]?.title).toBe("renamed");
+  });
+
+  it("replaces everything on a full packet and only deletes what `removed` names", () => {
+    const replaced = mergeRemoteSessionDelta([row("gone")], {
+      rows: [row("kept"), row("new")],
+      removed: [],
+      full: true,
+    });
+    expect(replaced.map(item => item.sessionId)).toEqual(["kept", "new"]);
+
+    const deleted = mergeRemoteSessionDelta(replaced, {
+      rows: [],
+      removed: ["kept"],
+      full: false,
+    });
+    expect(deleted.map(item => item.sessionId)).toEqual(["new"]);
+  });
+
+  it("ranks pinned rows first, then by activity, then by start time", () => {
+    const merged = mergeRemoteSessionDelta([], {
+      rows: [
+        row("old-pinned", { pinned: true, lastMessageAt: 10 }),
+        row("recent", { lastMessageAt: 9_000 }),
+        row("newer", { lastMessageAt: 9_500 }),
+        row("silent", { lastMessageAt: null, createdAt: 5_000 }),
+      ],
+      removed: [],
+      full: true,
+    });
+    expect(merged.map(item => item.sessionId)).toEqual([
+      "old-pinned",
+      "newer",
+      "recent",
+      "silent",
+    ]);
+  });
+
+  it("keeps the workspace a row already knew when the packet does not describe it", () => {
+    // A streamed row changes every second and its packet carries no dictionary;
+    // dropping the name the row had made the merged list draw its generic
+    // heading until the next dictionary-bearing packet brought it back.
+    const current = [
+      row("a", {
+        workspaceId: "w1",
+        workspaceName: "家里",
+        workspacePinned: true,
+        workspaceOrderedAt: 42,
+        lastMessageAt: 100,
+      }),
+    ];
+    const merged = mergeRemoteSessionDelta(current, {
+      rows: [row("a", { workspaceId: "w1", lastMessageAt: 999 })],
+      removed: [],
+      full: false,
+    });
+    expect(merged[0]?.lastMessageAt).toBe(999);
+    expect(merged[0]?.workspaceName).toBe("家里");
+    expect(merged[0]?.workspacePinned).toBe(true);
+    expect(merged[0]?.workspaceOrderedAt).toBe(42);
+  });
+
+  it("joins the workspace dictionary onto every held row when it moves", () => {
+    const held = [row("a", { workspaceId: "w1", workspaceName: "旧名字" })];
+    const merged = mergeRemoteSessionDelta(held, {
+      rows: [],
+      removed: [],
+      full: false,
+      dictionary: [{ id: "w1", name: "新名字", pinned: true, orderedAt: 42 }],
+    });
+    expect(merged[0]?.workspaceName).toBe("新名字");
+    expect(merged[0]?.workspacePinned).toBe(true);
+    expect(merged[0]?.workspaceOrderedAt).toBe(42);
   });
 });

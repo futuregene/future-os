@@ -466,6 +466,7 @@ impl Supervisor {
                         }
                         let bytes =
                             serde_json::to_vec(&body).expect("a delta Value always serializes");
+                        let sealed = bytes.len();
                         match secure::publish_json(
                             &client,
                             &security,
@@ -482,6 +483,7 @@ impl Supervisor {
                                 if dictionary_moved {
                                     delivered_dictionary = Some(dictionary_sig);
                                 }
+                                self.note_catalogue_packet(&pair_id, sealed);
                             }
                             Ok(false) => {}
                             Err(e) => {
@@ -508,6 +510,7 @@ impl Supervisor {
                         if catalog.signature != last_sessions_sig {
                             let bytes = serde_json::to_vec(&catalog.payload)
                                 .expect("a sessions Value always serializes");
+                            let sealed = bytes.len();
                             match secure::publish_json(
                                 &client,
                                 &security,
@@ -526,6 +529,7 @@ impl Supervisor {
                                     last_sessions_sig = catalog.signature.clone();
                                     last_structural_sig = catalog.structural.clone();
                                     delivered_activity = catalog.activity.iter().cloned().collect();
+                                    self.note_catalogue_packet(&pair_id, sealed);
                                 }
                                 Ok(false) => {}
                                 Err(e) => {

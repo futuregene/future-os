@@ -510,10 +510,24 @@ impl ServerSession {
         {
             return Err(crate::runtime::RunQueueError::PersistenceUnavailable(error).into());
         }
-        let requests = self.scheduler.queued();
-        let request = requests
-            .first()
-            .cloned()
+        // Anything that has waited too long stops being automatic here, at the
+        // one moment it could start by itself. It stays queued and visible; a
+        // person releasing it is the only way it runs.
+        let parked = self.scheduler.park_stale();
+        if !parked.is_empty() {
+            tracing::info!(
+                event = "queued_runs_parked",
+                session_id = %self.session_id,
+                runs = ?parked
+                    .iter()
+                    .map(|parked| (parked.run_id.as_str(), parked.reason.as_str()))
+                    .collect::<Vec<_>>(),
+                "queued prompts parked for the reader to release"
+            );
+        }
+        let request = self
+            .scheduler
+            .next_startable()
             .ok_or_else(|| anyhow::anyhow!("there is no queued run to start"))?;
         let mut payload: ScheduledPromptPayload = serde_json::from_value(request.payload.clone())?;
         // Follow-up coalescing (opt-in per request via `enqueue_coalescing`):

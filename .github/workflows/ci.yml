@@ -49,6 +49,8 @@ jobs:
         run: node scripts/ci/setup-rust.mjs
       - name: CI planner and gate regressions
         run: node --test scripts/tests/ci-plan.test.mjs
+      - name: Updater signature version regressions
+        run: node --test scripts/tests/updater-signature.test.mjs
       - name: Collect changed files (including deletions and rename sources)
         env:
           PR_BASE: ${{ github.event.pull_request.base.sha }}

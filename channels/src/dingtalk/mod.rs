@@ -35,6 +35,28 @@ impl DingtalkChannel {
         ch_cfg: DingtalkChannelConfig,
         shutdown: std::sync::Arc<crate::bridge::Shutdown>,
     ) -> Result<()> {
+        // This channel's own state directory, the same layout the framework
+        // channels and Feishu use. The bridge is rebuilt on every reconnect, so
+        // the conversation → session map has to live here rather than in the
+        // bridge.
+        Self::run_with_data_dir(
+            agent_cfg,
+            ch_cfg,
+            crate::data_root().join("dingtalk"),
+            shutdown,
+        )
+        .await
+    }
+
+    /// [`DingtalkChannel::run`] with an explicit state directory: production
+    /// passes `<future home>/channels/dingtalk`, tests a temp dir (so they never
+    /// read or write the real `~/.future`).
+    pub(crate) async fn run_with_data_dir(
+        agent_cfg: Arc<AgentConfig>,
+        ch_cfg: DingtalkChannelConfig,
+        data_dir: std::path::PathBuf,
+        shutdown: std::sync::Arc<crate::bridge::Shutdown>,
+    ) -> Result<()> {
         let dt_cfg = config::DingtalkConfig {
             sender_allowlist: ch_cfg.sender_allowlist.clone(),
             client_id: ch_cfg.client_id.clone(),
@@ -51,7 +73,11 @@ impl DingtalkChannel {
         loop {
             let bridge = loop {
                 let result = tokio::select! {
-                    result = bridge::DingtalkBridge::new(agent_cfg.clone(), dt_cfg.clone()) => result,
+                    result = bridge::DingtalkBridge::new(
+                        agent_cfg.clone(),
+                        dt_cfg.clone(),
+                        data_dir.clone(),
+                    ) => result,
                     _ = shutdown.notified() => {
                         info!("DingTalk channel shutting down");
                         return Ok(());
@@ -259,6 +285,87 @@ mod tests {
             .expect("run must return after shutdown")
             .expect("task join");
         assert!(result.is_ok(), "run returned: {:?}", result.err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_keeps_the_conversation_session_across_a_reconnect() {
+        // h4-C3: `run` rebuilds the bridge at the head of every outer-loop
+        // iteration and the conversation → session map lived only inside it, so
+        // one clean WS close (the arms below show reconnects are the normal
+        // state of this channel) forgot every chat: the next message created a
+        // brand-new agent session, dropping the conversation and any /model or
+        // /effort the user had set. docs/wiki/en/DingTalk.md promises
+        // "reconnection is automatic and transparent — sessions are preserved".
+        ts::ensure_crypto_provider();
+        // The mapping is persisted now, so the channel gets a temp state dir:
+        // this test must not read or write the real `~/.future`.
+        let data_dir = ts::temp_dir("dingtalk-reconnect-sessions");
+
+        let frame = |message_id: &str, text: &str| {
+            serde_json::json!({
+                "type": "CALLBACK",
+                "headers": {"messageId": message_id, "topic": "/v1.0/im/bot/messages/get"},
+                "data": serde_json::json!({
+                    "senderId": "user-1",
+                    "conversationId": "cid-reconnect",
+                    "msgtype": "text",
+                    "text": {"content": text},
+                    "sessionWebhook": "http://127.0.0.1:1/unreachable"
+                }).to_string()
+            })
+            .to_string()
+        };
+        let (ws_url, _) = ts::spawn_ws_per_connection(vec![
+            vec![
+                WsAction::SendText(frame("mid-before", "hello")),
+                // The ACK is what the client sends once the event reached the
+                // bridge; the delay lets the first turn create its session
+                // before the close tears the bridge down.
+                WsAction::WaitForReceived {
+                    count: 2,
+                    timeout: Duration::from_secs(5),
+                },
+                WsAction::Delay(Duration::from_millis(300)),
+                WsAction::SendClose,
+            ],
+            vec![
+                WsAction::SendText(frame("mid-after", "again")),
+                WsAction::Delay(Duration::from_secs(30)),
+            ],
+        ])
+        .await;
+        let (base, _) = ts::spawn_http(vec![gateway_route(&format!("{}/stream", ws_url))]).await;
+        let (addr, grpc) = ts::spawn_mock_grpc(MockState::default()).await;
+        let shutdown = crate::bridge::Shutdown::new();
+        let handle = tokio::spawn(DingtalkChannel::run_with_data_dir(
+            agent_cfg(&addr),
+            ch_cfg(&base),
+            data_dir,
+            shutdown.clone(),
+        ));
+
+        // Both messages reach the Agent: the reconnect happened in between and
+        // the second one was still answered.
+        assert!(
+            ts::wait_until(
+                || ts::recorded_of(&grpc, "prompt").len() >= 2,
+                Duration::from_secs(10)
+            )
+            .await,
+            "the second message must be processed after the reconnect"
+        );
+        assert_eq!(
+            ts::recorded_of(&grpc, "new_session").len(),
+            1,
+            "one chat keeps one agent session across a reconnect"
+        );
+
+        shutdown.trigger();
+        let result = tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("run must return after shutdown")
+            .expect("task join");
+        assert!(result.is_ok());
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -55,7 +55,18 @@ pub struct PeerCreds {
 /// only reconnect with the JWT it was opened with — so a generation that reaches
 /// its expiry can never come back. Rotating this far ahead keeps the handshake
 /// out of the expiring second, which would fail it in a way that looks like a
-/// protocol fault. Mirrors the mobile client's margin.
+/// protocol fault.
+///
+/// This is a *shared* margin, not this crate's to tune: the phone client asks the
+/// same question with the same number (`ensureFreshCredentials` in
+/// `packages/remote-client/src/pairing.ts`, 60 s) and `fixtures/credentials.json`
+/// pins the agreement from both sides. Moving it unilaterally splits the pair —
+/// measured 2026-11-02, a one-line 60 → 90 broke `client.credentials.fresh` and
+/// `the_refresh_window_has_one_definition` — so move both clients and the fixture
+/// together, or leave it here.
+///
+/// A live link is a different question with more room; that window is
+/// [`crate::runtime`]'s `ROTATION_LEAD_SECS` (240 s), not this constant.
 pub const REFRESH_LEAD_SECS: i64 = 60;
 
 impl PeerCreds {

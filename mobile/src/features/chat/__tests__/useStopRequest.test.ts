@@ -41,7 +41,7 @@ test("one click dispatches once, coalesces concurrent taps, and waits for author
   const pending = deferred();
   const abort = jest.fn(() => pending.promise);
   render({ abort });
-  let request!: Promise<void>;
+  let request!: Promise<boolean>;
   act(() => {
     request = current.stop();
     void current.stop();
@@ -63,11 +63,15 @@ test("one click dispatches once, coalesces concurrent taps, and waits for author
 test("failure is handled, visible and retryable without an automatic second abort", async () => {
   const abort = jest.fn().mockRejectedValueOnce(new Error("timeout")).mockResolvedValue(undefined);
   render({ abort });
-  await act(async () => current.stop());
+  await act(async () => {
+    await current.stop();
+  });
   expect(current.status).toBe("failed");
   expect(abort).toHaveBeenCalledTimes(1);
   expect(stages()).toEqual(["press_received", "request_failed"]);
-  await act(async () => current.stop());
+  await act(async () => {
+    await current.stop();
+  });
   expect(current.status).toBe("requested");
   expect(abort).toHaveBeenCalledTimes(2);
 });
@@ -75,8 +79,12 @@ test("failure is handled, visible and retryable without an automatic second abor
 test("ACK does not disable an explicit retry if the run has not stopped", async () => {
   const abort = jest.fn(async () => {});
   render({ abort });
-  await act(async () => current.stop());
-  await act(async () => current.stop());
+  await act(async () => {
+    await current.stop();
+  });
+  await act(async () => {
+    await current.stop();
+  });
   expect(abort).toHaveBeenCalledTimes(2);
   expect(current.status).toBe("requested");
 });
@@ -85,7 +93,7 @@ test.each(["resolve", "reject"] as const)("idle before a late %s never restores 
   const pending = deferred();
   const abort = jest.fn(() => pending.promise);
   render({ abort });
-  let request!: Promise<void>;
+  let request!: Promise<boolean>;
   act(() => { request = current.stop(); });
   render({ abort, streaming: false });
   await act(async () => {
@@ -94,7 +102,9 @@ test.each(["resolve", "reject"] as const)("idle before a late %s never restores 
     await request;
   });
   expect(current.status).toBe("idle");
-  await act(async () => current.stop());
+  await act(async () => {
+    await current.stop();
+  });
   expect(abort).toHaveBeenCalledTimes(1);
 });
 
@@ -102,7 +112,7 @@ test("switching session discards old state and late replies; detaching is not a 
   const pending = deferred();
   const abort = jest.fn(() => pending.promise);
   render({ abort });
-  let request!: Promise<void>;
+  let request!: Promise<boolean>;
   act(() => { request = current.stop(); });
   render({ abort, sessionId: "s2" });
   expect(current.status).toBe("idle");
@@ -117,12 +127,14 @@ test("streaming rerenders preserve a pending click and dispatch through the late
   const first = jest.fn(() => pending.promise);
   const latest = jest.fn(async () => {});
   render({ abort: first });
-  let request!: Promise<void>;
+  let request!: Promise<boolean>;
   act(() => { request = current.stop(); });
   for (let i = 0; i < 100; i++) render({ abort: latest });
   expect(current.status).toBe("requesting");
   await act(async () => { pending.resolve(); await request; });
-  await act(async () => current.stop());
+  await act(async () => {
+    await current.stop();
+  });
   expect(first).toHaveBeenCalledTimes(1);
   expect(latest).toHaveBeenCalledTimes(1);
 });
@@ -138,14 +150,18 @@ test("samples foreground JS scheduling lag without counting time in the backgrou
   act(() => stateChanged("active"));
   now.mockReturnValue(900); // The 250ms callback was delayed by 650ms.
   act(() => jest.advanceTimersByTime(250));
-  await act(async () => current.stop());
+  await act(async () => {
+    await current.stop();
+  });
   expect(info.mock.calls[0]![1].recentJsLagMs).toBe(650);
   const foregroundTimers = jest.getTimerCount();
   act(() => stateChanged("background"));
   expect(jest.getTimerCount()).toBe(foregroundTimers - 1);
   now.mockReturnValue(60_000);
   act(() => stateChanged("active"));
-  await act(async () => current.stop());
+  await act(async () => {
+    await current.stop();
+  });
   expect(info.mock.calls[2]![1].recentJsLagMs).toBe(0);
 });
 
@@ -164,7 +180,9 @@ test("a lag sample older than the two-second window is dropped, not carried forw
   // Second tick lands 10 s later, so the stale sample falls out of the window.
   now.mockReturnValue(30_000);
   act(() => jest.advanceTimersByTime(250));
-  await act(async () => current.stop());
+  await act(async () => {
+    await current.stop();
+  });
   // 9750 is the second sample alone: had the stale 19750 survived, the report
   // would still show it and every later stop would inherit a phantom stall.
   expect(info.mock.calls[0]![1].recentJsLagMs).toBe(9750);

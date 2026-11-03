@@ -24,7 +24,7 @@ import { useChatScroll } from "./useChatScroll";
 import { useQuestionNav } from "./useQuestionNav";
 import { useTimelinePaging } from "./useTimelinePaging";
 import { useCompactContext } from "./useCompactContext";
-import { useSendMessage } from "./useSendMessage";
+import { useSendMessage, sendFailureText } from "./useSendMessage";
 import { useSkillRecommendation } from "./useSkillRecommendation";
 import { useDesktopResource } from "../settings/useDesktopResource";
 import { ChatTimeline, type SyncNoticeState } from "./components/ChatTimeline";
@@ -38,6 +38,12 @@ import { ImageViewer } from "./components/ImageViewer";
 import { SessionUsageSheet } from "./components/SessionUsageSheet";
 import { NativeFileActionSheet } from "./components/NativeFileActionSheet";
 import { newestFirst } from "./timelineListModel";
+import { expandSessionReferences } from "./sessionCompletion";
+import { sendQueue, useSendQueue } from "./sendQueue";
+import { batchCommandId, isTransientQueueRefusal, QUEUE_RETRY_DELAY_MS, QUEUE_RETRY_LIMIT } from "./queueDelivery";
+import { deliveryCommandId, isRecoverableDeliveryError } from "../../remote/usePromptOutbox";
+import { showToast } from "./utils";
+import { collectQueuedAttachments, joinQueuedContent } from "../../lib/sendQueue";
 
 const SYNC_NOTICE_MIN_MS = 750;
 
@@ -144,6 +150,195 @@ export function ChatScreen() {
     remote, t, message, attachments, setMessage, setAttachments, setTransferProgress,
     sessionRefs, compactionPending: compactContext.pending,
   });
+
+  // ── Send queue ──────────────────────────────────────────────────────────
+  // A message held while the desktop was answering leaves the moment that run is
+  // over, joined with whatever else was queued into one message. Two things start
+  // it: the screen reading the run as over (`queueIdle`), and the reader asking the
+  // run to stop — the second does not wait for the first, because the reads of "is
+  // it still running" can trail the interrupt by a moment, and a queue the reader
+  // already asked to send must not look stuck behind a flag. Whichever starts it,
+  // the desktop decides: a `session_busy` answer means "not yet" and is retried.
+  const queue = useSendQueue(conversationKey);
+  const queueSendingRef = useRef(false);
+  const queueRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const queueAttemptRef = useRef(0);
+  const queueIdle = !remote.draft
+    && !controls.streaming
+    && !remote.busy
+    && remote.desktopOnline
+    && remote.presence?.control !== "standby";
+
+  const deliverQueue = useCallback((quiet = false) => {
+    if (!conversationKey || queueSendingRef.current)
+      return;
+    if (sendQueue.snapshot(conversationKey).items.length === 0)
+      return;
+    queueSendingRef.current = true;
+
+    /**
+     * One delivery, and the retries that belong to it.
+     *
+     * Acknowledged by the desktop is the only success; `session_busy` means the run
+     * it was waiting for has not settled yet, so the rows go back on the wire a
+     * moment later instead of becoming a "retry" the reader must press for a wait
+     * that ends by itself.
+     *
+     * The rows are taken per attempt, not carried in a closure: a failed attempt
+     * puts them back into the panel (so the reader keeps seeing what is waiting),
+     * and the next attempt takes them again. Restoring the same array twice would
+     * duplicate them — and anything the reader queued meanwhile belongs in the same
+     * message anyway.
+     */
+    const deliver = async (attempt: number): Promise<void> => {
+      const pending = sendQueue.take(conversationKey);
+      if (pending.length === 0) {
+        queueSendingRef.current = false;
+        return;
+      }
+      // One message, one command id: rows that already failed in a way the link
+      // recovers from carry the id they were sent under, and sending them again
+      // has to reuse it. The desktop dedupes by that id alone, so a second one is
+      // a second prompt in a second run — the same words, charged twice.
+      const commandId = batchCommandId(pending);
+      const content = joinQueuedContent(pending);
+      const files = collectQueuedAttachments(pending);
+      try {
+        if (commandId)
+          await remote.sendMessage(content, files, undefined, { commandId });
+        else
+          await remote.sendMessage(content, files);
+        queueAttemptRef.current = 0;
+        queueSendingRef.current = false;
+      }
+      catch (error) {
+        // A failure the link recovers from is not a refusal: the outbox kept the
+        // record, and it — not this panel — delivers the message when the link is
+        // back. The rows go back tagged with the command id that record holds, so
+        // the reader's retry (or this screen's next look at an idle conversation)
+        // asks about that id instead of writing the same words a second time.
+        const owned = isRecoverableDeliveryError(error) ? deliveryCommandId(error) : null;
+        sendQueue.restore(conversationKey, owned
+          ? pending.map(item => ({ ...item, commandId: owned }))
+          : pending);
+        if (isTransientQueueRefusal(error) && attempt < QUEUE_RETRY_LIMIT) {
+          queueAttemptRef.current = attempt + 1;
+          // Not a failure: the rows go back without the brake, and the chain keeps
+          // ownership of the queue until it succeeds or gives up.
+          sendQueue.clearFailure(conversationKey);
+          queueRetryTimerRef.current = setTimeout(() => {
+            queueRetryTimerRef.current = null;
+            void deliver(attempt + 1);
+          }, QUEUE_RETRY_DELAY_MS);
+          return;
+        }
+        queueAttemptRef.current = 0;
+        queueSendingRef.current = false;
+        // A quiet attempt is one the screen made on its own to find out whether the
+        // outbox delivered; the failure it hits is the one the reader was already
+        // told about, so it is not reported twice.
+        if (quiet)
+          return;
+        const failure = sendFailureText(error, remote.presence?.holder?.name?.trim());
+        showToast(t(failure.key, failure.params));
+      }
+    };
+    void deliver(0);
+  }, [conversationKey, remote, t]);
+
+  useEffect(() => {
+    if (!queueIdle || queue.failed || queueSendingRef.current || !conversationKey)
+      return;
+    if (queue.items.length === 0)
+      return;
+    void deliverQueue();
+  }, [conversationKey, deliverQueue, queue.failed, queue.items.length, queueIdle]);
+
+  /**
+   * Settle what the outbox owns, once per message, when the conversation is free.
+   *
+   * A recoverable failure leaves the rows in the panel flagged, and the outbox
+   * delivers them under their command id when the link is back. Asking about that
+   * id is how the panel learns the message is gone: a delivered one answers with
+   * its receipt and no second prompt is written, and one the outbox dropped is
+   * sent again under the same id. Either way the row settles without the reader
+   * having to press anything for a message they already sent.
+   *
+   * Once per id, not once per render: a row that keeps failing is the reader's
+   * call, the same as any other refusal.
+   */
+  const queueSettledRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!conversationKey || !queueIdle || queueSendingRef.current)
+      return;
+    const commandId = batchCommandId(sendQueue.snapshot(conversationKey).items);
+    if (!commandId || queueSettledRef.current === commandId)
+      return;
+    queueSettledRef.current = commandId;
+    deliverQueue(true);
+  }, [conversationKey, deliverQueue, queueIdle, queue.failed, queue.items.length]);
+
+  // The reader asked the run to stop: whatever they were holding goes next, even
+  // if this screen still reads the conversation as streaming.
+  const handleRunStopped = useCallback(() => {
+    queueAttemptRef.current = 0;
+    if (queueRetryTimerRef.current) {
+      clearTimeout(queueRetryTimerRef.current);
+      queueRetryTimerRef.current = null;
+    }
+    deliverQueue();
+  }, [deliverQueue]);
+
+  useEffect(() => () => {
+    if (queueRetryTimerRef.current) {
+      clearTimeout(queueRetryTimerRef.current);
+      queueRetryTimerRef.current = null;
+    }
+  }, []);
+
+  /**
+   * Hand the field's draft to the queue (the toolbar's "hold it" row). The
+   * references are expanded on the way in: a `#title` token edited away later
+   * must not strip the link out of a message that was already queued.
+   */
+  const enqueueComposerDraft = useCallback(() => {
+    const text = message.trim();
+    if (!text && attachments.length === 0)
+      return false;
+    if (!sendQueue.enqueue(conversationKey, {
+      content: expandSessionReferences(text, sessionRefs),
+      attachments,
+    })) {
+      showToast(t("chat.queueFull"));
+      return false;
+    }
+    setMessage("");
+    setAttachments([]);
+    return true;
+  }, [attachments, conversationKey, message, sessionRefs, setAttachments, setMessage, t]);
+
+  // The dock is memoized against the transcript's streaming commits, so what it
+  // is given has to keep its identity until the queue itself changes. The rows
+  // are derived from the store's stable snapshot, and the three handlers only
+  // ever need the conversation key.
+  const queuePanelItems = useMemo(
+    () => queue.items.map(item => ({
+      attachmentCount: item.attachments.length,
+      content: item.content,
+      id: item.id,
+    })),
+    [queue.items],
+  );
+  const updateQueuedMessage = useCallback((id: string, content: string) => {
+    sendQueue.update(conversationKey, id, content);
+  }, [conversationKey]);
+  const removeQueuedMessage = useCallback((id: string) => {
+    sendQueue.remove(conversationKey, id);
+  }, [conversationKey]);
+  const retrySendQueue = useCallback(() => {
+    sendQueue.clearFailure(conversationKey);
+  }, [conversationKey]);
+
   // Approvals live docked above the composer (not inline in the transcript), and
   // only while undecided — once a decision lands the card disappears.
   const timelineItems = useMemo(() => remote.timeline.items, [remote.timeline]);
@@ -583,6 +778,13 @@ export function ChatScreen() {
                     skillInstalling={installingSkill}
                     onInstallSkill={installSuggestedSkill}
                     onDismissSkill={dismissSuggestedSkill}
+                    queueItems={queuePanelItems}
+                    queueFailed={queue.failed}
+                    onQueueUpdate={updateQueuedMessage}
+                    onQueueRemove={removeQueuedMessage}
+                    onQueueRetry={retrySendQueue}
+                    enqueueDraft={enqueueComposerDraft}
+                    onStopped={handleRunStopped}
                   />
                 </PausedTimeline>
               </View>

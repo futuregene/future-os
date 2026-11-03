@@ -5,6 +5,140 @@ use super::*;
 
 // ── Crash-recovery run reanimation ───────────────────────────────────────
 
+/// The Agent's answer for a queued prompt that will never run on its own.
+///
+/// A prompt accepted while the conversation was busy is held in the Agent's
+/// queue. Most of them run at the turn boundary, but two never do:
+///
+/// * `enqueue_coalescing` folds the consecutive ones into the run ahead — the
+///   folded prompt's words are *inside* that run's message, and it comes back as
+///   a terminal ack with reason `merged`;
+/// * the reader deletes one from the panel, which cancels it before it starts.
+///
+/// Neither produces an `agent_end`, so their local rows would stay `running`
+/// forever and keep the conversation's composer blocked on a run that will never
+/// happen. This settles exactly those rows, from the Agent's own terminal acks —
+/// never from absence alone, because a run the Agent has simply not started yet
+/// looks the same as one that was folded if all we have is "not listed".
+pub async fn settle_queued_runs(session_id: &str, thread_id: &str) {
+    let Ok(runs) = crate::store::list_runs(thread_id) else {
+        return;
+    };
+    let pending: Vec<String> = runs
+        .iter()
+        .filter(|run| !crate::store::is_terminal_run_status(&run.status))
+        .map(|run| run.id.clone())
+        .collect();
+    if pending.is_empty() {
+        return;
+    }
+    let Ok(mut client) = connect_agent().await else {
+        return;
+    };
+    let Ok(response) = client
+        .execute_command(get_state_command(session_id.to_string()))
+        .await
+    else {
+        return;
+    };
+    let response = response.into_inner();
+    if !response.success {
+        return;
+    }
+    let state = future_rpc::decode::response_data(&response);
+    let field =
+        |value: &serde_json::Value, camel: &str, snake: &str| -> Option<serde_json::Value> {
+            value.get(camel).or_else(|| value.get(snake)).cloned()
+        };
+
+    // What the Agent still owns: the run in flight and everything queued behind
+    // it. Those rows are alive by definition and are left alone.
+    let mut live: HashSet<String> = HashSet::new();
+    if let Some(run_id) = field(&state, "activeRun", "active_run")
+        .and_then(|run| field(&run, "runId", "run_id"))
+        .and_then(|id| id.as_str().map(str::to_string))
+    {
+        live.insert(run_id);
+    }
+    for row in field(&state, "queuedRuns", "queued_runs")
+        .and_then(|rows| rows.as_array().cloned())
+        .unwrap_or_default()
+    {
+        if let Some(run_id) =
+            field(&row, "runId", "run_id").and_then(|id| id.as_str().map(str::to_string))
+        {
+            live.insert(run_id);
+        }
+    }
+
+    let mut acks: HashMap<String, (String, String)> = HashMap::new();
+    for row in field(&state, "recentTerminalAcks", "recent_terminal_acks")
+        .and_then(|rows| rows.as_array().cloned())
+        .unwrap_or_default()
+    {
+        let Some(run_id) =
+            field(&row, "runId", "run_id").and_then(|id| id.as_str().map(str::to_string))
+        else {
+            continue;
+        };
+        let ack_state = field(&row, "state", "state")
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let reason = field(&row, "reason", "reason")
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_default();
+        acks.insert(run_id, (ack_state, reason));
+    }
+
+    for run_id in pending {
+        if live.contains(&run_id) {
+            continue;
+        }
+        let Some((ack_state, reason)) = acks.get(&run_id) else {
+            continue;
+        };
+        let settlement = match ack_state.as_str() {
+            // Its words were folded into the run ahead, so nothing is lost and
+            // nothing is stopped: the prompt arrived, as part of that turn.
+            "terminal" => (
+                "completed",
+                "Folded into the preceding run.".to_string(),
+                "queue_merged",
+            ),
+            "cancelled" => (
+                "cancelled",
+                if reason.is_empty() {
+                    "Removed from the send queue.".to_string()
+                } else {
+                    format!("Removed from the send queue ({reason}).")
+                },
+                "queue_cancelled",
+            ),
+            "failed" => (
+                "failed",
+                if reason.is_empty() {
+                    "Future Agent could not queue this message.".to_string()
+                } else {
+                    format!("Future Agent could not queue this message ({reason}).")
+                },
+                "queue_failed",
+            ),
+            _ => continue,
+        };
+        if let Err(error) =
+            crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+                run_id: run_id.clone(),
+                status: settlement.0.to_string(),
+                error_message: Some(settlement.1),
+                error_type: Some(settlement.2.to_string()),
+            })
+        {
+            tracing::warn!(event = "settle_queued_runs", run_id = %run_id, error = %error,
+                "FutureOS could not settle the queued run {run_id}: {error}");
+        }
+    }
+}
+
 /// Called after the Agent service is reachable: for every run that was
 /// cancelled by startup convergence, check the agent's actual session state.
 /// If the agent is still streaming, reanimate the run (back to "running") and
@@ -1391,6 +1525,79 @@ mod settled_run_tests {
             mock.requests_of("get_state").is_empty(),
             "a run with no conversation is never put to the Agent: {:?}",
             mock.requests_of("get_state")
+        );
+    }
+
+    /// A queued prompt that was folded into the run ahead never runs on its own
+    /// (the Agent answers it with a `merged` terminal ack), and one the reader
+    /// deleted never starts. Neither produces an `agent_end`, so their rows are
+    /// settled from the Agent's own acks — and only those: a prompt still waiting
+    /// its turn, or the run in flight, is left exactly as it is.
+    #[tokio::test]
+    async fn a_folded_or_dropped_queued_prompt_settles_and_a_waiting_one_does_not() {
+        let home = TestHome::new("settle-queued-runs");
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-queue"));
+        let folded = seed_run(&thread.id);
+        let dropped = seed_run(&thread.id);
+        let waiting = seed_run(&thread.id);
+        let live = seed_run(&thread.id);
+        let mock = mock_agent();
+        mock.push_data(
+            "get_state",
+            serde_json::json!({
+                "activeRun": {"runId": live.id},
+                "queuedRuns": [
+                    {"runId": waiting.id, "queuePosition": 1, "displayText": "not yet"}
+                ],
+                "recentTerminalAcks": [
+                    {"runId": folded.id, "state": "terminal", "reason": "merged"},
+                    {"runId": dropped.id, "state": "cancelled", "reason": "cancelled"}
+                ]
+            }),
+        );
+
+        settle_queued_runs("sess-queue", &thread.id).await;
+
+        let status = |id: &str| store::get_run(id).expect("get run").expect("exists").status;
+        assert_eq!(
+            status(&folded.id),
+            "completed",
+            "a folded prompt arrived inside the run ahead — it is not lost"
+        );
+        assert_eq!(
+            status(&dropped.id),
+            "cancelled",
+            "a prompt taken back out of the queue never ran"
+        );
+        assert_eq!(status(&waiting.id), "running", "its turn has not come yet");
+        assert_eq!(
+            status(&live.id),
+            "running",
+            "the run in flight is untouched"
+        );
+    }
+
+    /// The sweep never invents a state: a row the Agent has no ack for is left
+    /// alone, because "not in the queue any more" cannot tell a folded run from
+    /// one the Agent simply has not started.
+    #[tokio::test]
+    async fn a_row_without_a_terminal_ack_is_left_alone() {
+        let home = TestHome::new("settle-queued-runs-no-ack");
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-noack"));
+        let run = seed_run(&thread.id);
+        let mock = mock_agent();
+        mock.push_data("get_state", serde_json::json!({ "queuedRuns": [] }));
+
+        settle_queued_runs("sess-noack", &thread.id).await;
+
+        assert_eq!(
+            store::get_run(&run.id)
+                .expect("get")
+                .expect("exists")
+                .status,
+            "running"
         );
     }
 }

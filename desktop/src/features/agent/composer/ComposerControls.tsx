@@ -66,9 +66,23 @@ interface Props {
   sendPending: boolean;
   recommendPending: boolean;
   compactionPending: boolean;
+  /**
+   * The send queue, while a reply is streaming (see `Composer.onEnqueue`).
+   *
+   * Present means the send button has something to ask: hold the draft in the
+   * queue, or interrupt the run and send it now. Absent keeps the old rule — one
+   * button, and while a reply streams it is Stop.
+   */
+  queue?: {
+    count: number;
+    choiceOpen: boolean;
+    onChoiceOpenChange: (open: boolean) => void;
+    onEnqueue: () => void;
+    onInterruptAndSend: () => void;
+  };
 }
 
-export function ComposerControls({ disabled, modelId, modelOptions, modelsEmptyReason, onModelChange, thinkingLevel, onThinkingLevelChange, approvalTier, futureSessionStatus, onChangeApprovalTier, sending, onAbort, handleAttachFiles, inputEmpty, attachmentCount, sendPending, recommendPending, compactionPending }: Props) {
+export function ComposerControls({ disabled, modelId, modelOptions, modelsEmptyReason, onModelChange, thinkingLevel, onThinkingLevelChange, approvalTier, futureSessionStatus, onChangeApprovalTier, sending, onAbort, handleAttachFiles, inputEmpty, attachmentCount, sendPending, recommendPending, compactionPending, queue }: Props) {
   const { t, i18n } = useTranslation("agent");
   const sandboxAvailability = useSandboxAvailability();
   const writeOnlySandbox = isWriteOnlySandbox(sandboxAvailability);
@@ -312,17 +326,62 @@ export function ComposerControls({ disabled, modelId, modelOptions, modelsEmptyR
             ))}
           </SelectMenu>
           {sending
-            ? (
-                <button
-                  className="inline-flex size-7 items-center justify-center rounded-md bg-ink text-surface transition-colors hover:bg-ink-soft"
-                  onClick={() => onAbort?.()}
-                  type="button"
-                  aria-label={t("composer.stop")}
-                  title={t("composer.stop")}
-                >
-                  <Square className="size-3 fill-current" />
-                </button>
-              )
+            ? (queue && (!inputEmpty || attachmentCount > 0)
+                ? (
+                    /* A run is streaming and there is something to send: the button
+                       asks what "send" should mean here. The draft is never taken
+                       away by pressing it — only by picking a row. */
+                    <SelectMenu
+                      align="right"
+                      open={queue.choiceOpen}
+                      onDismiss={() => queue.onChoiceOpenChange(false)}
+                      panelClassName="w-72 overflow-hidden"
+                      trigger={(
+                        <button
+                          className="inline-flex size-7 items-center justify-center rounded-md bg-accent-fill text-white transition-colors hover:bg-accent-fill-hover disabled:bg-accent-fill-disabled"
+                          disabled={disabled || sendPending || compactionPending || recommendPending}
+                          onClick={() => queue.onChoiceOpenChange(!queue.choiceOpen)}
+                          type="button"
+                          aria-label={t("composer.sendWhileRunning.choose")}
+                          title={t("composer.sendWhileRunning.choose")}
+                        >
+                          <ArrowUp className="size-3.5" />
+                        </button>
+                      )}
+                    >
+                      <SelectMenuItem className="py-1.5" selected={false} onSelect={queue.onEnqueue}>
+                        <span className="min-w-0 flex-1 space-y-0.5">
+                          <span className="block truncate font-medium leading-tight text-ink">
+                            {t("composer.sendWhileRunning.queue")}
+                          </span>
+                          <span className="block text-xs leading-tight text-ink-muted">
+                            {t("composer.sendWhileRunning.queueHint")}
+                          </span>
+                        </span>
+                      </SelectMenuItem>
+                      <SelectMenuItem className="py-1.5" selected={false} onSelect={queue.onInterruptAndSend}>
+                        <span className="min-w-0 flex-1 space-y-0.5">
+                          <span className="block truncate font-medium leading-tight text-ink">
+                            {t(queue.count > 0 ? "composer.sendWhileRunning.interruptAll" : "composer.sendWhileRunning.interrupt")}
+                          </span>
+                          <span className="block text-xs leading-tight text-ink-muted">
+                            {t(queue.count > 0 ? "composer.sendWhileRunning.interruptAllHint" : "composer.sendWhileRunning.interruptHint")}
+                          </span>
+                        </span>
+                      </SelectMenuItem>
+                    </SelectMenu>
+                  )
+                : (
+                    <button
+                      className="inline-flex size-7 items-center justify-center rounded-md bg-ink text-surface transition-colors hover:bg-ink-soft"
+                      onClick={() => onAbort?.()}
+                      type="button"
+                      aria-label={queue && queue.count > 0 ? t("composer.stopAndSendQueue") : t("composer.stop")}
+                      title={queue && queue.count > 0 ? t("composer.stopAndSendQueue") : t("composer.stop")}
+                    >
+                      <Square className="size-3 fill-current" />
+                    </button>
+                  ))
             : (
                 <>
                   {/* Compaction blocks submission for as long as the agent

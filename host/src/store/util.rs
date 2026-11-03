@@ -91,6 +91,15 @@ pub fn take_catalog_dirty() -> bool {
     CATALOG_DIRTY.swap(false, Ordering::AcqRel)
 }
 
+/// Whether a write is waiting to be published, without clearing the flag.
+///
+/// The publisher consumes the flag (`take_catalog_dirty`) on its own tick; a
+/// reader that answers from a cached snapshot asks this instead, so it never
+/// answers a pull with a snapshot taken before a write it can already see.
+pub fn catalog_dirty_peek() -> bool {
+    CATALOG_DIRTY.load(Ordering::Acquire)
+}
+
 /// Turn an "expected to exist" lookup into a hard error when the row is missing.
 /// Collapses the `get_X(&id)?.ok_or_else(|| "X could not be loaded.".into())`
 /// boilerplate that follows almost every insert/update read-back. `what` names

@@ -1456,6 +1456,23 @@ impl Observed {
                 Some("platform") => "Future platform".to_string(),
                 _ => "unpaired invitation".to_string(),
             };
+            // Which catalogue lane this connection is on, and what it has cost.
+            // The two lanes are indistinguishable from outside otherwise: same
+            // commands, same silence when nothing changes — so "did the delta
+            // capability take effect" had no answer a terminal could read.
+            let catalogue = match row.get("catalogueLane").and_then(Value::as_str) {
+                Some(lane) => format!(
+                    " · catalogue {lane} {} pkt / {} KiB",
+                    row.get("cataloguePackets")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                    row.get("catalogueBytes")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0)
+                        / 1024
+                ),
+                None => String::new(),
+            };
             lines.push(format!(
                 "  {:>2}  {:<id_width$}  {:<8}  {:<10}  {:<32}  {}",
                 index + 1,
@@ -1463,7 +1480,7 @@ impl Observed {
                 control,
                 connected,
                 client,
-                endpoint.trim_end()
+                format!("{}{catalogue}", endpoint.trim_end()).as_str()
             ));
         }
         lines

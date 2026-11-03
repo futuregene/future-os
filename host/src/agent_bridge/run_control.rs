@@ -3,8 +3,9 @@
 //! and the parent module's prompt finalization.
 
 use super::client::{
-    compact_command, connect_agent, get_state_command, is_session_not_found, map_rpc_error,
-    run_control_command, RpcResponseExt,
+    cancel_queued_run_command, compact_command, connect_agent, get_state_command,
+    is_session_not_found, map_rpc_error, release_queued_run_command, run_control_command,
+    RpcResponseExt,
 };
 use super::replica::AGENT_REPLICAS;
 use crate::store;
@@ -247,6 +248,73 @@ pub async fn abort_run(
         error_type: Some("abort_requested".to_string()),
     })?;
     store::get_run(&run_id)?.ok_or_else(|| "Run could not be loaded.".to_string().into())
+}
+
+/// Drop one prompt out of the Agent's queue for its conversation.
+///
+/// The reader built this queue by hand, so taking something back out of it has
+/// to work before it leaves: a queued prompt has been accepted but not run, and
+/// nothing about it is committed. The Agent cancels it by the run id it was
+/// accepted as, and the local row settles here — no `agent_end` is coming for a
+/// run that never started, and a row left `running` would keep the conversation's
+/// composer blocked on a run that will not happen.
+pub async fn cancel_queued_run(session_id: &str, run_id: &str) -> Result<(), crate::Error> {
+    if run_id.trim().is_empty() {
+        return Err("Run id is required to take a queued message back.".into());
+    }
+    let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, session_id).await?;
+    let response = client
+        .execute_command(cancel_queued_run_command(
+            run_id.to_string(),
+            session_id.to_string(),
+        ))
+        .await
+        .map_err(|error| format!("Unable to cancel the queued message: {error}"))?
+        .into_inner();
+    if !response.success {
+        return Err(format!(
+            "Future Agent did not cancel the queued message: {}",
+            response.error
+        )
+        .into());
+    }
+    store::update_run_status_if_active(store::UpdateRunStatusInput {
+        run_id: run_id.to_string(),
+        status: "cancelled".to_string(),
+        error_message: Some("Removed from the send queue.".to_string()),
+        error_type: Some("queue_cancelled".to_string()),
+    })?;
+    Ok(())
+}
+
+/// Start a queued prompt now, because the reader asked for it.
+///
+/// The staleness rule keeps prompts from starting by themselves; it does not take
+/// the decision away. The Agent runs it immediately when nothing else is in
+/// flight, and at the next boundary otherwise.
+pub async fn release_queued_run(session_id: &str, run_id: &str) -> Result<(), crate::Error> {
+    if run_id.trim().is_empty() {
+        return Err("Run id is required to send a queued message now.".into());
+    }
+    let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, session_id).await?;
+    let response = client
+        .execute_command(release_queued_run_command(
+            run_id.to_string(),
+            session_id.to_string(),
+        ))
+        .await
+        .map_err(|error| format!("Unable to send the queued message: {error}"))?
+        .into_inner();
+    if !response.success {
+        return Err(format!(
+            "Future Agent did not release the queued message: {}",
+            response.error
+        )
+        .into());
+    }
+    Ok(())
 }
 
 pub(super) fn mark_run_failed_if_active(run_id: Option<&str>, error: &str) {

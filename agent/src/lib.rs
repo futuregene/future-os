@@ -89,7 +89,7 @@ pub(crate) mod test_support {
             );
             0
         };
-        println!("FUTUREOS_PARENT_CONSOLE={window}");
+        crate::console::println!("FUTUREOS_PARENT_CONSOLE={window}");
     }
 
     /// How many file descriptors this test binary may hold.
