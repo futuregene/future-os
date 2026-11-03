@@ -293,10 +293,15 @@ pub fn redirect_windowless_standard_streams(path: &std::path::Path) -> std::io::
 /// * a character device in front of a console window — a launch from a
 ///   terminal, watched by the person who started it;
 /// * nothing usable — no handle (`NULL`, `INVALID_HANDLE_VALUE`), a handle
-///   whose type cannot be determined, or a character device with no console
-///   window (the `NUL` device a windowed parent hands its children, or a
-///   console nobody can write to). That is the GUI launch
-///   [`redirect_windowless_standard_streams`] exists for.
+///   whose type cannot be determined, a character device with no console
+///   window (the `NUL` device a windowed parent hands its children), or a
+///   handle of a usable *shape* that nevertheless refuses every write because
+///   it was opened without write access. The last one is not hypothetical:
+///   measured 2026-11-03 a Desktop launch held such a stderr, was judged to
+///   have a destination, and the first `eprintln!` to reach it panicked the
+///   task that emitted the line. That is the GUI launch
+///   [`redirect_windowless_standard_streams`] exists for, and why the shape is
+///   not the whole answer — see [`handle_accepts_a_write`].
 #[cfg(windows)]
 fn stream_has_a_destination(stream: u32) -> bool {
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
@@ -309,12 +314,49 @@ fn stream_has_a_destination(stream: u32) -> bool {
     if handle.is_null() || handle == INVALID_HANDLE_VALUE {
         return false;
     }
-    match unsafe { GetFileType(handle) } {
+    let shaped_like_one = match unsafe { GetFileType(handle) } {
         FILE_TYPE_DISK | FILE_TYPE_PIPE => true,
         FILE_TYPE_CHAR => !unsafe { GetConsoleWindow() }.is_null(),
         // `FILE_TYPE_UNKNOWN`, which is also the answer of a failed call: a
         // handle that cannot be classified is no better than having none.
         _ => false,
+    };
+    // The shape only says where the handle *would* write. A handle opened
+    // without write access has the same shape and takes no output at all, so
+    // the decision is completed by asking the stream itself.
+    shaped_like_one && handle_accepts_a_write(handle)
+}
+
+/// Whether `handle` takes a write at all.
+///
+/// A zero-length [`WriteFile`] moves nothing into the destination — no console
+/// cell, no byte for a pipe's reader, no file content — and returns the same
+/// access verdict a real write would. Measured 2026-11-03 with a standalone
+/// probe on this machine:
+///
+/// * a console handle the process may not write: `ERROR_ACCESS_DENIED`
+///   (os error 5) for both zero and six bytes;
+/// * a `NULL` handle: `ERROR_INVALID_HANDLE` (6) for both;
+/// * a writable file or pipe: success for both.
+///
+/// So one question separates "writes somewhere" from "cannot write anywhere",
+/// which `GetFileType` alone does not: a stderr of the right type that refuses
+/// every write is worse than no stderr at all, because it silences the redirect
+/// and then panics the first task that tries to report anything.
+///
+/// [`WriteFile`]: windows_sys::Win32::Storage::FileSystem::WriteFile
+#[cfg(windows)]
+fn handle_accepts_a_write(handle: windows_sys::Win32::Foundation::HANDLE) -> bool {
+    use windows_sys::Win32::Storage::FileSystem::WriteFile;
+    let mut written = 0u32;
+    unsafe {
+        WriteFile(
+            handle,
+            std::ptr::null(),
+            0,
+            &mut written,
+            std::ptr::null_mut(),
+        ) != 0
     }
 }
 
@@ -788,5 +830,42 @@ mod tests {
         let path = std::path::Path::new("/nonexistent/future-stdio.log");
         assert!(!redirect_windowless_standard_streams(path).unwrap());
         assert!(!path.exists(), "a refused repair must not create the file");
+    }
+
+    /// The write question, asked of handles whose shape says nothing about it.
+    ///
+    /// Both handles below are disk files, so `GetFileType` calls them both a
+    /// destination; only one of them accepts a byte. That difference is the
+    /// whole repair: a stream of the right shape that refuses every write is
+    /// the launch that kept its unusable stderr and panicked on the first line
+    /// it tried to report (2026-11-03, `failed printing to stderr: 拒绝访问`).
+    #[cfg(windows)]
+    #[test]
+    fn a_handle_that_refuses_a_write_is_not_a_destination() {
+        use std::os::windows::io::AsRawHandle;
+
+        let dir = std::env::temp_dir().join(format!("future-console-write-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temporary directory");
+        let path = dir.join("stream.log");
+        std::fs::write(&path, b"seed").expect("seed the file");
+
+        let read_only = std::fs::File::open(&path).expect("open for reading");
+        assert!(
+            !handle_accepts_a_write(read_only.as_raw_handle()),
+            "a read-only handle takes no write, so it is not a destination"
+        );
+
+        let writable = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open for appending");
+        assert!(
+            handle_accepts_a_write(writable.as_raw_handle()),
+            "an append handle takes a write"
+        );
+
+        drop(read_only);
+        drop(writable);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
