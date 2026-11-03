@@ -259,6 +259,42 @@ describe("archive entry and its guide", () => {
     archivedWorkspaces.length = 0;
   });
 
+  it("folds both archived sections with one click each", () => {
+    currentView = "archived";
+    archivedThreads.length = 0;
+    archivedThreads.push({
+      agentSessionId: "s-a",
+      createdAt: 1,
+      id: "a",
+      mode: "chat",
+      pinned: false,
+      readonly: false,
+      status: "archived",
+      title: "shelved one",
+      updatedAt: 2,
+      workspaceId: "w1",
+    } as unknown as StoredThread);
+
+    const view = mount(createElement(ActivityRail, props()));
+    const viewRoot = view.container.querySelector("[data-testid='rail-archived-view']")!;
+    const foldButtons = [...viewRoot.querySelectorAll("button[aria-expanded]")];
+    expect(foldButtons.length).toBeGreaterThanOrEqual(2);
+
+    // The conversations section folds away its rows.
+    expect(view.container.textContent).toContain("shelved one");
+    const threadHeading = foldButtons.find(button =>
+      button.getAttribute("aria-label")?.includes("已归档会话")
+      || button.getAttribute("aria-label")?.includes("Archived conversations"))!;
+    expect(threadHeading).toBeDefined();
+    act(() => threadHeading.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(view.container.textContent).not.toContain("shelved one");
+    // …and unfolds again.
+    act(() => threadHeading.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(view.container.textContent).toContain("shelved one");
+    view.unmount();
+    archivedThreads.length = 0;
+  });
+
   it("offers the guide again from the archived view", () => {
     currentView = "archived";
     const onShowArchiveGuide = vi.fn();
