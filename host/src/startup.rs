@@ -309,6 +309,34 @@ mod tests {
     }
 
     #[test]
+    fn a_step_is_reported_again_once_its_repeat_has_passed() {
+        let tracker = Tracker::new();
+        tracker.enter("window build");
+        let (tx, rx) = std::sync::mpsc::channel();
+        tracker.arm(
+            move |message| {
+                let _ = tx.send(message.to_string());
+            },
+            Duration::from_millis(20),
+            Duration::from_millis(20),
+        );
+        // The same step reports on its repeat, not only that it is still there:
+        // a launch that hangs in one step for an hour must keep appearing in a
+        // log nobody was watching when the first line was written.
+        let first = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the stall report");
+        let repeat = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the same step reports again on its repeat");
+        for message in [&first, &repeat] {
+            assert!(message.contains("window build"), "{message}");
+            assert!(message.contains("startup"), "{message}");
+        }
+        tracker.ready();
+    }
+
+    #[test]
     fn a_new_step_is_reported_even_after_stalling_in_the_previous_one() {
         let tracker = Tracker::new();
         tracker.enter("app store");
@@ -344,6 +372,23 @@ mod tests {
         assert!(
             rx.recv_timeout(Duration::from_millis(500)).is_err(),
             "a failed launch stops the watchdog before it reports"
+        );
+    }
+
+    /// The global tracker is a `Default`: an entry point that only needs one
+    /// (the headless mode) must get the same state `new()` produces, starting
+    /// from the step every launch begins in rather than an empty one.
+    #[test]
+    fn the_default_tracker_is_a_launch_at_its_first_step() {
+        let tracker = Tracker::default();
+        let at = tracker
+            .current()
+            .expect("a default tracker is a running launch");
+        assert_eq!(at.step, "process start");
+        tracker.ready();
+        assert!(
+            tracker.current().is_none(),
+            "the default tracker is the one ready() ends"
         );
     }
 }

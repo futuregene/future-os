@@ -5,6 +5,7 @@ mod broadcaster;
 mod commands;
 mod control_plane;
 pub use control_plane::ControlPlane;
+mod export_html;
 mod prompt_helpers;
 mod protocol;
 pub(crate) mod run_snapshot;
@@ -28,7 +29,11 @@ pub use broadcaster::{
 pub use commands::handle_command_internal;
 #[cfg(test)]
 pub(crate) use commands::test_support::make_app_state as service_test_state;
+pub(crate) use export_html::generate_session_html;
 pub use protocol::{HistoryResetCommand, RpcCommand, RpcResponse, SseEvent};
+/// The level → thinking-budget map is the session's, and the custom-provider
+/// probe has to send exactly what a session would; one definition, re-exported.
+pub(crate) use session::thinking_budget_for;
 pub use session::ServerSession;
 
 /// Map one broadcaster/journal event into its replay payload carrier. The
@@ -504,11 +509,31 @@ fn get_state_internal(
     // see `RpcSession::replay_cost_split`.
     let split = *sess.cumulative_cost_split.lock();
 
-    // Use API-reported prompt_tokens from the last request as actual context usage
-    let context_tokens = sess.last_prompt_tokens.load(Ordering::Relaxed);
+    // Use API-reported prompt_tokens from the last request as actual context usage.
+    //
+    // A compaction resets that counter — the checkpoint replaces the history the
+    // next request sends, and no request has been sent since — so a session that
+    // was just compacted would report an empty context until its next turn. It
+    // is not empty: the checkpoint's own `tokens_after` is the estimate of that
+    // next prompt, which is exactly the figure a context gauge should show in
+    // between (and the one the next request's usage will replace with the real
+    // count). Reporting 0 there drove every client's gauge to `0 / 200k` right
+    // after a compaction that had just said "62,203 → 33,281 tokens".
+    let context_tokens = {
+        let reported = sess.last_prompt_tokens.load(Ordering::Relaxed);
+        if reported > 0 {
+            reported
+        } else {
+            sess.active_checkpoint
+                .lock()
+                .as_ref()
+                .map(|checkpoint| checkpoint.tokens_after as i64)
+                .unwrap_or(0)
+        }
+    };
     // Query count: number of user messages (prompts and follow-ups).
     // Excludes internal tool/assistant messages.
-    let loaded = sess.session_manager.load_metadata(&session_id).ok();
+    let stored_metadata = sess.session_manager.state_metadata(&session_id).ok();
     let query_count = if sess.history_loaded {
         sess.messages
             .read()
@@ -516,9 +541,9 @@ fn get_state_internal(
             .filter(|m| m.role == "user")
             .count()
     } else {
-        loaded
+        stored_metadata
             .as_ref()
-            .map(|s| s.entries.iter().filter(|e| e.role == "user").count())
+            .map(|(count, _)| *count)
             .unwrap_or(0)
     };
     let context_percent = if context_window > 0 {
@@ -538,9 +563,9 @@ fn get_state_internal(
     let parent_session_id = if !sess.parent_session_id.is_empty() {
         sess.parent_session_id.clone()
     } else {
-        loaded
+        stored_metadata
             .as_ref()
-            .map(|s| s.parent_session_id.clone())
+            .map(|(_, parent)| parent.clone())
             .unwrap_or_default()
     };
     let active_run = sess
@@ -559,6 +584,7 @@ fn get_state_internal(
         .into_iter()
         .enumerate()
         .map(|(index, run)| {
+            let held = sess.scheduler.held_reason(&run.run_id);
             let display_text = run
                 .payload
                 .get("message")
@@ -569,7 +595,14 @@ fn get_state_internal(
                 run_id: run.run_id,
                 run_sequence: run.run_sequence,
                 client_request_id: run.client_request_id,
-                state: "queued".to_string(),
+                // "queued" runs at the turn boundary; "stale" waited too long;
+                // "stale:unknown_age" has no readable age, and is parked for the
+                // same reason rather than let through on a guess. Same field: a
+                // client renders the same row with one different sentence.
+                state: match held {
+                    None => "queued".to_string(),
+                    Some(reason) => format!("stale:{}", reason.as_str()),
+                },
                 queue_position: index + 1,
                 accepted_at: run.accepted_at,
                 display_text,
@@ -594,9 +627,10 @@ fn get_state_internal(
     // the previous run was interrupted by a crash or agent restart. Surface it
     // explicitly so clients never mistake it for a completed run.
     let interrupted_run = if active_run.is_none() {
-        loaded
-            .as_ref()
-            .and_then(|s| crate::session::find_unterminated_run(&s.entries))
+        sess.session_manager
+            .unterminated_run_id(&session_id)
+            .ok()
+            .flatten()
             .map(|run_id| payloads::RunStateSnapshot {
                 run_id,
                 epoch: None,
@@ -610,9 +644,10 @@ fn get_state_internal(
     let requested_run = requested_run_id
         .filter(|run_id| !run_id.is_empty())
         .and_then(|run_id| {
-            loaded
-                .as_ref()
-                .and_then(|session| crate::session::find_run_terminal(&session.entries, run_id))
+            sess.session_manager
+                .run_terminal(&session_id, run_id)
+                .ok()
+                .flatten()
                 .map(|terminal| future_rpc::message::run_terminal(&terminal))
         });
     // Approvals this session is parked on, with the full card payload. A client
@@ -703,67 +738,6 @@ fn get_state_internal(
     Some(payload)
 }
 
-/// Generate HTML representation of a session (matches Go exportSessionToHTML)
-pub(super) fn generate_session_html(
-    session_id: &str,
-    model: &str,
-    cwd: &str,
-    messages: &[crate::types::Message],
-) -> String {
-    let mut html = String::new();
-    let session_id = escape_html(session_id);
-    let model = escape_html(model);
-    let cwd = escape_html(cwd);
-
-    html.push_str("<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">");
-    html.push_str(&format!(
-        "<title>FutureAgent session {}</title>",
-        session_id
-    ));
-    html.push_str("<style>");
-    html.push_str("body{font-family:system-ui;max-width:800px;margin:auto;padding:20px;background:#1a1a2e;color:#e0e0e0}");
-    html.push_str(".user{background:#16213e;padding:10px;margin:5px 0;border-radius:8px}");
-    html.push_str(".assistant{background:#0f3460;padding:10px;margin:5px 0;border-radius:8px}");
-    html.push_str(
-        ".tool{background:#1a1a1a;padding:10px;margin:5px 0;border-radius:8px;font-size:0.9em}",
-    );
-    html.push_str("pre{white-space:pre-wrap;word-wrap:break-word}");
-    html.push_str("</style></head><body>\n");
-    html.push_str(&format!("<h1>FutureAgent Session: {}</h1>\n", session_id));
-    html.push_str(&format!("<p>Model: {} | CWD: {}</p>\n", model, cwd));
-
-    for msg in messages {
-        let cls = match msg.role.as_str() {
-            "assistant" => "assistant",
-            "tool" => "tool",
-            _ => "user",
-        };
-        let content = match &msg.content {
-            Some(serde_json::Value::String(s)) => s.clone(),
-            Some(v) => v.to_string(),
-            None => String::new(),
-        };
-        html.push_str(&format!(
-            "<div class=\"{}\"><strong>{}</strong><pre>{}</pre></div>\n",
-            cls,
-            escape_html(&msg.role),
-            escape_html(&content)
-        ));
-    }
-
-    html.push_str("</body></html>");
-    html
-}
-
-/// Escape HTML special characters
-fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
-
 /// The file path a tool call operates on: the first of `path` / `file_path` /
 /// `filePath` present in its arguments (a JSON object, or a JSON string that
 /// parses to one). Shared by the approval gate and the prompt path rewriter.
@@ -783,37 +757,6 @@ fn argument_path(arguments: &serde_json::Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ─── escape_html ───────────────────────────────────────────────────────
-
-    #[test]
-    fn escape_html_escapes_all_specials() {
-        assert_eq!(
-            escape_html("<script>alert('xss')</script>"),
-            "&lt;script&gt;alert(&apos;xss&apos;)&lt;/script&gt;"
-        );
-    }
-
-    #[test]
-    fn escape_html_escapes_ampersand_first() {
-        assert_eq!(escape_html("a & b"), "a &amp; b");
-    }
-
-    #[test]
-    fn escape_html_escapes_quotes() {
-        assert_eq!(escape_html("\"quoted\""), "&quot;quoted&quot;");
-        assert_eq!(escape_html("'single'"), "&apos;single&apos;");
-    }
-
-    #[test]
-    fn escape_html_empty_string() {
-        assert_eq!(escape_html(""), "");
-    }
-
-    #[test]
-    fn escape_html_no_specials() {
-        assert_eq!(escape_html("hello world"), "hello world");
-    }
 
     // ─── argument_path ─────────────────────────────────────────────────────
 
@@ -857,80 +800,6 @@ mod tests {
     fn argument_path_empty_json_returns_none() {
         let args = serde_json::json!({});
         assert_eq!(argument_path(&args), None);
-    }
-
-    // ─── generate_session_html ─────────────────────────────────────────────
-
-    #[test]
-    fn generate_session_html_contains_title() {
-        let html = generate_session_html("sess-123", "gpt-4o", "/tmp/test", &[]);
-        assert!(html.contains("FutureAgent session sess-123"));
-        assert!(html.contains("gpt-4o"));
-        assert!(html.contains("/tmp/test"));
-    }
-
-    #[test]
-    fn generate_session_html_with_messages() {
-        let messages = vec![
-            crate::types::Message {
-                role: "user".to_string(),
-                content: Some(serde_json::json!("hello")),
-                ..Default::default()
-            },
-            crate::types::Message {
-                role: "assistant".to_string(),
-                content: Some(serde_json::json!("hi there")),
-                ..Default::default()
-            },
-            crate::types::Message {
-                role: "tool".to_string(),
-                content: Some(serde_json::json!("result")),
-                ..Default::default()
-            },
-        ];
-        let html = generate_session_html("s1", "model", "/cwd", &messages);
-        assert!(html.contains("class=\"user\""));
-        assert!(html.contains("class=\"assistant\""));
-        assert!(html.contains("class=\"tool\""));
-        assert!(html.contains("hello"));
-        assert!(html.contains("hi there"));
-    }
-
-    #[test]
-    fn generate_session_html_escapes_content() {
-        let messages = vec![crate::types::Message {
-            role: "user".to_string(),
-            content: Some(serde_json::json!("<script>alert('xss')</script>")),
-            ..Default::default()
-        }];
-        let html = generate_session_html(
-            "</title><script>session</script>",
-            "<img src=x onerror=alert(1)>",
-            "<script>cwd</script>",
-            &messages,
-        );
-        assert!(!html.contains("<script>"));
-        assert!(!html.contains("<img src=x"));
-        assert!(html.contains("&lt;script&gt;"));
-        assert!(!html.contains("<script>alert"));
-    }
-
-    #[test]
-    fn generate_session_html_empty_messages() {
-        let html = generate_session_html("s1", "model", "/cwd", &[]);
-        assert!(html.contains("<body>"));
-        assert!(html.contains("</body>"));
-    }
-
-    #[test]
-    fn generate_session_html_null_content() {
-        let messages = vec![crate::types::Message {
-            role: "assistant".to_string(),
-            content: None,
-            ..Default::default()
-        }];
-        let html = generate_session_html("s1", "model", "/cwd", &messages);
-        assert!(html.contains("assistant"));
     }
 
     // ─── AppState helpers ──────────────────────────────────────────────────
@@ -1004,6 +873,53 @@ mod tests {
             )),
         };
         (dir, state)
+    }
+
+    fn resident_session(state: &AppState, id: &str) -> ServerSession {
+        ServerSession::new_with_queue_budget(
+            id.to_string(),
+            Arc::new(tokio::sync::RwLock::new(
+                state.loop_template.independent_copy(),
+            )),
+            state.session_manager.clone(),
+            "/tmp",
+            Arc::new(SseBroadcaster::new()),
+            state.approval_gate.clone(),
+            state.model_registry.clone(),
+            state.queue_budget.clone(),
+        )
+    }
+
+    #[test]
+    fn idle_session_lookup_preserves_process_local_permission_state() {
+        let (_dir, state) = bare_app_state();
+        let mut protected = resident_session(&state, "permission-pinned");
+        protected.set_permission_level("none");
+        state.create_session(protected);
+        state
+            .session_manager
+            .save(&crate::session::Session::snapshot(
+                "permission-pinned".into(),
+                "/tmp".into(),
+                "test-model".into(),
+                String::new(),
+                String::new(),
+                vec![crate::session::SessionEntry::session_info(
+                    serde_json::json!({"cwd":"/tmp","model":"test-model"}),
+                    "test-model".into(),
+                    "default".into(),
+                )],
+            ))
+            .unwrap();
+
+        // Resident handles are not caches for process-local policy. Keep enough
+        // other sessions here to catch reintroducing an LRU that rehydrates the
+        // protected handle with the default, broader permission level.
+        for index in 0..70 {
+            state.create_session(resident_session(&state, &format!("other-{index:02}")));
+        }
+        let restored = state.get_session("permission-pinned").unwrap();
+        assert_eq!(restored.read().get_permission_level(), "none");
     }
 
     #[test]
@@ -1849,6 +1765,59 @@ mod tests {
         assert_eq!(price("costCacheWriteCny"), 0.0);
     }
 
+    /// A compaction zeroes the API-reported prompt count (the next request is a
+    /// different prompt), and `get_state` used to report that zero as the
+    /// session's context usage — so every client's gauge read `0 / 200k 0%`
+    /// immediately after a compaction that had just reported
+    /// `62,203 → 33,281 tokens`.
+    ///
+    /// The checkpoint's `tokens_after` is the agent's own estimate of the prompt
+    /// that compaction left behind, which is what the gauge should show until
+    /// the next request states its real size — and a real request still wins.
+    #[test]
+    fn get_state_reports_the_checkpoints_estimate_between_a_compaction_and_the_next_request() {
+        let state = crate::rpc::commands::test_support::make_app_state();
+        let session = state.get_session("default").expect("the default session");
+        {
+            let sess = session.read();
+            sess.last_prompt_tokens
+                .store(0, std::sync::atomic::Ordering::Release);
+            *sess.active_checkpoint.lock() = Some(crate::compaction::ContextCheckpoint {
+                entry_id: "cmp-entry".to_string(),
+                checkpoint_id: "cmp-1".to_string(),
+                covered_from_entry_id: None,
+                cutoff_entry_id: None,
+                summary: vec![],
+                protected_entry_ids: vec![],
+                tokens_before: 62_203,
+                tokens_after: 33_281,
+                trigger: crate::compaction::CompactionTrigger::Manual,
+                phase: Some(crate::compaction::CompactionPhase::Standalone),
+                algorithm_version: "test-v1".to_string(),
+                summary_outcome: None,
+                model: "test-model".to_string(),
+                context_window: 200_000,
+                created_at: chrono::Utc::now(),
+            });
+        }
+
+        let value = get_state_internal(&state, "default", None).expect("a state");
+        assert_eq!(
+            value["contextTokens"], 33_281,
+            "the checkpoint's estimate stands in for the un-sent prompt: {value}"
+        );
+        assert!(value["contextPercent"].as_f64().unwrap() > 0.0);
+
+        // The next model call reports the real prompt size, and that is what the
+        // gauge shows from then on — the estimate must never outrank it.
+        session
+            .read()
+            .last_prompt_tokens
+            .store(12_345, std::sync::atomic::Ordering::Release);
+        let value = get_state_internal(&state, "default", None).expect("a state");
+        assert_eq!(value["contextTokens"], 12_345, "{value}");
+    }
+
     #[test]
     fn get_state_prefers_the_accumulated_split_over_re_pricing_the_totals() {
         // A session whose first request ran on a cheap model and whose second ran
@@ -1998,22 +1967,18 @@ mod tests {
     }
 
     #[test]
-    fn generate_session_html_formats_non_string_content() {
-        let messages = vec![
-            crate::types::Message {
-                role: "user".to_string(),
-                content: Some(serde_json::json!([{"type": "text", "text": "hi"}])),
-                ..Default::default()
-            },
-            crate::types::Message {
-                role: "assistant".to_string(),
-                content: None,
-                ..Default::default()
-            },
-        ];
+    fn generate_session_html_renders_every_text_block() {
+        let messages = vec![crate::types::AgentMessage {
+            role: "user".to_string(),
+            content: vec![
+                crate::types::ContentBlock::text("hi"),
+                crate::types::ContentBlock::text("there"),
+            ],
+            ..Default::default()
+        }];
         let html = generate_session_html("s1", "model", "/cwd", &messages);
-        assert!(html.contains("user"));
-        assert!(html.contains("text"));
+        assert!(html.contains("hi"));
+        assert!(html.contains("there"));
     }
     /// A stored model the registry does not know, with no default to replace it:
     /// hydration keeps the unresolved identity (so the next request fails

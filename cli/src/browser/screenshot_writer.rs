@@ -131,13 +131,25 @@ mod tests {
             dir.path().join("agent").join("browser").join("artifacts")
         );
         drop(_env);
-        // Without FUTURE_HOME it derives from the home directory.
-        let expected = dirs::home_dir()
-            .unwrap_or_default()
-            .join(".future")
-            .join("agent")
-            .join("browser");
-        assert_eq!(browser_dir(), expected);
+        // Without FUTURE_HOME it derives from the home directory. Both inputs are
+        // pinned here instead of read from whatever this machine exports: with an
+        // ambient FUTURE_HOME (a developer's shell, a second isolated instance)
+        // the derivation is not from `dirs::home_dir()` at all, and this half
+        // silently asserted the ambient answer.
+        let fallback = tempfile::tempdir().expect("tempdir");
+        let _home = crate::test_env::EnvGuard::set(&[
+            ("HOME", fallback.path().as_os_str().to_os_string()),
+            ("USERPROFILE", fallback.path().as_os_str().to_os_string()),
+        ]);
+        let _none = crate::test_env::EnvGuard::remove(&["FUTURE_HOME"]);
+        assert_eq!(
+            browser_dir(),
+            fallback
+                .path()
+                .join(".future")
+                .join("agent")
+                .join("browser")
+        );
     }
 
     #[tokio::test]

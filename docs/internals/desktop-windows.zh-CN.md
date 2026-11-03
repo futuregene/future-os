@@ -79,3 +79,75 @@ fail-closed 锁定卸载、复制后加载验证、复制/验证失败后的回�
 发布前，还要在上一版本之上冒烟测试**完整打包安装器**，覆盖"重装"与"先卸载再升级"
 两种选择。旧版本的卸载器包含的是它自己的原始 hooks，不是新的。任何预检都无法阻止
 其他应用在检查之后获得锁；安装完成前避免重新打开 FutureOS。
+
+## 无终端的启动没有可写的 stderr
+
+由资源管理器启动、安装器"立即运行"或开机自启拉起的进程没有控制台窗口，fd 2 要么不存在，
+要么指向一个本进程无写权限的句柄。`eprintln!` 在这种情况下不是"丢掉这行"：
+`std::io::stdio::print_to` 在写入失败时 panic，直接结束发射它的那个任务。
+
+2026-11-01 在同一个 `futureos.exe` 进程的 `app/logs/crash.log` 里实测到 **699** 条
+`panicked ... failed printing to stderr: 拒绝访问 (os error 5)`，全部在 `tokio-rt-worker`
+上，且每一条都固定出现在中继报出 `authorization violation` 之后 **11.1 秒**。当天两件后果
+都发生了：远程桌面停掉的原因在磁盘上查不到，而 panic 可能杀掉本来要去重建那条链路的任务。
+
+两层措施，缺一不可：
+
+- **`future_agent::console::redirect_windowless_standard_streams`**，由
+  `future_host::environment::prepare_process` 最先调用：`GetConsoleWindow()` 为空时，把本进程的
+  stdout/stderr 指向 `~/.future/app/logs/desktop.stdio.log`（超过 4 MiB 换新文件），于是**任何**
+  `eprintln!`（std、依赖、没人审过的代码）都会写进文件而不是 panic。从终端启动的进程保持原终端。
+- **容错写入器**，用于运行**中途**失效的流：`console::eprintln!` / `console::println!` 丢弃失败的写入，
+  `logfile::eprintln_log!` 同时镜像进 `desktop.log`，remote 栈则统一走
+  `future_remote_protocol::diagnostics`（host 把它接到 `environment::report`）。启动之后才断掉的终端
+  在启动时无法检测，所以长生命周期任务里的诊断不能再用裸 `eprintln!`。
+
+本仓库新代码的规矩：长生命周期任务里的诊断必须走上面三者之一；如果 `grep -rn 'eprintln!'`
+能搜到你那行，就说明它没有。
+
+## 更正（2026-11-02）：有控制台不等于 stderr 可写
+
+上面那段重定向以 `GetConsoleWindow()` 为门禁，这个门禁是错的：它在生产里**从未生效**。同一个桌面进程的证据（`app/logs/desktop.prev.log`，构建 `bbfee50e`）：
+
+```
+06:22:07.572Z host starting ... pid=30816 mode=auto          # 计划任务隐藏窗口启动
+06:22:08.780Z WARN terminal stream is unusable; ... error=拒绝访问 (os error 5)
+06:22:08.936Z Agent host finished ... phase=Failed("Embedded Agent worker panicked")
+```
+
+- 那次启动**是有控制台的**（计划任务的 PowerShell 创建的隐藏控制台），但它的 stderr 每次写入都返回 `os error 5`。「有控制台」和「流可写」是两个问题，于是重定向恰好在最需要它的地方被跳过。
+- **`desktop.stdio.log` 从未出现过**——这是最直接的证据：重定向一旦执行就会无条件创建该文件。
+- 之后发生的事：启动 1.4 秒 panic，看门狗每 10 分钟重启一次，持续 **13 小时**（84 次恢复，06:22:26Z 至 19:28:38Z），**全程没有告诉用户**，界面上看不出 Agent 已经死了。
+
+三项改动回答它，其中第一项是让另外两项有意义的前提：
+
+1. **写日志失败绝不能杀死写它的任务。** `console::write_err` / `write_out` 改为降级：文本转写进 host 日志，只在第一次记一行「输出不可用」，连日志也写失败就丢弃。Agent 自己的诊断不再用 `eprintln!`/`println!`（16 处生产代码改走容错宏），这类 panic 是被移除而不是被绕过。
+2. **门禁问的是"这条流有没有自己的去处"，而不是"有没有控制台"。** `redirect_windowless_standard_streams` 只把**没有去处**的流搬到 `app/logs/desktop.stdio.log`；调用方自己捕获的流原样留在原处（`NUL` 设备与已关闭的管道对同一个问题的回答相同，而被捕获的管道是别人的读者，搬走它等于弄坏 `futureos | tee`）。桌面端在进程准备阶段就走这条路径，不论启动时继承了什么控制台。
+3. **恢复有终点。** `future_rpc::supervision::RestartBudget` 只允许三次始终未达到 `Attached::Stable` 的启动；第三次就把预算用尽，任何冷却、更晚的唤醒或 `reset()` 都不能再放行。看门狗随即停止，只记一行（`Agent recovery gave up after N/3 attempts: <原因>; automatic retries stopped, restart FutureOS`），状态页显示 `phase=restart_required` 并带上原因，并**每个 episode 只弹一次**对话框，按钮一键重启。headless 不弹窗：只记日志与状态。
+
+验收标准不是「在窗口里能起来」，而是：**由计划任务以隐藏窗口启动**时，进程必须创建 `app/logs/desktop.stdio.log`、`crash.log` 条目数不变，并在 `host starting` 行里写清流类型。单测刻意让子进程**带控制台**运行（`console::tests::a_launch_with_a_console_still_redirects_its_streams_to_a_file`）；先前那条用 `CREATE_NO_WINDOW`，覆盖的正是生产里不会出现的那一支。
+
+### 装上新构建之前的临时约定
+
+在仍跑旧构建的机器上，唯一稳定的启动方式是**从一个保持打开的终端启动**（实测：`WindowsTerminal` → `powershell` → `futureos.exe`，19:21:44 起存活，而它之前四次启动都在一秒内死掉）。**关掉那个终端，stderr 就再次不可写，会重新进入静默重启循环。** 这是应急约定而不是修复：装上包含上述改动的构建后，启动方式就不再是变量。
+
+### 踩坑：先读 `origin/dev-huichen` 再动手，而不是写完再合
+
+这次工作是在一个已经变过的基点上写的。等它写好时，另一个会话已经把重定向门禁换成了上面的
+"有没有去处"判断——那个版本更对，因为它把调用方捕获的流留在原处——并且顺手迁移了裸
+`eprintln!`。之后 rebase 恰好在最要紧的几个文件上冲突，解冲突比当初读一眼 `origin` 贵得多：
+动手前执行一次 `git show origin/dev-huichen:<文件>` 就会看到门禁已经变了，于是这件事只需要写一次，
+而不是两次。
+
+由此留下的规矩：动一个仓库最近很忙的文件之前，**先读远端那份**
+（`git show origin/<branch>:<path>`），而不是工作树里那份，更不是等代码写完再读。
+
+## 启动、审阅与退出的边界（2026-11-03）
+
+GUI 在启动工作线程前，将缺失或不可写的非管道标准句柄重定向；调用方捕获的管道保留原目的地。`desktop.stdio.log` 无法打开时，缺失的流仍指向 `NUL`，通过结构化日志报告文件错误。桌面保留已连接的终端至进程结束，不再在日志准备后调用 `FreeConsole`。内嵌线程失败会把原始 panic 内容带入状态和日志。
+
+启动不遍历历史 Review。打开上一轮变更时，仅从当前对话最近一条已结束 Run 的已保存 before/after 补算；缺少 after 显示不完整。已保存 diff 无须访问当前工作区或 Git。影子 Git 和锁等待有期限并响应关闭，不再靠关闭预算等待全部历史维护完成。
+
+Agent 就绪后，账号验证超过 5 秒按暂不可用处理；模型服务设置超过 15 秒进入可重试的错误界面。设置加载失败与 Agent 启动失败分别展示。
+
+原生 Windows 仍需验收：资源管理器、隐藏计划任务、不可写日志路径、终端启动和管道捕获、数百条历史对话，以及 Git 执行中关闭。确认 `crash.log` 不新增 stderr 写失败 panic，历史按需加载，正常退出不再因全量审阅维护超时。

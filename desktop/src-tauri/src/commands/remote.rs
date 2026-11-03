@@ -16,20 +16,20 @@ pub async fn remote_start(
     match remote::enable().await {
         Ok(status) => {
             if let Some(reason) = &status.reason {
-                eprintln!("remote: start completed in {:?} [{reason:?}]", status.phase);
+                tracing::info!(event = "remote_start", reason = ?reason,"remote: start completed in {:?} [{reason:?}]", status.phase);
             }
             // A start that came up failed or revoked is not an "on" switch, so
             // it must not be remembered as one: the next launch must not replay
             // a state the user never saw.
             if is_on(status.phase) {
-                remember_switch(true);
+                remember_switch(true, "window_start");
             }
             Ok(status)
         }
         Err(error) => {
             // The GUI collapses this into a generic banner; keep the real cause
             // in the app's stderr so a failed start is debuggable.
-            eprintln!("remote: start failed (local fault): {error}");
+            tracing::error!(event = "remote_start", error = %error,"remote: start failed (local fault): {error}");
             Err(error)
         }
     }
@@ -38,7 +38,7 @@ pub async fn remote_start(
 #[tauri::command]
 pub async fn remote_stop() -> Result<remote::RemoteStatus, crate::AppError> {
     let status = remote::stop_gracefully("user_disconnect").await;
-    remember_switch(false);
+    remember_switch(false, "window_stop");
     Ok(status)
 }
 

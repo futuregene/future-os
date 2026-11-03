@@ -256,7 +256,7 @@ rebindable:
 
 | Action | Default | What it answers |
 | --- | --- | --- |
-| Jump to a command or conversation (`palette.open`) | `mod+k` | *do this* / *go there* |
+| Jump to a command or conversation (`palette.open`) | `mod+p` | *do this* / *go there* |
 | Show all shortcuts (`shortcuts.help`) | `mod+/` | *what can I press* |
 | Keyboard shortcut settings (`shortcuts.settings`) | `mod+shift+,` | *change one* |
 
@@ -372,18 +372,18 @@ separate keymap — see *Modes* below.
 | Find in this conversation | `mod+f` | was a private listener in `ThreadSearch` |
 | Copy the last reply | `mod+alt+c` | the same prose the reply's hover button copies (`replyCopyText`); registered only while the turn has an answer |
 | Jump to the latest message | `mod+alt+g` | the corner's jump button from the keys; `Page Up`/`Page Down` step between questions instead |
-| Attach files | `mod+shift+o` | the composer's paperclip, through the same picker and access probe |
+| Attach files | `mod+alt+a` | the composer's paperclip, through the same picker and access probe |
 | Previous / next conversation | `mod+[` / `mod+]` | the fine move: every drawn conversation row; repeats |
 | Previous / next workspace or conversation | `mod+shift+[` / `mod+shift+]` | the coarse move: hold ⇧ for the bigger step; repeats |
 | Filter the conversation list | `mod+shift+f` | jumps to the field, does not navigate |
 | List recent conversations / List workspaces | `mod+alt+1` / `mod+alt+2` | the rail's view switch; one key per answer, not a toggle |
 | Switch to the next device | `mod+shift+d` | walks the device picker's ring (all → this machine → each paired one); repeats. `vibe.device` holds the same keys inside the panel |
-| Previous / next model | `mod+alt+shift+m` / `mod+alt+m` | the composer's model picker; wraps |
-| Previous / next thinking level | `mod+alt+shift+t` / `mod+alt+t` | wraps through every level the model accepts |
-| Previous / next access level | `mod+alt+shift+a` / `mod+alt+a` | wraps through the tiers this account and host can offer |
+| Previous / next model | `mod+shift+o` / `mod+o` | the composer's model picker; wraps |
+| Previous / next thinking level | `mod+shift+t` / `mod+t` | wraps through every level the model accepts |
+| Previous / next access level | `mod+shift+s` / `mod+s` | wraps through the tiers this account and host can offer |
 | Show this conversation's usage | `mod+alt+u` | the header's receipt; registered only when the conversation has an agent session |
 | Go to Chats / Workspaces / Skills / Scheduled tasks / Remote | `mod+1` … `mod+5` | |
-| Show or hide the sidebar | `mod+b` | |
+| Show or hide the sidebar | `mod+d` | |
 | Show or hide the context panel | `mod+shift+b` | |
 | Show or hide the terminal | `mod+j` | was hard-coded in `features/terminal/shortcut.ts` |
 | Open settings | `mod+,` | |
@@ -401,6 +401,43 @@ caret (a bare key outside a mode is never a command — see *What the recorder r
 `↑` is taken only on an **empty** box (nowhere to move the caret to), and the walk
 continues while the recalled text is untouched; the first real edit ends it, so the
 arrows are the editor's again.
+
+## Agreement with the TUI
+
+The terminal workbench and this window are two surfaces of one product, so a verb
+they both have keeps **the same letter**: `tui/src/workbench/preferences.rs` binds
+`ctrl+P` and this table binds `mod+P`. `mod` *is* `Ctrl` on Windows and Linux, so
+there the two chords are the same physical key; on macOS one default still serves
+all three platforms, and only the accelerator differs (`⌘` here, `⌃` in the
+terminal) while the letter stays where the hand expects it.
+
+| Verb | TUI | Desktop |
+| --- | --- | --- |
+| Command palette | `ctrl+p` | `mod+p` |
+| Show or hide the rail | `ctrl+d` | `mod+d` |
+| Model | `ctrl+o` | `mod+o` (`⇧` walks back) |
+| Thinking level | `ctrl+t` | `mod+t` (`⇧` walks back) |
+| Approval mode | `ctrl+s` | `mod+s` (`⇧` walks back) |
+| New conversation | `ctrl+n` | `mod+n` (already agreed) |
+
+The three pickers are the one place where the *gesture* still differs: the TUI
+opens a chooser, this surface steps the value, because a `SelectMenu` has no
+roving focus and opening it would only get a reader to a pointer target. Same key,
+same value, one step instead of a menu.
+
+**Five pairs stay apart on purpose** — they are decisions, not drift:
+
+| Verb | TUI | Desktop | Why |
+| --- | --- | --- | --- |
+| Stop generating | `ctrl+c` | `mod+.` | `mod+c` is reserved for copy; inside the transcript `Ctrl+C` has to keep meaning "copy" |
+| Preferences | `ctrl+q` | `mod+,` | `⌘Q` is Quit on macOS, so no portable default exists |
+| Find | `ctrl+f` = the files panel | `mod+f` = find in this conversation | `⌘F` is the platform's find, and this surface has no "files panel" command (the tree lives in the context panel) |
+| Previous / next conversation | `shift+↑/↓` | `mod+[` / `mod+]` | the global keymap holds real modifiers only; `Shift+↑↓` is selection inside a text field |
+| The rail's two tabs | `ctrl+1` / `ctrl+2` | `mod+alt+1` / `mod+alt+2` | `mod+1`…`mod+5` are the five sections, and a section is pressed more often than a view |
+
+The embedded terminal keeps `Ctrl+D` (EOF), `Ctrl+P` (readline's previous line) and
+`Ctrl+S` (XOFF) because every one of these commands is `inTerminal: false` — the
+same bargain the terminal surface makes when it takes those bytes out of raw mode.
 
 ## What the recorder refuses
 
@@ -472,6 +509,17 @@ session. Expected: no command runs and the preedit box stays; inside the embedde
 terminal the expectation is the same, and the stale failure mode to guard is the
 composition being committed twice (`keyPolicy.ts`). Record both outcomes here
 when it is measured.
+
+**Not verified by hand — the five chords that are also browser accelerators.**
+`⌘P`, `⌘O`, `⌘S`, `⌘T` and `⌘D` are all accelerator keys in Chromium, and
+WebView2 is Chromium with a few of them handled by the browser process. The
+dispatcher listens in the capture phase and calls `preventDefault` (which is how
+`mod+f` has worked all along), so the expectation is that all five reach their
+command; nobody has yet pressed them in a packaged Windows build, and only that
+build answers the question. If one turns out to be eaten, the fallback keeps the
+letter and moves the modifier (`mod+alt+p` / `o` / `s` / `t` / `d`, with the
+`⇧` reverse following), so the TUI's vocabulary survives either way. Record the
+outcome here when it is measured.
 
 ## Going further (not implemented)
 

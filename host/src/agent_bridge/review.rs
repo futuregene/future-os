@@ -6,25 +6,9 @@
 
 use std::path::PathBuf;
 
-use crate::shadow_review::{
-    self, Limits, MaterializedDiff, ShadowRepo, VolumeRedline, VolumeVerdict,
-};
-use crate::store::{self, InsertReviewFileChangeInput, UpsertRunChangesetInput};
+use crate::shadow_review::{self, Limits, ShadowRepo, VolumeRedline, VolumeVerdict};
+use crate::store;
 use crate::Error as AppError;
-
-/// Append metadata-only rows for changed sensitive files (§13): path + status,
-/// no blob or diff.
-fn append_sensitive_rows(diff: &mut MaterializedDiff, sensitive: &[String]) {
-    for path in sensitive {
-        diff.files.push(InsertReviewFileChangeInput {
-            path: Some(path.clone()),
-            change_type: "M".to_string(),
-            omission_reason: Some("sensitive".to_string()),
-            ..Default::default()
-        });
-        diff.files_changed += 1;
-    }
-}
 
 struct ReviewContext {
     workspace_id: String,
@@ -171,138 +155,39 @@ fn try_materialize_changeset(
     run_id: &str,
     sensitive: Vec<String>,
 ) -> Result<(), AppError> {
-    let Some(ctx) = resolve(thread_id)? else {
-        return Ok(());
-    };
-    let Some(before) = store::get_review_snapshot(run_id, "before")? else {
-        return Ok(());
-    };
-    let after = store::get_review_snapshot(run_id, "after")?;
-
-    // Diffing between commits needs only the object DB — a bare handle.
-    let repo = ShadowRepo::open_bare(&ctx.workspace_id)?;
-    let limits = Limits::default();
-
-    // Materialize the diff only when both ends produced a real commit.
-    let both_ok = before.status != "failed"
-        && after
-            .as_ref()
-            .map(|a| a.status != "failed")
-            .unwrap_or(false);
-    let materialized = match (both_ok, before.commit_id.as_deref(), after.as_ref()) {
-        (true, Some(before_commit), Some(after_snap)) => match after_snap.commit_id.as_deref() {
-            Some(after_commit) => {
-                shadow_review::materialize(&repo, before_commit, after_commit, &limits).ok()
-            }
-            None => None,
-        },
-        _ => None,
-    };
-
-    let completeness = match (
-        before.status.as_str(),
-        after.as_ref().map(|a| a.status.as_str()),
-    ) {
-        (b, Some(a)) if b == "partial" || a == "partial" => "partial",
-        _ => "complete",
-    };
-    let omitted_files = after
-        .as_ref()
-        .map(|a| a.omitted_count)
-        .unwrap_or(before.omitted_count);
-
-    let mut diff = materialized.unwrap_or_default();
-    // §13: surface changed sensitive files as metadata-only rows (no content).
-    append_sensitive_rows(&mut diff, &sensitive);
-
-    // `None` means a parent row was deleted while this was in flight (the
-    // conversation went away); there is nothing to attach a changeset to.
-    let _ = store::upsert_run_changeset(UpsertRunChangesetInput {
-        run_id: run_id.to_string(),
-        thread_id: thread_id.to_string(),
-        workspace_id: Some(ctx.workspace_id.clone()),
-        title: crate::store::LAST_RUN_CHANGESET_TITLE.to_string(),
-        summary: None,
-        before_snapshot_id: Some(before.id),
-        after_snapshot_id: after.map(|a| a.id),
-        files_changed: diff.files_changed,
-        additions: diff.additions,
-        deletions: diff.deletions,
-        binary_files: diff.binary_files,
-        omitted_files,
-        completeness: completeness.to_string(),
-        confidence: "normal".to_string(),
-        error_message: None,
-        files: diff.files,
-    })?;
-
-    // §12.5: flag this Run and any concurrently-overlapping peers.
-    let _ = store::mark_run_overlapped(&ctx.workspace_id, run_id);
-    // §12.3: prune old changesets/refs for this Thread and let git gc when due.
-    shadow_review::enforce_retention(thread_id);
-    Ok(())
+    crate::shadow_review::with_run_review_lock(run_id, || {
+        shadow_review::materialize_recorded(thread_id, run_id, sensitive)?;
+        shadow_review::enforce_retention(thread_id);
+        Ok(())
+    })
 }
 
-/// Re-materialize a Run's changeset from its existing before/after commits
-/// (§10.4). Only valid when both commits still exist; never fabricates.
+/// Explicit retry uses the same immutable projection as normal completion.
+/// Missing boundaries are reported; they are never filled from today's files.
 pub fn retry(run_id: &str) -> Result<(), AppError> {
-    let run = store::get_run(run_id)?.ok_or_else(|| "Run could not be loaded.".to_string())?;
-    let thread_id = run.thread_id;
-    let ctx = resolve(&thread_id)?
-        .ok_or_else(|| "Shadow review does not apply to this Run.".to_string())?;
-
-    let before = store::get_review_snapshot(run_id, "before")?
-        .ok_or_else(|| "Missing before snapshot; cannot retry.".to_string())?;
-    let after = store::get_review_snapshot(run_id, "after")?
-        .ok_or_else(|| "Missing after snapshot; cannot retry.".to_string())?;
-    let (Some(before_commit), Some(after_commit)) =
-        (before.commit_id.as_deref(), after.commit_id.as_deref())
-    else {
-        return Err("Snapshots have no commits; cannot retry."
-            .to_string()
-            .into());
-    };
-
-    let repo = ShadowRepo::open(&ctx.workspace_id, &ctx.workspace_path, ctx.is_git)?;
-    let limits = Limits::default();
-    let diff = shadow_review::materialize(&repo, before_commit, after_commit, &limits)?;
-    let completeness = if before.status == "partial" || after.status == "partial" {
-        "partial"
-    } else {
-        "complete"
-    };
-    let omitted_files = after.omitted_count;
-
-    // A deleted conversation (or a Run deleted by retention) can take the
-    // parents away between the reads above and this write. The user asked for
-    // this retry, so say so rather than returning an empty review.
-    if store::upsert_run_changeset(UpsertRunChangesetInput {
-        run_id: run_id.to_string(),
-        thread_id,
-        workspace_id: Some(ctx.workspace_id),
-        title: crate::store::LAST_RUN_CHANGESET_TITLE.to_string(),
-        summary: None,
-        before_snapshot_id: Some(before.id),
-        after_snapshot_id: Some(after.id),
-        files_changed: diff.files_changed,
-        additions: diff.additions,
-        deletions: diff.deletions,
-        binary_files: diff.binary_files,
-        omitted_files,
-        completeness: completeness.to_string(),
-        confidence: "normal".to_string(),
-        error_message: None,
-        files: diff.files,
-    })?
-    .is_none()
-    {
-        return Err(
-            "The Run or its conversation was deleted; there is nothing to re-materialize."
-                .to_string()
-                .into(),
-        );
-    }
-    Ok(())
+    crate::shadow_review::with_run_review_lock(run_id, || {
+        let run = store::get_run(run_id)?.ok_or_else(|| "Run could not be loaded.".to_string())?;
+        let thread = store::get_thread(&run.thread_id)?
+            .ok_or_else(|| "Conversation could not be loaded.".to_string())?;
+        if thread.mode != "workspace" {
+            return Err("Shadow review does not apply to this Run.".into());
+        }
+        let before = store::get_review_snapshot(run_id, "before")?
+            .ok_or_else(|| "Missing before snapshot; cannot retry.".to_string())?;
+        let after = store::get_review_snapshot(run_id, "after")?
+            .ok_or_else(|| "Missing after snapshot; cannot retry.".to_string())?;
+        if before.commit_id.is_none() || after.commit_id.is_none() {
+            return Err("Snapshots have no commits; cannot retry.".into());
+        }
+        shadow_review::materialize_recorded(&run.thread_id, run_id, Vec::new())?;
+        if store::get_run_changeset(run_id)?.is_none() {
+            return Err(
+                "The Run or its conversation was deleted; there is nothing to re-materialize."
+                    .into(),
+            );
+        }
+        Ok(())
+    })
 }
 
 #[cfg(test)]
@@ -939,10 +824,9 @@ mod tests {
         );
     }
 
-    /// A `partial` before snapshot makes the changeset completeness `partial`
-    /// (before it is upserted successfully).
+    /// Metadata alone cannot establish a complete diff without both commits.
     #[test]
-    fn materialize_marks_partial_completeness() {
+    fn materialize_reports_commitless_snapshots_as_incomplete() {
         let _lock = crate::TEST_HOME_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
@@ -971,7 +855,7 @@ mod tests {
         let changeset = store::get_run_changeset(&run.id)
             .unwrap()
             .expect("changeset");
-        assert_eq!(changeset.completeness, "partial");
+        assert_eq!(changeset.completeness, "incomplete");
     }
 
     /// When the changeset store vanishes (raw table drop on the app db),

@@ -7,6 +7,7 @@ import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { Switch } from "../../components/ui/Switch";
+import { getAppSettings } from "../../integrations/storage/appSettings";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { usePolling } from "../../lib/usePolling";
 import {
@@ -23,6 +24,8 @@ import {
   deviceLabel,
   deviceReady,
   deviceState,
+  deviceSyncStageLabel,
+  deviceVersionLabel,
   formatCountdown,
   formatPairId,
 } from "./remoteHostFormat";
@@ -57,6 +60,14 @@ import {
  * closing it throws the invitation away rather than leaving a half-made
  * connection behind.
  */
+/**
+ * What the switch, and everything it opens, is in.
+ *
+ * `unknown` is a third state, not a flavour of `off`: it means this window has
+ * no status to read, so it cannot say whether the machine is serving or not.
+ */
+type HostSwitchState = "on" | "off" | "unknown";
+
 export interface RemoteHostSectionProps {
   /**
    * Shared remote bridge status polled at the app level — the same source
@@ -96,7 +107,56 @@ export function RemoteHostSection({
 
   // --- derived from the shared app-level status (same source as the sidebar indicator) ---
   const phase = remoteStatus?.phase ?? "stopped";
-  const running = phase !== "stopped" && phase !== "failed" && phase !== "revoked";
+  /**
+   * The switch is the stored preference, not the bridge's phase.
+   *
+   * Turning it on stores "serve again at launch", so a bridge that failed, a
+   * machine whose last device was removed, and a machine still trying to
+   * connect are all machines the user left *on*. Reading the phase instead made
+   * them render as "you turned it off": measured 2026-11-02, that is exactly
+   * what a user saw after repeated credential rejections, pressed the switch to
+   * turn their remote desktop back on, and only re-stored the `on` it already
+   * had — while the next launch served anyway. Health has its own line below
+   * (`failure`/`terminal`), so the switch does not have to carry it.
+   *
+   * `null` until the preference has been read, so the first frame falls back to
+   * the phase rather than flashing "off".
+   */
+  const [switchPreference, setSwitchPreference] = useState<boolean | null>(null);
+  const readSwitchPreference = useCallback(async () => {
+    try {
+      setSwitchPreference((await getAppSettings()).autoConnectRemote);
+    }
+    catch (err) {
+      // A settings read failing is not a reason to claim the remote desktop is
+      // off; the phase fallback keeps the control usable.
+      console.error("remote switch preference:", err);
+    }
+  }, []);
+  useEffect(() => {
+    void readSwitchPreference();
+  }, [readSwitchPreference]);
+  const phaseOn = phase !== "stopped" && phase !== "failed" && phase !== "revoked";
+  /**
+   * One state for the switch, the body it opens, and what the section says when
+   * it opens nothing.
+   *
+   * Three states, not two: without a status there is no evidence at all — the
+   * command may have failed, or the first poll may not have landed — and saying
+   * "off" there is the same lie the switch used to tell about a failed bridge
+   * (it claimed the user had turned the machine off when they had not). Nothing
+   * may read this as a boolean: `unknown` is not `false`, and every consumer
+   * below compares against the state it needs.
+   *
+   * With a status in hand, the stored preference answers — the phase fills in
+   * only until that read lands, because the phase is real evidence while the
+   * preference is still unknown.
+   */
+  const switchState: HostSwitchState = remoteStatus == null
+    ? "unknown"
+    : (switchPreference ?? phaseOn)
+        ? "on"
+        : "off";
   const presentation = remoteConnectionPresentation(remoteStatus);
   const terminal = phase === "failed" || phase === "revoked";
   const failure = terminal && presentation?.messageKey && presentation.messageKey !== "connection" && presentation.messageKey !== "devicePreparing"
@@ -180,6 +240,9 @@ export function RemoteHostSection({
     }
     finally {
       await onRefreshRemote();
+      // The start stored the preference; read it back so the switch shows what
+      // the machine will actually do at the next launch.
+      await readSwitchPreference();
       // Keep the preparation message visible until the refreshed status has
       // supplied the pairing code, avoiding a one-frame return of the button.
       setBusy(false);
@@ -201,6 +264,7 @@ export function RemoteHostSection({
       setAddOpen(false);
       setPendingPairId(null);
       await onRefreshRemote();
+      await readSwitchPreference();
     }
   }
 
@@ -383,25 +447,34 @@ export function RemoteHostSection({
   return (
     <>
       <div className="space-y-4">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center justify-between gap-3" data-switch-state={switchState}>
           <div className="min-w-0">
             <div className="text-sm text-ink">{t("hostToggleTitle")}</div>
             <div className="mt-0.5 text-xs text-ink-muted">{t("hostToggleDescription")}</div>
           </div>
+          {/* `checked` is the one place the tri-state has to become a boolean, and
+              an unknown state is drawn as *not claimed on* while being disabled:
+              it can neither be mistaken for "on" nor turned off by a click. The
+              line below says which of the two it is. */}
           <Switch
-            checked={running}
-            disabled={busy}
+            checked={switchState === "on"}
+            disabled={busy || switchState === "unknown"}
             label={t("hostToggleTitle")}
             onChange={handleToggle}
           />
         </div>
+
+        {/* No status to read: say so instead of showing a switch that reads off. */}
+        {switchState === "unknown"
+          ? <p aria-live="polite" className="text-sm text-ink-muted">{t("switchUnknown")}</p>
+          : null}
 
         {/* What this machine is called: the id the other side records when it
             pairs with this one. The rows below carry pair ids, which name a
             connection, so without this there is nothing to match the two
             screens by. One line, no explanation — the id is a lookup key, not
             a setting. */}
-        {running && remoteStatus?.desktopId
+        {switchState === "on" && remoteStatus?.desktopId
           ? (
               <div className="flex items-center gap-2 text-xs text-ink-muted">
                 <span className="shrink-0">{t("localDeviceId")}</span>
@@ -454,12 +527,12 @@ export function RemoteHostSection({
         {/* Turning the switch on is asynchronous: the bridge has to start and
             report back. Say so while that happens — otherwise the switch looks
             inert for the whole start. */}
-        {!running && busy
+        {switchState === "off" && busy
           ? <p aria-live="polite" className="text-sm text-ink-muted">{t("preparingPairingHint")}</p>
           : null}
 
         {/* Everything below is what the switch serves. */}
-        {running
+        {switchState === "on"
           ? (
               <>
                 <span className="text-sm font-medium text-ink">{t("clientsTitle")}</span>
@@ -473,6 +546,7 @@ export function RemoteHostSection({
                         <ul className="divide-y divide-line-soft">
                           {devices.map((device) => {
                             const state = deviceState(device, t);
+                            const syncStage = deviceSyncStageLabel(device, t);
                             return (
                               <li
                                 className="flex flex-wrap items-center gap-2 px-4 py-2"
@@ -492,6 +566,24 @@ export function RemoteHostSection({
                                   {deviceLabel(device, t)}
                                 </span>
                                 <span className="shrink-0 text-xs text-ink-muted">{formatPairId(device.pairId)}</span>
+                                {/* What the device said it runs. Next to the pair
+                                    id rather than behind a details view: the one
+                                    question a remote conversation that will not
+                                    load raises is "is that end older than this
+                                    machine?", and a person should not have to
+                                    open anything to answer it. "Unknown" is a
+                                    real answer — every device that predates the
+                                    field reports nothing. */}
+                                <span className="shrink-0 text-xs text-ink-muted">
+                                  {deviceVersionLabel(device, t)}
+                                </span>
+                                {/* Where that device's conversation sync is stuck,
+                                    when it says. It names the step
+                                    (`get_state`/`history`/`replay`), which is
+                                    the half a version cannot tell. */}
+                                {syncStage
+                                  ? <Badge tone="warning">{syncStage}</Badge>
+                                  : null}
                                 <Badge tone={state.tone}>{state.label}</Badge>
                                 {device.control === "standby" && deviceReady(device)
                                   ? (

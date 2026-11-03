@@ -12,25 +12,7 @@ pub(crate) enum CompactionClaim {
 }
 
 pub(crate) fn canonical_hash(value: &Value) -> Result<String> {
-    fn sorted(value: &Value) -> Value {
-        match value {
-            Value::Object(map) => {
-                let sorted_map = map.iter().collect::<std::collections::BTreeMap<_, _>>();
-                Value::Object(
-                    sorted_map
-                        .into_iter()
-                        .map(|(k, v)| (k.clone(), sorted(v)))
-                        .collect(),
-                )
-            }
-            Value::Array(values) => Value::Array(values.iter().map(sorted).collect()),
-            value => value.clone(),
-        }
-    }
-    Ok(format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(&sorted(value))?)
-    ))
+    super::content::json_digest(value)
 }
 
 fn input_hash(db: &Connection, session: &str) -> Result<String> {
@@ -53,6 +35,15 @@ impl Manager {
         policy: Value,
         operation_id: &str,
     ) -> Result<CompactionClaim> {
+        self.ensure_execution_allowed(session)?;
+        let store = self.storage()?;
+        if store.storage_format(session)? == super::content::FORMAT_VERSION {
+            return store.claim_segmented_checkpoint(
+                session,
+                canonical_hash(&policy)?,
+                operation_id,
+            );
+        }
         let session = session.to_owned();
         let operation_id = operation_id.to_owned();
         self.storage()?.db.call(move |db| {
@@ -76,7 +67,7 @@ impl Manager {
                         let actual:Value=serde_json::from_str(&content.context("missing cached checkpoint body")?)?;
                         if expected.as_ref()!=Some(&actual) { bail!("cached compaction checkpoint was modified"); }
                         let cutoff:Option<i64>=tx.query_row("SELECT position FROM entries WHERE session_id=?1 AND entry_id=?2",params![session,cp.cutoff_entry_id],|r|r.get(0)).optional()?;
-                        if !cutoff.is_some_and(|cutoff|cutoff<position) { bail!("cached compaction checkpoint range is invalid"); }
+                        if cutoff.is_none_or(|cutoff|cutoff>=position) { bail!("cached compaction checkpoint range is invalid"); }
                     }
                     return Ok(CompactionClaim::Cached { value, operation_id:original_operation });
                 }
@@ -99,6 +90,10 @@ impl Manager {
         entry: Option<SessionEntry>,
         receipt: Value,
     ) -> Result<()> {
+        let store = self.storage()?;
+        if store.storage_format(session)? == super::content::FORMAT_VERSION {
+            return store.finish_segmented_checkpoint(session, key, input, entry, receipt);
+        }
         let (session, key, input) = (session.to_owned(), key.to_owned(), input.to_owned());
         self.storage()?.db.call(move |db| {
             let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -117,6 +112,10 @@ impl Manager {
     }
 
     pub(crate) fn fail_compaction(&self, session: &str, key: &str, error: &str) -> Result<()> {
+        let store = self.storage()?;
+        if store.storage_format(session)? == super::content::FORMAT_VERSION {
+            return store.fail_segmented_checkpoint(session, key, error);
+        }
         let (session, key, error) = (session.to_owned(), key.to_owned(), error.to_owned());
         self.storage()?.db.call(move |db| {
             db.execute("UPDATE compaction_operations SET state='failed',result_json=?3 WHERE session_id=?1 AND input_key=?2 AND state='started'",params![session,key,serde_json::to_string(&json!({"error":error}))?])?;

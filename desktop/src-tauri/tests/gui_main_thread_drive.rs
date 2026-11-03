@@ -17,8 +17,8 @@
 //!    `instance::gui_identifier` appends the data root's id whenever `FUTURE_HOME` is
 //!    overridden (`lib.rs`'s identifier logic), so this process cannot collide with a real
 //!    Desktop on `/tmp/<identifier>_si.sock`.
-//! 2. **Run the real entry point** on the main thread: `futureos_lib::run_with`, the same
-//!    function `src/main.rs` calls.
+//! 2. **Run the real entry point** on the main thread: `futureos_lib::run`, the very
+//!    function `src/main.rs` calls (it wraps `run_with`, so the wrapper is covered too).
 //! 3. **Exit through `libc::exit`.** LLVM writes the profile from an `atexit` handler, so
 //!    the process must end normally — a `SIGKILL`ed app records nothing (measured; see the
 //!    record's Appendix S7). `std::process::exit` runs the `atexit` chain, which is why the
@@ -37,12 +37,12 @@
 //!   that on a host which delivers `Ready` the callback finds the window (its `unminimize`/
 //!   `show`/`set_focus` arms) and the `.setup` hook (menu, dock icon, geometry) has run;
 //! * a hard deadline ends the process regardless, so a hang cannot hold the suite;
-//! * if `run_with` returns — on a host where the real Tauri/Wry runtime cannot start (a
+//! * if `run` returns — on a host where the real Tauri/Wry runtime cannot start (a
 //!   Linux CI box without a display, for instance) it returns `Err` — the driver reports
 //!   that on stderr and exits **0**: the platform's own behaviour is the result, and this
 //!   target must not add a red to a job whose subject is not this unit's code.
 //!
-//! Flavour-sensitive: it needs the `gui` feature (`run_with` only exists there — the
+//! Flavour-sensitive: it needs the `gui` feature (`run`/`run_with` only exist there — the
 //! headless build exports a different surface), and the `[[test]]` stanza declares
 //! `required-features = ["gui"]` so the headless leg skips it instead of failing to build.
 
@@ -60,7 +60,7 @@ mod drive {
     // The body lives in a SUBDIRECTORY on purpose: Cargo turns every `.rs` directly
     // under `tests/` into its own test target, so a sibling file named
     // `gui_main_thread_drive_body.rs` was compiled as a second binary (which then
-    // failed to find `futureos_lib::run_with`, because that target was not built
+    // failed to find `futureos_lib::run`, because that target was not built
     // with the gui feature). A subdirectory is not auto-discovered.
     include!("gui_main_thread_drive/body.rs");
 }

@@ -2,6 +2,59 @@ use super::*;
 use anyhow::bail;
 
 #[test]
+fn schema_open_logs_versions_and_failures_without_database_contents() {
+    use std::io::Write;
+    #[derive(Clone)]
+    struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let output = bytes.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .with_max_level(tracing::Level::TRACE)
+        .with_writer(move || Capture(output.clone()))
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        let path = directory.path().join("agent.db");
+        let connection = connection::open_connection(&path).unwrap();
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            CURRENT_SCHEMA_VERSION
+        );
+        drop(connection);
+        let invalid = directory.path().join("invalid.db");
+        std::fs::write(&invalid, b"private-database-content").unwrap();
+        assert!(connection::open_connection(&invalid).is_err());
+        assert_eq!(std::fs::read(invalid).unwrap(), b"private-database-content");
+    });
+    let text = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+    assert!(!text.contains("private-database-content"));
+    let records: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(records.iter().any(
+        |record| record["fields"]["event"] == "database_upgrade_completed"
+            && record["fields"]["from_version"] == 0
+            && record["fields"]["to_version"] == CURRENT_SCHEMA_VERSION
+    ));
+    assert!(records
+        .iter()
+        .any(|record| record["fields"]["event"] == "database_open_failed"));
+}
+
+#[test]
 fn bounded_queue_rejects_overload_and_recovers_after_drain() {
     let dir = tempfile::tempdir().unwrap();
     let db = Database::open(&dir.path().join("agent.db")).unwrap();
@@ -92,7 +145,7 @@ fn committed_data_survives_reopen_and_failed_transaction_rolls_back() {
 }
 
 #[test]
-fn connection_bounds_wal_growth() {
+fn connection_moves_checkpoints_off_commit_and_retains_the_reuse_limit() {
     let dir = tempfile::tempdir().unwrap();
     let db = Database::open(&dir.path().join("agent.db")).unwrap();
     let settings = db
@@ -105,7 +158,7 @@ fn connection_bounds_wal_growth() {
             ))
         })
         .unwrap();
-    assert_eq!(settings, (1_000, 8 * 1024 * 1024));
+    assert_eq!(settings, (0, 8 * 1024 * 1024));
 }
 
 #[test]
@@ -358,5 +411,206 @@ fn a_panicking_job_leaves_later_callers_with_a_disconnected_worker() {
     assert!(
         closed.is_err(),
         "shutdown after a worker panic must report it, not report success"
+    );
+}
+
+/// A database written by an older build carries metadata snapshots as its
+/// activity stamps. Opening it repairs them once, and the marker keeps a later
+/// open from reading the whole transcript again.
+#[test]
+fn opening_recovers_activity_stamps_pushed_forward_by_a_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("agent.db");
+    let db = Database::open(&path).unwrap();
+    db.call(|connection| {
+        connection.execute_batch(
+            "INSERT INTO sessions(id,created_at_ms,updated_at_ms) VALUES ('s',1000,9000);
+             INSERT INTO entries(session_id,position,entry_id,entry_type,role,timestamp_ms,metadata_json)
+                 VALUES ('s',0,'u','user','user',1000,'{}'),
+                        ('s',1,'i','session_info','system',9000,'{}');",
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let stamp = |db: &Database| -> (i64, bool) {
+        db.call(|connection| {
+            Ok(connection.query_row(
+                "SELECT (SELECT updated_at_ms FROM sessions WHERE id='s'),
+                        EXISTS(SELECT 1 FROM storage_meta WHERE key='activity_stamps_repaired')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .unwrap()
+    };
+    // The open that created the rows already ran the pass, so replay the
+    // pre-fix state: a snapshot stamp above the newest message, no marker.
+    db.call(|connection| {
+        connection.execute_batch(
+            "UPDATE sessions SET updated_at_ms=9000 WHERE id='s';
+             DELETE FROM storage_meta WHERE key='activity_stamps_repaired';",
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    drop(db);
+
+    let reopened = Database::open(&path).unwrap();
+    assert_eq!(
+        stamp(&reopened),
+        (1000, true),
+        "the newest message is the activity stamp, and the repair is marked done"
+    );
+    drop(reopened);
+    // A second open finds the marker and leaves the stamp alone.
+    let again = Database::open(&path).unwrap();
+    assert_eq!(stamp(&again), (1000, true));
+}
+
+/// A fence read must answer while the ordered writer is busy, not after it.
+///
+/// This is the lane contract behind `get_session_presence`: on 2026-10-29 four
+/// remote commands were released together after 18–21 s because one writer job
+/// was running, and two of them had already hit their 30 s deadline. Presence
+/// decides whether a caller may proceed at all, so it cannot be one of them.
+#[test]
+fn a_fence_read_answers_while_a_writer_job_holds_the_lane() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::open(&dir.path().join("agent.db")).unwrap();
+    let (entered_tx, entered) = mpsc::channel();
+    let (release_tx, release) = mpsc::channel::<()>();
+    let holder = {
+        let db = db.clone();
+        std::thread::spawn(move || {
+            db.call(move |_| {
+                let _ = entered_tx.send(());
+                let _ = release.recv();
+                Ok(())
+            })
+            .unwrap();
+        })
+    };
+    entered.recv().unwrap();
+
+    let started = std::time::Instant::now();
+    let answer = db
+        .fence(|connection| Ok(connection.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?))
+        .unwrap();
+    let waited = started.elapsed();
+    release_tx.send(()).unwrap();
+    holder.join().unwrap();
+
+    assert_eq!(answer, 1);
+    assert!(
+        waited < std::time::Duration::from_millis(500),
+        "a fence read waited {waited:?} behind a writer job"
+    );
+}
+
+/// The other half of the same contract, so the test above cannot pass by
+/// accident: the writer lane itself *does* wait for the job in front of it.
+#[test]
+fn a_writer_read_waits_for_the_job_in_front_of_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::open(&dir.path().join("agent.db")).unwrap();
+    let (entered_tx, entered) = mpsc::channel();
+    let holder = {
+        let db = db.clone();
+        std::thread::spawn(move || {
+            db.call(move |_| {
+                let _ = entered_tx.send(());
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                Ok(())
+            })
+            .unwrap();
+        })
+    };
+    entered.recv().unwrap();
+    let started = std::time::Instant::now();
+    db.call(|connection| Ok(connection.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?))
+        .unwrap();
+    let waited = started.elapsed();
+    holder.join().unwrap();
+    assert!(
+        waited >= std::time::Duration::from_millis(200),
+        "a queued writer job started before the one in front of it finished: {waited:?}"
+    );
+}
+
+/// The fence's cost, asserted instead of assumed.
+///
+/// A fence read does not queue behind the ordered writer, so it cannot see a
+/// write that is already queued: a session whose placeholder commit is still
+/// waiting reads `missing`. That is exactly why the desktop confirms a negative
+/// answer before refusing it (`agent_bridge::presence::require_present_with_client`)
+/// — this test is the half that makes that recheck load-bearing rather than
+/// decorative. If the fence ever moves back onto the writer lane, the first read
+/// below stops answering and this fails instead of quietly re-introducing the
+/// 18–38 s stall.
+#[test]
+fn a_fence_read_lags_a_queued_write_until_it_commits() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::open(&dir.path().join("agent.db")).unwrap();
+    let session = uuid::Uuid::new_v4().to_string();
+    let exists = |db: &Database, session: String| {
+        db.fence(move |connection| {
+            Ok(connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)",
+                [&session],
+                |row| row.get::<_, bool>(0),
+            )?)
+        })
+    };
+
+    // Hold the writer with one job, then queue a create behind it.
+    let (entered_tx, entered) = mpsc::channel();
+    let (release_tx, release) = mpsc::channel::<()>();
+    let holder = {
+        let db = db.clone();
+        std::thread::spawn(move || {
+            db.call(move |_| {
+                let _ = entered_tx.send(());
+                let _ = release.recv();
+                Ok(())
+            })
+            .unwrap();
+        })
+    };
+    entered.recv().unwrap();
+    let queued = {
+        let db = db.clone();
+        let session = session.clone();
+        std::thread::spawn(move || {
+            db.call(move |connection| {
+                connection.execute(
+                    "INSERT INTO sessions(id,revision) VALUES (?1,-1)",
+                    [&session],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        })
+    };
+
+    // The fence answers now, and the answer is the pre-commit state.
+    let (before_tx, before) = mpsc::channel();
+    {
+        let db = db.clone();
+        let session = session.clone();
+        std::thread::spawn(move || {
+            let _ = before_tx.send(exists(&db, session));
+        });
+    }
+    let before = before
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("a fence read must answer while a writer job holds the lane");
+    assert!(!before.unwrap(), "the queued create is not visible yet");
+
+    release_tx.send(()).unwrap();
+    holder.join().unwrap();
+    queued.join().unwrap();
+    assert!(
+        exists(&db, session).unwrap(),
+        "the same question answers present once the create commits"
     );
 }

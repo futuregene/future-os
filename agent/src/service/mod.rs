@@ -5,8 +5,12 @@
 //! own logging, environment changes, signals, profiling and process exit.
 //!
 //! Hosts request shutdown through `AgentHandle` and continue polling `serve`
-//! until the listener drains. A timeout retains instance ownership until process
-//! exit; dropping a serving future is not a successful shutdown.
+//! until the listener drains. Every wait in that drain is bounded: the listener
+//! is dropped once its graceful drain outlives its share of the stop, because a
+//! client that never closes must not keep the endpoint and the instance lock.
+//! A drain that still times out — a stuck storage write, a host that stops
+//! polling `serve` — retains instance ownership until process exit; dropping a
+//! serving future is not a successful shutdown.
 
 mod activity;
 #[cfg(test)]
@@ -14,6 +18,7 @@ mod approval_tests;
 pub(crate) mod config;
 mod instance;
 mod lifecycle;
+mod progress;
 mod shutdown;
 mod startup;
 #[cfg(test)]
@@ -23,6 +28,7 @@ pub(crate) mod work;
 pub use activity::{ActivityUnavailable, AgentActivity};
 use anyhow::Result;
 pub use config::AgentConfig;
+pub use progress::{StartupProgress, StartupStage};
 pub use shutdown::{ShutdownReport, ShutdownStatus};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -34,7 +40,10 @@ pub use work::ServiceWork;
 /// Cooperative startup cancellation, including checkpoints around synchronous
 /// initialization. It never force-kills a thread or releases another owner.
 #[derive(Clone, Debug, Default)]
-pub struct StartupCancellation(Arc<AtomicBool>);
+pub struct StartupCancellation {
+    cancelled: Arc<AtomicBool>,
+    progress: progress::Progress,
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error("Agent startup cancelled")]
@@ -42,11 +51,43 @@ pub struct StartupCancelled;
 
 impl StartupCancellation {
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    pub fn progress(&self) -> StartupProgress {
+        self.progress.snapshot()
+    }
+
+    /// Time since actual startup work advanced. Observing status does not
+    /// renew this lease; a healthy long upgrade may outlive the initial wait.
+    pub fn idle_for(&self) -> std::time::Duration {
+        self.progress.idle_for()
+    }
+
+    /// Record a completed unit of initialization work, not a timer tick or a
+    /// status read. Hosts may use this for their own bounded preflight work.
+    pub fn record_progress(&self) {
+        self.progress.activity();
+    }
+
+    pub(crate) fn monitor_sqlite(&self, connection: &rusqlite::Connection) -> Result<()> {
+        let cancellation = self.clone();
+        connection.progress_handler(
+            10_000,
+            Some(move || {
+                cancellation.record_progress();
+                cancellation.cancelled.load(Ordering::Acquire)
+            }),
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn report(&self, stage: StartupStage) {
+        self.progress.report(stage);
     }
 
     pub(crate) fn check(&self) -> Result<()> {
-        if self.0.load(Ordering::Acquire) {
+        if self.cancelled.load(Ordering::Acquire) {
             return Err(StartupCancelled.into());
         }
         Ok(())
@@ -74,6 +115,34 @@ impl ServiceRetirement {
     }
 }
 
+/// A local-start permit authorizes one endpoint, and only that one.
+///
+/// The default Agent bind is the per-user IPC endpoint, which a permit obtained
+/// for it covers. A host that serves the Agent on an explicit TCP address gets a
+/// permit issued for that address; anything else — a permit for the IPC
+/// endpoint, a permit for another address — must not bind here, because the
+/// permission is what makes "nothing answers, so start one" safe.
+pub(crate) fn check_start_endpoint(
+    config: &AgentConfig,
+    permit: &future_rpc::connection::LocalStartPermit,
+) -> Result<()> {
+    let explicit = config.grpc_addr.as_deref().filter(|addr| {
+        !addr.trim().is_empty()
+            && !addr
+                .trim()
+                .eq_ignore_ascii_case(future_rpc::transport::AUTO_ENDPOINT)
+    });
+    let Some(addr) = explicit else {
+        return Ok(());
+    };
+    let (ip, port) = config::parse_tcp_bind(addr)?;
+    anyhow::ensure!(
+        permit.serves_tcp(&ip, port),
+        "a local-start permission cannot start the Agent on {addr}: it was issued for another endpoint"
+    );
+    Ok(())
+}
+
 impl AgentService<'_> {
     pub fn retirement(&self) -> ServiceRetirement {
         ServiceRetirement(self.work.clone())
@@ -86,16 +155,7 @@ impl AgentService<'_> {
         permit: future_rpc::connection::LocalStartPermit,
         host: impl FnOnce(&AgentService<'_>) -> Result<T>,
     ) -> Result<T> {
-        anyhow::ensure!(
-            config
-                .grpc_addr
-                .as_deref()
-                .is_none_or(|addr| addr.trim().is_empty()
-                    || addr
-                        .trim()
-                        .eq_ignore_ascii_case(future_rpc::transport::AUTO_ENDPOINT)),
-            "a local-start permission cannot start an explicit TCP endpoint"
-        );
+        check_start_endpoint(&config, &permit)?;
         anyhow::ensure!(
             config.future_home() == permit.future_home(),
             "Agent start permission belongs to another data root"
@@ -210,7 +270,9 @@ impl AgentService<'_> {
         if self.preparation_started.swap(true, Ordering::AcqRel) {
             anyhow::bail!("Agent service initialization has already been started");
         }
+        cancellation.report(StartupStage::Preparing);
         self.startup_cleanup();
+        cancellation.report(StartupStage::LoadingModels);
         tracing::info!("Agent startup: loading the model catalogue and credentials");
         // Registered BEFORE the cold registry build: that build spawns the
         // background Future-models fetch, and a fast fetch can land (and fire
@@ -377,12 +439,29 @@ impl RunningAgent<'_, '_> {
             completed: false,
         };
         let shutdown = self.state.service_work.listener_shutdown();
+        // The hard stop for the drain above: `stop_listener` starts a graceful
+        // shutdown that waits for connected peers, and a peer that never
+        // finishes cannot be waited for by the stop. When this resolves the
+        // server is dropped, which closes the listener and every connection.
+        let abandoned = self.state.service_work.listener_abandoned();
         let server = self.listener.serve(self.state, shutdown);
         tokio::pin!(server);
+        tokio::pin!(abandoned);
         drop(admission);
         let mut ready = ready.map(|sender| (sender, self.ready));
         let mut server_completed = false;
         let result = futures::future::poll_fn(|cx| {
+            if std::future::Future::poll(abandoned.as_mut(), cx).is_ready() {
+                // Dropping the server (on return) ends the listener's ownership
+                // of the endpoint instead of inheriting it for the life of the
+                // process, which is what left the socket, its port and the
+                // instance lock held by an Agent that had already been told to
+                // stop.
+                tracing::warn!(
+                    "Agent shutdown: dropping the RPC server instead of waiting for its clients"
+                );
+                return std::task::Poll::Ready(Ok(()));
+            }
             let result = std::future::Future::poll(server.as_mut(), cx);
             server_completed = result.is_ready();
             if result.is_pending() {

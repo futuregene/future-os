@@ -5,7 +5,7 @@ use serde_json::Value;
 fn event_page_bounds_decoding_before_a_corrupt_tail() {
     let directory = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(&directory.path().join("agent.db")).unwrap();
-    store.bind_events("synthetic").unwrap();
+    store.bind_legacy_events("synthetic").unwrap();
     for idx in 0..4 {
         store
             .append_event(
@@ -51,7 +51,7 @@ fn event_page_bounds_decoding_before_a_corrupt_tail() {
 fn event_batch_conflict_rolls_back_every_row() {
     let directory = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(&directory.path().join("agent.db")).unwrap();
-    store.bind_events("synthetic").unwrap();
+    store.bind_legacy_events("synthetic").unwrap();
     let first = serde_json::json!({
         "session_id": "synthetic", "run_id": "run", "epoch": 1, "idx": 0,
         "event_type": "text_chunk", "data": "{\"text\":\"first\"}"
@@ -69,7 +69,7 @@ fn event_batch_conflict_rolls_back_every_row() {
 fn cursor_query_does_not_decode_old_payloads_and_uses_range_index() {
     let directory = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(&directory.path().join("sessions.sqlite")).unwrap();
-    store.bind_events("synthetic").unwrap();
+    store.bind_legacy_events("synthetic").unwrap();
     for idx in 0..3 {
         store
             .append_event(
@@ -116,7 +116,7 @@ fn cursor_query_does_not_decode_old_payloads_and_uses_range_index() {
 fn compact_event_storage_reconstructs_identity_and_unknown_fields() {
     let directory = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(&directory.path().join("agent.db")).unwrap();
-    store.bind_events("synthetic").unwrap();
+    store.bind_legacy_events("synthetic").unwrap();
     let event = serde_json::json!({
         "event_type": "text_chunk",
         "data": "{\"text\":\"safe\"}",

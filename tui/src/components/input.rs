@@ -1281,12 +1281,15 @@ impl Input {
             }
             break;
         }
-        let at_cursor = {
+        // The character under the cursor, and whether it is the `" "` fallback
+        // that means "past the end" — a cell the *cursor* occupies, not one the
+        // draft does. `at_cursor_is_fallback` is what keeps that cell from
+        // counting as content below.
+        let (at_cursor, at_cursor_is_fallback) = {
             let rest = &text[j..];
-            let gs = graphemes(rest);
-            match gs.first() {
-                Some(g) => (*g).to_string(),
-                None => " ".to_string(),
+            match graphemes(rest).first() {
+                Some(g) => ((*g).to_string(), false),
+                None => (" ".to_string(), true),
             }
         };
         // TS `text.slice(afterCursorStart)` clamps to the string length —
@@ -1303,12 +1306,23 @@ impl Input {
         } else {
             at_cursor.clone()
         };
-        let text_with_cursor = format!("{before_cursor}{marker}{cursor_char}{after_cursor}");
+        let mut text_with_cursor = format!("{before_cursor}{marker}{cursor_char}{after_cursor}");
 
         // Compute visual length of the rendered content (without cursor
         // marker)
         let rendered_content = format!("{before_cursor}{at_cursor}{after_cursor}");
-        let visual_length = visible_width(&strip_ansi_codes(&rendered_content));
+        let mut visual_length = visible_width(&strip_ansi_codes(&rendered_content));
+        // A line whose text already fills the band has no cell left for the
+        // fallback: drawing it anyway made the row one column wider than the
+        // composer, and the box's own `fit` paid for that column by clipping the
+        // draft's last character into an "…" — the reader's text silently
+        // replaced by an ellipsis, with the caret left past what they could
+        // see. Past the end of a full line the cursor belongs *on* the last
+        // cell, which is where a terminal would draw it too.
+        if at_cursor_is_fallback && visual_length > available_width {
+            text_with_cursor = format!("{before_cursor}{marker}{after_cursor}");
+            visual_length -= 1;
+        }
         let padding = " ".repeat(available_width.saturating_sub(visual_length));
 
         format!("{text_with_cursor}{padding}")
@@ -2496,6 +2510,40 @@ mod tests {
         // available_width = 0 → a single empty visual line, prompt only.
         let lines = input.render(2);
         assert_eq!(lines, vec!["> ".to_string()]);
+    }
+
+    /// Every rendered row is exactly the width it was asked for — including the
+    /// row the cursor is on, and including a line whose text fills that width.
+    ///
+    /// The cell under the cursor is a *character* when there is one there and a
+    /// fallback space when the cursor sits past the last one. Counting that
+    /// fallback as content made a full line come out one column wider than the
+    /// band, and the composer's `fit` then clipped the draft's last character
+    /// into an "…": the reader's own text, quietly replaced, with the caret left
+    /// past what they could see.
+    #[test]
+    fn a_row_is_exactly_the_width_it_was_asked_for_when_the_cursor_is_at_the_end() {
+        let text = "我在lin双双适当放松地方史蒂夫，"; // 31 display columns
+        let width = crate::utils::visible_width(text); // 31
+        for available in [width, width + 1, width + 9] {
+            for focused in [false, true] {
+                let mut input = make_input();
+                input.set_value(text, None);
+                input.set_focused(focused);
+                let lines = input.render(available + 2);
+                assert_eq!(lines.len(), 1, "{lines:?}");
+                let plain = strip_ansi_codes(&lines[0]);
+                assert_eq!(
+                    crate::utils::visible_width(&plain),
+                    available + 2,
+                    "available={available} focused={focused}: {plain:?}"
+                );
+                assert!(
+                    plain.starts_with(&format!("> {text}")),
+                    "available={available} focused={focused}: the draft lost its tail: {plain:?}"
+                );
+            }
+        }
     }
 
     #[test]

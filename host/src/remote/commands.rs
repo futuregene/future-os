@@ -658,7 +658,8 @@ mod bridge_tests {
                 "task_deps_v1",
                 // Advertised, not merely honoured: a client only declares the
                 // frame carrier after finding it here.
-                "read_binary_v1"
+                "read_binary_v1",
+                "segmented_content_v1"
             ])
         );
         assert!(bridge.handshake.active_flag().load(Ordering::Acquire));
@@ -791,9 +792,10 @@ mod bridge_tests {
             desktop_nonce: &desktop_nonce,
         });
         let signature = client_key.sign(transcript.as_bytes()).unwrap();
-        // No HOME → the credential persist fails and the error surfaces.
-        std::env::remove_var("HOME");
-        std::env::remove_var("USERPROFILE");
+        // No home at all → the credential persist fails and the error surfaces.
+        // Withdrawing only `HOME` would leave the fixture's `FUTURE_HOME` root
+        // in charge, and the save would succeed.
+        home.withdraw_home();
         let reply = bridge
             .call(json!({
                 "id": unique("cmd"),
@@ -1980,7 +1982,7 @@ mod bridge_tests {
         let first = bridge
             .call(json!({
                 "id": unique("cmd"), "type": "get_events_since", "sessionId": session,
-                "runId": "r", "sinceIdx": -1, "limit": 2
+                "chunkedRead": true, "runId": "r", "sinceIdx": -1, "limit": 2
             }))
             .await;
         assert_eq!(first["success"], true);
@@ -1998,7 +2000,7 @@ mod bridge_tests {
         let middle = bridge
             .call(json!({
                 "id": unique("cmd"), "type": "get_events_since", "sessionId": session,
-                "runId": "r", "sinceIdx": 1, "limit": 2, "replayUntilIdx": 4
+                "chunkedRead": true, "runId": "r", "sinceIdx": 1, "limit": 2, "replayUntilIdx": 4
             }))
             .await;
         assert_eq!(middle["success"], true);
@@ -2021,7 +2023,7 @@ mod bridge_tests {
         let last = bridge
             .call(json!({
                 "id": unique("cmd"), "type": "get_events_since", "sessionId": session,
-                "runId": "r", "sinceIdx": 3, "limit": 2, "replayUntilIdx": 4
+                "chunkedRead": true, "runId": "r", "sinceIdx": 3, "limit": 2, "replayUntilIdx": 4
             }))
             .await;
         assert_eq!(last["success"], true);
@@ -2183,6 +2185,12 @@ mod bridge_tests {
             .call(json!({ "id": unique("cmd"), "type": "prompt", "sessionId": session, "message": "too soon" }))
             .await;
         assert_eq!(reply["success"], json!(false));
+        // The token is what a client turns into its own sentence; the sentence
+        // behind it stays readable in the desktop's logs.
+        assert!(reply["error"]
+            .as_str()
+            .unwrap()
+            .starts_with(crate::remote_host::business::SESSION_BUSY_CODE));
         assert!(reply["error"].as_str().unwrap().contains("still running"));
 
         bridge.stop().await;
@@ -3069,8 +3077,11 @@ mod bridge_tests {
         bridge.stop().await;
     }
 
+    /// Identity guards only: a run that does not exist, or one that belongs to
+    /// another conversation, is refused. **The reason a run stopped is never
+    /// consulted** — a completed run is as continuable as a failed one.
     #[tokio::test]
-    async fn continue_run_rejects_missing_wrong_session_and_nonfailed_sources() {
+    async fn continue_run_rejects_missing_and_foreign_sources() {
         let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-continue-source-guards").await;
         let session = unique("sess");
@@ -3083,21 +3094,6 @@ mod bridge_tests {
             agent_session_id: Some(session.clone()),
         })
         .unwrap();
-        let completed = crate::store::create_run(crate::store::CreateRunInput {
-            id: Some(unique("run-completed")),
-            thread_id: thread.id.clone(),
-            trigger_message_id: None,
-            model_provider: None,
-            model_id: None,
-        })
-        .unwrap();
-        crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
-            run_id: completed.id.clone(),
-            status: "completed".to_string(),
-            error_message: None,
-            error_type: None,
-        })
-        .unwrap();
 
         let missing = bridge
             .call(json!({ "id": unique("cmd"), "type": "continue_run", "sessionId": session, "runId": "missing-run" }))
@@ -3107,12 +3103,6 @@ mod bridge_tests {
             .as_str()
             .unwrap()
             .contains("no longer exists"));
-
-        let nonfailed = bridge
-            .call(json!({ "id": unique("cmd"), "type": "continue_run", "sessionId": session, "runId": completed.id }))
-            .await;
-        assert_eq!(nonfailed["success"], json!(false));
-        assert!(nonfailed["error"].as_str().unwrap().contains("failed run"));
 
         let failed = crate::store::create_run(crate::store::CreateRunInput {
             id: Some(unique("run-failed")),
@@ -3137,6 +3127,76 @@ mod bridge_tests {
             .as_str()
             .unwrap()
             .contains("does not belong"));
+
+        bridge.stop().await;
+    }
+
+    /// Whatever stopped a reply, its continuation reaches the Agent: a failure,
+    /// a restart's `cancelled`/`interrupted` row, a user stop, even a run that
+    /// completed. The source guard used to accept only `failed`, which turned
+    /// the phone's Continue into a permanent dead end for the very run a restart
+    /// leaves behind (and the phone showed only "message failed to send").
+    #[tokio::test]
+    async fn continue_run_accepts_every_reason_a_reply_can_stop() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-continue-interrupted").await;
+        let agent = ensure_mock_agent();
+
+        // One conversation per shape: a continuation that was refused at the
+        // source guard and one the Agent then rejected are told apart by the
+        // error, and a fresh session keeps the busy-session guard out of it.
+        for (status, message, error_type) in [
+            (
+                "cancelled",
+                Some("Interrupted by application restart."),
+                Some("interrupted"),
+            ),
+            ("failed", Some("boom"), Some("model_failed")),
+            ("cancelled", Some("Run was cancelled."), Some("cancelled")),
+            ("completed", None, None),
+        ] {
+            let session = unique("sess");
+            let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+                mode: "chat".to_string(),
+                title: Some("Interrupted".to_string()),
+                workspace_id: None,
+                workspace_path: None,
+                workspace_name: None,
+                agent_session_id: Some(session.clone()),
+            })
+            .unwrap();
+            let run = crate::store::create_run(crate::store::CreateRunInput {
+                id: Some(unique("run-source")),
+                thread_id: thread.id.clone(),
+                trigger_message_id: None,
+                model_provider: None,
+                model_id: None,
+            })
+            .unwrap();
+            crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+                run_id: run.id.clone(),
+                status: status.to_string(),
+                error_message: message.map(str::to_string),
+                error_type: error_type.map(str::to_string),
+            })
+            .unwrap();
+
+            // Refuse the prompt itself so the ack never looks like a successful
+            // continuation: what this test is about is reaching the Agent at all.
+            agent.script_for("prompt", &session, false, json!(null), "rejected");
+            let reply = bridge
+                .call(json!({ "id": unique("cmd"), "type": "continue_run", "sessionId": session, "runId": run.id }))
+                .await;
+            assert_eq!(reply["success"], json!(false), "got: {reply}");
+            assert!(
+                reply["error"].as_str().unwrap().contains("rejected"),
+                "the source guard must not judge a {status} run: {reply}"
+            );
+            assert!(
+                agent.served("prompt", &session),
+                "the continuation of a {status} run must reach the Agent"
+            );
+        }
 
         bridge.stop().await;
     }
@@ -3426,8 +3486,12 @@ mod bridge_tests {
         bridge.stop().await;
     }
 
+    /// A killed broker ends the stream. The lane now re-subscribes up to
+    /// `RESUBSCRIBE_ATTEMPTS` times before it returns, so a relay blip heals in
+    /// seconds instead of waiting for a whole generation rebuild — and returning
+    /// after that ladder still hands the device to the supervisor's budget.
     #[tokio::test]
-    async fn command_loop_exits_for_generation_supervisor_when_stream_ends() {
+    async fn command_loop_resubscribes_then_exits_when_the_stream_ends() {
         let _home = HomeGuard::new("cmd-self-heal");
         let nats = FakeNats::start().await;
         let client = nats_connect_once(&nats).await;
@@ -3446,12 +3510,12 @@ mod bridge_tests {
         ));
         nats.wait_for_sub(&format!("p.{pair_id}.cmd.>"), Duration::from_secs(5))
             .await;
-        // A critical subscription is generation-local. The loop exits so the
-        // single runtime supervisor can apply its 10-minute recovery budget.
+        // A critical subscription is generation-local, but it retries itself
+        // first: 0.5 s doubling, so five attempts fit inside eight seconds.
         nats.kill();
         wait_until(
-            "supervisor must observe the dead task",
-            Duration::from_secs(5),
+            "supervisor must observe the dead task after the lane's own ladder",
+            Duration::from_secs(30),
             || handle.is_finished(),
         )
         .await;
@@ -3461,9 +3525,12 @@ mod bridge_tests {
     /// subscription impossible. The loop must report that and return — not sit
     /// on a stream that can never receive anything — because returning is what
     /// lets the runtime supervisor spend its recovery budget on a new
-    /// generation. The old version of this test only killed the server:
-    /// async-nats accepts a subscribe optimistically, so `queue_subscribe` still
-    /// succeeded and the branch under test never ran.
+    /// generation. It retries the subscription first (`RESUBSCRIBE_ATTEMPTS`),
+    /// which is what makes a relay blip heal without a rebuild; this asserts the
+    /// ladder still ends rather than retrying a subject that can never work. The
+    /// old version of this test only killed the server: async-nats accepts a
+    /// subscribe optimistically, so `queue_subscribe` still succeeded and the
+    /// branch under test never ran.
     #[tokio::test]
     async fn a_pairing_id_that_cannot_form_a_queue_group_returns_instead_of_waiting() {
         let nats = FakeNats::start().await;
@@ -4067,6 +4134,17 @@ mod bridge_tests {
     /// packet the device that has just become the controller is answered
     /// `standby` and reads control back from the heartbeat — the same
     /// three-second lie as a takeover, one screen earlier.
+    ///
+    /// The claim is deferred past the answer on purpose (it writes the pairing
+    /// book to disk, and no reply may wait on that), so the answer reaching the
+    /// device does not mean the pointer has moved: they are two separate
+    /// wake-ups and the client is served between them. The claim is therefore
+    /// waited for rather than read once — a single read was asserting a step that
+    /// had not necessarily run yet. That is how it failed on the Linux lane of CI
+    /// run 41347774311 (`assertion failed: SUPERVISOR.in_control(&bridge.pair_id)`)
+    /// while passing on macOS, where the handler happened to be resumed first; a
+    /// single `yield_now` in that window reproduces the failure on every run
+    /// here.
     #[tokio::test]
     async fn a_first_pairing_announces_the_control_it_takes() {
         // Control is one pointer on the process-global supervisor, so this test
@@ -4120,7 +4198,23 @@ mod bridge_tests {
             json!("standby"),
             "the answer is built before the claim, which is why the packet is owed"
         );
-        assert!(SUPERVISOR.in_control(&bridge.pair_id));
+        // Bounded, not optimistic: the claim lands after the answer and before
+        // the packet, so waiting for it is the contract this test names.
+        wait_until(
+            "the first pairing's claim must move the supervisor's pointer to it; \
+             the confirmation's answer is not the claim",
+            Duration::from_secs(5),
+            || SUPERVISOR.in_control(&bridge.pair_id),
+        )
+        .await;
+        // And it must land on *this* device, not merely leave the machine
+        // unowned: `in_control` also answers yes while nobody holds a machine
+        // that knows of no device at all.
+        assert_eq!(
+            SUPERVISOR.active_pair().as_deref(),
+            Some(bridge.pair_id.as_str()),
+            "the claim must name this pairing in the control pointer"
+        );
 
         let announced = await_publish_matching(
             &mut tap,
@@ -4191,6 +4285,77 @@ mod bridge_tests {
             .await;
         assert_eq!(reply["success"], json!(true), "got: {reply}");
         assert_eq!(reply["data"]["watermark"], json!(2));
+        bridge.stop().await;
+    }
+
+    /// A backward page can be shorter than the exchanges the phone asked for
+    /// without the byte budget having removed anything: the Agent cuts the read
+    /// at its own row and byte limits, so a tool-dense exchange is answered as a
+    /// fragment — and once history assembly completes that fragment back to its
+    /// prompt, the page holds one exchange where three were asked for, with
+    /// `hasMore` promising the rest. The reply has to say so, or the phone
+    /// installs that page as the whole conversation: measured 2026-10-28, a
+    /// three-exchange tail read was delivered as a single 870 KB exchange with
+    /// `trimmed` unset, and the transcript showed the newest reply with nothing
+    /// above it.
+    #[tokio::test]
+    async fn a_backward_page_short_of_the_requested_exchanges_is_marked_trimmed() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-short-page").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        // What the Agent answers for a tool-dense exchange: its own row bound
+        // cut the read before the page reached a prompt, and the journal still
+        // holds the rest behind the cursor.
+        let cut = unique("sess-cut");
+        agent.script_for(
+            "get_session_entries",
+            &cut,
+            true,
+            json!({
+                "entries": [
+                    {"id": "u9", "role": "user", "kind": "user", "createdAtMs": 1, "blocks": []},
+                    {"id": "t9", "role": "tool", "kind": "tool", "createdAtMs": 2, "blocks": []},
+                    {"id": "a9", "role": "assistant", "kind": "assistant", "createdAtMs": 3, "blocks": []},
+                ],
+                "hasMore": true,
+                "nextOffset": 135,
+            }),
+            "",
+        );
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"), "type": "get_session_entries", "sessionId": cut,
+                "before": i64::MAX, "limit": 3, "chunkedRead": true
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["trimmed"], json!(true), "got: {reply}");
+
+        // The window the phone asked for — one exchange, nothing behind it —
+        // says nothing, so a complete page is not re-read for no reason.
+        let whole = unique("sess-whole");
+        agent.script_for(
+            "get_session_entries",
+            &whole,
+            true,
+            json!({
+                "entries": [
+                    {"id": "u1", "role": "user", "kind": "user", "createdAtMs": 1, "blocks": []},
+                ],
+                "hasMore": false,
+                "nextOffset": 0,
+            }),
+            "",
+        );
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"), "type": "get_session_entries", "sessionId": whole,
+                "before": i64::MAX, "limit": 3, "chunkedRead": true
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["trimmed"], json!(false), "got: {reply}");
         bridge.stop().await;
     }
 
@@ -4936,22 +5101,23 @@ mod bridge_tests {
     /// the desktop could not write its bookkeeping.
     #[tokio::test]
     async fn an_unpair_that_cannot_persist_is_still_acknowledged() {
-        let _home = HomeGuard::new("cmd-unpair-persist-failure");
+        let home = HomeGuard::new("cmd-unpair-persist-failure");
         init_store();
         crate::remote::pairing::save_creds(&secure_bridge_creds()).expect("seed a pairing");
-        // The HOME the pairing lives under disappears between the ack and the
-        // spawned cleanup, so the destructive work cannot be recorded.
-        let previous_userprofile = std::env::var("USERPROFILE").ok();
-        std::env::remove_var("HOME");
-        std::env::remove_var("USERPROFILE");
-        // The premise is asserted, not assumed: with no HOME the local unpair
+        // The root the pairing lives under disappears between the ack and the
+        // spawned cleanup, so the destructive work cannot be recorded. Every way
+        // to name a root has to go, `FUTURE_HOME` included: withdrawing `HOME`
+        // alone leaves the fixture's own root in charge and the persist
+        // succeeds, which is the opposite of the premise below.
+        home.withdraw_home();
+        // The premise is asserted, not assumed: with no home the local unpair
         // cannot record anything, which is the only reason the spawned cleanup
         // below can fail. The generation this first call stops is a throwaway —
         // the connection under test is admitted under the epoch captured after
         // it.
         assert!(
             crate::remote::unpair().await.is_err(),
-            "a pairing under an unset HOME must fail to persist"
+            "a pairing with no home to record under must fail to persist"
         );
 
         let nats = FakeNats::start().await;
@@ -4984,10 +5150,6 @@ mod bridge_tests {
         // The acknowledgement is published before the cleanup runs; yield so the
         // spawned task observably reaches the failure while HOME is still gone.
         tokio::task::yield_now().await;
-        // `home_dir` ignores an empty override exactly as it ignores an absent
-        // one, so restoring to the empty string needs no branch on whether this
-        // process happened to carry a USERPROFILE.
-        std::env::set_var("USERPROFILE", previous_userprofile.unwrap_or_default());
     }
 
     /// A phone-initiated unpair acknowledges first and does the destructive work

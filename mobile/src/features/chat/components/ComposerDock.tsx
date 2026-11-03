@@ -1,3 +1,4 @@
+import { useFusionAvailability } from "../../../remote/useFusionAvailability";
 import { INPUT_MIN_HEIGHT, INPUT_MAX_HEIGHT } from "../composer/composerMetrics";
 import { ArrowDown, CircleAlert, FileText, Paperclip, X } from "lucide-react-native";
 import { Pressable, ScrollView, Text, TextInput, useWindowDimensions, View, type TextInputInstance } from "react-native";
@@ -19,6 +20,8 @@ import { SkillDetailsDialog } from "./SkillDetailsDialog";
 import { SkillSuggestionCard } from "./SkillSuggestionCard";
 import { ComposerToolbar } from "../composer/ComposerToolbar";
 import { useStyles } from "../composer/composerStyles";
+import { SendChoiceSheet } from "./SendChoiceSheet";
+import { SendQueuePanel, type SendQueuePanelItem } from "./SendQueuePanel";
 import { SkillPicker, skillPickerHeight } from "./SkillPicker";
 import { SessionPicker, sessionPickerHeight } from "./SessionPicker";
 import { FloatingTimelineButton } from "./FloatingTimelineButton";
@@ -57,6 +60,13 @@ function ComposerDockView({
   skillInstalling = false,
   onInstallSkill,
   onDismissSkill,
+  queueItems = [],
+  queueFailed = false,
+  onQueueUpdate,
+  onQueueRemove,
+  onQueueRetry,
+  enqueueDraft,
+  onStopped,
 }: {
   message: string;
   setMessage: Dispatch<SetStateAction<string>>;
@@ -97,6 +107,27 @@ function ComposerDockView({
   skillInstalling?: boolean;
   onInstallSkill?: () => void;
   onDismissSkill?: () => void;
+  /**
+   * This conversation's send queue (see `features/chat/sendQueue`): what is
+   * waiting for the run to end, shown above the box so it can be read, fixed or
+   * taken back before it leaves.
+   */
+  queueItems?: readonly SendQueuePanelItem[];
+  queueFailed?: boolean;
+  onQueueUpdate?: (id: string, content: string) => void;
+  onQueueRemove?: (id: string) => void;
+  onQueueRetry?: () => void;
+  /**
+   * Hand the field's draft to the queue. Returns false when there was nothing to
+   * queue, so the sheet stays open instead of pretending something happened.
+   */
+  enqueueDraft?: () => boolean;
+  /**
+   * Called once the desktop has acknowledged a stop request, so the screen can
+   * send whatever the reader was holding without waiting for its own reading of
+   * the conversation to catch up.
+   */
+  onStopped?: () => void;
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -104,6 +135,8 @@ function ComposerDockView({
   // The skill whose description is open. Owned here rather than by the picker,
   // which is unmounted as soon as the composer loses its slash token.
   const [skillDetails, setSkillDetails] = useState<RemoteSkill | null>(null);
+  // The "what does send mean now" sheet, from the toolbar while a run streams.
+  const [queueChoiceOpen, setQueueChoiceOpen] = useState(false);
   const { width, height, fontScale } = useWindowDimensions();
   const compactToolbar = width < 380 || fontScale > 1.2;
   // A running reply blocks sending, not drafting the next message. Keep the
@@ -130,8 +163,9 @@ function ComposerDockView({
     ),
     [remote.sessions, remote.selectedSessionId],
   );
+  const fusionAvailable = useFusionAvailability();
   const slashActions = useMemo<SlashAction[]>(() => {
-    const actions: SlashAction[] = [];
+    const actions: SlashAction[] = fusionAvailable ? [{ id: "fusion", label: "/fusion", description: t("chat.fusionDescription"), searchText: "fusion 讨论 多模型 思考", insert: "/fusion " }] : [];
     if (canReference) {
       // The phone has no `#` key to speak of (it sits on the keyboard's symbol
       // page) while `/` has a button of its own, so the reference would be
@@ -154,15 +188,50 @@ function ComposerDockView({
       });
     }
     return actions;
-  }, [canReference, compactionActionEnabled, t]);
+  }, [canReference, compactionActionEnabled, t, fusionAvailable]);
   const handleSlashAction = useCallback((action: SlashAction) => {
+    if (action.id === "fusion") setMessage(value => `/fusion ${value.replace(/(^|\s)\/fusion(?=\s|$)\s*/u, "$1").trimStart()}`);
     if (action.id === "compact" && compactionActionEnabled) onCompactContext?.();
-  }, [compactionActionEnabled, onCompactContext]);
+  }, [compactionActionEnabled, onCompactContext, setMessage]);
   const stopRequest = useStopRequest(
     remote.streaming,
     remote.selectedSessionId,
     remote.abort,
   );
+  const hasDraft = !!message.trim() || attachments.length > 0;
+  /**
+   * Stop the run, and tell the screen once the desktop has taken the request.
+   *
+   * The acknowledgement is the moment a held queue may go: the reader has already
+   * decided ("stop, and send what I was holding"), and waiting for this screen to
+   * read the conversation as over adds a round-trip of its own. The desktop still
+   * refuses a send that arrives before the run has settled — that answer is
+   * retried by the screen (`isTransientQueueRefusal`).
+   */
+  const stopRun = useCallback(async () => {
+    const stopped = await stopRequest.stop();
+    if (stopped)
+      onStopped?.();
+    return stopped;
+  }, [onStopped, stopRequest]);
+  // The toolbar's own stop control goes through the same door, so a press there
+  // hands the held queue over too — it is the same decision from a different button.
+  const queueAwareStopRequest = useMemo(
+    () => ({ ...stopRequest, stop: stopRun }),
+    [stopRequest, stopRun],
+  );
+  const handleChooseQueue = useCallback(() => {
+    if (enqueueDraft?.())
+      setQueueChoiceOpen(false);
+  }, [enqueueDraft]);
+  const handleChooseInterrupt = useCallback(() => {
+    // Queued first, interrupted second: the flush that follows sends what was on
+    // screen, joined with the queue.
+    if (!enqueueDraft?.())
+      return;
+    setQueueChoiceOpen(false);
+    void stopRun();
+  }, [enqueueDraft, stopRun]);
   const inputRef = useRef<TextInputInstance>(null);
   const completion = useComposerCompletion(
     message,
@@ -254,6 +323,15 @@ function ComposerDockView({
           t={t}
         />
       ) : null}
+      {queueItems.length > 0 && (
+        <SendQueuePanel
+          failed={queueFailed}
+          items={queueItems}
+          onRemove={id => onQueueRemove?.(id)}
+          onRetry={onQueueRetry}
+          onUpdate={(id, content) => onQueueUpdate?.(id, content)}
+        />
+      )}
       <View style={styles.composerArea}>
         {completion.session && (
           <SessionPicker
@@ -354,7 +432,7 @@ function ComposerDockView({
                 {`${message}\u200b`}
               </Text>
             </View>
-            <TextInput
+      <TextInput
               ref={inputRef}
               selection={completion.inputSelection}
               onSelectionChange={(event) =>
@@ -388,10 +466,13 @@ function ComposerDockView({
             completion={completion}
             editable={editable}
             openAttachmentMenu={openAttachmentMenu}
-            stopRequest={stopRequest}
+            stopRequest={queueAwareStopRequest}
             skillEvaluating={skillEvaluating}
             canSend={canSend}
             send={send}
+            hasDraft={hasDraft}
+            queueCount={queueItems.length}
+            onOpenQueueChoice={() => setQueueChoiceOpen(true)}
           />
           {remote.streaming && stopRequest.status !== "idle" && (
             <Text accessibilityLiveRegion="polite" style={styles.stopStatus}>
@@ -407,6 +488,14 @@ function ComposerDockView({
         </View>
       </View>
       <SkillDetailsDialog onClose={() => setSkillDetails(null)} skill={skillDetails} />
+      <SendChoiceSheet
+        open={queueChoiceOpen}
+        queueCount={queueItems.length}
+        t={t}
+        onClose={() => setQueueChoiceOpen(false)}
+        onInterruptAndSend={handleChooseInterrupt}
+        onQueue={handleChooseQueue}
+      />
     </View>
   );
 }

@@ -62,6 +62,23 @@ describe("font size", () => {
     setItem.mockRestore();
   });
 
+  it("keeps working with no document to paint", async () => {
+    // The module is imported from code that may run before a DOM exists (and in a
+    // non-DOM runner): the choice still has to be read and stored, only the paint
+    // is skipped.
+    const fontSize = await import("./fontSize");
+    vi.stubGlobal("document", undefined);
+    try {
+      expect(() => fontSize.setFontSize("large")).not.toThrow();
+    }
+    finally {
+      vi.unstubAllGlobals();
+    }
+    // The choice is remembered even though nothing could be painted.
+    expect(fontSize.getFontSize()).toBe("large");
+    expect(localStorage.getItem("future.fontSize")).toBe("large");
+  });
+
   it("notifies subscribers on a change and stops after unsubscribe", async () => {
     const fontSize = await import("./fontSize");
     const listener = vi.fn();

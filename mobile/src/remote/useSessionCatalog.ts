@@ -1,5 +1,8 @@
+import { eventPayload } from "@future-os/thread-projection";
 import { CatalogVersionGate } from "@future-os/remote-client/catalogVersion";
+import { applyCatalogDelta } from "@future-os/remote-client/catalogDelta";
 import type {
+  CatalogDeltaPacket,
   SnapshotVersion,
   CatalogRevisions,
   RemoteSession,
@@ -104,7 +107,7 @@ export function useSessionCatalog(
     }
     if (event.type !== "agent_end") return;
     let data: { state?: string; reason?: string; error?: unknown };
-    try { data = JSON.parse(event.data) as typeof data; } catch { return; }
+    try { data = eventPayload(event, event.data) as typeof data; } catch { return; }
     if (!data || typeof data !== "object" || Array.isArray(data)) return;
     rememberRun(key);
     liveRuns.current.set(sessionId, key);
@@ -164,29 +167,19 @@ export function useSessionCatalog(
     [],
   );
 
-  const applySessionSnapshot = useCallback(
-    (list: RemoteSession[], version?: SnapshotVersion, overridesAtRead?: Record<string, string>) => {
-      // A fresh read may repeat the current version yet still confirm that an
-      // optimistic title should be retired. Pushes retain strict deduplication.
-      if (!versionGate.current.accept("sessions", version, overridesAtRead !== undefined)) return false;
-      if (overridesAtRead && titleOverridesRef.current === overridesAtRead) {
-        setTitleOverrides({});
-      } else {
-        const current = titleOverridesRef.current;
-        const confirmed = list.filter(session => current[session.sessionId] !== undefined && current[session.sessionId] === session.title);
-        if (confirmed.length) {
-          const next = { ...current };
-          for (const session of confirmed) delete next[session.sessionId];
-          setTitleOverrides(next);
-        }
-      }
+  /**
+   * Everything that happens once a catalogue's *content* is settled: the version
+   * bookkeeping, the finished-run detection every reminder hangs off, and the
+   * state the screens render.
+   *
+   * Shared by the snapshot path and the delta path on purpose. They differ in how
+   * they arrive at the rows — a whole list, or a merge into the rows already held
+   * — and not at all in what a row means afterwards: a run that completed while
+   * either packet was in flight must be reported once, by the same rule.
+   */
+  const commitSessions = useCallback((decorated: RemoteSession[]) => {
       markSync("sessions", "ready");
       revisions.current.sessions += 1;
-      const overrides = titleOverridesRef.current;
-      const decorated = list.map((session) => ({
-        ...session,
-        title: overrides[session.sessionId] ?? session.title,
-      }));
       const { finished, next } = detectFinished(
         lastStatusRef.current,
         decorated.map(session => ({ ...session, status: effectiveRunStatus(session.status, session.streaming) })),
@@ -216,9 +209,60 @@ export function useSessionCatalog(
           return nextUnread;
         });
       }
+    },
+    [selectedRef, markSync, onFinished, rememberRun],
+  );
+
+  /** An optimistic title wins over the host's copy until the host confirms it. */
+  const decorateSessions = useCallback((list: RemoteSession[]): RemoteSession[] => {
+    const overrides = titleOverridesRef.current;
+    return list.map((session) => ({
+      ...session,
+      title: overrides[session.sessionId] ?? session.title,
+    }));
+  }, []);
+
+  const applySessionSnapshot = useCallback(
+    (list: RemoteSession[], version?: SnapshotVersion, overridesAtRead?: Record<string, string>) => {
+      // A fresh read may repeat the current version yet still confirm that an
+      // optimistic title should be retired. Pushes retain strict deduplication.
+      if (!versionGate.current.accept("sessions", version, overridesAtRead !== undefined)) return false;
+      if (overridesAtRead && titleOverridesRef.current === overridesAtRead) {
+        setTitleOverrides({});
+      } else {
+        const current = titleOverridesRef.current;
+        const confirmed = list.filter(session => current[session.sessionId] !== undefined && current[session.sessionId] === session.title);
+        if (confirmed.length) {
+          const next = { ...current };
+          for (const session of confirmed) delete next[session.sessionId];
+          setTitleOverrides(next);
+        }
+      }
+      commitSessions(decorateSessions(list));
       return true;
     },
-    [selectedRef, markSync, onFinished, rememberRun, setTitleOverrides],
+    [commitSessions, decorateSessions, setTitleOverrides],
+  );
+
+  /**
+   * Apply a row-level catalogue packet, for a connection that declared
+   * `catalog_delta_v1`.
+   *
+   * The merge itself is the client package's `applyCatalogDelta`, which is where
+   * the one rule that makes this lane safe lives: a row the packet does not
+   * mention is kept, and removals are only ever the ids it names. What happens
+   * here is the same commit a snapshot goes through, so a run that finished in
+   * the few rows that arrived is reported exactly as it would be from a
+   * snapshot.
+   */
+  const applySessionDelta = useCallback(
+    (packet: CatalogDeltaPacket): boolean => {
+      if (!versionGate.current.accept("sessions", packet.version)) return false;
+      const merged = applyCatalogDelta(sessionsRef.current, packet);
+      commitSessions(decorateSessions(merged));
+      return true;
+    },
+    [commitSessions, decorateSessions],
   );
 
   /**
@@ -760,6 +804,7 @@ export function useSessionCatalog(
     titleOverrides,
     setTitleOverrides,
     applySessionSnapshot,
+    applySessionDelta,
     applySessionActivity,
     forgetCatalogue,
     observeRunEvent,

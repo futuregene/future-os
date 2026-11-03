@@ -2,6 +2,7 @@
 
 use super::probe::BwrapIdentity;
 use super::request::{HelperPhase, LinuxSandboxRequest, MountKind};
+use crate::console;
 use anyhow::{anyhow, Context, Result};
 use std::ffi::{CString, OsStr};
 use std::fs::File;
@@ -103,7 +104,7 @@ pub fn run_helper_request(reference: &str) -> ! {
     match outcome {
         Ok(status) => mirror_status(status),
         Err(error) => {
-            eprintln!("future-linux-sandbox-helper: {error:#}");
+            console::eprintln!("future-linux-sandbox-helper: {error:#}");
             std::process::exit(HELPER_INFRA_EXIT);
         }
     }

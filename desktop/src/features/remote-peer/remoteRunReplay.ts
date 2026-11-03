@@ -1,5 +1,5 @@
-import type { ReplayEvent, ReplayPage, RunEvent, RunReplay } from "@future-os/thread-projection";
-import { readRunReplay, tailCoversRange } from "@future-os/thread-projection";
+import type { ContentPage, ReplayEvent, ReplayPage, RunEvent, RunReplay } from "@future-os/thread-projection";
+import { copyEventPayload, hydrateRequiredContent, needsContentHydration, parseJsonText, readRunReplay, tailCoversRange, withEventPayload } from "@future-os/thread-projection";
 import { requestRemotePeer } from "./remotePeerClient";
 
 /**
@@ -44,16 +44,30 @@ export async function fetchRunReplay(options: {
 }): Promise<RunReplay> {
   const { desktopId, sessionId, runId, sinceIdx } = options;
   const isCurrent = options.isCurrent ?? (() => true);
-  return readRunReplay({
+  const replay = await readRunReplay({
     // One call per page: the Rust side declares `chunkedRead` and reassembles an
     // oversized reply before it reaches here (see `remote_peer::request`).
     readPage: command =>
-      requestRemotePeer<ReplayPage>(desktopId, command as unknown as Record<string, unknown>, sessionId),
+      requestRemotePeer<ReplayPage>(desktopId, command as unknown as Record<string, unknown>, sessionId, isCurrent),
     sessionId,
     runId,
     sinceIdx,
     isCurrent,
   });
+  for (const events of [replay.events, replay.projection?.events ?? []]) {
+    for (let index = 0; index < events.length; index += 1) {
+      const event = events[index]!;
+      if (!event.data.includes("\"content_refs\"") && event.data.length <= 32 * 1024)
+        continue;
+      const data = await parseJsonText<Record<string, unknown>>(event.data, { isCurrent });
+      const hydrated = needsContentHydration(event.type, data)
+        ? await hydrateRequiredContent(event.type, data, contentRequest =>
+            requestRemotePeer<ContentPage>(desktopId, { type: "get_event_content_range", runId, contentRequest }, sessionId, isCurrent), isCurrent)
+        : data;
+      events[index] = withEventPayload(event, hydrated);
+    }
+  }
+  return replay;
 }
 
 /**
@@ -82,13 +96,13 @@ export function replayEventsToRunEvents(runId: string, events: readonly ReplayEv
   const now = Date.now();
   return events.map((event) => {
     const createdAt = event.timestamp ? Date.parse(event.timestamp) : Number.NaN;
-    return {
+    return copyEventPayload(event, {
       id: event.eventId ?? `${runId}:${event.idx ?? -1}`,
       runId: event.runId || runId,
       eventType: event.type,
       payload: event.data,
       sequence: event.idx ?? -1,
       createdAt: Number.isNaN(createdAt) ? now : createdAt,
-    };
+    });
   });
 }

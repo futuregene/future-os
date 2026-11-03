@@ -44,7 +44,7 @@ impl Operation {
             state.snapshot.stage = stage.into();
         }
         drop(state);
-        eprintln!("FutureOS: cleanup stage={stage}");
+        tracing::debug!(event = "stage", stage = %stage,"FutureOS: cleanup stage={stage}");
         self.emit_progress();
     }
     fn emit_progress(&self) {

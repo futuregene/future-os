@@ -11,13 +11,18 @@ import { usePreviewLoadingGate } from "./usePreviewLoadingGate";
  * (`MarkdownContent`), constrained to the conversation-flow width (`max-w-3xl`)
  * with generous vertical padding. Content comes through the text-preview backend
  * command (default 200KB, 1MB cap); a read failure routes to `onError`.
+ *
+ * `onOpenPreview` is forwarded to the renderer so a link to another previewable
+ * file opens one level deeper in the overlay's stack (see `FilePreviewOverlay`).
  */
 export function MarkdownPreview({
   path,
   onError,
+  onOpenPreview,
 }: {
   path: string;
   onError: () => void;
+  onOpenPreview?: (file: { name: string; path: string }) => void;
 }) {
   const { t } = useTranslation("markdown");
   const { data: result, error, loading } = useAsyncResource<{ content: string; size: number; truncated: boolean; validUtf8: boolean } | null>(
@@ -50,7 +55,7 @@ export function MarkdownPreview({
   // so its rounded corners stay visible at top and bottom while the text scrolls.
   return (
     <div className="px-8 py-10">
-      <MarkdownContent basePath={path} content={content} />
+      <MarkdownContent basePath={path} content={content} onOpenPreview={onOpenPreview} />
     </div>
   );
 }

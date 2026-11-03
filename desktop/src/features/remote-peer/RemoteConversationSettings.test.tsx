@@ -448,6 +448,54 @@ it("seeds a draft from the host's starting level", async () => {
 });
 
 /**
+ * A remembered level the model still offers outranks the host's starting level.
+ *
+ * The host's `defaultThinkingLevel` is where a *new* conversation starts, not
+ * where this person wants the next one to start — they already said so, and the
+ * model has not lost that level. Reading it back is what makes one machine's
+ * pick carry across drafts.
+ */
+it("prefers the remembered level over the host's starting level when the model offers it", async () => {
+  rememberLastUsedModel("openai/gpt-5");
+  rememberLastUsedThinkingLevel("low");
+  requestMock.mockImplementation(async (name: string) =>
+    (name === "list_models"
+      ? [{
+          id: "gpt-5",
+          provider: "openai",
+          thinkingLevels: ["default", "low", "high"],
+          defaultThinkingLevel: "default",
+        }]
+      : undefined));
+
+  const hook = await mountHook({ sessionId: "" });
+
+  expect(hook.current.model).toBe("openai/gpt-5");
+  expect(hook.current.thinkingLevel).toBe("low");
+  await hook.unmount();
+});
+
+/**
+ * …and with nothing remembered and no start declared, the first declared level
+ * is the answer rather than nothing at all.
+ *
+ * A host that lists levels but no `defaultThinkingLevel` is not saying "no
+ * preference" in a way this client can send — an empty thinking level would be
+ * refused — so the list's own first entry is the honest fallback.
+ */
+it("takes the first declared level when the host declares neither a start nor a memory", async () => {
+  requestMock.mockImplementation(async (name: string) =>
+    (name === "list_models"
+      ? [{ id: "gpt-5", provider: "openai", thinkingLevels: ["low", "high"] }]
+      : undefined));
+
+  const hook = await mountHook({ sessionId: "" });
+
+  expect(hook.current.thinkingLevel).toBe("low");
+  await hook.unmount();
+});
+
+/**
  * The other half of that rule: a conversation that already exists on the host
  * shows the level *it* is running at, whatever this app's default is. Only a
  * draft is seeded here; overriding a real session's level would be this machine
@@ -700,8 +748,8 @@ it("offers the thinking levels, and reports a choice", async () => {
   const settings = state({ thinkingLevel: "off" });
   const view = await mountPicker(settings);
 
-  expect(view.thinkingLabel()).toContain("Off");
-  await view.choose("Thinking level (on that computer)", "High");
+  expect(view.thinkingLabel()).toContain("off");
+  await view.choose("Thinking level (on that computer)", "high");
   expect(settings.setThinkingLevel).toHaveBeenCalledWith("high");
   await view.unmount();
 });
@@ -717,9 +765,9 @@ it("shows exactly the host-declared levels, arbitrary values included", async ()
   const settings = state({ models, model: "openai/gpt-5", thinkingLevel: "max" });
   const view = await mountPicker(settings);
 
-  expect(view.thinkingLabel()).toContain("Max");
+  expect(view.thinkingLabel()).toContain("max");
   await view.open("Thinking level (on that computer)");
-  expect(view.menuItems().map(node => node.textContent)).toEqual(["Default", "Off", "Max"]);
+  expect(view.menuItems().map(node => node.textContent)).toEqual(["default", "off", "max"]);
   await act(async () => view.menuItems()[1]!.click());
   expect(settings.setThinkingLevel).toHaveBeenCalledWith("off");
   await view.unmount();
@@ -736,7 +784,7 @@ it("disables the thinking picker when the model offers a single level", async ()
   const view = await mountPicker(state({ models, model: "openai/gpt-5", thinkingLevel: "default" }));
 
   expect(view.thinking().disabled).toBe(true);
-  expect(view.thinkingLabel()).toContain("Default");
+  expect(view.thinkingLabel()).toContain("default");
   await view.unmount();
 });
 

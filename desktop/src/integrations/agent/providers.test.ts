@@ -16,6 +16,7 @@ import {
   peekFutureBalance,
   peekFutureProfile,
   pollFutureLogin,
+  probeThinkingLevel,
   setBuiltinProviderBaseUrl,
   startFutureLogin,
   storeFutureBalance,
@@ -115,6 +116,27 @@ describe("agent provider catalogue", () => {
 
     await deleteCustomProvider("custom-1");
     expect(invokeMock).toHaveBeenCalledWith("delete_custom_provider", { id: "custom-1" });
+    expect(peekAgentProviders()).toBe(EMPTY_VIEW);
+  });
+
+  it("probes one thinking level through the native command, unsaved", async () => {
+    const outcome = { level: "high", ok: false, error: "unsupported 'high'" };
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValueOnce(EMPTY_VIEW);
+    await listAgentProviders();
+    invokeMock.mockResolvedValue(outcome);
+    const input = {
+      api: "openai-completions",
+      baseUrl: "https://api.example.com/v1",
+      apiKey: null,
+      level: "high",
+      modelId: "qwen",
+      providerId: "custom-1",
+    };
+
+    await expect(probeThinkingLevel(input)).resolves.toBe(outcome);
+    expect(invokeMock).toHaveBeenCalledWith("probe_thinking_level", { input });
+    // A probe writes nothing, so it must not replace the cached catalogue.
     expect(peekAgentProviders()).toBe(EMPTY_VIEW);
   });
 

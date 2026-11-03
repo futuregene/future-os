@@ -589,6 +589,7 @@ pub fn plan_reset(entries: &[SessionEntry], selectors: &ResetSelectors) -> Resul
             continue;
         }
         let mut killed_by: Option<(DropKind, u64)> = None;
+        let mut changed = false;
         for kind in &kinds {
             let (blocks, survives) = drop_kind_from_entry(&mut entry, *kind);
             if !survives {
@@ -596,6 +597,7 @@ pub fn plan_reset(entries: &[SessionEntry], selectors: &ResetSelectors) -> Resul
                 break;
             }
             if blocks > 0 {
+                changed = true;
                 record_effect(&mut effects, *kind, 1, blocks);
             }
         }
@@ -605,6 +607,11 @@ pub fn plan_reset(entries: &[SessionEntry], selectors: &ResetSelectors) -> Resul
                 affected_runs.insert(run.to_owned());
             }
             continue;
+        }
+        if changed {
+            if let Some(run) = entry_run_id(&entry) {
+                affected_runs.insert(run.to_owned());
+            }
         }
         retained.push(entry);
     }
@@ -689,16 +696,24 @@ mod tests;
 
 #[cfg(test)]
 #[allow(clippy::type_complexity)]
-static RESET_RACE_HOOK: parking_lot::Mutex<Option<(String, Box<dyn Fn(&super::Manager) + Send>)>> =
-    parking_lot::Mutex::new(None);
+static RESET_RACE_HOOKS: std::sync::LazyLock<
+    parking_lot::Mutex<std::collections::HashMap<String, Box<dyn Fn(&super::Manager) + Send>>>,
+> = std::sync::LazyLock::new(Default::default);
 
 /// Test-only hook fired by `reset_history` in the window between the digest it
 /// captured and the rewrite transaction that re-reads the history — the one
 /// place a concurrent writer can slip in. It makes that race deterministic
 /// instead of hoping for one, so the refusal path is tested rather than assumed.
+///
+/// Keyed by session: four tests register one, and a single slot let whichever ran
+/// last replace the others' registration. The reset then found no hook for its
+/// own id and succeeded where the test expected `history_changed` — a failure
+/// that showed up only at high test parallelism (measured 2026-10-29: red with 32
+/// threads, green with 8). The id was always meant to gate the hook; now the
+/// storage agrees.
 #[cfg(test)]
 pub(crate) fn set_reset_race_hook(session: &str, hook: Box<dyn Fn(&super::Manager) + Send>) {
-    *RESET_RACE_HOOK.lock() = Some((session.to_string(), hook));
+    RESET_RACE_HOOKS.lock().insert(session.to_string(), hook);
 }
 
 /// Result of one reset call: the plan that was computed (and, when applied, the
@@ -724,7 +739,12 @@ impl super::Manager {
         selectors: &ResetSelectors,
         apply: bool,
     ) -> Result<ResetOutcome> {
-        let raw = self.storage()?.entries(id)?;
+        let store = self.storage()?;
+        let canonical = store.storage_format(id)? == super::content::FORMAT_VERSION;
+        let revision = store
+            .revision(id)?
+            .ok_or_else(|| anyhow::anyhow!("reset session is unavailable"))?;
+        let raw = store.entries(id)?;
         let entries: Vec<SessionEntry> = raw
             .iter()
             .map(|value| serde_json::from_value(value.clone()))
@@ -737,19 +757,34 @@ impl super::Manager {
                 backup: None,
             });
         }
-        let digest = super::compaction_ops::canonical_hash(&serde_json::Value::Array(raw.clone()))?;
+        let digest = if canonical {
+            None
+        } else {
+            Some(super::compaction_ops::canonical_hash(
+                &serde_json::Value::Array(raw.clone()),
+            )?)
+        };
         #[cfg(test)]
         {
-            // Id-gated so unrelated resets never consume the hook.
-            let mut slot = RESET_RACE_HOOK.lock();
-            if matches!(slot.as_ref(), Some((sid, _)) if sid == id) {
-                if let Some((_, hook)) = slot.take() {
-                    hook(self);
-                }
+            // Id-gated so unrelated resets never consume the hook, and taken
+            // out of the map before it runs: the hook writes through the same
+            // manager, and holding the registry across that work would
+            // serialize every other test's reset.
+            let hook = RESET_RACE_HOOKS.lock().remove(id);
+            if let Some(hook) = hook {
+                hook(self);
             }
         }
         let backup = self.write_reset_backup(id, selectors, &planned.plan, &raw)?;
-        let plan = self.storage()?.reset_transcript(id, &digest, selectors)?;
+        let plan = if canonical {
+            store.apply_segmented_reset(id, revision, &raw, planned)?
+        } else {
+            store.reset_transcript(
+                id,
+                digest.as_deref().expect("legacy reset digest"),
+                selectors,
+            )?
+        };
         // The display projection cache is keyed by transcript revision, which
         // the rewrite bumped; drop it anyway so a reader that captured the
         // session's revision before the reset cannot reuse the old projection.
@@ -783,7 +818,7 @@ impl super::Manager {
         std::fs::create_dir_all(&directory)
             .map_err(|error| anyhow::anyhow!("create {}: {error}", directory.display()))?;
         let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
-        let path = directory.join(format!("{id}-{stamp}.json"));
+        let path = directory.join(format!("{id}-{stamp}-{}.json", uuid::Uuid::new_v4()));
         let backup = serde_json::json!({
             "format": "futureos-session-backup",
             "version": 1,
@@ -795,15 +830,18 @@ impl super::Manager {
             "entriesAfter": plan.entries_after,
             "entries": entries,
         });
-        let temporary = path.with_extension("json.tmp");
-        std::fs::write(
-            &temporary,
-            serde_json::to_vec_pretty(&backup)
-                .map_err(|error| anyhow::anyhow!("encode backup: {error}"))?,
-        )
-        .map_err(|error| anyhow::anyhow!("write {}: {error}", temporary.display()))?;
-        std::fs::rename(&temporary, &path)
-            .map_err(|error| anyhow::anyhow!("publish {}: {error}", path.display()))?;
+        let mut temporary = tempfile::Builder::new()
+            .prefix(".history-reset-")
+            .tempfile_in(&directory)
+            .map_err(|error| anyhow::anyhow!("create reset backup: {error}"))?;
+        serde_json::to_writer_pretty(temporary.as_file_mut(), &backup)
+            .map_err(|error| anyhow::anyhow!("encode reset backup: {error}"))?;
+        temporary.as_file().sync_all()?;
+        temporary
+            .persist_noclobber(&path)
+            .map_err(|error| anyhow::anyhow!("publish reset backup: {error}"))?;
+        #[cfg(unix)]
+        std::fs::File::open(&directory)?.sync_all()?;
         Ok(path)
     }
 }

@@ -28,8 +28,7 @@ use future_tui::workbench::layout::Rect;
 use future_tui::workbench::mouse::{MouseEvent, MouseKind};
 use future_tui::workbench::picker::PickerKind;
 use future_tui::workbench::state::{
-    ApprovalView, DiffView, ForkPoint, PanelId, QueuedPrompt, SessionRow, WorkbenchData,
-    WorktreeView,
+    ApprovalView, DiffView, ForkPoint, ForkRole, PanelId, QueuedPrompt, WorkbenchData, WorktreeView,
 };
 use future_tui::workbench::{Overlay, WbAction, WbEvent, Workbench};
 
@@ -57,6 +56,13 @@ fn main() {
     let mut failures = 0;
     let mut total_regions = 0;
     let mut total_clicks = 0;
+    // A page whose fixture was removed with its feature must fail *here*, not
+    // halfway down the list: the panic used to abort the run after fifteen
+    // pages had passed, so every page behind it — including the ones a change
+    // touched — silently stopped being audited.
+    for name in PAGES {
+        let _ = fixture(name);
+    }
     for name in PAGES {
         if let Some(wanted) = only.as_deref() {
             if wanted != *name {
@@ -115,9 +121,6 @@ const PAGES: &[&str] = &[
     "diff",
     "diff-clean",
     "diff-error",
-    "history",
-    "history-long",
-    "tree",
     "fork",
     "worktree",
     "preferences",
@@ -142,10 +145,7 @@ fn fixture(name: &str) -> (WorkbenchData, fn(&mut Workbench, &WorkbenchData)) {
         "workspaces" => (demo::data(demo::Scenario::Workspaces), noop),
         "panel-recent" => (chat(), |wb, _| wb.panel = PanelId::Recent),
         "panel-workspaces" => (chat(), |wb, _| wb.panel = PanelId::Workspaces),
-        "panel-files" => (chat(), |wb, _| {
-            wb.panel = PanelId::Files;
-            wb.sidebar_focus = true;
-        }),
+        "panel-files" => (chat(), |wb, _| wb.panel = PanelId::Files),
         "preview-image" => (
             {
                 let mut data = chat();
@@ -241,34 +241,20 @@ pub fn highlight(path: &str, text: &str) -> Vec<Line> {
             },
             |wb, _| wb.overlay = Some(Overlay::Diff),
         ),
-        "history" | "history-long" => (
-            {
-                let mut data = chat();
-                let count = if name == "history-long" { 24 } else { 6 };
-                data.sessions = (0..count).map(session).collect();
-                data
-            },
-            |wb, _| wb.overlay = Some(Overlay::History),
-        ),
-        "tree" => (
-            {
-                let mut data = chat();
-                data.sessions = (0..8).map(session).collect();
-                let root = data.sessions[0].id.clone();
-                for (index, row) in data.sessions.iter_mut().enumerate() {
-                    row.parent_id = (index % 2 == 1).then(|| root.clone());
-                }
-                data
-            },
-            |wb, _| wb.overlay = Some(Overlay::Tree),
-        ),
         "fork" => (
             {
                 let mut data = chat();
                 data.fork_points = (0..5)
                     .map(|index| ForkPoint {
                         id: format!("e{index}"),
-                        text: format!("user message point {index}"),
+                        // Every other row is an answer: the picker lists both
+                        // kinds, and the label is what tells them apart.
+                        role: if index % 2 == 0 {
+                            ForkRole::User
+                        } else {
+                            ForkRole::Assistant
+                        },
+                        text: format!("message point {index}"),
                     })
                     .collect();
                 data
@@ -318,7 +304,9 @@ pub fn highlight(path: &str, text: &str) -> Vec<Line> {
         "picker-language" => (chat(), |wb, data| {
             wb.open_picker(PickerKind::Language, data);
         }),
-        other => panic!("no fixture for {other}"),
+        other => panic!(
+            "{other} is listed in PAGES but has no fixture: drop the page, or give it an arm here"
+        ),
     }
 }
 
@@ -360,15 +348,6 @@ fn diff() -> DiffView {
             .collect::<Vec<_>>()
             .join("\n"),
         error: None,
-    }
-}
-
-fn session(index: usize) -> SessionRow {
-    SessionRow {
-        id: format!("sess-{index:03}"),
-        title: format!("session {index} with a title long enough to be cut"),
-        workspace: format!("D:/future-os/.worktrees/branch-{index}"),
-        ..SessionRow::default()
     }
 }
 
@@ -598,7 +577,11 @@ fn audit_page(
             .iter()
             .any(|(_, id)| id.starts_with("sidebar.tab."))
         {
-            let actions = narrow.handle(WbEvent::Key("ctrl+b".into()), data);
+            let sidebar_key = narrow
+                .keys
+                .key(future_tui::workbench::preferences::Action::Sidebar)
+                .to_string();
+            let actions = narrow.handle(WbEvent::Key(sidebar_key.clone()), data);
             narrow.render(data, w, h);
             // The panel takes the body instead of a rail: either overlay is
             // the answer, but the keys must reach it and its rows must be
@@ -611,7 +594,7 @@ fn audit_page(
                     .any(|(_, id)| id.starts_with("sidebar.row."));
             if !reached {
                 issues.push(format!(
-                    "{name}: ctrl+b cannot reach the panel when narrow ({actions:?})"
+                    "{name}: {sidebar_key} cannot reach the panel when narrow ({actions:?})"
                 ));
             }
         }
@@ -638,6 +621,7 @@ fn is_page(id: &str) -> bool {
         || id == "input"
         || id == "divider"
         || id.starts_with("sidebar.")
+        || id.starts_with("header.")
         || id.starts_with("launchpad.")
 }
 
@@ -661,10 +645,9 @@ fn describe(actions: &[WbAction]) -> String {
 /// The state a click could have changed, as one comparable string.
 fn digest(wb: &Workbench) -> String {
     format!(
-        "{:?}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        "{:?}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         wb.overlay,
         wb.panel,
-        wb.sidebar_focus,
         wb.sidebar_visible,
         wb.sidebar_w,
         wb.workflow_index,

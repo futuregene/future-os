@@ -3,6 +3,7 @@
 pub(crate) mod availability;
 pub(crate) mod business;
 pub(crate) mod catalog;
+mod command_diagnostics;
 pub(crate) mod files;
 pub(crate) mod lean;
 pub(crate) mod pairing;
@@ -19,15 +20,25 @@ impl BusinessHost for DesktopHost {
         reply: &'a dyn ReplySink,
     ) -> futures::future::BoxFuture<'a, ()> {
         Box::pin(async move {
+            // Measure the desktop's half of every remote command, so a phone's
+            // load timeout can be told apart from a slow relay: no slow row
+            // logged here means the desktop answered quickly.
+            let kind = command.cmd_type.clone();
+            let session = command.session_id.clone();
+            let started = std::time::Instant::now();
+            let outcome = std::sync::Mutex::new(command_diagnostics::CommandOutcome::default());
+            let sink = command_diagnostics::ObservedSink::new(reply, &outcome);
             if command.cmd_type == "get_read_chunk" {
                 match read_pages::read(&command) {
-                    Ok(page) => reply.send_binary(page.header, page.body).await,
-                    Err(error) => reply.send(false, Value::Null, Some(error)).await,
+                    Ok(page) => sink.send_binary(page.header, page.body).await,
+                    Err(error) => sink.send(false, Value::Null, Some(error)).await,
                 }
+                command_diagnostics::report(&kind, &session, started.elapsed(), &outcome);
                 return;
             }
-            let paged = read_pages::PagedReply::new(&command, reply);
+            let paged = read_pages::PagedReply::new(&command, &sink);
             business::execute(command, &paged).await;
+            command_diagnostics::report(&kind, &session, started.elapsed(), &outcome);
         })
     }
 }
@@ -164,5 +175,28 @@ impl FileHost for DesktopHost {
     }
     fn clear_preview_cache(&self) {
         files::clear_preview_cache();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use future_remote_server::services::StateHost;
+
+    /// Taking control raises the GUI's claim hook. A headless host has no
+    /// presentation, so the hook must return without installing one: the
+    /// window activation belongs to the windowed entry point, and a backend
+    /// that attached a sink here would make every later `publish_to_gui` in
+    /// this process try to reach it. `events::attach` is process-global and
+    /// one-shot and another test may already have attached one, so what the
+    /// hook is held to is that it never changes whether one exists.
+    #[test]
+    fn the_claim_hook_does_not_attach_a_presentation() {
+        let attached = crate::events::has_presentation();
+        StateHost::on_control_claimed(&super::DesktopHost);
+        assert_eq!(
+            crate::events::has_presentation(),
+            attached,
+            "the backend hook must not install a presentation sink"
+        );
     }
 }

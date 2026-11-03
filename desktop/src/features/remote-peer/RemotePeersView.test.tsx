@@ -94,6 +94,15 @@ async function mount() {
   document.body.append(container);
   const root = createRoot(container);
   /**
+   * How many times each of the shell's two reads was asked for.
+   *
+   * They are different questions — machines *and* their hosts' catalogues,
+   * against the machines alone — and which one a control asks for is a claim
+   * about what it changed. Counted here so a test can hold such a claim: a local
+   * name must not send this page looking at any host.
+   */
+  const reads = { full: 0, labels: 0 };
+  /**
    * The shell, in miniature.
    *
    * The section is a view of the peer list the shell owns (`useRemotePeers`),
@@ -107,7 +116,7 @@ async function mount() {
     const [peers, setPeers] = useState<RemotePeer[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    const refresh = useCallback(async () => {
+    const read = useCallback(async () => {
       try {
         setPeers(await listRemotePeers());
         setError(null);
@@ -119,6 +128,14 @@ async function mount() {
         setLoading(false);
       }
     }, []);
+    const refresh = useCallback(async () => {
+      reads.full += 1;
+      await read();
+    }, [read]);
+    const refreshLabels = useCallback(async () => {
+      reads.labels += 1;
+      await read();
+    }, [read]);
     useEffect(() => {
       push = setPeers;
       void refresh();
@@ -130,6 +147,7 @@ async function mount() {
         onOpenSettings={onOpenSettings}
         onReconnectAll={onReconnectAll}
         onRefresh={refresh}
+        onRefreshLabels={refreshLabels}
         peers={peers}
       />
     );
@@ -145,6 +163,7 @@ async function mount() {
     input: () => container.querySelector<HTMLInputElement>("input")!,
     onOpenSettings,
     onReconnectAll,
+    reads,
     /**
      * Hand the section a new list the way the shell's push would.
      *
@@ -528,6 +547,37 @@ it("renames a machine from its own row while it is offline", async () => {
   await view.unmount();
 });
 
+/**
+ * Saving a name waits for the *local* list, not for the hosts.
+ *
+ * The write never leaves this computer (`remote_peer_set_label` edits the
+ * credential book), and so does the answer: the row is drawn from the machine
+ * list. The section's other re-read also fetches every connected host's
+ * conversations, which is a round trip per machine — and on a host that is
+ * connected but slow to answer, the client's command timeout with retries. That
+ * is what made a rename sit on "Saving…" for seconds, for a write no host can
+ * know about.
+ */
+it("re-reads the machines, not the hosts, when a label is saved", async () => {
+  const view = await mount();
+  view.reads.full = 0;
+  view.reads.labels = 0;
+
+  await act(async () => view.labelButton()!.click());
+  const input = view.labelInput()!;
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(input, "Old laptop");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => view.dialogButton("Save")!.click());
+  await view.settle();
+
+  expect(view.reads.labels).toBe(1);
+  expect(view.reads.full).toBe(0);
+  await view.unmount();
+});
+
 /** Nothing changed, nothing is written. */
 it("saves a label only once something has changed", async () => {
   const view = await mount();
@@ -904,5 +954,56 @@ it("reports a reconnect-all the shell could not carry out", async () => {
   await view.settle();
 
   expect(view.text()).toContain("no bridge");
+  await view.unmount();
+});
+
+/**
+ * Enter in the name box is the dialog's own submit.
+ *
+ * The keyboard is where the reader already is — they opened this to fix a name
+ * and the box has the caret — so the last gesture must not be a trip to the
+ * mouse. It goes through the same `save` the button does, which is what keeps
+ * "Enter" and "Save" from being two different writes.
+ */
+it("saves the label from the keyboard", async () => {
+  const view = await mount();
+  await act(async () => view.labelButton()!.click());
+
+  const input = view.labelInput()!;
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(input, "Studio mini");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => {
+    input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" }));
+  });
+  await view.settle();
+
+  expect(setRemotePeerLabel).toHaveBeenCalledWith("desktop_a", { name: "Studio mini" });
+  expect(view.container.querySelector("[role='dialog']")).toBeNull();
+  await view.unmount();
+});
+
+/**
+ * Enter on an unchanged form writes nothing.
+ *
+ * The Save button is disabled in that state, and Enter has to agree with it:
+ * a key press that reached the write would bump the busy flag, re-read the
+ * whole list and record a label that says what it already said.
+ */
+it("leaves an unchanged label alone when Enter is pressed", async () => {
+  const view = await mount();
+  await act(async () => view.labelButton()!.click());
+
+  const input = view.labelInput()!;
+  await act(async () => {
+    input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" }));
+  });
+  await view.settle();
+
+  expect(setRemotePeerLabel).not.toHaveBeenCalled();
+  // Still open: nothing happened, so nothing closed.
+  expect(view.container.querySelector("[role='dialog']")).not.toBeNull();
   await view.unmount();
 });

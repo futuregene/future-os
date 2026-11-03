@@ -10,6 +10,7 @@ test-support = []
 [dependencies]
 future-remote-protocol = { path = "../remote-protocol" }
 future-remote-crypto = { path = "../remote-crypto" }
+future-relay-endpoint = { path = "../relay-endpoint" }
 base64 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -24,3 +25,4 @@ sha2 = "0.10"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
+flate2 = "1"

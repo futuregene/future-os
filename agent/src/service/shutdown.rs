@@ -30,6 +30,21 @@ pub struct ShutdownReport {
 const STAGE_SESSION_SNAPSHOT: &str = "admission: session snapshot";
 const STAGE_INTERRUPTING_SESSIONS: &str = "admission: interrupting sessions";
 
+/// The drain's last wait before storage, named once so the report and the log
+/// line cannot drift apart.
+const STAGE_LISTENER: &str = "RPC listener and streams";
+/// The same stage after the graceful drain was abandoned. A report naming this
+/// says the server was dropped, not that a client was still being waited for.
+const STAGE_LISTENER_ABANDONED: &str = "RPC listener and streams (abandoned)";
+
+/// How much of a stop's five seconds the listener's graceful drain may use.
+///
+/// Long enough for the streams `close_streams` just ended to reach their peers
+/// and for a client to close its connection (milliseconds on the local endpoint;
+/// a stop with a silent peer measured ~35 ms of real work), short enough that a
+/// peer which never finishes costs half a second instead of the stop's budget.
+const LISTENER_GRACE: Duration = Duration::from_millis(500);
+
 /// How long one shutdown sub-step may take before it is worth a warning.
 ///
 /// Measurement only: nothing here changes what the drain does or how long it is
@@ -170,6 +185,26 @@ impl AgentHandle {
         *self.shutdown.stage.lock() = stage;
         while !settled() {
             if self.shutdown.report().is_some() {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        true
+    }
+
+    /// [`Self::wait`] with a budget of its own: one step may not hold the whole
+    /// stop, so past `budget` this returns `false` and the caller decides what to
+    /// do instead of waiting.
+    fn wait_within(
+        &self,
+        budget: Duration,
+        stage: &'static str,
+        mut settled: impl FnMut() -> bool,
+    ) -> bool {
+        *self.shutdown.stage.lock() = stage;
+        let expires = Instant::now() + budget;
+        while !settled() {
+            if self.shutdown.report().is_some() || Instant::now() >= expires {
                 return false;
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -357,10 +392,29 @@ impl AgentHandle {
         // shutdown then stops accepting connections and drains active RPCs.
         self.state.service_work.close_streams();
         self.state.service_work.stop_listener();
-        if !self.wait("RPC listener and streams", || {
+        // The listener's share of the stop is bounded, and the clients are not
+        // the ones who set it. Measured 2026-10-28: one connected peer that
+        // never finished its request kept Tonic's graceful shutdown pending
+        // until the deadline, which reported "RPC listener and streams" and
+        // retained instance ownership for the life of the Desktop process — no
+        // Agent could start for ~40 minutes. A peer is not worth the socket, the
+        // endpoint and the lock: past this grace the server is dropped.
+        if !self.wait_within(LISTENER_GRACE, STAGE_LISTENER, || {
             !self.shutdown.server_running.load(Ordering::Acquire)
         }) {
-            return errors;
+            if self.shutdown.report().is_none() {
+                tracing::warn!(
+                    stage = STAGE_LISTENER,
+                    grace_ms = LISTENER_GRACE.as_millis() as u64,
+                    "Agent shutdown: abandoning the graceful RPC drain"
+                );
+                self.state.service_work.abandon_listener();
+            }
+            if !self.wait(STAGE_LISTENER_ABANDONED, || {
+                !self.shutdown.server_running.load(Ordering::Acquire)
+            }) {
+                return errors;
+            }
         }
         *self.shutdown.stage.lock() = "journal compactor and SQLite";
         if let Err(error) = self.state.session_manager.shutdown() {

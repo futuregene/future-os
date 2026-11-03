@@ -62,6 +62,7 @@ export function RemoteClientSection({
   onOpenSettings,
   onReconnectAll,
   onRefresh,
+  onRefreshLabels,
   peers,
 }: {
   /**
@@ -98,6 +99,16 @@ export function RemoteClientSection({
    * keeping a second list of its own.
    */
   onRefresh: () => Promise<void>;
+  /**
+   * Re-read only this machine's own record of the paired computers.
+   *
+   * A machine's name and icon never leave this computer — `remote_peer_set_label`
+   * writes the local credential book and nothing else — so they are drawn from
+   * the list, and the list alone is what saving one has to wait for. The full
+   * `onRefresh` above also asks every connected host for its conversations,
+   * which is a round trip per machine for a fact none of them holds.
+   */
+  onRefreshLabels: () => Promise<void>;
   /** The paired machines, as the shell's live list has them. */
   peers: readonly RemotePeer[];
 }) {
@@ -331,7 +342,7 @@ export function RemoteClientSection({
                     onDisconnect={() => void run(peer.desktopId, () => disconnectRemotePeer(peer.desktopId))}
                     onEdit={() => onOpenSettings(peer)}
                     onReconnect={() => void run(peer.desktopId, () => connectRemotePeer(peer.desktopId))}
-                    onRefresh={onRefresh}
+                    onRefreshLabel={onRefreshLabels}
                     onTakeOver={() => void run(peer.desktopId, () => takeoverRemotePeer(peer.desktopId))}
                     onUnpair={() => setUnpairTarget(peer)}
                     peer={peer}
@@ -390,7 +401,7 @@ function PeerRow({
   onDisconnect,
   onEdit,
   onReconnect,
-  onRefresh,
+  onRefreshLabel,
   onTakeOver,
   onUnpair,
   peer,
@@ -399,8 +410,8 @@ function PeerRow({
   onDisconnect: () => void;
   onEdit: () => void;
   onReconnect: () => void;
-  /** Re-read the shell's list, which is what makes a saved label show up. */
-  onRefresh: () => Promise<void>;
+  /** Re-read this machine's own record of the machines, which draws the label. */
+  onRefreshLabel: () => Promise<void>;
   /** Ask this machine to let this desktop drive it (it is in standby). */
   onTakeOver: () => void;
   onUnpair: () => void;
@@ -516,7 +527,7 @@ function PeerRow({
         </div>
       </div>
       {labelOpen
-        ? <PeerLabelDialog onClose={() => setLabelOpen(false)} onRefresh={onRefresh} peer={peer} />
+        ? <PeerLabelDialog onClose={() => setLabelOpen(false)} onRefresh={onRefreshLabel} peer={peer} />
         : null}
     </>
   );
@@ -538,6 +549,12 @@ function PeerRow({
  * omitted key as "leave it", so sending both every time would rewrite a value
  * that did not need it. An empty name clears the label, and the row falls back
  * to the machine's id.
+ *
+ * The re-read it waits for is `onRefresh` — the local machine list, and nothing
+ * more (see the section's `onRefreshLabels`). Saving used to wait for the shell's
+ * full re-read instead, which also fetches every connected host's conversations
+ * over the network: the write is local, the wait was not, and a slow or sleeping
+ * host held "Saving…" for the length of its command timeout.
  */
 function PeerLabelDialog({
   onClose,
@@ -545,7 +562,7 @@ function PeerLabelDialog({
   peer,
 }: {
   onClose: () => void;
-  /** Re-read the shell's machine list, which is what redraws the row. */
+  /** Re-read this machine's own record of the machines, which redraws the row. */
   onRefresh: () => Promise<void>;
   peer: RemotePeer;
 }) {
@@ -571,7 +588,8 @@ function PeerLabelDialog({
         ...(iconChanged ? { icon } : {}),
       });
       // The rows are the shell's list, so the write is made visible by its
-      // re-read — the same contract every other row action has.
+      // re-read — of the machines alone: this is a local record of them, and no
+      // host has anything to say about a name it was never sent.
       await onRefresh();
       onClose();
     }

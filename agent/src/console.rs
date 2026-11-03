@@ -1,0 +1,888 @@
+//! Terminal writes that may fail without taking the process with them.
+//!
+//! `eprintln!` and its relatives are not best effort. They render into
+//! `std::io::stdio::print_to`, which panics with `failed printing to stderr`
+//! the moment the write returns an error — the caller has no `Result` to check,
+//! so a diagnostic becomes a crash. On a long-lived host that error is not
+//! hypothetical: a Desktop started from a terminal inherits that terminal's pty
+//! as fds 0/1/2, and when the terminal goes away the kernel revokes the pty
+//! slave, after which every write to it answers `EIO`.
+//!
+//! Measured 2026-10-28 in `app/logs/crash.log` (one Desktop process, pid 69180,
+//! which `lsof` showed holding `/dev/ttys002` as fds 0/1/2):
+//!
+//! * 171 records of `failed printing to stderr: Input/output error (os error 5)`
+//!   at `std/src/io/stdio.rs:1165`, between 2026-10-27T07:22Z (the moment the
+//!   pty went away) and 2026-10-28T01:16Z. Each ended the task that emitted it —
+//!   an Agent run, an observer, a reconcile pass — which is what a session
+//!   dying mid-tool looks like from the outside;
+//! * 3 records of a poisoned `AgentHost` state lock (`agent_host.rs`), because
+//!   one of those panics happened while the lock was held. The last of them, on
+//!   the main thread at 2026-10-28T01:27Z, is the one that ended the process.
+//!
+//! So a write to a terminal nobody is reading can take a run, and eventually the
+//! launch, down with it. The macros below are the ones every long-lived write in
+//! this tree uses instead, and they differ in exactly one way: a failed write is
+//! dropped. Call sites spell the path — `console::eprintln!(...)` with
+//! `use crate::console;` — rather than importing the macro under its familiar
+//! name: a macro imported by name is *ambiguous* with `std`'s prelude macro
+//! wherever a child module glob-imports it (`use super::*` in every test module,
+//! E0659), and a path invocation cannot be.
+//!
+//! What could not be written to the terminal still reaches the host log through
+//! [`crate::logfile`], which is where a launch with no terminal has its
+//! diagnostics read from anyway. Deliberately not a retry loop: a terminal that
+//! has gone away does not come back, so the first failure is reported once (so
+//! the next investigation knows why output stopped) and every write after it
+//! stays silent.
+
+use std::fmt::Arguments;
+use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Whether the one-line note for an unusable stderr has already been written.
+static STDERR_LOST: AtomicBool = AtomicBool::new(false);
+/// The same for stdout.
+static STDOUT_LOST: AtomicBool = AtomicBool::new(false);
+
+/// Write to stderr, dropping a failed write.
+pub fn write_err(args: Arguments<'_>) {
+    write_via(std::io::stderr(), &STDERR_LOST, "stderr", args);
+}
+
+/// Write to stdout, dropping a failed write.
+pub fn write_out(args: Arguments<'_>) {
+    write_via(std::io::stdout(), &STDOUT_LOST, "stdout", args);
+}
+
+/// The write-or-degrade policy, over any writer.
+///
+/// A failed write is not the end of the program: the text goes to the host log
+/// (the copy a later investigation reads anyway), one line records that output is
+/// unusable, and a write that fails there too is dropped. That order matters and
+/// each step is why the previous one can fail — the terminal may be gone, the log
+/// may not be open yet, and after that there is nowhere left to put it. Silence is
+/// the correct last resort: a diagnostic is never worth a dead task.
+///
+/// Split out so a writer that always fails can drive it: this is the panic
+/// `eprintln!` produces (it unwraps the same `Result` this function inspects), and
+/// the caller must keep working after it — measured 2026-11-01, one unwritable
+/// stream ended an Agent worker 1.4 s into a launch and the app then retried for
+/// thirteen hours.
+fn write_via<W: Write>(mut writer: W, reported: &AtomicBool, stream: &str, args: Arguments<'_>) {
+    let text = args.to_string();
+    if let Err(error) = writer.write_fmt(format_args!("{text}")) {
+        degrade(reported, stream, &error, &text);
+    }
+}
+
+/// Put a line the terminal refused into the host log, then note the loss once.
+fn degrade(reported: &AtomicBool, stream: &str, error: &std::io::Error, text: &str) {
+    if let Some(mirror) = crate::logfile::get() {
+        mirror.write_stripped(text);
+    }
+    // Not `write_err` again: this runs from inside a failed `write_err`.
+    note_once(reported, stream, error);
+}
+
+/// Write one *line* to stderr: `args`, then the newline that ends it.
+///
+/// The line-shaped macros have to write their own newline, because nothing
+/// downstream will. A reader that consumes this output by line —
+/// `BufReader::lines`, which is every log tail and every test that watches a
+/// launch start — holds an unterminated tail back until the *next* write
+/// supplies a delimiter, and if the process then goes quiet the text is never
+/// delivered at all. Measured 2026-10-28: `future host` on a signed-out machine
+/// wrote `Not signed in to FutureOS` and `Remote: Stopped` without their
+/// newlines, so `cli/tests/headless_cli.rs` blocked on both for its whole 300 s
+/// budget with the text sitting in the pipe, and every diagnostic that followed
+/// was glued onto the previous line.
+pub fn write_err_line(args: Arguments<'_>) {
+    let written = {
+        let mut stderr = std::io::stderr().lock();
+        write_line(&mut stderr, args)
+    };
+    // The lock is released first: the note goes through tracing, which writes to
+    // this same stream.
+    if let Err(error) = written {
+        note_once(&STDERR_LOST, "stderr", &error);
+    }
+}
+
+/// The stdout half of [`write_err_line`].
+pub fn write_out_line(args: Arguments<'_>) {
+    let written = {
+        let mut stdout = std::io::stdout().lock();
+        write_line(&mut stdout, args)
+    };
+    if let Err(error) = written {
+        note_once(&STDOUT_LOST, "stdout", &error);
+    }
+}
+
+/// Write `args` and then `\n`, holding `writer`'s lock across both so another
+/// thread's line cannot land between them and a full pipe blocks a whole line
+/// rather than half of one.
+fn write_line<W: Write>(writer: &mut W, args: Arguments<'_>) -> std::io::Result<()> {
+    writer.write_fmt(args)?;
+    writer.write_all(b"\n")
+}
+
+/// Say once that a stream is gone, then never again.
+///
+/// The note goes through tracing, so it lands in the host log and not only on
+/// the terminal that just failed; the console layer's own write to that
+/// terminal is already tolerant of the error.
+fn note_once(reported: &AtomicBool, stream: &str, error: &std::io::Error) {
+    if !reported.swap(true, Ordering::Relaxed) {
+        tracing::warn!(
+            stream,
+            error = %error,
+            "terminal stream is unusable; further terminal output is dropped"
+        );
+    }
+}
+
+// The macros carry a distinct name at the crate root (`#[macro_export]`
+// demands it; a plain `macro_rules!` item cannot be `pub use`d) and are
+// re-exported here under the familiar one, so the call site is
+// `console::eprintln!` after `use crate::console;`.
+//
+// The distinct exported names have a second use: `grep -rn "console_eprintln"`
+// and `grep -rn "eprintln!"` tell the tolerant writes from the remaining
+// standard ones without depending on any of the local names.
+
+/// `eprintln!` that cannot panic on a failed write, and that ends its line the
+/// way `eprintln!` does (see [`write_err_line`]).
+#[macro_export]
+macro_rules! console_eprintln {
+    () => {
+        $crate::console::write_err_line(format_args!(""))
+    };
+    ($($arg:tt)*) => {
+        $crate::console::write_err_line(format_args!($($arg)*))
+    };
+}
+
+/// `eprint!` that cannot panic on a failed write.
+#[macro_export]
+macro_rules! console_eprint {
+    ($($arg:tt)*) => {
+        $crate::console::write_err(format_args!($($arg)*))
+    };
+}
+
+/// `println!` that cannot panic on a failed write.
+#[macro_export]
+macro_rules! console_println {
+    () => {
+        $crate::console::write_out_line(format_args!(""))
+    };
+    ($($arg:tt)*) => {
+        $crate::console::write_out_line(format_args!($($arg)*))
+    };
+}
+
+/// `print!` that cannot panic on a failed write.
+#[macro_export]
+macro_rules! console_print {
+    ($($arg:tt)*) => {
+        $crate::console::write_out(format_args!($($arg)*))
+    };
+}
+
+pub use crate::console_eprint as eprint;
+pub use crate::console_eprintln as eprintln;
+pub use crate::console_print as print;
+pub use crate::console_println as println;
+
+/// How large the redirected stream file may grow before a launch starts a fresh
+/// one beside it.
+#[cfg(windows)]
+const STDIO_LOG_LIMIT: u64 = 4 * 1024 * 1024;
+
+/// Give a launch that has no terminal somewhere to write, by pointing this
+/// process's standard handles at `path`.
+///
+/// Windows only, and only for the streams that have no destination of their
+/// own: a GUI launch (Explorer, an installer's "run now", an auto-start entry)
+/// starts with no standard handles at all, and there [`std::eprintln!`] does
+/// not merely lose the line: `std::io::stdio::print_to` panics on the failed
+/// write, which ends the task that emitted it. Measured 2026-11-01 in
+/// `app/logs/crash.log` of one Desktop process: 699 `failed printing to
+/// stderr: 拒绝访问 (os error 5)`, one exactly 11.1 s after each relay
+/// authorization rejection — so the diagnostics that would have explained a
+/// stopped remote desktop never reached a file, and the panic could kill the
+/// very task that would have rebuilt the link.
+///
+/// A stream its caller already pointed somewhere keeps that destination, and
+/// that — never "does this process have a console window" — is the decision.
+/// `GetConsoleWindow` is null for *every* child started by
+/// `Command::output()`, so deciding on it alone moved a test child's stderr
+/// into a log file and the parent's pipe never saw the refusal it asserted on:
+/// `future host` exited 1 with an empty stderr and
+/// `cli/tests/headless_cli.rs` failed on Windows (`Rust Windows test /
+/// tui-cli`, 2026-11-01). The same shape is a shell's `2>` and a CI log
+/// collector. [`stream_has_a_destination`] carries the three cases.
+///
+/// After this call the same `eprintln!` appends to `path` instead.
+///
+/// Must run before the first write to a standard stream: std may cache the
+/// handle it found on first use.
+///
+/// Returns whether the handles were redirected. If opening the log fails,
+/// missing streams are still redirected to NUL and that opening error is
+/// returned for the host's structured diagnostic.
+#[cfg(windows)]
+pub fn redirect_windowless_standard_streams(path: &std::path::Path) -> std::io::Result<bool> {
+    use std::os::windows::io::{AsRawHandle, IntoRawHandle};
+    use windows_sys::Win32::System::Console::{SetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE};
+
+    let stderr_missing = !stream_has_a_destination(STD_ERROR_HANDLE);
+    let stdout_missing = !stream_has_a_destination(STD_OUTPUT_HANDLE);
+    if !stderr_missing && !stdout_missing {
+        return Ok(false);
+    }
+    let opened = (|| {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        rotate_stdio_log(path);
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+    })();
+    let (file, log_error) = match opened {
+        Ok(file) => (file, None),
+        // Full/read-only data directories must not turn a third-party
+        // diagnostic into a panic. Keep structured logging independent and
+        // report the failed file destination after its subscriber is installed.
+        Err(error) => (
+            std::fs::OpenOptions::new().write(true).open("NUL")?,
+            Some(error),
+        ),
+    };
+    let handle = file.as_raw_handle();
+    let mut installed = false;
+    let mut install_error = None;
+    for (missing, stream) in [
+        (stderr_missing, STD_ERROR_HANDLE),
+        (stdout_missing, STD_OUTPUT_HANDLE),
+    ] {
+        if missing {
+            if unsafe { SetStdHandle(stream, handle) } == 0 {
+                install_error = Some(std::io::Error::last_os_error());
+            } else {
+                installed = true;
+            }
+        }
+    }
+    if installed {
+        // Standard handles remain valid for the process lifetime, including
+        // when only one of the two SetStdHandle calls succeeded.
+        let _ = file.into_raw_handle();
+    }
+    match install_error.or(log_error) {
+        Some(error) => Err(error),
+        None => Ok(true),
+    }
+}
+
+/// Whether `stream` already writes somewhere its caller chose.
+///
+/// Three answers, and the distinction the version before 2026-11-01 missed is
+/// between the first two:
+///
+/// * a pipe or a disk file — the caller redirected it, which is writable and
+///   deliberate: `Command::output()`, a shell's `>`/`2>`, a CI log collector.
+///   Moving it hides the process's output from whoever asked for it;
+/// * a character device in front of a console window — a launch from a
+///   terminal, watched by the person who started it;
+/// * nothing usable — no handle (`NULL`, `INVALID_HANDLE_VALUE`), a handle
+///   whose type cannot be determined, or a character device with no console
+///   window (the `NUL` device a windowed parent hands its children, or a
+///   console nobody can write to). That is the GUI launch
+///   [`redirect_windowless_standard_streams`] exists for.
+#[cfg(windows)]
+fn stream_has_a_destination(stream: u32) -> bool {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileType, WriteFile, FILE_TYPE_CHAR, FILE_TYPE_DISK, FILE_TYPE_PIPE,
+    };
+    use windows_sys::Win32::System::Console::{GetConsoleWindow, GetStdHandle};
+
+    let handle = unsafe { GetStdHandle(stream) };
+    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+        return false;
+    }
+    // A zero-byte write validates access without emitting a diagnostic. Pipe
+    // destinations remain authoritative: probing a message-mode pipe could
+    // itself be an observable message to the caller.
+    let writable = || {
+        let mut written = 0;
+        unsafe { WriteFile(handle, b"".as_ptr(), 0, &mut written, std::ptr::null_mut()) != 0 }
+    };
+    match unsafe { GetFileType(handle) } {
+        FILE_TYPE_PIPE => true,
+        FILE_TYPE_DISK => writable(),
+        FILE_TYPE_CHAR => !unsafe { GetConsoleWindow() }.is_null() && writable(),
+        // `FILE_TYPE_UNKNOWN`, which is also the answer of a failed call: a
+        // handle that cannot be classified is no better than having none.
+        _ => false,
+    }
+}
+
+/// The same decision on platforms whose standard streams are file descriptors:
+/// a `/dev/null` or a pipe accepts writes, so there is nothing to repair here and
+/// the tolerant macros above are the answer for a terminal that goes away.
+#[cfg(not(windows))]
+pub fn redirect_windowless_standard_streams(_path: &std::path::Path) -> std::io::Result<bool> {
+    Ok(false)
+}
+
+/// Start a fresh stream file once the last one has grown past the limit, so a
+/// long-lived launch cannot fill the disk with its own noise.
+#[cfg(windows)]
+fn rotate_stdio_log(path: &std::path::Path) {
+    let too_large = std::fs::metadata(path).is_ok_and(|meta| meta.len() > STDIO_LOG_LIMIT);
+    if too_large {
+        let _ = std::fs::rename(path, path.with_extension("1.log"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader};
+    use std::time::{Duration, Instant};
+
+    /// A writer that accepts exactly one write and then fails.
+    struct Broken {
+        accepted: usize,
+    }
+
+    impl Write for Broken {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.accepted == 0 {
+                self.accepted = buf.len();
+                Ok(buf.len())
+            } else {
+                Err(std::io::Error::other("gone"))
+            }
+        }
+        // `Write::flush` has no default body, so a mock must carry one even
+        // though `write_line` never flushes: the trait requires it.
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The line writer ends the line it was given, and nothing else.
+    #[test]
+    fn a_line_ends_with_exactly_one_newline() {
+        let mut buf = Vec::new();
+        write_line(
+            &mut buf,
+            format_args!("Remote: {} (Agent {})", "Stopped", "unavailable"),
+        )
+        .expect("write to a Vec");
+        assert_eq!(buf, b"Remote: Stopped (Agent unavailable)\n");
+
+        // An empty line is a newline, not nothing.
+        let mut buf = Vec::new();
+        write_line(&mut buf, format_args!("")).expect("write to a Vec");
+        assert_eq!(buf, b"\n");
+
+        // The newline is part of the same write: a stream that only accepts the
+        // text must report the failure rather than look successful.
+        let mut broken = Broken { accepted: 0 };
+        assert!(write_line(&mut broken, format_args!("text")).is_err());
+    }
+
+    /// A writer that refuses must degrade, not panic, and must not end the caller.
+    ///
+    /// This is the injected failure the policy exists for: the first write is
+    /// accepted, the next two fail. The rounds after the failure are the point —
+    /// one dead stream used to end the task that wrote to it.
+    #[test]
+    fn a_failing_stream_degrades_instead_of_panicking() {
+        let lost = AtomicBool::new(false);
+        let mut broken = Broken { accepted: 0 };
+        write_via(&mut broken, &lost, "stderr", format_args!("first\n"));
+        assert!(
+            !lost.load(Ordering::Relaxed),
+            "a working write says nothing"
+        );
+        write_via(&mut broken, &lost, "stderr", format_args!("second\n"));
+        assert!(
+            lost.load(Ordering::Relaxed),
+            "the degradation is recorded, not silent"
+        );
+        write_via(&mut broken, &lost, "stderr", format_args!("third\n"));
+        // The tolerant macros land on the same path.
+        write_err(format_args!("console path\n"));
+        // A writer that works is unaffected: the policy only reacts to errors.
+        let mut buffer = Vec::new();
+        let healthy = AtomicBool::new(false);
+        write_via(&mut buffer, &healthy, "stderr", format_args!("kept\n"));
+        assert_eq!(buffer, b"kept\n");
+        assert!(!healthy.load(Ordering::Relaxed));
+    }
+
+    /// Environment naming the child half of [`a_console_line_arrives_whole`].
+    const FIXTURE_LINE: &str = "FUTURE_CONSOLE_LINE_FIXTURE";
+
+    /// A line written by the macro reaches a pipe reader that reads *lines*.
+    ///
+    /// This is the regression: `console::eprintln!` wrote its text and no
+    /// newline, so `BufReader::lines` on the other end of the pipe held the
+    /// whole line back waiting for a delimiter that never came — and
+    /// `cli/tests/headless_cli.rs` waited 300 s for "Not signed in to
+    /// FutureOS" and "Remote: Stopped" while the text sat in the pipe. The
+    /// child below writes one line and exits, so nothing after it can supply
+    /// the missing newline: it fails before the fix and passes after it.
+    #[test]
+    fn a_console_line_arrives_whole() {
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "console::tests::the_line_fixture",
+                "--test-threads=1",
+            ])
+            .env(FIXTURE_LINE, "1")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("run the line fixture");
+        let stderr = child.stderr.take().expect("the fixture's stderr");
+        let mut reader = BufReader::new(stderr);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut seen = String::new();
+        let line = loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "no line arrived; saw:\n{seen}");
+            let mut line = String::new();
+            // A blocking read, so the deadline is a budget for the whole loop:
+            // the fixture exits, which ends the read even without a newline.
+            if reader
+                .read_line(&mut line)
+                .expect("read the fixture's stderr")
+                == 0
+            {
+                panic!("the fixture's stderr ended without its line; saw:\n{seen}");
+            }
+            if line.contains("console-line-fixture") {
+                break line;
+            }
+            seen.push_str(&line);
+        };
+        let status = child.wait().expect("wait for the fixture");
+        assert!(status.success(), "{status}");
+        assert_eq!(line, "console-line-fixture 7\n");
+    }
+
+    /// The child half of [`a_console_line_arrives_whole`]: one line, then a
+    /// clean exit, so no later write can end it.
+    #[test]
+    fn the_line_fixture() {
+        if std::env::var_os(FIXTURE_LINE).is_none() {
+            return;
+        }
+        crate::console::eprintln!("console-line-fixture {}", 7);
+        crate::console::println!("a stdout line that is captured and never read");
+    }
+
+    /// The redirect target the child half of the windowless test is given.
+    #[cfg(windows)]
+    const FIXTURE_WINDOWLESS: &str = "FUTURE_CONSOLE_WINDOWLESS_FIXTURE";
+
+    /// A launch with no console gets a stderr that cannot panic.
+    ///
+    /// `CREATE_NO_WINDOW` is the shape of a GUI launch on this platform: the
+    /// child has no console window, and before this redirect every plain
+    /// `eprintln!` in it failed its write and panicked the task that emitted it
+    /// (699 such panics in one Desktop process, one every time a relay
+    /// rejection was reported). After the redirect the same `eprintln!` appends
+    /// to a file and the process exits 0.
+    ///
+    /// Its streams are the `NUL` device rather than the absent handles a real
+    /// GUI launch starts with, but they answer the same question the same way —
+    /// a character device with no console window in front of it has no
+    /// destination — so the child must still be redirected. The counterpart,
+    /// a captured stream that must *not* be moved, is
+    /// [`a_captured_stream_is_left_where_its_caller_put_it`].
+    #[cfg(windows)]
+    #[test]
+    fn a_windowless_launch_writes_its_standard_streams_to_a_file() {
+        use std::os::windows::process::CommandExt;
+        /// `CREATE_NO_WINDOW`: start the child without a console window.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("stdio.log");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "console::tests::the_windowless_fixture",
+                "--test-threads=1",
+                // The harness captures a test's output by default and drops it
+                // for a passing test, which would hide exactly the writes this
+                // test is about.
+                "--nocapture",
+            ])
+            .env(FIXTURE_WINDOWLESS, &path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .expect("run the windowless fixture");
+        let written = std::fs::read_to_string(&path).unwrap_or_default();
+        let head: String = written.chars().take(160).collect();
+        assert!(
+            status.success(),
+            "status={status:?} bytes={} head={head:?}",
+            written.len()
+        );
+        assert!(
+            written.contains("windowless-fixture on a redirected stderr"),
+            "{written}"
+        );
+        assert!(
+            written.contains("windowless-fixture on a redirected stdout"),
+            "one file carries both streams: {written}"
+        );
+    }
+
+    /// The child half of [`a_windowless_launch_writes_its_standard_streams_to_a_file`]:
+    /// redirect, then write through the macros that used to panic here.
+    #[cfg(windows)]
+    #[test]
+    fn the_windowless_fixture() {
+        let Some(path) = std::env::var_os(FIXTURE_WINDOWLESS) else {
+            return;
+        };
+        let path = std::path::PathBuf::from(path);
+        let redirected = redirect_windowless_standard_streams(&path).expect("redirect the streams");
+        assert!(redirected, "a launch with no console must be redirected");
+        // Deliberately the standard macros: they panic on a failed write, which
+        // is the failure under test. Spelled `::std::` because this module's own
+        // tolerant macros are in scope through `use super::*`.
+        ::std::eprintln!("windowless-fixture on a redirected stderr");
+        ::std::println!("windowless-fixture on a redirected stdout");
+    }
+
+    /// The redirect target the child half of the captured-stream test is given.
+    #[cfg(windows)]
+    const FIXTURE_CAPTURED: &str = "FUTURE_CONSOLE_CAPTURED_FIXTURE";
+
+    /// A stream its caller captured stays captured.
+    ///
+    /// This is the `Rust Windows test / tui-cli` failure of 2026-11-01.
+    /// `Command::output()` hands a child pipes and no console window, and
+    /// deciding the redirect on "no console window" alone pointed that child's
+    /// stderr at a log file — so `future host`'s "Desktop is already running"
+    /// refusal exited 1 with a completely empty stderr and
+    /// `cli/tests/headless_cli.rs` asserted against nothing. The child below is
+    /// exactly that shape, and the assertions are that the line comes back
+    /// through the pipe and that no log file is created for it.
+    #[cfg(windows)]
+    #[test]
+    fn a_captured_stream_is_left_where_its_caller_put_it() {
+        use std::io::Read;
+        use std::os::windows::process::CommandExt;
+        /// `CREATE_NO_WINDOW`: the console-free shape of the failing child.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("stdio.log");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "console::tests::the_captured_fixture",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env(FIXTURE_CAPTURED, &path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("run the captured fixture");
+        // Both pipes are drained, so the child can never block on a full one.
+        let mut stdout = child.stdout.take().expect("the fixture's stdout");
+        let drained = std::thread::spawn(move || {
+            let mut sink = Vec::new();
+            stdout.read_to_end(&mut sink).expect("drain stdout");
+        });
+        let mut stderr = String::new();
+        child
+            .stderr
+            .take()
+            .expect("the fixture's stderr")
+            .read_to_string(&mut stderr)
+            .expect("read the fixture's stderr");
+        drained.join().expect("join the stdout drain");
+        let status = child.wait().expect("wait for the fixture");
+        assert!(status.success(), "status={status:?} stderr={stderr:?}");
+        assert!(
+            stderr.contains("the caller still sees this line"),
+            "the caller's pipe must receive the line: {stderr:?}"
+        );
+        assert!(
+            !path.exists(),
+            "a launch whose caller captured both streams needs no file: {}",
+            path.display()
+        );
+    }
+
+    /// The child half of [`a_captured_stream_is_left_where_its_caller_put_it`]:
+    /// both streams belong to a parent that reads them.
+    #[cfg(windows)]
+    #[test]
+    fn the_captured_fixture() {
+        let Some(path) = std::env::var_os(FIXTURE_CAPTURED) else {
+            return;
+        };
+        let path = std::path::PathBuf::from(path);
+        let redirected = redirect_windowless_standard_streams(&path).expect("inspect the streams");
+        assert!(!redirected, "a captured stream must keep its destination");
+        ::std::eprintln!("the caller still sees this line");
+    }
+
+    /// An unwritable log directory must still give dependencies a safe stderr.
+    #[cfg(windows)]
+    #[test]
+    fn a_windowless_launch_with_no_log_directory_falls_back_to_nul() {
+        use std::os::windows::process::CommandExt;
+        let directory = tempfile::tempdir().unwrap();
+        let blocked = directory.path().join("not-a-directory");
+        std::fs::write(&blocked, "file").unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "console::tests::the_failed_log_fixture",
+                "--nocapture",
+            ])
+            .env("FUTURE_FAILED_STDIO_LOG_FIXTURE", blocked.join("stdio.log"))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(0x0800_0000)
+            .status()
+            .unwrap();
+        assert!(status.success(), "{status:?}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_failed_log_fixture() {
+        let Some(path) = std::env::var_os("FUTURE_FAILED_STDIO_LOG_FIXTURE") else {
+            return;
+        };
+        assert!(redirect_windowless_standard_streams(std::path::Path::new(&path)).is_err());
+        // Deliberately std macros: a failed log open cannot make these panic.
+        ::std::eprintln!("stderr survives a failed log open");
+        ::std::println!("stdout survives a failed log open");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_read_only_standard_file_is_repaired_without_a_console() {
+        use std::os::windows::process::CommandExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("stdio.log");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "console::tests::the_read_only_stream_fixture",
+                "--nocapture",
+            ])
+            .env("FUTURE_READ_ONLY_STREAM_FIXTURE", &path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(0x0800_0000)
+            .status()
+            .unwrap();
+        assert!(status.success(), "{status:?}");
+        assert!(std::fs::read_to_string(path)
+            .unwrap()
+            .contains("repaired read-only stderr"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_read_only_stream_fixture() {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::Console::{SetStdHandle, STD_ERROR_HANDLE};
+        let Some(path) = std::env::var_os("FUTURE_READ_ONLY_STREAM_FIXTURE") else {
+            return;
+        };
+        let path = std::path::PathBuf::from(path);
+        let input = path.with_extension("input");
+        std::fs::write(&input, "read-only destination").unwrap();
+        let file = std::fs::File::open(input).unwrap();
+        assert_ne!(
+            unsafe { SetStdHandle(STD_ERROR_HANDLE, file.as_raw_handle()) },
+            0
+        );
+        assert!(redirect_windowless_standard_streams(&path).unwrap());
+        ::std::eprintln!("repaired read-only stderr");
+    }
+
+    /// Counts the bytes a `tracing` subscriber writes, so a test can tell "the
+    /// note was logged" from "nothing was logged" — a sink drains both.
+    #[derive(Clone, Default)]
+    struct Written(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl Write for Written {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.fetch_add(bytes.len(), Ordering::SeqCst);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Written {
+        fn bytes(&self) -> usize {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    /// A stream that is gone is reported **once**, not once per failed write.
+    ///
+    /// The gate is the whole point of `note_once`: a process whose terminal has
+    /// gone away keeps writing to it (every diagnostic, every log line), and an
+    /// unguarded note would put one warning per write into the host log. So the
+    /// assertion is not "a warning was logged" but "the second failure logs
+    /// nothing while the first one does" — a gate that never closes passes the
+    /// weaker form and fails this one.
+    #[test]
+    fn an_unusable_stream_is_reported_once() {
+        let written = Written::default();
+        let sink = written.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || sink.clone())
+            .with_max_level(tracing::Level::TRACE)
+            .finish();
+        // Per-thread default, so the other tests in this binary keep their own.
+        let _subscriber = tracing::subscriber::set_default(subscriber);
+        static REPORTED: AtomicBool = AtomicBool::new(false);
+        let error = std::io::Error::other("the terminal went away");
+
+        note_once(&REPORTED, "stdout", &error);
+        let after_first = written.bytes();
+        note_once(&REPORTED, "stdout", &error);
+        let after_second = written.bytes();
+
+        // Each condition is hoisted to a short binding: a multi-line `assert!`
+        // builds its message on its own lines, which then only evaluate when
+        // the assertion fails.
+        let gate_closed = REPORTED.load(Ordering::Relaxed);
+        assert!(gate_closed, "the gate closes on the first failure");
+        assert!(after_first > 0, "the first failure is logged");
+        assert_eq!(after_second, after_first, "the second failure is silent");
+
+        // A different stream has its own gate, so it is still reportable.
+        static OTHER_STREAM: AtomicBool = AtomicBool::new(false);
+        note_once(&OTHER_STREAM, "stderr", &error);
+        let after_other = written.bytes();
+        assert!(after_other > after_second, "each stream gates separately");
+    }
+
+    /// Environment naming the child half of [`a_write_to_a_dead_stream_survives`].
+    const FIXTURE_DEAD_STREAM: &str = "FUTURE_CONSOLE_DEAD_STREAM_FIXTURE";
+
+    /// A write to a stream nobody reads is dropped, not fatal.
+    ///
+    /// This is the contract of the whole module: every `console::*` write
+    /// tolerates a failed write, because a launch whose output stopped being
+    /// read — a caller that exited, a pipe whose reader closed, the `NUL` device
+    /// behind a windowless launch — must not lose the rest of its work to a
+    /// panic. The child below replaces **both** of its standard streams with the
+    /// write ends of pipes whose read ends are already closed, so every write to
+    /// either fails with `EPIPE`; it then makes one call per writer and reports
+    /// on a file, which is the only channel left. It exits 0 only by reaching
+    /// the end: a panic is caught by the test harness, which reports the failure
+    /// instead.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_to_a_dead_stream_survives() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("survived");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "console::tests::the_dead_stream_fixture",
+                "--test-threads=1",
+            ])
+            .env(FIXTURE_DEAD_STREAM, &marker)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("run the dead-stream fixture");
+        let written = std::fs::read_to_string(&marker).unwrap_or_default();
+        assert!(status.success(), "status={status:?} marker={written:?}");
+        assert!(
+            written.contains("survived-a-dead-stream"),
+            "the process kept running past the failed writes: {written:?}"
+        );
+        assert!(
+            written.contains("four-writes-returned"),
+            "every one of the four writers returned instead of unwinding: {written:?}"
+        );
+    }
+
+    /// The child half of [`a_write_to_a_dead_stream_survives`]: point the
+    /// standard streams at pipes with no reader, write through each of the four
+    /// writers, then leave a marker in a file.
+    #[cfg(unix)]
+    #[test]
+    fn the_dead_stream_fixture() {
+        let Some(marker) = std::env::var_os(FIXTURE_DEAD_STREAM) else {
+            return;
+        };
+        for stream in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+            let mut fds = [0 as libc::c_int; 2];
+            // SAFETY: `fds` is a live, correctly sized array; on success both
+            // descriptors own a fresh pipe.
+            let opened = unsafe { libc::pipe(fds.as_mut_ptr()) };
+            let pipe_error = std::io::Error::last_os_error();
+            assert_eq!(opened, 0, "create a pipe: {pipe_error}");
+            // Close the read end first: with no reader left, a write to the
+            // write end fails with `EPIPE` instead of buffering the text.
+            // SAFETY: `fds[0]` came from the `pipe` above and is closed once.
+            unsafe { libc::close(fds[0]) };
+            // SAFETY: `fds[1]` is a live descriptor and `stream` is one of the
+            // two standard descriptor numbers, which this process may replace.
+            let moved = unsafe { libc::dup2(fds[1], stream) };
+            assert_eq!(moved, stream, "move the pipe onto descriptor {stream}");
+        }
+        crate::console::println!("this line has no reader");
+        crate::console::print!("neither does this one");
+        crate::console::eprintln!("this one is equally unread");
+        crate::console::eprint!("and so is this");
+        std::fs::write(&marker, "four-writes-returned survived-a-dead-stream")
+            .expect("leave the marker");
+        // Leave before the harness writes its own summary to the dead streams.
+        std::process::exit(0);
+    }
+
+    /// A platform whose standard streams are file descriptors has nothing to
+    /// repair: a `/dev/null` or a pipe accepts writes, so the answer is "not
+    /// redirected" and the tolerant writers above are the whole answer. Windows
+    /// is the platform that needs the repair, and its test is
+    /// [`a_windowless_launch_writes_its_standard_streams_to_a_file`].
+    #[cfg(not(windows))]
+    #[test]
+    fn a_stream_repair_is_not_offered_where_streams_are_descriptors() {
+        let path = std::path::Path::new("/nonexistent/future-stdio.log");
+        assert!(!redirect_windowless_standard_streams(path).unwrap());
+        assert!(!path.exists(), "a refused repair must not create the file");
+    }
+}

@@ -474,11 +474,11 @@ Review File Change 表示某个文件或 artifact 的具体变更。
 
 约束 `UNIQUE(run_id, phase)`。
 
-**扩展 `review_changesets`**：`source_kind`（`run_snapshot` / `native_git`）、`workspace_id`、`before_snapshot_id`、`after_snapshot_id`、`binary_files`、`omitted_files`、`completeness`（`complete` / `partial`）、`confidence`（`normal` / `recovered`）、`overlapped`（0/1）、`error_message`。`run_snapshot` changeset 不参与 apply/discard，旧 `status` 列对它不使用。
+**扩展 `review_changesets`**：`source_kind`（`run_snapshot` / `native_git`）、`workspace_id`、`before_snapshot_id`、`after_snapshot_id`、`binary_files`、`omitted_files`、`completeness`（`complete` / `partial` / `incomplete`）、`confidence`（`normal` / `incomplete`，以及旧数据的 `recovered`）、`overlapped`（0/1）、`error_message`。`run_snapshot` changeset 不参与 apply/discard，旧 `status` 列对它不使用。
 
 **扩展 `review_file_changes`**：`previous_path`、`binary`、`before_size`、`after_size`、`mime`、`diff_truncated`、`omission_reason`。在 after 快照固化时，每个文本文件的统一 diff 写入既有 `diff` 列，这是「上一轮变更」的**真源**——前端直接读 SQLite，不再回影子仓重算；二进制文件只记 size / mime，不存 diff。
 
-**派生状态**：API 层把 `RunReview.snapshotStatus`（`complete` / `partial` / `incomplete` / `unavailable`）从快照 `status` + changeset `completeness` 派生，不落库。非 Git workspace 走简化档，只产生 `complete` 或 `unavailable`（任何 before/after/diff 失败一律塌缩为 `unavailable`）；`partial` / `incomplete` / `recovered` 只出现在 Git workspace。`overlapped`（并发窗口重叠）与上述状态正交，单独透传。
+**派生状态**：API 层把 `RunReview.snapshotStatus`（`complete` / `partial` / `incomplete` / `unavailable`）从快照 `status` + changeset `completeness` 派生，不落库。Git 和普通目录使用相同状态；读取历史不探测当前工作区。`overlapped`（并发窗口重叠）与上述状态正交，单独透传。
 
 ### 4.11 Artifact
 
@@ -632,9 +632,6 @@ GUI 数据库（`~/.future/app/app.db`）包含以下业务对象表：
 - `review_file_changes`
 - `review_snapshots`
 - `artifacts`
-- `workspace_files`
-- `reference_targets`
-- `object_references`
 - `app_settings`（应用级设置键值表；缺键时取以下默认值，默认值定义在 `packages/app-settings/src/lib.rs:424-440` 的 `defaults()` 与 `:462-500` 的 `read()`）：`approval_tier`（默认 `off`，另可 `manual`/`sandbox`/`auto`；未知值收敛为 `off`）、`hidden_models`、`title_language`（`en`/`zh`，默认 `en`，由 Desktop UI 镜像给后台标题生成）、`auto_compact_first_turn`（保留的存储键名，用于「首个回答后生成标题」；默认 true，从不触发压缩）、`auto_upgrade_skills`（true）、`auto_connect_remote`（true——Remote 页自己的开关，存在这里使重启后仍对已配对设备提供服务；`host/src/remote/mod.rs` 的 `remember_switch`）、`bell_on_complete`（true）、`skill_recommend`（false，用户主动开启才生效）、`skill_guide_dismissed` / `skill_intro_dismissed`（false）、`community_edition`（false，仅呈现层）、`auto_resume_interrupted`（true，写穿到 Agent 的 `resume_interrupted_on_start`，见 `store/app_settings.rs` 的 `write_agent_resume_policy`）以及内部 `device_id`。全部走既有键值表与缺键默认，无需结构性迁移。已退役的 `show_thinking` 键允许留在旧数据库中，但不再读取、写入或通过设置 API 返回，无需破坏性迁移；旧 `remote_enabled` / `remote_nats_url` 键同样不再读取，运行状态驻内存、地址由平台环境派生。
 - `agent_delete_outbox`（删除 Thread 时登记的 Agent 会话删除投递队列，后台重试直至 Agent 确认，见 `store/deletions.rs`）
 - `skill_reco_events`（每次真正展示给用户的技能推荐一行：`day`、`skill_id`、`message_hash`——回答「今天推荐了几次 / 该技能今天是否展示过 / 该消息是否已产生过推荐」；没有可推荐项的调用不写行，见 `store/skill_reco.rs` 与 `store/schema.rs:262-268` 的 DDL）
@@ -716,8 +713,9 @@ Review 有两个数据源：「Git changes」读用户真实 Git 仓库的工作
 
 - **写隔离**：影子仓与真实仓物理分离（`~/.future/app/review/<workspace-id>/`），只读真实仓对象做加速，从不写真实仓，也不在用户目录建 `.git`。这样非 Git workspace 也能拿到准确的 Run 级 diff，且不污染用户目录。
 - **diff 立即固化为真源**：after 快照落盘后立即算出 patch 写入 SQLite（`review_file_changes.diff`），影子 commit / tree 降级为可丢弃缓存。即使日后真实仓 `git gc`、移动或影子仓被清理，已存 diff 仍可展示。
-- **归属诚实**：快照只能算出“运行窗口内 workspace 发生了什么变化”，无法绝对区分 Agent / 用户 / formatter，底层语义是 workspace_delta；并发 Run 重叠标 `overlapped`，失败标 `unavailable`；重启恢复按是否需重抓 after 分档——after 已在运行中抓到、仅事后 materialize 未跑完的，恢复为 `normal`（delta 完全可归属），需重启后重新捕获 after 的才标 `recovered`；绝不谎称归属或伪装“无变化”。
-- **两档可靠性**：Git workspace 借用真实仓对象库加速 + 完整可靠性机制（`partial` / `incomplete` / `recovered` / 重启恢复）；非 Git workspace 走简化档（失败即 `unavailable`，并对超体积目录用红线 `changePreview = unsupported_too_large` 关闭预览），换取实现简单。
+- **归属诚实**：快照描述运行窗口内 workspace 的变化，可能包含用户或其他工具的编辑；并发窗口标 `overlapped`。before/after 必须在执行时采集。缺失 after 保持 `incomplete`，查看历史不会用当前目录补成旧任务的结束状态，也不会终结 Agent 仍可能持有的 Run。旧数据的 `recovered` 标签保留。
+- **历史按需加载**：启动不扫描历史 Review。打开上一轮变更时，只选择当前对话最近一条已结束 Run；已保存的 diff 直接返回，进程退出前未生成的投影才用已保存的边界补算。同一 Run 的读取、重试、正常生成串行处理。Git 和普通目录都能显示 `partial` / `incomplete`，超大普通目录仍通过 `unsupported_too_large` 关闭采集。
+- **有界执行**：影子 Git 命令与锁等待响应宿主关闭，并有 30 秒期限。命令用临时文件承接输入输出，避免管道反压，每个输出流限制 64 MiB；取消时只停止并回收自身子进程。Review IPC 使用被宿主跟踪的阻塞任务执行，不占用窗口线程。
 - **适用范围与保留**：仅 `thread.mode = workspace` 接入影子 Review；普通 Chat 继续用 Artifacts，不创建影子数据。每个 Thread 默认保留最近 10 个 changeset，超出后清理旧 refs 与 DB 投影。删除 Workspace 记录时同步清理其影子仓与 review 数据。
 
 ### 6.9 Provider / 模型 / 登录配置存于 agent 配置文件，不落 GUI SQLite

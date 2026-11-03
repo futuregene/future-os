@@ -1,9 +1,143 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::client::run_control_command;
 use super::*;
 
 // ── Crash-recovery run reanimation ───────────────────────────────────────
+
+/// The Agent's answer for a queued prompt that will never run on its own.
+///
+/// A prompt accepted while the conversation was busy is held in the Agent's
+/// queue. Most of them run at the turn boundary, but two never do:
+///
+/// * `enqueue_coalescing` folds the consecutive ones into the run ahead — the
+///   folded prompt's words are *inside* that run's message, and it comes back as
+///   a terminal ack with reason `merged`;
+/// * the reader deletes one from the panel, which cancels it before it starts.
+///
+/// Neither produces an `agent_end`, so their local rows would stay `running`
+/// forever and keep the conversation's composer blocked on a run that will never
+/// happen. This settles exactly those rows, from the Agent's own terminal acks —
+/// never from absence alone, because a run the Agent has simply not started yet
+/// looks the same as one that was folded if all we have is "not listed".
+pub async fn settle_queued_runs(session_id: &str, thread_id: &str) {
+    let Ok(runs) = crate::store::list_runs(thread_id) else {
+        return;
+    };
+    let pending: Vec<String> = runs
+        .iter()
+        .filter(|run| !crate::store::is_terminal_run_status(&run.status))
+        .map(|run| run.id.clone())
+        .collect();
+    if pending.is_empty() {
+        return;
+    }
+    let Ok(mut client) = connect_agent().await else {
+        return;
+    };
+    let Ok(response) = client
+        .execute_command(get_state_command(session_id.to_string()))
+        .await
+    else {
+        return;
+    };
+    let response = response.into_inner();
+    if !response.success {
+        return;
+    }
+    let state = future_rpc::decode::response_data(&response);
+    let field =
+        |value: &serde_json::Value, camel: &str, snake: &str| -> Option<serde_json::Value> {
+            value.get(camel).or_else(|| value.get(snake)).cloned()
+        };
+
+    // What the Agent still owns: the run in flight and everything queued behind
+    // it. Those rows are alive by definition and are left alone.
+    let mut live: HashSet<String> = HashSet::new();
+    if let Some(run_id) = field(&state, "activeRun", "active_run")
+        .and_then(|run| field(&run, "runId", "run_id"))
+        .and_then(|id| id.as_str().map(str::to_string))
+    {
+        live.insert(run_id);
+    }
+    for row in field(&state, "queuedRuns", "queued_runs")
+        .and_then(|rows| rows.as_array().cloned())
+        .unwrap_or_default()
+    {
+        if let Some(run_id) =
+            field(&row, "runId", "run_id").and_then(|id| id.as_str().map(str::to_string))
+        {
+            live.insert(run_id);
+        }
+    }
+
+    let mut acks: HashMap<String, (String, String)> = HashMap::new();
+    for row in field(&state, "recentTerminalAcks", "recent_terminal_acks")
+        .and_then(|rows| rows.as_array().cloned())
+        .unwrap_or_default()
+    {
+        let Some(run_id) =
+            field(&row, "runId", "run_id").and_then(|id| id.as_str().map(str::to_string))
+        else {
+            continue;
+        };
+        let ack_state = field(&row, "state", "state")
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let reason = field(&row, "reason", "reason")
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_default();
+        acks.insert(run_id, (ack_state, reason));
+    }
+
+    for run_id in pending {
+        if live.contains(&run_id) {
+            continue;
+        }
+        let Some((ack_state, reason)) = acks.get(&run_id) else {
+            continue;
+        };
+        let settlement = match ack_state.as_str() {
+            // Its words were folded into the run ahead, so nothing is lost and
+            // nothing is stopped: the prompt arrived, as part of that turn.
+            "terminal" => (
+                "completed",
+                "Folded into the preceding run.".to_string(),
+                "queue_merged",
+            ),
+            "cancelled" => (
+                "cancelled",
+                if reason.is_empty() {
+                    "Removed from the send queue.".to_string()
+                } else {
+                    format!("Removed from the send queue ({reason}).")
+                },
+                "queue_cancelled",
+            ),
+            "failed" => (
+                "failed",
+                if reason.is_empty() {
+                    "Future Agent could not queue this message.".to_string()
+                } else {
+                    format!("Future Agent could not queue this message ({reason}).")
+                },
+                "queue_failed",
+            ),
+            _ => continue,
+        };
+        if let Err(error) =
+            crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+                run_id: run_id.clone(),
+                status: settlement.0.to_string(),
+                error_message: Some(settlement.1),
+                error_type: Some(settlement.2.to_string()),
+            })
+        {
+            tracing::warn!(event = "settle_queued_runs", run_id = %run_id, error = %error,
+                "FutureOS could not settle the queued run {run_id}: {error}");
+        }
+    }
+}
 
 /// Called after the Agent service is reachable: for every run that was
 /// cancelled by startup convergence, check the agent's actual session state.
@@ -24,7 +158,7 @@ pub async fn reconcile_interrupted_runs() {
         match check_and_reanimate_run(&session_id, &run_id, &thread_id).await {
             Ok(()) => {}
             Err(error) => {
-                eprintln!("FutureOS run reanimation failed for {run_id}: {error}");
+                tracing::warn!(event = "reconcile_interrupted_runs", run_id = %run_id, error = %error,"FutureOS run reanimation failed for {run_id}: {error}");
             }
         }
     }
@@ -71,7 +205,7 @@ pub(super) async fn check_and_reanimate_run(
         // interrupted state the synchronous phase set rather than asserting it
         // completed, so it stays visible as interrupted instead of vanishing
         // into a false "completed".
-        eprintln!(
+        tracing::warn!(event = "check_and_reanimate_run", run_id = %run_id,
             "FutureOS startup reconcile: get_state failed for run {run_id} ({}); leaving interrupted",
             state.error
         );
@@ -105,7 +239,7 @@ pub(super) async fn check_and_reanimate_run(
         let reanimated =
             crate::store::reanimate_run(run_id).map_err(|e| format!("reanimate: {e}"))?;
         if !reanimated {
-            eprintln!(
+            tracing::debug!(event = "check_and_reanimate_run", run_id = %run_id,
                 "FutureOS startup reconcile: run {run_id} no longer interrupted; skipping reattach"
             );
             return Ok(());
@@ -118,7 +252,7 @@ pub(super) async fn check_and_reanimate_run(
         // The Agent confirms this run began but never committed (interrupted by
         // the restart). The synchronous phase already cancelled it with
         // error_type='interrupted'; leave that accurate state in place.
-        eprintln!("FutureOS startup reconcile: run {run_id} confirmed interrupted by restart; leaving cancelled");
+        tracing::info!(event = "check_and_reanimate_run", run_id = %run_id,"FutureOS startup reconcile: run {run_id} confirmed interrupted by restart; leaving cancelled");
     } else if let Some(terminal) = requested_terminal {
         let state = terminal
             .get("status")
@@ -128,7 +262,7 @@ pub(super) async fn check_and_reanimate_run(
         crate::store::settle_interrupted_run_from_agent(run_id, state, error)
             .map_err(|e| format!("settle: {e}"))?;
     } else {
-        eprintln!(
+        tracing::warn!(event = "check_and_reanimate_run", run_id = %run_id,
             "FutureOS startup reconcile: no durable terminal for run {run_id}; leaving interrupted"
         );
     }
@@ -187,7 +321,7 @@ pub(super) async fn reconcile_run_gone(
     // terminal/orphan settling — the run is alive and the session observer
     // will project it from the journal once it starts.
     if queued_run_ids(&state_value).any(|run_id| run_id == canonical_run_id) {
-        eprintln!(
+        tracing::debug!(event = "reconcile_run_gone", local_run_id = %local_run_id, reason = %reason,
             "FutureOS run {local_run_id} is queued on the Agent; observer projects it on start ({reason})"
         );
         observer::ensure_observer_for_thread(session_id, thread_id)?;
@@ -199,7 +333,7 @@ pub(super) async fn reconcile_run_gone(
         .and_then(|run| run.get("runId"))
         .and_then(|id| id.as_str());
     if active == Some(canonical_run_id) {
-        eprintln!(
+        tracing::debug!(event = "reconcile_run_gone", local_run_id = %local_run_id, reason = %reason,
             "FutureOS run {local_run_id} still active on Agent after RunGone ({reason}); leaving running"
         );
         return Ok(());
@@ -395,6 +529,18 @@ fn queued_run_ids(state: &serde_json::Value) -> impl Iterator<Item = &str> {
         .filter_map(|run| run.get("runId").and_then(|id| id.as_str()))
 }
 
+/// Tonic's Display includes response metadata (including the changing HTTP
+/// Date header). Those headers are not a new diagnosis and must not restart
+/// the watchdog's consecutive-failure count.
+fn reconcile_probe_error(error: &tonic::Status) -> String {
+    format!(
+        "get_run_state: status: {:?}, message: {:?}, details: {:?}",
+        error.code(),
+        error.message(),
+        error.details()
+    )
+}
+
 /// Reconcile one non-terminal run row against the Agent's authoritative state.
 pub(super) async fn reconcile_active_run_once(
     run: &crate::store::ActiveRun,
@@ -424,7 +570,7 @@ pub(super) async fn reconcile_active_run_once(
             canonical_run_id.to_string(),
         ))
         .await
-        .map_err(|e| format!("get_run_state: {e}"))?
+        .map_err(|error| reconcile_probe_error(&error))?
         .into_inner();
     if !state.success {
         // The Agent could not resolve this session. For a session it merely
@@ -554,11 +700,9 @@ fn settle_orphaned_run(run_id: &str, message: &str) -> Result<(), String> {
 /// convergence on the next launch.
 pub fn spawn_active_run_watchdog() {
     crate::runtime::spawn(async move {
-        // Run ids already compared against the Agent ledger with nothing to
-        // correct, for the lifetime of this process (see
-        // `reconcile_settled_runs`). Owned by the loop rather than a global,
-        // so each watchdog instance — and each test — starts clean.
-        let mut settled_verified: HashSet<String> = HashSet::new();
+        // Watchdog memory lives with the loop rather than in a global, so each
+        // watchdog instance — and each test — starts clean.
+        let mut memory = WatchdogMemory::default();
         loop {
             tokio::time::sleep(watchdog_interval()).await;
             #[cfg(test)]
@@ -572,21 +716,57 @@ pub fn spawn_active_run_watchdog() {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
-            active_run_watchdog_pass(now_ms, &mut settled_verified).await;
+            active_run_watchdog_pass(now_ms, &mut memory).await;
         }
     });
+}
+
+/// How many consecutive passes may report the *same* reconcile error for one
+/// run before the watchdog stops believing the run is recoverable. At the 30 s
+/// pass interval this is a quarter of an hour of a persistently identical
+/// failure — long past anything transient, and far short of the incident that
+/// motivated it: two runs retried every pass from 06:21 to 14:54 on 2026-11-01
+/// (91 log lines), settled only by restarting the Agent.
+pub(super) const WATCHDOG_RECONCILE_GIVE_UP_PASSES: u32 = 30;
+
+/// Per-run record of a reconcile that keeps failing, so the pass can tell
+/// "this always fails" from "this failed once". A *different* error restarts
+/// the count: a run whose failures keep changing shape is not one diagnosis.
+struct ReconcileFailure {
+    error: String,
+    passes: u32,
+}
+
+/// Memory the watchdog carries between passes.
+#[derive(Default)]
+pub(super) struct WatchdogMemory {
+    /// Run ids already compared against the Agent ledger with nothing to
+    /// correct, for the lifetime of this process (see
+    /// `reconcile_settled_runs`).
+    settled_verified: HashSet<String>,
+    /// Consecutive identical reconcile failures, per run id.
+    reconcile_failures: HashMap<String, ReconcileFailure>,
+}
+
+impl WatchdogMemory {
+    /// How many runs this process has confirmed consistent with the Agent
+    /// ledger. Exposed so the repair tests can assert what stays unverified.
+    #[cfg(test)]
+    pub(super) fn settled_verified_count(&self) -> usize {
+        self.settled_verified.len()
+    }
 }
 
 /// One watchdog pass: reconcile every non-terminal run row against the
 /// Agent's authoritative state, then the rows the GUI settled on its own, then
 /// the pending approvals. Extracted from the spawn loop so tests can drive it
 /// with a synthetic clock (run rows cannot be backdated through the store API).
-pub(super) async fn active_run_watchdog_pass(now_ms: i64, settled_verified: &mut HashSet<String>) {
+pub(super) async fn active_run_watchdog_pass(now_ms: i64, memory: &mut WatchdogMemory) {
     crate::request_scope::reconcile_owned_runs().await;
     let Ok(active_runs) = crate::store::list_active_runs() else {
         return;
     };
-    for run in active_runs {
+    for run in &active_runs {
         let age_secs = now_ms.saturating_sub(run.created_at).max(0) as u64 / 1000;
         if age_secs < WATCHDOG_GRACE_SECS {
             continue;
@@ -594,14 +774,62 @@ pub(super) async fn active_run_watchdog_pass(now_ms: i64, settled_verified: &mut
         let canonical = AGENT_REPLICAS
             .canonical_for_local(&run.run_id)
             .unwrap_or_else(|| run.run_id.clone());
-        if let Err(error) = reconcile_active_run_once(&run, &canonical, age_secs).await {
-            eprintln!(
-                "FutureOS run watchdog could not reconcile {}: {error}",
-                run.run_id
-            );
+        match reconcile_active_run_once(run, &canonical, age_secs).await {
+            Ok(()) => {
+                memory.reconcile_failures.remove(&run.run_id);
+            }
+            Err(error) => {
+                let failure = memory
+                    .reconcile_failures
+                    .entry(run.run_id.clone())
+                    .or_insert_with(|| ReconcileFailure {
+                        error: error.clone(),
+                        passes: 0,
+                    });
+                if failure.error != error {
+                    failure.error = error.clone();
+                    failure.passes = 0;
+                }
+                failure.passes += 1;
+                let passes = failure.passes;
+                if passes >= WATCHDOG_RECONCILE_GIVE_UP_PASSES {
+                    // A run the journal will never confirm cannot heal by being
+                    // asked again: settle it once, with the reason, instead of
+                    // retrying forever and leaving the row `running` (which
+                    // gates the composer and the sidebar spinner).
+                    memory.reconcile_failures.remove(&run.run_id);
+                    match settle_orphaned_run(
+                        &run.run_id,
+                        &format!(
+                            "FutureOS could not reconcile this run after {passes} watchdog passes: {error}"
+                        ),
+                    ) {
+                        Ok(()) => tracing::warn!(event = "active_run_watchdog_pass", run_id = %run.run_id, passes = passes, error = %error,
+                            "FutureOS run watchdog gave up on {} after {passes} passes: {error}",
+                            run.run_id
+                        ),
+                        Err(settle_error) => tracing::error!(event = "active_run_watchdog_pass", run_id = %run.run_id, passes = passes, error = %error, settle_error = %settle_error,
+                            "FutureOS run watchdog could not settle {} after {passes} passes: {settle_error}",
+                            run.run_id
+                        ),
+                    }
+                } else if passes == 1 {
+                    // One line when it starts, one when it stops trying. The
+                    // 30-second heartbeat in between says nothing new.
+                    tracing::warn!(event = "active_run_watchdog_pass", run_id = %run.run_id, error = %error,
+                        "FutureOS run watchdog could not reconcile {}: {error}",
+                        run.run_id
+                    );
+                }
+            }
         }
     }
-    reconcile_settled_runs(now_ms, settled_verified).await;
+    // Forget runs that left the active set, so the map is bounded by what the
+    // store currently holds rather than by everything this process ever saw.
+    memory
+        .reconcile_failures
+        .retain(|run_id, _| active_runs.iter().any(|run| &run.run_id == run_id));
+    reconcile_settled_runs(now_ms, &mut memory.settled_verified).await;
     // Approvals outlive their collectors (the Agent stays parked while
     // the GUI restarts), so reconcile them against the Agent's pending
     // set on every tick — not just at startup.
@@ -718,7 +946,7 @@ async fn reconcile_settled_runs(now_ms: i64, verified: &mut HashSet<String>) {
             .unwrap_or_else(|| row.run_id.clone());
         match reconcile_settled_run_once(&row, &canonical).await {
             Ok(SettledRunOutcome::Repaired(status)) => {
-                eprintln!(
+                tracing::info!(event = "reconcile_settled_runs", status = %status,
                     "FutureOS settled run {} repaired from the Agent ledger to {status}",
                     row.run_id
                 );
@@ -738,7 +966,7 @@ async fn reconcile_settled_runs(now_ms: i64, verified: &mut HashSet<String>) {
                 verified.insert(row.run_id.clone());
             }
             Ok(SettledRunOutcome::Unknown) => {}
-            Err(error) => eprintln!(
+            Err(error) => tracing::warn!(event = "reconcile_settled_runs", error = %error,
                 "FutureOS settled run watchdog could not reconcile {}: {error}",
                 row.run_id
             ),
@@ -907,6 +1135,33 @@ pub fn reconcile_thread_workspace(session_id: &str, new_cwd: &str) -> Result<(),
 
 #[cfg(test)]
 mod settled_run_tests {
+    #[test]
+    fn probe_diagnosis_ignores_transport_headers_but_preserves_the_failure() {
+        let status = |date: &'static str, message: &'static str| {
+            let mut metadata = tonic::metadata::MetadataMap::new();
+            metadata.insert("date", date.parse().unwrap());
+            tonic::Status::with_metadata(tonic::Code::Unavailable, message, metadata)
+        };
+        let first = status("Mon, 02 Nov 2026 11:22:47 GMT", "still down");
+        let later = status("Mon, 02 Nov 2026 11:22:48 GMT", "still down");
+        assert_ne!(first.to_string(), later.to_string());
+        assert_eq!(
+            super::reconcile_probe_error(&first),
+            super::reconcile_probe_error(&later)
+        );
+        assert_ne!(
+            super::reconcile_probe_error(&first),
+            super::reconcile_probe_error(&status(
+                "Mon, 02 Nov 2026 11:22:48 GMT",
+                "different diagnosis"
+            ))
+        );
+        assert_ne!(
+            super::reconcile_probe_error(&first),
+            super::reconcile_probe_error(&tonic::Status::permission_denied("still down"))
+        );
+    }
+
     use super::super::test_support::{
         break_home, mock_agent, restore_home, seed_run, seed_thread, seed_workspace, Reply,
         TestHome,
@@ -1104,6 +1359,245 @@ mod settled_run_tests {
             row.ended_at,
             Some(started + 1500),
             "the ledger's duration is anchored on the row's start"
+        );
+    }
+
+    // ── Fault recovery: abort, then read the marker back ───────────────────
+
+    /// One live run row plus the `ActiveRun` snapshot the watchdog is handed.
+    fn faulted_run(tag: &str, session: &str) -> (TestHome, store::ActiveRun, String) {
+        let home = TestHome::new(tag);
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some(session));
+        let run = seed_run(&thread.id);
+        let active = store::ActiveRun {
+            run_id: run.id.clone(),
+            thread_id: thread.id.clone(),
+            session_id: session.to_string(),
+            created_at: run.created_at,
+        };
+        (home, active, run.id)
+    }
+
+    /// The Agent's ACK releases a dead lease; it does not say the run finished.
+    /// The watchdog therefore aborts, reads the run state again, and settles the
+    /// row only from the terminal marker that read returns.
+    #[tokio::test]
+    async fn a_faulted_lease_is_aborted_and_settled_from_the_marker_it_then_reports() {
+        let (_home, active, run_id) = faulted_run("reconcile-fault", "sess-fault");
+        let mock = mock_agent();
+        mock.push_run_state(
+            &run_id,
+            serde_json::json!({
+                "isStreaming": true,
+                "activeRun": {"runId": run_id, "state": "cancellation_stuck"},
+            }),
+        );
+        mock.push_run_state(
+            &run_id,
+            serde_json::json!({
+                "requestedRun": {
+                    "runId": run_id,
+                    "status": "cancelled",
+                    "error": "The runtime lease was released.",
+                },
+            }),
+        );
+
+        reconcile_active_run_once(&active, &run_id, WATCHDOG_GRACE_SECS)
+            .await
+            .expect("a recoverable fault is not an error");
+
+        let aborts = mock.requests_of("abort");
+        assert_eq!(aborts.len(), 1, "exactly one abort: {aborts:?}");
+        assert_eq!(
+            aborts[0].run_id, run_id,
+            "the abort names the canonical run"
+        );
+        assert_eq!(
+            mock.requests_of("get_state").len(),
+            2,
+            "one read to detect the fault, one to see what the abort left behind"
+        );
+        let row = store::get_run(&run_id).expect("get").expect("some");
+        assert_eq!(row.status, "cancelled", "{row:?}");
+        assert_eq!(row.error_type.as_deref(), Some("cancelled"));
+        assert_eq!(
+            row.error_message.as_deref(),
+            Some("The runtime lease was released."),
+            "the Agent's own error text is what the user sees"
+        );
+    }
+
+    /// A refused abort is a fact the caller has to see: the row is left exactly
+    /// as it was, and no second read claims a terminal state the Agent never
+    /// agreed to.
+    #[tokio::test]
+    async fn a_refused_abort_is_an_error_and_leaves_the_row_alone() {
+        let (_home, active, run_id) = faulted_run("reconcile-fault-refused", "sess-refused");
+        let mock = mock_agent();
+        mock.push_run_state(
+            &run_id,
+            serde_json::json!({
+                "isStreaming": true,
+                "activeRun": {"runId": run_id, "state": "cancellation_stuck"},
+            }),
+        );
+        mock.push(
+            "abort",
+            Reply::Reject("run is not owned by this client".into()),
+        );
+
+        let error = reconcile_active_run_once(&active, &run_id, WATCHDOG_GRACE_SECS)
+            .await
+            .expect_err("a refused abort cannot be read as a repaired run");
+        assert_eq!(error, "run is not owned by this client");
+        assert_eq!(
+            mock.requests_of("get_state").len(),
+            1,
+            "no read-back after a refusal"
+        );
+        assert_eq!(
+            store::get_run(&run_id).expect("get").expect("some").status,
+            "running",
+            "the row keeps the state the lease left it in"
+        );
+    }
+
+    /// The read-back can be a non-answer. Then nothing settles the row here: the
+    /// pass returns `Ok` and the next tick asks again.
+    #[tokio::test]
+    async fn a_read_back_that_fails_settles_nothing() {
+        let (_home, active, run_id) = faulted_run("reconcile-fault-silent", "sess-silent");
+        let mock = mock_agent();
+        mock.push_run_state(
+            &run_id,
+            serde_json::json!({
+                "isStreaming": true,
+                "activeRun": {"runId": run_id, "state": "persistence_degraded"},
+            }),
+        );
+        mock.push(
+            &format!("get_state#{run_id}"),
+            Reply::Reject("ledger busy".into()),
+        );
+
+        reconcile_active_run_once(&active, &run_id, WATCHDOG_GRACE_SECS)
+            .await
+            .expect("a non-answer is not an error");
+
+        assert_eq!(mock.requests_of("abort").len(), 1, "the abort still ran");
+        assert_eq!(
+            store::get_run(&run_id).expect("get").expect("some").status,
+            "running"
+        );
+    }
+
+    /// A conversation deleted while the watchdog held its snapshot is settled
+    /// once, with the reason the user needs; the Agent is never asked about a
+    /// run no session can carry.
+    #[tokio::test]
+    async fn a_run_whose_conversation_is_gone_is_settled_with_that_reason() {
+        let home = TestHome::new("reconcile-thread-gone");
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-gone"));
+        let run = seed_run(&thread.id);
+        // The snapshot is taken first: the delete below is the race this arm
+        // exists for.
+        let active = store::ActiveRun {
+            run_id: run.id.clone(),
+            thread_id: thread.id.clone(),
+            session_id: "sess-gone".to_string(),
+            created_at: run.created_at,
+        };
+        store::delete_thread(&thread.id).expect("delete the conversation");
+        let mock = mock_agent();
+
+        reconcile_active_run_once(&active, &run.id, WATCHDOG_GRACE_SECS)
+            .await
+            .expect("an orphaned row is settled, not an error");
+
+        assert!(
+            store::get_run(&run.id).expect("get").is_none(),
+            "the delete took the row with it"
+        );
+        assert!(
+            mock.requests_of("get_state").is_empty(),
+            "a run with no conversation is never put to the Agent: {:?}",
+            mock.requests_of("get_state")
+        );
+    }
+
+    /// A queued prompt that was folded into the run ahead never runs on its own
+    /// (the Agent answers it with a `merged` terminal ack), and one the reader
+    /// deleted never starts. Neither produces an `agent_end`, so their rows are
+    /// settled from the Agent's own acks — and only those: a prompt still waiting
+    /// its turn, or the run in flight, is left exactly as it is.
+    #[tokio::test]
+    async fn a_folded_or_dropped_queued_prompt_settles_and_a_waiting_one_does_not() {
+        let home = TestHome::new("settle-queued-runs");
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-queue"));
+        let folded = seed_run(&thread.id);
+        let dropped = seed_run(&thread.id);
+        let waiting = seed_run(&thread.id);
+        let live = seed_run(&thread.id);
+        let mock = mock_agent();
+        mock.push_data(
+            "get_state",
+            serde_json::json!({
+                "activeRun": {"runId": live.id},
+                "queuedRuns": [
+                    {"runId": waiting.id, "queuePosition": 1, "displayText": "not yet"}
+                ],
+                "recentTerminalAcks": [
+                    {"runId": folded.id, "state": "terminal", "reason": "merged"},
+                    {"runId": dropped.id, "state": "cancelled", "reason": "cancelled"}
+                ]
+            }),
+        );
+
+        settle_queued_runs("sess-queue", &thread.id).await;
+
+        let status = |id: &str| store::get_run(id).expect("get run").expect("exists").status;
+        assert_eq!(
+            status(&folded.id),
+            "completed",
+            "a folded prompt arrived inside the run ahead — it is not lost"
+        );
+        assert_eq!(
+            status(&dropped.id),
+            "cancelled",
+            "a prompt taken back out of the queue never ran"
+        );
+        assert_eq!(status(&waiting.id), "running", "its turn has not come yet");
+        assert_eq!(
+            status(&live.id),
+            "running",
+            "the run in flight is untouched"
+        );
+    }
+
+    /// The sweep never invents a state: a row the Agent has no ack for is left
+    /// alone, because "not in the queue any more" cannot tell a folded run from
+    /// one the Agent simply has not started.
+    #[tokio::test]
+    async fn a_row_without_a_terminal_ack_is_left_alone() {
+        let home = TestHome::new("settle-queued-runs-no-ack");
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-noack"));
+        let run = seed_run(&thread.id);
+        let mock = mock_agent();
+        mock.push_data("get_state", serde_json::json!({ "queuedRuns": [] }));
+
+        settle_queued_runs("sess-noack", &thread.id).await;
+
+        assert_eq!(
+            store::get_run(&run.id)
+                .expect("get")
+                .expect("exists")
+                .status,
+            "running"
         );
     }
 }

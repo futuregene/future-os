@@ -366,10 +366,16 @@ pub fn spawn_session_discovery() {
             match crate::store::reconcile_undeliverable_delete_intents().await {
                 Ok(0) => {}
                 Ok(released) => {
-                    eprintln!("FutureOS: released {released} undeliverable deletion intent(s)");
+                    tracing::info!(
+                        event = "spawn_session_discovery",
+                        released = released,
+                        "FutureOS: released {released} undeliverable deletion intent(s)"
+                    );
                     crate::emit_threads_updated();
                 }
-                Err(error) => eprintln!("FutureOS: undeliverable delete reconcile failed: {error}"),
+                Err(error) => {
+                    tracing::warn!(event = "spawn_session_discovery", error = %error,"FutureOS: undeliverable delete reconcile failed: {error}")
+                }
             }
             super::import::import_missing_sessions().await;
             // Rows mirrored for a session that has no message at all (an
@@ -378,10 +384,16 @@ pub fn spawn_session_discovery() {
             match crate::store::reconcile_empty_conversations().await {
                 Ok(0) => {}
                 Ok(removed) => {
-                    eprintln!("FutureOS: removed {removed} empty conversation(s)");
+                    tracing::info!(
+                        event = "spawn_session_discovery",
+                        removed = removed,
+                        "FutureOS: removed {removed} empty conversation(s)"
+                    );
                     crate::emit_threads_updated();
                 }
-                Err(error) => eprintln!("FutureOS: empty-conversation reconcile failed: {error}"),
+                Err(error) => {
+                    tracing::warn!(event = "spawn_session_discovery", error = %error,"FutureOS: empty-conversation reconcile failed: {error}")
+                }
             }
             // Sessions deleted elsewhere leave a thread row whose Agent side is
             // gone; the same pass that discovers new sessions reconciles those
@@ -389,12 +401,16 @@ pub fn spawn_session_discovery() {
             match crate::store::reconcile_orphan_sessions().await {
                 Ok(0) => {}
                 Ok(removed) => {
-                    eprintln!(
+                    tracing::info!(
+                        event = "spawn_session_discovery",
+                        removed = removed,
                         "FutureOS: removed {removed} conversation(s) deleted outside the GUI"
                     );
                     crate::emit_threads_updated();
                 }
-                Err(error) => eprintln!("FutureOS: orphan-session reconcile failed: {error}"),
+                Err(error) => {
+                    tracing::warn!(event = "spawn_session_discovery", error = %error,"FutureOS: orphan-session reconcile failed: {error}")
+                }
             }
         }
     });
@@ -512,13 +528,13 @@ fn evict_idle_if_over_cap(guard: &mut HashMap<String, ObserverHandle>) {
             Some(session_id) => {
                 if let Some(handle) = guard.remove(&session_id) {
                     let _ = handle.cancel.send(());
-                    eprintln!(
+                    tracing::debug!(event = "evict_idle_if_over_cap", session_id = %session_id, OBSERVER_MAX = %OBSERVER_MAX,
                         "FutureOS observer for {session_id} evicted (LRU cap {OBSERVER_MAX})"
                     );
                 }
             }
             None => {
-                eprintln!(
+                tracing::warn!(event = "evict_idle_if_over_cap", OBSERVER_MAX = %OBSERVER_MAX,
                     "FutureOS observer cap {OBSERVER_MAX} exceeded: all observers track active runs"
                 );
                 return;
@@ -563,7 +579,7 @@ pub(super) fn ensure_run_binding(
     }
     if let Ok(Some(run)) = crate::store::get_run(canonical_run_id) {
         if run.thread_id != thread_id {
-            eprintln!(
+            tracing::error!(event = "ensure_run_binding", session_id = %session_id, thread_id = %thread_id, canonical_run_id = %canonical_run_id,
                 "FutureOS observer refused cross-thread run binding: session={session_id} thread={thread_id} run={canonical_run_id} belongs_to={}",
                 run.thread_id
             );
@@ -604,6 +620,7 @@ fn bind_run(session_id: &str, canonical_run_id: &str, local_run_id: &str) {
 struct ObserverState {
     source: Option<(String, String, String)>,
     cursors: HashMap<String, i64>,
+    content_cursors: future_rpc::content_range::ContentCursors,
     session_cursor: i64,
     active_run: Option<String>,
     last_settled_run: Option<String>,
@@ -615,6 +632,7 @@ impl Default for ObserverState {
         Self {
             source: None,
             cursors: HashMap::new(),
+            content_cursors: Default::default(),
             session_cursor: -1,
             active_run: None,
             last_settled_run: None,
@@ -722,7 +740,9 @@ async fn record_message_activity(
                 crate::emit_thread_activity(&shared.thread_id, timestamp);
             }
         }
-        result => eprintln!("FutureOS could not record message activity: {result:?}"),
+        result => {
+            tracing::warn!(event = "record_message_activity", result = ?result,"FutureOS could not record message activity: {result:?}")
+        }
     }
 }
 
@@ -777,7 +797,7 @@ async fn run_observer(
         {
             Ok(presence) => presence,
             Err(error) => {
-                eprintln!("FutureOS: observer source verification deferred: {error}");
+                tracing::warn!(event = "run_observer", error = %error,"FutureOS: observer source verification deferred: {error}");
                 if sleep_or_cancel(&mut cancel, backoff).await {
                     return;
                 }
@@ -995,6 +1015,46 @@ fn forwards_to_webview(event_type: &str, origin: EventOrigin) -> bool {
         && !(origin == EventOrigin::Replay && is_compaction_lifecycle(event_type))
 }
 
+/// Settle the queued rows the Agent answered while this run's stream moved.
+///
+/// Off the event loop: the sweep asks the Agent for the session's queue, and a
+/// turn boundary is the wrong place to wait for another round trip.
+fn settle_queued_runs_off_thread(session_id: &str, thread_id: &str) {
+    let (session_id, thread_id) = (session_id.to_string(), thread_id.to_string());
+    crate::runtime::spawn(async move {
+        super::reconciliation::settle_queued_runs(&session_id, &thread_id).await;
+    });
+}
+
+/// Settle a local run row from the run's own `agent_end`.
+///
+/// A clean finish stays `completed`. Anything else is mirrored through
+/// [`reconciliation::settle_from_agent_terminal`] — the same mapping the
+/// watchdog already applies to the Agent's durable terminal marker — so a run
+/// the Agent *cancelled* is recorded as `cancelled` rather than as an
+/// unexplained `failed`/`stream_interrupted` row. Flattening every non-finish
+/// into one message is what made 29 runs (12 in a single morning, 2026-11-02)
+/// look like a crash when the user had simply stopped them. A run whose state
+/// this build does not recognise still falls back to the generic failure.
+pub(super) fn settle_agent_end(local_run_id: &str, data: &str) {
+    match stream::agent_end_outcome(data) {
+        stream::AgentEndOutcome::Completed => {
+            mark_run_completed_if_active(Some(local_run_id));
+        }
+        stream::AgentEndOutcome::Unfinished { state, error } => {
+            if let Err(settlement) = super::reconciliation::settle_from_agent_terminal(
+                local_run_id,
+                &state,
+                error.as_deref(),
+            ) {
+                tracing::warn!(event = "settle_agent_end", run_id = %local_run_id, error = %settlement,
+                    "FutureOS run settlement failed for {local_run_id}: {settlement}"
+                );
+            }
+        }
+    }
+}
+
 /// Process one event from the live subscription. Returns false when the run's
 /// idx sequence broke — the caller re-attaches, and the replay/projection
 /// snapshot heals the gap.
@@ -1022,6 +1082,21 @@ async fn handle_event_from(
     event: future_rpc::proto::StreamEvent,
     origin: EventOrigin,
 ) -> bool {
+    let mirror_data = future_rpc::decode::event_data_json(&event);
+    let mirror_snapshot_events = event.snapshot_events.clone();
+    let mut event = event;
+    if future_rpc::content_body::stream_needs_hydration(&event) {
+        let Ok(mut client) = connect_agent().await else {
+            return false;
+        };
+        if let Err(error) =
+            future_rpc::content_body::hydrate_stream_event(&mut client, session_id, &mut event)
+                .await
+        {
+            tracing::warn!(session_id, %error, "required event content could not be read");
+            return false;
+        }
+    }
     let event_type = event.r#type.as_str();
     let run_id = event.run_id.as_str();
 
@@ -1058,7 +1133,7 @@ async fn handle_event_from(
         crate::agent_events::publish_event(
             session_id,
             event_type,
-            &event_data,
+            &mirror_data,
             run_id,
             event.idx,
             event.epoch,
@@ -1074,6 +1149,21 @@ async fn handle_event_from(
     // snapshot IS the healing mechanism, so it bypasses the continuity check:
     // its cursor is the new position, locally and on the mirror.
     if event.projection_snapshot {
+        state.content_cursors.clear();
+        for projected in &event.snapshot_events {
+            let Ok(mut data) = serde_json::from_str::<serde_json::Value>(
+                &future_rpc::decode::projected_event_data_json(projected),
+            ) else {
+                return false;
+            };
+            if state
+                .content_cursors
+                .apply(run_id, event.epoch, &projected.r#type, &mut data)
+                .is_err()
+            {
+                return false;
+            }
+        }
         state
             .cursors
             .insert(run_id.to_string(), event.snapshot_cursor);
@@ -1098,16 +1188,10 @@ async fn handle_event_from(
             stream::replace_projection_off_thread(&thread_id, Some(&local_run_id), events).await;
             if let Some(agent_end_data) = terminal_agent_end {
                 crate::request_scope::release_run(session_id, run_id);
-                if stream::agent_end_incomplete(&agent_end_data) {
-                    mark_run_failed_if_active(
-                        Some(&local_run_id),
-                        "Future Agent response ended before a clean terminal.",
-                    );
-                } else {
-                    mark_run_completed_if_active(Some(&local_run_id));
-                }
+                settle_agent_end(&local_run_id, &agent_end_data);
                 crate::store::clear_run_event_buffer(&local_run_id);
                 note_run_settled(shared, state, run_id);
+                settle_queued_runs_off_thread(session_id, &thread_id);
             }
         }
         record_message_activity(shared, state, &event).await;
@@ -1119,7 +1203,7 @@ async fn handle_event_from(
             session_id,
             run_id,
             event.snapshot_cursor,
-            &event.snapshot_events,
+            &mirror_snapshot_events,
             event.run_sequence,
         );
         return true;
@@ -1128,12 +1212,19 @@ async fn handle_event_from(
     // Run-scoped event: validate ordering first. Replays (idx <= cursor) and
     // gaps (idx skips ahead) are settled here — neither may reach the stores,
     // the webview, or the mirror.
+    let mut range_data: serde_json::Value =
+        serde_json::from_str(&future_rpc::decode::event_data_json(&event))
+            .unwrap_or(serde_json::Value::Null);
     match state.cursors.get(run_id).copied() {
         Some(last) => {
             if event.idx <= last {
                 return true; // replay overlap — already persisted and mirrored
             }
-            if event.idx != last.saturating_add(1) {
+            if !future_rpc::content_range::covers_next(
+                &range_data,
+                last.saturating_add(1),
+                event.idx,
+            ) {
                 return false; // mid-run hole — re-attach for replay/snapshot healing
             }
         }
@@ -1178,13 +1269,20 @@ async fn handle_event_from(
             }
         }
     }
+    if state
+        .content_cursors
+        .apply(run_id, event.epoch, event_type, &mut range_data)
+        .is_err()
+    {
+        return false;
+    }
     state.cursors.insert(run_id.to_string(), event.idx);
     note_run_active(shared, state, run_id);
 
     // Canonical event payload (byte-stable while the agent dual-writes `data`;
     // the typed reconstruction takes over once `data` is retired). Persistence,
     // terminal detection, forwarding and the NATS mirror all read it.
-    let event_data = future_rpc::decode::event_data_json(&event);
+    let event_data = range_data.to_string();
 
     // Terminal bookkeeping applies regardless of ownership — otherwise a
     // pipeline-owned run's end would wedge has_active_run forever.
@@ -1208,16 +1306,13 @@ async fn handle_event_from(
 
         match event_type {
             "agent_end" => {
-                if stream::agent_end_incomplete(&event_data) {
-                    mark_run_failed_if_active(
-                        Some(&local_run_id),
-                        "Future Agent response ended before a clean terminal.",
-                    );
-                } else {
-                    mark_run_completed_if_active(Some(&local_run_id));
-                }
+                settle_agent_end(&local_run_id, &event_data);
                 crate::store::clear_run_event_buffer(&local_run_id);
                 note_run_settled(shared, state, run_id);
+                // The turn boundary just moved: whatever the queue folded into
+                // this run (or took back out of it) will never produce an
+                // `agent_end` of its own.
+                settle_queued_runs_off_thread(session_id, &thread_id);
             }
             "error" => {
                 mark_run_failed_if_active(Some(&local_run_id), "Future Agent reported an error.");
@@ -1236,7 +1331,7 @@ async fn handle_event_from(
     crate::agent_events::publish_event(
         session_id,
         event_type,
-        &event_data,
+        &mirror_data,
         run_id,
         event.idx,
         event.epoch,
@@ -1779,6 +1874,19 @@ mod tests {
         assert!(crate::store::find_thread_by_agent_session("s-tomb")
             .expect("find")
             .is_none());
+    }
+
+    /// A session the desktop never mirrored reconciles to "nothing removed": the
+    /// Agent can announce an id before any conversation claimed it, and that
+    /// must not read as a deletion that happened.
+    #[tokio::test]
+    async fn an_unowned_session_reconciles_to_nothing_removed() {
+        let _home = TestHome::new("observer-unowned");
+        let _mock = crate::agent_bridge::test_support::mock_agent();
+        assert!(
+            !super::reconcile_deleted_session("s-never-imported").expect("reconcile"),
+            "no local conversation was removed"
+        );
     }
 
     #[tokio::test]
@@ -2718,6 +2826,167 @@ mod tests {
         // error, and the loop keeps ticking.
     }
 
+    /// The first reconcile pass of a tick speaks only when it *acted*: a deletion
+    /// intent no client can ever deliver is released once the Agent says the
+    /// session is still there, and the tick reports the count. The intent is the
+    /// shape [`crate::store::undeliverable_agent_session_deletes`] selects —
+    /// settled at least once, with no ownership evidence left — and the Agent
+    /// still reporting the session *present* is what makes it deliverable again.
+    #[tokio::test]
+    async fn a_discovery_tick_releases_a_deletion_intent_no_client_can_deliver() {
+        let home = TestHome::new("observer-discovery-releasable-intent");
+        let mock = mock_agent();
+        let conn =
+            rusqlite::Connection::open(home.path().join(".future/app/app.db")).expect("open db");
+        conn.execute(
+            "INSERT INTO agent_delete_outbox (session_id, requested_at, attempts)\n             VALUES ('sess_fenced', 1, 1)",
+            [],
+        )
+        .expect("seed the undeliverable intent");
+        drop(conn);
+        // This tick has no mirrored conversation at all, so the fence's session is
+        // the only one the pass can ask about: one answer shape, no ordering.
+        mock.default_data("list_sessions", serde_json::json!({ "sessions": [] }));
+        mock.default_data("list_session_ids", serde_json::json!({ "ids": [] }));
+        mock.default_data(
+            "get_session_presence",
+            serde_json::json!({
+                "databaseId": "database-peer",
+                "restoreGeneration": "generation",
+                "sessions": [{ "sessionId": "sess_fenced", "status": "present" }],
+            }),
+        );
+        let _interval = crate::test_support::EnvGuard::set(
+            "FUTURE_TEST_DISCOVERY_INTERVAL_MS",
+            std::ffi::OsStr::new("10"),
+        );
+        spawn_session_discovery();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while fenced_intents(home.path()) != 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the pass never released the fence for a session the Agent still holds"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        TEST_DISCOVERY_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        assert_eq!(
+            fenced_intents(home.path()),
+            0,
+            "an intent with no ownership evidence is released once the Agent still holds the \
+             session, so the next import may mirror that conversation again"
+        );
+    }
+
+    /// A conversation the Agent reports *deleted* against the database this
+    /// Desktop mirrored it from is gone from the Agent, so the same tick takes
+    /// the mirror with it and says how many. The other reading — gone from the
+    /// catalogue but with no matching database identity — is a partial restore
+    /// and is deliberately left alone (`reconcile_preserves_history_when_an_agent_database_is_missing`).
+    #[tokio::test]
+    async fn a_discovery_tick_removes_a_conversation_the_agent_confirmed_deleted() {
+        let home = TestHome::new("observer-discovery-confirmed-deletion");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws-peer");
+        let conn =
+            rusqlite::Connection::open(home.path().join(".future/app/app.db")).expect("open db");
+        conn.execute(
+            "INSERT INTO threads (\n                 id, workspace_id, mode, title, agent_session_id, created_at, updated_at\n             ) VALUES ('t-peer', ?1, 'chat', 'T', 'sess_peer', 1, 1)",
+            rusqlite::params![workspace.id],
+        )
+        .expect("seed the conversation the Agent deleted");
+        // A run is what keeps the emptiness pass from touching this row: the
+        // deletion the Agent confirms is the one that removes it.
+        conn.execute(
+            "INSERT INTO runs (id, thread_id, status, error_type, created_at, updated_at)\n             VALUES ('r-peer', 't-peer', 'completed', NULL, 2, 2)",
+            [],
+        )
+        .expect("seed run");
+        drop(conn);
+        crate::store::record_thread_source("t-peer", "sess_peer", "database-peer", "generation")
+            .expect("bind the source the Agent reports");
+        // No fence in this tick, so the orphan pass's own question is the only
+        // presence read the loop makes: one answer shape, no ordering.
+        mock.default_data("list_sessions", serde_json::json!({ "sessions": [] }));
+        mock.default_data(
+            "list_session_ids",
+            serde_json::json!({ "ids": ["sess_peer"] }),
+        );
+        mock.default_data(
+            "get_session_presence",
+            serde_json::json!({
+                "databaseId": "database-peer",
+                "restoreGeneration": "generation",
+                "sessions": [{ "sessionId": "sess_peer", "status": "deleted" }],
+            }),
+        );
+        let _interval = crate::test_support::EnvGuard::set(
+            "FUTURE_TEST_DISCOVERY_INTERVAL_MS",
+            std::ffi::OsStr::new("10"),
+        );
+        spawn_session_discovery();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while crate::store::get_thread("t-peer").expect("get").is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the orphan pass never acted on the deletion the Agent confirmed"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        TEST_DISCOVERY_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        assert!(
+            crate::store::get_thread("t-peer").expect("get").is_none(),
+            "a deletion the Agent confirms against the same database takes the conversation"
+        );
+    }
+
+    /// How many fences the outbox still holds: the release is a delete, so the
+    /// count going to zero *is* the act, and reading it back is what keeps the
+    /// assertion about the store rather than about the loop's own bookkeeping.
+    fn fenced_intents(home: &std::path::Path) -> i64 {
+        let conn = rusqlite::Connection::open(home.join(".future/app/app.db")).expect("open db");
+        conn.query_row(
+            "SELECT count(*) FROM agent_delete_outbox WHERE session_id = 'sess_fenced'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count the intent")
+    }
+
+    /// The first reconcile pass of a tick is *reported* when it cannot read its
+    /// own candidates: the table a delete intent lives in can be gone under a
+    /// Desktop whose database was replaced. That must be a log line and a tick
+    /// that comes back, not a dead discovery loop.
+    #[tokio::test]
+    async fn a_missing_delete_outbox_is_reported_and_the_loop_keeps_ticking() {
+        let home = TestHome::new("observer-discovery-no-outbox");
+        let mock = mock_agent();
+        for _ in 0..8 {
+            mock.push_typed_data("list_sessions", serde_json::json!({ "sessions": [] }));
+            mock.push_data("list_session_ids", serde_json::json!({ "ids": [] }));
+        }
+        let conn =
+            rusqlite::Connection::open(home.path().join(".future/app/app.db")).expect("open db");
+        conn.execute_batch("DROP TABLE agent_delete_outbox;")
+            .expect("drop the outbox");
+        drop(conn);
+
+        let _interval = crate::test_support::EnvGuard::set(
+            "FUTURE_TEST_DISCOVERY_INTERVAL_MS",
+            std::ffi::OsStr::new("10"),
+        );
+        spawn_session_discovery();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        TEST_DISCOVERY_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        // Reaching this line is the assertion: the pass logged its failure and
+        // the loop went on to the next tick.
+    }
+
     #[tokio::test]
     async fn handle_event_projects_and_settles_an_owned_run() {
         let home = TestHome::new("observer-owned-run");
@@ -2849,7 +3118,7 @@ mod tests {
             snapshot_cursor: 5,
             snapshot_events: vec![future_rpc::proto::ProjectedRunEvent {
                 r#type: "text_chunk".to_string(),
-                data: "hello".to_string(),
+                data: serde_json::json!({"text":"hello"}).to_string(),
                 idx: 0,
                 ..Default::default()
             }],
@@ -2884,7 +3153,7 @@ mod tests {
             snapshot_cursor: 9,
             snapshot_events: vec![future_rpc::proto::ProjectedRunEvent {
                 r#type: "text_chunk".to_string(),
-                data: "hi".to_string(),
+                data: serde_json::json!({"text":"hi"}).to_string(),
                 idx: 0,
                 ..Default::default()
             }],
@@ -3235,6 +3504,124 @@ mod tests {
         std::env::remove_var("FUTURE_TEST_OBSERVER_BACKOFF_MS");
     }
 
+    /// A source the Agent no longer vouches for is *deferred*, not fatal: the
+    /// observer says which check failed, backs off and tries the whole attach
+    /// again. Attaching anyway would mirror a conversation into a thread whose
+    /// database the next restore can swap out from under it.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn run_observer_defers_an_attach_whose_source_it_cannot_verify() {
+        let home = TestHome::new("observer-source-deferred");
+        let mock = mock_agent();
+        let _backoff = crate::test_support::EnvGuard::set(
+            "FUTURE_TEST_OBSERVER_BACKOFF_MS",
+            std::ffi::OsStr::new("40"),
+        );
+        // `deleted` is an answer the presence check understands and refuses: the
+        // session this Desktop mirrored is not the one the Agent holds.
+        for _ in 0..4 {
+            mock.push_data(
+                "get_session_presence",
+                serde_json::json!({
+                    "databaseId": "database-gone",
+                    "restoreGeneration": "generation",
+                    "sessions": [{ "sessionId": "sess-sv", "status": "deleted" }],
+                }),
+            );
+        }
+
+        let shared = Arc::new(bound_observer_shared(&home, "sess-sv"));
+        let (cancel_tx, handle) = spawn_run_observer("sess-sv", shared);
+        // Two deferral cycles, the second cancelled inside its own backoff.
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        cancel_tx.send(()).unwrap();
+        handle.await.unwrap();
+
+        assert!(
+            mock.requests_of("get_session_presence").len() >= 2,
+            "the observer has to ask again, not give up on the first refusal"
+        );
+        assert!(
+            mock.requests_of("get_session_events_since").is_empty(),
+            "nothing may be replayed before the source is verified"
+        );
+    }
+
+    /// A re-attach that lands on a *different* restore generation of the same
+    /// Agent database is a different history: the cursor and the run binding the
+    /// previous attach built would silently skip the restored journal's own
+    /// events (`a_restored_or_restarted_source_replays_from_its_own_cursor_origin`
+    /// is the same rule one layer down). The generation is what can change while
+    /// the database identity stays — a swap of the database itself is refused one
+    /// layer earlier, by the source check above.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn run_observer_resets_its_cursors_when_the_source_changes() {
+        let home = TestHome::new("observer-source-changed");
+        let mock = mock_agent();
+        let _backoff = crate::test_support::EnvGuard::set(
+            "FUTURE_TEST_OBSERVER_BACKOFF_MS",
+            std::ffi::OsStr::new("50"),
+        );
+        // Cycle 1 streams a run-scoped event, which is what marks the run active.
+        mock.push_data(
+            "get_session_presence",
+            serde_json::json!({
+                "databaseId": "database-sc",
+                "restoreGeneration": "generation-before",
+                "sessions": [{ "sessionId": "sess-sc", "status": "present" }],
+            }),
+        );
+        mock.push_data(
+            "get_session_events_since",
+            serde_json::json!({"events": []}),
+        );
+        mock.push_data(
+            "get_state",
+            serde_json::json!({"activeRun": {"runId": "run-sc"}}),
+        );
+        mock.push_stream(StreamScript::Events(
+            vec![stream_event("agent_start", "run-sc", 0)],
+            None,
+        ));
+        // Cycle 2: same database, restored into a new generation. Its stream never
+        // yields, so the observer parks there instead of starting a third attach:
+        // the run mark can only go away through the reset.
+        mock.push_data(
+            "get_session_presence",
+            serde_json::json!({
+                "databaseId": "database-sc",
+                "restoreGeneration": "generation-after",
+                "sessions": [{ "sessionId": "sess-sc", "status": "present" }],
+            }),
+        );
+        mock.push_data(
+            "get_session_events_since",
+            serde_json::json!({"events": []}),
+        );
+        mock.push_data("get_state", serde_json::json!({"isStreaming": false}));
+        mock.push_stream(StreamScript::Hang);
+
+        let shared = Arc::new(bound_observer_shared(&home, "sess-sc"));
+        let (cancel_tx, handle) = spawn_run_observer("sess-sc", shared.clone());
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        cancel_tx.send(()).unwrap();
+        handle.await.unwrap();
+
+        assert!(
+            mock.requests_of("get_session_presence").len() >= 2,
+            "the observer re-attaches and verifies the source each time; a single read would \
+             mean the second cycle never started"
+        );
+        assert!(
+            !shared
+                .has_active_run
+                .load(std::sync::atomic::Ordering::Relaxed),
+            "the changed source clears the run binding; without the reset it would still be \
+             true from the first attach's `agent_start`"
+        );
+    }
+
     #[tokio::test]
     async fn run_observer_falls_back_to_plain_subscribe_after_atomic_error() {
         let _home = TestHome::new("observer-atomic-fallback");
@@ -3466,5 +3853,199 @@ mod tests {
         cancel_tx.send(()).unwrap();
         handle.await.unwrap();
         std::env::remove_var("FUTURE_TEST_IDLE_CHECK_MS");
+    }
+}
+
+/// The projection's refusal arms: an event whose required body cannot be read,
+/// and a snapshot whose projected events cannot be applied, must be refused
+/// rather than mirrored. Every one of these returns `false` — "re-attach and
+/// replay" — so the assertion that matters is not only the return value but
+/// that the cursors did not move: a refused event that advanced a cursor would
+/// be silently skipped for the rest of the session.
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+    use crate::agent_bridge::test_support::{mock_agent, Reply};
+
+    /// A body the Agent stored out of line: coordinates, no text.
+    const REFERENCED: &str = r#"{"role":"user","message":"","content_refs":{"message":{"databaseId":"db","restoreGeneration":"gen","epoch":1,"cursor":7,"field":"/data/message"}}}"#;
+
+    fn event(kind: &str, run_id: &str, idx: i64, data: &str) -> future_rpc::proto::StreamEvent {
+        future_rpc::proto::StreamEvent {
+            r#type: kind.to_string(),
+            data: data.to_string(),
+            run_id: run_id.to_string(),
+            idx,
+            projection_snapshot: false,
+            snapshot_events: vec![],
+            snapshot_cursor: 0,
+            session_id: "sess-projection".to_string(),
+            epoch: 1,
+            event_id: String::new(),
+            timestamp: String::new(),
+            session_idx: -1,
+            run_sequence: 1,
+            payload: None,
+        }
+    }
+
+    fn projected(kind: &str, idx: i64, data: &str) -> future_rpc::proto::ProjectedRunEvent {
+        future_rpc::proto::ProjectedRunEvent {
+            r#type: kind.to_string(),
+            data: data.to_string(),
+            idx,
+            payload: None,
+        }
+    }
+
+    /// An event carrying a content reference is materialized against the Agent
+    /// before anything is persisted or mirrored. When the Agent cannot be
+    /// reached at all, the event is refused — not projected with the reference
+    /// still in place, which would render as an empty message and would also
+    /// hand every mirror a body it can never resolve.
+    #[tokio::test]
+    async fn a_referenced_body_with_no_agent_to_read_it_is_refused() {
+        let mock = mock_agent();
+        let previous =
+            std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("the mock guard sets the endpoint");
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+
+        let shared = Arc::new(ObserverShared::new("thread-hydration-down"));
+        let mut state = ObserverState::default();
+        let event = event("user_message", "run-down", 0, REFERENCED);
+        let delivered =
+            handle_event_from("sess-down", &shared, &mut state, event, EventOrigin::Live).await;
+
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", previous);
+
+        assert!(!delivered, "an unreadable body must not be projected");
+        assert!(
+            !state.cursors.contains_key("run-down"),
+            "a refused event must not advance the run cursor"
+        );
+        assert_eq!(state.session_cursor, -1, "nor the session cursor");
+        assert!(
+            mock.requests_of("get_event_content_range").is_empty(),
+            "the unreachable Agent was never asked"
+        );
+    }
+
+    /// The Agent is reachable and refuses the read: same refusal, one round
+    /// trip later. The request is the event's own coordinates, so a host that
+    /// read the session's *current* run instead would be caught here.
+    #[tokio::test]
+    async fn a_body_the_agent_refuses_to_serve_is_refused() {
+        let mock = mock_agent();
+        mock.push(
+            "get_event_content_range",
+            Reply::Reject("no such field".into()),
+        );
+
+        let shared = Arc::new(ObserverShared::new("thread-hydration-refused"));
+        let mut state = ObserverState::default();
+        let event = event("user_message", "run-refused", 0, REFERENCED);
+        let delivered = handle_event_from(
+            "sess-refused",
+            &shared,
+            &mut state,
+            event,
+            EventOrigin::Live,
+        )
+        .await;
+
+        assert!(!delivered, "a refused body must not be projected");
+        assert!(!state.cursors.contains_key("run-refused"));
+        let reads = mock.requests_of("get_event_content_range");
+        assert_eq!(reads.len(), 1, "one referenced field, one read");
+        assert_eq!(reads[0].run_id, "run-refused");
+        let request = reads[0]
+            .content_request
+            .as_ref()
+            .expect("the reference is forwarded as a content request");
+        assert_eq!(request.field, "/data/message");
+        assert_eq!(request.cursor, 7);
+    }
+
+    /// A projection snapshot replaces the run's replica wholesale, so an
+    /// unreadable projected event cannot be dropped from it — the snapshot
+    /// would then lie about the run. The whole event is refused instead.
+    #[tokio::test]
+    async fn a_projection_snapshot_with_an_unreadable_event_is_refused() {
+        let _mock = mock_agent();
+        let shared = Arc::new(ObserverShared::new("thread-projection-json"));
+        let mut state = ObserverState::default();
+        let mut snapshot = event("agent_end", "run-json", 0, "{}");
+        snapshot.projection_snapshot = true;
+        snapshot.snapshot_cursor = 4;
+        snapshot.snapshot_events = vec![
+            projected("text_chunk", 1, r#"{"text":"ok"}"#),
+            projected("text_chunk", 2, "{not json"),
+        ];
+
+        let delivered = handle_event_from(
+            "sess-json",
+            &shared,
+            &mut state,
+            snapshot,
+            EventOrigin::Replay,
+        )
+        .await;
+
+        assert!(!delivered, "a snapshot with an unreadable event is refused");
+        assert!(
+            !state.cursors.contains_key("run-json"),
+            "the snapshot cursor is not adopted"
+        );
+    }
+
+    /// A projected canonical fragment that starts past byte zero is a hole in
+    /// the rebuilt body — appending it would produce plausible corrupted text.
+    #[tokio::test]
+    async fn a_projection_snapshot_with_a_content_hole_is_refused() {
+        let _mock = mock_agent();
+        let shared = Arc::new(ObserverShared::new("thread-projection-hole"));
+        let mut state = ObserverState::default();
+        let mut snapshot = event("agent_end", "run-hole", 0, "{}");
+        snapshot.projection_snapshot = true;
+        snapshot.snapshot_cursor = 4;
+        snapshot.snapshot_events = vec![projected(
+            "text_chunk",
+            1,
+            r#"{"content_key":"answer","content_offset":5,"content_bytes":3,"text":"abc"}"#,
+        )];
+
+        let delivered = handle_event_from(
+            "sess-hole",
+            &shared,
+            &mut state,
+            snapshot,
+            EventOrigin::Replay,
+        )
+        .await;
+
+        assert!(!delivered, "a fragment with no prefix is refused");
+        assert!(!state.cursors.contains_key("run-hole"));
+    }
+
+    /// The same hole outside a snapshot: the live path applies canonical
+    /// content before persisting, so a fragment past byte zero is refused and
+    /// the run cursor stays where it was — the event is replayed, not lost.
+    #[tokio::test]
+    async fn a_live_fragment_with_a_content_hole_is_refused() {
+        let _mock = mock_agent();
+        let shared = Arc::new(ObserverShared::new("thread-live-hole"));
+        let mut state = ObserverState::default();
+        let event = event(
+            "text_chunk",
+            "run-live-hole",
+            0,
+            r#"{"content_key":"answer","content_offset":5,"content_bytes":3,"text":"abc"}"#,
+        );
+
+        let delivered =
+            handle_event_from("sess-live", &shared, &mut state, event, EventOrigin::Live).await;
+
+        assert!(!delivered, "a fragment with no prefix is refused");
+        assert!(!state.cursors.contains_key("run-live-hole"));
     }
 }

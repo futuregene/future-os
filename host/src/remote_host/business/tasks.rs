@@ -460,8 +460,11 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         task.ok_or_else(|| crate::Error::Message("task not found".into()))
                     })
                     .and_then(|mut task| {
-                        task.enabled = enabled;
-                        task.updated_at = now_ms();
+                        // The same rule the desktop's own button applies, so a
+                        // schedule paused on the phone (which saves no due time
+                        // while it is off) lands on a real slot when the phone
+                        // turns it back on.
+                        crate::tasks::apply_task_enabled(&mut task, enabled, now_ms());
                         store
                             .update_task(&task)
                             .map_err(|e| crate::Error::Message(e.to_string()))?;
@@ -1239,6 +1242,47 @@ mod tests {
                 .map(str::len),
             Some(RUN_SUMMARY_CHARS + 50),
             "the stored summary is untouched"
+        );
+    }
+
+    /// A task the phone saved with its switch off carries no next slot — the
+    /// save path computes one only for an enabled schedule — so enabling it from
+    /// the phone has to compute one, exactly as the desktop's own button does.
+    ///
+    /// Without that, the row answers `enabled: true` while the tick's query
+    /// (`next_due_at IS NOT NULL AND next_due_at <= now`) can never select it:
+    /// the task reads as on in the phone's list and is dead on the schedule
+    /// (h2-C3). Re-enabling a task that already had a due time, which is all the
+    /// test below ever did, hid this.
+    #[tokio::test]
+    async fn enabling_a_paused_schedule_from_the_phone_lands_on_a_real_slot() {
+        let _home = home("business-tasks-enable-slot");
+        let store = open_store().expect("store");
+        let mut paused = task("paused on the phone", future_tasks::SessionPolicy::New);
+        paused.enabled = false;
+        paused.next_due_at = None;
+        store.insert_task(&paused).unwrap();
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("set_task_enabled");
+        cmd.task_id = paused.id.clone();
+        cmd.enabled = true;
+        super::execute(&cmd, &sink).await;
+        let data = sink.ok_data();
+        assert_eq!(data["enabled"], true);
+        let next_due = data["nextDueAt"]
+            .as_i64()
+            .expect("enabling answers the next slot it landed on");
+
+        // ... and the tick actually finds it at that slot.
+        let due = store.list_due_tasks(next_due).expect("due tasks");
+        assert!(
+            due.iter().any(|t| t.id == paused.id),
+            "the enabled task is a candidate at its next slot: {due:?}"
+        );
+        assert_eq!(
+            store.get_task(&paused.id).unwrap().unwrap().next_due_at,
+            Some(next_due)
         );
     }
 

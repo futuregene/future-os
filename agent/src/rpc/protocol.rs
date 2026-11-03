@@ -38,6 +38,8 @@ pub struct RpcCommand {
     // compact
     #[serde(default)]
     pub custom_instructions: String,
+    #[serde(default)]
+    pub fusion_settings_json: String,
 
     // new_session — typed provenance (see proto). Legacy clients smuggle the
     // same info as JSON in custom_instructions.
@@ -80,6 +82,10 @@ pub struct RpcCommand {
     pub before: Option<i64>,
     #[serde(default)]
     pub fragment_offset: Option<i64>,
+    #[serde(default)]
+    pub content_request: Option<future_rpc::content_range::ContentRequest>,
+    #[serde(default)]
+    pub replay_until_idx: Option<i64>,
     /// Upper bound on how many sessions `search_all_session_history` scans,
     /// most recently updated first. Absent selects the server default.
     #[serde(default)]
@@ -139,6 +145,12 @@ pub struct RpcCommand {
     pub auth_update: Option<crate::config::providers::AuthMutation>,
     #[serde(skip)]
     pub provider_config: Option<crate::config::providers::ProviderUpsertSpec>,
+
+    // probe_thinking_level — an ad-hoc provider/model probe for the
+    // custom-provider editor's thinking-level detection. Populated from the
+    // proto sub-message by the gRPC layer; the handler answers per level.
+    #[serde(skip)]
+    pub thinking_probe: Option<crate::llm::probe::ThinkingLevelProbeSpec>,
 
     // suggest_skill — the user's first-turn text plus the UNINSTALLED skill
     // candidates the caller offers to Jev. Populated from the proto fields by

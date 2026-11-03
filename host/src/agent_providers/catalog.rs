@@ -82,7 +82,7 @@ async fn fetch_builtin_catalog() -> Result<BTreeMap<String, CatalogProviderSumma
 /// still shows FutureGene and custom providers, and write-command validation
 /// refuses what it cannot check rather than trusting an empty set.
 pub(super) fn catalog_unavailable(error: crate::Error) -> BTreeMap<String, CatalogProviderSummary> {
-    eprintln!("FutureOS: built-in provider catalog unavailable from the agent: {error}");
+    tracing::warn!(event = "catalog_unavailable", error = %error,"FutureOS: built-in provider catalog unavailable from the agent: {error}");
     BTreeMap::new()
 }
 

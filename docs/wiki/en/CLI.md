@@ -203,6 +203,7 @@ File-path arguments are converted automatically where a tool expects file conten
 future mcp list                          # configured servers, and the file they come from
 future mcp status                        # start each, shake hands, report tool counts
 future mcp add rea --command rea --arg --mcp
+future mcp add remote --url https://example.com/mcp --header 'Authorization: Bearer <token>'
 future mcp tools rea --query binary      # that server's tools, one line each
 future mcp describe rea inspect_go_binary  # one tool's full argument schema
 future mcp call rea inspect_go_binary --args '{"path":"/usr/bin/foo"}'
@@ -212,9 +213,18 @@ future mcp remove rea
 ```
 
 Servers live in `~/.future/mcp.json` (beside `agent/`, so `FUTURE_HOME` moves them
-with the instance) and run as local processes speaking MCP over stdio. The agent
+with the instance) and are reached one of two ways: a local process speaking MCP
+over stdio (`"command"`), or a Streamable HTTP endpoint (`"url"`). The agent
 has no MCP client of its own, so this group is how an agent session reaches one:
 the skill or the user calls `future mcp` through the ordinary `shell` tool.
+
+An HTTP entry is one URL the client POSTs JSON-RPC messages to; the answer is
+either a JSON body or a server-sent-event stream, and the client reads until its
+own answer arrives rather than until the stream closes. The session id the server
+returns on `initialize` is echoed back on every request and ended with a `DELETE`
+when the command is done, and the negotiated revision travels as
+`MCP-Protocol-Version`. `--header 'Name: value'` stores credentials in the file
+rather than in the environment; only the header *names* are shown by `list`.
 
 `list` answers "what is configured"; `status` answers "is it usable" — it starts
 each server, completes the handshake, reports the tool count and timing, and stops
@@ -237,7 +247,9 @@ There are two budgets with a flag each: `--max-bytes` caps what is **printed**,
 fit at all, so the over-cap error names the method being awaited, says which
 budget it is, and gives both knobs; many servers also have their own response
 budget (REA's is `REA_MCP_MAX_RESPONSE_BYTES`). A mistyped tool name gets the
-same "Did you mean" hint from `call` as from `describe`.
+same "Did you mean" hint from `call` as from `describe`. Both budgets, and
+`--timeout`, apply to an HTTP endpoint exactly as they do to a process; a
+refused or unreachable request reports the HTTP status and the server's own body.
 
 `call` starts the server on every invocation, which costs nothing for a fast one
 and a lot for an engine that loads and analyses the target at launch: a Ghidra

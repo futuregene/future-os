@@ -22,6 +22,17 @@ export function rememberedCollapsedWorkspaces(): Set<string> {
 }
 
 /**
+ * Forget the in-session cache.
+ *
+ * The cache outliving a mount is the whole point (a remount draws folded groups
+ * on its first frame), which also makes it outlive a test that mounts the hook.
+ * Test-only: clearing it is what a fresh process starts from.
+ */
+export function __resetCollapsedWorkspacesCacheForTests(): void {
+  remembered = null;
+}
+
+/**
  * Parse a stored value into ids. Storage is best effort: anything corrupt,
  * non-array, or holding non-string members reads as "nothing collapsed"
  * rather than throwing during render.

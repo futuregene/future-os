@@ -1,7 +1,7 @@
-import type { AgentMessage, SessionEntry } from "@future-os/thread-projection";
+import type { AgentMessage, ContentPage, SessionEntry } from "@future-os/thread-projection";
 import type { RemotePeerEvent } from "./remotePeerClient";
 import type { RemoteLiveReply } from "./remoteRunStreams";
-import { entriesToMessages, HISTORY_PAGE_USER_EXCHANGES, HISTORY_TAIL_CURSOR } from "@future-os/thread-projection";
+import { copyEventPayload, createContentEventLane, entriesToMessages, eventPayload, HISTORY_PAGE_USER_EXCHANGES, HISTORY_TAIL_CURSOR } from "@future-os/thread-projection";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { requestRemotePeer } from "./remotePeerClient";
@@ -448,7 +448,7 @@ export function useRemoteTimeline(
         sessionId: session,
         limit: HISTORY_PAGE_USER_EXCHANGES,
         ...(before !== null && before !== undefined ? { before } : {}),
-      }, session);
+      }, session, () => epoch === epochRef.current);
       if (epoch !== epochRef.current)
         return [];
       const parsed = normaliseEntries(page?.entries);
@@ -640,8 +640,8 @@ export function useRemoteTimeline(
       return;
     let dispose: (() => void) | undefined;
     let cancelled = false;
-    void listen<RemotePeerEvent>("remote-peer-event", (event) => {
-      const { desktopId: source, kind, payload } = event.payload;
+    const processEvent = (event: RemotePeerEvent) => {
+      const { desktopId: source, kind, payload } = event;
       // A link that came back: whatever the host pushed while it was gone is
       // gone for good (NATS Core is at-most-once), so the transcript is re-read
       // from the host rather than trusted to have stayed complete. This runs
@@ -692,7 +692,7 @@ export function useRemoteTimeline(
       const rawData = readRaw(payload, "data");
       const streams = streamsRef.current;
       if (runId && idx !== null && rawData !== null && streams) {
-        const verdict = streams.apply({
+        const verdict = streams.apply(copyEventPayload(payload as object, {
           data: rawData,
           eventId: readString(payload, "eventId") ?? `${runId}:${idx}`,
           idx,
@@ -702,7 +702,7 @@ export function useRemoteTimeline(
           ...(readNumber(payload, "coalescedCount") === null
             ? {}
             : { coalescedCount: readNumber(payload, "coalescedCount")! }),
-        }, { omitIndices: hostTrimsRef.current });
+        }), { omitIndices: hostTrimsRef.current });
         publishReplies();
         // A frame that lands above index zero of a run this client has no
         // beginning for is a run it joined in flight: the reply's first half is
@@ -735,6 +735,40 @@ export function useRemoteTimeline(
       setEntries(current => (current.some(existing => existing.id === entry.id)
         ? current
         : [...current, entry]));
+    };
+    const contentLane = createContentEventLane<{
+      type: string;
+      data: string;
+      runId?: string;
+      original: RemotePeerEvent;
+    }>({
+      isCurrent: () => !cancelled,
+      read: (event, contentRequest) => requestRemotePeer<ContentPage>(desktopId, {
+        type: "get_event_content_range",
+        runId: event.runId ?? "",
+        contentRequest,
+      }, sessionId, () => !cancelled),
+      deliver: event => processEvent({ ...event.original, payload: copyEventPayload(event, { ...(event.original.payload as Record<string, unknown>), data: event.data }) }),
+      recover: () => {
+        streamsRef.current?.restart();
+        prefixAskedRef.current.clear();
+        void readPage("history", sessionId, desktopId, true).then(() => reconcileActiveRun(desktopId, sessionId));
+      },
+    });
+    void listen<RemotePeerEvent>("remote-peer-event", (event) => {
+      const value = event.payload;
+      if (value.kind !== "event") {
+        processEvent(value);
+        return;
+      }
+      if (value.desktopId !== desktopId || readString(value.payload, "sessionId") !== sessionId)
+        return;
+      contentLane.enqueue({
+        type: readString(value.payload, "type") ?? "",
+        data: readRaw(value.payload, "data") ?? "",
+        runId: readString(value.payload, "runId") ?? "",
+        original: value,
+      });
     }).then((unlisten) => {
       if (cancelled)
         unlisten();
@@ -744,6 +778,7 @@ export function useRemoteTimeline(
     });
     return () => {
       cancelled = true;
+      contentLane.dispose();
       dispose?.();
     };
   }, [enabled, desktopId, sessionId, readPage, reconcileActiveRun, readRunLog, publishReplies]);
@@ -959,7 +994,7 @@ function readJson(value: unknown, key: string): unknown {
   if (typeof field !== "string")
     return field ?? null;
   try {
-    return JSON.parse(field);
+    return eventPayload(value, field);
   }
   catch {
     return null;

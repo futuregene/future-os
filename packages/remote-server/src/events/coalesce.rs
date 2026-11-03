@@ -82,6 +82,7 @@ struct StreamKey {
     tool: String,
     // Reasoning blocks can interleave inside one run, even at adjacent indices.
     block: String,
+    content: String,
 }
 
 #[derive(Default)]
@@ -113,6 +114,8 @@ struct Pending {
     key: StreamKey,
     /// Index of the newest source event; the next merge must be its successor.
     newest_idx: i64,
+    first_idx: i64,
+    content_end: Option<u64>,
     /// Sum of the source payload lengths, an upper bound of the merged payload.
     bytes: usize,
     /// The newest source event; its payload is the base for the merged body.
@@ -133,7 +136,8 @@ impl Pending {
     /// source index, and still inside both merged-event bounds.
     fn accepts(&self, fragment: &Fragment, event: &EventPublish) -> bool {
         self.key == fragment.key
-            && self.newest_idx.checked_add(1) == Some(fragment.idx)
+            && self.newest_idx.checked_add(1) == Some(fragment.first_idx)
+            && self.content_end == fragment.content_offset
             && self.merged + 1 < MAX_MERGED_FRAGMENTS
             && self.bytes + event.payload.len() <= MAX_MERGED_BYTES
     }
@@ -175,6 +179,8 @@ impl Coalescer {
                 self.pending = Some(Pending {
                     key: fragment.key,
                     newest_idx: fragment.idx,
+                    first_idx: fragment.first_idx,
+                    content_end: fragment.content_end,
                     bytes: event.payload.len(),
                     event,
                     text: fragment.text,
@@ -195,6 +201,7 @@ impl Coalescer {
                 // The newest source owns the identity: its index is the end of
                 // the range this event now covers.
                 pending.newest_idx = fragment.idx;
+                pending.content_end = fragment.content_end;
                 pending.event = event;
             }
         }
@@ -213,7 +220,11 @@ impl Coalescer {
         if let Some(payload) = merged_payload(
             &pending.event,
             &pending.text,
-            pending.merged + 1,
+            if pending.content_end.is_some() {
+                (pending.newest_idx - pending.first_idx + 1) as usize
+            } else {
+                pending.merged + 1
+            },
             pending.replaces,
         ) {
             pending.event.payload = payload;
@@ -227,6 +238,9 @@ struct Fragment {
     key: StreamKey,
     /// The source index this fragment occupies, for contiguity.
     idx: i64,
+    first_idx: i64,
+    content_offset: Option<u64>,
+    content_end: Option<u64>,
     text: String,
     /// `snapshot: true` means "replace the accumulated text".
     replaces: bool,
@@ -251,6 +265,19 @@ fn fragment_of(event: &EventPublish) -> Option<Fragment> {
         .or_else(|| data.get("tool_call_id"))
         .and_then(Value::as_str)
         .unwrap_or("");
+    let idx = body.get("idx").and_then(Value::as_i64).unwrap_or(-1);
+    let canonical = data.get("content_key").and_then(Value::as_str);
+    let content_offset = canonical.and_then(|_| data["content_offset"].as_u64());
+    let content_end = content_offset
+        .zip(data["content_bytes"].as_u64())
+        .and_then(|(offset, bytes)| offset.checked_add(bytes));
+    if canonical.is_some()
+        && (content_offset.is_none()
+            || content_end.is_none()
+            || data["content_bytes"].as_u64() != Some(text.len() as u64))
+    {
+        return None;
+    }
     Some(Fragment {
         key: StreamKey {
             session: text_of("sessionId"),
@@ -261,6 +288,7 @@ fn fragment_of(event: &EventPublish) -> Option<Fragment> {
                 .unwrap_or_default(),
             event_type: event_type.to_owned(),
             tool: tool.to_owned(),
+            content: canonical.unwrap_or("").to_owned(),
             block: data
                 .get("block_id")
                 .and_then(Value::as_str)
@@ -268,7 +296,14 @@ fn fragment_of(event: &EventPublish) -> Option<Fragment> {
                 .unwrap_or_default()
                 .to_owned(),
         },
-        idx: body.get("idx").and_then(Value::as_i64).unwrap_or(-1),
+        idx,
+        first_idx: if canonical.is_some() {
+            data["content_first_idx"].as_i64().unwrap_or(idx)
+        } else {
+            idx
+        },
+        content_offset,
+        content_end,
         text: text.to_owned(),
         replaces: data.get("snapshot").and_then(Value::as_bool) == Some(true),
     })
@@ -288,6 +323,19 @@ fn merged_payload(
     let raw = body.get("data")?.as_str()?.to_owned();
     let mut data: Value = serde_json::from_str(&raw).ok()?;
     let object = data.as_object_mut()?;
+    if object.contains_key("content_key") {
+        let end = object
+            .get("content_offset")?
+            .as_u64()?
+            .checked_add(object.get("content_bytes")?.as_u64()?)?;
+        let offset = end.checked_sub(text.len() as u64)?;
+        object.insert("content_offset".into(), Value::from(offset));
+        object.insert("content_bytes".into(), Value::from(text.len()));
+        object.insert(
+            "content_first_idx".into(),
+            Value::from(body.get("idx")?.as_i64()? - i64::try_from(covered).ok()? + 1),
+        );
+    }
     object.insert("text".into(), Value::String(text.to_owned()));
     if replaces {
         // A source in this group replaced the accumulated text, so the merged

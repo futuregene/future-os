@@ -32,12 +32,14 @@ describe("remote JSON encoding", () => {
   });
 
   test("rejects a gzip payload whose footer exceeds the JSON allocation cap", () => {
-    const encoded = new Uint8Array([0x1f, 0x8b, 1, 0, 16, 0]);
+    // Footer claims one byte past `MAX_REMOTE_JSON_BYTES` (8 MiB): refused from
+    // the footer alone, before anything is inflated.
+    const encoded = new Uint8Array([0x1f, 0x8b, 1, 0, 128, 0]);
     expect(() => decodeRemoteJson(encoded)).toThrow("remote_json_gzip_too_large");
   });
 
   test("a plain reply over the cap is refused before it is parsed or copied", () => {
-    const oversized = new Uint8Array(1024 * 1024 + 1).fill(0x20);
+    const oversized = new Uint8Array(8 * 1024 * 1024 + 1).fill(0x20);
     expect(() => decodeRemoteJson(oversized)).toThrow("remote_json_too_large");
     // A payload exactly at the cap is still legal.
     expect(decodeRemoteJson(new TextEncoder().encode('{"ok":true}'))).toEqual({ ok: true });

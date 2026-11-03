@@ -46,6 +46,12 @@ pub const RATE_LIMIT_BACKOFF_SECS: u64 = 45;
 /// progress, so it is bounded.
 pub const DEFAULT_MAX_INCOMPLETE_RETRIES: u32 = 3;
 
+/// Default bound for consecutive transport-failure turns on the same todo
+/// before `future goal run` stops. A transport failure no longer ends the
+/// worker (it is recorded as an infra turn and retried), but an agent that
+/// stays down would otherwise spend the whole turn budget on instant failures.
+pub const DEFAULT_MAX_TRANSPORT_RETRIES: u32 = 3;
+
 /// Whether a turn's error is a recoverable rate-limit (HTTP 429 / overloaded).
 /// These are NOT science failures — they are throttle events — so the loop
 /// must back off, not count them toward a repair budget or replan.
@@ -74,6 +80,12 @@ pub fn is_rate_limit_error(error: Option<&str>) -> bool {
 /// surfaces its own idle / disconnect verdicts as `[UPSTREAM_DISCONNECTED] …`.
 /// None of these are plan problems, so they must not count toward the repair
 /// budget or page the supervisor — same policy as HTTP 429.
+///
+/// The agent host dying counts here too: the run and its stream go with it, and
+/// the goal plane learns `h2 protocol error: error reading a body from
+/// connection`, `Agent restarted before completion`, or the resume refusal
+/// "interrupted by an agent restart". None of that says anything about the
+/// work being done.
 pub fn is_transport_error(error: Option<&str>) -> bool {
     // Lower-cased marker substrings. Deliberately conservative: science
     // failure messages (validator output, proof/derivation errors) never
@@ -90,6 +102,10 @@ pub fn is_transport_error(error: Option<&str>) -> bool {
         "broken pipe",
         "reset by peer",
         "event stream gap",
+        // The agent host itself went away (restart / crash): the run is gone
+        // with it. Same policy — the turn is infra, not a bad plan.
+        "agent restarted",
+        "interrupted by an agent restart",
     ];
     match error {
         None => false,
@@ -226,6 +242,24 @@ pub fn incomplete_streak(history: &[RunRecord], todo_id: &str) -> u32 {
         .count() as u32
 }
 
+/// Consecutive trailing transport-failure records for `todo_id` (the
+/// just-written record included). A transport failure is a turn that never
+/// reached `agent_end` because the agent host or the stream under it went away;
+/// it is infra, not science, so the worker retries instead of stopping — but a
+/// dead agent would otherwise burn the whole turn budget, so the loop bounds
+/// the streak. Replayed from the ledger, like the incomplete streak.
+pub fn transport_failure_streak(history: &[RunRecord], todo_id: &str) -> u32 {
+    history
+        .iter()
+        .rev()
+        .take_while(|r| {
+            r.todo_id == todo_id
+                && r.terminal_state == "error"
+                && is_transport_error(r.error.as_deref())
+        })
+        .count() as u32
+}
+
 /// The continue note injected into the next turn's envelope when the previous
 /// turn ended `incomplete`, or `None` when the retry bound is exhausted and
 /// the run must stop. A truncated stream is an infra event, not a science
@@ -241,6 +275,40 @@ pub fn incomplete_continue_note(streak: u32, max_retries: u32, todo_id: &str) ->
          you left off — do not restart work that already completed. \
          (incomplete attempt {streak}/{max_retries})"
     ))
+}
+
+/// The first line of a run's `.live.jsonl`: which worker runs which todo — and,
+/// since the dispatch stopped being silent about it, the model and thinking
+/// level that run actually uses.
+///
+/// `model` / `thinking_level` / `model_source` are written on EVERY run,
+/// `model_source = "default"` included (when the goal has no supervisor
+/// configuration to inherit). That is deliberate: a reader must be able to treat
+/// a *missing* field as "this log predates the field" and never confuse it with
+/// "no override happened". Adding keys is additive for the readers that already
+/// exist (`scan_worker_sessions`, the dashboard) — they read the keys they know
+/// and ignore the rest, so an older log still parses.
+pub(crate) fn run_header(
+    run_id: &str,
+    session_id: &str,
+    agent_id: Option<&str>,
+    todo_id: &str,
+    goal_id: &str,
+    worker_config: &crate::worker_config::WorkerConfig,
+) -> serde_json::Value {
+    serde_json::json!({
+        "type": "run_header",
+        "idx": 0,
+        "wall_ts": now_epoch(),
+        "run_id": run_id,
+        "session_id": session_id,
+        "agent_id": agent_id,
+        "todo_id": todo_id,
+        "goal_id": goal_id,
+        "model": worker_config.model,
+        "thinking_level": worker_config.thinking_level,
+        "model_source": worker_config.source.as_str(),
+    })
 }
 
 /// Execute one bounded turn for `todo` and return the ledger entry (spend).
@@ -259,6 +327,7 @@ pub async fn execute_turn(
     runs_dir: Option<std::path::PathBuf>,
     progress: Option<&TurnProgressTracker>,
     continue_note: Option<&str>,
+    worker_config: &crate::worker_config::WorkerConfig,
 ) -> Result<RunRecord> {
     if !boundary_injected {
         client
@@ -316,16 +385,14 @@ pub async fn execute_turn(
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let header = serde_json::json!({
-            "type": "run_header",
-            "idx": 0,
-            "wall_ts": now_epoch(),
-            "run_id": run_id,
-            "session_id": session_id,
-            "agent_id": agent_id,
-            "todo_id": todo.id,
-            "goal_id": goal.goal_id,
-        });
+        let header = run_header(
+            &run_id,
+            session_id,
+            agent_id,
+            &todo.id,
+            &goal.goal_id,
+            worker_config,
+        );
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -336,10 +403,37 @@ pub async fn execute_turn(
             let _ = writeln!(f, "{header}");
         }
     }
-    let summary: RunSummary = client
+    let summary: RunSummary = match client
         .run_turn(session_id, &run_id, live_path.as_deref(), progress)
-        .await?;
-    let after = client.session_totals(session_id).await?;
+        .await
+    {
+        Ok(summary) => summary,
+        // A transport-level ending — the agent host restarted, the h2 stream
+        // reset, the connection closed — is an infrastructure event, not a turn
+        // result: no `agent_end` ever arrived. It must still BECOME a record.
+        // Propagating the error skipped the writeback entirely, so the turn's
+        // spend, its failure reason and the attempt itself vanished from the
+        // ledger, and the worker's whole run loop ended on the spot (measured:
+        // 31 launches of one goal left no run record at all, one todo was
+        // relaunched 48 times). Recording it keeps the spend, lets
+        // `classify_failure` stamp it `InfraRecoverable` (no repair budget), and
+        // lets the loop bound consecutive transport failures instead of dying
+        // on the first one.
+        Err(error) => RunSummary {
+            run_id: run_id.clone(),
+            terminal_state: "error".to_string(),
+            error: Some(format!("{error:#}")),
+            tools: Vec::new(),
+            text: String::new(),
+            usage: None,
+            duration_ms: None,
+            truncation: None,
+        },
+    };
+    // The accounting probe can fail for the same reason the stream did (a dead
+    // or restarting agent). Losing the delta is acceptable; losing the turn is
+    // not, so fall back to "nothing spent" instead of propagating.
+    let after = client.session_totals(session_id).await.unwrap_or(before);
     let terminal_state = summary.terminal_state.clone();
 
     let mut record = RunRecord {
@@ -467,6 +561,54 @@ mod validator_tests {
             None
         );
         assert_eq!(validator_tautology("test -n \"$(ls outputs)\""), None);
+    }
+
+    #[test]
+    fn run_header_always_carries_the_worker_configuration() {
+        use super::run_header;
+        use crate::worker_config::{ConfigSource, WorkerConfig};
+        for source in [
+            ConfigSource::Supervisor,
+            ConfigSource::Override,
+            ConfigSource::Default,
+            ConfigSource::Session,
+        ] {
+            let config = WorkerConfig {
+                model: "future/m".to_string(),
+                thinking_level: "medium".to_string(),
+                source,
+            };
+            let header = run_header("run-1", "sess-1", Some("w1"), "todo-1", "g1", &config);
+            assert_eq!(header["model"], "future/m");
+            assert_eq!(header["thinking_level"], "medium");
+            // Present even for `default`: a missing field must keep meaning
+            // "legacy log", never "nothing was overridden".
+            assert_eq!(header["model_source"], source.as_str());
+            // Pre-existing keys are unchanged.
+            assert_eq!(header["type"], "run_header");
+            assert_eq!(header["idx"], 0);
+            assert_eq!(header["run_id"], "run-1");
+            assert_eq!(header["session_id"], "sess-1");
+            assert_eq!(header["agent_id"], "w1");
+            assert_eq!(header["todo_id"], "todo-1");
+            assert_eq!(header["goal_id"], "g1");
+        }
+    }
+
+    #[test]
+    fn a_legacy_run_header_line_still_parses() {
+        // Written before the configuration fields existed: parsing must not
+        // depend on them, and their absence stays distinguishable from an
+        // explicit `default`.
+        let legacy: serde_json::Value = serde_json::from_str(
+            "{\"type\":\"run_header\",\"idx\":0,\"wall_ts\":1,\"run_id\":\"r\",\
+             \"session_id\":\"s\",\"agent_id\":\"a\",\"todo_id\":\"t\",\"goal_id\":\"g\"}",
+        )
+        .expect("legacy header parses");
+        assert_eq!(legacy["type"], "run_header");
+        assert_eq!(legacy["agent_id"], "a");
+        assert!(legacy.get("model").is_none());
+        assert!(legacy.get("model_source").is_none());
     }
 
     #[test]

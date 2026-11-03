@@ -28,7 +28,7 @@ themselves.
 | `future account profile` / `balance` | The user's account and remaining credits |
 | `future skills list` | Installed vs. catalogued skills |
 | `future tools list` / `describe <name>` | Platform and browser tools the **CLI** can call (not the model's `read`/`write`/`edit`/`shell`, which are set per session) |
-| `future mcp list` | MCP servers configured in `~/.future/mcp.json` and the command each one runs |
+| `future mcp list` | MCP servers configured in `~/.future/mcp.json`, each with its transport and what it runs or points at |
 | `future session list --json` | Every recorded session, newest first (each with its `cwd`, model and title) |
 | `future session info <id> [--json]` | One session's model, cwd, message/tool counts, tokens and cost |
 | `future session status <id> [--json] [--metrics]` | One session's **live** state: effective permission and sandbox tier, context occupancy, loaded context files and skills, active/queued runs, pending approvals |
@@ -361,8 +361,12 @@ sub-session, which users may also call a subagent, a sub-agent or 子agent/子�
 
 ```sh
 future session new --parent <your-session-id> --name "<short task>" --json
-future run --no-wait --session <child> "<self-contained prompt>"
+future run --no-wait --session <child> \
+  --model <id> --thinking <level> "<self-contained prompt>"
 ```
+
+`--json` names the new id `sessionId` (the same field `session list` reports as
+`id`); reading it as `id` is the one mistake this step invites.
 
 Recording the parent on the create command is what makes the child a child: the
 lineage exists even if its first run never happens, it is drawn under this
@@ -373,6 +377,34 @@ delegate further. Everything in the section above — `--no-wait` and `wait`,
 `abort`/`delete` stop and remove one, and `future session approvals <child>`
 says whether a child is parked on an approval, which from the outside is
 indistinguishable from being slow.
+
+The model and thinking level do not come from the parent automatically: a child
+resolves them from the agent's default, because that is what every fresh session
+does. So hand the caller's own down on the dispatching `run` — `--model <id>
+--thinking <level>`, taken from the environment block the caller is running
+under — which is the recommendation when the child continues work the parent
+was doing. Both are recorded on the child, so its later runs keep them. Leaving
+them off is a legitimate choice when the default model is what the work wants:
+the child then starts on the agent's default model and `default` thinking
+level.
+
+Tool permission is the exception, and it is not the caller's to pass: the agent
+copies the parent's level onto the child at creation, so a parent running
+approval-gated (`workspace`) or with tools denied (`none`) cannot mint a child
+with more access than it has. A parent that is only on disk has no live level to
+copy — permission is runtime state, not part of the session record — so a child
+minted from one keeps the settings default.
+
+Collecting the answer is a pull: the child answers, and `future session
+wait`/`transcript` reads that answer back. A `wait` that ends without an answer
+— an empty answer, an interrupted run, an error — exits non-zero on purpose:
+that is the child failing, not a blank success to report upward. When the
+caller cannot wait that long — the agent's shell tool caps a single wait at 600
+seconds — it puts its own session id in the child's prompt and asks for a report
+back through `future run --session <parent>`, which is a real run in that
+conversation and spends credits. That is also the only case in which ending a
+turn with a child still running is the right call, because the child still knows
+where to report.
 
 One jump is the limit, and it is enforced rather than asked for: a session that
 already has a parent cannot become one (`new_session` and `set_parent_session`

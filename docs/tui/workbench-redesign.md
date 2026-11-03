@@ -1,5 +1,9 @@
 # FutureOS workbench TUI — ordered change list
 
+> **Historical plan (2026).** This is the ordered implementation plan from the
+> workbench build-out, retained for its reasoning and decisions. Completed items
+> are not status reports; use the [TUI guide](../guide/tui.md) for what ships.
+
 The engineering plan for the full-screen workbench: what is already true, what
 changes next, in which file, in what order, and how each piece is accepted. The
 frozen contract (module layout, type names, keymap, layout constants, demo CLI)
@@ -292,7 +296,7 @@ store to search is the session log the agent already exposes.
 
 ### P1-10 Steering vs queue vs interrupt
 
-`Enter` submits and queues behind a live run (`live.rs::submit`), `ctrl+x`
+`Enter` submits and queues behind a live run (`live.rs::submit`), `ctrl+c`
 aborts. dsh distinguishes steer (`Enter`), queue (`Tab`) and interrupt-and-send
 (`Ctrl+Enter`). Do this only after P1-4: the queue badge is what makes the
 distinction visible.

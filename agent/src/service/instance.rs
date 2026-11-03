@@ -43,7 +43,7 @@ impl InstanceFile {
         let metadata = match write_metadata(&self.path, future_home) {
             Ok(metadata) => Some(metadata),
             Err(error) => {
-                eprintln!("Future Agent: could not publish instance metadata: {error:#}");
+                tracing::warn!(event = "acquire", error = %error,"Future Agent: could not publish instance metadata: {error:#}");
                 None
             }
         };
@@ -67,7 +67,7 @@ impl Drop for InstanceMetadata {
     fn drop(&mut self) {
         if let Err(error) = std::fs::remove_file(&self.0) {
             if error.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("Future Agent: could not remove instance metadata: {error}");
+                tracing::warn!(event = "drop", error = %error,"Future Agent: could not remove instance metadata: {error}");
             }
         }
     }

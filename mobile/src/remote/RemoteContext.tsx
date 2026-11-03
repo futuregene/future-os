@@ -182,6 +182,12 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
     text: string,
     attachments?: MobileAttachment[],
     onUploadProgress?: (completedBytes: number, totalBytes: number) => void,
+    /**
+     * The command id the message already has, for a caller re-attempting a
+     * delivery (the send queue). Omitted by the composer, which is a new message
+     * every time it sends.
+     */
+    options?: { commandId?: string },
   ): Promise<void>;
   /** Request manual context compaction; resolves with the operation to correlate. */
   compactContext(): Promise<{ sessionId: string; operationId: string }>;
@@ -200,7 +206,7 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
    * when the call has no target; rejects on transport/route failure, which the
    * row treats as "leave the row as it was".
    */
-  resolveToolCallTarget(toolCallId: string, runId: string): Promise<string | null>;
+  resolveToolCallTarget(toolCallId: string, runId: string, fusion?: { stepId?: string; offset?: number }): Promise<string | null>;
   prepareAttachment(
     attachment: HistoryAttachment,
     variant?: "preview" | "original",
@@ -439,6 +445,8 @@ const noop = async () => undefined;
  * reading.
  */
 const NO_MANAGEMENT = {
+  getFusionSettings: noop as never,
+  updateFusionSettings: noop as never,
   getDesktopSettings: noop as never,
   updateDesktopSettings: noop as never,
   listSettingsModels: noop as never,

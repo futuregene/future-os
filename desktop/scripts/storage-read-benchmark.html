@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>Storage read responsiveness</title></head>
+  <body>
+    <h1>Storage read responsiveness</h1>
+    <p>Synthetic data only. Measures JSON decoding and event-loop response, not storage commits or Markdown rendering. Keep this window visible.</p>
+    <label>MiB <select id="size"><option>1</option><option>10</option></select></label>
+    <label>Shape <select id="shape"><option value="string">Large string</option><option value="objects">Many objects</option></select></label>
+    <button id="native">Native baseline</button>
+    <button id="cooperative">Cooperative decoder</button>
+    <label>Try typing while decoding <input id="typing" autocomplete="off"></label>
+    <pre id="result">Ready</pre>
+    <script type="module" src="./storage-read-benchmark.ts"></script>
+  </body>
+</html>

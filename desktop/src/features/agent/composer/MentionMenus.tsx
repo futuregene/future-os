@@ -1,7 +1,7 @@
 import type { WorkspaceFileResult } from "../../../integrations/storage/threadStore";
 import type { ContextToolOption, SkillMentionOption, SlashMenuItem } from "../MentionEditor";
 import type { SessionMentionOption } from "../sessionMention";
-import { Blocks, FileText, MessagesSquare, Minimize2 } from "lucide-react";
+import { Blocks, FileText, MessagesSquare, Minimize2, UserRoundGroup } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { cn } from "../../../lib/cn";
 import { hasMixedSlashResults } from "../slashMenu";
@@ -109,7 +109,9 @@ export function SlashMenu({
             type="button"
           >
             {item.kind === "context-tool"
-              ? <Minimize2 className="mt-0.5 size-4 shrink-0 text-ink-soft" />
+              ? (item.tool.id === "fusion"
+                  ? <UserRoundGroup className="mt-0.5 size-4 shrink-0 text-ink-soft" />
+                  : <Minimize2 className="mt-0.5 size-4 shrink-0 text-ink-soft" />)
               : <Blocks className="mt-0.5 size-4 shrink-0 text-ink-soft" />}
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm font-medium text-ink">

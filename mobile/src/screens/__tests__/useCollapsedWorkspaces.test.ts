@@ -2,6 +2,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import {
+  __resetCollapsedWorkspacesCacheForTests,
   parseCollapsedWorkspaces,
   rememberedCollapsedWorkspaces,
   useCollapsedWorkspaces,
@@ -46,6 +47,10 @@ async function settle(): Promise<void> {
 
 describe("collapsed workspaces", () => {
   beforeEach(() => {
+    // The hook keeps a process-wide cache of the folds so a remount can draw
+    // them before storage resolves; a test that mounts it would otherwise hand
+    // its folds to whichever test runs next.
+    __resetCollapsedWorkspacesCacheForTests();
     mockData.clear();
     jest.clearAllMocks();
   });

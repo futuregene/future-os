@@ -21,10 +21,11 @@
 | [Channels configuration](guide/channels-config.md) ([中文](guide/channels-config.zh-CN.md)) | Unified reference for `~/.future/channels/config.json` (agent / providers / Feishu / DingTalk blocks, defaults) |
 | [Channel providers](guide/channels-providers.md) ([中文](guide/channels-providers.zh-CN.md)) | Shared-bridge channels: capability matrix, per-channel config, maturity, diagnostics, proactive send |
 | [Channel provider contract](guide/channels-provider-contract.md) ([中文](guide/channels-provider-contract.zh-CN.md)) | Adding a channel: the provider traits, the inbound/outbound boundary, config, errors, tests and coverage |
+| [Rust diagnostics](guide/logging.md) ([中文](guide/logging.zh-CN.md)) | Component log files, distribution profiles, storage/history events and retention |
 | [Desktop Agent](guide/desktop-agent.md) ([zh](guide/desktop-agent.zh-CN.md)) | Embedded/external hosting, exit scope, CLI clients, development launchers, logs and update recovery |
 | [Host mode](guide/desktop-host.md) ([中文](guide/desktop-host.zh-CN.md)) | Foreground `future host` startup, platform login QR, pairing from `future remote devices add`, Ctrl+C, GUI-free server builds and troubleshooting |
 | [Self-hosted relay](guide/self-hosted-relay.md) ([中文](guide/self-hosted-relay.zh-CN.md)) | `future relay`: an account-free NATS relay for remote control, its threat model, coexistence with the official relay, and operator notes |
-| [Hostname resolution](guide/dns-resolution.md) ([中文](guide/dns-resolution.zh-CN.md)) | How the static musl CLI resolves names when `/etc/resolv.conf` is absent, the candidate paths, `FUTURE_DNS_SERVER` / `FUTURE_RESOLV_CONF`, the NSS limits, and the measured behaviour |
+| [Hostname resolution](guide/dns-resolution.md) ([中文](guide/dns-resolution.zh-CN.md)) | How a static musl build resolves names when `/etc/resolv.conf` is absent — which clients attach the resolver, the candidate paths, `FUTURE_DNS_SERVER` / `FUTURE_RESOLV_CONF`, the NSS limits, and what is not covered (the NATS relay) |
 | [Directory layout](guide/directory-layout.md) ([中文](guide/directory-layout.zh-CN.md)) | What lives where under `~/.future/` ((agent, channels, TUI, GUI, goal)) |
 | [Data backup and recovery](guide/data-backup.md) ([中文](guide/data-backup.zh-CN.md)) | `future data`: offline backup, verify, restore to the original home, resume/rollback after an interrupted restore, and the startup fence |
 | [Run-journal cost and reclamation](guide/run-journal.md) ([中文](guide/run-journal.zh-CN.md)) | What `run_events` costs in `agent.db`, measured read timings at 4.4 GiB vs 1.3 GiB, `future session journal --reclaim`, the one-off `VACUUM`, and what it never touches |
@@ -43,7 +44,10 @@ entry point; the [wiki](wiki/en/Home.md) is the user-facing app guide.
 | [Goal Control Plane](architecture/goal-control-plane.md) ([中文](architecture/goal-control-plane.zh-CN.md)) | `future-goal` — goals/todos/gates/monitors, should-run kernel, quota, event sourcing, delivery closure, multi-agent, supervisor/worker messaging, web dashboard |
 | [Long-Run Evidence Ledger](architecture/long-run-evidence-ledger.md) ([中文](architecture/long-run-evidence-ledger.zh-CN.md)) | Accountability record for long-range goal-plane goals — wall clock, spend, validation results, explicit boundaries per closed goal |
 | [Scheduled tasks](architecture/tasks.md) ([中文](architecture/tasks.zh-CN.md)) | `future-tasks` — reusable prompt + trigger (schedule or on demand), full-permission runs, deterministic `next_due` kernel, run ledger and prompt versions |
+| [Fusion development design](architecture/fusion.md) ([中文](architecture/fusion.zh-CN.md)) | Run-scoped `/fusion` discussion policy, read-only inner discussion, shared settings, durable review/debug records and a Desktop discussion-detail panel, with desktop/mobile/terminal support on Windows/macOS/Linux hosts |
 | [SQLite migration](architecture/sqlite-migration.md) ([中文](architecture/sqlite-migration.zh-CN.md)) | Agent/desktop SQLite storage layout and migration policy |
+| [Streaming storage development plan](architecture/stream-storage-development.md) ([中文](architecture/stream-storage-development.zh-CN.md)) | Reviewed 2026-10-27 revision: replace the unpublished layout, compact changes and rerun released migrations; implementation pending |
+| [Storage space baselines](architecture/stream-storage-space-baselines.md) ([中文](architecture/stream-storage-space-baselines.zh-CN.md)) | Preserved original survey, both previous synthetic samples, actual-layout audit and in-memory model |
 | [Desktop embedded Agent development plan](architecture/embedded-agent-development.md) ([中文](architecture/embedded-agent-development.zh-CN.md)) | Complete in-process Agent, service/host lifecycle, locks, shutdown, updates/installers, development tooling and phased acceptance |
 | [Automatic update transactions](architecture/automatic-updates.md) ([中文](architecture/automatic-updates.zh-CN.md)) | Shared state machine, prepared platform executors, crash recovery, startup confirmation and CI acceptance |
 | [Agent startup arbitration](architecture/agent-supervision.md) ([中文](architecture/agent-supervision.zh-CN.md)) | Who starts the Agent in one data root: instance-lock arbitration between `future agent` and `future host`, yielding instead of failing, bounded waits, a crash-loop breaker, and why the TUI only attaches (D11) |
@@ -74,7 +78,7 @@ test harness conventions.
 - [desktop/](internals/desktop/PRODUCT.md) — product semantics, data model (`ER.md`), colors, sandbox (macOS/Windows/Linux), connection & remote, embedded terminal, compaction (see `desktop/CLAUDE.md` for the document map)
 - [compaction/](internals/compaction/compaction.md) — runtime context compaction: the two strategies and their parameters, the production request shape, the developer map (`compaction-development.md`), retrieval interfaces, and the two experiments — closed book (`compaction-closed-book-experiment.md`) and open book (`compaction-open-book-experiment.md`)
 - [mobile/](internals/mobile/README.md) — mobile build/TestFlight, iOS platform parity, streaming-sync design and measurements, HarmonyOS compatibility (the dated audits and measurement reports are in `archives/verification/`)
-- [skill_reco/](internals/skill_reco/harness.md) — skill recommendation: the Jev recommender's [evaluation](internals/skill_reco/evaluation.md), its [harness](internals/skill_reco/harness.md) and the [integration plan](internals/skill_reco/integration-plan.md) (a historical design record)
+- [skill_reco/](internals/skill_reco/harness.md) — skill recommendation: the Jev recommender's [evaluation](internals/skill_reco/evaluation.md), its [harness](internals/skill_reco/harness.md), the [integration plan](internals/skill_reco/integration-plan.md) (a historical design record) and [scoring another decision model](internals/skill_reco/decider-comparison.md) on the same set
 - [agent/](internals/agent/README.md) — module map of the gRPC backend (`agent/`): the turn loop, tools, LLM layer, sessions, sandbox, and what to read before changing each one
 - [host](internals/host.md) — module map of `future-host`, the GUI-free shared backend (store, agent bridge, tasks, remote, identity)
 - [Desktop NATS bridge](internals/desktop-nats.md)
@@ -85,7 +89,7 @@ test harness conventions.
 
 | Doc | What it covers |
 |---|---|
-| [Workbench TUI spec](tui/workbench-spec.md) ([中文](tui/workbench-spec.zh-CN.md)) | The frozen contract behind the [terminal UI](guide/tui.md): layout constants, mouse and keyboard contract, type names and acceptance commands. The surface it describes is built; the agent adapter and P1 items are not |
+| [Workbench TUI spec](tui/workbench-spec.md) ([中文](tui/workbench-spec.zh-CN.md)) | The historical v1 design record behind the [terminal UI](guide/tui.md): layout decisions, mouse and keyboard contracts, type names and the original acceptance commands. It records how the surface was built; current behaviour lives in the guide and `tui/src/workbench/` |
 | [Interface text that never reached the table](tui/i18n-homeless-strings.md) ([中文](tui/i18n-homeless-strings.zh-CN.md)) | The guard that fails a build when the workbench draws chrome it did not take from `workbench/i18n.rs`: what it reads, what it cannot see, the English-only text it froze on the way in, and the port list for the branches that left before the table |
 
 ## Wiki (user-facing app guide)
@@ -138,6 +142,13 @@ to match today's code.
 - [testing/](archives/testing/) — superseded coverage-campaign task-record
   snapshots, moved out of `testing/` whole and English-only under the same
   non-user-document exception
+
+## Proposals (`proposals/`)
+
+- [superagent-borrowing.md](proposals/superagent-borrowing.md) ([中文](proposals/superagent-borrowing.zh-CN.md)) —
+  what to borrow from `deepseek-ai/dsh-superagent-prototype`, what not to,
+  and the cost, acceptance and rollback of each candidate. **Not started**:
+  every item waits on the owner's decision.
 
 ## Maintainers (`maintainers/`)
 

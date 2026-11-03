@@ -33,6 +33,15 @@ async fn foreign_session_metadata_does_not_overwrite_a_conversation_title() {
 #[cfg(feature = "gui")]
 #[tokio::test]
 async fn history_does_not_follow_a_reconnected_cache_to_another_database() {
+    // The wait below is the **escape hatch**, not this test's subject: it answers "did the
+    // spawned read reach the mock at all", and its expiry means a hang, not a slow host. Task
+    // scheduling under the instrumented suite is not this test's business, so the budget is
+    // armed — measured red here on 2026-11-01 at 5 s while the full instrumented lib suite ran
+    // (`Elapsed(())` at this line), green alone. Same family as
+    // `crate::test_support::wait_budget` documents.
+    let _waits = crate::test_support::wait_budget::WaitBudgetGuard::armed(
+        std::time::Duration::from_secs(120),
+    );
     let home = TestHome::new("history-instance-fence");
     let mock = mock_agent();
     let workspace = seed_workspace(home.path(), "source");
@@ -44,10 +53,13 @@ async fn history_does_not_follow_a_reconnected_cache_to_another_database() {
     let read = tokio::spawn(async move {
         crate::commands::get_session_entries_page(thread_id, None, 10, None).await
     });
-    tokio::time::timeout(std::time::Duration::from_secs(5), observed)
-        .await
-        .unwrap()
-        .unwrap();
+    tokio::time::timeout(
+        crate::test_support::wait_budget::wait_budget(std::time::Duration::from_secs(5)),
+        observed,
+    )
+    .await
+    .unwrap()
+    .unwrap();
     for _ in 0..3 {
         mock.push_data("get_agent_readiness",json!({
                 "version":crate::build_info::VERSION,"agentInstanceId":"replacement-agent",

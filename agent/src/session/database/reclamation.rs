@@ -29,8 +29,10 @@ pub(crate) fn reclaim_space_when_idle(connection: &mut Connection) -> Result<boo
     let started = std::time::Instant::now();
     connection.busy_timeout(Duration::ZERO)?;
     let result = (|| -> Result<bool> {
-        // Space reclamation never changes journals. Snapshot construction
-        // and raw deletion happen only in the run-completion transaction.
+        let content_done = crate::session::content::reclaim(connection)?;
+        connection.busy_timeout(Duration::ZERO)?;
+        // Explicit ownership retirement is separate from page reuse. Neither
+        // step compacts historical events or builds a run-completion snapshot.
         let free = |connection: &Connection| -> Result<i64> {
             Ok(connection.pragma_query_value(None, "freelist_count", |r| r.get(0))?)
         };
@@ -47,13 +49,10 @@ pub(crate) fn reclaim_space_when_idle(connection: &mut Connection) -> Result<boo
             }
             remaining = now;
         }
-        // Reuse/truncate the WAL only when no reader needs it; never force a
-        // long reader to end. Failure leaves the retry hint set.
-        let (blocked, _, _): (i64, i64, i64) =
-            connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-            })?;
-        Ok(remaining == 0 && blocked == 0)
+        // WAL checkpointing is independent, on its own PASSIVE worker. A
+        // TRUNCATE here could hold write locks across a large fsync even with
+        // busy_timeout(0), delaying a newly arriving foreground transaction.
+        Ok(content_done && remaining == 0)
     })();
     connection.busy_timeout(Duration::from_secs(5))?;
     result

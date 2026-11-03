@@ -11,10 +11,12 @@ import { PeerIconChip } from "../../remote/PeerIconChip";
 import { useRemoteControls } from "../../remote/RemoteContext";
 import type { DesktopSettings, RemoteBuiltinProvider, RemoteCustomProvider } from "../../remote/types";
 import { VERSION } from "../../version.generated";
+import { openPrivacyPolicy } from "../../config/legal";
 import { layout, radius, spacing } from "../../theme/tokens";
 import { createThemedStyles, useTheme } from "../../theme/ThemeContext";
 import { CustomProviderPage } from "./CustomProviderPage";
 import { FollowAccountPage } from "./FollowAccountPage";
+import { FusionSettingsPage } from "./FusionSettingsPage";
 import { ModelsSettingsPage } from "./ModelsSettingsPage";
 import { ProviderKeyPage } from "./ProviderKeyPage";
 import { ProvidersSettingsPage } from "./ProvidersSettingsPage";
@@ -35,7 +37,7 @@ export type SettingsScreenHandle = { goBack(): void };
  * `appearance` first shipped. A test holds the two translations to this list.
  */
 export const TITLED_SETTINGS_PAGES = [
-  "preferences", "models", "skills", "tasks", "language", "appearance", "providers", "followAccount",
+  "preferences", "models", "fusion", "skills", "tasks", "language", "appearance", "providers", "followAccount",
 ] as const;
 
 type TitledSettingsPage = (typeof TITLED_SETTINGS_PAGES)[number];
@@ -57,7 +59,7 @@ type SettingsRoute =
  * what is being configured and no longer which device: the levels below the
  * device home are the only place the two are separated.
  */
-const DEVICE_LEVELS = new Set(["preferences", "models", "skills", "tasks", "providers"]);
+const DEVICE_LEVELS = new Set(["preferences", "models", "fusion", "skills", "tasks", "providers"]);
 
 /** A refused write, as the key of what failed. Held rather than a boolean
  * because the two surfaces fail differently and say so on screen. */
@@ -112,7 +114,7 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
   const settingsStyles = useSettingsStyles();
   const styles = useStyles();
   const { colors } = useTheme();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const insets = useSafeAreaInsets();
   const remote = useRemoteControls();
   const [routes, setRoutes] = useState<SettingsRoute[]>([{ name: "home" }]);
@@ -254,6 +256,8 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
         return <ProviderKeyPage key={page.provider.id} provider={page.provider} onSaved={goBackFromEditor} />;
       case "providerForm":
         return <CustomProviderPage key={page.provider?.id ?? "new"} onDone={goBackFromEditor} provider={page.provider} />;
+      case "fusion":
+        return <FusionSettingsPage />;
       case "models":
         return enabled
           ? <ModelsSettingsPage settings={resource.data} disabled={disabled} onChange={patch => void changeSettings(patch)} />
@@ -353,7 +357,18 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
           ? <Text accessibilityRole="alert" style={settingsStyles.error}>{t("notifications.saveFailed")}</Text>
           : null}
       </SettingsSection>
-      <Text style={styles.version}>{t("common.version", { version: VERSION })}</Text>
+      <View style={styles.versionRow}>
+        <Text style={styles.version}>{t("common.version", { version: VERSION })}</Text>
+        <Text style={styles.version}>·</Text>
+        <Pressable
+          accessibilityRole="link"
+          accessibilityLabel={t("common.privacyPolicy")}
+          onPress={() => void openPrivacyPolicy(i18n.language)}
+          hitSlop={8}
+        >
+          <Text style={styles.privacyLink}>{t("common.privacyPolicy")}</Text>
+        </Pressable>
+      </View>
     </ScrollView>;
   }
 
@@ -386,6 +401,7 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
                   rows that need it are disabled. */}
               <SettingsLink disabled={!remote.desktopOnline} label={t("desktopSettings.preferences")} onPress={() => push({ name: "preferences" })} />
               <SettingsLink disabled={!enabled} label={t("desktopSettings.models")} onPress={() => push({ name: "models" })} />
+              <SettingsLink disabled={!remote.desktopOnline || !remote.capabilities.has("fusion_settings_v1")} label={t("desktopSettings.fusion")} description={!remote.capabilities.has("fusion_settings_v1") ? t("desktopSettings.updateDesktop") : undefined} onPress={() => push({ name: "fusion" })} />
               <SettingsLink disabled={!remote.desktopOnline || !providersSupported} label={t("desktopSettings.providers")} onPress={() => push({ name: "providers" })} />
               <SettingsLink disabled={!remote.desktopOnline || !skillsSupported} label={t("desktopSettings.skills")} onPress={() => push({ name: "skills" })} />
               <SettingsLink disabled={!remote.desktopOnline || !tasksSupported} label={t("desktopSettings.tasks")} onPress={() => push({ name: "tasks" })} />
@@ -480,7 +496,20 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   pressed: { backgroundColor: theme.colors.surfaceSubtle },
   deviceScope: { flexDirection: "row", alignItems: "flex-start", gap: spacing.md, marginHorizontal: layout.gutter, padding: spacing.md, borderRadius: radius.lg, backgroundColor: theme.colors.accentSoft },
   deviceName: { color: theme.colors.inkStrong, fontSize: theme.font(14), fontWeight: "600", marginBottom: spacing.xs },
-  version: { ...createSettingsStyles(theme).description, textAlign: "center" },
+  version: { ...createSettingsStyles(theme).description, textAlign: "center", paddingBottom: 0 },
+  versionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.xs,
+    paddingHorizontal: layout.gutter,
+  },
+  privacyLink: {
+    color: theme.colors.inkSoft,
+    fontSize: theme.font(12),
+    fontWeight: "600",
+    textDecorationLine: "underline",
+  },
   notice: { color: theme.colors.inkMuted, padding: layout.gutter, fontSize: theme.font(13) },
   standby: {
     marginHorizontal: layout.gutter,

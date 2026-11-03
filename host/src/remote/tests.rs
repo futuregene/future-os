@@ -71,9 +71,9 @@ mod contract_tests {
 #[cfg(test)]
 mod runtime_tests {
     use super::test_support::{
-        await_publish, await_publish_matching, declare_features, fake_state, init_store, jwt,
-        nats_connect, nats_connect_once, now_secs, pairing_creds, sign_in, unique, FakeNats,
-        HomeGuard, MockPlatform,
+        await_publish, await_publish_matching, declare_features, fake_state, incompressible,
+        init_store, jwt, nats_connect, nats_connect_once, now_secs, pairing_creds, sign_in, unique,
+        FakeNats, HomeGuard, MockPlatform,
     };
     use super::*;
     use serde_json::json;
@@ -1697,6 +1697,90 @@ mod runtime_tests {
         stop();
     }
 
+    /// A credential rotation rebuilds the transport underneath a client that
+    /// never reconnects. The declaration it made on `secure_ready` belongs to
+    /// *that connection*, so the rebuilt lanes must keep it: dropping it served
+    /// the phone the legacy lane for the rest of its connection, which for a
+    /// segmented conversation is not a downgrade but a refusal
+    /// (`client_upgrade_required` on every read and every prompt).
+    ///
+    /// Measured 2026-10-29: credentials live 15 minutes, so a phone broke within
+    /// 15 minutes of connecting and stayed broken until the app reconnected.
+    #[tokio::test]
+    async fn credential_refresh_keeps_the_connection_declaration() {
+        let _home = HomeGuard::new("remote-refresh-declaration");
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        let nats2 = FakeNats::start().await;
+        sign_in(platform.url());
+        // Expiring credential → refresh is due on the first tick.
+        let creds = test_creds("pair_declare", nats.url(), 30);
+        pairing::save_creds(&creds).unwrap();
+        platform.respond_refresh(nats2.url());
+
+        let state = fake_state(&nats, "pair_declare").await;
+        let confirmed = state.pairing_confirmed.clone();
+        install_state(state);
+        let handshake = commands::new_handshake_state(
+            creds.clone(),
+            confirmed.clone(),
+            "bridge_declare".to_string(),
+        );
+        // What a 684a4fd phone declares on `secure_ready`.
+        future_remote_server::commands::apply_declared_features(
+            &handshake,
+            "pair_declare",
+            &[
+                future_remote_protocol::SEGMENTED_CONTENT_FEATURE.to_string(),
+                future_remote_server::commands::REPLY_GZIP_FEATURE.to_string(),
+            ],
+        );
+        assert!(handshake.segmented_content.load(Ordering::Acquire));
+
+        let handle = spawn_credential_refresh(
+            "pair_declare".to_string(),
+            commands::new_reply_slots(),
+            confirmed,
+            handshake.clone(),
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let swapped = {
+                let guard = SUPERVISOR.state.lock().unwrap();
+                guard
+                    .as_ref()
+                    .map(|state| state.nats_url == nats2.url())
+                    .unwrap_or(false)
+            };
+            if swapped {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "generation never swapped"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        // The command path reads the handshake's flag, the event publisher the
+        // runtime's. The rebuilt generation must still answer both.
+        assert!(
+            handshake.segmented_content.load(Ordering::Acquire),
+            "a rebuilt transport withdrew the declaration the connection made"
+        );
+        assert!(handshake.gzip_replies.load(Ordering::Acquire));
+        assert!(
+            SUPERVISOR
+                .segmented_content("pair_declare")
+                .load(Ordering::Acquire),
+            "the event lane lost the declaration the connection made"
+        );
+
+        handle.abort();
+        stop();
+    }
+
     #[tokio::test]
     async fn credential_refresh_logs_credential_save_failures() {
         let _home = HomeGuard::new("remote-refresh-savefail");
@@ -2324,25 +2408,31 @@ mod runtime_tests {
         })
         .unwrap();
 
-        let mut tap = nats.tap();
         let handle = spawn_presence_heartbeat(client.clone(), pair.clone(), "bridge_hb".into());
 
-        let presence = await_publish_matching(
-            &mut tap,
-            &format!("p.{pair}.presence"),
-            Duration::from_secs(5),
-            |published| published.json()["online"] == json!(true),
-        )
-        .await;
+        // Every wait below ends on the server's own record of what it accepted,
+        // or on this publisher finishing — never on how quickly the test thread
+        // was scheduled. `state.sessions` is change-driven: the tap's ring can
+        // drop it while the test is descheduled, and it is not sent again.
+        let presence = nats
+            .await_publish(
+                &format!("p.{pair}.presence"),
+                |published| published.json()["online"] == json!(true),
+                || handle.is_finished(),
+                Duration::from_secs(5),
+            )
+            .await;
         assert_eq!(presence.json()["online"], json!(true));
         assert_eq!(presence.json()["pairId"], json!(pair));
 
-        let sessions = await_publish(
-            &mut tap,
-            &format!("p.{pair}.state.sessions"),
-            Duration::from_secs(5),
-        )
-        .await;
+        let sessions = nats
+            .await_publish(
+                &format!("p.{pair}.state.sessions"),
+                |_| true,
+                || handle.is_finished(),
+                Duration::from_secs(5),
+            )
+            .await;
         let rows = sessions.json()["sessions"].as_array().unwrap().clone();
         let row = rows
             .iter()
@@ -2351,12 +2441,14 @@ mod runtime_tests {
         assert_eq!(row["streaming"], json!(true));
         assert_eq!(row["title"], json!("Heartbeat thread"));
 
-        let workspaces = await_publish(
-            &mut tap,
-            &format!("p.{pair}.state.workspaces"),
-            Duration::from_secs(5),
-        )
-        .await;
+        let workspaces = nats
+            .await_publish(
+                &format!("p.{pair}.state.workspaces"),
+                |_| true,
+                || handle.is_finished(),
+                Duration::from_secs(5),
+            )
+            .await;
         let list = workspaces.json()["workspaces"].as_array().unwrap().clone();
         assert!(list.iter().any(|w| w["name"] == json!("HB Workspace")));
 
@@ -2366,25 +2458,29 @@ mod runtime_tests {
             title: "Renamed heartbeat".to_string(),
         })
         .unwrap();
-        let mut saw_rename = false;
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while !saw_rename {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            assert!(!remaining.is_zero(), "rename never republished");
-            let published = tokio::time::timeout(remaining, tap.recv())
-                .await
-                .expect("tap stays live")
-                .expect("tap value");
-            if published.subject == format!("p.{pair}.state.sessions")
-                && published.json()["sessions"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|row| row["title"] == json!("Renamed heartbeat"))
-            {
-                saw_rename = true;
-            }
-        }
+        // The rename is a *later* packet on a subject that already has one, so
+        // the wait is for the record to grow a match, not for the next arrival.
+        let renamed = nats
+            .await_publish(
+                &format!("p.{pair}.state.sessions"),
+                |published| {
+                    published.json()["sessions"].as_array().is_some_and(|rows| {
+                        rows.iter()
+                            .any(|row| row["title"] == json!("Renamed heartbeat"))
+                    })
+                },
+                || handle.is_finished(),
+                Duration::from_secs(5),
+            )
+            .await;
+        assert!(
+            renamed.json()["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["title"] == json!("Renamed heartbeat")),
+            "the tick's signature check republished the renamed row"
+        );
 
         // Publish failures (broker dead) are logged, not fatal.
         nats.kill();
@@ -2446,9 +2542,13 @@ mod runtime_tests {
         let activity_subject = format!("p.{pair}.state.activity");
 
         // The baseline is the whole list, as it has to be: it is what carries
-        // the row set, the titles and the streaming flags.
+        // the row set, the titles and the streaming flags. Measured on the
+        // *decoded* body — the wire carries it gzipped now (256 B floor), and
+        // what a client parses is the inflated document.
         let baseline = await_publish(&mut tap, &sessions_subject, Duration::from_secs(5)).await;
-        let baseline_bytes = baseline.payload.len();
+        let baseline_bytes = future_remote_protocol::json::plain_json_bytes(&baseline.payload)
+            .expect("a catalogue packet inflates")
+            .len();
         assert_eq!(
             baseline.json()["sessions"].as_array().map(Vec::len),
             Some(20)
@@ -2564,8 +2664,8 @@ mod runtime_tests {
         let creds = pairing_creds(&pair);
         let _shared = shared_runtime(&creds, true, false);
         // A declaration is authoritative and always written, so this is the
-        // state an older client leaves behind (`build_transport` clears it, and
-        // `secure_ready` never sets it).
+        // state an older client leaves behind after its `secure_ready` sent no
+        // capability at all.
         declare_features(&creds, &pair, &[]);
 
         let handle = spawn_presence_heartbeat(client.clone(), pair.clone(), "bridge_legacy".into());
@@ -3146,6 +3246,40 @@ mod runtime_tests {
         *SUPERVISOR.last_error_code.lock().unwrap() = None;
     }
 
+    /// A suspension outliving its test must not survive into the next fixture.
+    ///
+    /// `suspended` is process-global and `reset_after_shutdown_for_test` only
+    /// resets a server that was *closed*, so a suspend with no resume stayed set
+    /// for the whole process — and the next `start` took the
+    /// `!start_requested || suspended` arm, answering an empty status: no
+    /// bridge and no invitation. Measured in a full `--lib` run, where
+    /// `remote::control`'s paired-machine fixture failed with "the host shows no
+    /// invitation" because of this and nothing about its own pairing. The guard
+    /// is the release itself: `HomeGuard` drains the host role before it hands
+    /// the next test a HOME.
+    #[tokio::test]
+    async fn a_suspension_does_not_outlive_the_fixture_that_set_it() {
+        let home = HomeGuard::new("remote-suspend-leak");
+        SUPERVISOR.start_requested.store(true, Ordering::Release);
+        handle_system_suspend().await;
+        assert!(
+            SUPERVISOR.suspended.load(Ordering::Acquire),
+            "the leaked shape is a suspension the teardown has to clear"
+        );
+        drop(home);
+
+        let _next = HomeGuard::new("remote-suspend-leak-next");
+        assert!(
+            !SUPERVISOR.suspended.load(Ordering::Acquire),
+            "a new fixture must acquire a machine that is not suspended: a start against one \
+             answers an empty status, which reads as a host that minted no invitation"
+        );
+        assert!(
+            !SUPERVISOR.start_requested.load(Ordering::Acquire),
+            "and nothing may still be asking it to serve"
+        );
+    }
+
     #[tokio::test]
     async fn handle_system_resume_rotates_epoch_and_recovers() {
         let _home = HomeGuard::new("remote-resume");
@@ -3326,10 +3460,13 @@ mod runtime_tests {
         // The publisher serves the device in control; this fixture is it.
         SUPERVISOR.restore_active(Some(pair.clone()));
         // A thread title that alone exceeds the broker payload cap: presence
-        // publishes (small pair id), then the sessions snapshot fails.
+        // publishes (small pair id), then the sessions snapshot fails. The title
+        // is incompressible so the catalogue lane's compression cannot shrink it
+        // under the cap — the fixture is about a *failing* publish, not about
+        // size.
         crate::store::create_thread(crate::store::CreateThreadInput {
             mode: "chat".to_string(),
-            title: Some("n".repeat(9 * 1024 * 1024)),
+            title: Some(incompressible(9 * 1024 * 1024)),
             workspace_id: None,
             workspace_path: None,
             workspace_name: None,
@@ -3338,10 +3475,227 @@ mod runtime_tests {
         .unwrap();
 
         let handle = spawn_presence_heartbeat(client.clone(), pair, "bridge_hbs".into());
-        tokio::time::timeout(Duration::from_secs(3), handle)
+        // Ten seconds, not three: the payload now travels through the catalogue
+        // lane's compressor before the broker rejects it, so *producing* this
+        // failure costs more than it did. The assertion is unchanged — a failed
+        // publish must stop the heartbeat.
+        tokio::time::timeout(Duration::from_secs(10), handle)
             .await
             .expect("catalog publish failure must stop heartbeat")
             .expect("heartbeat did not panic");
+    }
+
+    /// Executable evidence for the size of a handshake confirmation.
+    ///
+    /// The confirmation used to carry the whole catalogue, so it grew with the
+    /// machine — which is how a big enough catalogue stopped fitting in a sealed
+    /// record. It must now be *independent* of the catalogue, and say so in a way
+    /// a reader can run: the same profile with ten conversations and with two
+    /// hundred produces byte-identical bodies, no session id appears anywhere in
+    /// it, and it stays inside a kilobyte.
+    #[tokio::test]
+    async fn the_handshake_confirmation_does_not_grow_with_the_catalogue() {
+        let _home = HomeGuard::new("remote-confirm-size");
+        init_store();
+        let pair = unique("pairconfirm");
+        SUPERVISOR.restore_active(Some(pair.clone()));
+
+        // Exactly what `secure::confirmation` seals: the handshake host's answer,
+        // serialized with the protocol's own envelope.
+        let confirmation = || {
+            let presence = SUPERVISOR.handshake_presence(&pair, "bridge_confirm");
+            let body =
+                future_remote_protocol::handshake::confirmation(&pair, "bridge_confirm", presence);
+            serde_json::to_vec(&body).expect("a confirmation body serializes")
+        };
+
+        for index in 0..10 {
+            crate::store::create_thread(crate::store::CreateThreadInput {
+                mode: "chat".to_string(),
+                title: Some(format!("Small catalogue {index}")),
+                workspace_id: None,
+                workspace_path: None,
+                workspace_name: None,
+                agent_session_id: Some(unique(&format!("sesssmall{index}"))),
+            })
+            .unwrap();
+        }
+        let small = confirmation();
+
+        let mut sessions = Vec::new();
+        for index in 0..200 {
+            let session = unique(&format!("sesslarge{index}"));
+            crate::store::create_thread(crate::store::CreateThreadInput {
+                mode: "chat".to_string(),
+                title: Some(format!("A conversation with a realistic title {index}")),
+                workspace_id: None,
+                workspace_path: None,
+                workspace_name: None,
+                agent_session_id: Some(session.clone()),
+            })
+            .unwrap();
+            sessions.push(session);
+        }
+        let large = confirmation();
+
+        println!(
+            "CONFIRMATION_SIZE ten_conversations={} bytes two_hundred_conversations={} bytes",
+            small.len(),
+            large.len()
+        );
+        assert_eq!(
+            small.len(),
+            large.len(),
+            "the confirmation must not grow with the catalogue"
+        );
+        assert!(
+            large.len() < 1024,
+            "a handshake confirmation is liveness and revisions, not a directory: {} bytes",
+            large.len()
+        );
+        let text = String::from_utf8_lossy(&large);
+        assert!(
+            !sessions
+                .iter()
+                .any(|session| text.contains(session.as_str())),
+            "no session row may travel in the confirmation: {text}"
+        );
+        assert!(
+            text.contains("catalogVersion"),
+            "the reader still needs the revision to sync towards: {text}"
+        );
+    }
+
+    /// The delta lane, end to end: a declared client gets one full packet and
+    /// then only what moved, and a deletion is always named.
+    ///
+    /// The two rules this test exists for — the first packet is full, and a row
+    /// is never deleted by omission — are the ones the lane cannot get wrong
+    /// without corrupting somebody's list.
+    #[tokio::test]
+    async fn catalogue_delta_lane_carries_only_what_changed() {
+        let _home = HomeGuard::new("remote-catalog-delta");
+        init_store();
+        let nats = FakeNats::start().await;
+        let client = nats_connect_once(&nats).await;
+        let pair = unique("pairdelta");
+        SUPERVISOR.restore_active(Some(pair.clone()));
+
+        let mut sessions = Vec::new();
+        for index in 0..3 {
+            let session = unique(&format!("sessdelta{index}"));
+            crate::store::create_thread(crate::store::CreateThreadInput {
+                mode: "chat".to_string(),
+                title: Some(format!("Delta thread {index}")),
+                workspace_id: None,
+                workspace_path: None,
+                workspace_name: None,
+                agent_session_id: Some(session.clone()),
+            })
+            .unwrap();
+            sessions.push(session);
+        }
+
+        let creds = pairing_creds(&pair);
+        let _shared = shared_runtime(&creds, true, false);
+        declare_features(
+            &creds,
+            &pair,
+            &[future_remote_protocol::CATALOG_DELTA_FEATURE],
+        );
+        // The declaration is what `future remote status` reports, and the only
+        // place the lane is visible at all: both lanes share their commands and
+        // are equally silent when nothing changes.
+        assert_eq!(
+            SUPERVISOR.catalogue_traffic(&pair).0,
+            1,
+            "declaring `catalog_delta_v1` must put this connection on the delta lane"
+        );
+
+        let handle = spawn_presence_heartbeat(client.clone(), pair.clone(), "bridge_delta".into());
+        let mut tap = nats.tap();
+        let subject = format!("p.{pair}.state.sessions");
+
+        // 1. The first packet is the whole catalogue, and it is a delta packet.
+        let baseline = await_publish(&mut tap, &subject, Duration::from_secs(5)).await;
+        let body = baseline.json();
+        let (lane, packets, bytes) = SUPERVISOR.catalogue_traffic(&pair);
+        assert_eq!(lane, 1);
+        assert!(packets >= 1, "a published packet is counted: {packets}");
+        assert!(bytes > 0, "and its sealed size with it: {bytes}");
+        assert_eq!(body["full"], json!(true));
+        let rows = body["rows"].as_array().expect("a delta packet names rows");
+        assert_eq!(rows.len(), 3, "the baseline carries every row");
+        assert!(
+            rows.iter().all(|row| row.get("sortKey").is_none()),
+            "the rank is derived from the row, not sent: a key per row cost more \
+             than the dictionary saved"
+        );
+        assert!(
+            rows.iter().all(|row| row.get("workspaceName").is_none()),
+            "the workspace name travels in the dictionary, not on every row"
+        );
+        assert!(body["workspaces"].is_array(), "the dictionary rides along");
+        assert_eq!(body["removed"], json!([]));
+
+        // 2. One conversation appears: the packet names that row and nothing else.
+        let born = unique("sessdeltaborn");
+        crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("Born later".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some(born.clone()),
+        })
+        .unwrap();
+        let added = await_publish(&mut tap, &subject, Duration::from_secs(5)).await;
+        let body = added.json();
+        assert_eq!(body["full"], json!(false));
+        let rows = body["rows"].as_array().expect("a delta packet names rows");
+        assert_eq!(rows.len(), 1, "only the new row travels: {body}");
+        assert_eq!(rows[0]["sessionId"], json!(born));
+        assert_eq!(body["removed"], json!([]));
+        // Creating a conversation also creates its workspace here, so the
+        // dictionary legitimately moved; what matters is that the packet stayed a
+        // delta — one row and a dictionary, not four rows and a full list.
+        assert!(
+            body["workspaces"].as_array().is_some_and(|entries| entries
+                .iter()
+                .any(|entry| entry["name"]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with("Born later")))),
+            "the dictionary names the workspace this row needs: {body}"
+        );
+        // The sharp proof, and the one size cannot give at this fixture's scale:
+        // no other conversation is named anywhere in the packet.
+        let text = String::from_utf8_lossy(&added.payload).to_string();
+        for other in &sessions {
+            assert!(
+                !text.contains(other.as_str()),
+                "the packet must not mention {other} at all: {text}"
+            );
+        }
+
+        // 3. One conversation goes away: the removal is named, never implied.
+        let doomed = sessions[0].clone();
+        let thread = crate::store::list_threads()
+            .unwrap()
+            .into_iter()
+            .find(|thread| thread.agent_session_id.as_deref() == Some(doomed.as_str()))
+            .expect("the doomed thread exists");
+        crate::store::delete_thread(&thread.id).unwrap();
+        let removed = await_publish(&mut tap, &subject, Duration::from_secs(5)).await;
+        let body = removed.json();
+        assert_eq!(body["full"], json!(false));
+        assert_eq!(body["removed"], json!([doomed]));
+        assert_eq!(
+            body["rows"].as_array().map(Vec::len),
+            Some(0),
+            "a deletion moves no rows: {body}"
+        );
+
+        handle.abort();
     }
 
     #[tokio::test]
@@ -3354,11 +3708,13 @@ mod runtime_tests {
         // The publisher serves the device in control; this fixture is it.
         SUPERVISOR.restore_active(Some(pair.clone()));
         // A workspace name that alone exceeds the broker payload cap: presence
-        // and the (empty) sessions snapshot publish, then workspaces fails.
+        // and the (empty) sessions snapshot publish, then workspaces fails. The
+        // name is incompressible, so the compression of the workspace lane cannot
+        // shrink it under the cap.
         let workspace_dir = std::env::temp_dir().join(unique("futureos-ws-hbw"));
         std::fs::create_dir_all(&workspace_dir).unwrap();
         crate::store::create_workspace(crate::store::CreateWorkspaceInput {
-            name: Some("n".repeat(9 * 1024 * 1024)),
+            name: Some(incompressible(9 * 1024 * 1024)),
             path: workspace_dir.to_string_lossy().to_string(),
             description: None,
             create_directory: None,
@@ -3366,7 +3722,9 @@ mod runtime_tests {
         .unwrap();
 
         let handle = spawn_presence_heartbeat(client.clone(), pair, "bridge_hbw".into());
-        tokio::time::timeout(Duration::from_secs(3), handle)
+        // See `heartbeat_sessions_publish_failure_exits` for the budget: the
+        // payload is compressed before the broker rejects it.
+        tokio::time::timeout(Duration::from_secs(10), handle)
             .await
             .expect("catalog publish failure must stop heartbeat")
             .expect("heartbeat did not panic");
@@ -5062,6 +5420,140 @@ mod slot_tests {
         assert!(!SUPERVISOR.in_control(&three.pair_id));
         for slot in [&controller, &two, &three] {
             SUPERVISOR.forget_device(&slot.pair_id);
+        }
+    }
+}
+
+#[cfg(test)]
+mod switch_and_invitation_tests {
+    use super::*;
+    use crate::test_support::agent::{break_home, mock_agent, restore_home, TestHome};
+
+    fn status(phase: RemotePhase, code: Option<&str>, expires_at: Option<i64>) -> RemoteStatus {
+        RemoteStatus {
+            devices: Vec::new(),
+            client: None,
+            phase,
+            reason: None,
+            recovery: None,
+            agent_available: true,
+            nats_url: String::new(),
+            credential_expires_at: None,
+            pair_id: "pair_AAAA".into(),
+            pairing_code: code.map(str::to_string),
+            pairing_code_expires_at: expires_at,
+            desktop_id: "desktop_test".into(),
+            desktop_public_key: "UTEST".into(),
+            web_url: None,
+            web_lan_url: None,
+            warning_code: None,
+            cleared_invitations: Vec::new(),
+        }
+    }
+
+    /// The switch's stored value is what the next launch reads back, and the
+    /// window and `future remote enable|disable` share it. A failure to store is
+    /// reported and swallowed: the bridge is already in the state the switch
+    /// shows, so an unwritten preference must not become a caller error.
+    #[test]
+    fn the_remote_switch_is_stored_and_survives_an_unwritable_home() {
+        let _home = TestHome::new("remote-switch");
+        let _mock = mock_agent();
+
+        remember_switch(true, "test");
+        assert!(
+            crate::store::get_app_settings()
+                .expect("settings")
+                .auto_connect_remote,
+            "the switch is read back by the next launch"
+        );
+        remember_switch(false, "test");
+        assert!(
+            !crate::store::get_app_settings()
+                .expect("settings")
+                .auto_connect_remote,
+            "turning it off is stored too"
+        );
+
+        // A home that cannot hold a database: the write fails and the call still
+        // returns, leaving the bridge in whatever state it already had.
+        let previous = break_home();
+        remember_switch(true, "test");
+        restore_home(previous);
+    }
+
+    /// Three phases read as "off" — stopped, failed, revoked — and everything
+    /// else is a machine still trying to serve, which is what the user asked for
+    /// by turning it on. A retrying start must not flip the switch off.
+    #[test]
+    fn only_a_stopped_failed_or_revoked_machine_reads_as_off() {
+        for off in [
+            RemotePhase::Stopped,
+            RemotePhase::Failed,
+            RemotePhase::Revoked,
+        ] {
+            assert!(!is_on(off), "{off:?} must read as off");
+        }
+        for on in [
+            RemotePhase::Enabled,
+            RemotePhase::Connecting,
+            RemotePhase::Ready,
+            RemotePhase::Reconnecting,
+            RemotePhase::Refreshing,
+        ] {
+            assert!(is_on(on), "{on:?} must read as on");
+        }
+    }
+
+    /// An invitation is offered only while it is still a live, complete
+    /// `futureos://remote/pair` v2/v3 link: a missing or past expiry, or any
+    /// other shape, is no invitation at all rather than a QR the phone rejects.
+    #[test]
+    fn an_invitation_is_offered_only_while_it_is_live_and_complete() {
+        let now = unix_timestamp() as i64;
+        let link = "futureos://remote/pair?v=2&code=a&desktopId=d&desktopKey=U&secret=S";
+        assert_eq!(
+            invitation_link(&status(RemotePhase::Ready, Some(link), Some(now + 60))).as_deref(),
+            Some(link)
+        );
+        assert_eq!(
+            invitation_link(&status(RemotePhase::Ready, None, Some(now + 60))),
+            None,
+            "no code is no invitation"
+        );
+        assert_eq!(
+            invitation_link(&status(RemotePhase::Ready, Some(link), None)),
+            None,
+            "an invitation with no expiry cannot be shown as live"
+        );
+        assert_eq!(
+            invitation_link(&status(RemotePhase::Ready, Some(link), Some(now - 1))),
+            None,
+            "an expired invitation is not scannable"
+        );
+        assert_eq!(
+            invitation_link(&status(RemotePhase::Ready, Some(link), Some(now))),
+            None,
+            "the expiry is inclusive: at the instant it passes, it is gone"
+        );
+
+        // Shapes the phone cannot verify: another scheme, host or path, a v1
+        // link, one with no version, a version that is not v2/v3, and a string
+        // that is not a URL at all.
+        for wrong in [
+            "https://remote/pair?v=2",
+            "futureos://other/pair?v=2",
+            "futureos://remote/join?v=2",
+            "futureos://remote/pair?v=1",
+            "futureos://remote/pair",
+            "futureos://remote/pair?v=4",
+            "not a url",
+        ] {
+            assert_eq!(
+                invitation_link(&status(RemotePhase::Ready, Some(wrong), Some(now + 60))),
+                None,
+                "{wrong} is not a v2/v3 invitation"
+            );
         }
     }
 }

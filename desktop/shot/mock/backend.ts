@@ -1,3 +1,6 @@
+import type { FusionSettingsPatch } from "@future-os/thread-projection";
+import type { MockEntry } from "./data";
+import { fusionProgressFixture } from "../../../scripts/screenshots/fixtures/fusion-progress";
 /**
  * A browser-side stand-in for the desktop's Tauri (Rust) backend.
  *
@@ -8,7 +11,8 @@
  * asking for a command that is missing here, the console prints
  * `[mock] UNHANDLED COMMAND <name>` — add a handler for it and re-capture.
  */
-import type { MockEntry } from "./data";
+import { applyFusionSettings, fusionSettingsModels, initialFusionSettings } from "../../../scripts/screenshots/fixtures/fusion-settings";
+import fusionFixture from "../../../scripts/screenshots/fixtures/fusion.json";
 import {
   appSettings,
   availableSkills,
@@ -19,6 +23,7 @@ import {
   HOME,
   installedSkills,
   models,
+  parserApproval,
   pendingApproval,
   providersView,
   refreshedSessionUsage,
@@ -28,6 +33,7 @@ import {
   remoteSessions,
   remoteToolArgs,
   remoteWorkspaces,
+  requestedThread,
   reviewFiles,
   runs,
   sessionUsage,
@@ -41,6 +47,7 @@ import {
   workspaceFiles,
   workspaces,
 } from "./data";
+import { emit } from "./event";
 import { replayPage, replayState, sessionEntries, streamRemoteRun } from "./remoteStream";
 
 // The console output doubles as the "what is missing" list while iterating on
@@ -48,6 +55,13 @@ import { replayPage, replayState, sessionEntries, streamRemoteRun } from "./remo
 // eslint-disable-next-line no-console
 const log = (...args: unknown[]) => console.log("[mock]", ...args);
 
+let fusionSettings = initialFusionSettings();
+const settingsModels = () => new URLSearchParams(window.location.search).has("fusionSettings") ? [...models, ...fusionSettingsModels.filter(model => !models.some(entry => entry.id === model.id && entry.provider === model.provider))] : models;
+function saveFusionSettings(patch: FusionSettingsPatch) {
+  fusionSettings = applyFusionSettings(fusionSettings, patch);
+  void emit("app_settings_changed");
+  return fusionSettings;
+}
 let settings: typeof appSettings = { ...appSettings };
 
 /**
@@ -141,6 +155,125 @@ function slow<T>(answer: T): T | Promise<T> {
 }
 const threadList = threads.map(thread => ({ ...thread }));
 const workspaceList = workspaces.map(workspace => ({ ...workspace }));
+/** Staged session-history pages, read back in 64 KiB chunks (see `begin_session_history_transfer`). */
+const historyTransfers = new Map<string, Uint8Array>();
+
+/**
+ * The run a capture starts from the local composer: the journal it writes, and
+ * the pushes that tell the window to read it.
+ *
+ * Every other local send in this harness ended the moment `agent_prompt`
+ * answered, so there was no fixture for "a reply is being written" — and the
+ * states a reader is in *while* one is (the composer's send-while-running
+ * control, the send queue it fills) only exist during such a run. This one writes
+ * frames on a timer and resolves when the last has landed, which is exactly what
+ * the backend's stream lane does for a paired host (see `remoteStream.ts`).
+ */
+interface ShotRunEvent {
+  id: string;
+  runId: string;
+  eventType: string;
+  payload: string;
+  sequence: number;
+  createdAt: number;
+}
+
+const shotRunEvents = new Map<string, ShotRunEvent[]>();
+let shotRunSeq = 0;
+let shotEventSeq = 0;
+let shotRuntimeRevision = 0;
+
+/** What this fixture's reply says, split into the frames a run writes. */
+function shotRunFrames(prompt: string): Array<[string, Record<string, unknown>]> {
+  return [
+    ["agent_start", { started_at_ms: Date.now() }],
+    ["thinking_start", {}],
+    ["thinking_delta", { text: "先看这一轮要回答什么：" }],
+    ["thinking_delta", { text: "把读者的问题读一遍，再决定动不动文件。" }],
+    ["thinking_end", {}],
+    ["text_chunk", { text: "好，我先把" }],
+    ["text_chunk", { text: `「${prompt.slice(0, 16)}」` }],
+    ["text_chunk", { text: "拆成两步：" }],
+    ["text_chunk", { text: "先核对一遍现有结果，" }],
+    ["text_chunk", { text: "再按你说的改。" }],
+  ];
+}
+
+function appendShotRunEvent(runId: string, eventType: string, data: Record<string, unknown>): void {
+  const list = shotRunEvents.get(runId) ?? [];
+  list.push({
+    id: `shot_event_${++shotEventSeq}`,
+    runId,
+    eventType,
+    payload: JSON.stringify(data),
+    sequence: list.length,
+    createdAt: Date.now(),
+  });
+  shotRunEvents.set(runId, list);
+}
+
+function publishShotRun(threadId: string, runId: string, status: string, resetProjection = false): void {
+  void emit("thread-runtime-updated", {
+    updates: [{ threadId, runId, revision: ++shotRuntimeRevision, status, resetProjection }],
+  });
+}
+
+/**
+ * Answer a local prompt as a streamed run: frames on a timer, then the reply.
+ *
+ * A stop ends it where it stands — the run's row is what says so (`abort_run`
+ * marks it cancelled), so each tick checks it before writing again and hands back
+ * the text produced so far. That is what the backend does for a real abort, and
+ * it is what makes the app paint a stopped reply rather than a finished one.
+ */
+async function streamShotRun(args: any): Promise<Record<string, unknown>> {
+  const request = args?.request ?? {};
+  const runId = String(request.runId ?? "");
+  const threadId = String(request.threadId ?? "");
+  const sessionId = String(request.sessionId ?? `sess_shot_${Date.now()}`);
+  if (!runId || !threadId)
+    return { content: "", complete: true, sessionId };
+
+  const cancelled = () =>
+    String((runs.find(candidate => candidate.id === runId) as { status?: string } | undefined)?.status ?? "") === "cancelled";
+  let written = "";
+  const frames = shotRunFrames(String(request.message ?? ""));
+  for (const [eventType, data] of frames) {
+    await new Promise(resolve => setTimeout(resolve, 380));
+    if (cancelled())
+      break;
+    appendShotRunEvent(runId, eventType, data);
+    if (eventType === "text_chunk")
+      written += String(data.text ?? "");
+    publishShotRun(threadId, runId, "running");
+  }
+  if (cancelled()) {
+    publishShotRun(threadId, runId, "cancelled");
+    return { content: written, complete: false, sessionId };
+  }
+  await new Promise(resolve => setTimeout(resolve, 380));
+  publishShotRun(threadId, runId, "running");
+  appendShotRunEvent(runId, "agent_end", {});
+  return { content: written, complete: true, sessionId };
+}
+let historyTransferSeq = 0;
+/** The chunk size `historyTransfer.ts` insists on. */
+const HISTORY_CHUNK_BYTES = 64 * 1024;
+
+/** Directory names a checkout ignores; the demo tree never lists them. */
+const IGNORED_TREE_NAMES = new Set([
+  ".git",
+  ".next",
+  ".nuxt",
+  ".turbo",
+  ".cache",
+  "build",
+  "coverage",
+  "dist",
+  "node_modules",
+  "out",
+  "target",
+]);
 /** How many times each thread's agent state has been read (see the handler). */
 const stateReads = new Map<string, number>();
 
@@ -151,6 +284,8 @@ export function patchSettings(patch: Record<string, unknown>) {
 }
 
 export function entriesForThread(threadId: string): MockEntry[] {
+  if (new URLSearchParams(window.location.search).has("fusion"))
+    return fusionFixture.entries as unknown as MockEntry[];
   // `?compactHistory=1` swaps in the history of a run that compacted mid-turn,
   // so a capture can assert the reply after the divider survives the durable
   // projection (the schemaVersion 3 path).
@@ -171,6 +306,7 @@ export function assetUrl(path: string): string {
   const known: Record<string, string> = {
     "effect-size.png": "/shot/assets/effect-size.png",
     "forest-plot.png": "/shot/assets/forest-plot.png",
+    "parser-throughput.png": "/shot/assets/parser-throughput.png",
   };
   return known[path.split("/").pop() ?? ""] ?? path;
 }
@@ -315,6 +451,34 @@ function peerList(): typeof remotePeers {
 const taskList = tasks.map(task => ({ ...task }));
 
 const handlers: Record<string, (args: any) => unknown> = {
+  get_fusion_settings: () => fusionSettings,
+  update_fusion_settings: args => saveFusionSettings(args.input as FusionSettingsPatch),
+  get_fusion: (args) => {
+    const discussion = fusionProgressFixture(new URLSearchParams(window.location.search).get("fusion"));
+    if (!args?.stepId) {
+      const delay = Number(new URLSearchParams(window.location.search).get("fusionMetadataDelay") ?? 0);
+      return delay > 0 ? new Promise(resolve => setTimeout(resolve, delay, discussion)) : discussion;
+    }
+    const step = discussion.steps?.find(s => s.id === args.stepId);
+    if (!step)
+      throw new Error("Unknown discussion step");
+    const reviewLong = new URLSearchParams(window.location.search).has("fusionReviewLong") && step.phase === "reviewing";
+    const publicOutput = reviewLong
+      ? JSON.stringify({ participant: step.participant, current_answer: `# 当前答案\n\n依据已有报告，先确认现有存储约束，再确定方案。\n\n${"复核后的依据说明。\n\n".repeat(1500)}评议报告全文已读取。`, responses: [], self_review: [{ original_quote: "建议 SQLite", decision: "revise", updated_position: "先确认现有存储约束", reason: "以已有证据为准" }], mapping_corrections: [], additions: [] })
+      : step.status === "completed" && step.phase === "issue_mapping"
+        ? JSON.stringify(discussion.events?.find(event => event.kind === "issues")?.data)
+        : step.status === "completed" && step.phase === "synthesizing" ? JSON.stringify(discussion.run?.result) : step.output;
+    const output = new URLSearchParams(window.location.search).has("fusionLong") ? `${publicOutput}\n${"分页公开发言。".repeat(2400)}\n全文读取完成。` : publicOutput;
+    const transcript = JSON.stringify([{ role: "user", content: [{ type: "text", text: step?.input }] }, { role: "assistant", content: [{ type: "text", text: output }] }]);
+    const bytes = new TextEncoder().encode(transcript);
+    const offset = Number(args.offset ?? 0);
+    let end = Math.min(offset + 32768, bytes.length);
+    while (end < bytes.length && (bytes[end]! & 0xC0) === 0x80)
+      end--;
+    const page = { ...step, transcript: new TextDecoder().decode(bytes.slice(offset, end)), next_offset: end, total_bytes: bytes.length };
+    const delay = Number(new URLSearchParams(window.location.search).get("fusionReadDelay") ?? 0);
+    return delay > 0 ? new Promise(resolve => setTimeout(resolve, delay, page)) : page;
+  },
   // ── App bootstrap ──────────────────────────────────────────────────────
   initialize_app_store: () => null,
   app_build_info: () => buildInfo,
@@ -392,7 +556,7 @@ const handlers: Record<string, (args: any) => unknown> = {
     }
     return threadList;
   },
-  get_recent_thread: () => threadList.find(thread => thread.id === "th_review") ?? null,
+  get_recent_thread: () => threadList.find(thread => thread.id === (requestedThread() ?? "th_review")) ?? null,
   mark_thread_opened: () => null,
   pin_thread: (args) => {
     const target = threadList.find(thread => thread.id === args?.input?.threadId);
@@ -439,7 +603,7 @@ const handlers: Record<string, (args: any) => unknown> = {
         ? refreshedSessionUsage
         : sessionUsage;
     return {
-      model: "future/deepseek-v4-pro",
+      model: target.model ?? "future/deepseek-v4-pro",
       thinkingLevel: "medium",
       sessionName: target.title,
       sessionId: target.agentSessionId ?? null,
@@ -457,6 +621,35 @@ const handlers: Record<string, (args: any) => unknown> = {
   attach_remote_stream: () => ({ runId: null }),
 
   // ── Session history ────────────────────────────────────────────────────
+  /**
+   * A history read, staged and then read back in chunks.
+   *
+   * This is the lane `integrations/storage/historyTransfer.ts` uses: the backend
+   * stages the page, the client reads 64 KiB slices of it and composes the JSON
+   * cooperatively. Only the inline command was answered here, so every
+   * conversation in every capture came out as `invalid_history_transfer` and a
+   * retry link — the transcript a screenshot exists to show never rendered at
+   * all. The bytes are UTF-8 JSON, which is what `decodeJsonBytes` expects.
+   */
+  begin_session_history_transfer: (args) => {
+    const entries = entriesForThread(args?.threadId ?? "");
+    const page = { entries, hasMore: false, nextOffset: entries.length };
+    const bytes = new TextEncoder().encode(JSON.stringify(page));
+    const id = `shot_transfer_${++historyTransferSeq}`;
+    historyTransfers.set(id, bytes);
+    return { id, totalBytes: bytes.length, chunkBytes: HISTORY_CHUNK_BYTES };
+  },
+  read_session_history_transfer: (args) => {
+    const bytes = historyTransfers.get(String(args?.transferId ?? ""));
+    if (!bytes)
+      return [];
+    const offset = Math.max(0, Number(args?.offset ?? 0));
+    return Array.from(bytes.subarray(offset, offset + HISTORY_CHUNK_BYTES));
+  },
+  release_session_history_transfer: (args) => {
+    historyTransfers.delete(String(args?.transferId ?? ""));
+    return null;
+  },
   get_session_entries_page: (args) => {
     const entries = entriesForThread(args?.threadId ?? "");
     return { entries, hasMore: false, nextOffset: entries.length };
@@ -474,30 +667,106 @@ const handlers: Record<string, (args: any) => unknown> = {
         return run ? { threadId, runId: run.id, status: run.status, endedAt: run.endedAt ?? null } : null;
       })
       .filter(Boolean),
-  create_run: args => ({
-    id: `run_${Date.now()}`,
-    threadId: args?.input?.threadId,
-    status: "running",
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  }),
-  update_run_status: () => null,
-  abort_run: () => null,
+  create_run: (args) => {
+    const run = {
+      id: `run_shot_${++shotRunSeq}`,
+      threadId: String(args?.input?.threadId ?? ""),
+      triggerMessageId: args?.input?.triggerMessageId ?? null,
+      status: "running",
+      modelProvider: args?.input?.modelProvider ?? "future",
+      modelId: args?.input?.modelId ?? "deepseek-v4-pro",
+      startedAt: Date.now(),
+      endedAt: null,
+      errorMessage: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    runs.unshift(run as never);
+    shotRunEvents.set(run.id, []);
+    publishShotRun(run.threadId, run.id, "running", true);
+    return run;
+  },
+  update_run_status: (args) => {
+    const run = runs.find(candidate => candidate.id === args?.input?.runId);
+    if (!run)
+      return null;
+    const status = String(args?.input?.status ?? run.status);
+    Object.assign(run as unknown as Record<string, unknown>, {
+      status,
+      errorMessage: args?.input?.errorMessage ?? null,
+      endedAt: status === "running" ? (run.endedAt ?? null) : Date.now(),
+      updatedAt: Date.now(),
+    });
+    publishShotRun(run.threadId, run.id, status);
+    return run;
+  },
+  /**
+   * A stop the backend honours on its own clock.
+   *
+   * The row turns `cancelled` a moment later, not inside the call: a real abort
+   * has to reach the running turn, be acked and settle the row, and the state a
+   * reader is in during that gap — reply still on screen, queue still waiting — is
+   * exactly what a capture of "interrupting" has to show.
+   */
+  abort_run: (args) => {
+    const run = runs.find(candidate => candidate.id === args?.runId);
+    if (!run)
+      return null;
+    setTimeout(() => {
+      Object.assign(run as unknown as Record<string, unknown>, { status: "cancelled", endedAt: Date.now(), updatedAt: Date.now() });
+      publishShotRun(run.threadId, run.id, "cancelled");
+    }, 900);
+    return run;
+  },
   archive_finished_runs: () => 2,
-  list_run_events: () => [],
-  list_run_events_since: () => [],
-  list_run_events_bulk: (args: any) => (args?.runIds ?? []).map((id: string) => [id, []]),
+  list_run_events: (args: any) => shotRunEvents.get(String(args?.runId ?? "")) ?? [],
+  list_run_events_since: (args: any) => {
+    const events = shotRunEvents.get(String(args?.runId ?? "")) ?? [];
+    const since = Number(args?.sinceSequence ?? -1);
+    return since < 0 ? events : events.filter(event => event.sequence > since);
+  },
+  list_run_events_bulk: (args: any) => (args?.runIds ?? []).map((id: string) => [id, shotRunEvents.get(id) ?? []]),
   list_tool_calls: args => toolCalls.filter(call => call.runId === args?.runId),
   list_tool_calls_bulk: (args: any) =>
-    (args?.runIds ?? []).map((id: string) => [id, toolCalls.filter(call => call.runId === id)]),
+    (args?.runIds ?? []).map((id: string) => [id, new URLSearchParams(window.location.search).has("fusion")
+      ? id === "run_1" ? [{ id: "fusion-tool", runId: id, name: "fusion", kind: "fusion", input: JSON.stringify(fusionFixture.discussion.run.input), status: "completed", createdAt: 1793260000000 }] : []
+      : toolCalls.filter(call => call.runId === id)]),
   list_tool_outputs: (args) => {
     const content = toolOutputs[args?.toolCallId];
     return content
       ? [{ id: `out_${args.toolCallId}`, toolCallId: args.toolCallId, kind: "text", content, createdAt: Date.now() }]
       : [];
   },
-  list_approval_requests: args => (args?.threadId === pendingApproval.threadId ? [pendingApproval] : []),
-  list_pending_approval_requests: () => [pendingApproval],
+  /**
+   * The cards waiting on the reader, per conversation.
+   *
+   * `th_review` has the fixture's original escalation (the forest plot); the
+   * parser session has its own — the push the two commits are waiting for (see
+   * `parserApproval`). Both are `sandbox_escalation`, so the card localizes its
+   * own title instead of showing the agent's English string.
+   */
+  list_approval_requests: (args) => {
+    if (new URLSearchParams(window.location.search).has("fusion"))
+      return [];
+    const threadId = args?.threadId;
+    const cards: unknown[] = [];
+    if (threadId === pendingApproval.threadId)
+      cards.push(pendingApproval);
+    if (threadId === parserApproval.threadId)
+      cards.push(parserApproval);
+    return cards;
+  },
+  /**
+   * A run's auto-approval assessments: none here, but the *handler* has to exist.
+   *
+   * The run inspector renders them unconditionally, so an unanswered command
+   * reaches it as `null` and `data.filter` throws — which unmounts the whole app.
+   * Opening a step row (or the panel) is how a capture reaches that screen, so a
+   * missing answer here cost every frame that clicked a tool row, not a detail.
+   */
+  list_approval_assessments: () => [],
+  list_pending_approval_requests: () => new URLSearchParams(window.location.search).has("fusion") ? [] : [pendingApproval],
+
   decide_approval_request: () => null,
   save_approval_rule: () => null,
   save_approval_rules: () => null,
@@ -557,7 +826,19 @@ const handlers: Record<string, (args: any) => unknown> = {
   retry_run_review: () => null,
 
   // ── Files & artifacts ──────────────────────────────────────────────────
-  list_directory: args => workspaceFiles[args?.path] ?? [],
+  /**
+   * A directory of the demo checkout.
+   *
+   * Build output is dropped here rather than kept out of `workspaceFiles` by
+   * hand: `node_modules`, `target`, `.git` and the rest are what a real tree
+   * hides behind its ignore list, and a product screenshot that lists them reads
+   * as an untidy workspace. Filtering in the handler means a fixture entry added
+   * later cannot leak one back into the panel.
+   */
+  list_directory: (args) => {
+    const entries = workspaceFiles[args?.path] ?? [];
+    return entries.filter(entry => !IGNORED_TREE_NAMES.has(entry.name));
+  },
   search_workspace_files: () => [],
   // `validUtf8` and `size` are part of the command's real contract: without
   // `validUtf8` the text preview classifies every file as binary and bails to
@@ -611,7 +892,16 @@ const handlers: Record<string, (args: any) => unknown> = {
   prepare_image_preview: args => ({ path: assetUrl(args?.path ?? ""), version: "1" }),
 
   // ── Agent: models, providers, account ──────────────────────────────────
-  list_agent_models: () => models,
+  list_agent_models: () => settingsModels(),
+  /**
+   * A local prompt, answered as a streamed run (see `streamShotRun`).
+   *
+   * The composer's send-while-running control and the send queue it fills exist
+   * only while this is in flight, so a capture of either needs a reply that
+   * takes seconds and writes itself out — the same lane a paired host's stream
+   * feeds (`remoteStream.ts`), on this machine's own conversation.
+   */
+  agent_prompt: async (args: any) => streamShotRun(args),
   sync_future_models: () => ({ synced: true, modelCount: models.length, revision: 42 }),
   list_agent_providers: () => providersView,
   upsert_custom_provider: () => providersView,
@@ -619,6 +909,12 @@ const handlers: Record<string, (args: any) => unknown> = {
   update_builtin_provider_key: () => providersView,
   set_builtin_provider_base_url: () => providersView,
   delete_custom_provider: () => providersView,
+  // Thinking-level detection: every level is accepted, so a screenshot scenario
+  // that clicks Detect shows a fully selected row.
+  probe_thinking_level: (args: { input?: { level?: string } }) => ({
+    level: args?.input?.level || "default",
+    ok: true,
+  }),
   set_default_model: () => null,
   get_future_auth_state: () => ({
     status: "authenticated",
@@ -769,6 +1065,12 @@ const handlers: Record<string, (args: any) => unknown> = {
       return { sessionId: String(command.sessionId ?? ""), threadId: "th_forest" };
     }
     switch (command.type) {
+      case "get_fusion":
+        return handlers.get_fusion!({ stepId: command.entryId, offset: command.offset });
+      case "get_fusion_settings":
+        return fusionSettings;
+      case "update_fusion_settings":
+        return saveFusionSettings(command.fusionSettings as FusionSettingsPatch);
       case "get_session_entries":
         return {
           entries: sessionEntries(String(command.sessionId)),
@@ -832,7 +1134,7 @@ const handlers: Record<string, (args: any) => unknown> = {
             .map(model => ({ ...model, thinkingLevel: model.reasoning === false ? "off" : "high" })),
         });
       case "list_settings_models":
-        return { models };
+        return { models: settingsModels() };
       case "get_desktop_settings":
         return { ...settings };
       case "update_desktop_settings": {

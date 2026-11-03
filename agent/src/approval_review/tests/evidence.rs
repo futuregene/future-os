@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn deferred_evidence_initialization_keeps_the_admitted_user_source_and_shared_gate() {
+    use crate::types::AgentMessage;
+    let (ctx, _) = context(true, false);
+    let ctx = ctx.with_current_source("accepted-user-entry");
+    let gate = crate::rpc::ApprovalGate::default().with_model_reviewer(ctx.clone());
+    let source = prepared(&ctx).state["trusted_context"]["user_request"]["source_id"].clone();
+    gate.initialize_review_history(&[AgentMessage::new_user("user", json!("earlier restriction"))]);
+    let input = prepared(&ctx);
+    assert_eq!(
+        input.state["trusted_context"]["user_request"]["source_id"],
+        source
+    );
+    assert_eq!(
+        input.state["trusted_context"]["user_history"][0]["text"],
+        "earlier restriction"
+    );
+    assert_eq!(
+        input.state["trusted_context"]["user_request"]["source_id"],
+        "accepted-user-entry"
+    );
+}
+
+#[test]
 fn the_gate_forwards_a_runs_tool_results_into_the_review_evidence() {
     use crate::types::{AgentMessage, ContentBlock};
 

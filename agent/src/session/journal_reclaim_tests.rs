@@ -6,7 +6,7 @@ use std::time::Duration;
 /// One settled run of `chunks` text events plus its terminal, and a raw journal
 /// to reclaim.
 fn settled_run(store: &SqliteStore, run: &str, chunks: usize) {
-    store.bind_events("s").unwrap();
+    store.bind_legacy_events("s").unwrap();
     let run_owned = run.to_owned();
     store
         .db
@@ -304,6 +304,25 @@ fn an_unretirable_run_does_not_keep_the_sweep_looping() {
     assert_eq!(second["hasMore"], false);
 }
 
+#[test]
+fn explicit_legacy_reclaim_never_rewrites_canonical_conversations() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+    store.reserve_segmented("s").unwrap();
+    store.replace("s",vec![json!({"id":"user","type":"user","role":"user","timestamp":"2026-10-26T00:00:00Z","content":"preserved🙂".repeat(20000)})]).unwrap();
+    let before = store.entries("s").unwrap();
+    let outcome = store
+        .compact_run_cancellable("s", "run", &AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(
+        outcome.skip.map(|reason| reason.as_str()),
+        Some("canonical_format")
+    );
+    assert_eq!(outcome.deleted, 0);
+    assert_eq!(store.entries("s").unwrap(), before);
+    assert_eq!(store.journal_stats().unwrap()["runSnapshots"]["rows"], 0);
+}
+
 /// The other half of that rule: the same truncated run, once its settle time is
 /// older than the grace window, is exactly what the sweep should reclaim. This
 /// is the 50-run / 762k-event (179 MiB) leftover the first measurement found.
@@ -345,7 +364,7 @@ fn the_sweep_folds_a_truncated_stream_once_its_run_has_settled() {
 fn the_startup_catch_up_is_bounded_and_resumable() {
     let dir = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
-    store.bind_events("s").unwrap();
+    store.bind_legacy_events("s").unwrap();
     for run in ["r0", "r1", "r2", "r3", "r4", "r5"] {
         settled_run(&store, run, 2);
     }

@@ -462,7 +462,9 @@ fn reclaim_orphan_subdirs(
                     )?;
                     removed += 1;
                 }
-                Err(error) => eprintln!("FutureOS: managed directory cleanup deferred: {error}"),
+                Err(error) => {
+                    tracing::warn!(event = "reclaim_orphan_subdirs", error = %error,"FutureOS: managed directory cleanup deferred: {error}")
+                }
             }
         }
         tx.commit()?;

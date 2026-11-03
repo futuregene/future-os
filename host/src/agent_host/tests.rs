@@ -78,6 +78,11 @@ fn a_panicked_start_can_recover_only_after_service_retirement() {
 }
 
 #[test]
+fn startup_failure_keeps_the_storage_step_and_underlying_database_error_in_the_log() {
+    run_case("storage-error-chain");
+}
+
+#[test]
 fn an_attached_host_does_not_stop_the_external_owner() {
     run_case("external");
 }
@@ -99,7 +104,7 @@ fn held_lock_rejects_startup_before_database_initialization() {
 }
 
 #[test]
-fn a_stalled_client_fails_stop_without_releasing_the_lock_or_restarting() {
+fn a_stalled_client_cannot_hold_the_stop_or_the_instance() {
     run_case("stalled");
 }
 
@@ -143,10 +148,50 @@ fn host_fixture() {
     let root = future_rpc::home::future_home();
     test_driver::install();
     let host = AgentHost::default();
+    if case == "storage-error-chain" {
+        crate::environment::prepare_process();
+        let logging = crate::environment::start_logging().unwrap();
+        let database = root.join("agent/agent.db");
+        std::fs::create_dir_all(database.parent().unwrap()).unwrap();
+        std::fs::write(&database, b"not sqlite").unwrap();
+        let error = host.start("auto".into()).unwrap_err().to_string();
+        for expected in [
+            "initialize Agent SQLite storage",
+            "open_database",
+            "not a database",
+        ] {
+            assert!(error.contains(expected), "missing {expected:?} in {error}");
+        }
+        drop(logging);
+        let log = std::fs::read_to_string(future_logging::Component::Agent.path(&root)).unwrap();
+        for expected in [
+            "session storage step: failed",
+            "open_database",
+            "not a database",
+        ] {
+            assert!(log.contains(expected), "missing {expected:?} in {log}");
+        }
+        assert_eq!(std::fs::read(database).unwrap(), b"not sqlite");
+        return;
+    }
     if case == "recover-panic" {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("panic-once"), "").unwrap();
-        assert!(host.start("auto".into()).is_err());
+        let error = host
+            .start("auto".into())
+            .expect_err("the injected worker panics");
+        assert!(
+            error
+                .to_string()
+                .contains("Embedded Agent worker panicked:"),
+            "{error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("injected startup panic after acquiring the service"),
+            "{error}"
+        );
         assert!(matches!(host.phase(), Phase::Failed(_)));
         host.recover("auto".into()).unwrap();
         assert_eq!(host.phase(), Phase::Ready);
@@ -642,6 +687,11 @@ fn host_fixture() {
         return;
     }
     if case == "stalled" {
+        // A connected client that never closes is exactly what the drain's last
+        // stage waits for. It may not outlast the stop: measured 2026-10-28, this
+        // state failed a stop at "RPC listener and streams", retained instance
+        // ownership for the life of the Desktop process, and left the machine
+        // with no Agent for ~40 minutes while every scheduled task failed.
         let client = rpc
             .block_on(future_rpc::connection::connect_verified(
                 "auto",
@@ -651,20 +701,44 @@ fn host_fixture() {
             ))
             .unwrap();
         let started = Instant::now();
-        let error = host.stop().unwrap_err().to_string();
-        assert!(error.contains("RPC listener"), "{error}");
-        assert!(started.elapsed() < STOP_TIMEOUT);
-        assert!(root.join("agent/agent-instance.json").exists());
-        assert!(host.start("auto".into()).is_err());
-        assert!(host.recover("auto".into()).is_err());
-        assert!(host.recovery_requires_restart());
+        host.stop().unwrap();
+        let stopped = started.elapsed();
+        println!("STALLED-STOP elapsed_ms={}", stopped.as_millis());
+        assert!(
+            stopped < STOP_TIMEOUT,
+            "the stop stays inside its own budget: {stopped:?}"
+        );
+        assert_eq!(host.phase(), Phase::Stopped);
+        assert!(
+            !host.recovery_requires_restart(),
+            "a client that stayed connected is not unfinished cleanup"
+        );
+        assert!(!root.join("agent/agent-instance.json").exists());
+        // The lock another process needs: a released instance is claimable.
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(root.join("agent/agent-instance.lock"))
             .unwrap();
-        assert!(fs2::FileExt::try_lock_exclusive(&file).is_err());
+        assert!(
+            fs2::FileExt::try_lock_exclusive(&file).is_ok(),
+            "the released instance lock must be claimable again"
+        );
+        fs2::FileExt::unlock(&file).unwrap();
+        // And this process brings a replacement up on the same home, with the
+        // old client still connected, without restarting anything.
+        let restart = Instant::now();
+        host.start("auto".into()).unwrap();
+        let ready_after = restart.elapsed();
+        println!("STALLED-RESTART elapsed_ms={}", ready_after.as_millis());
+        assert_eq!(host.phase(), Phase::Ready);
+        assert!(host.owns_agent());
+        assert!(
+            ready_after < Duration::from_secs(30),
+            "a replacement Agent starts promptly: {ready_after:?}"
+        );
         drop(client);
+        host.stop().unwrap();
         return;
     }
     // Let the client transport close before testing an ordinary complete drain.
@@ -689,4 +763,358 @@ fn host_fixture() {
         drop(rpc);
         host.stop().unwrap();
     }
+}
+
+/// A panic on another thread must not make the host unreadable.
+///
+/// The state is shared with the worker that starts and stops the Agent, so a
+/// panic under that lock — a failed write to a terminal, an assertion in the
+/// driver — poisons it. Every later read used to panic in turn, which is what
+/// turned one broken worker into a Desktop that could no longer read its own
+/// backend's phase (measured 2026-10-28: `agent_host.rs:93` panicked on the
+/// poisoned lock and the app showed "the backend service did not start" while
+/// the process kept running). A poisoned state is stale, not unusable: the
+/// values left behind still say what the worker last reached.
+#[test]
+fn a_poisoned_state_is_still_readable() {
+    let host = AgentHost::default();
+    let shared = Arc::clone(&host.0);
+    let poisoner = std::thread::spawn(move || {
+        let _guard = shared.state.lock().unwrap();
+        panic!("poison the host state from a worker thread");
+    });
+    assert!(poisoner.join().is_err());
+    assert!(host.0.state.is_poisoned());
+
+    // The reads a caller makes while deciding whether to recover.
+    assert_eq!(host.phase(), Phase::Idle);
+    assert!(!host.owns_agent());
+    assert!(!host.recovery_requires_restart());
+    assert_eq!(host.yield_reason(), None);
+
+    // The write paths and the Condvar wait have to survive it too: recovery
+    // stops the host first, and that is where the poison was hit in the field.
+    // A worker that never closes out its stop must report a timeout, not panic.
+    {
+        let mut state = host.0.state();
+        state.phase = Phase::Starting;
+        state.finished = false;
+    }
+    let outcome = host.stop_until(Instant::now() + Duration::from_millis(200));
+    assert!(outcome.is_err(), "an unfinished worker must time out");
+    assert!(matches!(host.phase(), Phase::Failed(_)));
+}
+
+/// The host's read-only decisions, driven from the state a worker leaves behind.
+///
+/// Each of these is a function of `State` alone: a fresh `AgentHost` with that
+/// state written into it is the same entry point a caller hits after a real
+/// worker ran, without needing an Agent, a socket or a runtime. The guards are
+/// what decide whether the app starts, repairs or gives the Agent up, so each
+/// answer is asserted on both sides of its condition.
+#[test]
+fn the_host_reads_its_own_progress_and_only_detaches_what_it_merely_attached_to() {
+    let host = AgentHost::default();
+
+    // Progress is a plain read of the worker's own report, before any listener
+    // exists: a host that has not started is still "preparing", not absent.
+    assert_eq!(
+        host.startup_progress().stage,
+        future_agent::service::StartupStage::Preparing
+    );
+
+    // Idle refuses: there is nothing attached to give up.
+    assert!(!host.detach_attached());
+    assert_eq!(host.phase(), Phase::Idle);
+
+    // Ready but owned refuses too: an owned service holds the instance lock
+    // until a full stop, and pretending otherwise would let a second process
+    // start one against the same storage.
+    {
+        let mut state = host.0.state();
+        state.phase = Phase::Ready;
+        state.owned = true;
+        state.yield_reason = Some("Future Agent is held by another process".into());
+    }
+    assert!(!host.detach_attached(), "an owned Agent is not detached");
+    assert_eq!(
+        host.phase(),
+        Phase::Ready,
+        "a refused detach changes nothing"
+    );
+
+    // Ready and not owned is the one case it accepts, and the yield reason from
+    // the attempt that attached belongs to that attempt, not to this stop.
+    {
+        let mut state = host.0.state();
+        state.owned = false;
+    }
+    assert!(host.detach_attached());
+    assert_eq!(host.phase(), Phase::Stopped);
+    assert_eq!(host.yield_reason(), None);
+}
+
+/// The idle-update reservation is the last step before a stop: it closes idle
+/// admission on an Agent this host owns, and it says "nothing to reserve" for
+/// one it only attached to. An owned Agent without a control handle yet is
+/// still starting, and that is an error rather than a silent "reserved".
+#[test]
+fn the_idle_update_reservation_needs_an_owned_agent_with_a_handle() {
+    let host = AgentHost::default();
+    assert!(
+        !host
+            .reserve_idle_update()
+            .expect("an external Agent reserves"),
+        "an Agent this host does not own is never reserved"
+    );
+
+    {
+        let mut state = host.0.state();
+        state.owned = true;
+        state.phase = Phase::Starting;
+        state.handle = None;
+    }
+    let error = host
+        .reserve_idle_update()
+        .expect_err("an owned Agent with no handle is still starting");
+    assert_eq!(error.to_string(), "Agent is still starting");
+}
+
+/// `recover` repairs only what it can: a concurrent recovery owns the decision,
+/// a start or stop in flight is left alone, an unfinished external worker is
+/// left for a later pass, and an owned service that never finished retiring is
+/// the one state that needs a Desktop restart instead of a repair.
+#[test]
+fn recovery_declines_every_state_it_must_not_repair() {
+    let host = AgentHost::default();
+
+    // A second recovery running right now: not an error, and not this caller's
+    // decision to make.
+    let running = host.0.recovery.lock().unwrap();
+    assert!(host.recover("auto".into()).is_ok());
+    drop(running);
+
+    // A start or stop in flight is already doing the work.
+    for phase in [Phase::Starting, Phase::Stopping] {
+        {
+            let mut state = host.0.state();
+            state.phase.clone_from(&phase);
+        }
+        assert!(
+            host.recover("auto".into()).is_ok(),
+            "{phase:?} is left to finish"
+        );
+        assert_eq!(host.phase(), phase, "a declined recovery changes nothing");
+    }
+
+    // An external worker that has not finished is left for a later pass.
+    {
+        let mut state = host.0.state();
+        state.phase = Phase::Idle;
+        state.owned = false;
+        state.finished = false;
+    }
+    assert!(host.recover("auto".into()).is_ok());
+
+    // The cleanup never completed: repairing here would start a second service
+    // over the first one's storage, so the answer is a restart.
+    {
+        let mut state = host.0.state();
+        state.finished = true;
+        state.recovery_requires_restart = true;
+    }
+    assert!(host.recovery_requires_restart());
+    let error = host
+        .recover("auto".into())
+        .expect_err("an unfinished retirement needs a restart");
+    assert_eq!(
+        error.to_string(),
+        "Agent cleanup is incomplete; restart Desktop"
+    );
+}
+
+/// A host that has not been stopped cannot start again: the worker that owns
+/// the service scope is still there, and a second start would race it for the
+/// instance lock. Both non-startable phases answer with the same sentence,
+/// because the caller's move is the same either way — stop, then start.
+#[test]
+fn a_host_that_has_not_stopped_refuses_to_start_again() {
+    for phase in [Phase::Failed("worker panicked".into()), Phase::Stopping] {
+        let host = AgentHost::default();
+        {
+            let mut state = host.0.state();
+            state.phase.clone_from(&phase);
+        }
+        let error = host.start("auto".into()).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Agent host cannot start before a successful stop; restart Desktop",
+            "{phase:?} must not start a second worker"
+        );
+        assert_eq!(host.phase(), phase, "a refused start changes nothing");
+    }
+}
+
+/// The entry drives `select` from a probe runtime of its own; a lib test has to
+/// give it one.
+fn probe_block_on<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("probe runtime")
+        .block_on(future)
+}
+
+/// `FUTURE_DESKTOP_AGENT_MODE` is the operator's word on what this launch may
+/// do. A value the entry does not understand is refused before any probe, so a
+/// typo neither starts an embedded service nor silently attaches to whatever
+/// happened to answer.
+///
+/// The mode arrives through [`StartModeGuard`] rather than `set_var`: the
+/// process environment is shared with every test libtest runs beside this one,
+/// and nothing on this path resolves `HOME` or opens a socket, so the test needs
+/// neither the fixture lock nor a home of its own.
+#[test]
+fn a_start_mode_the_entry_does_not_understand_is_refused_before_any_probe() {
+    let host = AgentHost::default();
+    {
+        let mut state = host.0.state();
+        state.phase = Phase::Starting;
+    }
+    let _mode = StartModeGuard::set("embedded");
+    let error = probe_block_on(host.select("auto")).map(|_| ()).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "FUTURE_DESKTOP_AGENT_MODE must be auto, external or bind"
+    );
+    assert_eq!(
+        host.phase(),
+        Phase::Starting,
+        "a refused mode never reaches a start"
+    );
+}
+
+/// A local-start permission is what the probe hands back when nothing answered,
+/// and the entry honours it only while the host is still the one starting:
+/// attach-only mode refuses it outright, and a host that stopped while the probe
+/// ran leaves the service to whoever owns it now.
+#[test]
+fn a_local_start_permission_is_honoured_only_while_the_host_is_still_starting() {
+    let _home = crate::remote::test_support::HomeGuard::new("agent-host-local-start");
+
+    let permitted = |host: &AgentHost| {
+        let selected =
+            probe_block_on(host.select("auto")).expect("a probe with nothing listening answers");
+        assert!(
+            matches!(
+                selected.result,
+                Ok(Some(future_rpc::connection::AgentSelection::LocalStart(_)))
+            ),
+            "the fixture must reach the permit, not an external Agent"
+        );
+        selected
+    };
+
+    // Attach-only: the probe found no Agent and offered exactly the local start
+    // this mode exists to refuse.
+    let host = AgentHost::default();
+    {
+        let mut state = host.0.state();
+        state.phase = Phase::Starting;
+    }
+    let mut selected = permitted(&host);
+    selected.mode = "external".into();
+    let error = host.run_selected(selected, |_| Ok(())).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "External Agent is unavailable; attach-only mode never starts an embedded service"
+    );
+    assert_eq!(
+        host.phase(),
+        Phase::Starting,
+        "a refused start changes nothing"
+    );
+
+    // The same permission after the host stopped: the start it was granted for
+    // is gone, so the entry declines instead of taking the service anyway.
+    let host = AgentHost::default();
+    {
+        let mut state = host.0.state();
+        state.phase = Phase::Starting;
+    }
+    let selected = permitted(&host);
+    {
+        let mut state = host.0.state();
+        state.phase = Phase::Stopped;
+        state.finished = true;
+    }
+    host.run_selected(selected, |_| Ok(()))
+        .expect("an overtaken start is not an error");
+    assert_eq!(host.phase(), Phase::Stopped, "and it does not take it");
+    assert!(!host.owns_agent());
+}
+
+/// Serving mode is about one address, so it has to name it. Falling back to the
+/// IPC endpoint is exactly what `bind` exists to avoid, so an absent address is
+/// refused before any probe rather than silently served the old way.
+#[test]
+fn a_serving_launch_without_an_address_is_refused_before_any_probe() {
+    let host = AgentHost::default();
+    {
+        let mut state = host.0.state();
+        state.phase = Phase::Starting;
+    }
+    let _mode = StartModeGuard::set("bind");
+    for configured in ["auto", "", "   "] {
+        let error = probe_block_on(host.select(configured))
+            .map(|_| ())
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("needs an explicit loopback address"),
+            "{configured:?}: {error}"
+        );
+    }
+    assert_eq!(
+        host.phase(),
+        Phase::Starting,
+        "a refused launch never reaches a start"
+    );
+}
+
+/// A serving launch probes its own address and carries it into the start, so the
+/// embedded Agent is configured with the endpoint the permission was issued for
+/// instead of the IPC endpoint this mode exists to avoid.
+#[test]
+fn a_serving_launch_carries_its_address_into_the_start() {
+    let _home = crate::remote::test_support::HomeGuard::new("agent-host-serve-endpoint");
+    let host = AgentHost::default();
+    {
+        let mut state = host.0.state();
+        state.phase = Phase::Starting;
+    }
+    let _mode = StartModeGuard::set("bind");
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let address = format!("127.0.0.1:{port}");
+
+    let selected =
+        probe_block_on(host.select(&address)).expect("a probe with nothing listening answers");
+    assert_eq!(
+        selected.served_addr.as_deref(),
+        Some(address.as_str()),
+        "the start serves the address the probe was made against"
+    );
+    let Ok(Some(future_rpc::connection::AgentSelection::LocalStart(permit))) = selected.result
+    else {
+        panic!("nothing answers there, so this must be a local-start permit");
+    };
+    assert!(
+        permit.serves_tcp("127.0.0.1", port),
+        "the permission covers the address the start will bind"
+    );
 }

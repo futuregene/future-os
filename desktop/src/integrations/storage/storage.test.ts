@@ -19,6 +19,7 @@ import {
   openPath,
   prepareImagePreviewUrl,
   readNativeClipboardFilePaths,
+  readNativeClipboardImage,
   readTextFilePreview,
   resolvePreviewLinkPath,
   savePastedFile,
@@ -168,6 +169,8 @@ describe("storage invoke wrappers", () => {
     expect(invokeMock).toHaveBeenLastCalledWith("inspect_attachment", { path: "/a" });
     await readNativeClipboardFilePaths();
     expect(invokeMock).toHaveBeenLastCalledWith("read_native_clipboard_file_paths", undefined);
+    await readNativeClipboardImage();
+    expect(invokeMock).toHaveBeenLastCalledWith("read_native_clipboard_image", undefined);
     await validateImageAttachment("/i");
     expect(invokeMock).toHaveBeenLastCalledWith("validate_image_attachment", { path: "/i" });
     invokeMock.mockResolvedValueOnce({ path: "/f", version: "10-8" });

@@ -4,7 +4,7 @@ import en from "../../i18n/locales/en/shortcuts.json";
 import zhSettings from "../../i18n/locales/zh/settings.json";
 import zh from "../../i18n/locales/zh/shortcuts.json";
 import { bindingProblem, parseBinding, serializeBinding } from "../../lib/keybinding";
-import { CATEGORIES, COMMANDS, defaultBindingTexts, everyDefaultBindingText, FIXED_KEYS, isCommandId, scopeOf, sectionCommands, SECTIONS } from "./catalog";
+import { CATEGORIES, COMMANDS, defaultBinding, defaultBindingLabel, defaultBindings, defaultBindingTexts, everyDefaultBindingText, FIXED_KEYS, isCommandId, scopeOf, sectionCommands, SECTIONS } from "./catalog";
 
 /** Resolve a dotted key (`commands.chat.new`) against a locale bundle. */
 function lookup(bundle: unknown, path: string): unknown {
@@ -179,5 +179,24 @@ describe("command catalog", () => {
   it("writes defaults in the notation the parser reads", () => {
     for (const spec of COMMANDS)
       expect(parseBinding(spec.defaultBinding), spec.id).not.toBeNull();
+  });
+  it("parses a command's default and labels it for the platform", () => {
+    // `defaultBinding` / `defaultBindingLabel` are the table's own accessors: the
+    // settings page and the cheat sheet read a command's default through them, so a
+    // broken default has to surface here rather than as a missing label in the UI.
+    const spec = COMMANDS.find(spec => spec.id === "chat.new")!;
+    // The accessor agrees with the text it was written from — `n` and `KeyN` are the
+    // same physical key, which is exactly what canonicalising is for.
+    expect(serializeBinding(defaultBinding(spec))).toBe(serializeBinding(parseBinding(spec.defaultBinding)!));
+    expect(defaultBindingLabel(spec, false)).toBe("Ctrl+N");
+    expect(defaultBindingLabel(spec, true)).toBe("⌘N");
+  });
+
+  it("refuses to build a binding from a default the parser cannot read", () => {
+    // The defaults are literals in this file; a null here means the table itself was
+    // broken by an edit, which must fail loudly instead of producing a command with
+    // no key.
+    const broken = { ...COMMANDS[0]!, defaultBinding: "not a binding" } as (typeof COMMANDS)[number];
+    expect(() => defaultBindings(broken)).toThrow(/Invalid default binding for chat\.new: not a binding/);
   });
 });

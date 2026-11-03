@@ -14,6 +14,19 @@ pub const DEFAULT_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 pub const DEFAULT_GLOBAL_QUEUE_CAPACITY: usize = 4_096;
 pub const DEFAULT_GLOBAL_QUEUE_BYTES: usize = 512 * 1024 * 1024;
 
+/// How old a queued prompt may get and still start by itself.
+///
+/// A queue entry is a message written against a run that was in flight. While
+/// that run is finishing, running it is what the writer asked for. An hour later
+/// it is not: the conversation has moved on, the reader is elsewhere, and the
+/// Agent spending their credits on it is the expensive kind of being wrong. Past
+/// this age a queued prompt is parked as `stale` — still listed, still theirs,
+/// started only when they say so.
+///
+/// One definition, read by the dequeue path; clients never keep their own copy
+/// of the rule.
+pub const QUEUED_RUN_STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(600);
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScheduledRunRequest {
     pub session_id: String,
@@ -101,11 +114,47 @@ struct RequestIdentity {
     run_sequence: u64,
 }
 
+/// Why a queued prompt is waiting for a person instead of running itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParkReason {
+    /// It waited past `stale_after`.
+    TooOld,
+    /// Its `queuedAt` could not be read, so its age is unknowable.
+    UnknownAge,
+}
+
+impl ParkReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TooOld => "stale",
+            Self::UnknownAge => "unknown_age",
+        }
+    }
+}
+
+/// One prompt parked by this pass, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParkedRun {
+    pub run_id: String,
+    pub reason: ParkReason,
+}
+
+/// A queued prompt set aside until someone releases it, with the reason it was.
+#[derive(Debug, Clone)]
+struct HeldRun {
+    request: ScheduledRunRequest,
+    reason: ParkReason,
+}
+
 #[derive(Debug)]
 struct QueueState {
     next_sequence: u64,
     active: Option<(ScheduledRunRequest, u64)>,
     queued: VecDeque<ScheduledRunRequest>,
+    /// Queued prompts too old to start on their own (or with no readable age).
+    /// They keep their place in the order the reader sees, and are moved back
+    /// into `queued` only when someone asks for them.
+    held: Vec<HeldRun>,
     queued_bytes: usize,
     requests: HashMap<String, RequestIdentity>,
     run_ids: HashSet<String>,
@@ -208,6 +257,7 @@ pub struct InMemoryRunQueue {
     max_request_bytes: usize,
     global_budget: std::sync::Arc<GlobalQueueBudget>,
     recent_ack_limit: usize,
+    stale_after: std::time::Duration,
     state: Mutex<QueueState>,
 }
 
@@ -259,15 +309,45 @@ impl InMemoryRunQueue {
             max_request_bytes,
             global_budget,
             recent_ack_limit,
+            stale_after: QUEUED_RUN_STALE_AFTER,
             state: Mutex::new(QueueState {
                 next_sequence: next_sequence.max(1),
                 active: None,
                 queued: VecDeque::new(),
+                held: Vec::new(),
                 queued_bytes: 0,
                 requests: HashMap::new(),
                 run_ids: HashSet::new(),
                 terminal_acks: VecDeque::new(),
             }),
+        }
+    }
+
+    /// Shorten the staleness window for a test.
+    #[cfg(test)]
+    pub fn set_stale_after(&mut self, stale_after: std::time::Duration) {
+        self.stale_after = stale_after;
+    }
+
+    /// Age one queued prompt, so a test can reach the staleness line without
+    /// waiting for it.
+    #[cfg(test)]
+    pub fn test_backdate(&self, run_id: &str, age: std::time::Duration) {
+        let stamped =
+            (chrono::Utc::now() - chrono::Duration::from_std(age).expect("sane age")).to_rfc3339();
+        let mut state = self.state.lock();
+        if let Some(run) = state.queued.iter_mut().find(|run| run.run_id == run_id) {
+            run.accepted_at = stamped;
+        }
+    }
+
+    /// Stamp one queued prompt with whatever a test needs — including a value
+    /// that cannot be parsed at all.
+    #[cfg(test)]
+    pub fn test_stamp_queued_at(&self, run_id: &str, stamped: &str) {
+        let mut state = self.state.lock();
+        if let Some(run) = state.queued.iter_mut().find(|run| run.run_id == run_id) {
+            run.accepted_at = stamped.to_string();
         }
     }
 
@@ -575,13 +655,23 @@ impl InMemoryRunQueue {
         reason: QueuedCancellationReason,
     ) -> Result<ScheduledRunRequest, RunQueueError> {
         let mut state = self.state.lock();
-        let Some(index) = state.queued.iter().position(|run| run.run_id == run_id) else {
-            return Err(RunQueueError::RunNotQueued(run_id.to_string()));
+        // A parked prompt is still the reader's to take back, so deleting from
+        // the panel has to reach it too.
+        let held = state
+            .held
+            .iter()
+            .position(|held| held.request.run_id == run_id);
+        let cancelled = if let Some(index) = held {
+            state.held.remove(index).request
+        } else {
+            let Some(index) = state.queued.iter().position(|run| run.run_id == run_id) else {
+                return Err(RunQueueError::RunNotQueued(run_id.to_string()));
+            };
+            state
+                .queued
+                .remove(index)
+                .expect("queued run index checked")
         };
-        let cancelled = state
-            .queued
-            .remove(index)
-            .expect("queued run index checked");
         state.queued_bytes = state.queued_bytes.saturating_sub(cancelled.payload_bytes);
         self.global_budget.release(cancelled.payload_bytes);
         remember_terminal(
@@ -596,7 +686,9 @@ impl InMemoryRunQueue {
 
     pub fn cancel_all_queued(&self, reason: QueuedCancellationReason) -> Vec<ScheduledRunRequest> {
         let mut state = self.state.lock();
-        let cancelled: Vec<_> = state.queued.drain(..).collect();
+        let mut cancelled: Vec<_> = state.queued.drain(..).collect();
+        cancelled.extend(state.held.drain(..).map(|held| held.request));
+        cancelled.sort_by_key(|request| request.run_sequence);
         state.queued_bytes = 0;
         for request in &cancelled {
             self.global_budget.release(request.payload_bytes);
@@ -613,8 +705,116 @@ impl InMemoryRunQueue {
         cancelled
     }
 
+    /// Park every queued prompt that has waited longer than `stale_after`.
+    ///
+    /// Called at the turn boundary, right before something is picked to run:
+    /// that is the only moment a queued prompt would start by itself, so it is
+    /// the only moment the rule has to be applied. Parked prompts keep their
+    /// place in the order the reader sees and their quota, but the dequeue path
+    /// no longer sees them — they move back only through [`Self::release_held`].
+    ///
+    /// A prompt whose timestamp cannot be read is parked too, as `UnknownAge`.
+    /// The two mistakes do not cost the same: parking wrongly costs the reader
+    /// one press, while letting an unknown-age prompt through spends their money
+    /// on a run written days ago. "I cannot tell how old this is" is therefore a
+    /// reason to ask, not a reason to proceed — and it is loud, because an
+    /// unreadable timestamp is a data problem somebody has to look at.
+    ///
+    /// Returns what was parked now, so the caller can tell clients the queue
+    /// changed shape.
+    pub fn park_stale(&self) -> Vec<ParkedRun> {
+        let now = chrono::Utc::now();
+        let mut state = self.state.lock();
+        let mut parked = Vec::new();
+        let mut kept = VecDeque::with_capacity(state.queued.len());
+        let mut held = Vec::new();
+        for request in state.queued.drain(..) {
+            let reason = match chrono::DateTime::parse_from_rfc3339(&request.accepted_at) {
+                Ok(at) => {
+                    let age = now.signed_duration_since(at.with_timezone(&chrono::Utc));
+                    (age.num_seconds() >= self.stale_after.as_secs() as i64)
+                        .then_some(ParkReason::TooOld)
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        event = "queue_unparsable_queued_at",
+                        session_id = %self.session_id,
+                        run_id = %request.run_id,
+                        accepted_at = %request.accepted_at,
+                        %error,
+                        "queued prompt parked: its queuedAt could not be read"
+                    );
+                    Some(ParkReason::UnknownAge)
+                }
+            };
+            match reason {
+                Some(reason) => {
+                    parked.push(ParkedRun {
+                        run_id: request.run_id.clone(),
+                        reason,
+                    });
+                    held.push(HeldRun { request, reason });
+                }
+                None => kept.push_back(request),
+            }
+        }
+        state.queued = kept;
+        state.held.extend(held);
+        state.held.sort_by_key(|held| held.request.run_sequence);
+        parked
+    }
+
+    /// Whether this run is parked waiting for the reader's word.
+    pub fn is_held(&self, run_id: &str) -> bool {
+        self.state
+            .lock()
+            .held
+            .iter()
+            .any(|held| held.request.run_id == run_id)
+    }
+
+    /// Why this run is parked, if it is.
+    pub fn held_reason(&self, run_id: &str) -> Option<ParkReason> {
+        self.state
+            .lock()
+            .held
+            .iter()
+            .find(|held| held.request.run_id == run_id)
+            .map(|held| held.reason)
+    }
+
+    /// Put a parked prompt back in line, in its original order, so the next
+    /// boundary may start it.
+    pub fn release_held(&self, run_id: &str) -> Result<ScheduledRunRequest, RunQueueError> {
+        let mut state = self.state.lock();
+        let index = state
+            .held
+            .iter()
+            .position(|held| held.request.run_id == run_id)
+            .ok_or_else(|| RunQueueError::RunNotQueued(run_id.to_string()))?;
+        let mut request = state.held.remove(index).request;
+        // The reader just answered the question the parking asked, so the clock
+        // that asked it starts again: without this the boundary would park it
+        // straight back, and "send it now" would be a button that does nothing.
+        request.accepted_at = chrono::Utc::now().to_rfc3339();
+        let at = state
+            .queued
+            .iter()
+            .position(|queued| queued.run_sequence > request.run_sequence)
+            .unwrap_or(state.queued.len());
+        state.queued.insert(at, request.clone());
+        Ok(request)
+    }
+
     pub fn active(&self) -> Option<(ScheduledRunRequest, u64)> {
         self.state.lock().active.clone()
+    }
+
+    pub fn has_pending(&self) -> bool {
+        let state = self.state.lock();
+        // Parked prompts are not pending work: they wait for a person, so a
+        // boundary that sees only parkable rows has nothing to start.
+        state.active.is_some() || !state.queued.is_empty()
     }
 
     pub fn release_active_payload(&self, run_id: &str) {
@@ -629,8 +829,22 @@ impl InMemoryRunQueue {
         }
     }
 
+    /// The prompt that would start now, if any: the dequeue front, which is
+    /// never a parked one.
+    pub fn next_startable(&self) -> Option<ScheduledRunRequest> {
+        self.state.lock().queued.front().cloned()
+    }
+
+    /// Everything waiting, in the order the reader queued it: parked prompts
+    /// keep their slot rather than being pushed to the end, so the list a client
+    /// shows does not reorder itself when one crosses the staleness line.
     pub fn queued(&self) -> Vec<ScheduledRunRequest> {
-        self.state.lock().queued.iter().cloned().collect()
+        let state = self.state.lock();
+        let mut all: Vec<ScheduledRunRequest> =
+            state.held.iter().map(|held| held.request.clone()).collect();
+        all.extend(state.queued.iter().cloned());
+        all.sort_by_key(|request| request.run_sequence);
+        all
     }
 
     /// Test-only seam: push a copy of the ACTIVE request back onto the
@@ -763,6 +977,218 @@ mod tests {
 
     fn queue() -> InMemoryRunQueue {
         InMemoryRunQueue::new("session-a", 1)
+    }
+
+    /// A prompt whose age cannot be read is parked, not let through: the two
+    /// mistakes are not equally expensive, and "I cannot tell how old this is"
+    /// is a reason to ask rather than a reason to proceed.
+    #[test]
+    fn a_prompt_with_no_readable_age_is_parked_rather_than_let_through() {
+        let queue = queue();
+        queue
+            .accept(
+                "request-1",
+                Some("run-unknown"),
+                BusyPolicy::EnqueueCoalescing,
+                serde_json::json!({"message":"age unknown"}),
+            )
+            .unwrap();
+        queue.test_stamp_queued_at("run-unknown", "not a timestamp");
+
+        let parked = queue.park_stale();
+        assert_eq!(
+            parked,
+            vec![ParkedRun {
+                run_id: "run-unknown".to_string(),
+                reason: ParkReason::UnknownAge,
+            }]
+        );
+        assert_eq!(
+            queue.held_reason("run-unknown"),
+            Some(ParkReason::UnknownAge),
+            "the reason travels with the row, so the reader is not told 'long ago'"
+        );
+        // Not startable, still listed, still theirs.
+        assert_eq!(queue.next_startable(), None);
+        assert_eq!(queue.queued().len(), 1);
+        // And releasing it makes it runnable again, with a timestamp now.
+        queue.release_held("run-unknown").expect("release");
+        assert!(!queue.is_held("run-unknown"));
+        assert_eq!(
+            queue.next_startable().map(|run| run.run_id),
+            Some("run-unknown".to_string())
+        );
+    }
+
+    /// A prompt that waited past the window stops being automatic: it keeps its
+    /// place in the list the reader sees, and the dequeue path no longer reaches
+    /// it until someone releases it.
+    #[test]
+    fn a_prompt_past_the_window_is_parked_but_keeps_its_place() {
+        use std::time::Duration;
+
+        let queue = queue();
+        queue
+            .accept(
+                "request-old",
+                Some("run-old"),
+                BusyPolicy::EnqueueCoalescing,
+                serde_json::json!({"message":"written an hour ago"}),
+            )
+            .unwrap();
+        queue
+            .accept(
+                "request-new",
+                Some("run-new"),
+                BusyPolicy::EnqueueCoalescing,
+                serde_json::json!({"message":"written now"}),
+            )
+            .unwrap();
+        queue.test_backdate("run-old", Duration::from_secs(3_600));
+
+        assert_eq!(
+            queue.park_stale(),
+            vec![ParkedRun {
+                run_id: "run-old".to_string(),
+                reason: ParkReason::TooOld,
+            }]
+        );
+        // Both are still listed, in the order they were written: a row that
+        // crossed the line must not jump to the end of the panel.
+        let listed: Vec<String> = queue.queued().into_iter().map(|run| run.run_id).collect();
+        assert_eq!(listed, vec!["run-old", "run-new"]);
+        assert!(queue.is_held("run-old"));
+        assert!(!queue.is_held("run-new"));
+        // The dequeue path only sees the startable one.
+        assert_eq!(
+            queue.next_startable().map(|run| run.run_id),
+            Some("run-new".to_string())
+        );
+        // Parking is not a verdict: nothing was cancelled, and nothing was acked
+        // as terminal.
+        assert!(queue.recent_terminal_acks().is_empty());
+        // Releasing puts it back where it was, ahead of the newer prompt.
+        queue.release_held("run-old").expect("release");
+        assert!(!queue.is_held("run-old"));
+        assert_eq!(
+            queue.next_startable().map(|run| run.run_id),
+            Some("run-old".to_string())
+        );
+        assert!(!queue.has_pending() || queue.next_startable().is_some());
+    }
+
+    /// Two devices queueing inside the same turn: the boundary must run the
+    /// folded result ONCE, with both texts — not two runs, and not one of them
+    /// twice. A client-side queue could not get this wrong (each device had its
+    /// own) ; a shared one can, so it is asserted here.
+    #[test]
+    fn two_clients_queueing_in_one_turn_start_once_with_both_texts() {
+        let queue = queue();
+        // A run is already going, so both submissions are held.
+        queue
+            .accept(
+                "device-a",
+                Some("run-a"),
+                BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({"message":"first"}),
+            )
+            .unwrap();
+        let (_, _) = queue.start_next(1).unwrap();
+        queue
+            .accept(
+                "device-b:first",
+                Some("run-b1"),
+                BusyPolicy::EnqueueCoalescing,
+                serde_json::json!({"message":"from the phone"}),
+            )
+            .unwrap();
+        queue
+            .accept(
+                "device-c:first",
+                Some("run-c1"),
+                BusyPolicy::EnqueueCoalescing,
+                serde_json::json!({"message":"from the laptop"}),
+            )
+            .unwrap();
+
+        // Exactly one fold, taken from the front, leaving nothing behind it.
+        let folded = queue.drain_coalescing_after_first();
+        assert_eq!(folded.len(), 1);
+        assert_eq!(folded[0].run_id, "run-c1");
+        // The run ahead ends, and the boundary picks up what is queued.
+        queue.finish_active("run-a").expect("finish");
+        let (started, ack) = queue.start_next(1).unwrap();
+        assert_eq!(started.run_id, "run-b1", "the front one carries the turn");
+        assert_eq!(ack.run_epoch, 1);
+        assert!(
+            queue.queued().is_empty(),
+            "nothing left to run a second time"
+        );
+        let merged: Vec<String> = queue
+            .recent_terminal_acks()
+            .into_iter()
+            .filter(|ack| ack.reason == "merged")
+            .map(|ack| ack.run_id)
+            .collect();
+        assert_eq!(
+            merged,
+            vec!["run-c1".to_string()],
+            "the second device is told its words went with the first"
+        );
+    }
+
+    /// pays one cheap scan and changes nothing.
+    #[test]
+    fn a_fresh_queue_is_left_alone() {
+        let queue = queue();
+        queue
+            .accept(
+                "request-1",
+                Some("run-1"),
+                BusyPolicy::EnqueueCoalescing,
+                serde_json::json!({"message":"hi"}),
+            )
+            .unwrap();
+        assert!(queue.park_stale().is_empty());
+        assert!(!queue.is_held("run-1"));
+        assert_eq!(
+            queue.next_startable().map(|run| run.run_id),
+            Some("run-1".to_string())
+        );
+    }
+
+    /// A parked prompt can still be taken back, and cancelling everything takes
+    /// the parked ones too — otherwise a stale row would outlive the purge.
+    #[test]
+    fn a_parked_prompt_can_still_be_deleted() {
+        use std::time::Duration;
+
+        let queue = queue();
+        queue
+            .accept(
+                "request-old",
+                Some("run-old"),
+                BusyPolicy::EnqueueCoalescing,
+                serde_json::json!({"message":"old"}),
+            )
+            .unwrap();
+        queue.test_backdate("run-old", Duration::from_secs(3_600));
+        queue.park_stale();
+
+        let cancelled = queue
+            .cancel_queued("run-old", QueuedCancellationReason::Cancelled)
+            .expect("a parked prompt is still the reader's");
+        assert_eq!(cancelled.run_id, "run-old");
+        assert!(!queue.is_held("run-old"));
+        assert!(queue.queued().is_empty());
+        assert_eq!(
+            queue
+                .recent_terminal_acks()
+                .into_iter()
+                .map(|ack| ack.state)
+                .collect::<Vec<_>>(),
+            vec!["cancelled"]
+        );
     }
 
     /// Payload size as the queue measures and budgets it.

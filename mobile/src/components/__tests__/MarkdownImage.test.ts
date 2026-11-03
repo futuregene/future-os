@@ -199,6 +199,16 @@ test("unsupported inline images retain the existing open-file fallback", async (
   expect(onOpenFile).toHaveBeenCalledWith("a.svg");
 });
 
+test("a ratio measured earlier is reused, so a redraw never moves the layout", () => {
+  const rememberAspect = jest.fn();
+  const loader = { scope: "one", cached: () => "file:///cached.png", load: jest.fn(), aspect: () => 2, rememberAspect };
+  act(() => { tree = create(render(loader)); });
+  // The first frame already reserves the height the picture had last time.
+  expect(tree.root.findByType(Image).props.style[1].aspectRatio).toBe(2);
+  act(() => tree.root.findByType(Image).props.onLoad({ nativeEvent: { source: { width: 300, height: 300 } } }));
+  expect(rememberAspect).toHaveBeenCalledWith("assets/a.png", 1);
+});
+
 test("an image's intrinsic size sets the layout, and a renderer that omits it does not throw", () => {
   const loader = { scope: "one", cached: () => "file:///cached.png", load: jest.fn() };
   act(() => { tree = create(render(loader)); });

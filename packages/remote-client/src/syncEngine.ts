@@ -57,6 +57,11 @@ import {
   newCursor,
   nextEvent,
   tailCoversRange,
+  needsContentHydration,
+  eventPayload,
+  hasEventPayload,
+  parseJsonText,
+  withEventPayload,
   type ReplayEvent,
   type RunCursor,
   type RunReplay,
@@ -91,6 +96,7 @@ export interface SyncDeps {
    * range the peer will never send.
    */
   feedOmitsIndices?: () => boolean;
+  hydrateEvent?(sessionId: string, event: StreamEvent, isCurrent: () => boolean): Promise<StreamEvent>;
   onFailure?(failure: SyncFailure): void;
   onRecovered?(sessionId: string): void;
   /** Replay progress is independent of whether a cached timeline is readable. */
@@ -532,7 +538,7 @@ export class SyncEngine {
       lane.retryTimer = null;
       justReconciledRun = request.runId ?? null;
     }
-    this.applyOps(lane, justReconciledRun);
+    await this.applyOps(lane, justReconciledRun);
     if (request && lane.retryNotBefore === 0) {
       lane.retryAttempt = 0;
       this.deps.onRecovered?.(lane.sessionId);
@@ -584,7 +590,29 @@ export class SyncEngine {
       // against fresh state, not keep reusing a rejected/stale promise.
       const initialState = request.initialState;
       delete request.initialState;
-      const state = await (initialState ?? this.deps.requestGetState(lane.sessionId));
+      // A reconcile that is going to read durable history whatever the state
+      // answers (`open`, `reconnect`, or a lane with nothing established yet)
+      // reads it now, beside the state read rather than after it. The two
+      // requests are independent, and this is the reader's whole wait: a phone
+      // opening a conversation pays them over one relay link, one round trip
+      // after another. The history read keeps its own cancellation — a state
+      // rejection drops the result through `isCurrent` — so nothing is
+      // committed on behalf of a lane that has moved on.
+      const readsHistoryAnyway =
+        request.reason === "open" ||
+        request.reason === "reconnect" ||
+        lane.timeline === null;
+      // Issue the state read first: the pair is in flight together either way,
+      // and keeping `get_state` ahead of the history page on the wire leaves
+      // every ordered fixture — and every earlier reader of a trace — true.
+      const stateRead = initialState ?? this.deps.requestGetState(lane.sessionId);
+      const earlyHistory = readsHistoryAnyway
+        ? this.deps.requestHistory(lane.sessionId, isCurrent)
+        : null;
+      // If the state read fails first this chain is abandoned; it must not
+      // surface afterwards as an unhandled rejection.
+      earlyHistory?.catch(() => undefined);
+      const state = await stateRead;
       if (!isCurrent()) throw new Error("stale_sync_lane");
       let activeRunId = state.activeRun?.runId ?? "";
       // The reconcile target is the requested run (a snapshot-flip run that
@@ -595,7 +623,10 @@ export class SyncEngine {
       const refreshHistory = this.needsHistory(lane, targetRunId, request);
       if (refreshHistory) {
         enterStage("history");
-        const history = await this.deps.requestHistory(lane.sessionId, isCurrent);
+        // The stage label covers whichever read is still running: when the
+        // history read started beside the state read, this wait is only its
+        // tail, so `get_state` reports the overlap and `history` the remainder.
+        const history = await (earlyHistory ?? this.deps.requestHistory(lane.sessionId, isCurrent));
         if (!isCurrent()) throw new Error("stale_sync_lane");
         const settledReply = history.items.some(item =>
           item.kind === "message" && item.role === "assistant" && item.runId === targetRunId &&
@@ -824,12 +855,14 @@ export class SyncEngine {
    * still has not caught up to a queued gap, retain the tail and use bounded
    * backoff; neither dropping it nor an immediate replay loop is safe.
    */
-  private applyOps(lane: SessionLane, justReconciledRun: string | null): void {
+  private async applyOps(lane: SessionLane, justReconciledRun: string | null): Promise<void> {
     if (lane.ops.length === 0) return;
     let timeline = lane.timeline ?? emptyTimeline();
     const ops = lane.ops;
     lane.ops = [];
     const deadline = Date.now() + LIVE_OP_BUDGET_MS;
+    const generation = lane.generation;
+    const isCurrent = () => lane.generation === generation && this.isVisible(lane.sessionId);
     const beforeStreaming = timeline.streaming;
     let flipRunId: string | undefined;
     let changed = false;
@@ -867,7 +900,31 @@ export class SyncEngine {
         }
         continue;
       }
-      const event = op.event;
+      let event = op.event;
+      const requiredContent = !hasEventPayload(event) && event.data.length <= 32 * 1024
+        && event.data.includes('"content_refs"') && needsContentHydration(event.type, eventPayload(event, event.data));
+      if (requiredContent || (!hasEventPayload(event) && event.data.length > 32 * 1024)) {
+        // Publish the already-applied prefix before yielding to IO. A failed
+        // body read keeps this event and every later operation pending.
+        flushBatch();
+        if (changed) { lane.timeline = timeline; this.commit(lane); changed = false; }
+        try {
+          if (!this.deps.hydrateEvent && requiredContent) throw new Error("content_reader_unavailable");
+          if (this.deps.hydrateEvent) {
+            event = await this.deps.hydrateEvent(lane.sessionId, event, isCurrent);
+          } else {
+            const data = await parseJsonText(event.data, { isCurrent });
+            if (needsContentHydration(event.type, data)) throw new Error("content_reader_unavailable");
+            event = withEventPayload(event, data);
+          }
+          if (!isCurrent()) return;
+        } catch {
+          if (!isCurrent()) return;
+          lane.ops.unshift(...ops.slice(index));
+          this.enqueueReplay(lane, { reason: "gap", runId: event.runId });
+          break;
+        }
+      }
       // The broadcaster keeps the settled run's run_id + idx until the next
       // run starts, so a standalone compaction emitted between runs arrives
       // stamped inside that run at an idx past its end. It is session fan-out,
@@ -885,6 +942,7 @@ export class SyncEngine {
       const omitsIndices = this.deps.feedOmitsIndices?.() === true;
       const verdict = nextEvent(lane.cursor, event.runId, event.idx, event.coalescedCount, {
         omitIndices: omitsIndices,
+        data: event.data,
       });
       if (verdict.kind === "overlap") {
         // A merged event whose range starts below the high-water: a reconcile

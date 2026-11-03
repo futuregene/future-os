@@ -1,0 +1,154 @@
+[
+  {
+    "file": "agent/src/agent/run_loop.rs",
+    "function": "run_streaming_inner",
+    "macro": "crate::eprintln_log",
+    "tokens": "",
+    "count": 4,
+    "reason": "Model thinking/reply stream and its delimiters"
+  },
+  {
+    "file": "agent/src/agent/run_loop.rs",
+    "function": "run_streaming_inner",
+    "macro": "crate::eprint_log",
+    "tokens": "\"\\n{}[thinking]{} \" , C_MAGENTA , C_RESET",
+    "count": 1,
+    "reason": "Model thinking/reply stream and its delimiters"
+  },
+  {
+    "file": "agent/src/agent/run_loop.rs",
+    "function": "run_streaming_inner",
+    "macro": "crate::eprint_log",
+    "tokens": "\"{}\" , text",
+    "count": 2,
+    "reason": "Model thinking/reply stream and its delimiters"
+  },
+  {
+    "file": "agent/src/agent/run_loop.rs",
+    "function": "run_streaming_inner",
+    "macro": "crate::eprint_log",
+    "tokens": "\"\\n{}[output]{} \" , C_GREEN , C_RESET",
+    "count": 1,
+    "reason": "Model thinking/reply stream and its delimiters"
+  },
+  {
+    "file": "agent/src/cli.rs",
+    "function": "run_from_args",
+    "macro": "console::println",
+    "tokens": "\"{}\" , serde_json :: to_string (& result) ?",
+    "count": 2,
+    "reason": "Agent CLI maintenance JSON response"
+  },
+  {
+    "file": "agent/src/cli.rs",
+    "function": "run_from_args",
+    "macro": "console::println",
+    "tokens": "\"{{\\\"removedCapabilities\\\":{removed}}}\"",
+    "count": 1,
+    "reason": "Agent CLI maintenance JSON response"
+  },
+  {
+    "file": "agent/src/cli.rs",
+    "function": "run_from_args",
+    "macro": "crate::console::println",
+    "tokens": "\"{}\" , serde_json :: json ! ({ \"sessionId\" : id , \"recovery\" : \"completed\" , \"executionResumed\" : false })",
+    "count": 1,
+    "reason": "Agent CLI maintenance JSON response"
+  },
+  {
+    "file": "agent/src/cli.rs",
+    "function": "run_from_args",
+    "macro": "console::println",
+    "tokens": "\"{}\" , serde_json :: to_string (& report) ?",
+    "count": 1,
+    "reason": "Agent CLI maintenance JSON response"
+  },
+  {
+    "file": "agent/src/sandbox/linux/helper.rs",
+    "function": "run_helper_request",
+    "macro": "console::eprintln",
+    "tokens": "\"future-linux-sandbox-helper: {error:#}\"",
+    "count": 1,
+    "reason": "Sandbox helper stderr/status protocol read by the parent before service startup"
+  },
+  {
+    "file": "desktop/src-tauri/src/commands/update_process.rs",
+    "function": "await_commit",
+    "macro": "console::println",
+    "tokens": "\"READY\"",
+    "count": 1,
+    "reason": "Updater READY/JSON/ERROR process protocol"
+  },
+  {
+    "file": "desktop/src-tauri/src/commands/update_process.rs",
+    "function": "complete",
+    "macro": "console::println",
+    "tokens": "\"{}\" , serde_json :: to_string (result) . map_err (| e | e . to_string ()) ?",
+    "count": 1,
+    "reason": "Updater READY/JSON/ERROR process protocol"
+  },
+  {
+    "file": "desktop/src-tauri/src/commands/update.rs",
+    "function": "helper_result",
+    "macro": "console::println",
+    "tokens": "\"ERROR {}\" , serde_json :: to_string (error) . unwrap_or_default ()",
+    "count": 1,
+    "reason": "Updater READY/JSON/ERROR process protocol"
+  },
+  {
+    "file": "desktop/src-tauri/src/skills_bootstrap.rs",
+    "function": "handle_skill_event",
+    "macro": "console::eprint",
+    "tokens": "\"[skills] {}\" , String :: from_utf8_lossy (& bytes)",
+    "count": 1,
+    "reason": "Pass-through of child CLI stdout/stderr; bootstrap diagnostics are separate events"
+  },
+  {
+    "file": "desktop/src-tauri/src/main.rs",
+    "function": "main",
+    "macro": "console::eprintln",
+    "tokens": "\"{error}\"",
+    "count": 2,
+    "reason": "Command-line help, argument errors and helper-dispatch protocol errors"
+  },
+  {
+    "file": "desktop/src-tauri/src/main.rs",
+    "function": "main",
+    "macro": "console::println",
+    "tokens": "\"{}\" , launch :: HELP",
+    "count": 1,
+    "reason": "Command-line help, argument errors and helper-dispatch protocol errors"
+  },
+  {
+    "file": "desktop/src-tauri/src/main.rs",
+    "function": "main",
+    "macro": "console::eprintln",
+    "tokens": "\"{error}\\n\\n{}\" , launch :: HELP",
+    "count": 1,
+    "reason": "Command-line help, argument errors and helper-dispatch protocol errors"
+  },
+  {
+    "file": "desktop/src-tauri/src/main.rs",
+    "function": "start_desktop",
+    "macro": "console::eprintln",
+    "tokens": "\"This build has no graphical interface. Run future host instead.\"",
+    "count": 1,
+    "reason": "Command-line help, argument errors and helper-dispatch protocol errors"
+  },
+  {
+    "file": "agent/src/sandbox/linux/helper.rs",
+    "function": "run_outer",
+    "macro": "writeln",
+    "tokens": "std :: io :: stderr () . lock () , \"future-linux-sandbox-helper: post-command detection failed: {error:#}\"",
+    "count": 1,
+    "reason": "Sandbox helper infrastructure evidence stays in parent-captured tool stderr alongside the violation protocol; no application logger runs in the helper"
+  },
+  {
+    "file": "agent/src/sandbox/linux/helper.rs",
+    "function": "report_missing_guard_creations",
+    "macro": "writeln",
+    "tokens": "std :: io :: stderr () . lock () , \"future-linux-sandbox-helper: missing guard detection incomplete: {} failed, {} unchecked\" , report . failed , report . unchecked",
+    "count": 1,
+    "reason": "Sandbox helper infrastructure evidence stays in parent-captured tool stderr alongside the violation protocol; no application logger runs in the helper"
+  }
+]

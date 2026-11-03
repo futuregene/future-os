@@ -26,6 +26,7 @@
     "overlapped": "Other runs occurred in this Workspace during this run; some changes may come from concurrent runs",
     "recovered": "Snapshot recovered after an app restart; change attribution may be imprecise",
     "partial": "Some files exceeded the size limit and no diff was generated",
+    "missingBoundary": "This run has no complete pair of saved snapshots. Its exact changes cannot be reconstructed.",
     "incomplete": "This run's snapshot is incomplete; click to retry",
     "unavailable": "This run's change snapshot is unavailable",
     "retrying": "Retrying...",

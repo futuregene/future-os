@@ -40,6 +40,9 @@ pub struct RpcCommand {
     /// Optional custom instructions for the compaction summariser.
     #[prost(string, tag = "60")]
     pub custom_instructions: ::prost::alloc::string::String,
+    /// Versioned Fusion settings patch with expected_revision (update_fusion_settings).
+    #[prost(string, tag = "173")]
+    pub fusion_settings_json: ::prost::alloc::string::String,
     /// Toggle flag (true = on, false = off).
     #[prost(bool, tag = "70")]
     pub enabled: bool,
@@ -185,6 +188,12 @@ pub struct RpcCommand {
     /// type == "upsert_provider" or "delete_provider" (the latter uses only `id`).
     #[prost(message, optional, tag = "171")]
     pub provider_config: ::core::option::Option<ProviderUpsert>,
+    /// ── probe_thinking_level ───────────────────────────────────────────────
+    /// One ad-hoc provider round trip answering "does this endpoint accept this
+    /// thinking level?". Nothing is written: the caller is still editing the
+    /// provider. Read when type == "probe_thinking_level".
+    #[prost(message, optional, tag = "172")]
+    pub thinking_probe: ::core::option::Option<ThinkingLevelProbe>,
     /// ── suggest_skill ──────────────────────────────────────────────────────
     /// The user's first-turn text. Read when type == "suggest_skill".
     #[prost(string, tag = "180")]
@@ -204,6 +213,29 @@ pub struct RpcCommand {
     /// Read when type == "reset_session_history".
     #[prost(message, optional, tag = "190")]
     pub reset_history: ::core::option::Option<HistoryReset>,
+    /// Scoped canonical event-body paging. No raw database content ID is accepted.
+    #[prost(message, optional, tag = "191")]
+    pub content_request: ::core::option::Option<ContentRangeRequest>,
+    /// Inclusive replay boundary captured on the first page.
+    #[prost(int64, optional, tag = "192")]
+    pub replay_until_idx: ::core::option::Option<i64>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ContentRangeRequest {
+    #[prost(string, tag = "1")]
+    pub database_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub restore_generation: ::prost::alloc::string::String,
+    #[prost(int64, tag = "3")]
+    pub epoch: i64,
+    #[prost(int64, tag = "4")]
+    pub cursor: i64,
+    #[prost(string, tag = "5")]
+    pub field: ::prost::alloc::string::String,
+    #[prost(int64, tag = "6")]
+    pub offset: i64,
+    #[prost(int64, tag = "7")]
+    pub max_bytes: i64,
 }
 /// ── HistoryReset ─────────────────────────────────────────────────────────────
 /// Selectors for an in-place history reset (`reset_session_history`) — the
@@ -372,6 +404,27 @@ pub struct ProviderModel {
     /// list (possibly empty) replaces it.
     #[prost(bool, optional, tag = "12")]
     pub replace_thinking_levels: ::core::option::Option<bool>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ThinkingLevelProbe {
+    /// Wire protocol: "openai-completions" | "openai-responses" | "anthropic".
+    #[prost(string, tag = "1")]
+    pub api: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub base_url: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub api_key: ::prost::alloc::string::String,
+    /// Provider id and model id. Both are used to inherit an already-saved
+    /// model's per-model wire config; an unsaved provider simply finds none.
+    #[prost(string, tag = "4")]
+    pub provider_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub model_id: ::prost::alloc::string::String,
+    /// The level to test. Empty (or ``default``) sends no thinking parameter at
+    /// all — the calibration call that proves the rest of the configuration
+    /// (endpoint, key, model id) works.
+    #[prost(string, tag = "6")]
+    pub level: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ImageContent {
@@ -597,6 +650,10 @@ pub struct ModelEntry {
     /// older one.
     #[prost(string, optional, tag = "13")]
     pub default_thinking_level: ::core::option::Option<::prost::alloc::string::String>,
+    /// Agent effective generation capacity, using the same policy as requests.
+    /// Absent on older agents; clients must not invent a capacity when missing.
+    #[prost(int32, optional, tag = "14")]
+    pub max_tokens: ::core::option::Option<i32>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BuiltinProvider {
@@ -824,6 +881,9 @@ pub struct RuntimeMetricsResponse {
     /// Absent when the journal is healthy.
     #[prost(string, optional, tag = "11")]
     pub event_journal_error: ::core::option::Option<::prost::alloc::string::String>,
+    /// Fixed-size journal counters/histograms; no body or per-token diagnostics.
+    #[prost(string, optional, tag = "12")]
+    pub event_journal_json: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct EventPayload {
@@ -1463,6 +1523,9 @@ pub struct EventsSince {
     /// events follow: re-request with since_idx = the last event's idx.
     #[prost(bool, tag = "5")]
     pub has_more: bool,
+    /// Durable inclusive boundary; all pages of a read window pin this value.
+    #[prost(int64, optional, tag = "6")]
+    pub watermark: ::core::option::Option<i64>,
 }
 /// A compressed projection of a run's events (coalesced deltas).
 #[derive(Clone, PartialEq, ::prost::Message)]

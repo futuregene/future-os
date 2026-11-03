@@ -3,8 +3,8 @@ use future_remote_server::services::ReplySink;
 use serde_json::{json, Value};
 
 use super::{
-    entries_vec, paginate_events, paginate_items_with_cap, paginate_messages,
-    prepare_backward_entries_page_with_cap, reply, DEFAULT_MESSAGE_PAGE_LIMIT,
+    entries_vec, mark_short_backward_page, paginate_events, paginate_items_with_cap,
+    paginate_messages, prepare_backward_entries_page_with_cap, reply, DEFAULT_MESSAGE_PAGE_LIMIT,
 };
 
 /// The cursor meaning "the page at the end of the session". Clients open a
@@ -35,6 +35,33 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
     // never call this helper.
     let _ = crate::agent_bridge::ensure_observer_for_session(&cmd.session_id);
     match cmd.cmd_type.as_str() {
+        "get_event_content_range" => {
+            let parsed = cmd
+                .content_request
+                .clone()
+                .ok_or_else(|| "contentRequest is required".to_owned())
+                .and_then(|value| {
+                    serde_json::from_value::<future_rpc::content_range::ContentRequest>(value)
+                        .map_err(|error| format!("invalid contentRequest: {error}"))
+                });
+            let request = match parsed {
+                Ok(request) => request,
+                Err(error) => {
+                    reply(sink, false, Value::Null, Some(&error)).await;
+                    return;
+                }
+            };
+            match crate::agent_bridge::get_event_content_range(
+                cmd.session_id.clone(),
+                cmd.run_id.clone(),
+                request,
+            )
+            .await
+            {
+                Ok(data) => reply(sink, true, data, None).await,
+                Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+            }
+        }
         "get_messages" => {
             // Serve history from the agent (source of truth for all sessions).
             // The GUI store only has message rows for GUI-native threads —
@@ -116,6 +143,14 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                             !cmd.chunked_read,
                             enforce_page_bytes,
                         );
+                        // The byte budget is only one of the two bounds that can
+                        // leave a page short of the exchanges the client asked
+                        // for; the Agent's own row and byte limits are the other,
+                        // and they cut mid-exchange. Say so here, once, for any
+                        // client that assembles its window from several pages.
+                        if !cmd.untrimmed {
+                            mark_short_backward_page(&mut page, limit);
+                        }
                         if cmd.untrimmed {
                             page["untrimmed"] = json!(true);
                         }
@@ -155,6 +190,20 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
         // still carries every argument, so it has no use for this command and
         // must not find a path to it (the reply is the same "unsupported" a
         // client of an older bridge would get).
+        "get_fusion" => {
+            match crate::fusion::query(
+                cmd.session_id.clone(),
+                cmd.run_id.clone(),
+                cmd.tool_call_id.clone(),
+                (!cmd.entry_id.is_empty()).then(|| cmd.entry_id.clone()),
+                Some(cmd.offset),
+            )
+            .await
+            {
+                Ok(data) => reply(sink, true, data, None).await,
+                Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+            }
+        }
         "get_tool_call_args" => {
             if !crate::remote_host::lean::enabled() {
                 reply(
@@ -226,12 +275,13 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             } else {
                 DEFAULT_MESSAGE_PAGE_LIMIT
             };
-            let data = if cmd.replay_until_idx.is_some() && offset == 0 {
-                crate::agent_bridge::get_events_since_page(
+            let data = if cmd.chunked_read && offset == 0 {
+                crate::agent_bridge::get_events_since_page_until(
                     cmd.session_id.clone(),
                     cmd.run_id.clone(),
                     cmd.since_idx,
                     limit,
+                    cmd.replay_until_idx,
                 )
                 .await
             } else {
@@ -244,14 +294,16 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             };
             match data {
                 Ok(mut data) => {
-                    let source_watermark = data["events"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|event| event["idx"].as_i64())
-                        .max()
-                        .unwrap_or(cmd.since_idx)
-                        .max(data["projection"]["cursor"].as_i64().unwrap_or(-1));
+                    let source_watermark = data["watermark"].as_i64().unwrap_or_else(|| {
+                        data["events"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|event| event["idx"].as_i64())
+                            .max()
+                            .unwrap_or(cmd.since_idx)
+                            .max(data["projection"]["cursor"].as_i64().unwrap_or(-1))
+                    });
                     let watermark = cmd.replay_until_idx.unwrap_or(source_watermark);
                     if data["projection"]["cursor"]
                         .as_i64()
@@ -275,6 +327,17 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         .cloned()
                         .unwrap_or(json!(cmd.since_idx));
                     let next = page["nextSinceIdx"].as_i64().unwrap_or(cmd.since_idx);
+                    if page["events"].as_array().is_some_and(|events| {
+                        events.iter().any(|event| {
+                            event["data"].as_str().is_some_and(|raw| {
+                                serde_json::from_str::<Value>(raw)
+                                    .ok()
+                                    .is_some_and(|data| data.get("content_key").is_some())
+                            })
+                        })
+                    }) {
+                        page["rawEvents"] = json!(next.saturating_sub(cmd.since_idx));
+                    }
                     page["hasMore"] = json!(
                         next < watermark
                             && (agent_has_more || page["hasMore"].as_bool().unwrap_or(false))
@@ -356,5 +419,89 @@ mod tests {
             ..Default::default()
         };
         super::execute(&cmd, &sink).await;
+    }
+
+    /// The content-range command is how a lean client reads a field it was told
+    /// to fetch by reference. Three things can go wrong before the Agent is
+    /// asked (no request at all, a request that does not decode, a request the
+    /// Agent refuses), and each must come back as a failed reply with a reason —
+    /// a silent success would make the client render an empty message.
+    #[tokio::test]
+    async fn a_content_range_read_reports_every_way_it_can_fail() {
+        use crate::remote::test_support::RecordingSink;
+        use crate::test_support::agent::{mock_agent, Reply, TestHome};
+        use future_remote_protocol::IncomingCmd;
+        use serde_json::json;
+
+        let _home = TestHome::new("bridge-content-range");
+        // The handler under test is this module's `execute`, not the dispatcher.
+        use super::execute;
+        let mock = mock_agent();
+        let sink = RecordingSink::default();
+        let base = |request: Option<serde_json::Value>| IncomingCmd {
+            cmd_type: "get_event_content_range".into(),
+            id: "content-request".into(),
+            session_id: "sess-content".into(),
+            run_id: "run-content".into(),
+            content_request: request,
+            ..Default::default()
+        };
+
+        // 1. No request at all. Each reason is bound first: an assert's format
+        // arguments are only evaluated on failure, so reading the reply inside
+        // one would leave the read itself unmeasured.
+        execute(&base(None), &sink).await;
+        let missing = sink.error_text();
+        let missing_reply = sink.last();
+        assert!(
+            missing.contains("contentRequest is required"),
+            "{missing_reply:?}"
+        );
+
+        // 2. A request that is not a content request.
+        execute(&base(Some(json!({"cursor": "not a number"}))), &sink).await;
+        let invalid = sink.error_text();
+        let invalid_reply = sink.last();
+        assert!(
+            invalid.contains("invalid contentRequest"),
+            "{invalid_reply:?}"
+        );
+
+        // 3. The Agent's own refusal is forwarded as the reason.
+        let request = json!({
+            "databaseId": "db",
+            "restoreGeneration": "gen",
+            "epoch": 3,
+            "cursor": 12,
+            "field": "text",
+            "offset": 0,
+            "maxBytes": 512,
+        });
+        mock.push(
+            "get_event_content_range",
+            Reply::Reject("range no longer available".into()),
+        );
+        execute(&base(Some(request.clone())), &sink).await;
+        assert_eq!(sink.error_text(), "range no longer available");
+
+        // 4. And a range comes back whole, with the coordinates the phone sent.
+        mock.push_data(
+            "get_event_content_range",
+            json!({"text": "the rest of the message", "complete": true}),
+        );
+        execute(&base(Some(request)), &sink).await;
+        let data = sink.ok_data();
+        assert_eq!(data["text"], json!("the rest of the message"));
+        assert_eq!(data["complete"], json!(true));
+        let requests = mock.requests_of("get_event_content_range");
+        assert_eq!(requests.len(), 2, "one per accepted request");
+        assert_eq!(requests[1].run_id, "run-content");
+        let sent = requests[1]
+            .content_request
+            .as_ref()
+            .expect("the request is forwarded");
+        assert_eq!(sent.cursor, 12);
+        assert_eq!(sent.field, "text");
+        assert_eq!(sent.max_bytes, 512);
     }
 }

@@ -796,6 +796,7 @@ mod tests {
     }
 
     fn server(catalogue: &str, bytes: Vec<u8>, requests: usize) -> String {
+        crate::test_support::ensure_fd_headroom();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
         let catalogue = catalogue.as_bytes().to_vec();
@@ -1671,6 +1672,7 @@ mod tests {
     /// test ends: the catalogue is served by path, everything else is the
     /// package download.
     fn platform(catalogue: &str, download: Download) -> String {
+        crate::test_support::ensure_fd_headroom();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
         let catalogue = catalogue.as_bytes().to_vec();

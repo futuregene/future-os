@@ -2,6 +2,7 @@ import type { FutureMarkdownDocument } from "@future-os/markdown";
 import type { ReactNode } from "react";
 import type { StoredFile } from "../../integrations/storage/types";
 import type { FutureReference, InlineNode, MarkdownNode } from "./futureMarkdownTypes";
+import type { PreviewFileTarget } from "./PreviewMarkdownContext";
 import { parseSessionReferenceHref } from "@future-os/markdown";
 import { memo, useMemo } from "react";
 import { useFutureReference, useFutureReferences } from "./futureReferenceStore";
@@ -34,13 +35,19 @@ interface MarkdownContentProps {
    */
   basePath?: string;
   /**
+   * In preview mode: open a previewable local file the document links to one
+   * level deeper, instead of handing it to the OS. Preview hosts that have no
+   * level to nest (the artifact detail's inline preview) omit it.
+   */
+  onOpenPreview?: (file: PreviewFileTarget) => void;
+  /**
    * True for the still-growing tail of a streaming reply (see
    * `LiveMarkdownContext`): code blocks render plain until the segment closes.
    */
   live?: boolean;
 }
 
-function MarkdownContentImpl({ content, parsedDocument, workspaceId, basePath, live }: MarkdownContentProps) {
+function MarkdownContentImpl({ content, parsedDocument, workspaceId, basePath, onOpenPreview, live }: MarkdownContentProps) {
   const document = useMemo(() => {
     const parsed = parsedDocument ?? parseFutureMarkdown(content);
     // A previewed document reflows to the reader's width: its source soft breaks
@@ -69,7 +76,7 @@ function MarkdownContentImpl({ content, parsedDocument, workspaceId, basePath, l
     </LiveMarkdownProvider>
   );
   if (basePath)
-    return <PreviewMarkdownContext value={{ basePath }}>{body}</PreviewMarkdownContext>;
+    return <PreviewMarkdownContext value={{ basePath, openPreview: onOpenPreview }}>{body}</PreviewMarkdownContext>;
   return body;
 }
 

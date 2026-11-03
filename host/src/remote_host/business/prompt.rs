@@ -20,6 +20,13 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             }
             let model_id = qualified_model_id(&cmd.model_id, &cmd.provider_id);
             let thinking_level = (!cmd.level.trim().is_empty()).then(|| cmd.level.clone());
+            let busy_policy = match parse_busy_policy(&cmd.busy_policy) {
+                Ok(policy) => policy,
+                Err(error) => {
+                    reply(sink, false, Value::Null, Some(&error.to_string())).await;
+                    return;
+                }
+            };
             match prepare_remote_prompt(
                 &cmd.session_id,
                 cmd.message.clone(),
@@ -30,6 +37,7 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                     workspace_id: cmd.workspace_id.clone(),
                     upload_references: cmd.attachments.clone(),
                     command_id: cmd.id.clone(),
+                    busy_policy,
                 },
             )
             .await
@@ -37,6 +45,28 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 Ok(prepared) => acknowledge_prepared(prepared, sink, "prompt processing").await,
                 Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
             }
+        }
+        "get_queue" => match crate::agent_bridge::session_queue_snapshot(&cmd.session_id).await {
+            Ok(snapshot) => reply(sink, true, snapshot, None).await,
+            Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+        },
+        "cancel_queued_run" => {
+            reply_unit(
+                sink,
+                crate::agent_bridge::cancel_queued_run(&cmd.session_id, &cmd.run_id)
+                    .await
+                    .map(|_| ()),
+            )
+            .await
+        }
+        "release_queued_run" => {
+            reply_unit(
+                sink,
+                crate::agent_bridge::release_queued_run(&cmd.session_id, &cmd.run_id)
+                    .await
+                    .map(|_| ()),
+            )
+            .await
         }
         "get_prompt_receipt" => match remote_prompt_receipt(&cmd.prompt_id) {
             Ok(receipt) => reply(sink, true, receipt.unwrap_or(Value::Null), None).await,
@@ -77,6 +107,9 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                     workspace_id: String::new(),
                     upload_references: Vec::new(),
                     command_id: cmd.id.clone(),
+                    // Continuing a run is a fresh turn of its own; it never
+                    // overtakes a queue the reader already built.
+                    busy_policy: String::new(),
                 },
             )
             .await
@@ -136,7 +169,7 @@ async fn acknowledge_prepared(
         if let Err(error) =
             crate::agent_bridge::run_prepared_prompt_with_acceptance(prepared, accepted_tx).await
         {
-            eprintln!("remote: {failure_context} failed: {error}");
+            tracing::error!(event = "acknowledge_prepared", failure_context = %failure_context, error = %error,"remote: {failure_context} failed: {error}");
         }
         crate::emit_remote_activity(&thread_id);
     });
@@ -230,23 +263,40 @@ pub(crate) fn build_continue_prompt(run_id: &str) -> String {
     lines.join("\n")
 }
 
-/// A continuation is not a free-form prompt alias: it may only resume the
-/// failed run that belongs to the addressed session. This keeps a stale mobile
-/// outbox entry (including one from a previous pairing) from creating or
-/// steering an unrelated conversation.
+/// The stable token a refused continuation carries, so a client can say *why*
+/// instead of reporting a generic send failure (the same pattern as
+/// [`UNKNOWN_SESSION_CODE`]). Prefixed to the human sentence: the phone's toast
+/// maps the token, the text stays readable in the desktop's own logs.
+pub(crate) const CONTINUE_REFUSED_CODE: &str = "continue_unavailable";
+
+fn continue_refused(reason: &str) -> crate::Error {
+    format!("{CONTINUE_REFUSED_CODE}: {reason}").into()
+}
+
+/// A continuation is not a free-form prompt alias: it may only resume a run
+/// that belongs to the addressed session. This keeps a stale mobile outbox entry
+/// (including one from a previous pairing) from creating or steering an
+/// unrelated conversation.
+///
+/// **Identity only — never the reason the run stopped.** Any run of this
+/// conversation can be picked up from: a failure, a user stop, a stream the
+/// Agent or the app cut off, a restart that interrupted it. The rule used to
+/// read "only a `failed` run can be continued", which turned the one thing a
+/// client can offer after a restart (Continue — startup convergence settles
+/// that run `cancelled`/`interrupted`, not `failed`) into a permanent dead end,
+/// and asked the server to judge a decision the user had already made by tapping
+/// the button. The desktop's own Continue never consulted the run at all: it
+/// re-sends a prompt either way.
 pub(crate) fn validate_continue_source(session_id: &str, run_id: &str) -> Result<(), crate::Error> {
     if session_id.trim().is_empty() || run_id.trim().is_empty() {
-        return Err("A continuation requires a session and source run."
-            .to_string()
-            .into());
+        return Err(continue_refused(
+            "A continuation requires a session and source run.",
+        ));
     }
     let run = crate::store::get_run(run_id)?
-        .ok_or_else(|| "The source run no longer exists.".to_string())?;
-    if run.status != "failed" {
-        return Err("Only a failed run can be continued.".to_string().into());
-    }
+        .ok_or_else(|| continue_refused("The source run no longer exists."))?;
     let thread = crate::store::get_thread(&run.thread_id)?
-        .ok_or_else(|| "The source run's conversation no longer exists.".to_string())?;
+        .ok_or_else(|| continue_refused("The source run's conversation no longer exists."))?;
     let run_session_id = thread
         .agent_session_id
         .as_deref()
@@ -254,9 +304,9 @@ pub(crate) fn validate_continue_source(session_id: &str, run_id: &str) -> Result
         .filter(|value| !value.is_empty())
         .unwrap_or(&thread.id);
     if run_session_id != session_id {
-        return Err("The source run does not belong to this session."
-            .to_string()
-            .into());
+        return Err(continue_refused(
+            "The source run does not belong to this session.",
+        ));
     }
     Ok(())
 }
@@ -286,6 +336,38 @@ pub(crate) struct RemotePromptOptions {
     pub(crate) workspace_id: String,
     pub(crate) upload_references: Vec<crate::remote_host::files::UploadReference>,
     pub(crate) command_id: String,
+    /// What this send means while the session still runs something, as an Agent
+    /// `BusyPolicy` value. Empty keeps the refusal below.
+    pub(crate) busy_policy: String,
+}
+
+/// The policy values a Remote client may ask for.
+///
+/// `enqueue_if_busy` and `enqueue_coalescing` both mean "hold it, do not drop
+/// it": the Agent keeps a durable receipt and runs the prompt at the turn
+/// boundary (`coalescing` folds the consecutive ones into a single run, which is
+/// how a queue leaves as one message). `supersede_session` means "interrupt the
+/// run and do this instead". Anything else is a client bug, and answering it
+/// with the old refusal would hide it.
+pub(crate) fn parse_busy_policy(raw: &str) -> Result<String, crate::Error> {
+    let policy = raw.trim();
+    if policy.is_empty() {
+        return Ok(String::new());
+    }
+    if matches!(
+        policy,
+        "enqueue_if_busy" | "enqueue_coalescing" | "supersede_session"
+    ) {
+        return Ok(policy.to_string());
+    }
+    Err(crate::Error::Message(format!(
+        "unknown busy policy `{policy}`; expected one of: enqueue_if_busy, enqueue_coalescing, supersede_session"
+    )))
+}
+
+/// Whether this policy has the Agent hold the prompt instead of refusing it.
+pub(crate) fn queues_while_busy(policy: &str) -> bool {
+    matches!(policy, "enqueue_if_busy" | "enqueue_coalescing")
 }
 
 /// The stable token a refusal of an unknown session carries, so a client can
@@ -293,6 +375,12 @@ pub(crate) struct RemotePromptOptions {
 /// Prefixed to the human sentence: the phone's toast maps the token, the text
 /// stays readable in the desktop's own logs.
 pub(crate) const UNKNOWN_SESSION_CODE: &str = "session_not_on_desktop";
+
+/// The same token for a conversation whose run is still in flight. The client
+/// no longer guesses at this locally (its own "still streaming" flag outlives
+/// the run it described), so the refusal has to arrive with a reason it can
+/// turn into a sentence instead of "message failed to send".
+pub(crate) const SESSION_BUSY_CODE: &str = "session_busy";
 
 /// Find the thread for `session_id`, then persist user message + run via
 /// `agent_bridge::headless`.
@@ -323,6 +411,7 @@ pub(crate) async fn prepare_remote_prompt(
         workspace_id,
         upload_references,
         command_id,
+        busy_policy,
     } = options;
     let thread = match crate::store::find_thread_by_agent_session(session_id)? {
         Some(thread) => thread,
@@ -374,33 +463,40 @@ pub(crate) async fn prepare_remote_prompt(
             thread
         }
     };
-    // Reject a prompt for a session that is already running BEFORE persisting
-    // anything (matches GUI semantics: no follow-up/queue). The agent
-    // refuses a concurrent prompt too, but only after the ack — checking here
-    // keeps a busy session from accumulating a phantom user message, a failed
-    // run, and a fake "Future Agent error" assistant reply. Residual race: two
-    // clients prompting the same idle session within milliseconds can both pass
-    // this check; the agent's is_streaming refusal stays as the backstop.
+    // A session that is already running takes a prompt only from a client that
+    // said what that means. Two answers, and the difference is who decided:
+    //
+    //  * nothing said — the legacy refusal ("wait or abort first"). A client
+    //    that knows nothing about queueing must not have its message land behind
+    //    a run it never saw, so it is told to come back.
+    //  * `enqueue_*` — the Agent holds it and runs it at the turn boundary, on a
+    //    durable receipt, so this is a delivery and not a phantom message. The
+    //    check below is skipped on purpose.
+    //
+    // Residual race: two clients prompting the same idle session within
+    // milliseconds can both pass this check; the Agent's own admission decides.
     let resolved_session_id = thread
         .agent_session_id
         .clone()
         .unwrap_or_else(|| thread.id.clone());
-    if crate::store::active_run_sessions()?
-        .iter()
-        .any(|active| active == &resolved_session_id)
+    if !queues_while_busy(&busy_policy)
+        && crate::store::active_run_sessions()?
+            .iter()
+            .any(|active| active == &resolved_session_id)
     {
-        return Err(crate::Error::Message(
-            "This session is still running; wait for it to finish or abort it first.".to_string(),
-        ));
+        return Err(crate::Error::Message(format!(
+            "{SESSION_BUSY_CODE}: this session is still running; wait for it to finish or abort it first."
+        )));
     }
     let attachments = crate::remote_host::files::claim_uploads(&upload_references, &thread.id)?;
-    let prepared = crate::agent_bridge::prepare_prompt_persisted_with_trigger(
+    let prepared = crate::agent_bridge::prepare_prompt_persisted_busy(
         &thread,
         message,
         model_id,
         thinking_level,
         attachments.clone(),
         (!command_id.trim().is_empty()).then_some(command_id),
+        busy_policy,
     );
     #[cfg(test)]
     let prepared = prepared.and_then(|prepared| injected_prepare_failure().map(|()| prepared));
@@ -441,6 +537,84 @@ pub(crate) fn derive_thread_title(content: &str) -> String {
 mod tests {
     use super::*;
 
+    /// A policy a client names is a decision the Agent acts on, so the three
+    /// values are passed through and nothing else is guessed at.
+    #[test]
+    fn only_the_three_agent_policies_are_accepted_from_a_client() {
+        for policy in ["enqueue_if_busy", "enqueue_coalescing", "supersede_session"] {
+            assert_eq!(parse_busy_policy(policy).expect("a known policy"), policy);
+        }
+        // Absent is the legacy client, and means "ask me again when it is free".
+        assert_eq!(parse_busy_policy("").expect("absent is allowed"), "");
+        assert_eq!(parse_busy_policy("  ").expect("blank is absent"), "");
+        let error = parse_busy_policy("queue_it")
+            .expect_err("an unknown policy is a bug")
+            .to_string();
+        assert!(error.contains("queue_it"), "{error}");
+        // Two of them have the Agent hold the prompt; superseding does not.
+        assert!(queues_while_busy("enqueue_if_busy"));
+        assert!(queues_while_busy("enqueue_coalescing"));
+        assert!(!queues_while_busy("supersede_session"));
+        assert!(!queues_while_busy(""));
+    }
+
+    /// The same busy session, two answers: a client that said nothing is told to
+    /// come back, and one that named a queueing policy has its message held. The
+    /// second is the whole point — the refusal is about *who decided*, not about
+    /// the session being busy.
+    #[tokio::test]
+    async fn a_busy_session_holds_a_named_send_and_refuses_an_unnamed_one() {
+        use crate::remote::test_support::{raw_store_connection, HomeGuard};
+
+        let _home = HomeGuard::new("business-prompt-busy-policy");
+        crate::remote::test_support::init_store();
+        {
+            let conn = raw_store_connection();
+            conn.execute_batch(
+                "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                     VALUES ('ws_busy', 'WS', 'user', '/tmp/ws', 1, 1);
+                 INSERT INTO threads (id, workspace_id, mode, title, agent_session_id,
+                                      created_at, updated_at)
+                     VALUES ('th_busy', 'ws_busy', 'chat', 'T', 'sess_busy', 1, 1);
+                 INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+                     VALUES ('run_busy', 'th_busy', 'running', 1, 1);",
+            )
+            .expect("seed a running conversation");
+        }
+
+        let options = |policy: &str| RemotePromptOptions {
+            model_id: None,
+            thinking_level: None,
+            mode: "chat".to_string(),
+            workspace_id: String::new(),
+            upload_references: Vec::new(),
+            command_id: "cmd-busy".to_string(),
+            busy_policy: policy.to_string(),
+        };
+
+        // `expect_err` would need `PreparedPrompt: Debug`; the refusal is what
+        // this asserts, so it is matched directly.
+        let refused =
+            match prepare_remote_prompt("sess_busy", "next".to_string(), options("")).await {
+                Ok(_) => panic!("an unnamed send must be refused while the run is live"),
+                Err(error) => error.to_string(),
+            };
+        assert!(
+            refused.starts_with(SESSION_BUSY_CODE),
+            "the client maps this code to its own sentence: {refused}"
+        );
+
+        for policy in ["enqueue_if_busy", "enqueue_coalescing"] {
+            let prepared =
+                match prepare_remote_prompt("sess_busy", "held".to_string(), options(policy)).await
+                {
+                    Ok(prepared) => prepared,
+                    Err(error) => panic!("{policy} must be accepted: {error}"),
+                };
+            assert_eq!(prepared.session_id, "sess_busy");
+        }
+    }
+
     /// A continuation without a session and source run would resume "whatever
     /// was last used", which is not something the user asked for. Both ids are
     /// required, and the guard runs before any store lookup so a stale outbox
@@ -456,6 +630,58 @@ mod tests {
                 "session {session:?} run {run:?} -> {error}"
             );
         }
+    }
+
+    /// Every reason a run can stop is resumable — the guard is identity, not
+    /// outcome. The old reading ("only a `failed` run can be continued") made
+    /// the phone's Continue a dead end for exactly the run a restart leaves
+    /// behind (`cancelled`/`interrupted`), while the desktop's own Continue
+    /// re-sent a prompt without ever consulting the run.
+    #[test]
+    fn every_terminal_run_of_the_session_is_a_continuation_source() {
+        use crate::remote::test_support::{raw_store_connection, HomeGuard};
+
+        let _home = HomeGuard::new("business-prompt-continue-any-reason");
+        crate::remote::test_support::init_store();
+        {
+            let conn = raw_store_connection();
+            conn.execute_batch(
+                "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                     VALUES ('ws_rst', 'WS', 'user', '/tmp/ws', 1, 1);
+                 INSERT INTO threads (id, workspace_id, mode, title, agent_session_id,
+                                      created_at, updated_at)
+                     VALUES ('th_rst', 'ws_rst', 'chat', 'T', 'sess_rst', 1, 1);
+                 INSERT INTO runs (id, thread_id, status, error_message, error_type,
+                                   created_at, updated_at) VALUES
+                     ('run_failed', 'th_rst', 'failed', 'boom', 'model_failed', 1, 1),
+                     ('run_interrupted', 'th_rst', 'cancelled',
+                      'Interrupted by application restart.', 'interrupted', 1, 1),
+                     ('run_completed', 'th_rst', 'completed', NULL, NULL, 1, 1),
+                     ('run_stopped', 'th_rst', 'cancelled', 'Run was cancelled.', 'cancelled', 1, 1);",
+            )
+            .expect("seed the source runs");
+        }
+
+        for run_id in [
+            "run_failed",
+            "run_interrupted",
+            "run_completed",
+            "run_stopped",
+        ] {
+            validate_continue_source("sess_rst", run_id)
+                .unwrap_or_else(|error| panic!("{run_id} must be continuable: {error}"));
+        }
+
+        // The one thing still refused: a run that belongs to another
+        // conversation, which would steer text into a chat the user is not in.
+        let error = validate_continue_source("another-session", "run_failed")
+            .expect_err("a foreign run is not a continuation source")
+            .to_string();
+        assert!(
+            error.starts_with(CONTINUE_REFUSED_CODE),
+            "the phone maps this token to its own text: {error}"
+        );
+        assert!(error.contains("does not belong"), "{error}");
     }
 
     /// A prompt addressed to a conversation this desktop does not have must be
@@ -531,6 +757,7 @@ mod tests {
                 workspace_id: String::new(),
                 upload_references: Vec::new(),
                 command_id: "cmd-draft-session".to_string(),
+                busy_policy: String::new(),
             },
         )
         .await

@@ -169,6 +169,12 @@ describe("sending", () => {
     ["send_compacting", "t:chat.compacting"],
     ["prompt_too_large", "t:chat.promptTooLarge"],
     ["send_disconnected", "t:chat.sendFailed"],
+    // The desktop answered for itself: a run is still in flight there.
+    ["session_busy: this session is still running; wait for it to finish or abort it first.", "t:chat.sessionBusy"],
+    // Nothing left this device: the pairing is gone, so the text was never sent.
+    ["not_connected", "t:chat.sendOffline"],
+    ["pairing_changed", "t:chat.sendOffline"],
+    ["send_busy", "t:chat.sendInFlight"],
   ])("a failed send reports %s and hands the draft back", async (error, expectedToast) => {
     const remote = remoteFor({ sendMessage: jest.fn(async () => { throw new Error(error); }) });
     const { setAttachments, setMessage, setTransferProgress } = mount({ remote, message: "keep me", attachments: [attachment] });
@@ -392,6 +398,19 @@ describe("continuing a truncated answer", () => {
     mount({ remote });
     await act(async () => { api.continueMessage(assistant({ id: "a1" })); await Promise.resolve(); });
     expect(toast).toHaveBeenCalledWith("t:chat.sendFailed");
+  });
+
+  // The desktop answered "no" instead of dropping the request: the reply is no
+  // longer resumable, so the toast must not read as a send/network failure.
+  test("a continuation the desktop refuses says why, not \"send failed\"", async () => {
+    const remote = remoteFor({
+      continueRun: jest.fn(async () => {
+        throw new Error("continue_unavailable: Only a run that failed or was interrupted can be continued.");
+      }),
+    });
+    mount({ remote });
+    await act(async () => { api.continueMessage(assistant({ id: "a1" })); await Promise.resolve(); });
+    expect(toast).toHaveBeenCalledWith("t:chat.continueUnavailable");
   });
 
   test("an answer with no run to resume is not continued", async () => {

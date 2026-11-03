@@ -13,6 +13,45 @@ const minute = 60_000;
 const hour = 60 * minute;
 const day = 24 * hour;
 
+/**
+ * The language the fixture's *data* is written in.
+ *
+ * The interface has two languages (`src/i18n`), and half of a frame is the
+ * agent's words: a rail whose rows say `整理两篇文献的结论对比表` under a heading
+ * that says `Sessions` is neither language. So the fixture carries the session
+ * list and the transcripts in both, and `?lang=en` (the same parameter
+ * `shot/prefs.ts` pins the interface with) selects the English payload — the
+ * capture passes one parameter and both halves agree.
+ *
+ * English is not a translation of the Chinese payload, it is the session an
+ * English reader would be looking at: same workspaces, same ages, same
+ * conversations, written in the language of the frame.
+ */
+const fixtureEn = typeof window !== "undefined"
+  && new URLSearchParams(window.location.search).get("lang") === "en";
+
+/** Pick the fixture string for this capture's language. */
+function pick(zh: string, en: string): string {
+  return fixtureEn ? en : zh;
+}
+
+/**
+ * The conversation a capture asked to open — `?thread=th_parser`.
+ *
+ * The default state is what every other scenario starts from, and a conversation
+ * added to it would move all of them. So a conversation a capture names brings
+ * its own workspace with it, and only then. The backend reads the same value to
+ * decide which conversation the app opens on.
+ */
+export function requestedThread(): string | null {
+  if (typeof window === "undefined")
+    return null;
+  return new URLSearchParams(window.location.search).get("thread");
+}
+
+/** The expression-parser session: the conversation the two language captures open. */
+export const PARSER_THREAD_ID = "th_parser";
+
 export interface MockWorkspace {
   id: string;
   name: string;
@@ -37,6 +76,8 @@ export interface MockThread {
   status: "active" | "archived" | "deleted";
   pinned: boolean;
   readonly: boolean;
+  /** The model this conversation runs on; unset means the fixture's default. */
+  model?: string;
   agentSessionId?: string | null;
   parentSessionId?: string | null;
   lastMessageAt?: number | null;
@@ -50,10 +91,10 @@ export const HOME = "/Users/lixin";
 export const workspaces: MockWorkspace[] = [
   {
     id: "ws_dopamine",
-    name: "多巴胺与决策",
+    name: pick("多巴胺与决策", "Dopamine and Decisions"),
     kind: "user",
     path: `${HOME}/Research/dopamine-decision`,
-    description: "风险决策的神经经济学文献与数据",
+    description: pick("风险决策的神经经济学文献与数据", "Neuroeconomics of risky choice: papers and data"),
     pinned: true,
     cleanupStatus: "active",
     lastOpenedAt: now - 2 * minute,
@@ -62,10 +103,10 @@ export const workspaces: MockWorkspace[] = [
   },
   {
     id: "ws_sparse",
-    name: "稀疏注意力复现",
+    name: pick("稀疏注意力复现", "Sparse Attention, Reproduced"),
     kind: "user",
     path: `${HOME}/Research/sparse-attention`,
-    description: "复现 Longformer 的稀疏注意力实验",
+    description: pick("复现 Longformer 的稀疏注意力实验", "Reproducing Longformer's sparse attention"),
     pinned: true,
     cleanupStatus: "active",
     lastOpenedAt: now - 5 * hour,
@@ -74,7 +115,7 @@ export const workspaces: MockWorkspace[] = [
   },
   {
     id: "ws_sc",
-    name: "单细胞转录组",
+    name: pick("单细胞转录组", "Single-Cell Transcriptomics"),
     kind: "user",
     path: `${HOME}/Research/single-cell`,
     cleanupStatus: "active",
@@ -84,7 +125,7 @@ export const workspaces: MockWorkspace[] = [
   },
   {
     id: "ws_temp",
-    name: "临时会话",
+    name: pick("临时会话", "Scratch Chats"),
     kind: "temporary",
     path: `${HOME}/.future/workspaces/chat/2026-09-17-a1b2`,
     cleanupStatus: "active",
@@ -115,35 +156,70 @@ function thread(id: string, workspaceId: string, title: string, ageMinutes: numb
 
 export const threads: MockThread[] = [
   // The conversation the screenshots open on.
-  thread("th_review", "ws_dopamine", "整理两篇文献的结论对比表", 2, { pinned: true }),
+  thread("th_review", "ws_dopamine", pick("整理两篇文献的结论对比表", "Comparing Two Papers' Conclusions"), 2, { pinned: true }),
   // A conversation tree: a parent thread and two follow-ups forked from it.
-  thread("th_review_a", "ws_dopamine", "只看风险偏好那一段", 40, {
+  thread("th_review_a", "ws_dopamine", pick("只看风险偏好那一段", "Just the Risk-Preference Section"), 40, {
     parentSessionId: "sess_th_review",
   }),
-  thread("th_review_b", "ws_dopamine", "把结论改成中文表格", 75, {
+  thread("th_review_b", "ws_dopamine", pick("把结论改成中文表格", "Conclusions as a Chinese Table"), 75, {
     parentSessionId: "sess_th_review",
   }),
-  thread("th_review_b1", "ws_dopamine", "表格加上样本量一列", 90, {
+  thread("th_review_b1", "ws_dopamine", pick("表格加上样本量一列", "Add a Sample-Size Column"), 90, {
     parentSessionId: "sess_th_review_b",
   }),
-  thread("th_data", "ws_dopamine", "把这份问卷数据清洗一下", 6 * 60),
-  thread("th_fig", "ws_dopamine", "重新画一张效应量森林图", 30 * 60),
+  thread("th_data", "ws_dopamine", pick("把这份问卷数据清洗一下", "Clean Up This Survey Data"), 6 * 60),
+  thread("th_fig", "ws_dopamine", pick("重新画一张效应量森林图", "Redraw the Effect-Size Forest Plot"), 30 * 60),
 
-  thread("th_longformer", "ws_sparse", "跑通 Longformer 的 baseline", 5 * 60),
-  thread("th_ablation", "ws_sparse", "帮我设计消融实验", 2 * 24 * 60),
+  thread("th_longformer", "ws_sparse", pick("跑通 Longformer 的 baseline", "Get the Longformer Baseline Running"), 5 * 60),
+  thread("th_ablation", "ws_sparse", pick("帮我设计消融实验", "Design the Ablation Study"), 2 * 24 * 60),
   // Started two hours ago and then stopped on a question: the recency view ranks
   // the running rows by when they *started*, so this row leads the active stretch
   // even though it is the older one to have spoken. With both clocks agreeing the
   // capture would say nothing about which one the list uses.
-  thread("th_sc", "ws_sc", "找一下这批细胞的 marker 基因", 26 * 60, {
+  thread("th_sc", "ws_sc", pick("找一下这批细胞的 marker 基因", "Find Marker Genes for These Cells"), 26 * 60, {
     createdAt: now - 2 * 60 * minute,
   }),
-  thread("th_temp", "ws_temp", "帮我把这段英文摘要改通顺", 3 * 60),
+  thread("th_temp", "ws_temp", pick("帮我把这段英文摘要改通顺", "Smooth Out This English Abstract"), 3 * 60),
   // Chat-mode conversations (the rail's own "对话" group).
-  thread("th_chat1", "ws_temp", "基金申报书的创新点怎么写", 20, { mode: "chat" }),
-  thread("th_chat2", "ws_temp", "解释一下 p 值的常见误用", 5 * 60, { mode: "chat" }),
-  thread("th_chat3", "ws_temp", "把这封催稿邮件改得客气一点", 28 * 60, { mode: "chat" }),
+  thread("th_chat1", "ws_temp", pick("基金申报书的创新点怎么写", "Writing a Grant's Innovation Section"), 20, { mode: "chat" }),
+  thread("th_chat2", "ws_temp", pick("解释一下 p 值的常见误用", "Common Misuses of the p Value"), 5 * 60, { mode: "chat" }),
+  thread("th_chat3", "ws_temp", pick("把这封催稿邮件改得客气一点", "Soften This Nudge Email"), 28 * 60, { mode: "chat" }),
 ];
+
+/**
+ * The expression-parser session.
+ *
+ * The same two turns the TUI's scripted agent serves (`tui/examples/demo_agent.rs`,
+ * `journal_zh` / `journal_en`), in the desktop's own entry shape: a user question
+ * about `1+2+` returning `3`, the reasoning and the calls that answer it, a
+ * diagnosis with a heading, inline code, a highlighted `rust` block and a
+ * three-row table, then a second turn that lands the fix as two commits and
+ * answers with a numbered list and a quote.
+ *
+ * Only `?thread=th_parser` adds it: the default fixture is what every other
+ * scenario starts from, and it must stay what it was.
+ */
+export const PARSER_MODEL = "future/deepseek-flash";
+const PARSER_WORKSPACE = "ws_futureos";
+
+function sessionTitle(): string {
+  return pick("表达式解析器里的 off-by-one", "Off-by-One in the Expression Parser");
+}
+
+if (requestedThread() === PARSER_THREAD_ID) {
+  workspaces.push({
+    id: PARSER_WORKSPACE,
+    name: pick("FutureOS 仓库", "FutureOS Repo"),
+    kind: "user",
+    path: `${HOME}/future-os`,
+    description: pick("表达式解析器、CLI 与 agent 的仓库", "The repository: parser, CLI and agent"),
+    cleanupStatus: "active",
+    lastOpenedAt: now,
+    createdAt: now - 40 * day,
+    updatedAt: now,
+  });
+  threads.unshift(thread(PARSER_THREAD_ID, PARSER_WORKSPACE, sessionTitle(), 0, { model: PARSER_MODEL }));
+}
 
 /** The conversation rendered in the chat screenshots. */
 export const MAIN_THREAD_ID = "th_review";
@@ -424,7 +500,274 @@ export const mainEntries: MockEntry[] = [
   },
 ];
 
-/** A second conversation used for the "search full history" screenshot. */
+/** The diagnosis: a heading, inline code, bold and italic runs, a highlighted block, a table. */
+const PARSER_DIAGNOSIS_ZH = `### 诊断
+
+\`parse_expr\` 用 **\`<=\`** 比较光标，于是 *「到末尾」* 和 *「越过末尾」* 变成同一个状态——尾随的运算符被消费掉，而缺的那个右操作数就成了 \`lhs\`。
+
+\`\`\`rust
+// 停在最后一个 token 上，而不是越过它。
+while self.peek() < self.end {
+    let op = self.next();
+    lhs = apply(lhs, op, self.parse_atom()?);
+}
+\`\`\`
+
+| 形状 | 改前 | 改后 |
+| --- | --- | --- |
+| 1+2+ | 3 | UnexpectedEof |
+| [1,2, | [1, 2] | UnexpectedEof |
+| f(a, | f(a) | UnexpectedEof |
+
+三种写法是**同一个错误**，所以一张表驱动的用例就覆盖了它们——见 \`src/parser/tests.rs\`。`;
+
+const PARSER_DIAGNOSIS_EN = `### Diagnosis
+
+\`parse_expr\` compares the cursor with **\`<=\`**, so *"at the end"* and *"past the end"* are one state — the trailing operator is consumed and its missing operand becomes \`lhs\`.
+
+\`\`\`rust
+// Stop *at* the last token, not one past it.
+while self.peek() < self.end {
+    let op = self.next();
+    lhs = apply(lhs, op, self.parse_atom()?);
+}
+\`\`\`
+
+| Shape | Before | After |
+| --- | --- | --- |
+| 1+2+ | 3 | UnexpectedEof |
+| [1,2, | [1, 2] | UnexpectedEof |
+| f(a, | f(a) | UnexpectedEof |
+
+All three are the **same mistake**, so one table-driven test covers them — see \`src/parser/tests.rs\`.`;
+
+/** The closing answer: a numbered list of the two commits and a quote of the test run. */
+const PARSER_RESULT_ZH = `两个 commit 都绿了（\`6b1f0c2\` 边界、\`d41e8aa\` 用例）；\`benches/run.sh\` 四个用例各 5 次取中位数：
+
+| 用例 | 改前 | 改后 | 变化 |
+| --- | --- | --- | --- |
+| \`1+2+\`（提前报错） | 412 | 408 | −1.0% |
+| \`f(a, b, c, d)\` | 3 210 | 3 194 | −0.5% |
+| \`((((1))))\` × 64 层 | 11 700 | 12 410 | **+6.1%** |
+
+深嵌套这 6% 是真的：\`<\` 每轮多一次边界比较，64 层就是 64 次——换的是 \`1+2+\` 不再返回 \`3\`。深度是另一笔账（每层一帧，1 MB 栈约 900 层），\`max_depth = 256\` 单独 commit；接着把 \`plot.py\` 接进 CI、\`SmallVec\` 换数组、补深度用例。
+
+![三个用例的吞吐：改前 vs 改后](/Users/lixin/future-os/benches/parser-throughput.png)`;
+
+const PARSER_RESULT_EN = `Both commits are green (\`6b1f0c2\` bounds, \`d41e8aa\` cases); \`benches/run.sh\`, four cases, median of five:
+
+| Case | Before | After | Delta |
+| --- | --- | --- | --- |
+| \`1+2+\` (fails early) | 412 | 408 | −1.0% |
+| \`f(a, b, c, d)\` | 3,210 | 3,194 | −0.5% |
+| \`((((1))))\` × 64 deep | 11,700 | 12,410 | **+6.1%** |
+
+That 6% is real: \`<\` costs one extra comparison per iteration — 64 here — and it buys \`1+2+\` failing instead of returning \`3\`. Depth is the other debt (1 MB ≈ 900 levels, so \`max_depth = 256\` ships separately). Next: \`plot.py\` into CI, an array for the \`Vec\`, depth cases at 255/256/257.
+
+![Throughput on three cases: before vs after](/Users/lixin/future-os/benches/parser-throughput.png)`;
+
+/**
+ * The parser session's two turns, in the desktop's entry shape.
+ *
+ * The words are the TUI's (`journal_zh` / `journal_en` in
+ * `tui/examples/demo_agent.rs`), sentence for sentence: a caption-carrying
+ * question, a reasoning block, the calls that answer it, the diagnosis, then the
+ * second turn that searches for the same shape and lands the fix. What differs is
+ * the *shape* of the payload, because the desktop has its own: tool results are
+ * their own entry (the transcript pairs them by `toolCallId` and reads the
+ * output from `toolOutputs`), and a reply's reasoning and calls fold into one
+ * summary the reader opens.
+ */
+export function parserEntries(): MockEntry[] {
+  return [
+    {
+      id: "p1",
+      kind: "message",
+      role: "user",
+      createdAtMs: now - 3 * minute,
+      runId: "run_parser_1",
+      blocks: [{
+        kind: "text",
+        text: pick(
+          "`1+2+` 返回的是 `3`，不是报错。表达式解析器里有个 off-by-one，找出来并补一个回归测试。",
+          "`1+2+` returns `3` instead of failing. There is an off-by-one in the expression parser — find it and add a regression test.",
+        ),
+      }],
+    },
+    {
+      id: "p2",
+      kind: "message",
+      role: "assistant",
+      createdAtMs: now - 2.6 * minute,
+      runId: "run_parser_1",
+      usage: { inputTokens: 24_800, outputTokens: 1_480, cacheReadTokens: 21_100 },
+      run: { status: "completed", durationMs: 61_400 },
+      blocks: [
+        {
+          kind: "reasoning",
+          text: pick(
+            "先从 `parse_expr` 的循环边界看：光标用 `<=` 比较时，「到末尾」和「越过末尾」是同一个状态，尾随的运算符会被接受，而它的右操作数其实并不存在。",
+            "Start at `parse_expr`'s loop bound. If the cursor is compared with `<=`, \"at the end\" and \"past the end\" are the same state, and a trailing operator is accepted with an operand that is not there.",
+          ),
+        },
+        {
+          kind: "tool_call",
+          toolCallId: "pc_read",
+          name: "read",
+          arguments: { path: "src/parser.rs", offset: 138, limit: 16 },
+        },
+        {
+          kind: "tool_call",
+          toolCallId: "pc_test",
+          name: "shell",
+          arguments: { command: "cargo test -p parser" },
+        },
+        { kind: "text", text: pick(PARSER_DIAGNOSIS_ZH, PARSER_DIAGNOSIS_EN) },
+      ],
+    },
+    {
+      id: "p3",
+      kind: "tool",
+      role: "tool",
+      createdAtMs: now - 2.5 * minute,
+      runId: "run_parser_1",
+      blocks: [
+        { kind: "tool_result", toolCallId: "pc_read" },
+        { kind: "tool_result", toolCallId: "pc_test" },
+      ],
+    },
+    {
+      id: "p4",
+      kind: "message",
+      role: "user",
+      createdAtMs: now - 1.5 * minute,
+      runId: "run_parser_2",
+      blocks: [{
+        kind: "text",
+        text: pick(
+          "别处还有同样的写法吗？拆两个 commit，改完跑个基准——我怕 `<` 更慢。",
+          "Anywhere else with this shape? Two commits, then the benchmark.",
+        ),
+      }],
+    },
+    {
+      id: "p5",
+      kind: "message",
+      role: "assistant",
+      createdAtMs: now - minute,
+      runId: "run_parser_2",
+      usage: { inputTokens: 31_200, outputTokens: 1_020, cacheReadTokens: 28_600 },
+      run: { status: "completed", durationMs: 44_900 },
+      blocks: [
+        {
+          kind: "reasoning",
+          text: pick(
+            "搜这个比较本身，而不是搜 `parse_expr`：错的是边界，不是函数。",
+            "Search for the comparison itself rather than for `parse_expr`: the mistake is the bound, not the function.",
+          ),
+        },
+        {
+          kind: "tool_call",
+          toolCallId: "pc_grep",
+          name: "shell",
+          arguments: { command: "rg -n 'peek\\(\\) <=' src/" },
+        },
+        {
+          kind: "reasoning",
+          text: pick(
+            "另外两处，都能从同一个入口到达。边界放一个 commit、用例表放另一个，这样回滚测试不会把行为改动一起带走，中间也不会留一个红的测试集。",
+            "Two more sites, both reachable from the same entry point. Bounds in one commit, the case table in the other, so reverting the tests cannot take the behaviour change with them — or leave a red suite in between.",
+          ),
+        },
+        {
+          kind: "reasoning",
+          text: pick(
+            "基准要盯两件事：一是尾部用例（提前报错）不能被 `<` 拖慢，二是深嵌套这种递归下降的老账要能量出来，否则「慢了一点」只是感觉。四个用例各跑 5 次取中位数，同一台 runner。",
+            "Two things the benchmark has to show: that the early-error case did not get slower, and how much the deep-nesting case costs — otherwise \"a bit slower\" is a feeling, not a number. Four cases, five repetitions, median, same runner.",
+          ),
+        },
+        {
+          kind: "tool_call",
+          toolCallId: "pc_edit",
+          name: "edit",
+          arguments: {
+            path: "src/args.rs",
+            old: "while self.peek() <= self.end {",
+            new: "while self.peek() < self.end {",
+          },
+        },
+        {
+          kind: "tool_call",
+          toolCallId: "pc_commit",
+          name: "shell",
+          arguments: { command: "cargo test -p parser && git commit -am 'fix(parser): the loop bound'" },
+        },
+        {
+          kind: "tool_call",
+          toolCallId: "pc_bench",
+          name: "shell",
+          arguments: { command: "benches/run.sh --save-baseline after" },
+        },
+        {
+          kind: "tool_call",
+          toolCallId: "pc_plot",
+          name: "shell",
+          arguments: { command: "python benches/plot.py --out benches/parser-throughput.png" },
+        },
+        { kind: "text", text: pick(PARSER_RESULT_ZH, PARSER_RESULT_EN) },
+      ],
+    },
+    {
+      id: "p6",
+      kind: "tool",
+      role: "tool",
+      createdAtMs: now - 0.9 * minute,
+      runId: "run_parser_2",
+      blocks: [
+        { kind: "tool_result", toolCallId: "pc_grep" },
+        { kind: "tool_result", toolCallId: "pc_edit" },
+        { kind: "tool_result", toolCallId: "pc_commit" },
+        { kind: "tool_result", toolCallId: "pc_bench" },
+        { kind: "tool_result", toolCallId: "pc_plot" },
+      ],
+    },
+  ];
+}
+
+/** The parser session's runs and calls: the Runs panel and the tool rows read these. */
+export const parserRuns = [
+  {
+    id: "run_parser_1",
+    threadId: PARSER_THREAD_ID,
+    status: "completed",
+    modelProvider: "future",
+    modelId: "deepseek-flash",
+    startedAt: now - 3 * minute,
+    endedAt: now - 2.4 * minute,
+    createdAt: now - 3 * minute,
+    updatedAt: now - 2.4 * minute,
+  },
+  {
+    id: "run_parser_2",
+    threadId: PARSER_THREAD_ID,
+    status: "completed",
+    modelProvider: "future",
+    modelId: "deepseek-flash",
+    startedAt: now - 1.5 * minute,
+    endedAt: now - 0.8 * minute,
+    createdAt: now - 1.5 * minute,
+    updatedAt: now - 0.8 * minute,
+  },
+];
+
+export const parserToolCalls = [
+  tool("pc_read", "run_parser_1", "read", JSON.stringify({ path: "src/parser.rs", offset: 138, limit: 16 }), now - 2.9 * minute, 140),
+  tool("pc_test", "run_parser_1", "shell", JSON.stringify({ command: "cargo test -p parser" }), now - 2.8 * minute, 4_100),
+  tool("pc_grep", "run_parser_2", "shell", JSON.stringify({ command: "rg -n 'peek\\(\\) <=' src/" }), now - 1.4 * minute, 120),
+  tool("pc_edit", "run_parser_2", "edit", JSON.stringify({ path: "src/args.rs" }), now - 1.3 * minute, 90),
+  tool("pc_commit", "run_parser_2", "shell", JSON.stringify({ command: "cargo test -p parser && git commit -am 'fix(parser): the loop bound'" }), now - 1.2 * minute, 5_200),
+];
+
 export const figureEntries: MockEntry[] = [
   {
     id: "f1",
@@ -466,6 +809,7 @@ export const figureEntries: MockEntry[] = [
 export const entriesByThread: Record<string, MockEntry[]> = {
   th_review: mainEntries,
   th_fig: figureEntries,
+  ...(requestedThread() === PARSER_THREAD_ID ? { [PARSER_THREAD_ID]: parserEntries() } : {}),
 };
 
 /**
@@ -567,6 +911,7 @@ export const compactResumeEntries: MockEntry[] = [
 // ─── Runs / tools (Runs panel + right context rail) ──────────────────────
 
 export const runs = [
+  ...(requestedThread() === PARSER_THREAD_ID ? parserRuns : []),
   {
     id: "run_1",
     threadId: "th_review",
@@ -659,6 +1004,7 @@ function tool(id: string, runId: string, name: string, input: string, startedAtM
 }
 
 export const toolCalls = [
+  ...(requestedThread() === PARSER_THREAD_ID ? parserToolCalls : []),
   tool("tc_1", "run_1", "read", JSON.stringify({ path: "papers/frank-2024.pdf" }), now - 8.9 * minute, 1_400),
   tool("tc_2", "run_1", "read", JSON.stringify({ path: "papers/dreher-2025.pdf" }), now - 8.8 * minute, 1_500),
   tool("tc_3", "run_1", "shell", JSON.stringify({ command: "ls -la data/ && wc -l data/subjects.csv" }), now - 8.7 * minute, 320),
@@ -717,6 +1063,66 @@ export const pendingApproval = {
 };
 
 /**
+ * The parser session's pending approval: the benchmark figure.
+ *
+ * The story the card tells is the one the transcript is in the middle of — the
+ * sandbox refused to write the chart the benchmark script draws, and the model
+ * asks for that one path. `kind: "sandbox_escalation"` with a
+ * `sandbox_failure` trigger is what makes the card *localize its own title*
+ * (`approval.escalationRetryTitle`) instead of showing the agent's English
+ * string; the command, the reason and the blocked path are the fixture's and
+ * therefore carry both languages, like the transcript.
+ */
+export const parserApproval = {
+  id: "apr_parser",
+  threadId: PARSER_THREAD_ID,
+  runId: "run_parser_2",
+  toolCallId: "pc_push",
+  kind: "sandbox_escalation",
+  status: "pending",
+  title: "This command needs to run outside the sandbox",
+  summary: pick(
+    "沙箱拒绝这个会话的出站网络",
+    "The sandbox refused outbound network for this session",
+  ),
+  riskLevel: "medium",
+  requestedAction: "shell",
+  actionCategory: "shell",
+  actionPayload: JSON.stringify({
+    tool: "shell",
+    category: "sandbox_escalation",
+    behavior: "network",
+    summary: pick(
+      "沙箱拒绝这个会话的出站网络",
+      "The sandbox refused outbound network for this session",
+    ),
+    command: "git push origin fix/parser-bound",
+    justification: pick(
+      "两个 commit 要先推上去，CI 才会跑基准；只推这一个分支，不碰 main。",
+      "Pushed before CI can run the benchmark. This branch only, not main.",
+    ),
+    // snake_case on purpose: `parseAction` reads `escalation_trigger`, and the
+    // camelCase spelling is dropped — which is why the card falls back to the
+    // generic escalation title when it is written the other way.
+    escalation_trigger: "sandbox_failure",
+    scope: {
+      cwd: `${HOME}/future-os`,
+      insideWorkspace: true,
+      estimatedBlastRadius: "low",
+    },
+  }),
+  sandboxBoundary: `${HOME}/future-os`,
+  saveSuggestion: null,
+  decisionNote: null,
+  decidedAt: null,
+  reviewer: "user",
+  decisionScope: "session",
+  decisionSource: "local",
+  createdAt: now - 30_000,
+  updatedAt: now - 30_000,
+};
+
+/**
  * A pending approval on the *host*, delivered the way a real one arrives: as an
  * `approval_request` event on the peer event stream. A remote approval has no
  * local store to read, so the fixture must push it rather than serve it.
@@ -738,6 +1144,42 @@ drwxr-xr-x  6 lixin  staff    192  9月 17 10:02 .
 68 data/subjects.csv`,
   tc_8: `notes/frank-summary.md:12:sample size: n = 42, PET imaging, striatal binding potential
 notes/dreher-summary.md:12:sample size: n = 68, plasma metabolite assay`,
+  // The parser session's calls, verbatim from the TUI's `journal_*`: the file it
+  // read, the suite before and after, the places the same comparison appears,
+  // and the two commits.
+  pc_read: `142  fn parse_expr(&mut self) -> Result<Expr> {
+143      let mut lhs = self.parse_atom()?;
+144      while self.peek() <= self.end {
+145          let op = self.next();
+146          let rhs = self.parse_atom()?;
+147          lhs = apply(lhs, op, rhs);
+148      }
+149      Ok(lhs)
+150  }
+`,
+  pc_test: `running 41 tests
+test result: ok. 41 passed; 0 failed; 0 ignored
+`,
+  pc_grep: `src/parser.rs:144:        while self.peek() <= self.end {
+src/parser.rs:318:        while self.peek() <= self.end {
+src/args.rs:87:        while self.peek() <= self.end {
+`,
+  pc_edit: `patched src/args.rs:87
+1 file changed, 1 insertion(+), 1 deletion(-)
+`,
+  pc_commit: `test result: ok. 44 passed; 0 failed; 0 ignored
+[parser 6b1f0c2] fix(parser): the loop bound
+ 3 files changed, 3 insertions(+), 3 deletions(-)
+`,
+  pc_bench: `running 4 benchmarks (median of 5)
+1+2+                    412 -> 408 ns/op
+a+b*c                   1840 -> 1862 ns/op
+f(a, b, c, d)           3210 -> 3194 ns/op
+((((1)))) x64          11700 -> 12410 ns/op
+baseline written to benches/baseline.json
+`,
+  pc_plot: `wrote benches/parser-throughput.png (38 KB)
+`,
 };
 
 // ─── Skills ──────────────────────────────────────────────────────────────
@@ -762,6 +1204,9 @@ export const availableSkills = [
 
 export const models = [
   { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", provider: "future", reasoning: true, thinkingLevel: "medium", contextWindow: 128_000, isDefault: true, supportsImages: true, description: "推理与长上下文兼顾，适合文献综述与数据分析", descriptionEn: "Balanced reasoning and long context", recommended: true },
+  // The model the parser session runs on — the same one the TUI's scripted agent
+  // reports, so the two frames describe one session rather than two.
+  { id: "deepseek-flash", label: "DeepSeek Flash", provider: "future", reasoning: true, thinkingLevel: "medium", contextWindow: 200_000, supportsImages: false, description: "快模型，适合定位 bug 与改代码", descriptionEn: "Fast model for bug hunting and small edits" },
   { id: "deepseek-v4", label: "DeepSeek V4", provider: "future", reasoning: true, thinkingLevel: "medium", contextWindow: 128_000, supportsImages: true, description: "日常问答与改写的快模型", descriptionEn: "Fast model for everyday work" },
   { id: "future-flash", label: "Future Flash", provider: "future", reasoning: false, thinkingLevel: "off", contextWindow: 64_000, description: "低延迟，适合小改动", descriptionEn: "Low latency for small edits" },
   { id: "future-vision", label: "Future Vision", provider: "future", reasoning: true, thinkingLevel: "medium", contextWindow: 200_000, supportsImages: true, description: "看图、读图表与扫描件", descriptionEn: "Reads figures and scans" },
@@ -769,7 +1214,7 @@ export const models = [
 
 export const providersView = {
   builtin: [
-    { id: "future", name: "FutureOS", baseUrl: "https://api.future-os.cn", hasApiKey: true, modelCount: 4, requiresBaseUrl: false },
+    { id: "future", name: "FutureOS", baseUrl: "https://api.future-os.cn", hasApiKey: true, modelCount: 5, requiresBaseUrl: false },
     { id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", hasApiKey: false, modelCount: 6, requiresBaseUrl: false },
     { id: "anthropic", name: "Anthropic", baseUrl: "https://api.anthropic.com", hasApiKey: false, modelCount: 4, requiresBaseUrl: false },
   ],
@@ -849,6 +1294,87 @@ export const workspaceFiles: Record<string, Array<{ name: string; path: string; 
     { name: "effect-size.png", path: `${HOME}/Research/dopamine-decision/notes/effect-size.png`, isDir: false, size: 62_400, modified: now - 4 * minute },
   ],
 };
+
+/**
+ * The expression-parser session's checkout.
+ *
+ * The right-hand Files panel lists the *active workspace*, so a capture that
+ * opens it needs a directory that looks like the repository the conversation is
+ * about: the two files the agent read and edited (`src/parser.rs`, `src/args.rs`),
+ * the test module the diagnosis points at (`src/parser/tests.rs`), and the
+ * manifest and the agent guide beside them. Keyed by path, so nothing else in
+ * the fixture changes.
+ */
+const REPO = `${HOME}/future-os`;
+function dir(name: string, parent: string, minutes: number) {
+  return { name, path: `${parent}/${name}`, isDir: true, size: 0, modified: now - minutes * minute };
+}
+function file(name: string, parent: string, size: number, minutes: number) {
+  return { name, path: `${parent}/${name}`, isDir: false, size, modified: now - minutes * minute };
+}
+
+// A working checkout, deep enough that the Files panel is a tree rather than a
+// few rows hanging off the top: with `src`, `benches` and `src/parser` open (what
+// the capture opens) it fills a 1728×1117 window and stops 16 px short of the
+// bottom edge — a row more, and the window edge cuts the last one through its
+// glyphs (the panel is a full-height column with no border of its own down there).
+workspaceFiles[REPO] = [
+  dir(".github", REPO, 6 * 24 * 60),
+  dir("benches", REPO, 3),
+  dir("docs", REPO, 6 * 60),
+  dir("src", REPO, 4),
+  dir("tests", REPO, 9 * 24 * 60),
+  file("AGENTS.md", REPO, 8_960, 2 * 24 * 60),
+  file("Cargo.lock", REPO, 41_280, 3 * 24 * 60),
+  file("Cargo.toml", REPO, 1_940, 3 * 24 * 60),
+  file("LICENSE", REPO, 1_080, 120 * 24 * 60),
+  file("README.md", REPO, 3_400, 9 * 24 * 60),
+  file("rust-toolchain.toml", REPO, 132, 11 * 24 * 60),
+  file("rustfmt.toml", REPO, 210, 40 * 24 * 60),
+];
+workspaceFiles[`${REPO}/.github`] = [
+  dir("workflows", `${REPO}/.github`, 6 * 24 * 60),
+  file("dependabot.yml", `${REPO}/.github`, 480, 20 * 24 * 60),
+];
+workspaceFiles[`${REPO}/.github/workflows`] = [
+  file("bench.yml", `${REPO}/.github/workflows`, 1_460, 2 * 24 * 60),
+  file("ci.yml", `${REPO}/.github/workflows`, 3_120, 5 * 24 * 60),
+  file("release.yml", `${REPO}/.github/workflows`, 2_180, 12 * 24 * 60),
+];
+workspaceFiles[`${REPO}/benches`] = [
+  file("README.md", `${REPO}/benches`, 1_260, 6 * 24 * 60),
+  file("baseline.json", `${REPO}/benches`, 2_240, 12),
+  file("cases.json", `${REPO}/benches`, 1_480, 3),
+  file("parser-throughput.png", `${REPO}/benches`, 38_400, 1),
+  file("plot.py", `${REPO}/benches`, 1_880, 25),
+  file("run.sh", `${REPO}/benches`, 620, 4 * 60),
+  file("throughput.rs", `${REPO}/benches`, 5_640, 2 * 60),
+];
+workspaceFiles[`${REPO}/docs`] = [
+  file("benchmarks.md", `${REPO}/docs`, 4_260, 3 * 60),
+  file("grammar.md", `${REPO}/docs`, 6_120, 14 * 24 * 60),
+  file("parser.md", `${REPO}/docs`, 5_180, 4 * 60),
+];
+workspaceFiles[`${REPO}/src`] = [
+  dir("parser", `${REPO}/src`, 2),
+  file("args.rs", `${REPO}/src`, 4_120, 5),
+  file("ast.rs", `${REPO}/src`, 6_480, 15 * 24 * 60),
+  file("error.rs", `${REPO}/src`, 3_260, 8 * 24 * 60),
+  file("eval.rs", `${REPO}/src`, 5_940, 20 * 24 * 60),
+  file("lexer.rs", `${REPO}/src`, 9_870, 3 * 24 * 60),
+  file("main.rs", `${REPO}/src`, 2_310, 8 * 24 * 60),
+  file("parser.rs", `${REPO}/src`, 14_260, 6),
+  file("span.rs", `${REPO}/src`, 1_740, 30 * 24 * 60),
+  file("token.rs", `${REPO}/src`, 2_960, 18 * 24 * 60),
+];
+workspaceFiles[`${REPO}/src/parser`] = [
+  file("depth.rs", `${REPO}/src/parser`, 2_640, 40),
+  file("errors.rs", `${REPO}/src/parser`, 3_180, 6 * 24 * 60),
+  file("mod.rs", `${REPO}/src/parser`, 1_120, 3 * 24 * 60),
+  file("pratt.rs", `${REPO}/src/parser`, 8_420, 22 * 24 * 60),
+  file("tests.rs", `${REPO}/src/parser`, 7_540, 2),
+  file("tokens.rs", `${REPO}/src/parser`, 2_250, 11 * 24 * 60),
+];
 
 /**
  * Source the text preview shows for a demo file, keyed by file name. Files
@@ -1197,6 +1723,8 @@ export const remotePeers: MockPeer[] = [
     // The capabilities the host advertises; the UI gates optional actions on
     // these, so a fixture without them renders fewer rows than the app can.
     features: [
+      "fusion_v1",
+      "fusion_settings_v1",
       "approval_tier_v1",
       "auto_approval_v1",
       "provider_management_v1",
@@ -1228,10 +1756,10 @@ export const remoteSessions: Record<string, unknown[]> = {
     {
       sessionId: "rs_forest",
       threadId: "th_forest",
-      title: "重画森林图并核对置信区间",
+      title: pick("重画森林图并核对置信区间", "Redraw the Forest Plot, Check the Intervals"),
       mode: "workspace",
       workspaceId: "ws_figures",
-      workspaceName: "图表脚本",
+      workspaceName: pick("图表脚本", "Figure Scripts"),
       // The same field the host's catalogue carries (a workspace's pin lives on
       // its conversations' rows), and the same state the mock's workspace list
       // reports: the group leads the merged list, with its marker.
@@ -1247,10 +1775,10 @@ export const remoteSessions: Record<string, unknown[]> = {
     {
       sessionId: "rs_forest_mono",
       threadId: "th_forest_mono",
-      title: "把森林图改成黑白版",
+      title: pick("把森林图改成黑白版", "A Black-and-White Forest Plot"),
       mode: "workspace",
       workspaceId: "ws_figures",
-      workspaceName: "图表脚本",
+      workspaceName: pick("图表脚本", "Figure Scripts"),
       workspacePinned: true,
       workspaceOrderedAt: Date.now() - 30 * 60_000,
       // A fork on that machine, as its catalogue reports it: the row is drawn
@@ -1270,10 +1798,10 @@ export const remoteSessions: Record<string, unknown[]> = {
     {
       sessionId: "rs_prisma",
       threadId: "th_prisma",
-      title: "PRISMA 流程图的筛选数字对不上",
+      title: pick("PRISMA 流程图的筛选数字对不上", "PRISMA Flow Diagram: Counts Do Not Add Up"),
       mode: "workspace",
       workspaceId: "ws_figures",
-      workspaceName: "图表脚本",
+      workspaceName: pick("图表脚本", "Figure Scripts"),
       workspacePinned: true,
       workspaceOrderedAt: Date.now() - 30 * 60_000,
       pinned: true,
@@ -1283,7 +1811,7 @@ export const remoteSessions: Record<string, unknown[]> = {
     {
       sessionId: "rs_reviewer",
       threadId: "th_reviewer",
-      title: "审稿意见逐条回复草稿",
+      title: pick("审稿意见逐条回复草稿", "Point-by-Point Reply to the Reviewer"),
       mode: "chat",
       workspaceId: null,
       pinned: false,
@@ -1425,8 +1953,8 @@ export const remoteWorkspaces = {
   desktopId: "desktop_studio",
   version: 1,
   workspaces: [
-    { id: "ws_figures", kind: "user", name: "图表脚本", path: "/Users/studio/papers/figures", pinned: true },
-    { id: "ws_manuscript", kind: "user", name: "投稿稿件", path: "/Users/studio/papers/submission", pinned: false },
+    { id: "ws_figures", kind: "user", name: pick("图表脚本", "Figure Scripts"), path: "/Users/studio/papers/figures", pinned: true },
+    { id: "ws_manuscript", kind: "user", name: pick("投稿稿件", "Submission"), path: "/Users/studio/papers/submission", pinned: false },
   ],
 };
 

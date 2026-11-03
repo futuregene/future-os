@@ -12,33 +12,53 @@
 //! update. Another Desktop has the same `createdBy` category but a different
 //! creator id, so its sessions are imported normally.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use super::connect_agent;
+use super::global_loop::GlobalLoop;
 
-static STARTED: AtomicBool = AtomicBool::new(false);
+/// One Agent stream per process: the reconnect loop re-attaches a plain
+/// subscription forever, so the test fixture has to be able to end it — see
+/// [`GlobalLoop`] for what a loop that outlives its test does to the mock's
+/// script queue.
+static LOOP: GlobalLoop = GlobalLoop::new();
 
 /// Re-arm the start guard so the "start it once" arm is reachable regardless of
-/// what earlier tests in this process already started.
+/// what earlier tests in this process already started — and stop whatever one
+/// of them left running.
 #[cfg(test)]
 fn reset_started_for_test() {
-    STARTED.store(false, Ordering::Release);
+    LOOP.stop_for_test();
 }
 
 pub fn spawn_session_events_observer() {
-    if STARTED.swap(true, Ordering::AcqRel) {
-        return;
-    }
-    crate::runtime::spawn(run());
+    LOOP.start(run());
+}
+
+/// Test-only: stop the process-wide observer and wait until its future is
+/// dropped, so its next reconnect cannot take another test's scripted stream.
+#[cfg(any(test, feature = "test-support"))]
+pub fn stop_session_events_observer_for_test() {
+    LOOP.stop_for_test();
+}
+
+/// Test-only: is the process-wide observer still owned by a live task?
+#[cfg(test)]
+fn session_events_observer_is_running_for_test() -> bool {
+    LOOP.is_running_for_test()
 }
 
 async fn run() {
     let mut backoff = Duration::from_millis(250);
-    loop {
+    while !crate::request_scope::is_stopping() {
         let result = observe_once(&mut backoff).await;
+        // Agent shutdown closes these streams before background tasks drain.
+        // Exit normally instead of logging a disconnect or reattaching to it.
+        if crate::request_scope::is_stopping() {
+            break;
+        }
         if let Err(error) = result {
-            eprintln!("FutureOS session events observer reconnecting: {error}");
+            tracing::debug!(event = "run", error = %error,"FutureOS session events observer reconnecting: {error}");
         }
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(Duration::from_secs(5));
@@ -89,7 +109,7 @@ async fn handle_session_created(data: &str) {
     let payload: serde_json::Value = match serde_json::from_str(data) {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("FutureOS: malformed session_created payload: {error}");
+            tracing::warn!(event = "handle_session_created", error = %error,"FutureOS: malformed session_created payload: {error}");
             return;
         }
     };
@@ -98,7 +118,10 @@ async fn handle_session_created(data: &str) {
         .and_then(|value| value.as_str())
         .filter(|id| !id.is_empty())
     else {
-        eprintln!("FutureOS: session_created payload omitted sessionId");
+        tracing::warn!(
+            event = "handle_session_created",
+            "FutureOS: session_created payload omitted sessionId"
+        );
         return;
     };
     let created_by = payload
@@ -127,7 +150,7 @@ async fn handle_session_created(data: &str) {
                 // binding from this installation's in-flight create. The
                 // reconnect/periodic reconciliation will retry after the
                 // original thread has had a chance to persist its binding.
-                eprintln!(
+                tracing::debug!(event = "handle_session_created", session_id = %session_id, error = %error,
                     "FutureOS deferred session {session_id} while device identity is unavailable: {error}"
                 );
                 return;
@@ -136,13 +159,13 @@ async fn handle_session_created(data: &str) {
     }
     match super::observer::reconcile_discovered_session(session_id).await {
         Ok(true) => {
-            eprintln!(
+            tracing::info!(event = "handle_session_created", session_id = %session_id, created_by = ?created_by, creator_id = ?creator_id,
                 "FutureOS imported session {session_id} announced by client {created_by:?} creator {creator_id:?}"
             );
         }
         Ok(false) => {}
         Err(error) => {
-            eprintln!("FutureOS could not import announced session {session_id}: {error}")
+            tracing::warn!(event = "handle_session_created", session_id = %session_id, error = %error,"FutureOS could not import announced session {session_id}: {error}")
         }
     }
 }
@@ -157,7 +180,7 @@ fn handle_session_deleted(data: &str) {
     let payload: serde_json::Value = match serde_json::from_str(data) {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("FutureOS: malformed session_deleted payload: {error}");
+            tracing::warn!(event = "handle_session_deleted", error = %error,"FutureOS: malformed session_deleted payload: {error}");
             return;
         }
     };
@@ -166,7 +189,10 @@ fn handle_session_deleted(data: &str) {
         .and_then(|value| value.as_str())
         .filter(|id| !id.is_empty())
     else {
-        eprintln!("FutureOS: session_deleted payload omitted sessionId");
+        tracing::warn!(
+            event = "handle_session_deleted",
+            "FutureOS: session_deleted payload omitted sessionId"
+        );
         return;
     };
     if let Some(database) = payload["databaseId"].as_str().filter(|id| !id.is_empty()) {
@@ -177,33 +203,40 @@ fn handle_session_deleted(data: &str) {
                 .map(Option::flatten)
         }) {
             Ok(Some((source, _))) if source != database => {
-                eprintln!("FutureOS: ignored deletion from another Agent database");
+                tracing::debug!(
+                    event = "handle_session_deleted",
+                    "FutureOS: ignored deletion from another Agent database"
+                );
                 return;
             }
             Ok(None) => {
-                eprintln!("FutureOS: preserving conversation without a verified deletion source");
+                tracing::warn!(
+                    event = "handle_session_deleted",
+                    "FutureOS: preserving conversation without a verified deletion source"
+                );
                 return;
             }
             Err(error) => {
-                eprintln!("FutureOS: could not verify deletion source: {error}");
+                tracing::warn!(event = "handle_session_deleted", error = %error,"FutureOS: could not verify deletion source: {error}");
                 return;
             }
             _ => {}
         }
     } else {
-        eprintln!(
+        tracing::warn!(
+            event = "handle_session_deleted",
             "FutureOS: preserving conversation after deletion event without database identity"
         );
         return;
     }
     match super::observer::reconcile_deleted_session(session_id) {
         Ok(true) => {
-            eprintln!("FutureOS: removed session {session_id} deleted outside the GUI");
+            tracing::info!(event = "handle_session_deleted", session_id = %session_id,"FutureOS: removed session {session_id} deleted outside the GUI");
             crate::emit_threads_updated();
         }
         Ok(false) => {}
         Err(error) => {
-            eprintln!("FutureOS: could not remove deleted session {session_id}: {error}")
+            tracing::warn!(event = "handle_session_deleted", session_id = %session_id, error = %error,"FutureOS: could not remove deleted session {session_id}: {error}")
         }
     }
 }
@@ -212,9 +245,47 @@ fn handle_session_deleted(data: &str) {
 mod tests {
     use super::super::test_support::{
         break_home, mock_agent, restore_home, seed_thread, seed_workspace, stream_event, Reply,
-        TestHome,
+        StreamScript, TestHome,
     };
     use super::*;
+
+    #[tokio::test]
+    async fn shutdown_does_not_start_a_subscription() {
+        let _home = crate::test_support::agent::TestHome::new("session_events-already-stopping");
+        let mock = mock_agent();
+        let _stopping = crate::request_scope::close_admission_guard_for_test();
+        tokio::time::timeout(Duration::from_millis(100), run())
+            .await
+            .expect("an observer must exit when the host is already stopping");
+        assert!(mock.stream_requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_during_backoff_prevents_another_subscription() {
+        let _home = crate::test_support::agent::TestHome::new("session_events-stop-backoff");
+        let mock = mock_agent();
+        mock.push_plain_stream(crate::test_support::agent::StreamScript::AttachError(
+            tonic::Code::Unavailable,
+            "subscription ended",
+        ));
+        let observer = run();
+        tokio::pin!(observer);
+        // Drive the observer only until its first attach reaches the server.
+        // Manual polls prevent a slow CI scheduler from running a retry first.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while mock.stream_requests().is_empty() {
+                assert!(futures::poll!(&mut observer).is_pending());
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the first subscription must reach the mock");
+        let _stopping = crate::request_scope::close_admission_guard_for_test();
+        tokio::time::timeout(Duration::from_secs(1), &mut observer)
+            .await
+            .expect("shutdown must end the retry loop");
+        assert_eq!(mock.stream_requests().len(), 1);
+    }
 
     #[tokio::test]
     async fn handle_session_created_skips_own_creator_and_malformed_payloads() {
@@ -318,13 +389,58 @@ mod tests {
 
         spawn_session_events_observer();
         spawn_session_events_observer();
+        assert!(
+            super::session_events_observer_is_running_for_test(),
+            "the first spawn must start the loop (the second is a no-op)"
+        );
 
         // Let the spawned loop reach its first attachment (and the mock answer
         // it) so the test proves the loop ran, not merely that it was queued.
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    /// `run` is the process-lifetime loop: it never returns, so what the test
+    /// A test that spawns this loop must not leave it re-attaching into the
+    /// next test's script queue — the same rule as the provider-config
+    /// observer, and the reason `mock_agent` stops both.
+    #[tokio::test]
+    async fn a_leaked_observer_cannot_take_the_next_tests_script() {
+        let _home = TestHome::new("session-events-leak");
+        spawn_session_events_observer();
+        assert!(super::session_events_observer_is_running_for_test());
+        let mock = mock_agent();
+        assert!(
+            !super::session_events_observer_is_running_for_test(),
+            "mock_agent must stop the loop an earlier test left running"
+        );
+        mock.push_plain_stream(StreamScript::Events(
+            vec![stream_event(
+                "",
+                0,
+                "session_created",
+                r#"{"sessionId":"s-1"}"#,
+            )],
+            None,
+        ));
+        let mut client = connect_agent().await.expect("connect to the mock");
+        let mut stream = client
+            .stream_events(future_rpc::proto::StreamRequest {
+                event_types: vec!["session_created".to_string()],
+                global_events: true,
+                ..Default::default()
+            })
+            .await
+            .expect("attach")
+            .into_inner();
+        let event = stream
+            .message()
+            .await
+            .expect("the scripted stream must reach this test")
+            .expect("one scripted event");
+        assert_eq!(event.r#type, "session_created");
+        assert_eq!(mock.stream_requests().len(), 1);
+    }
+
+    /// `run` lives until host shutdown, so what this test
     /// can prove is that a failed attachment is logged and retried on a longer
     /// backoff instead of ending the observer. The timeout is the assertion.
     #[tokio::test]

@@ -7,7 +7,9 @@ pub fn install_disconnect_notifier() {
     crate::runtime::spawn(async {
         loop {
             if let Err(error) = listen().await {
-                eprintln!("remote: Linux power notification listener unavailable: {error}");
+                tracing::warn!(event = "install_disconnect_notifier", error = %error,
+                    "remote: Linux power notification listener unavailable: {error}"
+                );
             }
             // login1 is absent on non-systemd systems and can restart during an
             // upgrade. Retry slowly; heartbeat expiry remains the fallback.

@@ -452,21 +452,22 @@ fn the_prune_keeps_a_partial_write_and_tolerates_a_cache_it_cannot_read() {
 /// is released.
 #[test]
 fn the_prune_is_a_no_op_when_no_home_can_be_resolved() {
-    let _home = crate::remote::test_support::HomeGuard::new("peer-xfer-preview-no-home");
-    let previous = std::env::var_os("HOME");
-    std::env::remove_var("HOME");
-    std::env::remove_var("USERPROFILE");
-    std::env::remove_var("FUTURE_HOME");
+    let home = crate::remote::test_support::HomeGuard::new("peer-xfer-preview-no-home");
+    home.withdraw_home();
+    // The premise is asserted, not assumed: with no home to resolve the cache
+    // has no path at all. (The fixture's own `FUTURE_HOME` would have answered
+    // with a real one, and the no-op below would then be the ordinary
+    // absent-cache case covered above instead of this arm.)
+    assert!(
+        crate::store::remote_previews_dir().is_err(),
+        "no home and no override leaves no preview cache to prune"
+    );
 
     transfer::prune_preview_cache();
 
-    match previous {
-        Some(value) => std::env::set_var("HOME", value),
-        None => std::env::remove_var("HOME"),
-    }
     assert!(
-        std::env::var_os("HOME").is_some(),
-        "the fixture must put HOME back"
+        std::env::var_os("HOME").is_none(),
+        "the home stays withdrawn for the whole body; the guard restores it"
     );
 }
 

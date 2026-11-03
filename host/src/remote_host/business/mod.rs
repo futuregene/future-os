@@ -43,16 +43,17 @@ pub(crate) enum Route {
 pub(crate) fn route(cmd_type: &str) -> Option<Route> {
     Some(match cmd_type {
         "list_sessions" | "list_workspaces" => Route::Catalog,
-        "get_messages" | "get_session_entries" | "get_events_since" | "get_tool_call_args" => {
+        "get_fusion" | "get_messages" | "get_session_entries" | "get_events_since" | "get_tool_call_args" | "get_event_content_range" => {
             Route::History
         }
         "upload_init" | "upload_complete" | "upload_cancel" | "list_session_files"
         | "download_prepare" | "download_cancel" => Route::Transfers,
-        "prompt" | "get_prompt_receipt" | "abort" | "continue_run" | "approval_decision" => {
-            Route::Prompt
-        }
+        "prompt" | "get_prompt_receipt" | "get_queue" | "cancel_queued_run" | "release_queued_run"
+        | "abort" | "continue_run" | "approval_decision" => Route::Prompt,
         "compact_context" => Route::Compaction,
-        "get_desktop_settings"
+        "get_fusion_settings"
+        | "update_fusion_settings"
+        | "get_desktop_settings"
         | "update_desktop_settings"
         | "list_settings_models"
         | "list_available_skills"
@@ -103,6 +104,37 @@ pub(crate) fn route(cmd_type: &str) -> Option<Route> {
     })
 }
 
+/// Legacy peers may keep using legacy conversations. Creation and content
+/// operations need the format contract; stop/approval/delete remain available.
+fn needs_content_capability(cmd: &str) -> bool {
+    matches!(
+        cmd,
+        "get_fusion"
+            | "get_messages"
+            | "get_session_entries"
+            | "get_events_since"
+            | "get_tool_call_args"
+            | "get_event_content_range"
+            | "prompt"
+            | "continue_run"
+            | "fork_session"
+            | "compact_context"
+    )
+}
+
+fn unsupported_format(cmd: &str, info: &Value) -> Result<bool, &'static str> {
+    let exists = info["exists"]
+        .as_bool()
+        .ok_or("invalid session format preflight")?;
+    let format = if !exists && cmd == "prompt" {
+        info["new_session_format"].as_i64()
+    } else {
+        info["format"].as_i64()
+    }
+    .ok_or("invalid session format preflight")?;
+    Ok(format != 1)
+}
+
 pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
     let Some(route) = route(&cmd.cmd_type) else {
         reply(
@@ -114,6 +146,31 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
         .await;
         return;
     };
+    if needs_content_capability(&cmd.cmd_type)
+        && future_remote_server::content_capability::declared() == Some(false)
+    {
+        let result = crate::agent_bridge::get_session_storage_format(cmd.session_id.clone())
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|info| unsupported_format(&cmd.cmd_type, &info).map_err(str::to_owned));
+        match result {
+            Ok(false) => {}
+            Ok(true) => {
+                reply(
+                    sink,
+                    false,
+                    Value::Null,
+                    Some(future_remote_server::content_capability::UPGRADE_REQUIRED),
+                )
+                .await;
+                return;
+            }
+            Err(error) => {
+                reply(sink, false, Value::Null, Some(&error)).await;
+                return;
+            }
+        }
+    }
     match route {
         Route::Catalog => catalog::execute(&cmd, sink).await,
         Route::History => history::execute(&cmd, sink).await,
@@ -144,8 +201,39 @@ pub(super) async fn reply_unit(sink: &dyn ReplySink, result: Result<(), crate::E
 
 #[cfg(test)]
 mod tests {
+    // The mock agent is process-global: the tests that script it hold its lock
+    // across the awaits that consume the script, exactly as the bridge tests do.
+    #![allow(clippy::await_holding_lock)]
     use super::*;
     use crate::remote::test_support::{HomeGuard, RecordingSink};
+
+    #[test]
+    fn old_peers_keep_legacy_access_but_cannot_create_or_open_an_unsupported_format() {
+        assert!(!unsupported_format(
+            "get_session_entries",
+            &json!({"exists":true,"format":1,"new_session_format":2})
+        )
+        .unwrap());
+        assert!(unsupported_format(
+            "get_session_entries",
+            &json!({"exists":true,"format":2,"new_session_format":2})
+        )
+        .unwrap());
+        assert!(unsupported_format(
+            "prompt",
+            &json!({"exists":false,"format":1,"new_session_format":2})
+        )
+        .unwrap());
+        assert!(!unsupported_format(
+            "get_messages",
+            &json!({"exists":false,"format":1,"new_session_format":2})
+        )
+        .unwrap());
+        assert!(unsupported_format("prompt", &json!({})).is_err());
+        assert!(!needs_content_capability("abort"));
+        assert!(!needs_content_capability("approval_decision"));
+        assert!(!needs_content_capability("delete_session"));
+    }
 
     /// Every command a paired phone sends, mirrored from the mobile client's
     /// command surface (`mobile/src/remote/useDesktopManagement.ts`,
@@ -179,6 +267,8 @@ mod tests {
         "download_prepare",
         "fork_session",
         "generate_session_title",
+        "get_fusion_settings",
+        "update_fusion_settings",
         "get_desktop_settings",
         "get_events_since",
         "get_prompt_receipt",
@@ -338,6 +428,230 @@ mod tests {
         assert!(sink
             .error_text()
             .contains("Unsupported command: definitely_not_a_command"));
+    }
+
+    /// A peer that did not declare segmented content may not be handed a
+    /// session stored in the new format: the reply is the upgrade token the
+    /// client maps to "update the app", and it must arrive *instead of* the
+    /// handler's own answer — an advisory reply followed by a real one would
+    /// render as success on a build that cannot read the page it asked for.
+    #[tokio::test]
+    async fn an_old_peer_is_told_to_upgrade_instead_of_receiving_a_new_format_page() {
+        use crate::remote::test_support::{
+            ensure_mock_agent, init_store, mock_agent_lock, HomeGuard, RecordingSink,
+        };
+
+        let _lock = mock_agent_lock();
+        let _home = HomeGuard::new("business-capability-upgrade");
+        init_store();
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        // `exists` + `format` is the preflight's answer for a session already on
+        // disk: the stored format is the new one, so this peer cannot read it.
+        agent.script_for(
+            "get_session_storage_format",
+            "session-v2",
+            true,
+            json!({"exists": true, "format": 2, "new_session_format": 2}),
+            "",
+        );
+
+        let sink = RecordingSink::default();
+        future_remote_server::content_capability::in_request(false, async {
+            execute(
+                IncomingCmd {
+                    cmd_type: "get_session_entries".into(),
+                    session_id: "session-v2".into(),
+                    ..Default::default()
+                },
+                &sink,
+            )
+            .await
+        })
+        .await;
+
+        let (success, data, error) = sink.only();
+        assert!(!success, "the page must not be served to this peer");
+        assert!(data.is_null());
+        assert_eq!(
+            error.as_deref(),
+            Some(future_remote_server::content_capability::UPGRADE_REQUIRED),
+            "the client matches this exact token to its own text"
+        );
+        // The preflight asked about *this* session, and the handler never ran.
+        assert!(agent.served("get_session_storage_format", "session-v2"));
+        assert!(
+            !agent.served("get_session_entries", "session-v2"),
+            "a second reply would mean the refusal was advisory"
+        );
+        agent.clear_scripts();
+    }
+
+    /// A preflight the desktop cannot read is not a compatible session. Both
+    /// ways it can go wrong are reported as the refusal itself — an unreadable
+    /// answer, and the Agent's own failure — because "I could not check" must
+    /// never be treated as "this peer is fine".
+    #[tokio::test]
+    async fn a_preflight_that_cannot_be_read_is_a_refusal_not_a_pass() {
+        use crate::remote::test_support::{
+            ensure_mock_agent, init_store, mock_agent_lock, HomeGuard, RecordingSink,
+        };
+
+        let _lock = mock_agent_lock();
+        let _home = HomeGuard::new("business-capability-preflight");
+        init_store();
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        // An answer with no `exists` cannot be interpreted at all.
+        agent.script_for(
+            "get_session_storage_format",
+            "session-preflight",
+            true,
+            json!({"format": 1}),
+            "",
+        );
+        let sink = RecordingSink::default();
+        future_remote_server::content_capability::in_request(false, async {
+            execute(
+                IncomingCmd {
+                    cmd_type: "get_messages".into(),
+                    session_id: "session-preflight".into(),
+                    ..Default::default()
+                },
+                &sink,
+            )
+            .await
+        })
+        .await;
+        assert_eq!(sink.error_text(), "invalid session format preflight");
+
+        // The Agent's refusal is carried through verbatim rather than replaced
+        // by a generic message, so the phone shows the reason it was refused.
+        agent.clear_scripts();
+        agent.script_for(
+            "get_session_storage_format",
+            "session-preflight",
+            false,
+            json!({}),
+            "session not found",
+        );
+        let sink = RecordingSink::default();
+        future_remote_server::content_capability::in_request(false, async {
+            execute(
+                IncomingCmd {
+                    cmd_type: "get_messages".into(),
+                    session_id: "session-preflight".into(),
+                    ..Default::default()
+                },
+                &sink,
+            )
+            .await
+        })
+        .await;
+        let error = sink.error_text();
+        assert!(error.contains("session not found"), "{error}");
+        agent.clear_scripts();
+    }
+
+    /// The other side of the same gate: a peer that declares no segmented
+    /// content may still *create* a conversation whose stored format is the old
+    /// one, so the preflight's "compatible" answer has to let the command
+    /// through to the handler rather than stopping at the capability check.
+    #[tokio::test]
+    async fn an_old_peer_still_reaches_the_handler_for_a_legacy_session() {
+        use crate::remote::test_support::{
+            ensure_mock_agent, init_store, mock_agent_lock, HomeGuard, RecordingSink,
+        };
+
+        let _lock = mock_agent_lock();
+        let _home = HomeGuard::new("business-capability-compatible");
+        init_store();
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        // A session that does not exist yet is judged by the format the Agent
+        // would create; 1 is the format every peer can read.
+        agent.script_for(
+            "get_session_storage_format",
+            "session-not-on-this-desktop",
+            true,
+            json!({"exists": false, "format": 1, "new_session_format": 1}),
+            "",
+        );
+
+        let sink = RecordingSink::default();
+        future_remote_server::content_capability::in_request(false, async {
+            execute(
+                IncomingCmd {
+                    cmd_type: "prompt".into(),
+                    id: "cmd-legacy-peer".into(),
+                    session_id: "session-not-on-this-desktop".into(),
+                    message: "hello".into(),
+                    ..Default::default()
+                },
+                &sink,
+            )
+            .await
+        })
+        .await;
+
+        let error = sink.error_text();
+        assert_ne!(
+            error,
+            future_remote_server::content_capability::UPGRADE_REQUIRED,
+            "a readable session must not be refused for the peer's capabilities"
+        );
+        // It reached the prompt handler, which refused the unknown conversation
+        // for its own reason: that refusal is what proves the gate opened.
+        assert!(
+            error.starts_with(crate::remote_host::business::prompt::UNKNOWN_SESSION_CODE),
+            "{error}"
+        );
+        assert!(
+            agent.served("get_session_storage_format", "session-not-on-this-desktop"),
+            "the preflight is what decided this session was readable"
+        );
+        agent.clear_scripts();
+    }
+
+    /// A command outside the capability list never pays the preflight: an
+    /// `abort` from a peer that declared nothing must not leave a session-format
+    /// probe behind, or every keystroke would wait on the Agent twice.
+    #[tokio::test]
+    async fn a_command_outside_the_capability_list_skips_the_preflight() {
+        use crate::remote::test_support::{
+            ensure_mock_agent, init_store, mock_agent_lock, HomeGuard, RecordingSink,
+        };
+
+        let _lock = mock_agent_lock();
+        let _home = HomeGuard::new("business-capability-skip");
+        init_store();
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        agent.script_for("abort", "session-abort", true, json!({}), "");
+
+        let sink = RecordingSink::default();
+        future_remote_server::content_capability::in_request(false, async {
+            execute(
+                IncomingCmd {
+                    cmd_type: "abort".into(),
+                    session_id: "session-abort".into(),
+                    ..Default::default()
+                },
+                &sink,
+            )
+            .await
+        })
+        .await;
+
+        assert!(
+            !agent.served("get_session_storage_format", "session-abort"),
+            "abort carries no content and must not be preflighted"
+        );
+        // The abort itself reached the Agent and was acknowledged: the answer
+        // is about the command, not about the capability gate.
+        assert_eq!(sink.ok_data(), json!({}));
+        assert!(agent.served("abort", "session-abort"));
+        agent.clear_scripts();
     }
 
     fn task(name: &str) -> future_tasks::Task {

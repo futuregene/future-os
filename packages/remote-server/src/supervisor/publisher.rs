@@ -33,6 +33,63 @@ impl PublisherTiming {
     }
 }
 
+/// Split a catalogue snapshot into the rows a delta packet carries and the
+/// workspace dictionary they name.
+///
+/// A row on this lane names its workspace by id alone: the name, the pin and the
+/// place are properties of the *workspace*, and repeating them on every
+/// conversation was most of what a snapshot cost (70 KB of 283 KB on a machine
+/// with 604 conversations and 52 workspaces). The dictionary rides beside the
+/// rows and is re-sent only when it moves, which is also what makes renaming a
+/// workspace one small packet instead of one row per conversation in it.
+///
+/// A delta names no order, so the reader ranks the merged list itself — from
+/// `pinned`, `lastMessageAt` and `createdAt`, which every row already carries.
+/// The rank is not sent: it is derivable, and as a number per row it cost more
+/// than the dictionary saved.
+fn compact_catalogue(
+    snapshot: &serde_json::Value,
+) -> (Vec<serde_json::Value>, serde_json::Value, String) {
+    let mut dictionary: std::collections::BTreeMap<String, serde_json::Value> =
+        std::collections::BTreeMap::new();
+    let mut rows = Vec::new();
+    for row in snapshot
+        .get("sessions")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        let mut row = row.clone();
+        let workspace = row
+            .get("workspaceId")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        if let Some(object) = row.as_object_mut() {
+            if let Some(id) = workspace {
+                dictionary.entry(id.clone()).or_insert_with(|| {
+                    serde_json::json!({
+                        "id": id,
+                        "name": object.get("workspaceName").cloned().unwrap_or(serde_json::Value::Null),
+                        "pinned": object.get("workspacePinned").cloned().unwrap_or(serde_json::Value::Null),
+                        "orderedAt": object.get("workspaceOrderedAt").cloned().unwrap_or(serde_json::Value::Null),
+                    })
+                });
+                object.remove("workspaceName");
+                object.remove("workspacePinned");
+                object.remove("workspaceOrderedAt");
+            }
+            // No ordering key on the wire: the rank is
+            // `pinned ? floor + activity : activity`, and both of those are
+            // already on the row. Sending it cost ~16 bytes per row — more than
+            // the workspace dictionary saved once the body is compressed.
+        }
+        rows.push(row);
+    }
+    let dictionary = serde_json::Value::Array(dictionary.into_values().collect());
+    let signature = dictionary.to_string();
+    (rows, dictionary, signature)
+}
+
 fn catalog_activity_subject(pair: &str) -> String {
     format!("p.{pair}.state.activity")
 }
@@ -90,10 +147,35 @@ impl Supervisor {
                 session_id,
                 unix_timestamp_ms(),
             ) {
-                eprintln!("{line}");
+                future_remote_protocol::remote_log!("{line}");
             }
             return;
         }
+        // A legacy peer must receive an explicit upgrade outcome, never
+        // incomplete referenced bodies. Suppress later frames for this run.
+        // The cache is bounded and is reset with the connection declaration.
+        let unsupported = !self.segmented_content(&pair_id).load(Ordering::Acquire)
+            && crate::content_capability::canonical_data(data);
+        let refusal;
+        let (event_type, data) = if unsupported {
+            let shared = self.shared_or_insert(&pair_id);
+            let key = serde_json::json!([session_id, run_id, epoch]).to_string();
+            let mut refused = shared.content_refusals.lock().unwrap();
+            if refused.contains(&key) {
+                return;
+            }
+            if refused.len() >= 64 {
+                refused.pop_front();
+            }
+            refused.push_back(key);
+            refusal = serde_json::json!({"type":"agent_end","state":"error",
+                "error":crate::content_capability::UPGRADE_REQUIRED,
+                "error_code":"client_upgrade_required"})
+            .to_string();
+            ("agent_end", refusal.as_str())
+        } else {
+            (event_type, data)
+        };
         // Lean feed: reasoning and streamed tool arguments never reach the lane.
         // Dropping here (rather than later in the drain) keeps the queue and the
         // coalescer from ever holding them.
@@ -147,7 +229,7 @@ impl Supervisor {
                 session_id,
                 unix_timestamp_ms(),
             ) {
-                eprintln!("{line}");
+                future_remote_protocol::remote_log!("{line}");
             }
             return;
         }
@@ -155,7 +237,7 @@ impl Supervisor {
         // enqueued normally. Report once, with the episode's total. Best-effort —
         // a burst racing across threads may miscount a line, never the flood.
         if let Some(line) = drop_counters.report_recovery() {
-            eprintln!("{line}");
+            future_remote_protocol::remote_log!("{line}");
         }
     }
 
@@ -232,12 +314,12 @@ impl Supervisor {
                 secure::publish(&client, &security, format!("p.{pair_id}.presence"), bytes).await
             {
                 if let Some(line) = self.publisher_failures.record("heartbeat_publish", error) {
-                    eprintln!("{line}");
+                    future_remote_protocol::remote_log!("{line}");
                 }
                 return;
             }
             if let Some(line) = self.publisher_failures.recovered() {
-                eprintln!("{line}");
+                future_remote_protocol::remote_log!("{line}");
             }
         }
     }
@@ -300,6 +382,12 @@ impl Supervisor {
         // every row.
         let mut delivered_activity: std::collections::HashMap<String, i64> =
             std::collections::HashMap::new();
+        // What the delta lane has actually told this connection, per session, and
+        // the workspace dictionary it was told along with it. Empty base = this
+        // connection knows nothing yet, so its first packet is a full one.
+        let mut delivered_rows: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let mut delivered_dictionary: Option<String> = None;
         let mut last_workspaces_sig = String::new();
         loop {
             interval.tick().await;
@@ -312,6 +400,8 @@ impl Supervisor {
                 last_structural_sig.clear();
                 last_workspaces_sig.clear();
                 delivered_activity.clear();
+                delivered_rows.clear();
+                delivered_dictionary = None;
                 continue;
             }
             // Read once per tick: the declaration belongs to the connection, and
@@ -334,15 +424,50 @@ impl Supervisor {
             // next tick recomputes the signature from the store, so a transient
             // failure delays a change by one tick rather than losing it.
             if let Some(catalog) = sessions {
-                // Sending the whole list is the *only* thing that can restore a
-                // structure the client cannot patch, so it is what a client
-                // without the declaration keeps getting.
-                let full = !activity_declared || catalog.structural != last_structural_sig;
-                if full {
-                    if catalog.signature != last_sessions_sig {
-                        let bytes = serde_json::to_vec(&catalog.payload)
-                            .expect("a sessions Value always serializes");
-                        match secure::publish(
+                if self.catalog_delta(&pair_id).load(Ordering::Acquire) {
+                    // One lane for every change, for a client that declared it:
+                    // the rows that moved, the ids that left, and the workspace
+                    // dictionary when that moved instead of a row.
+                    let (rows, dictionary, dictionary_sig) = compact_catalogue(&catalog.payload);
+                    let full = delivered_rows.is_empty();
+                    let mut next_rows = std::collections::HashMap::with_capacity(rows.len());
+                    let mut changed: Vec<serde_json::Value> = Vec::new();
+                    for row in &rows {
+                        let session = row
+                            .get("sessionId")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned();
+                        let signature = row.to_string();
+                        if full || delivered_rows.get(&session) != Some(&signature) {
+                            changed.push(row.clone());
+                        }
+                        next_rows.insert(session, signature);
+                    }
+                    // Deletion is always named. Nothing here relies on a row
+                    // being absent to mean it went away.
+                    let removed: Vec<String> = delivered_rows
+                        .keys()
+                        .filter(|session| !next_rows.contains_key(*session))
+                        .cloned()
+                        .collect();
+                    let dictionary_moved =
+                        delivered_dictionary.as_deref() != Some(dictionary_sig.as_str());
+                    if full || !changed.is_empty() || !removed.is_empty() || dictionary_moved {
+                        let mut body = serde_json::json!({
+                            "pairId": pair_id,
+                            "full": full,
+                            "rows": changed,
+                            "removed": removed,
+                            "version": catalog.payload["version"].clone(),
+                        });
+                        if dictionary_moved {
+                            body["workspaces"] = dictionary;
+                        }
+                        let bytes =
+                            serde_json::to_vec(&body).expect("a delta Value always serializes");
+                        let sealed = bytes.len();
+                        match secure::publish_json(
                             &client,
                             &security,
                             format!("p.{pair_id}.state.sessions"),
@@ -350,30 +475,75 @@ impl Supervisor {
                         )
                         .await
                         {
-                            // Record the signature only once the snapshot actually
-                            // left the endpoint. `Ok(false)` means the secure
-                            // channel had no key yet, so the payload was dropped —
-                            // the next tick retries, which is what makes this a
-                            // "retry until delivered" publisher instead of a
-                            // "send once and hope" one.
+                            // Same rule as the other lanes: what this connection
+                            // believes it has been told only advances for what
+                            // actually left the endpoint.
                             Ok(true) => {
-                                last_sessions_sig = catalog.signature.clone();
-                                last_structural_sig = catalog.structural.clone();
-                                delivered_activity = catalog.activity.iter().cloned().collect();
+                                delivered_rows = next_rows;
+                                if dictionary_moved {
+                                    delivered_dictionary = Some(dictionary_sig);
+                                }
+                                self.note_catalogue_packet(&pair_id, sealed);
                             }
                             Ok(false) => {}
                             Err(e) => {
                                 if let Some(line) =
                                     self.publisher_failures.record("state_publish", e)
                                 {
-                                    eprintln!("{line}");
+                                    future_remote_protocol::remote_log!("{line}");
                                 }
                                 return;
                             }
                         }
                     }
+                    // Keep the legacy signatures in step, so a connection that
+                    // re-declares itself onto the snapshot lane is not held back
+                    // by a signature nothing ever set.
+                    last_sessions_sig = catalog.signature.clone();
+                    last_structural_sig = catalog.structural.clone();
                 } else {
-                    let updates: Vec<serde_json::Value> = catalog
+                    // Sending the whole list is the *only* thing that can restore a
+                    // structure the client cannot patch, so it is what a client
+                    // without the declaration keeps getting.
+                    let full = !activity_declared || catalog.structural != last_structural_sig;
+                    if full {
+                        if catalog.signature != last_sessions_sig {
+                            let bytes = serde_json::to_vec(&catalog.payload)
+                                .expect("a sessions Value always serializes");
+                            let sealed = bytes.len();
+                            match secure::publish_json(
+                                &client,
+                                &security,
+                                format!("p.{pair_id}.state.sessions"),
+                                bytes,
+                            )
+                            .await
+                            {
+                                // Record the signature only once the snapshot actually
+                                // left the endpoint. `Ok(false)` means the secure
+                                // channel had no key yet, so the payload was dropped —
+                                // the next tick retries, which is what makes this a
+                                // "retry until delivered" publisher instead of a
+                                // "send once and hope" one.
+                                Ok(true) => {
+                                    last_sessions_sig = catalog.signature.clone();
+                                    last_structural_sig = catalog.structural.clone();
+                                    delivered_activity = catalog.activity.iter().cloned().collect();
+                                    self.note_catalogue_packet(&pair_id, sealed);
+                                }
+                                Ok(false) => {}
+                                Err(e) => {
+                                    if let Some(line) =
+                                        self.publisher_failures.record("state_publish", e)
+                                    {
+                                        future_remote_protocol::remote_log!("{line}");
+                                    }
+                                    return;
+                                }
+                            }
+                        }
+                    } else {
+                        let updates: Vec<serde_json::Value> = catalog
                         .activity
                         .iter()
                         .filter(|(session, at)| delivered_activity.get(session) != Some(at))
@@ -381,41 +551,42 @@ impl Supervisor {
                             serde_json::json!({ "sessionId": session, "lastMessageAt": at })
                         })
                         .collect();
-                    if !updates.is_empty() {
-                        // The revision rides along for the same reason it rides
-                        // on a snapshot: it is what lets the client's gate tell a
-                        // stale or repeated packet from a newer one, and what the
-                        // heartbeat compares when one is lost.
-                        let body = serde_json::json!({
-                            "pairId": pair_id,
-                            "activity": updates,
-                            "version": catalog.payload["version"].clone(),
-                        });
-                        let bytes =
-                            serde_json::to_vec(&body).expect("an activity Value always serializes");
-                        match secure::publish(
-                            &client,
-                            &security,
-                            catalog_activity_subject(&pair_id),
-                            bytes,
-                        )
-                        .await
-                        {
-                            // Same retry rule as the snapshot: the base advances
-                            // only for what the endpoint actually sent, so a
-                            // packet the secure channel could not seal is rebuilt
-                            // on the next tick.
-                            Ok(true) => {
-                                delivered_activity = catalog.activity.iter().cloned().collect()
-                            }
-                            Ok(false) => {}
-                            Err(e) => {
-                                if let Some(line) =
-                                    self.publisher_failures.record("state_publish", e)
-                                {
-                                    eprintln!("{line}");
+                        if !updates.is_empty() {
+                            // The revision rides along for the same reason it rides
+                            // on a snapshot: it is what lets the client's gate tell a
+                            // stale or repeated packet from a newer one, and what the
+                            // heartbeat compares when one is lost.
+                            let body = serde_json::json!({
+                                "pairId": pair_id,
+                                "activity": updates,
+                                "version": catalog.payload["version"].clone(),
+                            });
+                            let bytes = serde_json::to_vec(&body)
+                                .expect("an activity Value always serializes");
+                            match secure::publish_json(
+                                &client,
+                                &security,
+                                catalog_activity_subject(&pair_id),
+                                bytes,
+                            )
+                            .await
+                            {
+                                // Same retry rule as the snapshot: the base advances
+                                // only for what the endpoint actually sent, so a
+                                // packet the secure channel could not seal is rebuilt
+                                // on the next tick.
+                                Ok(true) => {
+                                    delivered_activity = catalog.activity.iter().cloned().collect()
                                 }
-                                return;
+                                Ok(false) => {}
+                                Err(e) => {
+                                    if let Some(line) =
+                                        self.publisher_failures.record("state_publish", e)
+                                    {
+                                        future_remote_protocol::remote_log!("{line}");
+                                    }
+                                    return;
+                                }
                             }
                         }
                     }
@@ -429,7 +600,7 @@ impl Supervisor {
             if dirty || workspaces_sig != last_workspaces_sig {
                 let bytes = serde_json::to_vec(&workspaces_payload)
                     .expect("a workspaces Value always serializes");
-                match secure::publish(
+                match secure::publish_json(
                     &client,
                     &security,
                     format!("p.{pair_id}.state.workspaces"),
@@ -441,7 +612,7 @@ impl Supervisor {
                     Ok(false) => {}
                     Err(e) => {
                         if let Some(line) = self.publisher_failures.record("state_publish", e) {
-                            eprintln!("{line}");
+                            future_remote_protocol::remote_log!("{line}");
                         }
                         return;
                     }

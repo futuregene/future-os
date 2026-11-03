@@ -49,9 +49,29 @@ function agentErrorDetail(raw: string): string {
     const afterTail = detail.slice((tail.index ?? 0) + tail[0].length);
     if (!/\S/.test(afterTail)) detail = detail.slice(0, tail.index).trimEnd();
   }
-  detail = detail.trim();
+  return capDetail(detail);
+}
+
+function capDetail(detail: string): string {
   const MAX_DETAIL = 300;
-  return detail.length > MAX_DETAIL ? `${detail.slice(0, MAX_DETAIL)}…` : detail;
+  const trimmed = detail.trim();
+  return trimmed.length > MAX_DETAIL ? `${trimmed.slice(0, MAX_DETAIL)}…` : trimmed;
+}
+
+/**
+ * Reduce a transport failure to "host: cause". The HTTP client wraps its own
+ * chain around the part that matters — `error sending request for url
+ * (https://host/v1/chat/completions): client error (Connect): tls handshake
+ * eof` — and neither the path nor the layer names help somebody deciding
+ * whether their endpoint or their network is at fault.
+ */
+function connectionErrorDetail(raw: string): string {
+  const endpoint = /for url \(([^)\s]+)\)/.exec(raw)?.[1];
+  const cause = /client error \([^)]*\):\s*(.+)$/i.exec(raw)?.[1];
+  if (!endpoint || !cause)
+    return agentErrorDetail(raw);
+  const host = /^[a-z]+:\/\/([^/?#]+)/i.exec(endpoint)?.[1] ?? endpoint;
+  return capDetail(`${host}: ${cause}`);
 }
 
 /**
@@ -72,6 +92,13 @@ export function classifyAgentError(raw: string): FriendlyAgentError {
   // users to debug the wrong thing.
   if (/\[AGENT_INTERRUPTED\]|Unable to (?:connect to|send prompt to) Future Agent|Future Agent (?:event stream|response timed out|run ended|run no longer active|rejected the prompt)|prompt acknowledgement omitted/i.test(message))
     return { key: "agent:failure.agentInterrupted" };
+  // A restart is not a model failure. Startup convergence settles the run the
+  // app was in the middle of as `cancelled`/`interrupted` with exactly this
+  // sentence, and the reply can be picked up with Continue — so it must not be
+  // titled "the model service failed" (that sends the user to retry the model
+  // or the network when neither was at fault).
+  if (/interrupted by application restart|interrupted because future agent restarted/i.test(message))
+    return { key: "agent:failure.runInterrupted" };
   if (message.includes("[CTX_LIMIT]"))
     return { key: "agent:failure.contextLimit" };
 
@@ -93,6 +120,14 @@ export function classifyAgentError(raw: string): FriendlyAgentError {
     return { key: "agent:failure.rateLimited" };
   if (status?.startsWith("5"))
     return { key: "agent:failure.serverError", params: { status } };
+  // A 400 means the provider refused *this request* — an unknown model id, an
+  // unsupported parameter, a rejected tool schema. Only the provider's own
+  // message says what to change, and "try again later" is actively misleading
+  // (resending the same request cannot succeed), so it reaches the user as-is.
+  // Context-limit 400s are the agent's own `[CTX_LIMIT]` case and are handled
+  // above with compaction guidance instead.
+  if (status === "400")
+    return { key: "agent:failure.badRequest", params: { message: agentErrorDetail(message) } };
   const reasonKeys: Record<string, string> = {
     RESPONSE_UNCONFIRMED: "responseUnconfirmed",
     RESPONSE_TIMEOUT: "responseTimeout",
@@ -114,6 +149,13 @@ export function classifyAgentError(raw: string): FriendlyAgentError {
   if (/\[MODEL_RESPONSE_ERROR\]|invalid provider stream|invalid provider response|response ended before a clean terminal|stream was truncated/i.test(message))
     return { key: "agent:failure.modelResponseError" };
   if (/timed out|timeout|etimedout|econnreset|econnrefused|enotfound|network error|fetch failed/i.test(message))
-    return { key: "agent:failure.network" };
+    return { key: "agent:failure.network", params: { message: connectionErrorDetail(message) } };
+  // The client's own transport wording: the endpoint was never reached, so no
+  // status and no provider message exist. Recognised separately from the short
+  // codes above because it already names the endpoint and the failure inside it
+  // ("error sending request for url (https://host/…): client error (Connect):
+  // tls handshake eof"), which is the whole diagnosis the user is missing.
+  if (/error sending request|client error \(connect|certificate|dns error|failed to lookup address|connection refused|tls handshake/i.test(message))
+    return { key: "agent:failure.network", params: { message: connectionErrorDetail(message) } };
   return { key: "agent:failure.run", params: { message: agentErrorDetail(message) } };
 }

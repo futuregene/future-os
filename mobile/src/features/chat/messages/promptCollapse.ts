@@ -16,14 +16,14 @@
  * rest of the prompt has to live somewhere a reader can scroll instead (the
  * prompt reader, `PromptReader.tsx`).
  *
- * The numbers are the ones the code block already uses (more than 16 lines, or
- * more than 10 000 characters, is long; 16 wrapped lines is what stays), so a
- * reader meets the same budget in both places.
+ * The threshold is the code block's (more than 16 lines, or more than 10 000
+ * characters, is long), so a reader meets the same rule in both places. The
+ * preview's own budget is not that number, though — see `PROMPT_PREVIEW_LINES`.
  */
 import { spacing } from "../../../theme/tokens";
 
-/** Wrapped chat lines the collapsed bubble shows, and the count beyond which a
- * prompt is collapsed at all — the code block's own budget and threshold. */
+/** Source lines beyond which a prompt is collapsed at all — the code block's own
+ * threshold. It is a rule about *when* to preview, not about how much fits. */
 export const PROMPT_COLLAPSE_LINES = 16;
 
 /** Source characters beyond which a prompt is long even on a single line: one
@@ -32,13 +32,37 @@ export const PROMPT_COLLAPSE_LINES = 16;
 const PROMPT_COLLAPSE_CHARS = 10_000;
 
 /**
- * Characters the collapsed bubble's preview may carry, which is what actually
- * bounds the row: 16 wrapped lines is roughly this many characters at a phone's
- * width and the default text size, and a preview that stopped at 16 *source*
- * lines would be a whole paragraph — several dozen wrapped lines — for prompts
- * that are one long line.
+ * *Rendered* chat lines the preview may occupy — the number this module is
+ * really about.
+ *
+ * It used to be 16, inherited from the code block, on the reasoning that a code
+ * block and a prompt are both bounded by "16 wrapped lines". A code block is: it
+ * is monospaced rows, so 16 source lines are 16 lines. A prompt is not. Measured
+ * on the reporting phone (2026-10-29, build `684a4fde2`, which carries the
+ * earlier collapse fix): the preview budget was 720 characters, which on a
+ * 350 dp column of prose is **27 wrapped lines ≈ 630 dp**, and the bubble drew
+ * its accent fill with no text at all at exactly that height. The reply beside
+ * it, several times longer, draws fine — because a reply arrives as dozens of
+ * small blocks while a prompt is one `Text` node, and the device drops the
+ * content of a single node that tall.
+ *
+ * So the budget is now counted in the lines the reader actually sees, and kept
+ * far below that height: 8 lines is about what a two-sentence reply occupies, a
+ * shape this device paints. The rest of the prompt is one tap away in the
+ * reader, where it is drawn a block at a time.
  */
-const PROMPT_PREVIEW_CHARS = 720;
+export const PROMPT_PREVIEW_LINES = 8;
+
+/**
+ * Characters that wrap to `PROMPT_PREVIEW_LINES` at a phone's width and the
+ * default text size (~26 CJK glyphs or ~45 latin characters per 350 dp line).
+ *
+ * The character clause exists because the line clause cannot see a prompt that
+ * is one long paragraph: 200 characters of CJK is 8 lines, but 200 characters is
+ * *one* source line. Both clauses are budgets for the same rendered row, so the
+ * preview is cut by whichever runs out first.
+ */
+const PROMPT_PREVIEW_CHARS = 200;
 
 /** The bubble's own vertical padding, which a height cap has to include for the
  * capped box to still show the promised lines of text. */
@@ -78,8 +102,8 @@ export function isLongPrompt(text: string): boolean {
  */
 export function promptPreview(text: string): { head: string; truncated: boolean; } {
   if (!isLongPrompt(text)) return { head: text, truncated: false };
-  const byLine = text.split("\n", PROMPT_COLLAPSE_LINES + 1)
-    .slice(0, PROMPT_COLLAPSE_LINES)
+  const byLine = text.split("\n", PROMPT_PREVIEW_LINES + 1)
+    .slice(0, PROMPT_PREVIEW_LINES)
     .join("\n");
   const head = byLine.length > PROMPT_PREVIEW_CHARS
     ? byLine.slice(0, PROMPT_PREVIEW_CHARS)
@@ -94,13 +118,19 @@ export function promptPreview(text: string): { head: string; truncated: boolean;
 /**
  * The height cap a collapsed prompt bubble takes, in dp.
  *
- * `lineHeight` is the reader's own scaled chat line height, so the cap grows
- * with the text size the way every other measurement here does; the window
- * share is what keeps it bounded on a short screen with the largest type.
+ * The cap is the preview's own rendered-line budget plus the bubble's padding,
+ * so the box the reader sees and the box the module promises are the same box —
+ * the previous cap was 16 lines while the preview ran to 27, and the difference
+ * is what the device failed to draw. It stays a cap rather than a height because
+ * a preview that ends earlier than eight lines should keep its own size.
+ *
+ * `lineHeight` is the reader's own scaled chat line height, so the cap grows with
+ * the text size the way every other measurement here does; the window share is
+ * what keeps it bounded on a short screen with the largest type.
  */
 export function collapsedPromptHeight(lineHeight: number, windowHeight: number): number {
   return Math.min(
-    lineHeight * PROMPT_COLLAPSE_LINES + PROMPT_BUBBLE_PADDING,
+    lineHeight * PROMPT_PREVIEW_LINES + PROMPT_BUBBLE_PADDING,
     Math.round(windowHeight * COLLAPSED_WINDOW_SHARE),
   );
 }

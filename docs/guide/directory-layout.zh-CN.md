@@ -19,7 +19,10 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 │   ├── skills/                # 已安装的用户技能（APP_SKILLS_DIR）
 │   ├── browser/               # CLI 浏览器工具状态（config.json、profile/、artifacts/）
 │   ├── images/                # CLI 图片工具输出目录
-│   └── logs/agent.log         # agent 日志（启用日志时）
+│   └── logs/agent.log         # Agent JSONL 诊断（内嵌与独立）
+├── fusion/                    # 共享只读讨论控制面
+│   ├── fusion.db              # 设置及版本、运行、阶段、参与者、议题与正文引用
+│   └── snapshots/             # 有界且带哈希的讨论文件快照
 ├── agent-app/                 # 遗留凭据目录（auth.json），向后兼容读取
 ├── channels/
 │   ├── config.json            # 所有通道的配置（见 channels-config.zh-CN.md）
@@ -52,6 +55,8 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 │   └── remote-control/        # 瞬态设备请求（`future remote devices add|remove|use`、`future remote peers connect|disconnect|takeover|remove`）
 └── bin/                       # CLI / agent 链接：`future`、`future-agent`（见下）
 ```
+
+各组件日志路径与保留规则见 [Rust 诊断日志](logging.zh-CN.md)。
 
 ## `~/.future/agent/` — agent 后端
 
@@ -87,7 +92,7 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 - `browser/` — CLI 浏览器工具状态（`config.json`、Chromium 的 `profile/`、
   截图的 `artifacts/`）。遵循 `FUTURE_HOME`。
 - `images/` — CLI 图片生成/编辑工具（`future tools call image …`）的输出目录。
-- `logs/agent.log` — 启用日志时写入。
+- `logs/agent.log` — 默认写入结构化诊断日志（内嵌与独立 Agent）。
 
 ## IPC、审批规则与 Windows 清理
 
@@ -162,7 +167,8 @@ agent 解析 `auth.json` 时会先读 `~/.future/agent/auth.json`，只有该文
 
 归 `future-tui` 所有。`settings.json` 持久化客户端侧设置（`defaultModel`、
 `defaultThinkingLevel`、`defaultPermissionLevel`、`enabledModelIds`、`themeId`、
-`skillRecommend`）；按键绑定覆盖放在 `keybindings.json`（`/keymap` 写入与默认值不同的
+`skillRecommend`、`lastWorkspace`——从「环境目录」（家目录、临时目录、根目录）启动
+时打开的工作区）；按键绑定覆盖放在 `keybindings.json`（`/keymap` 写入与默认值不同的
 绑定，启动时读取）；`skill_reco.json` 保存当天技能推荐配额（已推荐过哪些技能、已评估过
 哪些草稿——按天滚动，从不跨天读取）；`debug.log` 在设置 `PI_DEBUG_REDRAW=1` 时写入调试重绘日志，设置 `PI_TUI_WRITE_LOG=1` 时 `write.log` 记录原始屏幕写入；`crash.log` 在 TUI 崩溃时接收 panic 回溯。
 见 [tui.zh-CN.md](tui.zh-CN.md)。整个目录遵循 `FUTURE_HOME`（见下文），
@@ -210,9 +216,10 @@ agent 解析 `auth.json` 时会先读 `~/.future/agent/auth.json`，只有该文
 
 ## `~/.future/workspaces/chat/` — 聊天工作区
 
-GUI 的每线程聊天工作区，每个子目录以 agent 会话 id（已知时，例如从导入
-获得）或 GUI 线程 id 命名。用户自选的工作区位于别处，清理本目录时绝不会
-触碰它们。
+GUI 与 TUI 的每线程聊天工作区，每个子目录以 agent 会话 id（已知时，例如从导入
+获得）或 GUI 线程 id 命名。TUI 会自己生成聊天会话的 id，并在 agent 打开会话之前
+创建 `<chat root>/<id>`，所以两个界面把同一段对话归在同一个目录下。用户自选的
+工作区位于别处，清理本目录时绝不会触碰它们。
 
 ## goal 控制面 — 项目本地，不在 `~/.future/` 下
 

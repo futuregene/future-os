@@ -509,6 +509,14 @@ pub fn read_text_file_preview(
     let read = file.read(&mut buffer)?;
     let truncated = read > limit || size > limit as u64;
     buffer.truncate(read.min(limit));
+    if truncated {
+        // The cut is a byte count, so it can land inside a multi-byte character
+        // (a 200 KiB boundary in a CJK document usually does). Keeping the
+        // fragment would make `from_utf8` report the whole file as binary and
+        // the preview render nothing, so drop the incomplete sequence — at most
+        // three bytes. A genuinely binary file keeps its 0xFF/0xFE bytes.
+        trim_incomplete_utf8_tail(&mut buffer);
+    }
 
     let valid_utf8 = std::str::from_utf8(&buffer).is_ok();
     Ok(TextFilePreview {
@@ -517,6 +525,41 @@ pub fn read_text_file_preview(
         truncated,
         valid_utf8,
     })
+}
+
+/// Drop the lead-plus-continuation bytes of a UTF-8 sequence that the read cut
+/// in half, so what remains ends on a character boundary.
+///
+/// Only a *truncated* buffer is passed here: a whole file that ends mid-sequence
+/// is genuinely malformed and must stay reported as such. A byte that is not a
+/// sequence lead at all (`0xFF`, a stray continuation) is left in place for
+/// `from_utf8` to judge.
+fn trim_incomplete_utf8_tail(bytes: &mut Vec<u8>) {
+    let len = bytes.len();
+    for back in 1..=4.min(len) {
+        let index = len - back;
+        let byte = bytes[index];
+        if byte & 0b1100_0000 == 0b1000_0000 {
+            continue; // continuation byte: walk back to its lead
+        }
+        // Length the lead byte promises, including itself; an invalid lead
+        // promises only itself, so it is kept and reported.
+        let needed = if byte & 0b1000_0000 == 0 {
+            1
+        } else if byte & 0b1110_0000 == 0b1100_0000 {
+            2
+        } else if byte & 0b1111_0000 == 0b1110_0000 {
+            3
+        } else if byte & 0b1111_1000 == 0b1111_0000 {
+            4
+        } else {
+            1
+        };
+        if needed > back {
+            bytes.truncate(index);
+        }
+        return;
+    }
 }
 
 pub fn export_artifact_file(
@@ -826,36 +869,24 @@ mod tests {
 
     #[test]
     fn ensure_path_allowed_is_a_noop_without_a_home_dir() {
-        let lock = crate::TEST_HOME_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        // Other tests can intentionally leave HOME unset. Preserve its exact
-        // prior state; USERPROFILE is a Windows-only fallback absent on
-        // macOS/Linux.
-        //
-        // The `else` arm below exists for a process that never had a HOME (a bare
-        // `cargo test`, without this campaign's HOME override). This suite always
-        // has one, so the precondition is produced here — the real value is kept
-        // and put back at the end, and `TEST_HOME_LOCK` is held throughout, so no
-        // other test can observe the window.
-        let real_home = std::env::var_os("HOME");
-        std::env::remove_var("HOME");
-        let old_home = std::env::var_os("HOME");
-        std::env::remove_var("USERPROFILE");
+        let home = crate::auth_store::test_support::HomeGuard::new("files-no-home");
+        // No home *at all* — the two user-home variables and the FutureOS root
+        // override together, since either one names a root. The guard restores
+        // whatever it withdrew.
+        home.withdraw_home();
+        // The premise is asserted, not assumed: with nothing to resolve there is
+        // no root to protect. With the fixture's `FUTURE_HOME` still in place
+        // this resolved and only the ordinary-file arm ran.
+        assert!(
+            crate::store::future_dir().is_err(),
+            "no home and no override leaves no FutureOS root"
+        );
 
         let file = write_under(&future_root("no_home"), "ok.txt");
-        assert!(ensure_path_allowed(&file).is_ok());
-
-        if let Some(old_home) = old_home {
-            std::env::set_var("HOME", old_home);
-        } else {
-            std::env::remove_var("HOME");
-        }
-        std::env::remove_var("USERPROFILE");
-        if let Some(real_home) = real_home {
-            std::env::set_var("HOME", real_home);
-        }
-        drop(lock);
+        assert!(
+            ensure_path_allowed(&file).is_ok(),
+            "an unresolvable home must not turn every path into an error"
+        );
     }
 
     #[test]
@@ -1000,6 +1031,68 @@ mod tests {
         fs::write(&invalid, [0xff, 0xfe]).unwrap();
         let preview = read_text_file_preview(invalid.display().to_string(), None).unwrap();
         assert!(!preview.valid_utf8);
+    }
+
+    /// A cut that lands inside a multi-byte character is a truncation, not
+    /// binary content (h7-C1).
+    ///
+    /// The preview reads a fixed byte count and hands what it has to
+    /// `from_utf8`, so any file whose 200 KiB boundary falls inside a CJK
+    /// character was reported as `valid_utf8 = false` — the one field the UI
+    /// reads as "this is binary" — and rendered nothing at all.
+    #[test]
+    fn a_truncated_cjk_preview_is_still_text() {
+        let root = future_root("preview_cjk");
+        // 70_000 CJK characters = 210_000 bytes: past the default 200 KiB
+        // limit, and 204_800 is not a multiple of 3, so the cut splits one.
+        let text = "中".repeat(70_000);
+        let file = root.join("long-cjk.md");
+        fs::write(&file, &text).unwrap();
+        let preview = read_text_file_preview(file.display().to_string(), None).unwrap();
+        assert!(preview.truncated);
+        assert_eq!(preview.size, 210_000);
+        assert!(
+            preview.valid_utf8,
+            "a whole-UTF-8 file cut mid-character is text, not binary"
+        );
+        assert_eq!(preview.content, "中".repeat(68_266));
+        assert!(
+            !preview.content.contains('\u{FFFD}'),
+            "no replacement character from the cut: {:?}",
+            &preview.content[preview.content.len() - 12..]
+        );
+
+        // The boundary shifts: 6 bytes is a clean cut, 7 and 8 split the third
+        // character. Both sides of the boundary have to read as text.
+        for (limit, expected) in [(6_usize, "中中"), (7, "中中"), (8, "中中")] {
+            let preview = read_text_file_preview(file.display().to_string(), Some(limit)).unwrap();
+            assert!(preview.valid_utf8, "limit {limit} is text");
+            assert_eq!(preview.content, expected, "limit {limit}");
+            assert!(preview.truncated, "limit {limit} is a truncation");
+        }
+    }
+
+    /// Genuine binary stays binary, and a file that fits keeps every byte: the
+    /// incomplete-tail trim only applies to what truncation cut.
+    #[test]
+    fn an_untruncated_file_is_judged_on_its_whole_content() {
+        let root = future_root("preview_binary");
+        let file = root.join("bytes.bin");
+        fs::write(&file, [0x00, 0x01, 0xff, 0xfe]).unwrap();
+        let preview = read_text_file_preview(file.display().to_string(), None).unwrap();
+        assert!(!preview.truncated);
+        assert!(
+            !preview.valid_utf8,
+            "0xFF/0xFE is binary, not an incomplete sequence to drop"
+        );
+
+        // A whole-file read of valid text is untouched by the trim.
+        let text = root.join("short-cjk.md");
+        fs::write(&text, "中文").unwrap();
+        let preview = read_text_file_preview(text.display().to_string(), None).unwrap();
+        assert!(!preview.truncated);
+        assert!(preview.valid_utf8);
+        assert_eq!(preview.content, "中文");
     }
 
     #[test]

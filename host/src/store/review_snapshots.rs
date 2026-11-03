@@ -333,6 +333,26 @@ pub fn get_last_run_changeset(
     .map_err(crate::Error::from)
 }
 
+/// The latest ended Run, scoped to one conversation, including no-change Runs.
+/// Recovery never enumerates other conversations or changes a live Run's state.
+pub fn latest_review_run(thread_id: &str) -> Result<Option<String>, crate::Error> {
+    let conn = connect()?;
+    conn.query_row(
+        &format!(
+            "SELECT r.id FROM runs r
+         WHERE r.thread_id = ?1
+           AND r.status IN ({})
+         ORDER BY COALESCE(r.ended_at, r.updated_at) DESC, r.created_at DESC, r.id DESC
+         LIMIT 1",
+            super::status::TERMINAL_RUN_STATUSES_SQL
+        ),
+        params![thread_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(crate::Error::from)
+}
+
 /// Mark a Run's changeset (and any concurrently-overlapping peer Runs in the
 /// same Workspace) as `overlapped` (§12.5). Overlap is derived purely from the
 /// snapshot time windows; no extra in-memory state.
@@ -409,8 +429,8 @@ fn set_overlapped(conn: &rusqlite::Connection, run_id: &str, now: i64) -> rusqli
 /// changeset, and snapshots), in FK-safe order. Transaction-injecting: the
 /// three DELETEs must land atomically — a partial delete either leaves a
 /// changeset with no file rows (renders as an empty review) or orphaned
-/// snapshots that `list_unmaterialized_runs` would misread as crash-recovery
-/// candidates and re-materialize against pruned shadow refs.
+/// snapshots that an on-demand read could mistake for recoverable input after
+/// their shadow refs have already been pruned.
 pub(super) fn delete_run_review_in(
     conn: &rusqlite::Connection,
     run_id: &str,
@@ -464,63 +484,6 @@ pub fn prune_thread_changesets(
     Ok(pruned)
 }
 
-/// Runs interrupted by a crash: a `before` snapshot exists but there is no
-/// `after` snapshot and no changeset. Returns `(run_id, thread_id, workspace_id)`
-/// (§6.6).
-/// Runs that have a usable `before` snapshot but no materialized `run_snapshot`
-/// changeset yet. Covers two restart-recovery shapes (§6.6, B-6): an
-/// interrupted Run with no `after` snapshot, and a finished Run whose deferred
-/// materialize never ran before exit (its `after` snapshot is present). The
-/// `after`-present case is deliberately *not* excluded — the old query's
-/// `NOT EXISTS(after)` dropped it, leaving such Runs permanently
-/// changeset-less.
-pub fn list_unmaterialized_runs() -> Result<Vec<(String, String, String)>, crate::Error> {
-    let conn = connect()?;
-    list_unmaterialized_runs_in(&conn)
-}
-
-fn list_unmaterialized_runs_in(
-    conn: &rusqlite::Connection,
-) -> Result<Vec<(String, String, String)>, crate::Error> {
-    const SQL: &str = "SELECT s.run_id, s.thread_id, s.workspace_id
-         FROM review_snapshots s
-         WHERE s.phase = 'before' AND s.status != 'failed'
-           AND NOT EXISTS (
-             SELECT 1 FROM review_changesets c
-             WHERE c.run_id = s.run_id AND c.source_kind = 'run_snapshot'
-           )";
-    let mut stmt = conn.prepare(SQL)?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-        ))
-    })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(crate::Error::from)
-}
-
-/// All non-failed snapshots that pin a commit, for the startup consistency check.
-/// Returns `(snapshot_id, workspace_id, commit_id)` (§8.4).
-pub fn list_snapshots_with_commits() -> Result<Vec<(String, String, String)>, crate::Error> {
-    let conn = connect()?;
-    let mut stmt = conn.prepare(
-        "SELECT id, workspace_id, commit_id
-         FROM review_snapshots
-         WHERE status != 'failed' AND commit_id IS NOT NULL",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-        ))
-    })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(crate::Error::from)
-}
-
 /// Mark a snapshot failed (e.g. its commit went missing), so the derived
 /// `snapshotStatus` becomes `unavailable` (§8.4).
 pub fn mark_snapshot_failed(snapshot_id: &str, reason: &str) -> Result<(), crate::Error> {
@@ -537,67 +500,6 @@ mod tests {
     use rusqlite::{params, Connection};
 
     use super::*;
-    use crate::store::schema::SCHEMA;
-
-    fn test_conn() -> Connection {
-        let conn = Connection::open_in_memory().expect("open in-memory database");
-        conn.execute_batch(SCHEMA).expect("initialize test schema");
-        // The recovery query is exercised in isolation; insert snapshot/changeset
-        // rows directly without their workspace/thread/run parents.
-        conn.execute_batch("PRAGMA foreign_keys = OFF;")
-            .expect("disable foreign keys");
-        conn
-    }
-
-    fn insert_snapshot(conn: &Connection, run_id: &str, phase: &str) {
-        conn.execute(
-            "INSERT INTO review_snapshots (id, workspace_id, thread_id, run_id, phase, status, created_at)
-             VALUES (?1, 'ws', 'thread', ?2, ?3, 'complete', 1)",
-            params![format!("{run_id}_{phase}"), run_id, phase],
-        )
-        .expect("insert snapshot");
-    }
-
-    fn insert_changeset(conn: &Connection, run_id: &str) {
-        conn.execute(
-            "INSERT INTO review_changesets (id, thread_id, run_id, title, status, source_kind, created_at, updated_at)
-             VALUES (?1, 'thread', ?2, 't', 'ready', 'run_snapshot', 1, 1)",
-            params![format!("cs_{run_id}"), run_id],
-        )
-        .expect("insert changeset");
-    }
-
-    /// B-6: a Run with before+after but no changeset (deferred materialize never
-    /// ran before exit) must be recoverable — the old `NOT EXISTS(after)` query
-    /// wrongly excluded it.
-    #[test]
-    fn lists_finished_but_unmaterialized_run() {
-        let conn = test_conn();
-        insert_snapshot(&conn, "run_b6", "before");
-        insert_snapshot(&conn, "run_b6", "after");
-        let runs = list_unmaterialized_runs_in(&conn).unwrap();
-        assert!(runs.iter().any(|(run_id, ..)| run_id == "run_b6"));
-    }
-
-    /// The interrupted shape (before only, no after) is still listed.
-    #[test]
-    fn lists_interrupted_run() {
-        let conn = test_conn();
-        insert_snapshot(&conn, "run_int", "before");
-        let runs = list_unmaterialized_runs_in(&conn).unwrap();
-        assert!(runs.iter().any(|(run_id, ..)| run_id == "run_int"));
-    }
-
-    /// A Run that already has a materialized changeset is excluded.
-    #[test]
-    fn excludes_already_materialized_run() {
-        let conn = test_conn();
-        insert_snapshot(&conn, "run_done", "before");
-        insert_snapshot(&conn, "run_done", "after");
-        insert_changeset(&conn, "run_done");
-        let runs = list_unmaterialized_runs_in(&conn).unwrap();
-        assert!(!runs.iter().any(|(run_id, ..)| run_id == "run_done"));
-    }
 
     // ── connect()-backed API surface (fake HOME) ────────────────────────────
 
@@ -860,36 +762,16 @@ mod tests {
     }
 
     #[test]
-    fn unmaterialized_and_commit_pinning_queries() {
-        let (_home, conn) = guarded_conn("rsnap_queries");
-        seed_graph(&conn, &["r1", "r2"]);
+    fn a_failed_snapshot_retains_its_boundary_and_error() {
+        let (_home, conn) = guarded_conn("rsnap_failed_boundary");
+        seed_graph(&conn, &["r1"]);
         drop(conn);
-
-        create_review_snapshot(snapshot_input("r1", "before", Some("c1"))).expect("snap r1");
-        create_review_snapshot(snapshot_input("r2", "before", None)).expect("snap r2");
-        upsert_run_changeset(changeset_input("r1", false))
-            .unwrap()
-            .expect("changeset r1");
-
-        // r1 has a changeset; only r2 is unmaterialized.
-        let unmaterialized = list_unmaterialized_runs().expect("unmaterialized");
-        assert_eq!(
-            unmaterialized,
-            vec![("r2".to_string(), "t1".to_string(), "ws1".to_string())]
-        );
-
-        // Only r1 pins a commit.
-        let pinned = list_snapshots_with_commits().expect("pinned");
-        assert_eq!(pinned.len(), 1);
-        assert_eq!(pinned[0].1, "ws1");
-        assert_eq!(pinned[0].2, "c1");
-
-        // Failing the snapshot removes it from both queries.
-        let snapshot_id = pinned[0].0.clone();
-        mark_snapshot_failed(&snapshot_id, "commit gone").expect("mark failed");
-        assert!(list_snapshots_with_commits().expect("pinned").is_empty());
-        let unmaterialized = list_unmaterialized_runs().expect("unmaterialized");
-        assert_eq!(unmaterialized.len(), 1, "failed snapshots drop out too");
+        let before = create_review_snapshot(snapshot_input("r1", "before", Some("c1"))).unwrap();
+        mark_snapshot_failed(&before.id, "commit gone").unwrap();
+        let failed = get_review_snapshot("r1", "before").unwrap().unwrap();
+        assert_eq!(failed.status, "failed");
+        assert_eq!(failed.commit_id.as_deref(), Some("c1"));
+        assert_eq!(failed.error_message.as_deref(), Some("commit gone"));
     }
 
     /// The materialize path reads a Run's snapshots, then writes a changeset

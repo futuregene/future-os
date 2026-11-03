@@ -11,6 +11,10 @@ pub(super) fn connected(state: &RemoteState) -> bool {
     state.client.connection_state() == async_nats::connection::State::Connected
         && !state.nats_health.is_terminal()
         && !state.cmd_task.is_finished()
+        // A live socket with no command lane answers nothing. Reporting that as
+        // "connected" is what let a phone send into a subject nobody listened on
+        // while the desktop page still said it was serving.
+        && !state.nats_health.command_lane_is_down()
 }
 /// The invitation of `pair_id`, if it is still worth showing.
 ///
@@ -31,6 +35,21 @@ fn pending_invitation(state: Option<&RemoteState>, pair_id: &str) -> (Option<Str
         (state.pairing_code.clone(), state.pairing_code_expires_at)
     } else {
         (None, None)
+    }
+}
+
+/// The `refreshing` field's value.
+///
+/// Pure so both directions can be asserted without a live relay: a renewal that
+/// failed `n` times in a row says so, a renewal in progress says `pending`, and a
+/// healthy one says nothing.
+pub(super) fn refreshing_label(mint_failures: u8, refreshing: bool) -> Option<String> {
+    if mint_failures >= crate::health::MINT_FAILURES_BEFORE_STUCK {
+        Some(format!("stuck({mint_failures})"))
+    } else if refreshing {
+        Some("pending".to_string())
+    } else {
+        None
     }
 }
 
@@ -118,7 +137,8 @@ impl Supervisor {
         // Is the device's client at the other end? Read per pairing and without
         // the bridge in the way: a client whose bridge is rebuilding is still
         // sitting there, and the two facts are reported separately.
-        let present = self.client_link(pair_id).present();
+        let present = self.client_link(pair_id).present_and_report();
+        let (lane, packets, bytes) = self.catalogue_traffic(pair_id);
         RemoteDevice {
             pair_id: pair_id.to_string(),
             phase,
@@ -134,6 +154,53 @@ impl Supervisor {
             pairing_code,
             pairing_code_expires_at,
             desktop_id,
+            catalogue_lane: if lane == 1 {
+                crate::types::CatalogueLane::Delta
+            } else {
+                crate::types::CatalogueLane::Snapshot
+            },
+            catalogue_packets: packets,
+            catalogue_bytes: bytes,
+            relay: self.relay_health(state, present),
+        }
+    }
+
+    /// What this pairing's relay link is doing, for the status a reader sees.
+    ///
+    /// Read from the live generation where the generation knows the answer (the
+    /// command lane, the mint failures) and from the supervisor where the fact is
+    /// machine-wide (the last failure timestamp, the rebuild budget).
+    fn relay_health(&self, state: Option<&RemoteState>, present: bool) -> RelayHealth {
+        let Some(state) = state else {
+            return RelayHealth::default();
+        };
+        let now = crate::health::unix_millis();
+        let attempts = self.runtime_reconnect_attempts.load(Ordering::Acquire);
+        let since = self.runtime_failure_window_started.load(Ordering::Acquire);
+        let next_attempt_in_sec = if self.start_requested.load(Ordering::Acquire) {
+            match reconnect_step_for(attempts, since, now, present) {
+                ReconnectStep::Wait(wait) => Some((wait.as_millis() / 1000) as u64),
+                ReconnectStep::Attempt => None,
+            }
+        } else {
+            None
+        };
+        RelayHealth {
+            command_lane: match state.nats_health.command_lane_down_since() {
+                Some(down_since) => {
+                    format!("down({}s)", now.saturating_sub(down_since) / 1000)
+                }
+                None => "up".to_string(),
+            },
+            last_issue_at: crate::health::link_issue_age()
+                .map(|age| now.saturating_sub(age.as_millis() as u64)),
+            code: self.last_error_code.lock().unwrap().clone(),
+            attempts,
+            next_attempt_in_sec,
+            refreshing: refreshing_label(
+                state.nats_health.mint_failures(),
+                self.credential_refreshing.load(Ordering::Acquire),
+            ),
         }
     }
 

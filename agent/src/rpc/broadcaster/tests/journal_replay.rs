@@ -4,7 +4,7 @@ use super::*;
 fn journal_reads_flush_buffered_deltas_and_enqueue_failure_interrupts() {
     let directory = tempfile::tempdir().unwrap();
     let b = SseBroadcaster::new();
-    b.configure_journal(
+    b.configure_legacy_journal(
         "session-1",
         &crate::session::Manager::new(directory.path().to_path_buf()),
     )
@@ -43,7 +43,7 @@ fn journal_reads_flush_buffered_deltas_and_enqueue_failure_interrupts() {
 fn envelope_carries_run_sequence_and_session_replay_has_own_cursor() {
     let directory = tempfile::tempdir().unwrap();
     let b = SseBroadcaster::new();
-    b.configure_journal(
+    b.configure_legacy_journal(
         "session-1",
         &crate::session::Manager::new(directory.path().to_path_buf()),
     )
@@ -67,7 +67,7 @@ fn atomic_attach_replays_disk_when_memory_ring_is_truncated() {
     let directory = tempfile::tempdir().unwrap();
     let manager = crate::session::Manager::new(directory.path().to_path_buf());
     let store = manager.storage().unwrap();
-    store.bind_events("session-1").unwrap();
+    store.bind_legacy_events("session-1").unwrap();
     let mut events = Vec::new();
     for idx in 0..(MAX_RUN_EVENTS as i64 + 5) {
         let event = SseEvent {
@@ -97,7 +97,7 @@ fn atomic_attach_replays_disk_when_memory_ring_is_truncated() {
         .unwrap();
 
     let b = SseBroadcaster::new();
-    b.configure_journal(
+    b.configure_legacy_journal(
         "session-1",
         &crate::session::Manager::new(directory.path().to_path_buf()),
     )
@@ -119,7 +119,7 @@ fn events_since_reads_a_settled_run_from_its_durable_journal() {
     let directory = tempfile::tempdir().unwrap();
     let broadcaster = SseBroadcaster::new();
     broadcaster
-        .configure_journal(
+        .configure_legacy_journal(
             "session-1",
             &crate::session::Manager::new(directory.path().to_path_buf()),
         )
@@ -152,7 +152,7 @@ fn a_compacted_run_is_served_from_its_published_snapshot() {
     let manager = crate::session::Manager::new(directory.path().to_path_buf());
     let broadcaster = SseBroadcaster::new();
     broadcaster
-        .configure_journal("session-snapshot", &manager)
+        .configure_legacy_journal("session-snapshot", &manager)
         .unwrap();
     broadcaster.start_run("run-settled".to_string(), 1);
     broadcaster.broadcast(SseEvent::new("agent_start", serde_json::json!({})));
@@ -208,7 +208,7 @@ fn a_truncated_current_run_prefers_its_published_snapshot() {
     let manager = crate::session::Manager::new(directory.path().to_path_buf());
     let broadcaster = SseBroadcaster::new();
     broadcaster
-        .configure_journal("session-ring", &manager)
+        .configure_legacy_journal("session-ring", &manager)
         .unwrap();
     // Stay in ONE run and overflow the ring (MAX_RUN_EVENTS = 2000), so the
     // oldest events are gone while the run is still the current one.
@@ -254,12 +254,12 @@ fn pre_run_compaction_events_do_not_collide_with_session_events_on_restart() {
     let directory = tempfile::tempdir().unwrap();
     let manager = crate::session::Manager::new(directory.path().to_path_buf());
     let first = SseBroadcaster::new();
-    first.configure_journal("s", &manager).unwrap();
+    first.configure_legacy_journal("s", &manager).unwrap();
     first.broadcast(SseEvent::new("model_changed", serde_json::json!({})));
     first.broadcast(SseEvent::new("compaction_started", serde_json::json!({})));
     assert!(first.persistence_error().is_none());
     let second = SseBroadcaster::new();
-    second.configure_journal("s", &manager).unwrap();
+    second.configure_legacy_journal("s", &manager).unwrap();
     second.broadcast(SseEvent::new("compaction_committed", serde_json::json!({})));
     assert!(second.persistence_error().is_none());
     let events = second.read_journal("").unwrap();
@@ -277,7 +277,7 @@ fn events_since_beyond_ring_reads_disk_journal() {
     let dir = tempfile::tempdir().unwrap();
     let broadcaster = SseBroadcaster::new();
     broadcaster
-        .configure_journal(
+        .configure_legacy_journal(
             "s1".to_string(),
             &crate::session::Manager::new(dir.path().to_path_buf()),
         )
@@ -294,4 +294,62 @@ fn events_since_beyond_ring_reads_disk_journal() {
     );
     let event_count = events.len();
     assert!(event_count > 2000, "full history from disk: {event_count}");
+}
+
+/// The head this Agent can still serve is the union of its two sources. A ring
+/// that dropped its oldest events does not lose the head while the journal still
+/// holds them — and telling a consumer its window is incomplete when it is not
+/// would cost it a pointless full rebuild.
+#[test]
+fn earliest_cursor_prefers_a_journal_that_still_holds_the_head() {
+    let dir = tempfile::tempdir().unwrap();
+    let broadcaster = SseBroadcaster::new();
+    broadcaster
+        .configure_legacy_journal(
+            "s1".to_string(),
+            &crate::session::Manager::new(dir.path().to_path_buf()),
+        )
+        .unwrap();
+    broadcaster.start_run("run-journaled".to_string(), 1);
+    // Durable event kinds: buffered deltas would be folded on the way to disk and
+    // the stored head would then be a merged row rather than idx 0.
+    for i in 0..2100 {
+        broadcaster.broadcast(SseEvent::new("usage", serde_json::json!({"i": i})));
+    }
+
+    // The ring dropped 0..99; the journal still has them.
+    assert_eq!(
+        broadcaster.earliest_cursor("run-journaled", 0).unwrap(),
+        Some(0)
+    );
+    // Inside the ring's reach the journal is not consulted at all: the answer is
+    // served from memory, whose front is the head.
+    assert_eq!(
+        broadcaster.earliest_cursor("run-journaled", 2_099).unwrap(),
+        Some(100)
+    );
+    assert!(broadcaster
+        .earliest_cursor("run-unknown", 0)
+        .unwrap()
+        .is_none());
+}
+
+/// Without a journal the ring is the whole archive: once it drops the prefix, the
+/// oldest cursor the Agent can serve moves with it, and a cursor below that is a
+/// window that lost its head.
+#[test]
+fn earliest_cursor_follows_a_ring_that_dropped_its_head() {
+    let broadcaster = SseBroadcaster::new();
+    broadcaster.start_run("run-ring-only".to_string(), 1);
+    for i in 0..2100 {
+        broadcaster.broadcast(SseEvent::new("usage", serde_json::json!({"i": i})));
+    }
+    assert_eq!(
+        broadcaster.earliest_cursor("run-ring-only", 0).unwrap(),
+        Some(100)
+    );
+    assert!(broadcaster
+        .earliest_cursor("run-unknown", 0)
+        .unwrap()
+        .is_none());
 }

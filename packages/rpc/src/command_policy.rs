@@ -78,17 +78,24 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "export_html",
     "fork",
     "generate_session_title",
+    "get_fusion_settings",
+    "update_fusion_settings",
+    "get_fusion_status",
+    "get_fusion",
     "get_agent_info",
     "get_agent_readiness",
     "get_commands",
     "get_events_since",
+    "get_event_content_range",
     "get_run_snapshot",
     "get_fork_messages",
+    "get_fork_entries",
     "get_last_assistant_text",
     "get_journal_stats",
     "get_messages",
     "get_runtime_metrics",
     "get_session_entries",
+    "get_session_storage_format",
     "get_session_history_entry",
     "search_all_session_history",
     "search_session_history",
@@ -113,6 +120,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "list_streaming_sessions",
     "new_session",
     "probe_sandbox",
+    "probe_thinking_level",
     "probe_windows_sandbox",
     "prompt",
     "prune_run_events",
@@ -166,7 +174,9 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
             RetryPolicy::SameRequestId,
             ExecutionKind::AsyncAck,
         ),
-        "get_agent_info"
+        "get_fusion_settings"
+        | "get_fusion_status"
+        | "get_agent_info"
         | "get_agent_readiness"
         | "get_commands"
         | "get_last_assistant_text"
@@ -182,6 +192,9 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
             RetryPolicy::SafeRead,
             ExecutionKind::Immediate,
         ),
+        "update_fusion_settings" => {
+            policy(STORAGE_TIMEOUT, RetryPolicy::Never, ExecutionKind::Bounded)
+        }
         "prompt" => policy(
             PROMPT_ACK_TIMEOUT,
             RetryPolicy::SameRequestId,
@@ -210,6 +223,15 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
             RetryPolicy::Never,
             ExecutionKind::Bounded,
         ),
+        // One provider round trip with a model call inside it: the probe's own
+        // first-frame deadline (30 s) answers first, so this is only the outer
+        // transport bound. Never retried — a retry would spend a second model
+        // call against a level already known to be answered.
+        "probe_thinking_level" => policy(
+            Duration::from_secs(45),
+            RetryPolicy::Never,
+            ExecutionKind::Bounded,
+        ),
         // External Jev HTTP call with its own internal deadline; never retry
         // (a retried suggestion would spend a second model call).
         "suggest_skill" => policy(NETWORK_TIMEOUT, RetryPolicy::Never, ExecutionKind::Bounded),
@@ -218,12 +240,15 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
             RetryPolicy::Never,
             ExecutionKind::ManagedProcess,
         ),
-        "get_events_since"
+        "get_fusion"
+        | "get_events_since"
+        | "get_event_content_range"
         | "get_run_snapshot"
         | "list_tool_calls"
         | "get_tool_output"
         | "get_tool_call_args"
         | "get_fork_messages"
+        | "get_fork_entries"
         | "get_messages"
         | "get_session_entries"
         | "get_session_history_entry"
@@ -232,6 +257,7 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
         | "get_session_events_since"
         | "list_session_ids"
         | "get_session_presence"
+        | "get_session_storage_format"
         | "get_storage_health"
         | "list_sessions"
         | "probe_sandbox"

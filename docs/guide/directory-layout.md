@@ -21,7 +21,10 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 │   ├── skills/                # installed user skills (APP_SKILLS_DIR)
 │   ├── browser/               # CLI browser-tool state (config.json, profile/, artifacts/)
 │   ├── images/                # CLI image-tool output directory
-│   └── logs/agent.log         # agent log (when logging is enabled)
+│   └── logs/agent.log         # Agent JSONL diagnostics, embedded and standalone
+├── fusion/                    # shared read-only consultation control plane
+│   ├── fusion.db              # settings/revisions, runs, phases, participants, issues and transcript references
+│   └── snapshots/             # bounded, hashed consultation file snapshots
 ├── agent-app/                 # legacy credential dir (auth.json) read for back-compat
 ├── channels/
 │   ├── config.json            # every channel's config (see channels-config.md)
@@ -56,6 +59,8 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 │   └── remote-control/        # transient device requests (`future remote devices add|remove|use`, `future remote peers connect|disconnect|takeover|remove`)
 └── bin/                       # CLI / agent links: `future`, `future-agent` (see below)
 ```
+
+See [Rust diagnostics](logging.md) for all component log paths and retention.
 
 ## `~/.future/agent/` — agent backend
 
@@ -196,7 +201,9 @@ channel config, queue and status.
 
 Owned by `future-tui`. `settings.json` persists client-side settings
 (`defaultModel`, `defaultThinkingLevel`, `defaultPermissionLevel`,
-`enabledModelIds`, `themeId`, `skillRecommend`); key-binding overrides live in
+`enabledModelIds`, `themeId`, `skillRecommend`, `lastWorkspace` — the workspace
+`future tui` opens on when it is started from somewhere ambient); key-binding
+overrides live in
 `keybindings.json` (`/keymap` writes the non-default bindings, and the file is
 read at startup); `skill_reco.json` holds the current local day's
 skill-recommendation budget (which skills were already offered and which
@@ -267,9 +274,12 @@ Nothing here is data: it is how a running process and a terminal find each other
 
 ## `~/.future/workspaces/chat/` — chat workspaces
 
-Per-thread chat workspaces for the GUI, one subdir per agent session id (when
-known, e.g. from an import) or GUI thread id. User-chosen workspaces live
-elsewhere and are never touched by reclamation of this directory.
+Per-thread chat workspaces for the GUI and the TUI, one subdir per agent session
+id (when known, e.g. from an import) or GUI thread id. The TUI mints a chat
+session's id itself and creates `<chat root>/<id>` before the agent opens the
+session, so both surfaces file the same conversation under the same directory.
+User-chosen workspaces live elsewhere and are never touched by reclamation of
+this directory.
 
 ## Goal control plane — project-local, not under `~/.future/`
 

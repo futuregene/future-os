@@ -17,12 +17,12 @@ pub(crate) fn initialize() -> Result<(), crate::AppError> {
 
 /// Separate host log prevents attachment/restart from opening an external
 /// Agent's log. Call after acquiring the Desktop lock; it lives until exit.
-pub(crate) fn start_logging() -> Result<(), crate::AppError> {
-    future_host::environment::start_logging()?;
+pub(crate) fn start_logging() -> Result<future_logging::FileGuard, crate::AppError> {
+    let logging = future_host::environment::start_logging()?;
     if let Err(error) = crate::cli_tool::resolve() {
         report(&error.to_string());
     }
-    Ok(())
+    Ok(logging)
 }
 
 #[cfg(all(test, feature = "gui"))]
@@ -51,6 +51,13 @@ mod tests {
             return;
         }
         let _home = crate::auth_store::test_support::HomeGuard::new("host-start-logging");
+        // This fixture bypasses initialize(), which normally prepares tracing.
+        future_logging::prepare(
+            future_logging::Component::Desktop,
+            crate::build_info::VERSION,
+            true,
+            false,
+        );
         let empty = tempfile::tempdir().expect("an empty directory to search");
         // A PATH to restore is a precondition of this fixture, not a branch: the
         // `None` arm would be a line no run executes.

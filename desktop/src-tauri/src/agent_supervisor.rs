@@ -1,12 +1,45 @@
 //! GUI adapter over the shared in-process Agent host. External Agents retain
 //! their ownership; successful full cleanup is required before relaunch.
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 static QUIT_CONFIRMED: AtomicBool = AtomicBool::new(false);
 static QUIT_DIALOG_OPEN: AtomicBool = AtomicBool::new(false);
+/// Whether automatic Agent recovery has stopped for good.
+static RECOVERY_GAVE_UP: AtomicBool = AtomicBool::new(false);
+/// The one dialog for a give-up episode, shown at most once.
+static GAVE_UP_DIALOG_SHOWN: AtomicBool = AtomicBool::new(false);
+/// Why recovery gave up, kept for the status page.
+static GAVE_UP_REASON: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// How many recovery attempts the give-up episode spent, for `attempt N/limit`.
+static GAVE_UP_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
+
+/// How many recovery attempts this process will make before it gives up.
+///
+/// The status text names it, so the two cannot drift apart in the UI.
+pub fn recovery_attempt_limit() -> u32 {
+    future_rpc::supervision::RestartBudget::new().limit()
+}
+
+/// The reason automatic recovery stopped, when it has.
+///
+/// The status page reads this: a machine that has given up on its Agent must not
+/// look like one that is still trying, which is what thirteen silent hours of
+/// retrying looked like from outside.
+pub fn recovery_gave_up() -> Option<String> {
+    if !RECOVERY_GAVE_UP.load(Ordering::Acquire) {
+        return None;
+    }
+    Some(
+        GAVE_UP_REASON
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .unwrap_or_else(|| "the Agent did not stay reachable".to_string()),
+    )
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,6 +51,8 @@ pub struct AgentStatus {
     pub shutdown: Option<crate::desktop_shutdown::StopSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub startup: Option<future_agent::service::StartupProgress>,
 }
 
 pub fn start_agent_supervision<R: tauri::Runtime>(
@@ -54,7 +89,7 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
         {
             Ok(runtime) => runtime,
             Err(error) => {
-                crate::host_environment::report(&format!("Agent watchdog unavailable: {error}"));
+                tracing::error!(event = "spawn_agent_watchdog", %error, "Agent watchdog unavailable: {error}");
                 return;
             }
         };
@@ -88,7 +123,7 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
             if let LocalAgentState::Blocked(reason) = &observed {
                 loss.reset();
                 if last_notice.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(30)) {
-                    crate::host_environment::report(&format!("Agent recovery blocked: {reason}"));
+                    tracing::warn!(event = "spawn_agent_watchdog", %reason, "Agent recovery blocked: {reason}");
                     last_notice = Some(now);
                 }
                 continue;
@@ -96,16 +131,48 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
             // A held lock may be our own unresponsive embedded service. Only
             // its owner can drain it. An external owner's lock is never removed.
             let host = crate::agent_host::host();
+            if host.recovery_requires_restart() {
+                // Nothing in this process may start another Agent once the
+                // previous one failed its cleanup: the instance lock, its storage
+                // writer and its background work are all still held. Say so out
+                // loud instead of skipping the recovery in silence — measured
+                // 2026-10-28, that silence is what let the Desktop sit with no
+                // Agent for 40 minutes with only "restart Desktop" as the fix.
+                if last_notice.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(30)) {
+                    tracing::error!(
+                        event = "spawn_agent_watchdog",
+                        "Agent recovery blocked: the previous Agent did not finish its cleanup; \
+                         restart FutureOS",
+                    );
+                    last_notice = Some(now);
+                }
+                continue;
+            }
             if !loss.confirmed(now)
                 || !(matches!(observed, LocalAgentState::Startable) || host.owns_agent())
-                || host.recovery_requires_restart()
                 || !budget.allow(now)
             {
+                // A spent budget ends the loop instead of waiting out another
+                // cooldown: the escalation used to have a ceiling but no
+                // terminal state, so an Agent that died on every start was
+                // restarted 84 times over thirteen hours and nobody was told.
+                if budget.exhausted() {
+                    give_up(&_app, &recovery_cause(), budget.failures(), budget.limit());
+                    return;
+                }
                 continue;
             }
             loss.reset();
+            tracing::info!(
+                event = "spawn_agent_watchdog",
+                attempt = budget.failures(),
+                limit = budget.limit(),
+                "Agent recovery: the Agent is gone; starting a replacement (attempt {}/{})",
+                budget.failures(),
+                budget.limit()
+            );
             if let Err(error) = host.recover(address) {
-                crate::host_environment::report(&format!("Agent recovery: {error}"));
+                tracing::error!(event = "spawn_agent_watchdog", %error, "Agent recovery: {error}");
             }
         }
     });
@@ -121,6 +188,93 @@ pub fn ensure_agent_running<R: tauri::Runtime>(
     {
         Ok(())
     } // Mock Tauri apps must never launch a real default-home Agent.
+}
+
+/// Stop trying to recover, once, and tell the user.
+///
+/// Three things have to happen together and each is why the other two are not
+/// enough: the loop must end (otherwise it is the thirteen-hour cycle again), the
+/// status must say so (a user who opens the page finds it, and a later
+/// investigation reads it from the log), and the user must be told without
+/// hunting (nobody watches a status page they have no reason to open).
+///
+/// One dialog per episode, never one per attempt, and one log line: a give-up is
+/// news, not a state to poll.
+///
+/// `reason` is the caller's reading of why the Agent is gone, because only the
+/// watchdog can ask the host. Everything else — the terminal state, the attempt
+/// count the status page prints, the one log line, the one dialog — happens here,
+/// so a test drives the whole effect instead of writing the statics this is
+/// supposed to set. `GAVE_UP_ATTEMPTS` therefore records the budget that was
+/// spent rather than the limit, which is what makes `attempt 3/3` honest.
+fn give_up<R: tauri::Runtime>(app: &tauri::AppHandle<R>, reason: &str, failures: u32, limit: u32) {
+    #[cfg(test)]
+    let _ = app;
+    if RECOVERY_GAVE_UP.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    GAVE_UP_ATTEMPTS.store(failures, Ordering::Release);
+    *GAVE_UP_REASON
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(reason.to_string());
+    tracing::error!(event = "agent_recovery_gave_up", failures, limit, %reason,
+        "Agent recovery gave up after {failures}/{limit} attempts: {reason}; \
+         automatic retries stopped, restart FutureOS"
+    );
+    // The dialog flag is spent in every build, not only where a dialog can be
+    // drawn: that makes the once-per-episode rule code a test can drive, and
+    // keeps the dialog itself to the build that has a window to put it in.
+    let owe_dialog = !GAVE_UP_DIALOG_SHOWN.swap(true, Ordering::AcqRel);
+    #[cfg(not(test))]
+    if owe_dialog {
+        let handle = app.clone();
+        app.dialog()
+            .message(format!(
+                "FutureOS could not keep its Agent running.\n\n\
+                 Cause: {reason}\n\
+                 Automatic recovery stopped after {failures} of {limit} attempts.\n\n\
+                 Restart FutureOS to recover."
+            ))
+            .title("Agent unavailable")
+            .kind(MessageDialogKind::Error)
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "Restart FutureOS".into(),
+                "Later".into(),
+            ))
+            .show(move |confirmed| {
+                if confirmed {
+                    // One step, from the dialog: the same path the quit menu
+                    // takes, so the Agent's work is drained rather than cut.
+                    request_quit(handle, true);
+                }
+            });
+    }
+    #[cfg(test)]
+    let _ = owe_dialog;
+}
+
+/// How many recovery attempts the give-up episode spent.
+///
+/// The status page prints it against the limit (`attempt 3/3`): a budget that
+/// ran out says how far it got, not just that it is over.
+fn recovery_gave_up_attempts() -> u32 {
+    GAVE_UP_ATTEMPTS.load(Ordering::Acquire)
+}
+
+/// Why the Agent is gone, as the give-up reports it.
+///
+/// A host that never came up names its own failure; one that came up and left
+/// names the reason it yielded. Neither is a guess, and an unrecognised state
+/// falls back to a line that says what is known instead of an empty cause.
+#[cfg(not(test))]
+fn recovery_cause() -> String {
+    crate::agent_host::host()
+        .yield_reason()
+        .or_else(|| match crate::agent_host::host().phase() {
+            crate::agent_host::Phase::Failed(error) => Some(error),
+            _ => None,
+        })
+        .unwrap_or_else(|| "the Agent did not stay reachable".to_string())
 }
 pub async fn ensure_agent_ready_for_login<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> bool {
     if !matches!(
@@ -138,6 +292,7 @@ pub async fn agent_status() -> AgentStatus {
         agent_version: None,
         shutdown: crate::desktop_shutdown::snapshot(),
         error: None,
+        startup: None,
     };
     if let Some(shutdown) = &status.shutdown {
         status.phase = "stopping".into();
@@ -150,6 +305,18 @@ pub async fn agent_status() -> AgentStatus {
         status.phase = "stopping".into();
         return status;
     }
+    if let Some(reason) = recovery_gave_up() {
+        // Recovery stopped by its own budget, not by a shutdown: the page says
+        // so in the same terms as an incomplete cleanup, because the user's next
+        // step is the same one.
+        status.phase = "restart_required".into();
+        status.error = Some(format!(
+            "Agent recovery stopped at attempt {}/{}: {reason}. Restart FutureOS.",
+            recovery_gave_up_attempts(),
+            crate::agent_supervisor::recovery_attempt_limit()
+        ));
+        return status;
+    }
     if crate::agent_host::host().recovery_requires_restart() {
         status.phase = "restart_required".into();
         status.error = Some("Agent cleanup is incomplete; restart FutureOS".into());
@@ -158,6 +325,7 @@ pub async fn agent_status() -> AgentStatus {
     match crate::agent_host::host().phase() {
         crate::agent_host::Phase::Starting => {
             status.phase = "starting".into();
+            status.startup = Some(crate::agent_host::host().startup_progress());
             return status;
         }
         crate::agent_host::Phase::Failed(error) => {
@@ -345,7 +513,7 @@ pub(crate) fn request_quit<R: tauri::Runtime>(app: tauri::AppHandle<R>, force: b
     if let Err(error) = std::thread::Builder::new().name("desktop-quit".into()).spawn(move || {
         let result = operation.wait();
         if let Err(error) = result {
-            eprintln!("FutureOS exit cleanup failed: {error}");
+            tracing::error!(event = "request_quit", %error, "FutureOS exit cleanup failed: {error}");
             if !FORCE_QUIT_REQUESTED.load(Ordering::Acquire) {
                 app.dialog().message(format!("FutureOS could not complete cleanup: {error}. Exit the process anyway?"))
                     .title("Cleanup failed")
@@ -469,6 +637,7 @@ mod tests {
             agent_version: None,
             shutdown: None,
             error: None,
+            startup: None,
         };
         let value = serde_json::to_value(&status).unwrap();
         assert_eq!(value["phase"], "unavailable");
@@ -485,12 +654,14 @@ mod tests {
             value.get("error").is_none(),
             "an absent error is omitted, not null: {value}"
         );
+        assert!(value.get("startup").is_none());
         let busy = AgentStatus {
             phase: "incompatible".into(),
             desktop_version: "1.2.3".into(),
             agent_version: Some("9.9.9".into()),
             shutdown: None,
             error: Some("protocol mismatch".into()),
+            startup: None,
         };
         let value = serde_json::to_value(&busy).unwrap();
         assert_eq!(value["agentVersion"], "9.9.9");
@@ -534,6 +705,11 @@ mod block_fixtures {
     #[test]
     fn a_failed_stop_is_a_stopping_status_with_its_reason() {
         run_case("failed-stop");
+    }
+
+    #[test]
+    fn a_spent_recovery_budget_is_reported_as_restart_required() {
+        run_case("gave-up");
     }
 
     #[test]
@@ -637,6 +813,10 @@ mod block_fixtures {
             };
             let status = block_on(agent_status());
             assert_eq!(status.phase, "starting");
+            assert_eq!(
+                status.startup.as_ref().unwrap().stage,
+                future_agent::service::StartupStage::Preparing,
+            );
             assert!(status.error.is_none());
             assert!(status.shutdown.is_none());
             // Starting is *not* "no work": the count cannot be read yet, so the
@@ -717,6 +897,31 @@ mod block_fixtures {
             assert_eq!(status.phase, "stopping");
             assert_eq!(status.error.as_deref(), Some("fixture stop failure"));
             assert!(status.shutdown.is_some());
+            return;
+        }
+        if case == "gave-up" {
+            // A budget that ran out is a state the page must name, not a phase
+            // that still reads "starting" while nothing is being started. Driven
+            // through `give_up` itself: writing these fields here would pass even
+            // if the watchdog never called it, which is the defect this case is
+            // meant to catch.
+            let app = mock_app();
+            give_up(app.handle(), "Embedded Agent worker panicked", 3, 3);
+            assert_eq!(
+                recovery_gave_up().as_deref(),
+                Some("Embedded Agent worker panicked")
+            );
+            assert_eq!(recovery_gave_up_attempts(), 3);
+            assert!(
+                GAVE_UP_DIALOG_SHOWN.load(Ordering::Acquire),
+                "the episode owes its one dialog"
+            );
+            let status = block_on(agent_status());
+            assert_eq!(status.phase, "restart_required");
+            let error = status.error.unwrap_or_default();
+            assert!(error.contains("Embedded Agent worker panicked"), "{error}");
+            assert!(error.contains("attempt 3/3"), "{error}");
+            assert!(error.contains("Restart FutureOS"), "{error}");
             return;
         }
         if case == "quit-barrier" {

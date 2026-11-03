@@ -1,31 +1,15 @@
-//! Markdown object-reference handling, split by concern:
-//! - [`extract`] — pure parsing of `futureos://` links/fences out of markdown.
-//! - [`resolve`] — turn explicit references into live store records (read side).
-//! - [`sync`] — keep the denormalized reference tables in step with messages.
+//! Resolve explicit object references against live store records.
 //!
 //! The composer's `@`-mention picker searches workspace files, not objects —
 //! see [`super::workspace_files`].
 
-#[cfg(test)]
-mod extract;
-#[cfg(test)]
-mod metadata;
 mod resolve;
-#[cfg(test)]
-mod sync;
 
 pub use self::resolve::resolve_markdown_references;
-
-/// First eight characters of an id, used to label runs in sync output.
-#[cfg(test)]
-fn short_id(id: &str) -> String {
-    id.chars().take(8).collect()
-}
 
 #[cfg(test)]
 mod tests {
     use super::resolve::resolve_markdown_reference;
-    use super::sync::sync_message_markdown_references;
     use crate::store::records::MarkdownReferenceInput;
     use crate::store::schema::SCHEMA;
     use rusqlite::Connection;
@@ -34,62 +18,6 @@ mod tests {
         let conn = Connection::open_in_memory().expect("open in-memory database");
         conn.execute_batch(SCHEMA).expect("initialize test schema");
         conn
-    }
-
-    #[test]
-    fn syncs_message_references_into_reference_tables() {
-        let conn = test_conn();
-        seed_workspace_artifact(&conn);
-
-        sync_message_markdown_references(
-            &conn,
-            "msg_test",
-            "thread_test",
-            "[Poem](futureos://artifact/artifact_test)",
-        )
-        .expect("sync markdown references");
-
-        let target_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM reference_targets", [], |row| {
-                row.get(0)
-            })
-            .expect("count reference targets");
-        let object_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM object_references", [], |row| {
-                row.get(0)
-            })
-            .expect("count object references");
-        let title: String = conn
-            .query_row("SELECT title FROM reference_targets", [], |row| row.get(0))
-            .expect("load target title");
-
-        assert_eq!(target_count, 1);
-        assert_eq!(object_count, 1);
-        assert_eq!(title, "Poem");
-    }
-
-    #[test]
-    fn sync_of_tool_reference_is_a_noop_not_an_error() {
-        // The `tool_calls` table is gone (journal-era pipeline): syncing a
-        // message that links a tool must neither fail the message write nor
-        // create a reference target.
-        let conn = test_conn();
-        seed_workspace_artifact(&conn);
-
-        sync_message_markdown_references(
-            &conn,
-            "msg_tool",
-            "thread_test",
-            "[shell](futureos://tool/tool_123)",
-        )
-        .expect("sync must not fail on a tool reference");
-
-        let target_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM reference_targets", [], |row| {
-                row.get(0)
-            })
-            .expect("count reference targets");
-        assert_eq!(target_count, 0);
     }
 
     #[test]

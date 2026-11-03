@@ -25,6 +25,10 @@ pub struct PreparedPrompt {
     model_id: Option<String>,
     thinking_level: Option<String>,
     attachments: Vec<AttachmentInput>,
+    /// What this send means while the session already runs something: an Agent
+    /// `BusyPolicy` value, empty for the Agent's own default. Only the remote
+    /// path sets it today (a phone or another computer asking to queue).
+    busy_policy: String,
 }
 
 /// Create the run for `thread` and return its stable local identifiers.
@@ -57,6 +61,29 @@ pub fn prepare_prompt_persisted_with_trigger(
     attachments: Vec<AttachmentInput>,
     trigger_message_id: Option<String>,
 ) -> Result<PreparedPrompt, crate::Error> {
+    prepare_prompt_persisted_busy(
+        thread,
+        message,
+        model_id,
+        thinking_level,
+        attachments,
+        trigger_message_id,
+        String::new(),
+    )
+}
+
+/// The same, for a caller that says what a send means while the session still
+/// runs one (the remote prompt path). An empty policy keeps the Agent default.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_prompt_persisted_busy(
+    thread: &store::ThreadRecord,
+    message: String,
+    model_id: Option<String>,
+    thinking_level: Option<String>,
+    attachments: Vec<AttachmentInput>,
+    trigger_message_id: Option<String>,
+    busy_policy: String,
+) -> Result<PreparedPrompt, crate::Error> {
     let session_id = thread
         .agent_session_id
         .clone()
@@ -80,6 +107,7 @@ pub fn prepare_prompt_persisted_with_trigger(
         model_id,
         thinking_level,
         attachments,
+        busy_policy,
     })
 }
 
@@ -113,6 +141,7 @@ async fn run_prepared_prompt_inner(
         model_id,
         thinking_level,
         attachments,
+        busy_policy,
     } = prepared;
 
     let request = super::AgentPromptRequest {
@@ -124,6 +153,7 @@ async fn run_prepared_prompt_inner(
         run_id: Some(run_id.clone()),
         model_id,
         thinking_level,
+        busy_policy,
     };
     let (agent_accepted_tx, agent_accepted_rx) = tokio::sync::oneshot::channel();
     // Poll acceptance alongside the prompt in this task. A spawned JoinHandle

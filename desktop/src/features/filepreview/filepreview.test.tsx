@@ -196,6 +196,29 @@ describe("previewLoadingGate", () => {
     hook.unmount();
   });
 
+  it("supports a one-second minimum and stays visible across a renewed request", () => {
+    vi.useFakeTimers();
+    let loading = true;
+    const hook = renderHook(() => usePreviewLoadingGate(loading, 1000));
+    act(() => vi.advanceTimersByTime(PREVIEW_LOADING_DELAY_MS));
+    expect(hook.current).toEqual({ showContent: false, showLoading: true });
+    act(() => vi.advanceTimersByTime(50));
+    loading = false;
+    hook.rerender();
+    act(() => vi.advanceTimersByTime(100));
+    loading = true;
+    hook.rerender();
+    expect(hook.current).toEqual({ showContent: false, showLoading: true });
+    act(() => vi.advanceTimersByTime(50));
+    loading = false;
+    hook.rerender();
+    act(() => vi.advanceTimersByTime(799));
+    expect(hook.current).toEqual({ showContent: false, showLoading: true });
+    act(() => vi.advanceTimersByTime(1));
+    expect(hook.current).toEqual({ showContent: true, showLoading: false });
+    hook.unmount();
+  });
+
   it("moves straight to ready once the minimum visible time has elapsed", () => {
     vi.useFakeTimers();
     let loading = true;
@@ -721,6 +744,136 @@ describe("filePreviewOverlay", () => {
     await flushAsync();
     await flushAsync();
     expect(events[0]?.detail.message).toBe("original gone");
+    cleanup();
+  });
+});
+
+/**
+ * A previewed document's links open one level deeper in the same overlay; each
+ * Escape steps back out, and only the outermost one leaves the preview.
+ */
+describe("previewStack", () => {
+  /** Serve `/w/a.md` (which links to `b.md`) and `/w/b.md`; other reads fail. */
+  function serveLinkedDocs(options: { nestedFails?: boolean } = {}) {
+    invokeMock.mockImplementation((cmd, args) => {
+      const { path } = (args ?? {}) as { path?: string };
+      // Every relative link in these documents points at `/w/b.md`.
+      if (cmd === "resolve_preview_link_path")
+        return Promise.resolve({ name: "b.md", path: "/w/b.md" });
+      if (cmd !== "read_text_file_preview")
+        return Promise.resolve(null);
+      if (path === "/w/b.md")
+        return options.nestedFails ? Promise.reject(new Error("unreadable")) : Promise.resolve({ content: "second doc", size: 10, truncated: false, validUtf8: true });
+      if (path === "/w/a.md")
+        return Promise.resolve({ content: "first doc\n\n[next](b.md)", size: 22, truncated: false, validUtf8: true });
+      return Promise.reject(new Error(`unexpected read: ${path}`));
+    });
+  }
+
+  function link(container: HTMLElement) {
+    return [...container.querySelectorAll("a")].find(anchor => anchor.textContent === "next")!;
+  }
+
+  function escape() {
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+  }
+
+  it("follows a link one level deeper and steps back out with Escape", async () => {
+    serveLinkedDocs();
+    const onClose = vi.fn();
+    const { container, cleanup } = mount(createElement(FilePreviewOverlay, {
+      path: "/w/a.md",
+      name: "a.md",
+      kind: "markdown",
+      open: true,
+      onClose,
+    }));
+    await flushAsync();
+    expect(container.textContent).toContain("first doc");
+
+    act(() => {
+      link(container).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+    expect(container.textContent).toContain("second doc");
+    expect(container.textContent).not.toContain("first doc");
+    // The overlay is still up: following a link is not a dismissal.
+    expect(onClose).not.toHaveBeenCalled();
+    expect(container.querySelector("button[aria-label='Back']")).not.toBeNull();
+
+    escape();
+    await flushAsync();
+    expect(container.textContent).toContain("first doc");
+    expect(container.textContent).not.toContain("second doc");
+    expect(onClose).not.toHaveBeenCalled();
+
+    // The bottom of the stack closes the preview, as it always did.
+    escape();
+    expect(onClose).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
+
+  it("keeps a followed document that cannot be read from closing the preview", async () => {
+    serveLinkedDocs({ nestedFails: true });
+    const events: CustomEvent[] = [];
+    window.addEventListener("futureos:toast", e => events.push(e as CustomEvent));
+    const onClose = vi.fn();
+    const onOpenExternal = vi.fn();
+    const { container, cleanup } = mount(createElement(FilePreviewOverlay, {
+      path: "/w/a.md",
+      name: "a.md",
+      kind: "markdown",
+      open: true,
+      onClose,
+      onOpenExternal,
+    }));
+    await flushAsync();
+    act(() => {
+      link(container).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+    await flushAsync();
+
+    expect(events[events.length - 1]?.detail.message).toContain("b.md");
+    expect(onClose).not.toHaveBeenCalled();
+    expect(onOpenExternal).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("first doc");
+    cleanup();
+  });
+
+  it("starts a fresh stack when the opened file changes under the overlay", async () => {
+    serveLinkedDocs();
+    const onClose = vi.fn();
+    const { container, root, cleanup } = mount(createElement(FilePreviewOverlay, {
+      path: "/w/a.md",
+      name: "a.md",
+      kind: "markdown",
+      open: true,
+      onClose,
+    }));
+    await flushAsync();
+    act(() => {
+      link(container).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+    expect(container.textContent).toContain("second doc");
+
+    // The file tree's next/previous picture swaps the root rather than nesting.
+    act(() => {
+      root.render(createElement(FilePreviewOverlay, {
+        path: "/w/b.md",
+        name: "b.md",
+        kind: "markdown",
+        open: true,
+        onClose,
+      }));
+    });
+    await flushAsync();
+    expect(container.querySelector("button[aria-label='Back']")).toBeNull();
+    escape();
+    expect(onClose).toHaveBeenCalledTimes(1);
     cleanup();
   });
 });

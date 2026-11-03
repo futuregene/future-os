@@ -173,7 +173,12 @@ async fn connect_channel_with_policy(
     .await
 }
 
-async fn connect_channel_with_connector<F, Fut>(
+/// The endpoint loop with its connector injected.
+///
+/// Crate-visible because tests drive it directly: a pending connector is how a
+/// connect attempt that never completed is produced on a platform whose empty
+/// loopback ports are refused immediately (see `connection::tests`).
+pub(crate) async fn connect_channel_with_connector<F, Fut>(
     configured: Option<&str>,
     connect_timeout: Duration,
     mut connect: F,
@@ -318,6 +323,69 @@ fn normalize_tcp_uri(addr: &str) -> String {
     }
 }
 
+/// A bind address that cannot be used, with the option name left to the surface
+/// that owns it.
+///
+/// The grammar is shared; the flag is not. `future agent --grpc-addr` and
+/// `future host --agent-grpc-addr` refuse exactly the same addresses, and a
+/// diagnostic phrased here cannot know which of them the operator typed. It
+/// therefore says what is wrong with the address, and
+/// [`BindAddrError::for_flag`] says it again in the caller's own words — the
+/// agent's option names itself instead of sending the operator to look for
+/// whatever "TCP address" is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindAddrError {
+    addr: String,
+    reason: &'static str,
+}
+
+impl BindAddrError {
+    pub fn addr(&self) -> &str {
+        &self.addr
+    }
+
+    /// The same complaint phrased for a surface whose option is `flag`.
+    pub fn for_flag(&self, flag: &str) -> String {
+        format!("invalid {flag} {:?}: {}", self.addr, self.reason)
+    }
+}
+
+impl fmt::Display for BindAddrError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.for_flag("TCP address"))
+    }
+}
+
+impl std::error::Error for BindAddrError {}
+
+/// Parse a TCP bind/connect address the way the Agent's `--grpc-addr` does.
+///
+/// `47200` and `:47200` both mean loopback, `[::1]:47200` is bracketed IPv6, and
+/// nothing else is inferred: `localhost:47200` is refused rather than resolved,
+/// because a bind address must be numeric for the listener and the client to
+/// agree without a resolver in between. Shared with the Agent so the address a
+/// host is allowed to serve on is parsed exactly like the one the Agent binds.
+pub fn parse_bind_addr(addr: &str) -> Result<std::net::SocketAddr, BindAddrError> {
+    let refused = |reason: &'static str| BindAddrError {
+        addr: addr.to_string(),
+        reason,
+    };
+    let trimmed = addr.trim();
+    let address = if let Some(port) = trimmed.strip_prefix(':') {
+        if port.contains(':') {
+            return Err(refused("bracket IPv6 addresses as [::1]:port"));
+        }
+        format!("127.0.0.1:{port}")
+    } else if trimmed.contains(':') {
+        trimmed.to_owned()
+    } else {
+        format!("127.0.0.1:{trimmed}")
+    };
+    address
+        .parse()
+        .map_err(|_| refused("expected IP:port (bracket IPv6 addresses)"))
+}
+
 #[cfg(unix)]
 pub fn local_socket_path() -> std::path::PathBuf {
     local_socket_path_from(
@@ -446,9 +514,24 @@ pub fn endpoint_dir() -> std::path::PathBuf {
 /// directory is refused before anything is written into it.
 #[cfg(unix)]
 pub fn ensure_endpoint_dir() -> std::io::Result<std::path::PathBuf> {
+    ensure_endpoint_dir_at(&endpoint_dir())
+}
+
+/// The whole of [`ensure_endpoint_dir`], against a directory the caller names.
+///
+/// Split out so the rules can be exercised on a directory the test owns. They
+/// used to be tested on [`endpoint_dir`] itself — `/tmp/future-<uid>`, one path
+/// *shared by every process on the machine* — which made the test mutate a
+/// machine-global object: two `cargo test` runs at once (two worktrees, the
+/// recorded condition) removed and re-created each other's symlink and reported
+/// `AlreadyExists`/`NotFound` against a directory this code classifies
+/// correctly. The rules under test are about a directory's own metadata; which
+/// directory it is belongs to the caller.
+#[cfg(unix)]
+fn ensure_endpoint_dir_at(dir: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-    let dir = endpoint_dir();
+    let dir = dir.to_path_buf();
     let uid = effective_uid();
     match std::fs::symlink_metadata(&dir) {
         Ok(meta) => {
@@ -496,7 +579,7 @@ pub fn ensure_endpoint_dir() -> std::io::Result<std::path::PathBuf> {
             std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
             // Re-check what actually appeared: create_dir is atomic against a
             // concurrent creator, but the winner's object is what we must trust.
-            ensure_endpoint_dir()
+            ensure_endpoint_dir_at(&dir)
         }
         Err(error) => Err(error),
     }
@@ -979,40 +1062,51 @@ mod tests {
     /// `/tmp` is world-writable: a pre-created directory there can belong to
     /// anybody, or be a symlink pointing anywhere. Both are refused rather than
     /// repaired — chmod'ing someone else's directory is the attack, not the fix.
+    ///
+    /// Driven on a directory the test owns. It used to be driven on
+    /// `endpoint_dir()` — `/tmp/future-<uid>`, shared by every process on the
+    /// machine — and then this test created a symlink there, deleted the
+    /// directory, and re-created it, so two `cargo test` processes at once (the
+    /// recorded condition: several worktrees) destroyed each other's fixture and
+    /// failed with `AlreadyExists`/`NotFound` and with each other's refusal text.
+    /// Nothing here belongs to another process: the target, the symlink and the
+    /// directory all live under this test's own temp dir.
     #[cfg(unix)]
     #[test]
     fn a_squatted_endpoint_directory_is_refused() {
         use std::os::unix::fs::{symlink, PermissionsExt};
-        let dir = endpoint_dir();
-        let _ = std::fs::remove_file(&dir);
-        let _ = std::fs::remove_dir_all(&dir);
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("future-uid");
+        let target = root.path().join("squat-target");
+        std::fs::create_dir_all(&target).unwrap();
 
         // 1. A symlink where the directory should be.
-        let target = std::env::temp_dir().join("future-squat-target-test");
-        std::fs::create_dir_all(&target).unwrap();
-        if symlink(&target, &dir).is_ok() {
-            let error = ensure_endpoint_dir().expect_err("a symlink must be refused");
-            assert!(
-                error.to_string().contains("symbolic link"),
-                "the refusal must name the cause: {error}"
-            );
-            std::fs::remove_file(&dir).unwrap();
-        }
-        let _ = std::fs::remove_dir_all(&target);
+        symlink(&target, &dir).unwrap();
+        let error = ensure_endpoint_dir_at(&dir).expect_err("a symlink must be refused");
+        assert!(
+            error.to_string().contains("symbolic link"),
+            "the refusal must name the cause: {error}"
+        );
+        assert_eq!(
+            std::fs::read_link(&dir).unwrap(),
+            target,
+            "the refusal must not repair what it refuses to trust"
+        );
+        std::fs::remove_file(&dir).unwrap();
 
         // 2. A directory with the wrong mode.
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let error = ensure_endpoint_dir().expect_err("a 0755 directory must be refused");
+        let error = ensure_endpoint_dir_at(&dir).expect_err("a 0755 directory must be refused");
         assert!(
             error.to_string().contains("expected 700"),
             "the refusal must say what to fix: {error}"
         );
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
 
-        // 3. The legitimate case still works, and creates it when absent.
-        let _ = std::fs::remove_dir_all(&dir);
-        let made = ensure_endpoint_dir().expect("a fresh owned directory is fine");
+        // 3. The legitimate case still works, and repairs a 0755 directory only
+        // when it is this user's own and nothing else changed.
+        let made = ensure_endpoint_dir_at(&dir).expect("a fresh owned directory is fine");
         assert_eq!(made, dir);
         let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700, "the created directory must be private");
@@ -1135,6 +1229,60 @@ mod tests {
             Some(std::path::PathBuf::from(r"C:\tmp\other-home")),
         );
         assert_ne!(tagged, other);
+    }
+
+    /// The pipe the *process* would use, in both directions: the FutureOS
+    /// override is the only input that moves it, and `HOME` is not.
+    ///
+    /// The first direction is the isolation every fixture relies on; the second
+    /// is the trap that cost real credentials. Dropping `FUTURE_HOME` and moving
+    /// only `HOME` keeps the *files* in a temp dir while the endpoint silently
+    /// falls back to the untagged default pipe — the running Agent's — so a test
+    /// that asked "am I isolated?" of the file paths was told yes. If anything
+    /// ever removes the fixture's override again, this direction goes red with
+    /// the reason, rather than the suite quietly talking to the developer's
+    /// Agent. Only the name is computed: nothing is bound or connected.
+    #[cfg(windows)]
+    #[test]
+    fn local_pipe_name_moves_with_the_future_home_override_and_not_with_home() {
+        let _guard = crate::home::env_guard();
+        let previous_future_home = std::env::var_os(crate::home::FUTURE_HOME_ENV);
+        let previous_home = std::env::var_os("HOME");
+        let sid = current_user_sid_string().expect("the process token must yield a SID");
+
+        // A redirected user home, no override: still the untagged default pipe.
+        std::env::remove_var(crate::home::FUTURE_HOME_ENV);
+        let user_home = std::env::temp_dir().join("rpc-pipe-home-only");
+        std::env::set_var("HOME", &user_home);
+        let default = local_pipe_name();
+        assert_eq!(
+            default,
+            format!(r"\\.\pipe\future-agent-{sid}"),
+            "HOME alone must not rename the pipe: that is the running Agent's name"
+        );
+
+        // With the override, the name carries the tag of that root.
+        let root = std::env::temp_dir().join("rpc-pipe-isolated-root");
+        std::env::set_var(crate::home::FUTURE_HOME_ENV, &root);
+        let isolated = local_pipe_name();
+        assert_eq!(
+            isolated,
+            format!(
+                r"\\.\pipe\future-agent-{sid}-{}",
+                crate::home::home_tag(&root)
+            ),
+            "the override must rename the pipe to this instance's own"
+        );
+        assert_ne!(isolated, default);
+
+        match previous_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        match previous_future_home {
+            Some(value) => std::env::set_var(crate::home::FUTURE_HOME_ENV, value),
+            None => std::env::remove_var(crate::home::FUTURE_HOME_ENV),
+        }
     }
 
     /// The pipe is created with a DACL that grants only SYSTEM and the current user,

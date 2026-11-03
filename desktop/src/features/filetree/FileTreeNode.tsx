@@ -63,7 +63,13 @@ export function FileTreeNode({ entry, depth, tree, activePath, onContextMenu, on
           can sit inside without nesting buttons; the leading part stays the
           click/expand target. */}
       <div
-        className="group/file-row flex w-full items-center pr-2.5 text-sm text-ink transition-colors hover:bg-surface-subtle"
+        // A hairline *above* every row, the way the app's other file lists are
+        // divided (`RemoteFilesPanel`, the review list): a column of names with
+        // no rules between them reads as a wall of text at this width. Above and
+        // not below, so the last row carries no rule of its own — the panel's
+        // closing edge under the scroll viewport is the only line at the bottom
+        // (see `FileTreePanel`), which is what keeps the two from doubling.
+        className="group/file-row flex w-full items-center border-t border-line-soft/50 pr-2.5 text-sm text-ink transition-colors hover:bg-surface-subtle"
         style={{ paddingLeft: BASE_INDENT + depth * INDENT_STEP }}
       >
         <button

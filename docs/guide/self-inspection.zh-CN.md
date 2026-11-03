@@ -23,7 +23,7 @@
 | `future account profile` / `balance` | 用户账户与剩余额度 |
 | `future skills list` | 已安装与目录中的技能 |
 | `future tools list` / `describe <name>` | **CLI** 可调用的平台/浏览器工具（不是模型的 `read`/`write`/`edit`/`shell`，那组按会话设置） |
-| `future mcp list` | `~/.future/mcp.json` 中配置的 MCP 服务器，以及每个要执行什么命令 |
+| `future mcp list` | `~/.future/mcp.json` 中配置的 MCP 服务器，每条带传输方式与要执行的命令或要访问的地址 |
 | `future session list --json` | 全部已记录会话（新的在前，每条带 `cwd`、模型与标题） |
 | `future session info <id> [--json]` | 单个会话的模型、cwd、消息/工具计数、token 与成本 |
 | `future session status <id> [--json] [--metrics]` | 单个会话的**实时**状态：生效中的工具权限与沙箱档、上下文占用、已加载的上下文文件与技能、活动/排队 run、待审批项 |
@@ -305,8 +305,12 @@ future run --session <id> "<message>"     # 在那个会话里起一次 run
 
 ```sh
 future session new --parent <你的会话 id> --name "<短任务名>" --json
-future run --no-wait --session <子会话 id> "<自包含的提示词>"
+future run --no-wait --session <子会话 id> \
+  --model <id> --thinking <level> "<自包含的提示词>"
 ```
+
+`--json` 里新会话 id 的字段是 `sessionId`（`session list` 里同一个字段叫 `id`）——
+把它读成 `id` 是这一步唯一会踩的坑。
 
 在创建命令上就写下父会话，才让这个子会话真的是「子」：血缘在它首次运行之前就已存在，
 桌面端会把它画在这个会话下面，而子会话的系统提示词也会告诉它不能再向下委派。
@@ -314,6 +318,26 @@ future run --no-wait --session <子会话 id> "<自包含的提示词>"
 来源与意图 —— 全部照旧适用；`future session list --parent <id>` 列出一个会话的子会话，
 `abort` / `delete` 停掉并删除一个，`future session approvals <子会话>` 回答它是不是
 卡在审批上 —— 这在外部观察起来和「跑得慢」完全一样。
+
+模型与思考等级不会从父会话自动继承：每个新会话都从 Agent 的默认模型解析，
+所以要在派发那次 `run` 上把父会话自己的带下去 —— `--model <id> --thinking
+<level>`，值取自父会话环境块里报告的 Current model / Thinking level。子会话
+承接的是父会话正在做的事时，这是建议做法；两个值会记在子会话上，它之后的 run
+继续用。不写也是合理的选择：那就用 Agent 的默认模型和 `default` 思考等级。
+
+工具权限是例外，而且不需要调用方传：Agent 在创建子会话时把父会话的权限等级
+复制过去，所以跑在审批档（`workspace`）或禁用工具（`none`）的父会话不会造出
+一个权限比它更大的子会话。若父会话只在磁盘上、不在内存里，就没有可复制的等级
+—— 权限是运行时状态，不进会话记录 —— 这样的父会话造出来的子会话仍用设置里的
+默认值。
+
+取答案是「拉」：子会话给出答复，调用方用 `future session wait` / `transcript`
+把它读回来。没拿到答复就结束的 `wait` —— 空答复、run 被中断、出错 —— 会以非零
+退出码收尾，这是故意设计的：那是子会话失败，不是可以往上汇报的「空白成功」。
+若调用方等不起 —— Agent 的 shell 工具单次等待上限 600 秒 —— 就把
+自己的会话 id 写进子会话的提示词，让它用 `future run --session <父会话 id>`
+回报；那是在那个会话里真起一个 run、要花 credits。这也正是「子会话还在跑时结束
+本回合」唯一正确的场合：子会话仍然知道该往哪报。
 
 只允许一跳，而且是强制的、不是靠提示词劝阻：已经有父会话的会话不能再当父会话
 （`new_session` 与 `set_parent_session` 都拒绝），所以子会话无法再开孙会话。

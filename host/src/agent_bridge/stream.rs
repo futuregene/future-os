@@ -187,6 +187,7 @@ pub(super) async fn collect_agent_response(
     // source of truth); a mid-collect reconnect resumes from `last_idx` below,
     // and a forced re-attach replays through the gap check.
     let mut last_idx: i64 = -1;
+    let mut content_cursors = future_rpc::content_range::ContentCursors::default();
     let mut reconnect_attempt = 0_u32;
 
     let (clean_end, termination_kind) = 'attach: loop {
@@ -226,7 +227,11 @@ pub(super) async fn collect_agent_response(
             Err(AttachFailure::Fatal(reason)) => return Err(reason.into()),
             Err(AttachFailure::Transient(stream_error)) => {
                 reconnect_attempt = reconnect_attempt.saturating_add(1);
-                eprintln!(
+                if reconnect_attempt == 1 {
+                    tracing::warn!(event = "agent_stream_interrupted", run_id = canonical_run_id,
+                        last_idx, error = %stream_error, "Agent stream interrupted; reattaching");
+                }
+                tracing::debug!(event = "collect_agent_response", canonical_run_id = %canonical_run_id, last_idx = last_idx, reconnect_attempt = reconnect_attempt, error = %stream_error,
                     "FutureOS reattaching Agent run {canonical_run_id} after idx {last_idx} \
                      (attempt {reconnect_attempt}): {stream_error}"
                 );
@@ -301,10 +306,20 @@ pub(super) async fn collect_agent_response(
                 replace_projection_off_thread(thread_id, local_run_id, snapshot_events).await;
 
                 content.clear();
+                content_cursors.clear();
                 waiting_for_approval = false;
                 let mut snapshot_terminal = None;
                 for projected in &event.snapshot_events {
                     let projected_data = future_rpc::decode::projected_event_data_json(projected);
+                    let mut data: serde_json::Value =
+                        serde_json::from_str(&projected_data).map_err(|error| error.to_string())?;
+                    content_cursors.apply(
+                        canonical_run_id,
+                        event.epoch,
+                        &projected.r#type,
+                        &mut data,
+                    )?;
+                    let projected_data = data.to_string();
                     match fold_response_event(
                         &projected.r#type,
                         &projected_data,
@@ -334,7 +349,14 @@ pub(super) async fn collect_agent_response(
             if event.idx <= last_idx {
                 continue;
             }
-            if event.idx != last_idx.saturating_add(1) {
+            let mut range_data: serde_json::Value =
+                serde_json::from_str(&future_rpc::decode::event_data_json(&event))
+                    .unwrap_or(serde_json::Value::Null);
+            if !future_rpc::content_range::covers_next(
+                &range_data,
+                last_idx.saturating_add(1),
+                event.idx,
+            ) {
                 // Drop this stream and atomically reattach from the last
                 // confirmed cursor. The Agent will return either the missing
                 // tail or a full projection snapshot if the ring rolled over.
@@ -344,12 +366,30 @@ pub(super) async fn collect_agent_response(
                     event.idx
                 );
             }
+            if future_rpc::content_body::needs_hydration(&event.r#type, &range_data) {
+                let mut client = connect_agent().await?;
+                future_rpc::content_body::hydrate_required(
+                    &mut client,
+                    session_id,
+                    canonical_run_id,
+                    &event.r#type,
+                    &mut range_data,
+                )
+                .await
+                .map_err(crate::Error::from)?;
+            }
             last_idx = event.idx;
 
             // Canonical event payload (byte-stable while the agent dual-writes
             // `data`; the typed reconstruction takes over once `data` is
             // retired). Persistence and the content fold read the same string.
-            let event_data = future_rpc::decode::event_data_json(&event);
+            content_cursors.apply(
+                canonical_run_id,
+                event.epoch,
+                &event.r#type,
+                &mut range_data,
+            )?;
+            let event_data = range_data.to_string();
             persist_run_event_off_thread(
                 thread_id,
                 local_run_id,
@@ -379,7 +419,11 @@ pub(super) async fn collect_agent_response(
         };
 
         reconnect_attempt = reconnect_attempt.saturating_add(1);
-        eprintln!(
+        if reconnect_attempt == 1 {
+            tracing::warn!(event = "agent_stream_interrupted", run_id = canonical_run_id,
+                        last_idx, error = %stream_error, "Agent stream interrupted; reattaching");
+        }
+        tracing::debug!(event = "collect_agent_response", canonical_run_id = %canonical_run_id, last_idx = last_idx, reconnect_attempt = reconnect_attempt, error = %stream_error,
             "FutureOS reattaching Agent run {canonical_run_id} after idx {last_idx} \
              (attempt {reconnect_attempt}): {stream_error}"
         );
@@ -452,6 +496,26 @@ fn fold_response_event(
     Ok(FoldOutcome::Continue)
 }
 
+/// How an `agent_end` says the run ended.
+///
+/// One predicate, three readers: [`agent_end_incomplete`] (may this reply be
+/// persisted as a clean completion?), the settlement of the run row, and the
+/// termination classification. They used to be derived separately, which is how
+/// a run the Agent had *cancelled* was recorded as an unexplained failure by the
+/// observer and as `cancelled` by the watchdog — 29 rows, 12 of them in one
+/// morning (2026-11-02).
+pub(super) enum AgentEndOutcome {
+    /// The Agent finished on its own.
+    Completed,
+    /// Not a clean finish. `state` is the state the Agent named, or empty when
+    /// it named none (or named a finish it then contradicted with an error), so
+    /// the settlement falls back to its conservative generic failure.
+    Unfinished {
+        state: String,
+        error: Option<String>,
+    },
+}
+
 /// Returns true when an `agent_end` event's data marks the reply as incomplete —
 /// i.e. the LLM stream was truncated before a genuine finish. Such a reply is a
 /// prefix and must not be persisted as a clean completion.
@@ -464,33 +528,53 @@ fn fold_response_event(
 /// `completed`). A terminal that carries an `error` is not a success either,
 /// whatever `state` it names.
 pub(super) fn agent_end_incomplete(data: &str) -> bool {
+    matches!(agent_end_outcome(data), AgentEndOutcome::Unfinished { .. })
+}
+
+/// The same decision as [`agent_end_incomplete`], keeping the state and error
+/// it was derived from so a caller can mirror the Agent's own ending onto the
+/// run row instead of flattening every non-finish into one generic failure.
+pub(super) fn agent_end_outcome(data: &str) -> AgentEndOutcome {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
         // Unparseable terminal data cannot vouch for a finished answer.
-        return true;
+        return AgentEndOutcome::Unfinished {
+            state: String::new(),
+            error: None,
+        };
     };
-    if value
+    let state = value.get("state").and_then(|state| state.as_str());
+    let error = value
         .get("error")
         .and_then(|error| error.as_str())
-        .is_some_and(|error| !error.trim().is_empty())
-    {
-        return true;
+        .filter(|error| !error.trim().is_empty());
+    let named_incomplete =
+        value.get("reason").and_then(|reason| reason.as_str()) == Some("incomplete");
+    // The states that mean the Agent finished on its own. `complete` is the
+    // same answer under the spelling older producers used. An `agent_end` with
+    // no `state` at all is the older shape every other client still produces,
+    // and is read as a clean end: absence is not evidence of a cut-off run,
+    // only a named non-finish state is.
+    let clean_state = matches!(state, Some("completed" | "complete") | None);
+    if clean_state && error.is_none() && !named_incomplete {
+        return AgentEndOutcome::Completed;
     }
-    if value.get("reason").and_then(|reason| reason.as_str()) == Some("incomplete") {
-        return true;
-    }
-    match value.get("state").and_then(|state| state.as_str()) {
-        // The states that mean the Agent finished on its own. `complete` is the
-        // same answer under the spelling older producers used. An `agent_end`
-        // with no `state` at all is the older shape every other client still
-        // produces, and is read as a clean end: absence is not evidence of a
-        // cut-off run, only a named non-finish state is.
-        Some("completed" | "complete") | None => false,
-        // `incomplete` | `interrupted` | `interrupted_by_restart` | `cancelled`
-        // | `error` | `failed`, and any state a later Agent adds. An unknown
-        // state is read as *not* finished on purpose: a new non-finish state
-        // then fails loudly (one word to add here) instead of quietly passing
-        // as a completed run, which is the bug this list exists to prevent.
-        Some(_) => true,
+    // A clean-looking state that still carries an error or an explicit
+    // `reason: incomplete` is not evidence of a finish. Drop the state so the
+    // settlement cannot read it as `completed`, exactly as before this split.
+    //
+    // Every other state — `incomplete` | `interrupted` |
+    // `interrupted_by_restart` | `cancelled` | `error` | `failed`, and any
+    // state a later Agent adds — is passed through. An unknown state is read as
+    // *not* finished on purpose: a new non-finish state then fails loudly (one
+    // word to add here) instead of quietly passing as a completed run, which is
+    // the bug this list exists to prevent.
+    AgentEndOutcome::Unfinished {
+        state: if clean_state {
+            String::new()
+        } else {
+            state.unwrap_or_default().to_string()
+        },
+        error: error.map(str::to_string),
     }
 }
 
@@ -1354,6 +1438,68 @@ mod tests {
             );
         }
     }
+
+    /// An event that stores a required body out of line is materialized against
+    /// the Agent before the collector persists or forwards it: the reference is
+    /// coordinates, and a pipeline that recorded it instead of the body would
+    /// hand the UI and every mirror a message that renders as empty.
+    #[tokio::test]
+    async fn collect_hydrates_a_required_body_before_folding_the_event() {
+        let _home = TestHome::new("collect-hydration");
+        let mock = mock_agent();
+        let referenced = serde_json::json!({
+            "role": "user",
+            "message": "",
+            "content_refs": {
+                "message": {
+                    "databaseId": "db",
+                    "restoreGeneration": "gen",
+                    "epoch": 5,
+                    "cursor": 7,
+                    "field": "/data/message",
+                },
+            },
+        });
+        mock.push_stream(StreamScript::Events(
+            vec![
+                stream_event("run-1", 0, "user_message", &referenced.to_string()),
+                stream_event("run-1", 1, "agent_end", r#"{"reason":"complete"}"#),
+            ],
+            None,
+        ));
+        mock.push_data(
+            "get_event_content_range",
+            serde_json::json!({
+                "databaseId": "db",
+                "restoreGeneration": "gen",
+                "text": "materialized text",
+                "nextOffset": 17,
+                "totalBytes": 17,
+                "etag": "e1",
+                "encoding": "text",
+                "hasMore": false,
+            }),
+        );
+
+        let response = collect_agent_response(None, "run-1", "sess-1", "thread-1")
+            .await
+            .expect("collect");
+        assert!(response.complete);
+
+        // The body was read for the collecting run, at the coordinates the event
+        // carried — not for the session's current run and not from byte one of
+        // some other field.
+        let reads = mock.requests_of("get_event_content_range");
+        assert_eq!(reads.len(), 1, "one referenced field, one read");
+        assert_eq!(reads[0].run_id, "run-1");
+        let request = reads[0]
+            .content_request
+            .as_ref()
+            .expect("the reference is forwarded as a content request");
+        assert_eq!(request.field, "/data/message");
+        assert_eq!(request.cursor, 7);
+        assert_eq!(request.epoch, 5);
+    }
 }
 
 #[cfg(test)]
@@ -1440,5 +1586,58 @@ mod terminal_state_tests {
             FoldOutcome::Continue => panic!("agent_end must end the fold"),
         }
         assert!(content.is_empty(), "nothing was answered");
+    }
+
+    /// The outcome carries the state the settlement needs, and it agrees with
+    /// `agent_end_incomplete` on every shape: the two readers must never drift,
+    /// or the same run gets a different ending on each path (2026-11-02).
+    #[test]
+    fn the_outcome_names_the_state_that_decided_it() {
+        use super::{agent_end_outcome, AgentEndOutcome};
+
+        let unfinished = |data: &str| match agent_end_outcome(data) {
+            AgentEndOutcome::Unfinished { state, error } => (state, error),
+            AgentEndOutcome::Completed => panic!("{data} must not read as a clean end"),
+        };
+
+        assert_eq!(
+            unfinished(r#"{"state":"cancelled"}"#),
+            ("cancelled".to_string(), None)
+        );
+        assert_eq!(
+            unfinished(r#"{"state":"interrupted_by_restart"}"#),
+            ("interrupted_by_restart".to_string(), None)
+        );
+        // A state the settlement does not know is passed through, so the
+        // mapping — not this fold — decides what it means.
+        assert_eq!(
+            unfinished(r#"{"state":"teleported"}"#),
+            ("teleported".to_string(), None)
+        );
+        // An error outranks a clean-looking state, and drops the state so the
+        // settlement cannot read it as `completed`.
+        assert_eq!(
+            unfinished(r#"{"state":"completed","error":"boom"}"#),
+            (String::new(), Some("boom".to_string()))
+        );
+        assert_eq!(
+            unfinished(r#"{"reason":"incomplete"}"#),
+            (String::new(), None)
+        );
+        // Unparseable data cannot vouch for a finish.
+        assert_eq!(unfinished("not json"), (String::new(), None));
+
+        for clean in [
+            r#"{"state":"completed"}"#,
+            r#"{"state":"complete"}"#,
+            r#"{"usage":{}}"#,
+            r#"{"reason":"complete"}"#,
+        ] {
+            assert!(
+                matches!(agent_end_outcome(clean), AgentEndOutcome::Completed),
+                "{clean} is a clean end"
+            );
+            assert!(!agent_end_incomplete(clean), "{clean}");
+        }
     }
 }

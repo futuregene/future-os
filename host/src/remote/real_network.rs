@@ -29,6 +29,7 @@
 
 #![cfg(test)]
 
+use crate::console;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -166,7 +167,7 @@ fn orchestrator() {
         let _ = host.wait();
         panic!("the host bridge never published an invitation (see host-child.log)");
     }
-    println!(
+    console::println!(
         "REALNET_HOST_UP {}",
         std::fs::read_to_string(dir.join("host.json")).expect("host.json")
     );
@@ -175,7 +176,7 @@ fn orchestrator() {
     let code = wait_child(client, Duration::from_secs(120), "client");
     let client_report = dir.join("client.json");
     if client_report.is_file() {
-        println!("REALNET_CLIENT {}", read_report(&client_report));
+        console::println!("REALNET_CLIENT {}", read_report(&client_report));
     }
     if code != 0 {
         let _ = host.kill();
@@ -227,7 +228,7 @@ async fn host_role() {
             "hostPid": std::process::id(),
         }),
     );
-    println!("REALNET_HOST_READY pair={}", host.pair_id);
+    console::println!("REALNET_HOST_READY pair={}", host.pair_id);
 
     // Stay up until the client says it is done (or the orchestrator gives up).
     let done = dir.join("client.done");
@@ -262,7 +263,7 @@ async fn host_role() {
         &dir.join("host-report.json"),
         &json!({ "uploadScan": upload_scan }),
     );
-    println!(
+    console::println!(
         "REALNET_HOST_REPORT {}",
         read_report(&dir.join("host-report.json"))
     );
@@ -344,7 +345,7 @@ async fn client_role() {
         "the host's real Agent is reachable"
     );
     let bridge_instance = connected.bridge_instance_id.clone().expect("bridge id");
-    println!(
+    console::println!(
         "REALNET_CLIENT_CONNECTED {}",
         json!({
             "desktopId": desktop_id,
@@ -368,7 +369,7 @@ async fn client_role() {
         sha256(&bulk),
         "the host's hash of the multi-chunk upload is the client's hash"
     );
-    println!(
+    console::println!(
         "REALNET_CLIENT_UPLOAD_BULK {}",
         json!({
             "uploadId": bulk_upload.upload_id,
@@ -388,7 +389,7 @@ async fn client_role() {
         sha256(&upload_bytes),
         "the host's hash of what it received is the client's hash"
     );
-    println!(
+    console::println!(
         "REALNET_CLIENT_UPLOAD {}",
         json!({
             "uploadId": uploaded.upload_id,
@@ -406,7 +407,7 @@ async fn client_role() {
         .expect("download across the real transfer lane");
     let expected = download_payload();
     assert_eq!(fetched.bytes, expected, "the download is byte-identical");
-    println!(
+    console::println!(
         "REALNET_CLIENT_DOWNLOAD {}",
         json!({
             "name": fetched.name,
@@ -435,7 +436,7 @@ async fn client_role() {
         .as_str()
         .expect("created workspace id")
         .to_string();
-    println!(
+    console::println!(
         "REALNET_CLIENT_WORKSPACE {}",
         json!({ "workspaceId": workspace_id })
     );
@@ -462,7 +463,7 @@ async fn client_role() {
         .expect("ack sessionId")
         .to_string();
     let run_id = ack["runId"].as_str().expect("ack runId").to_string();
-    println!(
+    console::println!(
         "REALNET_CLIENT_PROMPT_ACK {}",
         json!({ "sessionId": session_id, "runId": run_id, "bridgeInstanceId": ack["bridgeInstanceId"] })
     );
@@ -504,7 +505,7 @@ async fn client_role() {
     assert_eq!(terminal, "agent_end", "the run must end cleanly");
     assert!(chunks > 0, "the phone received no text chunks");
     let echoed = answer.contains(&prompt_marker);
-    println!(
+    console::println!(
         "REALNET_CLIENT_PROMPT {}",
         json!({
             "runId": run_id,
@@ -660,7 +661,7 @@ fn failure_orchestrator() {
         panic!("the client never reported the broker-restart phase");
     }
     let phase_broker = read_report(&dir.join("phase-broker.json"));
-    println!("REALNET_PHASE_BROKER {phase_broker}");
+    console::println!("REALNET_PHASE_BROKER {phase_broker}");
     let restarted_broker_pid = phase_broker["brokerPid"].as_i64().map(|pid| pid as i32);
 
     // ── 3. peer restarted with the same identity ──
@@ -683,7 +684,7 @@ fn failure_orchestrator() {
         panic!("host 2 never came up on the persisted identity");
     }
     std::fs::write(dir.join("host2-back"), b"back").expect("host2-back marker");
-    println!(
+    console::println!(
         "REALNET_HOST2_UP {}",
         std::fs::read_to_string(dir.join("host2.json")).unwrap_or_default()
     );
@@ -707,7 +708,7 @@ fn failure_orchestrator() {
             .arg(pid.to_string())
             .status();
     }
-    println!("REALNET_FAILURES {}", read_report(&dir.join("client.json")));
+    console::println!("REALNET_FAILURES {}", read_report(&dir.join("client.json")));
 }
 
 /// Host process for the restart scenario: phase 1 mints and persists the
@@ -754,7 +755,7 @@ async fn host_restart_role() {
                 "hostPid": std::process::id(),
             }),
         );
-        println!("REALNET_HOST1_READY pair={}", host.pair_id);
+        console::println!("REALNET_HOST1_READY pair={}", host.pair_id);
         let stop = dir.join("stop-host1");
         let deadline = std::time::Instant::now() + Duration::from_secs(90);
         while std::time::Instant::now() < deadline && !stop.is_file() {
@@ -781,7 +782,7 @@ async fn host_restart_role() {
                 "hostPid": std::process::id(),
             }),
         );
-        println!("REALNET_HOST2_READY pair={}", host.pair_id);
+        console::println!("REALNET_HOST2_READY pair={}", host.pair_id);
         let done = dir.join("client.done");
         let deadline = std::time::Instant::now() + Duration::from_secs(90);
         while std::time::Instant::now() < deadline && !done.is_file() {
@@ -830,7 +831,7 @@ async fn client_failure_role() {
     runtime::connect_with_emitter(desktop_id, Some(emitter))
         .await
         .expect("initial pair and connect");
-    println!("REALNET_FAILURE_CONNECTED");
+    console::println!("REALNET_FAILURE_CONNECTED");
 
     // ── 1. socket closed under the open stream ──
     runtime::close_socket_for_test(desktop_id).await;
@@ -841,7 +842,7 @@ async fn client_failure_role() {
         &dir.join("phase-socket.json"),
         &json!({ "socketClosedThenCommandSucceeded": socket_recovered }),
     );
-    println!(
+    console::println!(
         "REALNET_PHASE_SOCKET {}",
         read_report(&dir.join("phase-socket.json"))
     );
@@ -903,7 +904,7 @@ async fn client_failure_role() {
     {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    println!("REALNET_BROKER_RESTARTED pid={broker_pid_now}");
+    console::println!("REALNET_BROKER_RESTARTED pid={broker_pid_now}");
     let mid_transfer = match tokio::time::timeout(Duration::from_secs(30), &mut big_task).await {
         Ok(Ok(Ok(file))) => json!({
             "completedBeforeKill": true,
@@ -922,7 +923,7 @@ async fn client_failure_role() {
             json!({ "completedBeforeKill": false, "timedOut": true })
         }
     };
-    println!("REALNET_MID_TRANSFER {mid_transfer}");
+    console::println!("REALNET_MID_TRANSFER {mid_transfer}");
     // The 12 s outage outlived the client's 10 s request budget on purpose, so
     // both ends have to reconnect before a retry can mean anything. A cheap
     // command is the liveness proof: the host bridge has to be serving again,
@@ -938,7 +939,7 @@ async fn client_failure_role() {
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    println!("REALNET_HOST_BACK {}", json!({ "hostBack": host_back }));
+    console::println!("REALNET_HOST_BACK {}", json!({ "hostBack": host_back }));
     // The interrupted attempt may already have released its host record, so the
     // retry uses the second registration.
     let mut retried = None;
@@ -989,7 +990,7 @@ async fn client_failure_role() {
             "recovered": recovered
         }),
     );
-    println!(
+    console::println!(
         "REALNET_PHASE_BROKER {}",
         read_report(&dir.join("phase-broker.json"))
     );
@@ -1031,7 +1032,7 @@ async fn client_failure_role() {
         resumed,
         "the client did not resume against the restarted host: {last_error}"
     );
-    println!("REALNET_PHASE_HOST_RESTART {}", json!({ "resumed": true }));
+    console::println!("REALNET_PHASE_HOST_RESTART {}", json!({ "resumed": true }));
     write_report(
         &dir.join("client.json"),
         &json!({

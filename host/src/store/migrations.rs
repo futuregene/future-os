@@ -14,6 +14,7 @@ const STEPS: &[(i64, &str)] = &[
     (1, CONTRACT_SQL),
     (2, include_str!("thread_sources.sql")),
     (3, include_str!("delete_sources.sql")),
+    (4, include_str!("retire_reference_caches.sql")),
 ];
 
 fn checksum(version: i64) -> String {
@@ -116,21 +117,44 @@ pub(super) fn admit(conn: &Connection) -> Result<i64, Error> {
 }
 
 pub(super) fn initialize(conn: &Connection) -> Result<(), Error> {
-    let version = admit(conn)?;
+    let started = std::time::Instant::now();
+    let version = admit(conn).inspect_err(|error| {
+        tracing::error!(event = "database_admission_failed", database = "app", %error);
+    })?;
+    tracing::debug!(
+        event = "database_header_read",
+        database = "app",
+        schema_version = version,
+        target_version = future_app_settings::APP_DB_SCHEMA_VERSION
+    );
     if version == future_app_settings::APP_DB_SCHEMA_VERSION {
         validate_core(conn)?;
         // Optional metadata can retry independently without replaying old cleanup.
         super::db::apply_versioned_migrations(conn).unwrap_or_else(|error| {
-            eprintln!("FutureOS migration: optional metadata unavailable: {error}");
+            tracing::warn!(event = "database_optional_metadata_failed", database = "app", %error);
         });
         return Ok(());
     }
-    let backup = snapshot_before_upgrade(conn)?;
+    tracing::info!(
+        event = "database_upgrade_started",
+        database = "app",
+        from_version = version,
+        to_version = future_app_settings::APP_DB_SCHEMA_VERSION
+    );
+    let backup = snapshot_before_upgrade(conn).inspect_err(|error| {
+        tracing::error!(event = "database_upgrade_backup_failed", database = "app", from_version = version, %error);
+    })?;
     let result = (|| {
         if version == 0 {
             super::db::apply_schema(conn)?;
         }
         for (step, sql) in STEPS.iter().filter(|step| step.0 > version) {
+            let step_started = std::time::Instant::now();
+            tracing::debug!(
+                event = "database_migration_step_started",
+                database = "app",
+                schema_version = step
+            );
             let tx = rusqlite::Transaction::new_unchecked(
                 conn,
                 rusqlite::TransactionBehavior::Immediate,
@@ -153,10 +177,26 @@ pub(super) fn initialize(conn: &Connection) -> Result<(), Error> {
             )?;
             tx.pragma_update(None, "user_version", step)?;
             tx.commit()?;
+            tracing::info!(
+                event = "database_migration_step_committed",
+                database = "app",
+                schema_version = step,
+                elapsed_ms = step_started.elapsed().as_millis() as u64
+            );
         }
+        tracing::info!(
+            event = "database_upgrade_completed",
+            database = "app",
+            from_version = version,
+            to_version = future_app_settings::APP_DB_SCHEMA_VERSION,
+            elapsed_ms = started.elapsed().as_millis() as u64
+        );
         Ok(())
     })();
     result.map_err(|error: Error| {
+        tracing::error!(event = "database_upgrade_failed", database = "app", from_version = version,
+            to_version = future_app_settings::APP_DB_SCHEMA_VERSION,
+            snapshot = ?backup, elapsed_ms = started.elapsed().as_millis() as u64, %error);
         match backup {
             Some(path) => format!("Desktop database upgrade failed: {error}. Pre-upgrade snapshot: {}. Keep both databases; restart to retry the remaining migration steps.",path.display()).into(),
             None => error,
@@ -239,10 +279,7 @@ fn snapshot_before_upgrade(conn: &Connection) -> Result<Option<PathBuf>, Error> 
         .join("backups");
     let path = future_agent::session::create_database_snapshot(conn, &directory, "app-before-schema-upgrade")
         .map_err(|error| Error::from(format!("Cannot create a verified Desktop pre-upgrade snapshot: {error}; migration was not started.")))?;
-    eprintln!(
-        "FutureOS: preserved Desktop pre-upgrade snapshot at {}",
-        path.display()
-    );
+    tracing::info!(event = "database_upgrade_snapshot_preserved", database = "app", path = %path.display());
     Ok(Some(path))
 }
 
@@ -250,6 +287,126 @@ fn snapshot_before_upgrade(conn: &Connection) -> Result<Option<PathBuf>, Error> 
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn reference_cache_retirement_is_atomic_retryable_and_preserves_live_history() {
+        let conn = Connection::open_in_memory().unwrap();
+        legacy(&conn);
+        initialize(&conn).unwrap();
+        // Reinstall the exact retired DDL to reconstruct the contract-3 boundary.
+        conn.execute_batch(include_str!("fixtures/retired-reference-tables.sql"))
+            .unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;
+            INSERT INTO workspace_files VALUES('file','w','/file','file',NULL,1,1,1,1);
+            INSERT INTO reference_targets VALUES('target','artifact','artifact','workspace','w','Cached',NULL,NULL,1,1);
+            INSERT INTO object_references VALUES('reference','message','u','target',1);
+            INSERT INTO runs(id,thread_id,status,created_at,updated_at) VALUES('run','t','completed',1,1);
+            INSERT INTO review_snapshots(id,workspace_id,thread_id,run_id,phase,status,created_at) VALUES('snapshot','w','t','run','before','complete',1);
+            INSERT INTO artifacts(id,workspace_id,thread_id,title,artifact_type,content,created_at,updated_at) VALUES('artifact','w','t','Keep','markdown','original artifact',1,1);
+            DELETE FROM app_schema_migrations WHERE version=4; PRAGMA user_version=3;
+            CREATE TRIGGER refuse_v4 BEFORE INSERT ON app_schema_migrations WHEN NEW.version=4 BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        let identity: String = conn
+            .query_row("SELECT database_id FROM app_database_identity", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(initialize(&conn).is_err());
+        assert_eq!(admit(&conn).unwrap(), 3);
+        for table in ["workspace_files", "reference_targets", "object_references"] {
+            assert_eq!(
+                conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+        }
+        assert!(conn
+            .prepare("SELECT 1 FROM sqlite_schema WHERE name='idx_review_snapshots_run'")
+            .unwrap()
+            .exists([])
+            .unwrap());
+        conn.execute_batch("DROP TRIGGER refuse_v4").unwrap();
+        initialize(&conn).unwrap();
+        initialize(&conn).unwrap();
+        assert_eq!(
+            admit(&conn).unwrap(),
+            future_app_settings::APP_DB_SCHEMA_VERSION
+        );
+        for table in ["workspace_files", "reference_targets", "object_references"] {
+            assert!(!table_names(&conn).unwrap().contains(table));
+        }
+        for (sql, expected) in [
+            (
+                "SELECT content FROM legacy_messages WHERE id='u'",
+                "保留历史",
+            ),
+            (
+                "SELECT content FROM artifacts WHERE id='artifact'",
+                "original artifact",
+            ),
+            ("SELECT status FROM runs WHERE id='run'", "completed"),
+            (
+                "SELECT status FROM review_snapshots WHERE id='snapshot'",
+                "complete",
+            ),
+        ] {
+            assert_eq!(
+                conn.query_row(sql, [], |r| r.get::<_, String>(0)).unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            conn.query_row("SELECT database_id FROM app_database_identity", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+            identity
+        );
+        assert!(!conn
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .exists([])
+            .unwrap());
+        let plan: String = conn.query_row(
+            "EXPLAIN QUERY PLAN SELECT id FROM review_snapshots WHERE run_id='run' AND phase='before'", [], |r| r.get(3),
+        ).unwrap();
+        assert!(
+            plan.contains("sqlite_autoindex_review_snapshots_"),
+            "{plan}"
+        );
+        assert!(!conn
+            .prepare("SELECT 1 FROM sqlite_schema WHERE name='idx_review_snapshots_run'")
+            .unwrap()
+            .exists([])
+            .unwrap());
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM app_schema_migrations WHERE version=4",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn fresh_schema_has_no_retired_caches_and_current_open_does_not_replay_retirement() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        for table in ["workspace_files", "reference_targets", "object_references"] {
+            assert!(!table_names(&conn).unwrap().contains(table));
+        }
+        // A later restore must not make every pooled open repeat destructive SQL.
+        conn.execute_batch("CREATE TABLE workspace_files(restored TEXT); INSERT INTO workspace_files VALUES('keep');").unwrap();
+        initialize(&conn).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT restored FROM workspace_files", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "keep"
+        );
+    }
 
     #[test]
     fn version_two_qualifies_only_proven_deletion_sources() {
@@ -260,7 +417,7 @@ mod tests {
             INSERT INTO thread_sources VALUES('t','session','original-agent','generation');
             INSERT INTO agent_delete_outbox(session_id,requested_at) VALUES('session',1),('unknown',2);
             DROP TABLE agent_delete_sources;
-            DELETE FROM app_schema_migrations WHERE version=3; PRAGMA user_version=2;
+            DELETE FROM app_schema_migrations WHERE version>=3; PRAGMA user_version=2;
             CREATE TRIGGER refuse_v3 BEFORE INSERT ON app_schema_migrations WHEN NEW.version=3 BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
         assert!(initialize(&conn).is_err());
         assert_eq!(admit(&conn).unwrap(), 2);
@@ -283,7 +440,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(archive, "保留历史");
-        assert_eq!(admit(&conn).unwrap(), 3);
+        assert_eq!(
+            admit(&conn).unwrap(),
+            future_app_settings::APP_DB_SCHEMA_VERSION
+        );
     }
 
     #[test]
@@ -469,7 +629,7 @@ mod tests {
 
     #[test]
     fn inconsistent_nonzero_headers_never_replay_contract_steps() {
-        for extra_version in [0, 4] {
+        for extra_version in [0, future_app_settings::APP_DB_SCHEMA_VERSION + 1] {
             let conn = Connection::open_in_memory().unwrap();
             legacy(&conn);
             initialize(&conn).unwrap();
@@ -510,6 +670,196 @@ mod tests {
         conn.execute_batch("DROP TABLE artifacts").unwrap();
         assert!(initialize(&conn).is_err());
         assert!(!table_names(&conn).unwrap().contains("artifacts"));
+    }
+
+    /// A database at the current version whose identity row is gone has no
+    /// provenance to restore from: the run paths could never tell which Agent
+    /// database it mirrors. It is refused before any write, not repaired with a
+    /// fresh identity that would silently re-admit every historical row.
+    #[test]
+    fn a_current_database_without_its_identity_is_refused_not_repaired() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        let version = admit(&conn).unwrap();
+        conn.execute_batch("DELETE FROM app_database_identity")
+            .unwrap();
+        let error = initialize(&conn).unwrap_err().to_string();
+        assert!(error.contains("identity is missing"), "{error}");
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            version,
+            "the refusal writes nothing"
+        );
+        // An identity row with empty values is the same refusal: nothing to
+        // compare an Agent database against.
+        conn.execute_batch(
+            "INSERT INTO app_database_identity(id,database_id,restore_generation) VALUES('main','','')",
+        )
+        .unwrap();
+        assert!(admit(&conn).is_err());
+    }
+
+    /// The mirror image: a version header of zero beside a ledger that already
+    /// has rows. Reading that as a fresh install would replay the contract over
+    /// live data, so it is refused.
+    #[test]
+    fn a_ledger_with_rows_and_no_version_header_is_refused() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE app_schema_migrations(version INTEGER PRIMARY KEY, checksum TEXT, applied_at INTEGER);
+            INSERT INTO app_schema_migrations VALUES(1,'x',1);",
+        )
+        .unwrap();
+        let error = initialize(&conn).unwrap_err().to_string();
+        assert!(
+            error.contains("version header disagrees with its migration ledger"),
+            "{error}"
+        );
+        assert_eq!(
+            table_names(&conn).unwrap(),
+            ["app_schema_migrations".to_string()].into_iter().collect(),
+            "no schema write happened"
+        );
+    }
+
+    /// An upgrade that fails leaves the pre-upgrade snapshot behind and says
+    /// where it is, so the operator's next step is a path rather than a hunt.
+    #[test]
+    fn a_failed_upgrade_names_the_snapshot_it_left_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = Connection::open(dir.path().join("app.db")).unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        legacy(&conn);
+        conn.execute_batch(CONTRACT_SQL).unwrap();
+        conn.execute_batch("CREATE TRIGGER refuse_contract BEFORE INSERT ON app_schema_migrations BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+
+        let error = initialize(&conn).unwrap_err().to_string();
+        assert!(
+            error.starts_with("Desktop database upgrade failed"),
+            "{error}"
+        );
+        let marker = "Pre-upgrade snapshot: ";
+        let start = error
+            .find(marker)
+            .unwrap_or_else(|| panic!("the failure must name its snapshot: {error}"))
+            + marker.len();
+        let end = error
+            .find(". Keep both databases")
+            .unwrap_or_else(|| panic!("the failure must say what to keep: {error}"));
+        let snapshot = std::path::Path::new(&error[start..end]);
+        assert!(snapshot.is_file(), "{snapshot:?} was named but not written");
+        let backup =
+            Connection::open_with_flags(snapshot, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        assert_eq!(
+            backup
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "the snapshot is the pre-upgrade state, not the half-migrated one"
+        );
+        let body: String = backup
+            .query_row("SELECT content FROM messages WHERE id='u'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(body, "保留历史");
+    }
+
+    /// Optional run metadata is applied after the core contract and its failure
+    /// is swallowed: the Desktop still opens, and because the recording INSERT is
+    /// rolled back with the column change, the next open retries from the same
+    /// place instead of believing itself migrated.
+    #[test]
+    fn optional_metadata_that_cannot_be_applied_does_not_block_the_open() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        conn.execute_batch(
+            "DELETE FROM schema_migrations WHERE version='v1.1.9-thread-asset-root';
+            CREATE TRIGGER refuse_metadata BEFORE INSERT ON schema_migrations BEGIN SELECT RAISE(ABORT,'injected'); END;",
+        )
+        .unwrap();
+
+        initialize(&conn).expect("optional metadata must not block the open");
+        assert_eq!(
+            admit(&conn).unwrap(),
+            future_app_settings::APP_DB_SCHEMA_VERSION
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM schema_migrations WHERE version='v1.1.9-thread-asset-root'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0,
+            "a refused migration is not recorded as applied"
+        );
+        initialize(&conn).unwrap();
+    }
+
+    /// A table whose foreign key names a table that is no longer there (a
+    /// restored or partially copied database) is refused: every join through it
+    /// would fail at read time, and the missing target is the one fact the
+    /// recovery copy needs.
+    #[test]
+    fn a_foreign_key_with_no_target_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            initialize(&conn).unwrap();
+        }
+        {
+            // The column set stays intact; only the reference dangles.
+            let conn = Connection::open(&path).unwrap();
+            conn.pragma_update(None, "writable_schema", true).unwrap();
+            conn.execute(
+                "UPDATE sqlite_schema SET sql = replace(sql, 'REFERENCES threads(id)', 'REFERENCES threads_gone(id)') WHERE type='table' AND name='runs'",
+                [],
+            )
+            .unwrap();
+            conn.pragma_update(None, "writable_schema", false).unwrap();
+        }
+        let conn = Connection::open(&path).unwrap();
+        let error = initialize(&conn).unwrap_err().to_string();
+        assert!(error.contains("missing foreign-key target"), "{error}");
+        assert!(error.contains("threads_gone"), "{error}");
+    }
+
+    /// The conversation binding must stay unique across the whole database: a
+    /// missing index (or one of the same name that is not unique) lets two
+    /// threads claim one Agent session, and every read that resolves a thread by
+    /// session silently picks one of them.
+    #[test]
+    fn a_database_without_its_unique_conversation_index_is_refused() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        conn.execute_batch("DROP INDEX idx_threads_agent_session_unique")
+            .unwrap();
+        let error = initialize(&conn).unwrap_err().to_string();
+        assert!(
+            error.contains("unique conversation binding index"),
+            "{error}"
+        );
+
+        conn.execute_batch(
+            "CREATE INDEX idx_threads_agent_session_unique ON threads(agent_session_id)",
+        )
+        .unwrap();
+        let error = initialize(&conn).unwrap_err().to_string();
+        assert!(
+            error.contains("unique conversation binding index"),
+            "an index of the right name is not enough: {error}"
+        );
+
+        conn.execute_batch(&format!(
+            "DROP INDEX idx_threads_agent_session_unique; {};",
+            super::super::schema::UNIQUE_AGENT_SESSION_INDEX
+        ))
+        .unwrap();
+        initialize(&conn).expect("the contract index lets the database open again");
     }
 
     #[test]

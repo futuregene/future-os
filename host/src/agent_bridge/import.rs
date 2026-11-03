@@ -58,7 +58,7 @@ async fn list_agent_sessions() -> Vec<AgentSessionSummary> {
     let mut client = match connect_agent().await {
         Ok(client) => client,
         Err(error) => {
-            eprintln!("FutureOS: unable to connect agent for session import: {error}");
+            tracing::warn!(event = "list_agent_sessions", error = %error,"FutureOS: unable to connect agent for session import: {error}");
             return vec![];
         }
     };
@@ -66,7 +66,7 @@ async fn list_agent_sessions() -> Vec<AgentSessionSummary> {
     let inner = match client.execute_command(list_sessions_command()).await {
         Ok(response) => response.into_inner(),
         Err(error) => {
-            eprintln!("FutureOS: session import transport error: {error}");
+            tracing::warn!(event = "list_agent_sessions", error = %error,"FutureOS: session import transport error: {error}");
             return vec![];
         }
     };
@@ -77,12 +77,15 @@ async fn list_agent_sessions() -> Vec<AgentSessionSummary> {
         } else {
             inner.error
         };
-        eprintln!("FutureOS: session import list failed: {err}");
+        tracing::warn!(event = "list_agent_sessions", error = %err,"FutureOS: session import list failed: {err}");
         return vec![];
     }
 
     let Some(sessions) = future_rpc::decode::decode_list_sessions(&inner) else {
-        eprintln!("FutureOS: session import parse failed: typed payload is missing or invalid");
+        tracing::warn!(
+            event = "list_agent_sessions",
+            "FutureOS: session import parse failed: typed payload is missing or invalid"
+        );
         return vec![];
     };
     sessions
@@ -452,7 +455,7 @@ async fn write_back_cwd(session_id: &str, cwd: &str) -> Result<(), String> {
 /// title write in this file is best-effort for the same reason.
 fn seed_auto_title_best_effort(thread_id: &str, title: &str) {
     if let Err(error) = crate::store::seed_thread_auto_title(thread_id, title) {
-        eprintln!("FutureOS: auto-title seed write failed for {thread_id}: {error}");
+        tracing::warn!(event = "seed_auto_title_best_effort", thread_id = %thread_id, error = %error,"FutureOS: auto-title seed write failed for {thread_id}: {error}");
     }
 }
 
@@ -605,7 +608,7 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::Error
         let sid = summary.id.clone();
         crate::runtime::spawn(async move {
             if let Err(e) = write_back_cwd(&sid, &cwd).await {
-                eprintln!("FutureOS: cwd write-back failed for {sid}: {e}");
+                tracing::warn!(event = "import_one", sid = %sid, error = %e,"FutureOS: cwd write-back failed for {sid}: {e}");
             }
         });
     }
@@ -672,6 +675,9 @@ pub(crate) async fn import_discovered_session(session_id: &str) -> Result<bool, 
         return Err(format!("agent rejected get_state: {}", response.error).into());
     }
     let state: serde_json::Value = future_rpc::decode::response_data(&response);
+    if state["created_by"] == "fusion" || state["createdBy"] == "fusion" {
+        return Ok(false);
+    }
     let summary = AgentSessionSummary {
         id: session_id.to_string(),
         // get_state emits canonical `sessionName` plus the legacy `session_name`
@@ -762,21 +768,23 @@ pub async fn import_missing_sessions() {
                         imported += 1;
                     }
                 }
-                Ok(Err(error)) => eprintln!("FutureOS: session import error: {error}"),
+                Ok(Err(error)) => {
+                    tracing::warn!(event = "import_missing_sessions", error = %error,"FutureOS: session import error: {error}")
+                }
                 Err(panic) => {
                     let detail = panic
                         .downcast_ref::<&str>()
                         .copied()
                         .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
                         .unwrap_or("non-string panic");
-                    eprintln!("FutureOS: session import panic: {detail}");
+                    tracing::error!(event = "import_missing_sessions", detail = %detail,"FutureOS: session import panic: {detail}");
                 }
             }
         }
     }
 
     if imported > 0 {
-        eprintln!(
+        tracing::info!(event = "import_missing_sessions", imported = imported, total_runs = total_runs, total = total,
             "FutureOS: imported {imported} session(s) ({total_runs} runs) out of {total} agent session(s)"
         );
         // New threads landed in the store — let the sidebar know.
@@ -1344,19 +1352,21 @@ mod tests {
 
     #[test]
     fn is_desktop_chat_cwd_falls_through_when_home_is_unset() {
-        let _lock = crate::TEST_HOME_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let saved_home = std::env::var("HOME").ok();
-        let saved_profile = std::env::var("USERPROFILE").ok();
-        std::env::remove_var("HOME");
-        std::env::remove_var("USERPROFILE");
-        // No home → the `if let Some(home)` else path runs, returning false.
+        let home = crate::auth_store::test_support::HomeGuard::new("import-no-home");
+        // "Unset" means no root at all: the scratch root resolves through the
+        // app dir, which `FUTURE_HOME` names by itself. Withdrawing only the
+        // user home left the fixture's own root in charge, so the test ran the
+        // ordinary path-mismatch arm and never reached the fall-through it is
+        // named for. The guard restores what it withdrew.
+        home.withdraw_home();
+        assert!(
+            future_app_workspaces::chat_workspaces_root().is_err(),
+            "no home and no override leaves no scratch root to compare against"
+        );
+        // No home → the `let Ok(root)` edge answers false.
         assert!(!is_desktop_chat_cwd(
             "/Users/who/.future/workspaces/chat/abc"
         ));
-        super::super::test_support::restore_home(saved_home);
-        std::env::set_var("USERPROFILE", saved_profile.unwrap_or_default());
     }
 
     /// Fire-and-forget spawned tasks (title sync, cwd write-back) run against

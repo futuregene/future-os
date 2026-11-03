@@ -8,7 +8,7 @@ import type {
   RunReplay,
 } from "@future-os/thread-projection";
 import type { RemoteRunEvent } from "./remotePeerClient";
-import { advanceCursor, createRunProjector, newCursor, nextEvent } from "@future-os/thread-projection";
+import { advanceCursor, copyEventPayload, createRunProjector, newCursor, nextEvent } from "@future-os/thread-projection";
 import { replayEventsToRunEvents } from "./remoteRunReplay";
 
 export type { RemoteRunEvent };
@@ -116,7 +116,7 @@ export class RemoteRunStreams {
       event.runId,
       event.idx,
       event.coalescedCount,
-      { omitIndices: options?.omitIndices ?? false },
+      { omitIndices: options?.omitIndices ?? false, data: event.data },
     );
     if (verdict.kind === "untracked") {
       // A frame that names no run or no index is not part of a reply's log.
@@ -349,7 +349,7 @@ export class RemoteRunStreams {
 
 function toRunEvent(event: RemoteRunEvent): RunEvent {
   const createdAt = Number.isNaN(Date.parse(event.timestamp)) ? Date.now() : Date.parse(event.timestamp);
-  return {
+  return copyEventPayload(event, {
     id: event.eventId,
     runId: event.runId,
     eventType: event.type,
@@ -358,7 +358,7 @@ function toRunEvent(event: RemoteRunEvent): RunEvent {
     // The host's timestamp is ISO; a body without one still has to sort, and
     // "now" is the only honest fallback (arrival order is the order it sent).
     createdAt,
-  };
+  });
 }
 
 /**

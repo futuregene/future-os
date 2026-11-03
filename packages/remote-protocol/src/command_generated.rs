@@ -15,6 +15,8 @@ pub struct IncomingCmd {
     pub cmd_type: String,
     pub session_id: String,
     pub message: String,
+    /// prompt: what a send means while this session already has a run in flight (enqueue_if_busy | enqueue_coalescing | supersede_session). Absent keeps the refusal legacy clients expect.
+    pub busy_policy: String,
     /// approval_decision
     pub entry_id: String,
     /// fork_session: the persisted user entry whose settled turn the phone forks at. The command's own `id` is the fork request identity (idempotent child).
@@ -70,6 +72,10 @@ pub struct IncomingCmd {
     /// `secure_ready`: what the client says it is. Optional and additive, so an older client that sends neither is simply "unknown" rather than wrong.
     pub device_name: String,
     pub device_kind: String,
+    /// `secure_ready`: the build the client is running, as its own opaque string. Optional and additive — an older client sends none and is reported as an unknown version, never rejected. Nothing on this side compares it against a minimum; it exists so a machine can name what is talking to it, which is the one thing neither end could otherwise learn (the phone's package version, the desktop's release tag).
+    pub device_version: String,
+    /// `client_presence`: the reconcile stage this client last failed at (`get_state`, `history`, `replay`). Rides the beat the client already sends, so where a stuck conversation died reaches the machine without a new command or connection. Absent (or empty) means "nothing to report", which is what a healthy client and an older client both say.
+    pub sync_stage: String,
     /// file transfer control + prompt attachment references
     pub mime_type: String,
     pub kind: String,
@@ -92,6 +98,10 @@ pub struct IncomingCmd {
     pub features: Vec<String>,
     /// Additive. client_disconnect: why the client is leaving. `disconnected` is the user's own stop — the device gives up the machine and a device that is actually there may take it. `background` only says the client is off screen (a suspended app), so the device keeps the machine and is presumed back when it speaks again. An older host ignores the command (it names no reply, and an unhandled type only reaches its business dispatcher), so a new client on an old host keeps the old reading.
     pub reason: String,
+    /// get_event_content_range: session/run scoped immutable event field and UTF-8 page coordinates.
+    pub content_request: Option<serde_json::Value>,
+    /// Host-owned Fusion settings patch with expected_revision.
+    pub fusion_settings: serde_json::Value,
 }
 impl Default for IncomingCmd {
     fn default() -> Self {
@@ -106,6 +116,7 @@ impl Default for IncomingCmd {
             cmd_type: String::new(),
             session_id: String::new(),
             message: String::new(),
+            busy_policy: String::new(),
             entry_id: String::new(),
             source_entry_id: String::new(),
             mode: String::new(),
@@ -141,6 +152,8 @@ impl Default for IncomingCmd {
             path: String::new(),
             device_name: String::new(),
             device_kind: String::new(),
+            device_version: String::new(),
+            sync_stage: String::new(),
             mime_type: String::new(),
             kind: String::new(),
             original_size: 0,
@@ -159,6 +172,8 @@ impl Default for IncomingCmd {
             client_signature: String::new(),
             features: Vec::new(),
             reason: String::new(),
+            content_request: None,
+            fusion_settings: serde_json::Value::Null,
         }
     }
 }

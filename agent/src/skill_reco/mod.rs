@@ -27,8 +27,15 @@ use serde::{Deserialize, Serialize};
 /// Refusal gate: `none_of_these` probability at or above this means "no
 /// recommendation" (caller-side, because Jev never self-refuses).
 const NONE_GATE_THRESHOLD: f64 = 0.15;
-/// Hard cap on candidates per call: a Choice accepts at most 255 options and
-/// `none_of_these` occupies one of them (measured in bench/option-limit.mjs).
+/// How many candidates one call may carry: a Choice accepts at most 255 options
+/// and `none_of_these` occupies one of them (measured in
+/// `bench/option-limit.mjs`).
+///
+/// **This is the platform's per-request ceiling, not a product limit we chose.**
+/// It used to also cap the catalogue (everything past it was silently dropped);
+/// it is now the *block size* — a larger catalogue is split into parallel blocks
+/// ([`chunked_call`]) instead of being cut. Do not read it as "we only want 254
+/// skills" and shrink the catalogue to fit.
 const MAX_CANDIDATES: usize = 254;
 /// Per-call timeout, deliberately **inside** every client's own deadline
 /// (`RECOMMEND_TIMEOUT_MS` = 3 s in the TUI, the desktop and the phone).
@@ -128,14 +135,78 @@ impl FailureKind {
     }
 }
 
-/// What a call actually consumed and produced. Both fields come from the
-/// response, so an operator can tell a routed call from a direct one.
+/// What a call actually consumed and produced. The first two fields come from
+/// the response, so an operator can tell a routed call from a direct one; the
+/// last one is what this request looked like before it went out.
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Attempt {
     /// Token counts and the charged amount, when the response carried `usage`.
+    /// For a split catalogue this is the sum over the calls actually made.
     usage: Option<JevUsage>,
     /// The backend that answered (`typesafe/jev-1.13-…`), when reported.
     served_by: Option<String>,
+    /// How many candidates this request carried and how they were split.
+    counts: Counts,
+}
+
+/// The shape of one request, as logged on every real attempt:
+/// `candidates=N chunks=K truncated=0 limit=254`.
+///
+/// `truncated` is the number of candidates that could *not* be offered. It is
+/// zero by construction now (the catalogue is split, never cut); the field stays
+/// in the log so a future regression that starts dropping skills is visible in
+/// one line instead of being inferred from a suspicious input token count.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Counts {
+    candidates: usize,
+    chunks: usize,
+    truncated: usize,
+    limit: usize,
+}
+
+impl Default for Counts {
+    fn default() -> Self {
+        Counts {
+            candidates: 0,
+            chunks: 0,
+            truncated: 0,
+            limit: MAX_CANDIDATES,
+        }
+    }
+}
+
+impl Counts {
+    fn of(candidates: usize, chunks: usize) -> Self {
+        Counts {
+            candidates,
+            chunks,
+            truncated: 0,
+            limit: MAX_CANDIDATES,
+        }
+    }
+}
+
+/// Folds one call's answer into an aggregate, so a split request reports the
+/// tokens every block spent instead of only the winning block's.
+impl Attempt {
+    fn merge(&mut self, other: &Attempt) {
+        self.usage = match (self.usage, other.usage) {
+            (None, usage) => usage,
+            (usage, None) => usage,
+            (Some(mut mine), Some(theirs)) => {
+                mine.input_tokens += theirs.input_tokens;
+                mine.output_tokens += theirs.output_tokens;
+                mine.cost = match (mine.cost, theirs.cost) {
+                    (Some(a), Some(b)) => Some(a + b),
+                    (a, b) => a.or(b),
+                };
+                Some(mine)
+            }
+        };
+        if self.served_by.is_none() {
+            self.served_by = other.served_by.clone();
+        }
+    }
 }
 
 /// Input/output token counts Jev reports for one call (used to price it).
@@ -336,9 +407,6 @@ fn attempt_call(
     candidates: &[SkillCandidate],
 ) -> (Outcome, Attempt) {
     let query_bytes = query.trim().len();
-    // Defensive cap: the caller is expected to pre-truncate, but a Choice
-    // would hard-400 above 255 options, so clamp here too.
-    let candidates = &candidates[..candidates.len().min(MAX_CANDIDATES)];
     if query.trim().is_empty() || candidates.is_empty() {
         return (
             Outcome::NoInput {
@@ -349,6 +417,25 @@ fn attempt_call(
         );
     }
 
+    // A catalogue that fits one Choice takes exactly the path it took before
+    // splitting existed; only an overflowing one pays for a split. Changing the
+    // ordinary path would move the measured latency for no benefit.
+    let blocks: Vec<&[SkillCandidate]> = candidates.chunks(MAX_CANDIDATES).collect();
+    if blocks.len() == 1 {
+        let (outcome, mut attempt) = one_call(client, endpoint, query, blocks[0]);
+        attempt.counts = Counts::of(candidates.len(), 1);
+        return (outcome, attempt);
+    }
+    chunked_call(client, endpoint, query, &blocks, candidates.len())
+}
+
+/// One call over a candidate set that fits a single Choice.
+fn one_call(
+    client: &reqwest::blocking::Client,
+    endpoint: &Endpoint,
+    query: &str,
+    candidates: &[SkillCandidate],
+) -> (Outcome, Attempt) {
     let request = build_request(query, candidates, &endpoint.model);
     let response = match crate::system_one::blocking_post(client, endpoint, &request) {
         Ok(response) => response,
@@ -401,8 +488,164 @@ fn attempt_call(
     let attempt = Attempt {
         usage: body.usage,
         served_by: body.model.clone(),
+        counts: Counts::default(),
     };
     (decide(&body, candidates), attempt)
+}
+
+/// One block's call and what it decided.
+#[derive(Clone)]
+struct BlockAnswer {
+    outcome: Outcome,
+    attempt: Attempt,
+}
+
+/// Ask about a catalogue that does not fit one Choice: split it into parallel
+/// blocks and keep the block that answers first with a skill.
+///
+/// Every block is an equal-sized slice of the same catalogue, handed the same
+/// question with the same option text, so one block recommending a skill is a
+/// complete answer — waiting for the rest would only delay a card that is
+/// already decided. Two consequences worth naming:
+///
+/// - **There is no re-rank call.** The evaluation's chunked variant spent a
+///   second round trip re-choosing among the blocks' winners (+9% cost). That
+///   call exists to *compare* blocks; taking the first answer instead is exactly
+///   what keeps a split request at one round trip, so it is deliberately not
+///   bought back here.
+/// - **Losing blocks run to completion** (up to [`TIMEOUT`]) and are billed. That
+///   is the price of the shortest possible latency, and it only applies to a
+///   catalogue above `MAX_CANDIDATES`, which today is none.
+fn chunked_call(
+    client: &reqwest::blocking::Client,
+    endpoint: &Endpoint,
+    query: &str,
+    blocks: &[&[SkillCandidate]],
+    candidates: usize,
+) -> (Outcome, Attempt) {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    for block in blocks {
+        // Owned copies: a thread needs `'static`, and both are small next to the
+        // request they carry. The client is an `Arc` internally, so cloning it
+        // costs nothing.
+        let client = client.clone();
+        let endpoint = endpoint.clone();
+        let query = query.to_string();
+        let block: Vec<SkillCandidate> = (*block).to_vec();
+        let sender = sender.clone();
+        std::thread::spawn(move || {
+            // A panic inside a block must not take the recommendation — or the
+            // message's submit — down with it: it is reported as one failed
+            // block, a shape this path already handles.
+            let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let (outcome, attempt) = one_call(&client, &endpoint, &query, &block);
+                BlockAnswer { outcome, attempt }
+            }))
+            .unwrap_or_else(|_| BlockAnswer {
+                outcome: Outcome::Failed {
+                    reason: "a block of the split call panicked".to_string(),
+                    kind: FailureKind::Transient,
+                },
+                attempt: Attempt::default(),
+            });
+            let _ = sender.send(answer);
+        });
+    }
+    drop(sender);
+
+    let mut answers: Vec<BlockAnswer> = Vec::with_capacity(blocks.len());
+    while answers.len() < blocks.len() {
+        // A closed channel means every block already answered (or its thread is
+        // gone), so there is nothing left to wait for either way.
+        let Ok(answer) = receiver.recv() else { break };
+        let recommended = matches!(answer.outcome, Outcome::Recommended { .. });
+        answers.push(answer);
+        if recommended {
+            // Take the answers that already arrived — a race that finished twice
+            // must be decided by probability, not by thread scheduling — and go
+            // without waiting for the rest.
+            while let Ok(late) = receiver.try_recv() {
+                answers.push(late);
+            }
+            break;
+        }
+    }
+
+    let (outcome, mut attempt) = best_of(&answers);
+    attempt.counts = Counts::of(candidates, blocks.len());
+    (outcome, attempt)
+}
+
+/// Reduce the blocks that answered into the single outcome to report.
+///
+/// * Every block that named a skill competes, and the highest probability wins.
+///   Blocks are equal-sized slices of one catalogue, so those numbers come from
+///   the same prompt over comparable option counts. In practice an answer is
+///   usually the only one in hand, because a split request returns as soon as a
+///   block recommends.
+/// * No skill anywhere is a failure when some block failed, and a refusal only
+///   when the blocks that reported one actually read their list and said none.
+///   A block still in flight is not a refusal, and is never reported as one.
+fn best_of(answers: &[BlockAnswer]) -> (Outcome, Attempt) {
+    let mut attempt = Attempt::default();
+    let mut best: Option<(String, f64, f64, Option<String>)> = None;
+    let mut refused: Option<f64> = None;
+    let mut failure: Option<(String, FailureKind)> = None;
+    for answer in answers {
+        attempt.merge(&answer.attempt);
+        match &answer.outcome {
+            Outcome::Recommended {
+                skill,
+                probability,
+                none_probability,
+            } => {
+                let better = best.as_ref().is_none_or(|(_, top, _, _)| probability > top);
+                if better {
+                    best = Some((
+                        skill.clone(),
+                        *probability,
+                        *none_probability,
+                        answer.attempt.served_by.clone(),
+                    ));
+                }
+            }
+            Outcome::Refused { none_probability } => {
+                refused = Some(match refused {
+                    Some(low) => low.min(*none_probability),
+                    None => *none_probability,
+                });
+            }
+            Outcome::Failed { reason, kind } => {
+                failure.get_or_insert_with(|| (reason.clone(), *kind));
+            }
+            // Not produced by a block call; `best_of` only ever sees block
+            // answers, and those three arms cannot occur here.
+            Outcome::NoKey | Outcome::NoInput { .. } | Outcome::Skipped { .. } => {}
+        }
+    }
+
+    match best {
+        Some((skill, probability, none_probability, served_by)) => {
+            attempt.served_by = served_by.or(attempt.served_by);
+            (
+                Outcome::Recommended {
+                    skill,
+                    probability,
+                    none_probability,
+                },
+                attempt,
+            )
+        }
+        None => match failure {
+            Some((reason, kind)) => (Outcome::Failed { reason, kind }, attempt),
+            None => (
+                Outcome::Refused {
+                    none_probability: refused.unwrap_or(1.0),
+                },
+                attempt,
+            ),
+        },
+    }
 }
 
 /// The status classes that will not change per message: the account itself is
@@ -492,6 +735,16 @@ fn log_outcome(outcome: &Outcome, attempt: Attempt, query: &str, elapsed: std::t
     // Which backend answered: a gateway can route the same request elsewhere,
     // and that is invisible in the reply's shape.
     let served_by = attempt.served_by.as_deref().unwrap_or("-");
+    // The shape of the request, on every line that describes a real attempt:
+    // a split that silently lost skills would show up as `truncated` moving
+    // off zero, and a wrong block count is visible without reading any body.
+    let counts = attempt.counts;
+    let (candidates, chunks, truncated, limit) = (
+        counts.candidates,
+        counts.chunks,
+        counts.truncated,
+        counts.limit,
+    );
     match outcome {
         Outcome::NoKey => tracing::debug!(
             "skill reco: not signed in (no Future account credential); recommendation is off"
@@ -508,6 +761,10 @@ fn log_outcome(outcome: &Outcome, attempt: Attempt, query: &str, elapsed: std::t
             query = %crate::session::truncate_visible(query.trim(), 40),
             none_probability,
             threshold = NONE_GATE_THRESHOLD,
+            candidates,
+            chunks,
+            truncated,
+            limit,
             latency_ms,
             input_tokens,
             output_tokens,
@@ -523,6 +780,10 @@ fn log_outcome(outcome: &Outcome, attempt: Attempt, query: &str, elapsed: std::t
             skill = %skill,
             probability,
             none_probability,
+            candidates,
+            chunks,
+            truncated,
+            limit,
             latency_ms,
             input_tokens,
             output_tokens,
@@ -536,6 +797,10 @@ fn log_outcome(outcome: &Outcome, attempt: Attempt, query: &str, elapsed: std::t
             // Which failures will stand the recommender down, and which only
             // count towards a streak: the reason alone does not say.
             kind = ?kind,
+            candidates,
+            chunks,
+            truncated,
+            limit,
             latency_ms,
             input_tokens,
             output_tokens,
@@ -759,6 +1024,7 @@ mod tests {
                 cost: None,
             }),
             served_by: Some("typesafe/jev-1.13-20260917".to_string()),
+            counts: Counts::of(300, 2),
         };
         let elapsed = std::time::Duration::from_millis(487);
         // `tracing` recomputes a callsite's interest from a *single* registered
@@ -833,6 +1099,13 @@ mod tests {
             "none_probability=0.01",
             "latency_ms=487",
             "input_tokens=8800",
+            // The request's shape rides on every line that describes a call:
+            // `candidates` and `chunks` say a split happened, and `truncated=0`
+            // says nothing was dropped to fit.
+            "candidates=300",
+            "chunks=2",
+            "truncated=0",
+            "limit=254",
             "skill reco: nothing in the list fits (no card shown)",
             "threshold=0.15",
             "HTTP 402 Payment Required",
@@ -1166,6 +1439,7 @@ mod tests {
         status: &'static str,
         body: String,
     ) -> (String, std::sync::mpsc::Receiver<String>) {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -1183,9 +1457,76 @@ mod tests {
         (address, receiver)
     }
 
+    /// A gateway that serves `requests` connections concurrently, building each
+    /// answer from the request it read.
+    ///
+    /// Concurrent on purpose: a split call is a race, and a server that answered
+    /// one connection at a time would turn "the fast block answered" into "the
+    /// fast block happened to connect first". Deriving each answer from the
+    /// request keeps a test independent of connection order.
+    ///
+    /// Each request is reported with the instant its last byte was read, i.e.
+    /// when it actually reached the gateway. That is what a test measures when
+    /// the question is *when* the blocks were sent rather than how long the call
+    /// took: the gateway's own reply delay is not on that clock.
+    fn scripted_gateway(
+        requests: usize,
+        answer: impl Fn(&str) -> (std::time::Duration, String) + Send + Sync + 'static,
+    ) -> (
+        String,
+        std::sync::mpsc::Receiver<(std::time::Instant, String)>,
+    ) {
+        crate::test_support::ensure_fd_headroom();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let answer = std::sync::Arc::new(answer);
+        std::thread::spawn(move || {
+            let mut handlers = Vec::new();
+            for _ in 0..requests {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let answer = std::sync::Arc::clone(&answer);
+                let sender = sender.clone();
+                handlers.push(std::thread::spawn(move || {
+                    let request = read_request(&mut stream);
+                    let arrived = std::time::Instant::now();
+                    let (delay, body) = answer(&request);
+                    let _ = sender.send((arrived, request));
+                    if !delay.is_zero() {
+                        std::thread::sleep(delay);
+                    }
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(header.as_bytes());
+                    let _ = stream.write_all(body.as_bytes());
+                }));
+            }
+            for handler in handlers {
+                let _ = handler.join();
+            }
+        });
+        (address, receiver)
+    }
+
+    /// A gateway reply that finds nothing in the list it was given.
+    fn refusal() -> String {
+        let mut probabilities = serde_json::Map::new();
+        probabilities.insert(NONE_OPTION.to_string(), serde_json::json!(0.95));
+        serde_json::json!({
+            "answers": { "chunk_0": { "probabilities": probabilities } },
+            "model": "typesafe/jev-1.13-20260917",
+        })
+        .to_string()
+    }
+
     /// A peer that completes the TCP handshake and then says nothing, so only
     /// the client's own deadline can end the call.
     fn silent_server() -> String {
+        crate::test_support::ensure_fd_headroom();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
         std::thread::spawn(move || {
@@ -1288,7 +1629,12 @@ mod tests {
             },
             "a day of log lines must not be one gateway error"
         );
-        assert_eq!(attempt, Attempt::default(), "a 402 never reached Jev");
+        assert_eq!(attempt.usage, None, "a 402 never reached Jev");
+        assert_eq!(attempt.served_by, None);
+        // The request's shape is still reported on a failed call: that is what
+        // makes "the gateway refused it" and "we sent something odd"
+        // distinguishable from the log alone.
+        assert_eq!(attempt.counts, Counts::of(1, 1));
     }
 
     /// A 2xx whose body is not the gateway's JSON is a failure, not a pick: an
@@ -1309,6 +1655,7 @@ mod tests {
     #[test]
     fn a_refused_connection_is_reported_as_a_failure() {
         let url = {
+            crate::test_support::ensure_fd_headroom();
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let address = format!("http://{}", listener.local_addr().unwrap());
             drop(listener); // the port is now closed
@@ -1372,19 +1719,18 @@ mod tests {
             .is_err());
     }
 
-    /// The defensive cap. A Choice holds at most 255 options and
-    /// `none_of_these` is one of them, so 300 candidates must reach the gateway
-    /// as 254 candidates + none — not as a request the gateway hard-400s.
+    /// The ordinary case must not change: a catalogue that fits one Choice goes
+    /// out as exactly one call, with the same 255 options it always had.
     #[test]
-    fn a_catalogue_larger_than_the_choice_limit_is_clamped_to_255_options() {
-        let candidates: Vec<SkillCandidate> = (0..300)
+    fn a_catalogue_that_fits_one_choice_stays_a_single_call() {
+        let candidates: Vec<SkillCandidate> = (0..MAX_CANDIDATES)
             .map(|index| SkillCandidate {
                 name: format!("skill-{index:03}"),
                 description: "does a thing".to_string(),
             })
             .collect();
         let (url, request) = one_shot_server("200 OK", gateway_response("skill-000"));
-        let (outcome, _) = attempt_call(
+        let (outcome, attempt) = attempt_call(
             &HTTP_CLIENT,
             &gateway(&format!("{url}/v1/systemone")),
             "hello",
@@ -1394,21 +1740,252 @@ mod tests {
             matches!(outcome, Outcome::Recommended { .. }),
             "{outcome:?}"
         );
+        assert_eq!(attempt.counts, Counts::of(MAX_CANDIDATES, 1));
         let sent = request
             .recv_timeout(std::time::Duration::from_secs(10))
             .unwrap();
-        let body: serde_json::Value =
-            serde_json::from_str(sent.split_once("\r\n\r\n").unwrap().1).unwrap();
-        let options = body["questions"]["chunk_0"]["criteria"]
-            .as_object()
-            .expect("criteria is the option map");
+        let options = sent_options(&sent);
         assert_eq!(options.len(), MAX_CANDIDATES + 1);
         assert!(options.contains_key("skill-000") && options.contains_key("skill-253"));
-        assert!(
-            !options.contains_key("skill-254"),
-            "the 255th candidate would push the Choice past its option cap"
-        );
         assert!(options.contains_key(NONE_OPTION));
+    }
+
+    /// A catalogue past the Choice's ceiling is **split, not dropped**: every
+    /// candidate must reach the gateway in some block, no block may exceed 255
+    /// options, and there is no extra re-rank call after them.
+    ///
+    /// Both blocks answer `none`, so the run has to wait for both — which is what
+    /// makes "exactly two requests" checkable rather than a race.
+    #[test]
+    fn an_overflowing_catalogue_is_split_instead_of_dropped() {
+        let total = MAX_CANDIDATES + 46;
+        let candidates: Vec<SkillCandidate> = (0..total)
+            .map(|index| SkillCandidate {
+                name: format!("skill-{index:03}"),
+                description: "does a thing".to_string(),
+            })
+            .collect();
+        let (url, requests) = scripted_gateway(2, |_| (std::time::Duration::ZERO, refusal()));
+        let (outcome, attempt) = attempt_call(
+            &HTTP_CLIENT,
+            &gateway(&format!("{url}/v1/systemone")),
+            "hello",
+            &candidates,
+        );
+        assert!(matches!(outcome, Outcome::Refused { .. }), "{outcome:?}");
+        assert_eq!(attempt.counts, Counts::of(total, 2));
+
+        let mut seen: Vec<String> = Vec::new();
+        let mut blocks = 0;
+        while let Ok((_, request)) = requests.recv_timeout(std::time::Duration::from_secs(10)) {
+            let options = sent_options(&request);
+            assert!(
+                options.len() <= MAX_CANDIDATES + 1,
+                "a block went out with {} options, past the Choice cap",
+                options.len()
+            );
+            blocks += 1;
+            seen.extend(options.keys().filter(|key| *key != NONE_OPTION).cloned());
+        }
+        assert_eq!(blocks, 2, "two blocks, and no re-rank call after them");
+        assert_eq!(seen.len(), total, "every candidate is offered exactly once");
+        for index in 0..total {
+            assert!(
+                seen.contains(&format!("skill-{index:03}")),
+                "skill-{index:03} never reached the gateway"
+            );
+        }
+    }
+
+    /// The block that answers first with a skill decides the request: the call
+    /// returns without waiting for the slow block, which is the whole point of
+    /// splitting this way.
+    #[test]
+    fn a_split_call_returns_the_first_block_that_recommends() {
+        let slow = std::time::Duration::from_millis(800);
+        let candidates: Vec<SkillCandidate> = (0..MAX_CANDIDATES + 1)
+            .map(|index| SkillCandidate {
+                name: format!("skill-{index:03}"),
+                description: "does a thing".to_string(),
+            })
+            .collect();
+        // Which block this is has to come from the request, not from the order
+        // connections happen to arrive in.
+        let (url, _requests) = scripted_gateway(2, move |request| {
+            if request.contains("skill-000") {
+                (std::time::Duration::ZERO, gateway_response("skill-000"))
+            } else {
+                (slow, gateway_response("skill-254"))
+            }
+        });
+
+        let started = std::time::Instant::now();
+        let (outcome, attempt) = attempt_call(
+            &HTTP_CLIENT,
+            &gateway(&format!("{url}/v1/systemone")),
+            "hello",
+            &candidates,
+        );
+        let elapsed = started.elapsed();
+
+        assert_eq!(
+            outcome,
+            Outcome::Recommended {
+                skill: "skill-000".to_string(),
+                probability: 0.9,
+                none_probability: 0.01,
+            }
+        );
+        assert_eq!(attempt.counts, Counts::of(MAX_CANDIDATES + 1, 2));
+        assert!(elapsed < slow, "the slow block was waited for: {elapsed:?}");
+    }
+
+    /// The blocks of a split request leave together: the second block reaches the
+    /// gateway long before the first one's reply can come back.
+    ///
+    /// The measured quantity is the gap between the two requests *arriving at the
+    /// gateway*, not the call's total time. A serialized implementation cannot
+    /// produce a small gap — a block that is awaited before the next one is sent
+    /// cannot arrive until the previous one has been answered, and the scripted
+    /// gateway holds its answer for `delay` — while an implementation that sends
+    /// them from two threads produces a gap of roughly the cost of one `write` on
+    /// a socket. Total time would not distinguish those two: it contains the
+    /// per-request cost of the runner on top of `delay`, so on a busy CI runner it
+    /// reaches `delay` plus that entire cost and fails while the blocks were in
+    /// fact parallel (measured 2026-11-03: 451 ms against a 450 ms bound, on a
+    /// suite that took 333 s instead of 318 s). The arrival gap does not include
+    /// any of that fixed cost, so its bound is a statement about ordering and not
+    /// about how fast the machine is.
+    ///
+    /// The other half of the story — latency against the real gateway — is
+    /// deliberately not asserted: no test may spend the user's credits, so it
+    /// stays unmeasured rather than being faked with a local socket's numbers.
+    #[test]
+    fn the_blocks_of_a_split_call_run_in_parallel() {
+        let delay = std::time::Duration::from_millis(300);
+        // `MAX_CANDIDATES + 1` is what makes this a split at all: one candidate
+        // more than a single Choice holds, so the call runs as two blocks.
+        let candidates: Vec<SkillCandidate> = (0..MAX_CANDIDATES + 1)
+            .map(|index| SkillCandidate {
+                name: format!("skill-{index:03}"),
+                description: "does a thing".to_string(),
+            })
+            .collect();
+        let (url, requests) = scripted_gateway(2, move |_| (delay, refusal()));
+
+        let (outcome, _) = attempt_call(
+            &HTTP_CLIENT,
+            &gateway(&format!("{url}/v1/systemone")),
+            "hello",
+            &candidates,
+        );
+        assert!(matches!(outcome, Outcome::Refused { .. }), "{outcome:?}");
+
+        // Both blocks are waited for here (neither recommends anything), so both
+        // requests exist; a missing one is a failure, not a reason to skip the
+        // gap check.
+        let mut arrived = [std::time::Instant::now(); 2];
+        for slot in arrived.iter_mut() {
+            *slot = requests
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("a block never reached the gateway")
+                .0;
+        }
+        arrived.sort();
+        let gap = arrived[1].duration_since(arrived[0]);
+
+        assert!(
+            gap < delay / 2,
+            "the second block arrived {gap:?} after the first, out of a {delay:?} \
+             answer delay: the blocks were sent one after the other, not together"
+        );
+    }
+
+    /// A block that failed is reported as the failure, never quietly turned into
+    /// "no skill fits" — and a split that produced no answer at all is still not
+    /// a recommendation.
+    #[test]
+    fn best_of_reports_a_failure_rather_than_a_refusal() {
+        let failed = BlockAnswer {
+            outcome: Outcome::Failed {
+                reason: "HTTP 500: upstream".to_string(),
+                kind: FailureKind::Transient,
+            },
+            attempt: Attempt::default(),
+        };
+        let refused = BlockAnswer {
+            outcome: Outcome::Refused {
+                none_probability: 0.4,
+            },
+            attempt: Attempt::default(),
+        };
+        assert_eq!(
+            best_of(&[refused.clone(), failed]).0,
+            Outcome::Failed {
+                reason: "HTTP 500: upstream".to_string(),
+                kind: FailureKind::Transient,
+            }
+        );
+        // Nothing answered at all: not a recommendation either, and the gate is
+        // reported as fully confident so the log does not read like a near miss.
+        assert_eq!(
+            best_of(&[]).0,
+            Outcome::Refused {
+                none_probability: 1.0
+            }
+        );
+        assert_eq!(
+            best_of(&[refused]).0,
+            Outcome::Refused {
+                none_probability: 0.4
+            }
+        );
+    }
+
+    /// When more than one block is already back, the higher probability wins —
+    /// and the reported cost is what every block spent, not the winner's alone.
+    #[test]
+    fn best_of_takes_the_highest_probability_and_sums_what_the_blocks_spent() {
+        let answer = |skill: &str, probability: f64, tokens: u64| BlockAnswer {
+            outcome: Outcome::Recommended {
+                skill: skill.to_string(),
+                probability,
+                none_probability: 0.02,
+            },
+            attempt: Attempt {
+                usage: Some(JevUsage {
+                    input_tokens: tokens,
+                    output_tokens: 1,
+                    cost: Some(0.000_001),
+                }),
+                served_by: Some(format!("block-{skill}")),
+                counts: Counts::default(),
+            },
+        };
+        let (outcome, attempt) = best_of(&[answer("weak", 0.6, 100), answer("strong", 0.8, 200)]);
+        assert_eq!(
+            outcome,
+            Outcome::Recommended {
+                skill: "strong".to_string(),
+                probability: 0.8,
+                none_probability: 0.02,
+            }
+        );
+        let usage = attempt.usage.expect("both blocks reported usage");
+        assert_eq!(usage.input_tokens, 300);
+        assert_eq!(usage.output_tokens, 2);
+        assert_eq!(usage.cost, Some(0.000_002));
+        assert_eq!(attempt.served_by.as_deref(), Some("block-strong"));
+    }
+
+    /// The option map of a request a test server received.
+    fn sent_options(request: &str) -> serde_json::Map<String, serde_json::Value> {
+        let body: serde_json::Value =
+            serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+        body["questions"]["chunk_0"]["criteria"]
+            .as_object()
+            .expect("criteria is the option map")
+            .clone()
     }
 
     /// Probabilities that name only `none_of_these`, below the gate, leave
@@ -1492,7 +2069,8 @@ mod tests {
             }
             other => panic!("expected a failure, got {other:?}"),
         }
-        assert_eq!(attempt, Attempt::default());
+        assert_eq!(attempt.usage, None);
+        assert_eq!(attempt.served_by, None);
     }
 
     // ── the stand-down (Memo) ─────────────────────────────────────────────

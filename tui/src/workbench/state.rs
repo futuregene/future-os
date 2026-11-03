@@ -38,6 +38,15 @@ pub struct UsageData {
     pub cost: f64,
     /// Cache hit rate, 0..=100.
     pub cache_pct: u8,
+    /// Prompt tokens the session has been billed for, cumulative across its
+    /// requests. This is the provider's `prompt_tokens`, so the cached reads
+    /// below are *part of* it — that is what makes the hit rate checkable by
+    /// eye (`cache_read_tokens / input_tokens`).
+    pub input_tokens: u64,
+    /// Completion tokens the session has been billed for, cumulative.
+    pub output_tokens: u64,
+    /// The cached share of `input_tokens`, cumulative.
+    pub cache_read_tokens: u64,
     /// Output tokens per second of the run in flight (0 when idle).
     pub tps: f64,
 }
@@ -86,6 +95,13 @@ pub struct SessionRow {
     /// here too — as long as the list is re-read while it runs (see
     /// `run::SESSIONS_POLL`).
     pub streaming: bool,
+    /// The reader pinned this conversation (`/pin`, the 置顶 section of 工作区).
+    ///
+    /// A pin names a conversation, not the directory it ran in: the agent has
+    /// no such flag, so this is this client's own choice, held in
+    /// `settings.json` (`pinnedSessions`) and filed into the rail's 置顶 block by
+    /// [`crate::workbench::panels::rows_with`].
+    pub pinned: bool,
 }
 
 /// One workspace in the 工作区 tab: a directory several conversations are filed
@@ -97,8 +113,6 @@ pub struct WorkspaceGroup {
     /// The directory, which is the group's identity — two checkouts can share a
     /// name.
     pub path: String,
-    /// Above the unpinned workspaces, in the 置顶 section.
-    pub pinned: bool,
     /// How long ago anything in it was refreshed (`5m`, `3h`).
     pub age: String,
     /// The conversations filed under it, most recently refreshed first.
@@ -375,6 +389,9 @@ pub enum ActivityKind {
     Thinking,
     Tool,
     Streaming,
+    /// A manual compaction holds the session: the agent is writing the
+    /// handoff summary, and nothing can be sent until the checkpoint lands.
+    Compacting,
 }
 
 impl ActivityKind {
@@ -384,6 +401,7 @@ impl ActivityKind {
             Self::Thinking => "thinking",
             Self::Tool => "tool",
             Self::Streaming => "streaming",
+            Self::Compacting => "compacting",
         }
     }
 }
@@ -426,10 +444,13 @@ pub enum PanelId {
 impl PanelId {
     /// The panels the rail's tab strip offers, in tab order.
     ///
-    /// Every key that walks tabs (`←`/`→` on the rail, `shift+←/→` anywhere,
+    /// Every key that walks tabs (`shift+←/→` anywhere,
     /// [`Action::PanelPrev`](super::preferences::Action::PanelPrev)) walks this
     /// list, so 文件 cannot be reached by stepping past 工作区 — the panel has its
-    /// own door (`/files`, its own shortcut, the header's button).
+    /// own door (`/files`, its own shortcut, the header's button). The plain
+    /// arrows are the caret's, never the tab strip's, even while the rail has
+    /// the keys: the prompt stays on screen and a reader standing in it reads
+    /// `←`/`→` as movement inside their draft.
     pub const TABS: [PanelId; 2] = [PanelId::Recent, PanelId::Workspaces];
 
     /// Every panel id, tabs first. The scroll slots are indexed by this, so the
@@ -502,7 +523,7 @@ impl PanelId {
 /// Everything the workbench paints.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WorkbenchData {
-    pub app_name: String,
+    pub fusion_enabled: Option<bool>,
     pub version: String,
     pub connected: bool,
     pub session: SessionMeta,
@@ -518,10 +539,14 @@ pub struct WorkbenchData {
     /// The conversations, most recently refreshed first. Both panels read this
     /// one list; 工作区 only adds the filing.
     pub sessions: Vec<SessionRow>,
-    /// The workspace groups 工作区 files them under, pinned first.
+    /// The workspace groups 工作区 files them under, most recently worked on
+    /// first. This is the *filing*, which knows nothing about pins: 工作区 draws
+    /// a pinned conversation in 置顶 instead of under its heading, and 最近
+    /// draws it where it always would (see `panels::filed_sessions`).
     pub workspaces: Vec<WorkspaceGroup>,
     /// Conversations that belong to no workspace — the desktop's plain chats.
-    /// Session ids, in the same order as `sessions`.
+    /// Session ids, in the same order as `sessions`. A pinned one is drawn in
+    /// 置顶 by 工作区, like a pinned conversation in a workspace.
     pub chats: Vec<String>,
     /// Every model the agent offers, in the agent's order. The `/model` picker
     /// groups them by provider; an empty list is a picker that says so.
@@ -531,9 +556,22 @@ pub struct WorkbenchData {
     /// Already-rendered ANSI rows of the conversation (see `ChatArea`). The
     /// workbench never parses markdown itself: the same renderer the inline TUI
     /// uses produces these, so a reply looks the same in both.
-    pub messages: Vec<String>,
+    ///
+    /// Shared rather than owned: one keystroke composes the frame several times
+    /// and a long transcript must not be copied for each pass.
+    pub messages: std::sync::Arc<[String]>,
+    /// The transcript's own `tab` stops: the rows that open something — a
+    /// settled reply's folded process, a burst of work, a tool call's body, a
+    /// reasoning block's text (see `chat_area::RowStop`). Rows are indexes into
+    /// `messages`, which is why they travel with it: the walk, the highlight
+    /// and the click regions have to name the same lines the frame painted.
+    pub row_stops: Vec<crate::components::chat_area::RowStop>,
     pub input: InputView,
     pub activity: Activity,
+    /// A manual compaction is running and the agent will refuse a prompt until
+    /// it commits (`session_busy`). The composer says so in its title and
+    /// `enter` leaves the draft alone instead of sending into that refusal.
+    pub compacting: bool,
     /// A failed request or command, shown in place of the hint row until
     /// something succeeds. Distinct from the transcript: it is about the
     /// surface's own last action, not part of the conversation.
@@ -549,7 +587,8 @@ pub struct WorkbenchData {
     pub approval: Option<ApprovalView>,
     /// Read-only git working-tree review.
     pub diff: Option<DiffView>,
-    /// Real user-message fork points from `get_fork_messages`.
+    /// The messages a `/fork` can stop after, in transcript order: every
+    /// question and every answer the session has persisted (`get_fork_entries`).
     pub fork_points: Vec<ForkPoint>,
     /// Read-only git worktree list.
     pub worktrees: Vec<WorktreeView>,
@@ -574,6 +613,12 @@ pub struct WorkbenchData {
 /// make `+` feel like a disk seek.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreviewView {
+    /// The driver has asked for the bytes and is waiting for them. Keeping this
+    /// as state is what lets the box open immediately instead of freezing the
+    /// frame until a large picture has been decoded.
+    Loading {
+        path: String,
+    },
     Image {
         path: String,
         pixels: ImagePixels,
@@ -582,7 +627,7 @@ pub enum PreviewView {
     /// levels follow the theme in force like the transcript does.
     Markdown {
         path: String,
-        text: String,
+        text: std::sync::Arc<str>,
     },
     Text {
         path: String,
@@ -607,7 +652,8 @@ impl PreviewView {
     /// The path this preview is about — what the box's title names.
     pub fn path(&self) -> &str {
         match self {
-            Self::Image { path, .. }
+            Self::Loading { path }
+            | Self::Image { path, .. }
             | Self::Markdown { path, .. }
             | Self::Text { path, .. }
             | Self::Unavailable { path, .. } => path,
@@ -651,9 +697,24 @@ pub struct DiffView {
     pub error: Option<String>,
 }
 
+/// Whose message a `/fork` point is: the reader's or the model's.
+///
+/// The picker lists both, because "fork after this message" means the same
+/// thing either way — the child ends with the message the reader picked. The
+/// role is only what the row is labelled by.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ForkRole {
+    /// A question the reader asked.
+    #[default]
+    User,
+    /// An answer the model wrote.
+    Assistant,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ForkPoint {
     pub id: String,
+    pub role: ForkRole,
     pub text: String,
 }
 
@@ -680,11 +741,25 @@ pub enum GitSection {
     Status,
     /// `git stash list`.
     Stash,
+    /// The repository's checkouts — `git worktree list`. `enter` moves the
+    /// session's workspace to the chosen one, so the other tabs read it.
+    Worktrees,
+    /// Local branches, with the current one marked. `enter` narrows the log to
+    /// the chosen branch — entering its line of work without leaving the
+    /// checkout alone.
+    Branches,
 }
 
 impl GitSection {
     /// Every section, in tab order.
-    pub const ALL: [GitSection; 4] = [Self::Commits, Self::Refs, Self::Status, Self::Stash];
+    pub const ALL: [GitSection; 6] = [
+        Self::Commits,
+        Self::Refs,
+        Self::Status,
+        Self::Stash,
+        Self::Worktrees,
+        Self::Branches,
+    ];
 }
 
 /// What one field of a `/git` row *is*, so the painter colours it by meaning
@@ -708,14 +783,22 @@ pub enum GitKind {
 /// One painted line of the `/git` list.
 ///
 /// `key` is what the row *is* (`abc1234`, `refs/heads/main`, `src/a.rs`,
-/// `stash@{0}`) and what the detail pane loads; a row without one is the log's
-/// graph continuing through a column that has no commit on it — painted, but
-/// never selected, the same way the graph is drawn in a terminal git client.
+/// `stash@{0}`) and what the detail pane loads. A row without one is painted
+/// but never selected — a drawing, not an object — so the cursor can step over
+/// it: no section produces one today (every row of the log carries a commit),
+/// and the rule is what keeps a section that adds one from breaking `enter`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GitRow {
     pub key: Option<String>,
-    /// The gutter before the fields: the graph (`* `, `| * `), a badge (`● `),
-    /// a porcelain status (`M `), a stash number (`#0 `).
+    /// The columns left of the gutter, one padded cell each: a commit's
+    /// date-time and then its committer, in fixed widths so the graph lines up
+    /// under them (the id is not here — the detail pane beside the list already
+    /// names the whole commit). The painter draws them joined by two spaces and
+    /// drops them from the right as the pane narrows, so a column is shown whole
+    /// or not at all.
+    pub columns: Vec<String>,
+    /// The gutter before the fields: the log's graph (`●─┐ `, `│ ● `), a badge
+    /// (`● `), a porcelain status (`M `), a stash number (`#0 `).
     pub prefix: String,
     /// The row's fields, most important first — a narrow box drops the tail
     /// whole rather than cutting a field in half.
@@ -853,6 +936,7 @@ mod tests {
     fn the_git_cursor_skips_rows_that_are_only_drawing() {
         let row = |key: Option<&str>| GitRow {
             key: key.map(str::to_string),
+            columns: Vec::new(),
             prefix: String::new(),
             pieces: Vec::new(),
             kinds: Vec::new(),

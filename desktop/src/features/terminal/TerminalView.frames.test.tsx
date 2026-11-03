@@ -19,6 +19,9 @@ import { TerminalView } from "./TerminalView";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
+/** The server's frame type byte for PTY output (`protocol::DATA_PREFIX`). */
+const DATA_PREFIX = 1;
+
 /** Everything xterm was asked to render, in order. */
 const written: string[] = [];
 /** The sockets the view opened, so a test can play the server. */
@@ -63,6 +66,11 @@ class FakeSocket {
   frame(bytes: Uint8Array) {
     const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
     this.emit("message", { data: buffer });
+  }
+
+  /** Deliver one *output* frame: the type byte, then the PTY's raw bytes. */
+  frameOutput(bytes: Uint8Array) {
+    this.frame(new Uint8Array([DATA_PREFIX, ...bytes]));
   }
 }
 
@@ -164,7 +172,7 @@ describe("terminal frames", () => {
 
     // The replay chunk stops after two of the three bytes of 中.
     await act(async () => {
-      socket.frame(bytes.subarray(0, 2));
+      socket.frameOutput(bytes.subarray(0, 2));
     });
     // Then the control frame — ASCII JSON, but the decoder still holds bytes.
     const meta = new Uint8Array([0, ...new TextEncoder().encode("{\"cursor\":3,\"start\":0,\"exitCode\":7}")]);
@@ -173,10 +181,30 @@ describe("terminal frames", () => {
     });
     // …and the rest of the character arrives with the live stream.
     await act(async () => {
-      socket.frame(bytes.subarray(2));
+      socket.frameOutput(bytes.subarray(2));
     });
 
     expect(written.join("")).toBe("中");
     expect(exits).toEqual([7]);
+  });
+
+  /**
+   * NUL is valid UTF-8 (U+0000), and a terminal merely drops that character's
+   * glyph: a read beginning with it is ordinary output. With the frame's first
+   * byte as the only discriminator, such a frame was parsed as a control frame,
+   * failed as JSON and was dropped whole — up to an 8 KiB live read (or a 64 KiB
+   * replay chunk) lost, and the cursor it should have advanced never moved.
+   */
+  it("renders output whose first byte is NUL instead of dropping the frame", async () => {
+    const socket = await connect();
+    const payload = new Uint8Array([0, ...new TextEncoder().encode("hello")]);
+
+    await act(async () => {
+      socket.frameOutput(payload);
+    });
+
+    // The bytes reach the terminal — NUL included, which the terminal itself
+    // renders as nothing. What must not happen is the frame disappearing.
+    expect(written.join("")).toBe("\u0000hello");
   });
 });

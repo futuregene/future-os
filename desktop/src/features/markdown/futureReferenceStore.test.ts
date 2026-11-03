@@ -1,15 +1,19 @@
-import { act } from "react";
 // @vitest-environment jsdom
+import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook } from "../../test/renderHook";
 
-import {
-  peekFutureReference,
-  queueFutureReferenceLoad,
-  useFutureReference,
-  useFutureReferences,
-} from "./futureReferenceStore";
-
+/**
+ * `futureReferenceStore` keeps every piece of state at module scope: the record
+ * map, the pending-load batches, the retry deadlines and attempts, the flush and
+ * sweep timers, and the "terminal listener installed" flag. All of that is
+ * one-per-process by design, so a test that counts IPC calls or asserts a flag
+ * flips exactly once only sees its own state on a fresh module — a leftover
+ * retry timer from an earlier test changes the call count, and an already
+ * installed listener hides the install. Each test therefore re-imports the
+ * store through `vi.resetModules()` (the pattern in `lib/doneBell.context.test.ts`)
+ * instead of relying on per-workspace key isolation.
+ */
 const resolveMock = vi.fn<(workspaceId: string, refs: unknown[]) => Promise<Array<Record<string, unknown>>>>();
 
 vi.mock("../../integrations/storage/markdownReferences", () => ({
@@ -27,11 +31,17 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: (name: string, handler: Listener) => listenMock(name, handler),
 }));
 
+/** A store instance with no records, timers or listener from an earlier test. */
+async function loadStore(): Promise<typeof import("./futureReferenceStore")> {
+  return await import("./futureReferenceStore");
+}
+
 beforeEach(() => {
+  vi.resetModules();
   vi.useFakeTimers();
-  // Records persist across tests (module-level cache) — each test uses its own
-  // workspace id; only the call counts reset.
-  resolveMock.mockClear();
+  resolveMock.mockReset();
+  listenMock.mockClear();
+  terminalListener = null;
 });
 
 afterEach(() => {
@@ -69,6 +79,7 @@ async function flush() {
 
 describe("futureReferenceStore", () => {
   it("batches multiple queued loads into one pending flush", async () => {
+    const { queueFutureReferenceLoad } = await loadStore();
     resolveMock.mockResolvedValue([resolvedRecord("run-batch")]);
     queueFutureReferenceLoad("w-batch", [
       { targetType: "run", targetId: "run-batch" },
@@ -80,12 +91,14 @@ describe("futureReferenceStore", () => {
     expect(resolveMock).toHaveBeenCalledTimes(1);
   });
 
-  it("ignores empty load requests", () => {
+  it("ignores empty load requests", async () => {
+    const { queueFutureReferenceLoad } = await loadStore();
     queueFutureReferenceLoad("w1", []);
     expect(resolveMock).not.toHaveBeenCalled();
   });
 
   it("resolves, caches, and skips re-resolving resolved records", async () => {
+    const { peekFutureReference, queueFutureReferenceLoad } = await loadStore();
     resolveMock.mockResolvedValue([resolvedRecord()]);
     queueFutureReferenceLoad("w1", [RUN]);
     await flush();
@@ -97,12 +110,14 @@ describe("futureReferenceStore", () => {
     expect(resolveMock).toHaveBeenCalledTimes(1);
   });
 
-  it("returns undefined for a null workspace and unknown records", () => {
+  it("returns undefined for a null workspace and unknown records", async () => {
+    const { peekFutureReference } = await loadStore();
     expect(peekFutureReference(null, RUN)).toBeUndefined();
     expect(peekFutureReference("w1", { targetType: "run", targetId: "nope" })).toBeUndefined();
   });
 
   it("marks failures and retries on an escalating backoff until parked", async () => {
+    const { peekFutureReference, queueFutureReferenceLoad } = await loadStore();
     resolveMock.mockImplementation((_w: string, refs: any[]) =>
       Promise.resolve(refs.map((r: any) => ({ ...r, status: "missing", data: undefined }))));
     queueFutureReferenceLoad("w2", [RUN]);
@@ -142,6 +157,7 @@ describe("futureReferenceStore", () => {
   });
 
   it("stores a failed record when the resolve IPC rejects", async () => {
+    const { peekFutureReference, queueFutureReferenceLoad } = await loadStore();
     resolveMock.mockRejectedValue(new Error("ipc down"));
     queueFutureReferenceLoad("w3", [RUN]);
     await flush();
@@ -149,6 +165,7 @@ describe("futureReferenceStore", () => {
   });
 
   it("loads via the useFutureReferences hook only with a workspace and references", async () => {
+    const { useFutureReferences } = await loadStore();
     resolveMock.mockResolvedValue([resolvedRecord("run-hook")]);
     const hookRef = { source: "inline" as const, targetType: "run" as const, targetId: "run-hook", view: "chip" as const };
     let workspaceId: string | null = null;
@@ -163,6 +180,7 @@ describe("futureReferenceStore", () => {
   });
 
   it("useFutureReference subscribes to cache updates", async () => {
+    const { queueFutureReferenceLoad, useFutureReference } = await loadStore();
     resolveMock.mockResolvedValue([resolvedRecord("run-sub")]);
     const subRef = { targetType: "run" as const, targetId: "run-sub" };
     const h = renderHook(() => useFutureReference("w5", subRef));
@@ -174,9 +192,11 @@ describe("futureReferenceStore", () => {
   });
 
   it("installs the terminal-run listener once and re-resolves settled runs in place", async () => {
+    const { queueFutureReferenceLoad } = await loadStore();
     resolveMock.mockResolvedValue([resolvedRecord("run-term")]);
     queueFutureReferenceLoad("w6", [{ targetType: "run", targetId: "run-term" }]);
     await flush();
+    expect(listenMock).toHaveBeenCalledTimes(1);
     const listenCalls = listenMock.mock.calls.length;
     queueFutureReferenceLoad("w6b", [{ targetType: "run", targetId: "run-other" }]);
     await flush();
@@ -200,6 +220,7 @@ describe("futureReferenceStore", () => {
   });
 
   it("prunes records past the 1000-entry cap", async () => {
+    const { peekFutureReference, queueFutureReferenceLoad } = await loadStore();
     const many = Array.from({ length: 1005 }, (_, i) => ({ targetType: "artifact" as const, targetId: `art-${i}` }));
     resolveMock.mockResolvedValue(
       many.map(r => ({ targetType: r.targetType, targetId: r.targetId, status: "resolved", data: null })),

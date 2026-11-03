@@ -38,8 +38,7 @@ pub fn with_workspace_lock<T>(
     f: impl FnOnce() -> Result<T, Error>,
 ) -> Result<T, Error> {
     let lock = workspace_lock(workspace_id);
-    let _guard = lock.lock().unwrap_or_else(|poison| poison.into_inner());
-    f()
+    super::process::with_lock(&lock, f)
 }
 
 // ── shadow repository handle ────────────────────────────────────────────────
@@ -122,29 +121,9 @@ impl ShadowRepo {
         index: Option<&Path>,
         stdin: Option<&[u8]>,
     ) -> Result<Output, Error> {
-        use std::io::Write;
-
         let mut cmd = self.base_command(index);
         cmd.args(args);
-        if stdin.is_some() {
-            cmd.stdin(Stdio::piped());
-        }
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-
-        let mut child = cmd
-            .spawn()
-            .map_err(|error| format!("shadow git {args:?} failed to spawn: {error}"))?;
-        if let Some(bytes) = stdin {
-            child
-                .stdin
-                .take()
-                .ok_or_else(|| "shadow git stdin unavailable".to_string())?
-                .write_all(bytes)
-                .map_err(|error| format!("shadow git stdin write failed: {error}"))?;
-        }
-        child
-            .wait_with_output()
+        super::process::run(&mut cmd, stdin)
             .map_err(|error| format!("shadow git {args:?} failed: {error}").into())
     }
 
@@ -175,9 +154,7 @@ impl ShadowRepo {
             .args(["commit-tree", tree_id, "-m", message])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let output = cmd
-            .output()
-            .map_err(|error| format!("shadow commit-tree failed: {error}"))?;
+        let output = super::process::run(&mut cmd, None)?;
         check_status(&["commit-tree"], &output)?;
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
@@ -212,7 +189,12 @@ impl ShadowRepo {
     /// Let git decide whether a gc is actually warranted (loose-object
     /// threshold); cheap to call after every retention pass (§12.3). Best-effort.
     pub fn gc_auto(&self) {
-        let _ = self.run(&["gc", "--auto", "--quiet"], None, None);
+        // A detached GC would escape the Host's cancellation/child ownership.
+        let _ = self.run(
+            &["-c", "gc.autoDetach=false", "gc", "--auto", "--quiet"],
+            None,
+            None,
+        );
     }
 
     // ── persisted index handling (§5.4) ─────────────────────────────────────
@@ -293,11 +275,7 @@ impl ShadowRepo {
     }
 
     fn git_init(&self) -> Result<(), Error> {
-        let output = self
-            .base_command(None)
-            .args(["init", "--quiet"])
-            .output()
-            .map_err(|error| format!("shadow git init failed to spawn: {error}"))?;
+        let output = super::process::run(self.base_command(None).args(["init", "--quiet"]), None)?;
         check_status(&["init"], &output)
     }
 
@@ -488,13 +466,14 @@ impl ShadowRepo {
     /// for read-only seeding lookups.
     fn real_git(&self, args: &[&str]) -> Result<String, Error> {
         use crate::proc::NoWindow;
-        let output = Command::new("git")
-            .no_window()
-            .arg("-C")
-            .arg(&self.workspace_path)
-            .args(args)
-            .output()
-            .map_err(|error| format!("real git {args:?} failed to spawn: {error}"))?;
+        let output = super::process::run(
+            Command::new("git")
+                .no_window()
+                .arg("-C")
+                .arg(&self.workspace_path)
+                .args(args),
+            None,
+        )?;
         check_status(args, &output)?;
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }

@@ -2853,4 +2853,39 @@ mod tests {
             "cached future model must be injected into the registry"
         );
     }
+
+    // ── same_provider_replacement ──
+
+    /// A request-time fallback may only move to another *model*, never to
+    /// another vendor: the run was admitted for one provider, and a
+    /// momentarily missing credential must fail there rather than bill a
+    /// different endpoint.
+    #[test]
+    fn a_request_time_fallback_stays_inside_the_current_models_provider() {
+        let _home = crate::test_support::TestHome::new();
+        let mut registry = Registry::new();
+        let mut plain = make_model("a-plain", "prov");
+        plain.output = vec!["text".to_string()];
+        let mut recommended = make_model("z-recommended", "prov");
+        recommended.output = vec!["text".to_string()];
+        recommended.recommended = true;
+        let mut image_only = make_model("b-image", "prov");
+        image_only.output = vec!["image".to_string()];
+        let mut elsewhere = make_model("a-plain", "other");
+        elsewhere.output = vec!["text".to_string()];
+        for model in [plain, recommended, image_only, elsewhere] {
+            registry.test_insert(model);
+        }
+
+        // The recommended text model wins over the alphabetically first one,
+        // the image-only model is never a text fallback, and the identically
+        // named model of another provider is not a candidate at all.
+        assert_eq!(
+            registry.same_provider_replacement("prov/a-plain"),
+            Some("prov/z-recommended".to_string())
+        );
+        // A reference with no provider half has no provider to defend.
+        assert_eq!(registry.same_provider_replacement("a-plain"), None);
+        assert_eq!(registry.same_provider_replacement("/a-plain"), None);
+    }
 }

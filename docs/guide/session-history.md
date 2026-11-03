@@ -157,6 +157,39 @@ session's system prompt is now constant for its whole life. That is strictly bet
 provider prefix caching, and it means the summary request and the turn it belongs to are
 byte-identical without any code keeping them in step.
 
+## Replacement characters in stored text
+
+A stored passage can contain U+FFFD (the replacement character) where the
+original had a word — `文档` recorded as `文��`. Two causes look identical on
+screen: the character arrived that way, or it was damaged here. Only the recorded
+deltas tell them apart, and they do it in one command:
+
+```sh
+python3 scripts/scan_replacement_chars.py              # whole history (a few seconds)
+python3 scripts/scan_replacement_chars.py --session SESSION_ID
+python3 scripts/scan_replacement_chars.py --json       # machine-readable
+```
+
+It reads `agent.db` read-only, starts no Agent and calls no model. Every stored
+delta is checked for the three bytes `EF BF BD`; a hit reports its event kind
+(assistant text, thinking, tool argument), the session and run, and the
+characters on either side.
+
+Reading the result:
+
+- `position=interior`, with `not valid UTF-8: 0` — the provider's stream carried
+  the replacement character as a code point. The Agent validates every SSE line
+  as UTF-8 and fails the run on invalid bytes, so nothing was lost on this
+  machine and there is nothing to repair. Expect this in quotes of already
+  garbled terminal output.
+- `position=edge`, or the same passage damaged in different places across runs —
+  the shape of a local byte split. Compare the neighbouring delta before
+  concluding anything.
+- `not valid UTF-8` above zero — the stored bytes are not text at all. That is
+  local damage and worth a bug report.
+
+The scan is not part of CI: a hit is worth recording, not gating a build on.
+
 ## Scope and limitations
 
 Every request requires an explicit session ID; unknown IDs never fall back to a

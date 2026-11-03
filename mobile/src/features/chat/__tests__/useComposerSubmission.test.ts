@@ -3,6 +3,11 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { useComposerSubmission } from "../composer/useComposerSubmission";
 import { showToast } from "../utils";
 
+const mockRemoteControls = {
+  capabilities: new Set<string>(), desktopReadable: false, desktopSettingsRevision: 0,
+  getFusionSettings: jest.fn(),
+};
+jest.mock("../../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemoteControls }));
 jest.mock("../utils", () => ({ showToast: jest.fn() }));
 
 type Options = Parameters<typeof useComposerSubmission>[0];
@@ -96,6 +101,23 @@ test("submit cannot send an empty draft while restoration is pending", async () 
   await act(async () => { await api.sendFromComposer(); });
   expect(options.recommendation.evaluate).not.toHaveBeenCalled();
   expect(options.send).not.toHaveBeenCalled();
+});
+
+test("a stale \"still streaming\" flag does not swallow the send", async () => {
+  // The flag is this client's projection: it outlives the run it described (a
+  // missed terminal event, a socket that died mid-stream) and nothing clears it
+  // now that automatic resume is retired. Consulting it made sends vanish with
+  // no feedback at all; the desktop answers for itself instead.
+  const options = optionsFor();
+  render({
+    ...options,
+    remote: {
+      ...options.remote,
+      timeline: { ...options.remote.timeline, streaming: true },
+    },
+  });
+  await act(async () => { await api.sendFromComposer(); });
+  expect(options.send).toHaveBeenCalledWith(undefined);
 });
 
 test("unrelated remote updates preserve composer callbacks", () => {

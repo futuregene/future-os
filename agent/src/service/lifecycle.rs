@@ -38,11 +38,17 @@ pub(super) fn cleanup_windows_sandbox_on_startup() {
     #[cfg(target_os = "windows")]
     match crate::sandbox::reset_windows_sandbox_capabilities() {
         Ok(removed) if removed > 0 => {
-            eprintln!("Future Agent: cleaned {removed} stale Windows sandbox permission(s)")
+            tracing::info!(
+                event = "cleanup_windows_sandbox_on_startup",
+                removed = removed,
+                "Future Agent: cleaned {removed} stale Windows sandbox permission(s)"
+            )
         }
         Ok(_) => {}
         Err(error) => {
-            eprintln!("Future Agent: could not clean stale Windows sandbox permissions: {error}")
+            tracing::warn!(event = "cleanup_windows_sandbox_on_startup", error = %error,
+                "Future Agent: could not clean stale Windows sandbox permissions: {error}"
+            )
         }
     }
 }

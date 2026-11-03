@@ -17,11 +17,15 @@ import { Composer } from "./Composer";
 const h = vi.hoisted(() => ({
   deleteTempAttachment: vi.fn(),
   readNativeClipboardFilePaths: vi.fn(),
+  readNativeClipboardImage: vi.fn(),
   savePastedFile: vi.fn(),
   savePastedImage: vi.fn(),
   classifyAttachment: vi.fn(),
 }));
 
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async () => () => {}),
+}));
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }),
 }));
@@ -32,6 +36,7 @@ vi.mock("../../integrations/storage/threadStore", async original => ({
   ...await original<typeof import("../../integrations/storage/threadStore")>(),
   deleteTempAttachment: h.deleteTempAttachment,
   readNativeClipboardFilePaths: h.readNativeClipboardFilePaths,
+  readNativeClipboardImage: h.readNativeClipboardImage,
   savePastedFile: h.savePastedFile,
   savePastedImage: h.savePastedImage,
 }));
@@ -61,6 +66,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.deleteTempAttachment.mockResolvedValue(undefined);
   h.readNativeClipboardFilePaths.mockResolvedValue([]);
+  h.readNativeClipboardImage.mockResolvedValue(null);
   h.savePastedFile.mockImplementation(async ({ name }: { name: string }) => ({ path: `/tmp/${name}` }));
   h.savePastedImage.mockResolvedValue({ path: "/tmp/pasted.png" });
   // The classifier is the backend boundary; accept whatever it is handed.
@@ -307,4 +313,94 @@ it("reclaims a copied file that finishes after switching drafts", async () => {
   await act(async () => release({ path: "/tmp/stale-a.txt" }));
   expect(chips()).toEqual([]);
   expect(h.deleteTempAttachment).toHaveBeenCalledWith("/tmp/stale-a.txt");
+});
+
+/** Paste with no payload at all — what WebKitGTK reports for a clipboard image. */
+async function pasteNothing() {
+  const event = new Event("paste", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clipboardData", {
+    value: { getData: () => "", items: [] },
+  });
+  await act(async () => {
+    container.querySelector("[role=textbox]")!.dispatchEvent(event);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+it("reads the native pasteboard when the paste carried no payload", async () => {
+  // platform-cfg: WebKitGTK dispatches a paste event with an empty DataTransfer
+  // for a clipboard image, so the WebView has no bytes and the attachment can
+  // only come from the native pasteboard.
+  render();
+  h.readNativeClipboardImage.mockResolvedValue({ name: "pasted.png", path: "/tmp/pasted.png" });
+  await pasteNothing();
+
+  expect(h.readNativeClipboardImage).toHaveBeenCalledTimes(1);
+  expect(h.savePastedImage).not.toHaveBeenCalled();
+  expect(chips().map(chip => chip.getAttribute("aria-label"))).toEqual(["Remove pasted.png"]);
+});
+
+it("attaches nothing when the clipboard holds no image", async () => {
+  // boundary: an empty clipboard is the common case for an empty paste; the
+  // native read reports null and the draft must stay untouched.
+  render();
+  await pasteNothing();
+
+  expect(h.readNativeClipboardImage).toHaveBeenCalledTimes(1);
+  expect(chips()).toHaveLength(0);
+  expect(h.deleteTempAttachment).not.toHaveBeenCalled();
+});
+
+it("reclaims a native image the classifier refused", async () => {
+  // error-path: the backend already wrote the file, so a refusal must not leak
+  // it into the thread's temp dir.
+  render();
+  h.readNativeClipboardImage.mockResolvedValue({ name: "pasted.png", path: "/tmp/pasted.png" });
+  h.classifyAttachment.mockImplementation(async (path: string) => ({ kind: null, path, reason: "image unreadable" }));
+  await pasteNothing();
+
+  expect(h.deleteTempAttachment).toHaveBeenCalledWith("/tmp/pasted.png");
+  expect(chips()).toHaveLength(0);
+});
+
+it("does not read the native pasteboard while the composer is locked", async () => {
+  // A locked composer (a run in flight, a read-only conversation) has no draft to put
+  // an attachment in: the native read is the expensive half of a paste, so it is not
+  // started at all.
+  render({ disabled: true });
+  await pasteNothing();
+
+  expect(h.readNativeClipboardImage).not.toHaveBeenCalled();
+  expect(chips()).toHaveLength(0);
+});
+
+it("reclaims a native image that arrives after the draft it was pasted into is gone", async () => {
+  // The backend writes the file before this side can tell the draft moved on; the copy
+  // belongs to a composer that is no longer on screen, so it is deleted rather than
+  // attached to whatever is showing now.
+  let release!: (saved: { name: string; path: string }) => void;
+  h.readNativeClipboardImage.mockReturnValue(new Promise((resolve) => {
+    release = resolve;
+  }));
+  render({ draftKey: "clipboard-a" });
+  await pasteNothing();
+  render({ draftKey: "clipboard-b" });
+
+  await act(async () => release({ name: "pasted.png", path: "/tmp/stale-native.png" }));
+
+  expect(h.deleteTempAttachment).toHaveBeenCalledWith("/tmp/stale-native.png");
+  expect(chips()).toEqual([]);
+});
+
+it("survives a pasteboard the backend cannot read", async () => {
+  // error-path: no desktop session / locked keyring / headless CI all make the
+  // native read fail; a paste must not surface that as an attachment error.
+  render();
+  h.readNativeClipboardImage.mockRejectedValue(new Error("no pasteboard access"));
+  await pasteNothing();
+
+  expect(chips()).toHaveLength(0);
+  expect(container.querySelector("[role=textbox]")!.textContent).toBe("");
 });

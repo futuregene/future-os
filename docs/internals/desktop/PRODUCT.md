@@ -52,6 +52,14 @@ Quitting an embedded owner cancels all its clients' work; attached external
 owners survive Desktop exit. See the [lifecycle guide](../../guide/desktop-agent.md)
 and [implementation plan](../../architecture/embedded-agent-development.md).
 
+During embedded startup the Agent reports preparation, backup, upgrade and
+conversation recovery stages before its business RPC endpoint is ready. The
+startup screen keeps its existing animation; stage hints appear only after five
+seconds, with a longer-wait hint after fifteen seconds. A responsive startup
+never becomes a timeout merely because an upgrade takes longer: only fifteen
+seconds without a successful status response shows a no-response hint, and
+probing continues so the screen can recover automatically.
+
 ## 3. Product principles
 
 ### 3.1 The GUI is the primary experience
@@ -432,6 +440,13 @@ and after each Run and diffing them, read-only throughout: it writes no
 commit / index / ref / object into the user's real Git repository and creates
 no `.git` in non-Git directories (implementation in ER.md §4.10, §6.8).
 
+Historical review is loaded for the conversation being viewed; app startup
+never checks every conversation's snapshots. Existing saved diffs open directly.
+If projection was interrupted, it can be rebuilt from the saved before/after
+pair. A missing boundary remains incomplete, with an explanation that exact
+changes cannot be reconstructed; the app does not capture today's workspace
+as an old Run's after snapshot or offer a retry that cannot repair that absence.
+
 "Last-round changes" overlays status hints at the top as applicable:
 
 - **Concurrent**: other Runs ran concurrently in this workspace during this
@@ -523,6 +538,11 @@ Attachment sources and upload paths:
   Linux file managers' URI lists. After resolving to a real absolute path, the
   backend checks protected paths, existence, directory-ness, and readability;
   on success only the path is recorded — the file is not copied.
+- WebKitGTK (the Linux webview) hands the page an empty `DataTransfer` for a
+  clipboard image, so a paste carrying neither text nor files asks the native
+  pasteboard for the image (arboard), encodes it as PNG, and attaches it through
+  the same pasted-image path. macOS/Windows webviews already deliver the image
+  as a pasted `File` and never take that fallback.
 - At most 4 images per message; non-image files have no count or size limit. A
   single image is at most 25 MiB, validated on select, drag, and paste.
 - Images must be successfully read and decoded before sending; on failure the
@@ -823,6 +843,23 @@ observers project the event stream in real time onto the UI and additional
 storage (approvals, etc.). Desktop keeps its own workspace, Thread, Run
 display, and approval store — never a second copy of conversation bodies.
 
+While a reply streams, the send control offers what "send" can mean instead of
+refusing it — the Agent answers one prompt at a time. With nothing typed it is
+the interrupt control; with a draft it offers **Add to the send queue** or
+**Interrupt and send**. Queued messages wait above the input box — readable,
+editable and removable until they leave — and go out by themselves as **one**
+message (their texts joined in order, one paragraph each, their attachments
+together) the moment the run ends. Interrupting while a queue waits ends the run
+and sends that same joined message; interrupting with a draft queues the draft
+first, so the flush carries the queue and the draft together. The queue belongs
+to its conversation: switching conversations keeps it, and the phone writes it to
+local storage too, so a restart still holds it (attachments the OS has cleaned up
+are dropped on the way back). An uninstall takes it with everything else — only a
+queue held on the desktop could outlive that — and the desktop app, including its
+view of another computer's conversation, keeps its queue in memory. The terminal
+has no send queue, and the Vibe
+panel's input layer keeps its own hand-back queue (see `VIBE.md` §5.4).
+
 History display and persistence rules:
 
 - First open reads only the latest 10 user rounds, older pages load on
@@ -926,7 +963,8 @@ Current focus:
   ones. Each program card's main content shows only the `command` field from
   the tool input JSON, displayed as the real command text — never the full
   JSON, escaped text, model names, or internal numbers like `Program <id>`;
-  runs without `command` do not enter the Runs list.
+  Fusion rows instead show their focused question and open their detail inspector within Runs.
+- Fusion is a tool within Runs. Its row and inline activity open a dedicated detail inspector inside Runs; Back returns to the tool list. There is no standalone Discussions type. Internal moderator readiness checks are hidden from the user-facing inspector. Remote conversations reuse the detail component with their host-bound reader.
 - Workspace conversations: show Files, Runs, and Review. Git workspaces'
   Review offers "Git changes" + "Last-round changes"; non-Git workspaces offer
   only "Last-round changes".

@@ -261,9 +261,19 @@ fn an_apply_rewrites_the_transcript_backs_it_up_and_refreshes_memory() {
 
 #[test]
 fn a_reset_that_applies_but_cannot_be_reloaded_reports_reload_failed() {
+    // Own session id, not the module's shared `"s1"`: `RELOAD_FAILURE_HOOK` is a
+    // process-wide single slot whose only gate is the session id, and six tests
+    // in this module apply a reset to `"s1"`. A concurrent apply landing between
+    // this test's `set_reload_failure_hook` and its own reset consumed the hook
+    // first, ran the damage closure against *this* test's state, and left this
+    // reset reporting `reset_failed` (or failing before it ran at all) instead
+    // of `reload_failed` — measured 4/25 at `--test-threads 28`. Same reasoning
+    // as `RESET_RACE_HOOKS` in `session::reset` ("the id was always meant to
+    // gate the hook"), and the hook's process-wide semantics are unchanged.
+    let id = format!("reload-failed-{}", crate::utils::generate_id());
     let state = make_app_state();
-    seed(&state, "s1");
-    hydrate(&state, "s1");
+    seed(&state, &id);
+    hydrate(&state, &id);
 
     // Damage the store in the window between the rewrite committing and the
     // reload reading it back. The read path is the `entry_records` **view**; the
@@ -271,14 +281,14 @@ fn a_reset_that_applies_but_cannot_be_reloaded_reports_reload_failed() {
     // damage has to land in that window — see the hook's own note and F-53.
     let damage = state.clone();
     super::session_reset::set_reload_failure_hook(
-        "s1",
+        &id,
         Box::new(move || {
             damage
                 .session_manager
                 .test_execute("DROP VIEW entry_records")
         }),
     );
-    let response = run(&state, "s1", apply(keep_last(2)));
+    let response = run(&state, &id, apply(keep_last(2)));
 
     assert_eq!(response["success"], false, "{response}");
     assert_eq!(response["error_code"], json!("reload_failed"), "{response}");
@@ -844,4 +854,87 @@ fn a_reset_whose_history_moved_is_reported_as_history_changed() {
         }),
     );
     assert_eq!(retry["success"], true, "{retry}");
+}
+
+#[test]
+fn a_reset_excludes_prompt_and_delete_admission_then_releases_its_flag_and_old_replay() {
+    let state = make_app_state();
+    let id = "guarded-reset";
+    save_via(&state, id, "mock-model", seeded_entries());
+    hydrate(&state, id);
+    let session = state.sessions.read().get(id).cloned().unwrap();
+    let broadcaster = session.read().broadcaster.clone();
+    broadcaster.start_run("r1".into(), 1);
+    broadcaster.broadcast(crate::rpc::SseEvent::new(
+        "text_chunk",
+        json!({"text":"old cached reply"}),
+    ));
+    let concurrent = state.clone();
+    crate::session::reset::set_reset_race_hook(
+        id,
+        Box::new(move |_| {
+            let mut prompt = make_cmd_for("prompt", id);
+            prompt.message = "must wait for reset".into();
+            let response = parse_response(&handle_command_internal(&concurrent, prompt));
+            assert_eq!(response["error_code"], "session_busy");
+            assert_eq!(response["error_data"]["busy_reason"], "history_reset");
+            let response = parse_response(&handle_command_internal(
+                &concurrent,
+                make_cmd_for("delete_session", id),
+            ));
+            assert_eq!(response["error_code"], "session_busy");
+        }),
+    );
+    let response = run(
+        &state,
+        id,
+        apply(HistoryReset {
+            all: Some(true),
+            ..Default::default()
+        }),
+    );
+    assert_eq!(response["success"], true, "{response}");
+    assert!(!session
+        .read()
+        .history_reset_in_progress
+        .load(std::sync::atomic::Ordering::Acquire));
+    assert!(broadcaster.current_run_id().is_empty());
+    assert!(
+        broadcaster.events_since("r1", -1).is_err(),
+        "dropped history must not survive in the old in-memory replay"
+    );
+}
+
+#[test]
+fn accepted_queued_work_blocks_destructive_reset_even_between_runtime_leases() {
+    let state = make_app_state();
+    let id = "queued-reset";
+    save_via(&state, id, "mock-model", seeded_entries());
+    hydrate(&state, id);
+    let session = state.sessions.read().get(id).cloned().unwrap();
+    session
+        .read()
+        .scheduler
+        .accept(
+            "pending-request",
+            Some("pending-run"),
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+            json!({"message":"must survive"}),
+        )
+        .unwrap();
+    assert!(session.read().runtime.snapshot().is_none());
+    let response = run(
+        &state,
+        id,
+        apply(HistoryReset {
+            all: Some(true),
+            ..Default::default()
+        }),
+    );
+    assert_eq!(response["error_code"], "session_busy");
+    assert!(!session
+        .read()
+        .history_reset_in_progress
+        .load(std::sync::atomic::Ordering::Acquire));
+    assert_eq!(session.read().scheduler.queued().len(), 1);
 }

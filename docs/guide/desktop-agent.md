@@ -23,6 +23,17 @@ takeover. For development, run `future agent` in another terminal before startin
 Desktop in external mode. Default `auto` supports both compatible external and
 embedded services; there is no force-embedded bypass of an external owner.
 
+A host that cannot create a UNIX socket — a sandbox, a container, an Android
+device under SELinux — serves the Agent on a loopback TCP port instead, with one
+command: `future host --agent-grpc-addr 127.0.0.1:47200`. A compatible Agent
+already answering there is attached to; otherwise the embedded Agent binds that
+address and no socket is created. It is the same as setting
+`FUTURE_AGENT_GRPC_ADDR` to that address and `FUTURE_DESKTOP_AGENT_MODE=bind`,
+which is a third mode beside `auto` and `external`: it accepts loopback addresses
+only and refuses anything else instead of guessing at a local service. Clients on
+the same machine reach that Agent by putting the same value in
+`FUTURE_AGENT_GRPC_ADDR`, since nothing answers on the per-user endpoint.
+
 A release Desktop rejects attachment when its configured Future platform is
 non-production. It does not rewrite authentication or remove keys while an
 external Agent owns the data root. Exit that Agent independently, then restart
@@ -96,11 +107,12 @@ WAL or lock files to accelerate exit.
 ## Troubleshooting and logs
 
 The default data root is `~/.future`; a valid absolute FUTURE_HOME replaces the
-whole root. Embedded host logs are at `<root>/app/logs/desktop.log`; that file
-keeps its newest 1000 lines, and each start first copies the tail of the run
-before it to `<root>/app/logs/desktop.prev.log`, so a launch that never came
-back stays readable after the next session filled the live file. Independent
-CLI Agent file logs remain at `<root>/agent/logs/agent.log` when enabled. A
+whole root. Desktop writes `app/logs/desktop.log`, foreground Host writes
+`app/logs/host.log`, and both embedded and standalone Agent write
+`agent/logs/agent.log`. Files are bounded JSONL with detailed test-build and
+concise release defaults; see [Rust diagnostics](logging.md) for component
+paths, retention and startup filters. Each Host start also preserves its previous
+tail in `*.prev.log`. A
 launch that panics appends the panic (UTC time, process, thread, `file:line`,
 payload, startup step, best-effort backtrace) to
 `<root>/app/logs/crash.log`, which is never trimmed — a windowless GUI launch has

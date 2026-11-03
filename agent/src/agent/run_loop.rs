@@ -66,13 +66,14 @@ fn text_block_mut<'a>(
     blocks.last_mut().expect("text block was just inserted")
 }
 
-fn assemble_assistant_content(
+fn assemble_assistant_parts(
     order: &[AssistantBlockOrder],
     reasoning_blocks: &[AccumulatedReasoningBlock],
     text_blocks: &[AccumulatedTextBlock],
     tool_calls: &[AgentToolCall],
-) -> Vec<ContentBlock> {
+) -> (Vec<ContentBlock>, Vec<Option<String>>) {
     let mut content = Vec::new();
+    let mut keys = Vec::new();
     let mut emitted_reasoning = vec![false; reasoning_blocks.len()];
     let mut emitted_text = vec![false; text_blocks.len()];
     let mut emitted_tools = vec![false; tool_calls.len()];
@@ -87,6 +88,7 @@ fn assemble_assistant_content(
                 {
                     emitted_reasoning[index] = true;
                     if !reasoning.text.is_empty() || !reasoning.provider_metadata.is_empty() {
+                        keys.push(Some(format!("thinking:{}", reasoning.id)));
                         content.push(ContentBlock::reasoning(
                             &reasoning.text,
                             reasoning.provider_metadata.clone(),
@@ -102,6 +104,7 @@ fn assemble_assistant_content(
                 {
                     emitted_text[index] = true;
                     if !text.text.is_empty() {
+                        keys.push(Some(format!("text:{}", text.id)));
                         content.push(ContentBlock::text(&text.text));
                     }
                 }
@@ -109,6 +112,7 @@ fn assemble_assistant_content(
             AssistantBlockOrder::Tool(index) => {
                 if let Some(tool) = tool_calls.get(*index) {
                     emitted_tools[*index] = true;
+                    keys.push(None);
                     content.push(ContentBlock::tool_call(
                         tool.id.clone(),
                         tool.name.clone(),
@@ -126,6 +130,7 @@ fn assemble_assistant_content(
         if !emitted_reasoning[index]
             && (!reasoning.text.is_empty() || !reasoning.provider_metadata.is_empty())
         {
+            keys.push(Some(format!("thinking:{}", reasoning.id)));
             content.push(ContentBlock::reasoning(
                 &reasoning.text,
                 reasoning.provider_metadata.clone(),
@@ -134,11 +139,13 @@ fn assemble_assistant_content(
     }
     for (index, text) in text_blocks.iter().enumerate() {
         if !emitted_text[index] && !text.text.is_empty() {
+            keys.push(Some(format!("text:{}", text.id)));
             content.push(ContentBlock::text(&text.text));
         }
     }
     for (index, tool) in tool_calls.iter().enumerate() {
         if !emitted_tools[index] {
+            keys.push(None);
             content.push(ContentBlock::tool_call(
                 tool.id.clone(),
                 tool.name.clone(),
@@ -147,7 +154,31 @@ fn assemble_assistant_content(
             ));
         }
     }
-    content
+    (content, keys)
+}
+#[cfg(test)]
+fn assemble_assistant_content(
+    order: &[AssistantBlockOrder],
+    reasoning: &[AccumulatedReasoningBlock],
+    text: &[AccumulatedTextBlock],
+    tools: &[AgentToolCall],
+) -> Vec<ContentBlock> {
+    assemble_assistant_parts(order, reasoning, text, tools).0
+}
+
+fn bind_stream_message(message: &mut AgentMessage, entry_id: &str, keys: Vec<Option<String>>) {
+    let metadata = message.metadata.get_or_insert_with(serde_json::Map::new);
+    metadata.insert(
+        AgentMessage::JOURNAL_ENTRY_ID_KEY.into(),
+        serde_json::json!(entry_id),
+    );
+    metadata.insert(
+        AgentMessage::STREAM_BLOCKS_KEY.into(),
+        serde_json::json!(keys
+            .into_iter()
+            .map(|key| key.map(|key| format!("{entry_id}:{key}")))
+            .collect::<Vec<_>>()),
+    );
 }
 
 fn clear_unfinished_provider_identity(tool: &mut AgentToolCall) {
@@ -178,12 +209,36 @@ impl Loop {
         ctx: &super::StreamContext,
         on_text: impl Fn(String) + Send + 'static,
         on_event: impl Fn(RunEvent) + Send + Sync + 'static,
-        mut interrupt_rx: Option<tokio::sync::mpsc::Receiver<()>>,
+        interrupt_rx: Option<tokio::sync::mpsc::Receiver<()>>,
     ) -> Result<(String, Vec<AgentMessage>)> {
+        match crate::fusion::with_context(
+            self.fusion_context.clone(),
+            self.run_streaming_inner(&mut messages, ctx, on_text, on_event, interrupt_rx),
+        )
+        .await
+        {
+            Ok(text) => Ok((text, messages)),
+            Err(error) => {
+                if let Some(callback) = &ctx.on_failure_messages {
+                    callback(messages);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    async fn run_streaming_inner(
+        &self,
+        messages: &mut Vec<AgentMessage>,
+        ctx: &super::StreamContext,
+        on_text: impl Fn(String) + Send + 'static,
+        on_event: impl Fn(RunEvent) + Send + Sync + 'static,
+        mut interrupt_rx: Option<tokio::sync::mpsc::Receiver<()>>,
+    ) -> Result<String> {
         // Every model-visible message is bound to a stable journal identity.
         // Loaded messages already carry it; fresh/ephemeral callers receive one
         // here so compaction provenance never depends on vector indices.
-        for message in &mut messages {
+        for message in messages.iter_mut() {
             message.ensure_journal_entry_id();
         }
         let mut active_checkpoint = self.active_checkpoint.lock().clone();
@@ -255,7 +310,7 @@ impl Loop {
             // Cancellation always terminates this run. A later user submission
             // is a distinct scheduler-owned run and can never be injected here.
             if self.is_interrupted() {
-                return Ok((String::new(), messages));
+                return Ok(String::new());
             }
 
             // Emit turn_start
@@ -291,7 +346,7 @@ impl Loop {
             // Ephemeral/direct Loop users may have no persistence callback.
             // New assistant/tool messages still need stable in-memory IDs for
             // checkpoint ranges across subsequent turns.
-            for message in &mut messages {
+            for message in messages.iter_mut() {
                 if message.journal_entry_id().is_none() {
                     message.ensure_journal_entry_id();
                 }
@@ -310,7 +365,7 @@ impl Loop {
                 .ok()
                 .filter(|tokens: &u64| *tokens > 0);
             let mut projected = crate::compaction::project_prompt_context(
-                &messages,
+                messages,
                 active_checkpoint.as_ref(),
                 reported_input,
                 context_window,
@@ -343,7 +398,7 @@ impl Loop {
             } else {
                 crate::compaction::CompactionTrigger::Automatic
             };
-            let automatic_operation_id = format!("cmp_{}", crate::utils::generate_entry_id());
+            let automatic_operation_id = crate::utils::generate_entry_id();
             let emit_automatic_started = || {
                 on_event(RunEvent::CompactionStarted {
                     operation_id: automatic_operation_id.clone(),
@@ -388,7 +443,7 @@ impl Loop {
                     crate::compaction::prepare_with_journal_and_summary(
                         manager,
                         projected.clone(),
-                        &messages,
+                        messages,
                         automatic_trigger,
                         automatic_phase,
                         None,
@@ -517,10 +572,9 @@ impl Loop {
             // Emit message_start
 
             // Convert to LLM format
-            let llm_messages: Vec<Message> = ConvertToLLM(&work_messages);
-
             if self.verbose {
-                tracing::info!("[agent] turn={} calling LLM model={} msgs={} tools={} sys_prompt_len={} msg_chars={}",
+                let llm_messages: Vec<Message> = ConvertToLLM(&work_messages);
+                tracing::debug!("[agent] turn={} calling LLM model={} msgs={} tools={} sys_prompt_len={} msg_chars={}",
                     turn,
                     ctx.model,
                     llm_messages.len(),
@@ -543,7 +597,7 @@ impl Loop {
                     self.provider
                         .stream_model(crate::llm::schema::ModelRequest {
                             model: ctx.model.clone(),
-                            messages: work_messages.clone(),
+                            messages: work_messages,
                             tools: tool_defs.clone(),
                             system_prompt: request_system_prompt.to_string(),
                         }),
@@ -553,7 +607,7 @@ impl Loop {
             {
                 Some(r) => r,
                 None => {
-                    return Ok((String::new(), messages));
+                    return Ok(String::new());
                 }
             };
 
@@ -591,8 +645,7 @@ impl Loop {
                             } else {
                                 crate::compaction::CompactionPhase::MidTurn
                             };
-                            let provider_limit_operation_id =
-                                format!("cmp_{}", crate::utils::generate_entry_id());
+                            let provider_limit_operation_id = crate::utils::generate_entry_id();
                             let Some(manager) = &context_manager else {
                                 let error = anyhow!(
                                     "context compaction is unavailable for provider-limit recovery"
@@ -613,7 +666,7 @@ impl Loop {
                                 return Err(error);
                             };
                             let mut projected = crate::compaction::project_prompt_context(
-                                &messages,
+                                messages,
                                 active_checkpoint.as_ref(),
                                 None,
                                 manager.context_window.max(1) as u64,
@@ -636,7 +689,7 @@ impl Loop {
                             match crate::compaction::prepare_with_journal_and_summary(
                                 manager,
                                 projected,
-                                &messages,
+                                messages,
                                 crate::compaction::CompactionTrigger::ProviderContextLimit,
                                 provider_limit_phase,
                                 None,
@@ -725,7 +778,7 @@ impl Loop {
                         // Don't burn a retry (and its backoff) if the user
                         // already asked to stop.
                         if self.is_interrupted() {
-                            return Ok((String::new(), messages));
+                            return Ok(String::new());
                         }
                         retry_attempt += 1;
                         let delay_ms = 2000 * (1 << (retry_attempt - 1));
@@ -739,7 +792,7 @@ impl Loop {
                             )
                             .await
                         {
-                            return Ok((String::new(), messages));
+                            return Ok(String::new());
                         }
                         continue;
                     }
@@ -754,6 +807,12 @@ impl Loop {
                 retry_attempt = 0;
             }
 
+            let stream_entry_id = crate::utils::generate_entry_id();
+            if ctx.segmented_storage {
+                on_event(RunEvent::MessageStart {
+                    entry_id: stream_entry_id.clone(),
+                });
+            }
             // Process stream events
             let mut assistant_text = retry_text.clone();
             let mut reasoning_blocks: Vec<AccumulatedReasoningBlock> = Vec::new();
@@ -832,6 +891,29 @@ impl Loop {
                 {
                     reconnecting = false;
                     on_event(RunEvent::StreamResumed);
+                }
+                let mut model_event = model_event;
+                if ctx.segmented_storage {
+                    match &mut model_event {
+                        ModelStreamEvent::ToolInputStart { id, .. } if id.is_empty() => {
+                            *id = crate::utils::generate_entry_id();
+                        }
+                        ModelStreamEvent::ToolInputDelta { index, id, .. }
+                        | ModelStreamEvent::ToolInputEnd { index, id, .. }
+                            if id.is_empty() =>
+                        {
+                            *id = current_tool_calls
+                                .get(*index)
+                                .and_then(Option::as_ref)
+                                .map(|tool| tool.id.clone())
+                                .filter(|id| !id.is_empty())
+                                .unwrap_or_else(crate::utils::generate_entry_id);
+                        }
+                        _ => {}
+                    }
+                    if let ModelStreamEvent::ToolInputEnd { arguments, .. } = &mut model_event {
+                        repair_partial_tool_args(arguments);
+                    }
                 }
                 // Clients treat `error` as terminal. Do not stop their stream
                 // for a disconnect that will be recovered below.
@@ -1130,6 +1212,15 @@ impl Loop {
             // Charge the compaction summary once, the same way a model call is
             // charged: from the final usage chunk, never per progressive chunk.
             if let Some(summary_usage) = compaction_summary_usage.lock().clone() {
+                // Journal it as the request it is, through the same channel a
+                // model call uses. The session's per-category split is rebuilt
+                // from the journal for any record that lacks one, and
+                // `pricing_event_payloads` only prices `usage`/`model_changed`
+                // rows: a summary charged here but never journaled would leave
+                // that rebuilt split short by a whole request (h1-C2).
+                on_event(RunEvent::Model(ModelStreamEvent::Usage(
+                    summary_usage.clone(),
+                )));
                 let cost = summary_usage
                     .credit_cost
                     .unwrap_or_else(|| self.estimate_usage_cost(&summary_usage));
@@ -1168,6 +1259,15 @@ impl Loop {
             // placeholder tool-result messages, otherwise the LLM API rejects
             // the conversation on resume (HTTP 400: "assistant message with
             // tool_calls must be followed by tool messages").
+            if ctx.segmented_storage {
+                on_event(RunEvent::MessageEnd {
+                    entry_id: stream_entry_id.clone(),
+                    complete: !interrupted_during_stream
+                        && !model_stream_failed
+                        && !stream_truncated,
+                });
+            }
+            ctx.await_durability().await?;
             let build_partial_assistant = |messages: &mut Vec<AgentMessage>,
                                            assistant_block_order: &[AssistantBlockOrder],
                                            reasoning_blocks: &[AccumulatedReasoningBlock],
@@ -1175,16 +1275,20 @@ impl Loop {
                                            tool_calls: &[AgentToolCall],
                                            reason: &str| {
                 let first_new_message = messages.len();
-                let msg = AgentMessage {
-                    role: "assistant".to_string(),
-                    content: assemble_assistant_content(
-                        assistant_block_order,
-                        reasoning_blocks,
-                        text_blocks,
-                        tool_calls,
-                    ),
+                let (content, keys) = assemble_assistant_parts(
+                    assistant_block_order,
+                    reasoning_blocks,
+                    text_blocks,
+                    tool_calls,
+                );
+                let mut msg = AgentMessage {
+                    role: "assistant".into(),
+                    content,
                     ..Default::default()
                 };
+                if ctx.segmented_storage {
+                    bind_stream_message(&mut msg, &stream_entry_id, keys);
+                }
                 // Don't push an empty assistant — the LLM API rejects
                 // messages with neither content nor tool_calls.
                 if !msg.content.is_empty() {
@@ -1238,7 +1342,7 @@ impl Loop {
                 // run. This step's tools have not executed: pair even partial
                 // calls with skipped results before sending history upstream.
                 build_partial_assistant(
-                    &mut messages,
+                    messages,
                     &assistant_block_order,
                     &reasoning_blocks,
                     &text_blocks,
@@ -1290,7 +1394,7 @@ impl Loop {
                     .sleep_or_interrupt(Duration::from_millis(delay_ms), interrupt_rx.as_mut())
                     .await
                 {
-                    return Ok((String::new(), messages));
+                    return Ok(String::new());
                 }
                 // Opening another HTTP stream is not success: only a complete
                 // model step resets this budget. Retries do not consume turns.
@@ -1305,7 +1409,7 @@ impl Loop {
                     "provider stream error"
                 };
                 build_partial_assistant(
-                    &mut messages,
+                    messages,
                     &assistant_block_order,
                     &reasoning_blocks,
                     &text_blocks,
@@ -1340,7 +1444,7 @@ impl Loop {
                             .to_string(),
                     });
                 }
-                return Ok((String::new(), messages));
+                return Ok(String::new());
             }
 
             // Close any open output block (text_end may not have been emitted).
@@ -1351,16 +1455,20 @@ impl Loop {
             // Emit message_end
 
             // Build assistant message
-            let assistant_msg = AgentMessage {
-                role: "assistant".to_string(),
-                content: assemble_assistant_content(
-                    &assistant_block_order,
-                    &reasoning_blocks,
-                    &text_blocks,
-                    &agent_tool_calls,
-                ),
+            let (content, keys) = assemble_assistant_parts(
+                &assistant_block_order,
+                &reasoning_blocks,
+                &text_blocks,
+                &agent_tool_calls,
+            );
+            let mut assistant_msg = AgentMessage {
+                role: "assistant".into(),
+                content,
                 ..Default::default()
             };
+            if ctx.segmented_storage {
+                bind_stream_message(&mut assistant_msg, &stream_entry_id, keys);
+            }
 
             // Skip truly empty assistant messages — the LLM API rejects them
             // ("content or tool_calls must be set"). Reasoning and tool calls
@@ -1411,12 +1519,12 @@ impl Loop {
                     );
                 }
                 append_skipped_tool_placeholders(
-                    &mut messages,
+                    messages,
                     &agent_tool_calls,
                     "the stream was truncated",
                     ctx.save_callback.as_ref(),
                 );
-                return Ok((assistant_text, messages));
+                return Ok(assistant_text);
             }
 
             stream_retry_attempt = 0;
@@ -1426,7 +1534,7 @@ impl Loop {
             // edge branchless (a nested if's closing brace here collected a
             // phantom zero-count coverage region).
             let stop_hit = self.config.stop_condition.as_ref().is_some_and(|stop_fn| {
-                let llm_msgs: Vec<Message> = ConvertToLLM(&messages);
+                let llm_msgs: Vec<Message> = ConvertToLLM(messages);
                 stop_fn(llm_msgs, &assistant_text)
             });
             if stop_hit {
@@ -1434,12 +1542,12 @@ impl Loop {
                 // calls; they are never executed, so append placeholder
                 // results to keep the conversation API-valid for the next run.
                 append_skipped_tool_placeholders(
-                    &mut messages,
+                    messages,
                     &agent_tool_calls,
                     "the stop condition fired",
                     ctx.save_callback.as_ref(),
                 );
-                return Ok((assistant_text, messages));
+                return Ok(assistant_text);
             }
 
             // No tool calls means this run is complete. Follow-up submissions
@@ -1465,12 +1573,12 @@ impl Loop {
                         cum_cost,
                     );
                 }
-                return Ok((assistant_text, messages));
+                return Ok(assistant_text);
             }
 
             // Execute tools
             if self.verbose {
-                tracing::info!(
+                tracing::debug!(
                     "[agent] turn={} executing {} tools: {}",
                     turn,
                     tool_calls.len(),
@@ -1481,20 +1589,14 @@ impl Loop {
                         .join(", ")
                 );
             }
-            self.execute_tools(
-                turn,
-                &tool_calls,
-                &mut messages,
-                &on_event,
-                &ctx.on_tool_result,
-            )
-            .await;
+            self.execute_tools(turn, &tool_calls, messages, &on_event, ctx)
+                .await?;
 
             // Log per-turn usage: tokens and cost.
             if let Some(ref u) = total_usage {
                 let cost = u.credit_cost.unwrap_or(0.0);
                 let cum_cost = *self.cumulative_cost.lock();
-                tracing::info!(
+                tracing::debug!(
                     "[agent] turn={} tokens_in={} tokens_out={} cache_read={} cache_write={} cost={:.6} cumulative_cost={:.6}",
                     turn,
                     u.prompt_tokens,
@@ -1809,64 +1911,17 @@ fn agent_tool_call_to_tool_call(tool_call: AgentToolCall) -> ToolCall {
 }
 
 fn repair_partial_tool_args(args: &mut serde_json::Value) {
-    let serde_json::Value::String(raw) = args else {
-        return;
-    };
-    // Empty string is never valid tool-call arguments — treat as empty object
-    // so the tool handler gets a proper "missing field" error instead of
-    // "invalid type: string \"\", expected struct ShellParams".
-    if raw.is_empty() {
-        *raw = String::from("{}");
-        return;
-    }
-    if serde_json::from_str::<serde_json::Value>(raw).is_ok() {
-        return;
-    }
-    let Some(repaired) = repair_partial_json_object(raw) else {
-        return;
-    };
-    if serde_json::from_str::<serde_json::Value>(&repaired).is_ok() {
-        *raw = repaired;
-    }
+    future_rpc::tool_arguments::repair_string_v1(args);
 }
 
+#[cfg(test)]
 fn repair_partial_json_object(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    if !trimmed.starts_with('{') {
-        return None;
-    }
-
-    let mut repaired = trimmed.to_string();
-    if has_unclosed_string(&repaired) {
-        repaired.push('"');
-    }
-
-    let open_braces = repaired.chars().filter(|c| *c == '{').count();
-    let close_braces = repaired.chars().filter(|c| *c == '}').count();
-    if open_braces > close_braces {
-        for _ in 0..(open_braces - close_braces) {
-            repaired.push('}');
-        }
-    }
-
-    Some(repaired)
+    future_rpc::tool_arguments::repair_partial_json_object(raw)
 }
 
+#[cfg(test)]
 fn has_unclosed_string(value: &str) -> bool {
-    let mut in_string = false;
-    let mut escaped = false;
-    for ch in value.chars() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match ch {
-            '\\' if in_string => escaped = true,
-            '"' => in_string = !in_string,
-            _ => {}
-        }
-    }
-    in_string
+    future_rpc::tool_arguments::has_unclosed_string(value)
 }
 
 /// Append placeholder tool-result messages for tool calls that were never
@@ -2258,6 +2313,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_consumes_typed_tool_state_and_emits_typed_events() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let mut start_metadata = crate::types::ProviderMetadata::new();
         start_metadata.insert("openai".into(), serde_json::json!({"item_id": "fc_1"}));
         let mut end_metadata = crate::types::ProviderMetadata::new();
@@ -2413,6 +2471,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_rejects_provider_controlled_allocation_indices() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         for event in [
             ModelStreamEvent::ToolInputDelta {
                 index: usize::MAX,
@@ -2464,6 +2525,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_streams_simple_text_reply() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ev_text("Hello"),
             ev_text(" world"),
@@ -2493,6 +2557,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_records_thinking_and_usage() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ModelStreamEvent::ReasoningStart {
                 id: "reasoning".into(),
@@ -2563,6 +2630,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_preserves_multiple_reasoning_blocks_and_their_metadata() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let mut first_metadata = crate::types::ProviderMetadata::new();
         first_metadata.insert(
             "anthropic".into(),
@@ -2678,6 +2748,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_estimates_cost_when_credit_cost_absent() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         // A non-Future model: the usage carries no credit_cost, but the catalog
         // has a price, so the run loop accumulates a token×price estimate
         // instead of silently dropping the request's cost (mixed-model bug).
@@ -2740,6 +2813,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_split_bills_each_request_at_its_own_models_rates() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         // A conversation that switches models mid-session: the first request runs
         // on a cheap model, the second on one priced 100× higher. Each request's
         // tokens belong to the rates in force when it ran, so the split is the
@@ -2803,6 +2879,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_executes_tool_then_answers() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Events(vec![
                 ev_toolcall_start(0, "call-1", "echo", "{\"text\":\"hi\""),
@@ -2932,6 +3011,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_records_failing_tool_result_is_error() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Events(vec![
                 ev_toolcall_start(0, "call-1", "read", "{\"path\":\"missing.rs\"}"),
@@ -2980,6 +3062,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_records_soft_fail_and_nonzero_shell_exit_is_error() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Events(vec![
                 ev_toolcall_start(
@@ -3012,6 +3097,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_rejects_assistant_last_message() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![]);
         let loop_ = Loop::new(provider, "mock");
         let mut messages = user_messages("hi");
@@ -3038,6 +3126,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_respects_max_turns() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Events(vec![
                 ev_toolcall_start(0, "c1", "echo", "{}"),
@@ -3072,6 +3163,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_with_zero_max_turns_is_unlimited() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         // `max_turns = 0` (also the absent-setting default) means unlimited.
         // Run well past the 50 the startup path used to hard-code, so a
         // reintroduced floor fails here instead of only in production.
@@ -3110,6 +3204,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_returns_early_when_interrupt_flag_set() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![]);
         let loop_ = Loop::new(provider, "mock");
         loop_
@@ -3131,6 +3228,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_handles_stream_error_event() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ev_text("partial"),
             ModelStreamEvent::Error {
@@ -3552,6 +3652,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_marks_truncated_stop_as_incomplete() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ev_text("cut off"),
             ModelStreamEvent::Finish {
@@ -3699,6 +3802,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_marks_length_stop_as_incomplete() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ev_text("cut off at max tokens"),
             ModelStreamEvent::Finish {
@@ -3733,6 +3839,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_marks_content_filter_as_model_response_error() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ev_text("partial"),
             ModelStreamEvent::Finish {
@@ -3972,6 +4081,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn run_retries_then_succeeds() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Fail("transient boom".to_string()),
             Script::Events(vec![ev_text("recovered"), ev_stop()]),
@@ -4003,6 +4115,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn run_returns_error_after_retries_exhausted() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Fail("boom 1".to_string()),
             Script::Fail("boom 2".to_string()),
@@ -4027,6 +4142,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn run_fails_when_forced_compaction_finds_no_cut() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::Fail(
             "[CTX_LIMIT] Request exceeds the model's maximum context length (HTTP 400)."
                 .to_string(),
@@ -4064,6 +4182,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn run_compacts_then_retries_on_context_length_error() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Fail(
                 "[CTX_LIMIT] Request exceeds the model's maximum context length (HTTP 400)."
@@ -4206,6 +4327,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_commits_checkpoint_without_replacing_history() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
         let mut loop_ = Loop::new(provider, "mock");
         loop_.context_manager = Some(crate::compaction::ContextManager {
@@ -4506,6 +4630,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_rejects_a_window_consumed_by_request_overhead() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![]);
         let mut loop_ = Loop::new(provider, "mock");
         loop_.context_manager = Some(crate::compaction::ContextManager {
@@ -4530,6 +4657,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_stop_condition_short_circuits_the_loop() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ev_toolcall_start(0, "c1", "echo", "{}"),
             ev_toolcall_end(),
@@ -4559,6 +4689,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn run_interrupt_mid_stream_keeps_partial_reply() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::PartialThenStall(vec![ev_text(
             "before interrupt",
         )])]);
@@ -4585,6 +4718,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_handles_toolcall_streaming_edge_cases() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Events(vec![
                 // Delta before any start → placeholder that the later start replaces.
@@ -4639,6 +4775,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_skips_remaining_tools_after_interrupt() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Events(vec![
                 ev_toolcall_start(0, "c1", "echo", "{}"),
@@ -4799,6 +4938,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_verbose_covers_logging_arms() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Events(vec![
                 ModelStreamEvent::ReasoningStart {
@@ -4850,6 +4992,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_with_empty_messages_validates_ok() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("hi"), ev_stop()])]);
         let loop_ = Loop::new(provider, "mock");
         let (text, _) = loop_
@@ -4867,6 +5012,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_stop_event_finalizes_pending_tool_calls_and_usage() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         // toolcall_start followed DIRECTLY by a usage-carrying stop: the stop
         // arm both finalizes the pending call and processes usage.
         let provider = ScriptedProvider::new(vec![
@@ -4911,6 +5059,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_verbose_truncated_stream_warns() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let _tracing = tracing_sink();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ev_text("cut off"),
@@ -4936,6 +5087,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_verbose_completion_logs_usage_details() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let _tracing = tracing_sink();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ev_text("final"),
@@ -4970,6 +5124,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn run_interrupt_while_connecting_returns_early() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         struct PendProvider;
         #[async_trait::async_trait]
         impl LLMProvider for PendProvider {
@@ -5002,6 +5159,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_interrupt_during_retry_backoff_returns_early() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         struct FailOnSignalProvider {
             release: tokio::sync::Notify,
         }
@@ -5117,6 +5277,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn run_interrupt_with_finalized_tool_call_writes_placeholders() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::PartialThenStall(vec![
             ev_toolcall_start(0, "c1", "echo", "{}"),
             ev_toolcall_end(),
@@ -5160,6 +5323,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_toolcall_merge_and_delta_variants() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Events(vec![
                 // Same-id start with a longer non-prefix arg string → replace.
@@ -5230,6 +5396,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_slow_provider_exercises_await_polling() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         struct SlowProvider {
             delay: Duration,
         }
@@ -5396,6 +5565,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn run_interrupt_during_error_retry_returns_partial() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let provider = FailAndInterruptProvider { flag: flag.clone() };
         let config = crate::types::AgentConfig {
@@ -5419,6 +5591,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn run_reports_last_error_when_turn_limit_hit_after_failed_retry() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         // Turn 0 fails once, the retry succeeds with a tool call (turn becomes
         // 1); the loop top then hits the turn limit. (The stale-last_error arm
         // was removed as dead by construction — see the limit check comment.)
@@ -5453,6 +5628,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_verbose_handles_typed_text_events() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let _sink = tracing_sink();
         let provider =
             ScriptedProvider::new(vec![Script::Events(vec![ev_text("done"), ev_stop()])]);
@@ -5473,6 +5651,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn run_finalizes_pending_tool_call_when_stream_ends_early() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         // toolcall_start with no toolcall_end and no stop: the post-loop sweep
         // finalizes the pending call, then the turn ends as incomplete.
         let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_toolcall_start(
@@ -5499,6 +5680,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_merges_repeated_toolcall_start_over_null_args() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         // First chunk carries no tool_call payload (args stay Null); the
         // same-id repeat upgrades Null args to the real string via the
         // overwrite arm (the merge arm needs a String on both sides).
@@ -5553,6 +5737,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_stop_condition_ends_run_with_text() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider =
             ScriptedProvider::new(vec![Script::Events(vec![ev_text("stop here"), ev_stop()])]);
         let config = crate::types::AgentConfig {
@@ -5601,6 +5788,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_fills_empty_tool_id_from_delta() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Events(vec![
                 ModelStreamEvent::ToolInputStart {
@@ -5636,6 +5826,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_handles_tool_input_end_without_start() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         // ToolInputEnd with an index beyond the array exercises both the resize
         // and the get_or_insert_with creation arm.
         let provider = ScriptedProvider::new(vec![
@@ -5666,6 +5859,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_builds_partial_assistant_with_reasoning_on_stream_error() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         // Reasoning followed by a stream error hits the partial-assistant path
         // with non-empty reasoning content.
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
@@ -5698,6 +5894,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_merges_repeated_toolcall_start_with_provider_metadata() {
+        // fd budget: this test builds a runtime and holds its own
+        // descriptors while its neighbours do the same.
+        crate::test_support::ensure_fd_headroom();
         let mut meta = crate::types::ProviderMetadata::new();
         meta.insert("openai".into(), serde_json::json!({"id": "call_1"}));
         let provider = ScriptedProvider::new(vec![
@@ -6522,6 +6721,63 @@ mod tests {
         // The provider's own `credit_cost` is authoritative and is charged once,
         // never per progressive chunk.
         assert_eq!(*loop_.cumulative_cost.lock(), 0.5);
+    }
+
+    /// A handoff summary is a billed model call, so it has to reach the run's
+    /// journal as a `usage` event exactly like a normal request.
+    ///
+    /// The session's per-category cost split is rebuilt from the journal
+    /// (`RpcSession::replay_cost_split` → `pricing_event_payloads`, which reads
+    /// only `usage`/`model_changed` rows), and for a record written before the
+    /// split was persisted that replay is the only source of the breakdown. A
+    /// summary charged to the counters but never journaled therefore leaves the
+    /// rebuilt split short by a whole request, and it is then cached with
+    /// `cost_split_complete = true`, so the understatement is permanent (h1-C2).
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_compaction_summary_is_journaled_as_a_usage_event() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
+        provider
+            .summary_usage
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        provider
+            .summary_unpriced
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut loop_ = Loop::new(provider.clone(), "mock");
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: true,
+            reserve_tokens: 2000,
+            keep_recent_tokens: 1,
+            context_window: 8192,
+            model: "mock".into(),
+        });
+        // The main call reports no usage, so every journaled `usage` event in
+        // this run can only come from the summary the compaction requested.
+        let journaled = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let record = journaled.clone();
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                compactable_messages(26_000),
+                &StreamContext::default(),
+                noop_on_text,
+                move |event| {
+                    if let RunEvent::Model(ModelStreamEvent::Usage(usage)) = &event {
+                        record
+                            .lock()
+                            .push((usage.prompt_tokens, usage.completion_tokens));
+                    }
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(text, "ok");
+        let recorded = journaled.lock().clone();
+        assert_eq!(
+            recorded,
+            vec![(1_000_000, 500_000)],
+            "the summary request must be journaled once, with the usage it charged"
+        );
     }
 
     /// A summary whose provider reports usage *without* a price still has to be

@@ -153,7 +153,7 @@ pub async fn check_auth_state() -> FutureAuthState {
             };
         }
         Err(error) => {
-            eprintln!("FutureOS account credential unavailable: {error}");
+            tracing::warn!(event = "check_auth_state", error = %error,"FutureOS account credential unavailable: {error}");
             return FutureAuthState {
                 status: FutureAuthStatus::Unavailable,
                 profile: None,
@@ -171,7 +171,7 @@ pub async fn check_auth_state() -> FutureAuthState {
             profile: None,
         },
         Err(error) => {
-            eprintln!("FutureOS account verification unavailable: {error}");
+            tracing::warn!(event = "check_auth_state", error = %error,"FutureOS account verification unavailable: {error}");
             FutureAuthState {
                 status: FutureAuthStatus::Unavailable,
                 profile: None,
@@ -327,7 +327,8 @@ pub async fn poll(device_code: &str) -> Result<FutureLoginPoll, AppError> {
     let status = response.status();
     if is_retryable_poll_status(status) {
         let retry_after_seconds = retry_after_seconds(&response);
-        eprintln!(
+        tracing::debug!(
+            event = "poll",
             "FutureOS device authorization poll will retry after HTTP {}{}",
             status.as_u16(),
             retry_after_seconds
@@ -345,7 +346,7 @@ pub async fn poll(device_code: &str) -> Result<FutureLoginPoll, AppError> {
             return Ok(FutureLoginPoll::retry(None));
         }
         Err(error) if success => {
-            eprintln!(
+            tracing::warn!(event = "poll", error = %error,
                 "FutureOS device authorization returned an invalid success response: {error}"
             );
             return Ok(FutureLoginPoll::of("malformed"));
@@ -365,7 +366,7 @@ pub async fn poll(device_code: &str) -> Result<FutureLoginPoll, AppError> {
         let token: DeviceTokenResponse = match serde_json::from_value(body) {
             Ok(token) => token,
             Err(error) => {
-                eprintln!(
+                tracing::warn!(event = "poll", error = %error,
                     "FutureOS device authorization returned an invalid token response: {error}"
                 );
                 return Ok(FutureLoginPoll::of("malformed"));
@@ -373,7 +374,10 @@ pub async fn poll(device_code: &str) -> Result<FutureLoginPoll, AppError> {
         };
         let key = token.api_key.unwrap_or_default();
         if key.trim().is_empty() {
-            eprintln!("FutureOS device authorization response did not contain an API key");
+            tracing::warn!(
+                event = "poll",
+                "FutureOS device authorization response did not contain an API key"
+            );
             return Ok(FutureLoginPoll::of("malformed"));
         }
         if token
@@ -382,7 +386,10 @@ pub async fn poll(device_code: &str) -> Result<FutureLoginPoll, AppError> {
             .map(|kind| kind != "api_key")
             .unwrap_or(false)
         {
-            eprintln!("FutureOS device authorization returned an unsupported credential type");
+            tracing::warn!(
+                event = "poll",
+                "FutureOS device authorization returned an unsupported credential type"
+            );
             return Ok(FutureLoginPoll::of("malformed"));
         }
         // Only report success after the key is durably written. Pin `base_url`
@@ -460,7 +467,7 @@ fn log_poll_transport_error(error: &reqwest::Error) {
         causes.push(cause.to_string());
         source = cause.source();
     }
-    eprintln!(
+    tracing::warn!(event = "log_poll_transport_error",
         "FutureOS device authorization poll transport error (connect={}, timeout={}, request={}, body={}, redirect={}): {}{}",
         error.is_connect(),
         error.is_timeout(),

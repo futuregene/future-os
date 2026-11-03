@@ -116,7 +116,29 @@ pub async fn connect_nats(
     };
     let fixture_requires_tls = environment.require_tls(&creds.nats_url)?;
     let options = options.require_tls(fixture_requires_tls && !plaintext_relay(creds));
-    let client = options.connect(&creds.nats_url).await.map_err(|error| {
+    // `async-nats` resolves inside itself and exposes no hook to replace that, so
+    // when this process has its own resolver the relay's address is resolved here
+    // and the connection is pinned to the name it came from — see
+    // `future_relay_endpoint`.
+    let endpoint = future_relay_endpoint::for_connect(
+        &creds.nats_url,
+        environment.root_bundle.as_deref(),
+        plaintext_relay(creds),
+    )
+    .await
+    .map_err(|error| {
+        let message = format!("Failed to connect to NATS: {error}");
+        if error.transient {
+            crate::Error::RemoteTransport(message)
+        } else {
+            crate::Error::Message(message)
+        }
+    })?;
+    let options = match endpoint.tls {
+        Some(config) => options.tls_client_config(config),
+        None => options,
+    };
+    let client = options.connect(&endpoint.url).await.map_err(|error| {
         let message = format!("Failed to connect to NATS: {error}");
         classify_nats_connect_error(error.kind(), message)
     })?;

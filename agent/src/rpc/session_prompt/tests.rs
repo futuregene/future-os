@@ -11,6 +11,40 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
+#[test]
+fn deferred_context_preparation_checks_the_admitted_prefix_and_cancellation() {
+    let mut user = AgentMessage::new_user("user", serde_json::json!("accepted input"));
+    user.ensure_journal_entry_id();
+    let messages = vec![user];
+    let boundary = RunInputBoundary::capture(&messages);
+    let interrupt = std::sync::atomic::AtomicBool::new(false);
+    let prepared = boundary.snapshot(&messages, &interrupt).unwrap();
+    assert_eq!(prepared[0].display_text(), "accepted input");
+    let mut replaced = messages.clone();
+    replaced[0].metadata.as_mut().unwrap().insert(
+        AgentMessage::JOURNAL_ENTRY_ID_KEY.into(),
+        serde_json::json!("different accepted source"),
+    );
+    assert!(boundary
+        .snapshot(&replaced, &interrupt)
+        .unwrap_err()
+        .to_string()
+        .contains("input changed"));
+    replaced = messages.clone();
+    replaced.push(AgentMessage::new_user(
+        "user",
+        serde_json::json!("later queued input"),
+    ));
+    assert!(boundary.snapshot(&replaced, &interrupt).is_err());
+    interrupt.store(true, Ordering::Relaxed);
+    assert!(boundary
+        .snapshot(&messages, &interrupt)
+        .unwrap_err()
+        .to_string()
+        .contains("cancelled"));
+    assert_eq!(messages[0].display_text(), "accepted input");
+}
+
 struct MockWriteProvider {
     calls: AtomicUsize,
     outside_path: String,
@@ -481,6 +515,55 @@ fn text_turn(text: &str) -> Script {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn an_isolated_recovery_refuses_direct_and_queued_work_before_any_model_or_ack() {
+    let provider = ScriptedProvider::new(vec![text_turn("must never execute")]);
+    let mut fixture = run_fixture(provider.clone(), "recovery-execution-fence");
+    let manager = fixture.session.session_manager.clone();
+    manager.storage().unwrap().replace("s1", vec![
+        serde_json::json!({"id":"info","type":"session_info","timestamp":"2026-10-28T00:00:00Z","content":{"cwd":".","model":"mock"}}),
+        serde_json::json!({"id":"start","type":"run_started","timestamp":"2026-10-28T00:00:00Z","content":{"run_id":"broken","epoch":1}}),
+    ]).unwrap();
+    manager.storage().unwrap().db.call(|db| {
+        db.execute("UPDATE runs SET status='recovery_failed',error='fixture' WHERE session_id='s1' AND run_id='broken'", [])?;
+        Ok(())
+    }).unwrap();
+    let before = manager.storage().unwrap().entries("s1").unwrap();
+    let direct = fixture
+        .session
+        .prompt("do work", &[], &[], Some("next"), None)
+        .unwrap_err();
+    assert!(direct
+        .to_string()
+        .contains("session recovery requires repair"));
+    let queued = fixture
+        .session
+        .enqueue_prompt(
+            "queue work",
+            &[],
+            &[],
+            Some("queued"),
+            "recovery-request",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap_err();
+    assert!(queued
+        .to_string()
+        .contains("session recovery requires repair"));
+    assert!(matches!(
+        queued.downcast_ref::<crate::runtime::RunQueueError>(),
+        Some(crate::runtime::RunQueueError::PersistenceUnavailable(reason))
+            if reason.contains("session recovery requires repair")
+    ));
+    assert!(provider.requests.lock().unwrap().is_empty());
+    assert!(fixture.session.runtime.snapshot().is_none());
+    assert!(manager
+        .queued_receipt("s1", "recovery-request")
+        .unwrap()
+        .is_none());
+    assert_eq!(manager.storage().unwrap().entries("s1").unwrap(), before);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn prompt_text_run_completes_and_persists() {
     let fixture = run_fixture(
         ScriptedProvider::new(vec![text_turn("the answer")]),
@@ -657,16 +740,21 @@ async fn prompt_projects_typed_model_and_tool_events_end_to_end() {
         vec![
             "user_message",
             "agent_start",
+            "message_start",
             "thinking_start",
             "thinking_delta",
             "thinking_end",
             "tool_start",
             "tool_delta",
+            "tool_input_end",
             "usage",
+            "message_end",
             "tool_start",
             "tool_end",
+            "message_start",
             "text_chunk",
             "usage",
+            "message_end",
             "agent_end",
         ]
     );
@@ -788,10 +876,71 @@ async fn prompt_provider_failure_records_error_terminal() {
 async fn prompt_ephemeral_session_skips_persistence() {
     let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("hi")]), "ephemeral");
     let mut session = fixture.session;
-    session.set_ephemeral(true);
+    session.set_ephemeral(true).unwrap();
     session.prompt("hello", &[], &[], None, None).unwrap();
     wait_for_run_end(&session).await;
     assert_eq!(session.messages.read().len(), 2);
+    assert!(
+        !session.session_manager.contains("s1").unwrap(),
+        "ephemeral sessions never touch the transcript"
+    );
+}
+
+/// An ephemeral session has no transcript, so a failed run has no run terminal
+/// to persist: the live stream is the only place its failure can be told, and a
+/// client that never sees it would show a run that simply stopped. The run must
+/// therefore emit the `error` event and *still* close with an `agent_end` that
+/// names the state, the error and the run's usage.
+#[tokio::test(flavor = "current_thread")]
+async fn an_ephemeral_run_that_fails_reports_the_error_in_its_agent_end() {
+    let provider = ScriptedProvider::new(vec![Script::Fail("upstream is down".to_string())]);
+    let fixture = run_fixture(provider, "ephemeral-error");
+    let mut session = fixture.session;
+    session.set_ephemeral(true).unwrap();
+    session.set_auto_retry(false); // fail once, no 2s/4s/8s backoff
+    let mut events = session.broadcaster.subscribe();
+    session.prompt("hi", &[], &[], None, None).unwrap();
+
+    let mut event_types = Vec::new();
+    let mut reported = None;
+    let end = loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+            .await
+            .expect("run event timeout")
+            .expect("run event");
+        event_types.push(event.event_type.clone());
+        match event.event_type.as_str() {
+            "error" => {
+                reported = Some(serde_json::from_str::<serde_json::Value>(&event.data).unwrap());
+            }
+            "agent_end" => break serde_json::from_str::<serde_json::Value>(&event.data).unwrap(),
+            _ => {}
+        }
+    };
+    let reported = reported.expect("a failed run reports an error event before it ends");
+    assert!(
+        reported["error"]
+            .as_str()
+            .unwrap()
+            .contains("upstream is down"),
+        "{reported}"
+    );
+    assert_eq!(end["type"], "agent_end");
+    assert_eq!(end["state"], crate::session::RUN_STATE_ERROR);
+    assert!(
+        end["error"].as_str().unwrap().contains("upstream is down"),
+        "the terminal event carries the failure, not just its state: {end}"
+    );
+    assert!(
+        end["usage"]["output_tokens"].is_u64(),
+        "a failed run still reports its usage: {end}"
+    );
+    assert!(end["duration_ms"].is_i64(), "{end}");
+    assert_eq!(
+        event_types.last().map(String::as_str),
+        Some("agent_end"),
+        "nothing may follow the terminal event: {event_types:?}"
+    );
     assert!(
         !session.session_manager.contains("s1").unwrap(),
         "ephemeral sessions never touch the transcript"
@@ -1076,6 +1225,96 @@ async fn queued_follow_ups_keep_independent_runs() {
         .iter()
         .any(|t| t == "second question\n\nthird question"));
     session.abort_run(Some(&started.run_id)).unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_prompt_that_waited_too_long_is_parked_and_starts_only_when_released() {
+    let provider = ScriptedProvider::new(vec![
+        Script::Stall(vec![text_event("stalled")]),
+        text_turn("the held question"),
+    ]);
+    let fixture = run_fixture(provider, "stale-queued-prompt");
+    let mut session = fixture.session;
+
+    let first = session.prompt("first", &[], &[], None, None).unwrap();
+    for _ in 0..200 {
+        if session.runtime.snapshot().is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    let held = session
+        .enqueue_prompt(
+            "written an hour ago",
+            &[],
+            &[],
+            None,
+            "req-old",
+            crate::runtime::BusyPolicy::EnqueueCoalescing,
+        )
+        .unwrap();
+    assert_eq!(
+        held.accepted_state,
+        crate::runtime::RunAcceptedState::Queued
+    );
+    // One hour of nobody looking, without waiting an hour.
+    session
+        .scheduler
+        .test_backdate(&held.run_id, std::time::Duration::from_secs(3_600));
+
+    // The run ahead ends. The boundary is the moment a queued prompt would have
+    // started by itself — and this one must not.
+    session.abort_run(Some(&first.run_id)).unwrap();
+    for _ in 0..500 {
+        if session.runtime.snapshot().is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(session.runtime.snapshot().is_none());
+    assert!(
+        session.start_next_scheduled().is_err(),
+        "an aged prompt is not started by a turn boundary"
+    );
+    assert!(
+        session.scheduler.is_held(&held.run_id),
+        "it is parked, not dropped"
+    );
+    // Still the reader's: listed, and the user's text is not in the transcript
+    // as something that ran.
+    assert_eq!(session.scheduler.queued().len(), 1);
+    assert!(!session
+        .messages
+        .read()
+        .iter()
+        .any(|m| m.role == "user" && m.text() == "written an hour ago"));
+
+    // Releasing it is the reader answering the question the parking asked.
+    session.release_queued_run(&held.run_id).unwrap();
+    assert!(!session.scheduler.is_held(&held.run_id));
+    for _ in 0..200 {
+        if session
+            .messages
+            .read()
+            .iter()
+            .any(|m| m.role == "user" && m.text() == "written an hour ago")
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        session
+            .messages
+            .read()
+            .iter()
+            .any(|m| m.role == "user" && m.text() == "written an hour ago"),
+        "a released prompt runs"
+    );
+    if let Some((active, _)) = session.scheduler.active() {
+        session.abort_run(Some(&active.run_id)).unwrap();
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2186,64 +2425,57 @@ async fn prompt_journal_loss_marks_run_persistence_degraded() {
 /// pending batch, and a drain that fails must not stop the run from finishing or
 /// from asking for compaction — its failure is reported instead.
 ///
-/// The guard that decides this reads the journal's *health*, so reaching the
-/// warning needs a drain that fails **while the journal is still healthy**. That
-/// combination cannot be provoked from the outside: every way a live drain fails
-/// (a dead worker, a store that cannot commit the batch) makes an *append* fail
-/// first, and an append failure marks the journal unhealthy — which takes the
-/// guard's other branch and never reaches the warning. So the drain error is
-/// armed through the broadcaster's test-only fail point, exactly as the existing
-/// append-failure tests arm theirs, and what this test asserts is the behaviour
-/// around the warning: the run finishes, the transcript is intact, the journal is
-/// not marked unhealthy by a drain failure, and compaction is still requested.
+/// A failed durability fence cannot be advertised as a completed run or
+/// repaired by scheduling a full-history compaction.
 #[tokio::test(flavor = "current_thread")]
-async fn a_failed_journal_drain_before_compaction_still_finishes_the_run() {
+async fn a_failed_durability_fence_marks_run_degraded_without_compaction() {
     let fixture = run_fixture(
         ScriptedProvider::new(vec![text_turn("drained late")]),
         "drain-failure",
     );
     let mut session = fixture.session;
-    // Armed before the run: it is consumed by the completion-time drain, which
-    // happens once per run, after every append has already succeeded.
     session.broadcaster.fail_next_flush();
     session.prompt("hi", &[], &[], None, None).unwrap();
-    wait_for_run_end(&session).await;
-
-    // The run finished with its reply, and the failed drain did not mark the
-    // journal unhealthy — the difference between a drain failure and a storage
-    // failure, and the reason the guard let the drain run at all.
-    assert_eq!(
-        session.messages.read().last().unwrap().text(),
-        "drained late"
-    );
+    wait_for_degraded_run(&session).await;
     assert!(
-        session.runtime.snapshot().is_none(),
-        "a failed drain must not leave the run active"
+        session.scheduler.recent_terminal_acks().is_empty(),
+        "a failed fence must not acknowledge completion"
     );
-    assert!(
-        session.broadcaster.persistence_error().is_none(),
-        "an injected drain failure is not reported as a journal health failure"
-    );
-
-    // The drain's failure did not skip the compaction that follows it: the run's
-    // journal is compacted into a snapshot, which is what the request produces.
     let store = session.session_manager.storage().unwrap();
-    let run_id = session.broadcaster.current_run_id();
-    let mut compacted = false;
-    for _ in 0..300 {
-        if store
-            .replay_page("s1", &run_id, -1, false, None)
-            .is_ok_and(|page| page.snapshot.is_some())
-        {
-            compacted = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert!(
-        compacted,
-        "compaction must still be requested after a failed drain"
+    let counts: (i64, i64) = store
+        .db
+        .read(|db| {
+            Ok((
+                db.query_row("SELECT count(*) FROM run_snapshots", [], |row| row.get(0))?,
+                db.query_row(
+                    "SELECT count(*) FROM entries WHERE entry_type='run_terminal'",
+                    [],
+                    |row| row.get(0),
+                )?,
+            ))
+        })
+        .unwrap();
+    assert_eq!(
+        counts,
+        (0, 0),
+        "no snapshot or false terminal is written after a failed fence"
     );
+}
+
+async fn wait_for_degraded_run(session: &crate::rpc::ServerSession) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if session.runtime.snapshot().is_some_and(|snapshot| {
+                snapshot.phase == crate::runtime::RunPhase::PersistenceDegraded
+            }) && !session.runtime.has_owned_task()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("durability failure must settle as persistence_degraded");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2731,17 +2963,31 @@ async fn scheduled_run_empty_dequeue_reports_error() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn prompt_append_failure_logs_session_entry_error() {
-    let fixture = run_fixture(
-        ScriptedProvider::new(vec![text_turn("hello")]),
-        "append-fail",
-    );
+async fn prompt_terminal_worker_spawn_failure_marks_degraded_without_completion() {
+    let provider = ScriptedProvider::new(vec![text_turn("hello")]);
+    let fixture = run_fixture(provider.clone(), "append-fail");
     let mut session = fixture.session;
-    // Both worker-spawn attempts fail, so the mid-run save_closure append
-    // observes an unavailable worker and logs (rather than failing the run).
     session.persistence.fail_spawns_for_test(2);
     session.prompt("hi", &[], &[], None, None).unwrap();
-    wait_for_run_end(&session).await;
+    wait_for_degraded_run(&session).await;
+    assert_eq!(
+        provider.requests.lock().unwrap().len(),
+        1,
+        "the canonical writer accepts the user independently of the terminal worker"
+    );
+    let loaded = session.session_manager.load(&session.session_id).unwrap();
+    assert!(loaded
+        .entries
+        .iter()
+        .any(|entry| entry.entry_type == crate::session::ENTRY_TYPE_USER));
+    assert!(
+        !loaded
+            .entries
+            .iter()
+            .any(|entry| entry.entry_type == crate::session::ENTRY_TYPE_RUN_TERMINAL),
+        "an unavailable terminal worker must not publish a completed run"
+    );
+    assert!(session.scheduler.recent_terminal_acks().is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2833,6 +3079,149 @@ async fn prompt_empty_message_hits_empty_context_early_return() {
     // "truly empty — nothing to compact" early return inside the transform.
     session.prompt("", &[], &[], None, None).unwrap();
     wait_for_run_end(&session).await;
+}
+
+#[tokio::test]
+async fn idle_session_releases_cached_history_and_reloads_it_on_demand() {
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("persisted answer")]),
+        "idle-history",
+    );
+    let mut session = fixture.session;
+    session.prompt("remember me", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    assert!(!session.messages.read().is_empty());
+    let subscriber = session.broadcaster.subscribe();
+    assert!(
+        !session.release_idle_history_if_unused(),
+        "a live subscriber pins the in-memory projector/history"
+    );
+    drop(subscriber);
+    assert!(session.release_idle_history_if_unused());
+    assert!(session.messages.read().is_empty());
+    assert!(!session.history_loaded);
+    session.ensure_history_loaded().unwrap();
+    assert!(session
+        .messages
+        .read()
+        .iter()
+        .any(|message| message.text().contains("remember me")));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_after_idle_release_restores_history_before_persisting() {
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("first answer"), text_turn("second answer")]),
+        "idle-history-prompt",
+    );
+    let mut session = fixture.session;
+    session
+        .prompt("first question", &[], &[], None, None)
+        .unwrap();
+    wait_for_run_end(&session).await;
+    assert!(session.release_idle_history_if_unused());
+    assert!(session.messages.read().is_empty());
+
+    // Deliberately do not call ensure_history_loaded here. prompt_internal is
+    // the last boundary that can close the admission/idle-release race for both
+    // direct and scheduled starts.
+    session
+        .prompt("second question", &[], &[], None, None)
+        .unwrap();
+    wait_for_run_end(&session).await;
+
+    let stored = session.session_manager.load(&session.session_id).unwrap();
+    let text = stored
+        .entries
+        .iter()
+        .filter_map(|entry| entry.content.as_ref())
+        .map(serde_json::Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("first question"),
+        "old user history was lost: {text}"
+    );
+    assert!(
+        text.contains("first answer"),
+        "old assistant history was lost: {text}"
+    );
+    assert!(text.contains("second question"));
+    assert!(text.contains("second answer"));
+}
+
+#[test]
+fn checkpoint_survives_a_run_boundary_after_the_transcript_changes_on_disk() {
+    use crate::session::{checkpoint_to_entry, Session, SessionEntry};
+
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("unused")]),
+        "checkpoint-cache",
+    );
+    let mut session = fixture.session;
+    let id = "checkpoint-cache";
+    let mut info = SessionEntry::session_info(
+        serde_json::json!({"cwd": ".", "model": "mock"}),
+        "mock".into(),
+        "default".into(),
+    );
+    info.id = "info".into();
+    let mut user = SessionEntry::new_user("user", serde_json::json!("old request"));
+    user.id = "u1".into();
+    let mut assistant = SessionEntry::new_assistant(serde_json::json!("old answer"), Vec::new());
+    assistant.id = "a1".into();
+    let mut checkpoint = test_checkpoint("cp-entry", "cp-cache");
+    checkpoint.covered_from_entry_id = Some("u1".into());
+    checkpoint.cutoff_entry_id = Some("a1".into());
+    let checkpoint_entry = checkpoint_to_entry(&checkpoint);
+    let base = Session::snapshot(
+        id.into(),
+        ".".into(),
+        "mock".into(),
+        String::new(),
+        String::new(),
+        vec![
+            info.clone(),
+            user.clone(),
+            assistant.clone(),
+            checkpoint_entry,
+        ],
+    );
+    session.session_manager.save(&base).unwrap();
+    session.switch_session_metadata(id).unwrap();
+    session.ensure_history_loaded().unwrap();
+    assert_eq!(
+        session
+            .active_checkpoint
+            .lock()
+            .as_ref()
+            .map(|checkpoint| checkpoint.checkpoint_id.as_str()),
+        Some("cp-cache")
+    );
+
+    // If a prompt went back to disk for the checkpoint, this replacement would
+    // erase it. The cache is loaded once per handle, not once per run.
+    let replaced = Session::snapshot(
+        id.into(),
+        ".".into(),
+        "mock".into(),
+        String::new(),
+        String::new(),
+        vec![info, user, assistant],
+    );
+    session.session_manager.save(&replaced).unwrap();
+    let agent_loop = session.agent_loop.clone();
+    let mut loop_ = agent_loop.try_write().unwrap();
+    session.wire_auto_compaction(&mut loop_, true, "mock");
+    assert_eq!(
+        loop_
+            .active_checkpoint
+            .lock()
+            .as_ref()
+            .map(|checkpoint| checkpoint.checkpoint_id.as_str()),
+        Some("cp-cache"),
+        "run wiring must reuse the loaded checkpoint instead of reading the transcript"
+    );
 }
 
 #[test]
@@ -3250,6 +3639,7 @@ async fn an_automatic_reviewer_policy_reviews_a_sandboxed_run_without_asking_the
         return;
     }
     let home = crate::test_support::TestHome::new();
+    crate::test_support::ensure_fd_headroom();
     // A reviewer that is reachable and answers "server error" at once, so the
     // review completes fast (and fails: no verdict is reachable).
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3369,5 +3759,700 @@ async fn an_automatic_reviewer_policy_reviews_a_sandboxed_run_without_asking_the
     assert!(
         session.approval_gate.pending_for_session("s1").is_empty(),
         "an automatic policy never parks a human request"
+    );
+}
+
+/// `/tools off` has to reach the *next* run's request: the palette says "tool
+/// settings updated" and a reader who then sends a prompt expects a model with
+/// no tools at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disable_tools_removes_every_tool_from_the_next_run() {
+    let provider = ScriptedProvider::new(vec![text_turn("no tools needed")]);
+    let fixture = run_fixture(provider.clone(), "disable-tools-run");
+    let mut session = fixture.session;
+    session.disable_tools();
+    session.prompt("say hi", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1, "one turn, one request");
+    assert!(
+        requests[0].tools.is_empty(),
+        "a disabled tool set must not be sent: {:?}",
+        requests[0]
+            .tools
+            .iter()
+            .map(|t| &t.function.name)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ─── a run abandoned by persistence must say so ────────────────────────
+
+/// The 2026-10-31 shape: the journal is already failed when the run ends, so
+/// the append path drops every later event — including the `agent_end` the
+/// normal completion path sends. Before this, the run stopped mid-stream with
+/// no terminal at all (`run_ebdcad4959…`: 20:04:58.896Z refusal, 20:04:58.912Z
+/// durability barrier failed, nothing delivered; the client aborted 3.5 s
+/// later). The run stays `persistence_degraded` — its outcome cannot be
+/// recorded durably — but the client is told instead of waiting forever.
+#[tokio::test(flavor = "current_thread")]
+async fn a_run_abandoned_by_persistence_still_sends_a_terminal() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![]), "persistence-abandon");
+    let mut session = fixture.session;
+    assert!(
+        session.broadcaster.uses_segmented_storage(),
+        "the failed-journal terminal is about the segmented run path"
+    );
+    let mut events = session.broadcaster.subscribe();
+    session
+        .prompt("please answer", &[], &[], None, None)
+        .unwrap();
+    // The run's own interrupt flag is what a failed journal sets; install the
+    // failure the way the append path does once it gives up on storage.
+    session.broadcaster.fail_persistence(
+        "event storage backlog exceeded its byte or age limit; generation interrupted",
+    );
+
+    let mut types = Vec::new();
+    let terminal = loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+            .await
+            .expect("the run must not end without a terminal event")
+            .expect("the run still holds a subscriber");
+        types.push(event.event_type.clone());
+        if event.event_type == "agent_end" {
+            break serde_json::from_str::<serde_json::Value>(&event.data).unwrap();
+        }
+    };
+    assert!(
+        types
+            .iter()
+            .any(|event_type| event_type == "persistence_error"),
+        "the client is told what failed before the terminal: {types:?}"
+    );
+    assert_eq!(terminal["state"], crate::session::RUN_STATE_ERROR);
+    assert!(
+        terminal["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("Session persistence failed")),
+        "{terminal}"
+    );
+    assert_eq!(
+        session
+            .runtime
+            .snapshot()
+            .expect("the run is still held")
+            .phase,
+        crate::runtime::RunPhase::PersistenceDegraded,
+        "the outcome was never recorded, so the run must not look settled"
+    );
+}
+
+/// Test-only: persist an accepting snapshot plus a queued receipt, which is the
+/// durable half of "this client request was already accepted" after a restart
+/// (the in-memory scheduler is empty again, so admission has to read it back).
+#[tokio::test(flavor = "current_thread")]
+async fn a_persisted_receipt_answers_a_replayed_request_and_refuses_a_different_body() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![]), "receipt-replay");
+    let mut session = fixture.session;
+    let msg = "replayed input";
+    let snapshot = crate::session::Session::snapshot(
+        "s1".to_string(),
+        session.cwd.clone(),
+        "mock".to_string(),
+        String::new(),
+        String::new(),
+        vec![crate::session::SessionEntry::run_started("run-receipt", 1)],
+    );
+    session.session_manager.save(&snapshot).unwrap();
+    // The fingerprint is the canonical hash admission recomputes from the
+    // request itself; anything else means a different input was accepted.
+    let fingerprint = crate::session::compaction_ops::canonical_hash(&serde_json::json!({
+        "message": msg, "modelContext": "", "images": [], "attachments": []
+    }))
+    .unwrap();
+    let ack = crate::runtime::RunAck::queued("run-receipt".into(), 1, 1);
+    let user: crate::session::SessionEntry = serde_json::from_value(serde_json::json!({
+        "id":"u-replayed","type":"user","role":"user",
+        "timestamp":"2026-10-26T00:00:01Z","meta":{"run_id":"run-receipt"},"content":msg
+    }))
+    .unwrap();
+    session
+        .session_manager
+        .record_queued_receipt(
+            "s1",
+            "req-receipt",
+            &ack,
+            &fingerprint,
+            &serde_json::json!({}),
+            &user,
+        )
+        .unwrap();
+
+    // The same body under the same request id is the same accepted input: the
+    // client gets the original acknowledgement instead of a second run.
+    let replayed = session
+        .enqueue_prompt(
+            msg,
+            &[],
+            &[],
+            None,
+            "req-receipt",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    assert_eq!(replayed.run_id, "run-receipt");
+    assert_eq!(replayed.run_sequence, Some(1));
+    assert_eq!(
+        replayed.accepted_state,
+        crate::runtime::RunAcceptedState::Existing
+    );
+    // Naming the receipt's own run id is also the same accepted input.
+    let named = session
+        .enqueue_prompt(
+            msg,
+            &[],
+            &[],
+            Some("run-receipt"),
+            "req-receipt",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    assert_eq!(
+        named.accepted_state,
+        crate::runtime::RunAcceptedState::Existing
+    );
+
+    // A different body under the same request id is refused, and nothing new
+    // was accepted for it.
+    let error = session
+        .enqueue_prompt(
+            "different body",
+            &[],
+            &[],
+            None,
+            "req-receipt",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("already belongs to another accepted input"),
+        "{error}"
+    );
+    // Naming a *different* run id for the same request id is refused too.
+    let error = session
+        .enqueue_prompt(
+            msg,
+            &[],
+            &[],
+            Some("run-other"),
+            "req-receipt",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("already belongs to another accepted input"),
+        "{error}"
+    );
+}
+
+/// A reset owns the conversation's identities while it runs: new input has to
+/// wait rather than race the rewrite.
+#[tokio::test(flavor = "current_thread")]
+async fn a_history_reset_in_progress_refuses_new_input_until_it_finishes() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![]), "reset-guard");
+    let mut session = fixture.session;
+    session
+        .history_reset_in_progress
+        .store(true, std::sync::atomic::Ordering::Release);
+    let error = session
+        .enqueue_prompt(
+            "hi",
+            &[],
+            &[],
+            None,
+            "req-reset",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("session history reset is in progress"),
+        "{error}"
+    );
+    // The refusal is the flag, not a permanent state: clearing it admits the
+    // same input.
+    session
+        .history_reset_in_progress
+        .store(false, std::sync::atomic::Ordering::Release);
+    assert!(session
+        .enqueue_prompt(
+            "hi",
+            &[],
+            &[],
+            None,
+            "req-reset",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .is_ok());
+}
+
+/// A session whose journal already failed refuses new input with that failure
+/// instead of accepting work it could not persist.
+#[tokio::test(flavor = "current_thread")]
+async fn a_failed_journal_refuses_new_input_with_its_persistence_failure() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![]), "journal-failed");
+    let mut session = fixture.session;
+    session
+        .broadcaster
+        .fail_persistence("injected journal failure");
+    let error = session
+        .enqueue_prompt(
+            "hi",
+            &[],
+            &[],
+            None,
+            "req-failed",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap_err();
+    let text = format!("{error:#}");
+    assert!(text.contains("injected journal failure"), "{text}");
+    assert!(
+        matches!(
+            error.downcast_ref::<crate::runtime::RunQueueError>(),
+            Some(crate::runtime::RunQueueError::PersistenceUnavailable(_))
+        ),
+        "{text}"
+    );
+    // Nothing was accepted for that request id.
+    assert!(session.scheduler.queued().is_empty());
+}
+
+/// A queued input whose durable receipt cannot be written is not left behind:
+/// the accepted run is cancelled out of the scheduler and the client is told
+/// the store failed, so a retry cannot meet a phantom queue entry.
+#[tokio::test(flavor = "current_thread")]
+async fn a_queue_that_cannot_record_its_receipt_is_not_left_queued() {
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![Script::Stall(vec![text_event("running")])]),
+        "receipt-refused",
+    );
+    let mut session = fixture.session;
+    // The first input takes the lane, so the second one has to be queued —
+    // which is the only path that records a receipt.
+    session
+        .enqueue_prompt(
+            "first",
+            &[],
+            &[],
+            Some("run-first"),
+            "req-first",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    let store = session.session_manager.storage().unwrap().clone();
+    store
+        .db
+        .call(|db| {
+            db.execute_batch(
+                "CREATE TRIGGER refuse_receipt BEFORE INSERT ON queued_run_receipts \
+                 BEGIN SELECT RAISE(ABORT,'injected receipt failure'); END;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let error = session
+        .enqueue_prompt(
+            "second",
+            &[],
+            &[],
+            Some("run-second"),
+            "req-second",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap_err();
+    let text = format!("{error:#}");
+    assert!(text.contains("injected receipt failure"), "{text}");
+    assert!(
+        matches!(
+            error.downcast_ref::<crate::runtime::RunQueueError>(),
+            Some(crate::runtime::RunQueueError::PersistenceUnavailable(_))
+        ),
+        "{text}"
+    );
+    assert!(
+        session.scheduler.queued().is_empty(),
+        "the input whose receipt failed must not stay queued"
+    );
+    assert!(session
+        .session_manager
+        .queued_receipt("s1", "req-second")
+        .unwrap()
+        .is_none());
+    // A store that accepts receipts again admits the same input.
+    store
+        .db
+        .call(|db| {
+            db.execute_batch("DROP TRIGGER refuse_receipt")?;
+            Ok(())
+        })
+        .unwrap();
+    let ack = session
+        .enqueue_prompt(
+            "second",
+            &[],
+            &[],
+            Some("run-second"),
+            "req-second",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    assert_eq!(ack.run_id, "run-second");
+    // A queued input always carries its durable receipt; a running one does not
+    // need one, because the scheduler itself owns it.
+    assert_eq!(
+        session
+            .session_manager
+            .queued_receipt("s1", "req-second")
+            .unwrap()
+            .is_some(),
+        ack.accepted_state == crate::runtime::RunAcceptedState::Queued,
+        "receipt presence must match the accepted state"
+    );
+}
+
+/// A provider failure ends the run as an `error` terminal, and that terminal is
+/// announced on the same frame that carries the state, the token usage and the
+/// duration — clients that joined late still learn how the run ended.
+///
+/// The separate `error` *event* is not part of this path: a provider failure is
+/// folded into the terminal state, so the contract asserted here is "exactly one
+/// terminal frame, no error frame".
+#[tokio::test(flavor = "current_thread")]
+async fn a_failed_run_broadcasts_a_single_terminal_frame_with_its_usage() {
+    let provider = ScriptedProvider::new(vec![Script::Fail("upstream is down".to_string())]);
+    let fixture = run_fixture(provider, "error-events");
+    let mut session = fixture.session;
+    session.set_auto_retry(false);
+    let mut receiver = session.broadcaster.subscribe();
+    let _ = session.prompt("hi", &[], &[], None, None);
+    wait_for_run_end(&session).await;
+
+    let events: Vec<_> = std::iter::from_fn(|| receiver.try_recv().ok()).collect();
+    let terminals: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == "agent_end")
+        .collect();
+    assert_eq!(
+        terminals.len(),
+        1,
+        "one terminal frame: {:?}",
+        kinds(&events)
+    );
+    let data: serde_json::Value = serde_json::from_str(&terminals[0].data).unwrap();
+    assert_eq!(data["state"], crate::session::RUN_STATE_ERROR);
+    assert!(data["usage"]["output_tokens"].is_number(), "{data}");
+    assert!(data["duration_ms"].is_number(), "{data}");
+    // The run started and was announced before it failed.
+    let kinds = kinds(&events);
+    assert_eq!(kinds.first().map(String::as_str), Some("user_message"));
+    assert!(kinds.contains(&"agent_start".to_string()), "{kinds:?}");
+    assert!(
+        !kinds.contains(&"error".to_string()),
+        "a provider failure is folded into the terminal state: {kinds:?}"
+    );
+}
+
+/// The event kinds of a captured stream, for failure messages.
+fn kinds(events: &[crate::rpc::SseEvent]) -> Vec<String> {
+    events
+        .iter()
+        .map(|event| event.event_type.clone())
+        .collect()
+}
+
+/// Superseding a queued input whose receipt cannot be cancelled must not leave
+/// the successor behind: the replacement run is cancelled too and the client is
+/// told the store failed.
+#[tokio::test(flavor = "current_thread")]
+async fn a_supersede_whose_receipt_cannot_be_cancelled_leaves_no_successor() {
+    let provider = ScriptedProvider::new(vec![Script::Stall(vec![text_event("running")])]);
+    let fixture = run_fixture(provider, "supersede-refused");
+    let mut session = fixture.session;
+    session
+        .enqueue_prompt(
+            "first",
+            &[],
+            &[],
+            Some("run-first"),
+            "req-first",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    // A queued input with its durable receipt — this is the one that the
+    // superseding request has to cancel.
+    let queued = session
+        .enqueue_prompt(
+            "second",
+            &[],
+            &[],
+            Some("run-second"),
+            "req-second",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    assert_eq!(
+        queued.accepted_state,
+        crate::runtime::RunAcceptedState::Queued
+    );
+    let store = session.session_manager.storage().unwrap().clone();
+    store
+        .db
+        .call(|db| {
+            db.execute_batch(
+                "CREATE TRIGGER refuse_receipt_cancel BEFORE UPDATE ON queued_run_receipts \
+                 BEGIN SELECT RAISE(ABORT,'injected receipt cancel failure'); END;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    let error = session
+        .enqueue_prompt(
+            "third",
+            &[],
+            &[],
+            Some("run-third"),
+            "req-third",
+            crate::runtime::BusyPolicy::SupersedeSession,
+        )
+        .unwrap_err();
+    let text = format!("{error:#}");
+    assert!(text.contains("injected receipt cancel failure"), "{text}");
+    assert!(
+        matches!(
+            error.downcast_ref::<crate::runtime::RunQueueError>(),
+            Some(crate::runtime::RunQueueError::PersistenceUnavailable(_))
+        ),
+        "{text}"
+    );
+    // Neither the superseded input nor its replacement may stay queued.
+    let queued = session.scheduler.queued();
+    assert!(
+        queued.iter().all(|run| run.run_id != "run-third"),
+        "the refused successor must be cancelled: {:?}",
+        queued
+            .iter()
+            .map(|run| run.run_id.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        queued.iter().all(|run| run.run_id != "run-second"),
+        "the superseded input must be cancelled too"
+    );
+}
+
+// ─── the legacy (non-segmented) conversation path ──────────────────────────
+
+/// A conversation whose storage format is the plain transcript, with the
+/// format selected **before** the session configures its journal: the
+/// broadcaster reads the format once and never reconsiders it, so binding it
+/// afterwards would silently keep the canonical path under test.
+fn run_fixture_legacy(provider: Arc<dyn LLMProvider>, name: &str, session_id: &str) -> RunFixture {
+    let dir = test_path(name);
+    let workspace = dir.join("ws");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let manager = Arc::new(crate::session::Manager::new(dir.join("sessions")));
+    manager
+        .storage()
+        .unwrap()
+        .bind_legacy_events(session_id)
+        .unwrap();
+    let agent_loop = Loop::new(provider, "mock").with_tools(coding_tools());
+    let session = crate::rpc::ServerSession::new_with_queue_budget(
+        session_id.to_string(),
+        Arc::new(tokio::sync::RwLock::new(agent_loop)),
+        manager,
+        workspace.to_string_lossy().as_ref(),
+        Arc::new(crate::rpc::SseBroadcaster::new()),
+        crate::rpc::ApprovalGate::default(),
+        Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
+        Arc::new(crate::runtime::GlobalQueueBudget::defaults()),
+    );
+    RunFixture { workspace, session }
+}
+
+/// A legacy conversation writes each message straight into the transcript and
+/// keeps the session's provenance on the run's own `session_info` entry — the
+/// canonical path deliberately drops `source_meta` (a stream run has no place
+/// for it), so this is the only branch that carries it forward.
+#[tokio::test(flavor = "current_thread")]
+async fn a_legacy_run_writes_plain_transcript_entries_and_keeps_its_provenance() {
+    let provider = ScriptedProvider::new(vec![text_turn("legacy answer")]);
+    let mut fixture = run_fixture_legacy(provider, "legacy-run", "leg-run");
+    let session = &mut fixture.session;
+    session.created_by = "desktop".to_string();
+    session.creator_id = "device-1".to_string();
+    session.source_meta = serde_json::json!({"threadId": "thread-1"});
+
+    session
+        .prompt("hello", &[], &[], Some("run-legacy"), None)
+        .unwrap();
+    wait_for_run_end(session).await;
+
+    assert!(
+        !session.broadcaster.uses_segmented_storage(),
+        "the fixture must exercise the plain transcript path"
+    );
+
+    let loaded = session.session_manager.load("leg-run").unwrap();
+    let info = loaded
+        .entries
+        .iter()
+        .rev()
+        .find(|entry| entry.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO)
+        .and_then(|entry| entry.content.clone())
+        .expect("the run wrote its own session_info entry");
+    assert_eq!(info["created_by"], "desktop", "{info}");
+    assert_eq!(info["creator_id"], "device-1", "{info}");
+    assert_eq!(info["source_meta"]["threadId"], "thread-1", "{info}");
+
+    // The answer is a plain assistant entry: no stream staging on this path.
+    let answer = loaded
+        .entries
+        .iter()
+        .find(|entry| entry.role == "assistant")
+        .expect("the answer was persisted");
+    assert_eq!(answer.entry_type, crate::session::ENTRY_TYPE_ASSISTANT);
+    let rendered = answer
+        .content
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    assert!(rendered.contains("legacy answer"), "{rendered}");
+}
+
+/// A pre-block-array transcript recorded a run's id inside the entry **content**
+/// rather than the journal, so a replayed `run_id` has to be recognised by
+/// scanning the transcript — there is no per-run journal row to ask.
+#[tokio::test(flavor = "current_thread")]
+async fn a_legacy_transcript_answers_a_replayed_run_id_without_a_journal() {
+    let provider = ScriptedProvider::new(vec![text_turn("must not run")]);
+    let mut fixture = run_fixture_legacy(provider, "legacy-dup", "leg-dup");
+    let session = &mut fixture.session;
+    session
+        .session_manager
+        .storage()
+        .unwrap()
+        .replace(
+            "leg-dup",
+            vec![
+                serde_json::json!({"id":"legacy-info","type":"session_info","timestamp":"2024-01-01T00:00:00Z","content":{"cwd":".","model":"mock"}}),
+                serde_json::json!({"id":"legacy-answer","type":"assistant","role":"assistant","timestamp":"2024-01-01T00:00:01Z","content":{"run_id":"run-legacy","text":"old answer"}}),
+            ],
+        )
+        .unwrap();
+
+    // The scan lives on the *enqueue* path: a directly submitted prompt never
+    // carries a client request id, so only a queued admission is deduplicated.
+    let error = session
+        .enqueue_prompt(
+            "hello",
+            &[],
+            &[],
+            Some("run-legacy"),
+            "req-legacy",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .expect_err("the transcript already holds that run id");
+    assert!(
+        error
+            .to_string()
+            .contains("already exists in this Agent instance"),
+        "{error}"
+    );
+    assert!(error.to_string().contains("run-legacy"), "{error}");
+    // Nothing was admitted: no run started and the script is untouched.
+    assert!(session.runtime.snapshot().is_none());
+}
+
+/// A run whose event journal dies while it is in flight is **abandoned as
+/// failed**: the runtime leaves `Running` for `PersistenceDegraded`, the live
+/// client is told persistence failed, and the terminal frame says `error` — on
+/// the unpersisted path, because a journal that just refused a commit would
+/// drop an ordinary broadcast before any subscriber saw it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_run_whose_event_journal_dies_mid_way_is_abandoned_as_failed() {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let provider = ScriptedProvider::new(vec![Script::Gated(
+        gate.clone(),
+        vec![text_event("late answer"), finish_event()],
+    )]);
+    let mut fixture = run_fixture_legacy(provider, "journal-dies", "leg-journal");
+    let session = &mut fixture.session;
+    let mut receiver = session.broadcaster.subscribe();
+    session
+        .prompt("hello", &[], &[], Some("run-journal"), None)
+        .unwrap();
+
+    // The run is parked before the body it will send, so the damage lands after
+    // admission and before the batch that carries the answer.
+    session
+        .session_manager
+        .test_execute("DROP TABLE run_events");
+    gate.notify_one();
+
+    let mut degraded = false;
+    for _ in 0..300 {
+        if session
+            .runtime
+            .snapshot()
+            .is_some_and(|snapshot| snapshot.phase == crate::runtime::RunPhase::PersistenceDegraded)
+        {
+            degraded = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        degraded,
+        "a run that cannot persist must leave Running, not hold it: {:?}",
+        session.runtime.snapshot().map(|snapshot| snapshot.phase)
+    );
+
+    let events: Vec<_> = std::iter::from_fn(|| receiver.try_recv().ok()).collect();
+    let kinds: Vec<&str> = events
+        .iter()
+        .map(|event| event.event_type.as_str())
+        .collect();
+    let failure = events
+        .iter()
+        .find(|event| event.event_type == "persistence_error")
+        .unwrap_or_else(|| panic!("no persistence_error frame in {kinds:?}"));
+    let reported: serde_json::Value = serde_json::from_str(&failure.data).unwrap();
+    assert!(reported["error"].is_string(), "{reported}");
+
+    let terminal = events
+        .iter()
+        .rev()
+        .find(|event| event.event_type == "agent_end")
+        .unwrap_or_else(|| panic!("no terminal frame in {kinds:?}"));
+    let data: serde_json::Value = serde_json::from_str(&terminal.data).unwrap();
+    assert_eq!(data["state"], crate::session::RUN_STATE_ERROR, "{data}");
+    assert!(
+        data["error"]
+            .as_str()
+            .is_some_and(|text| text.starts_with("Session persistence failed:")),
+        "{data}"
+    );
+    assert!(
+        session.broadcaster.persistence_error().is_some(),
+        "the broadcaster keeps the failure the client was told about"
     );
 }

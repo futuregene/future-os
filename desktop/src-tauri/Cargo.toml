@@ -40,8 +40,14 @@ gui = [
 # it for every shipped binary; sources outside the Tauri CLI (`make
 # install-local`, a bare `cargo build --profile local`) have to ask for it.
 custom-protocol = ["tauri/custom-protocol"]
+# Test-only seams (`src/test_support.rs`), **not** in `default`: the module and its
+# symbols do not exist in a shipped build. The coverage lane turns it on
+# (`cargo llvm-cov -p futureos --features test-support …`) because one IPC wrapper's
+# body needs the real `Wry` handle the running app publishes.
+test-support = []
 
 [dev-dependencies]
+tracing-subscriber.workspace = true
 future-host = { path = "../../host", features = ["test-support"] }
 future-remote-server = { path = "../../packages/remote-server", features = ["test-support"] }
 future-remote-client = { path = "../../packages/remote-client", features = ["test-support"] }
@@ -63,6 +69,8 @@ tauri-build = { version = "2.7.4", features = [], optional = true }
 # compile without pulling in GTK/WebKit through the dev dependency graph.
 
 [dependencies]
+tracing.workspace = true
+future-logging = { path = "../../packages/logging" }
 future-host = { path = "../../host" }
 # Shared agent wire contract (proto codegen + typed/JSON decode; typed-RPC
 # milestone). Path dep: this crate lives in the root cargo workspace, and
@@ -83,7 +91,7 @@ future-app-workspaces = { path = "../../packages/app-workspaces" }
 future-tasks = { path = "../../orchestration/tasks" }
 tauri = { version = "2.12.5", features = ["protocol-asset", "test"], optional = true }
 tauri-plugin-shell = { version = "2.5.0", optional = true }
-tauri-plugin-updater = { version = "2.14.0", optional = true }
+tauri-plugin-updater = { version = "2.14.1", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 semver = "1"
@@ -182,3 +190,12 @@ objc2-foundation = { version = "0.3.2", optional = true, features = ["NSData", "
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "6.0", default-features = false, features = ["tokio", "proxy"], optional = true }
+# WebKitGTK hands the webview an empty `DataTransfer` for a clipboard image, so
+# the composer reads the pasteboard image through arboard instead (see
+# `commands/files.rs::read_native_clipboard_image`). `image-data` is enabled
+# only here: macOS/Windows webviews already deliver the image as a pasted `File`,
+# and arboard's image support would pull an extra image-format dependency (tiff)
+# into those graphs for a path they never take.
+arboard = { version = "3.6", default-features = false, features = [
+    "image-data",
+], optional = true }

@@ -66,11 +66,6 @@ export function isCompletedWithoutReply(message: AgentMessage): boolean {
     && !message.activityItems?.some(item => item.kind !== "thinking");
 }
 
-export function canContinueResponse(message: AgentMessage): boolean {
-  const { key } = classifyAgentError(message.runError ?? "");
-  return !["agent:failure.modelPaused", "agent:failure.contentFilter", "agent:failure.softwareError"].includes(key);
-}
-
 export async function updateRunStatusSafe(
   runId: string,
   status: "completed" | "failed",

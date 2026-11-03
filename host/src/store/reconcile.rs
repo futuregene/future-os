@@ -19,13 +19,16 @@ pub async fn reconcile_orphan_sessions() -> Result<usize, crate::Error> {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
             Err(error) => {
-                eprintln!("FutureOS: orphan-session reconcile skipped: {error}");
+                tracing::warn!(event = "reconcile_orphan_sessions", error = %error,"FutureOS: orphan-session reconcile skipped: {error}");
                 return Ok(0);
             }
         }
     }
     let Some(live_sessions) = live_sessions else {
-        eprintln!("FutureOS: orphan-session reconcile skipped: agent unreachable");
+        tracing::debug!(
+            event = "reconcile_orphan_sessions",
+            "FutureOS: orphan-session reconcile skipped: agent unreachable"
+        );
         return Ok(0);
     };
 
@@ -38,7 +41,7 @@ pub async fn reconcile_orphan_sessions() -> Result<usize, crate::Error> {
         let presence = match crate::agent_bridge::session_presence(ids).await {
             Ok(presence) => presence,
             Err(error) => {
-                eprintln!("FutureOS: durable session reconcile deferred: {error}");
+                tracing::warn!(event = "reconcile_orphan_sessions", error = %error,"FutureOS: durable session reconcile deferred: {error}");
                 break;
             }
         };
@@ -56,7 +59,9 @@ pub async fn reconcile_orphan_sessions() -> Result<usize, crate::Error> {
                         &presence.database_id,
                         &presence.restore_generation,
                     ) {
-                        eprintln!("FutureOS: conversation source binding retained: {error}");
+                        tracing::warn!(event = "reconcile_orphan_sessions", error = %error,
+                            "FutureOS: conversation source binding retained: {error}"
+                        );
                     }
                 }
                 Some("deleted")
@@ -71,7 +76,7 @@ pub async fn reconcile_orphan_sessions() -> Result<usize, crate::Error> {
         }
     }
     if orphans != 0 && removed == 0 {
-        eprintln!("FutureOS: {} conversation source(s) are missing; preserving local history for recovery", orphans);
+        tracing::warn!(event = "reconcile_orphan_sessions","FutureOS: {} conversation source(s) are missing; preserving local history for recovery", orphans);
     }
     Ok(removed)
 }
@@ -100,7 +105,7 @@ pub async fn reconcile_undeliverable_delete_intents() -> Result<usize, crate::Er
             Err(error) => {
                 // Nothing in this pass can be judged without the Agent's own
                 // catalogue; the next one re-runs it.
-                eprintln!("FutureOS: undeliverable delete reconcile deferred: {error}");
+                tracing::warn!(event = "reconcile_undeliverable_delete_intents", error = %error,"FutureOS: undeliverable delete reconcile deferred: {error}");
                 break;
             }
         };
@@ -116,7 +121,7 @@ pub async fn reconcile_undeliverable_delete_intents() -> Result<usize, crate::Er
         released += super::release_undeliverable_agent_session_deletes(&present)?;
     }
     if released > 0 {
-        eprintln!(
+        tracing::info!(event = "reconcile_undeliverable_delete_intents", released = released,
             "FutureOS: released {released} undeliverable deletion intent(s); the next import may mirror those conversations again"
         );
     }
@@ -157,11 +162,13 @@ pub async fn reconcile_empty_conversations() -> Result<usize, crate::Error> {
             Err(crate::Error::AgentUnavailable(error)) => {
                 // Nothing left in this pass can be judged while the Agent is
                 // away; the next one re-runs it.
-                eprintln!("FutureOS: empty-conversation reconcile stopped: {error}");
+                tracing::warn!(event = "reconcile_empty_conversations", error = %error,"FutureOS: empty-conversation reconcile stopped: {error}");
                 break;
             }
             Err(error) => {
-                eprintln!("FutureOS: empty-conversation probe failed for {session_id}: {error}")
+                tracing::warn!(event = "reconcile_empty_conversations", session_id = %session_id, error = %error,
+                    "FutureOS: empty-conversation probe failed for {session_id}: {error}"
+                )
             }
         }
     }
@@ -209,6 +216,71 @@ mod tests {
         assert_eq!(deleted, 0);
         assert!(crate::store::get_thread("t_none").expect("get").is_some());
         assert!(crate::store::get_thread("t_sess").expect("get").is_some());
+    }
+
+    /// Each binding is answered for on its own: a deletion the Agent confirms
+    /// against the same database it reports removes that conversation, and a
+    /// status this pass does not model leaves its row exactly as it was.
+    #[tokio::test]
+    async fn reconcile_answers_each_binding_from_the_agent_presence() {
+        let (_home, conn) = guarded_conn("reconcile_binding_status");
+        seed_full(&conn);
+        conn.execute_batch(
+            "UPDATE threads SET agent_session_id = NULL WHERE id = 't_blank';
+             INSERT INTO threads (
+                 id, workspace_id, mode, title, agent_session_id, created_at, updated_at
+             ) VALUES ('t_other', 'ws1', 'chat', 'T', 'sess_other', 1, 1);",
+        )
+        .expect("one bound thread per session, and no blank binding");
+        drop(conn);
+        record_thread_source("t_sess", "sess_live", "database-live", "generation")
+            .expect("bind the source the Agent reports");
+        let mock = mock_agent();
+        mock.default_data(
+            "list_session_ids",
+            serde_json::json!({"ids":["sess_live","sess_other"]}),
+        );
+        mock.default_data(
+            "get_session_presence",
+            serde_json::json!({"databaseId":"database-live","restoreGeneration":"generation",
+            "sessions":[
+                {"sessionId":"sess_live","status":"deleted"},
+                {"sessionId":"sess_other","status":"missing"}
+            ]}),
+        );
+
+        let removed = reconcile_orphan_sessions().await.expect("reconcile");
+
+        assert_eq!(removed, 1, "only the confirmed deletion is removed");
+        assert!(
+            get_thread("t_sess").expect("get").is_none(),
+            "the Agent's deletion takes the conversation with it"
+        );
+        assert!(
+            get_thread("t_other").expect("get").is_some(),
+            "a status this pass does not model is not a deletion"
+        );
+    }
+
+    /// A presence answer that does not arrive defers the whole batch: nothing is
+    /// removed on a question the Agent never answered.
+    #[tokio::test]
+    async fn reconcile_defers_a_batch_whose_presence_read_fails() {
+        let (_home, conn) = guarded_conn("reconcile_presence_failure");
+        seed_full(&conn);
+        conn.execute_batch("UPDATE threads SET agent_session_id = NULL WHERE id = 't_blank';")
+            .expect("one binding to ask about");
+        drop(conn);
+        record_thread_source("t_sess", "sess_live", "database-live", "generation")
+            .expect("bind the source the Agent reports");
+        let mock = mock_agent();
+        mock.default_data("list_session_ids", serde_json::json!({"ids":["sess_live"]}));
+        mock.reject_default("get_session_presence", "presence is unavailable");
+
+        let removed = reconcile_orphan_sessions().await.expect("reconcile");
+
+        assert_eq!(removed, 0, "a failed presence read removes nothing");
+        assert!(get_thread("t_sess").expect("get").is_some());
     }
 
     #[tokio::test]

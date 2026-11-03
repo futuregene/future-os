@@ -84,6 +84,14 @@
       "x-ts-type": "string",
       "type": "string"
     },
+    "busyPolicy": {
+      "x-rust-name": "busy_policy",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "prompt: what a send means while this session already has a run in flight (enqueue_if_busy | enqueue_coalescing | supersede_session). Absent keeps the refusal legacy clients expect."
+    },
     "entryId": {
       "x-rust-name": "entry_id",
       "x-rust-type": "String",
@@ -348,6 +356,22 @@
       "x-ts-type": "string",
       "type": "string"
     },
+    "deviceVersion": {
+      "x-rust-name": "device_version",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "`secure_ready`: the build the client is running, as its own opaque string. Optional and additive — an older client sends none and is reported as an unknown version, never rejected. Nothing on this side compares it against a minimum; it exists so a machine can name what is talking to it, which is the one thing neither end could otherwise learn (the phone's package version, the desktop's release tag)."
+    },
+    "syncStage": {
+      "x-rust-name": "sync_stage",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "`client_presence`: the reconcile stage this client last failed at (`get_state`, `history`, `replay`). Rides the beat the client already sends, so where a stuck conversation died reaches the machine without a new command or connection. Absent (or empty) means \"nothing to report\", which is what a healthy client and an older client both say."
+    },
     "mimeType": {
       "x-rust-name": "mime_type",
       "x-rust-type": "String",
@@ -487,6 +511,24 @@
       "x-ts-type": "string",
       "type": "string",
       "description": "Additive. client_disconnect: why the client is leaving. `disconnected` is the user's own stop — the device gives up the machine and a device that is actually there may take it. `background` only says the client is off screen (a suspended app), so the device keeps the machine and is presumed back when it speaks again. An older host ignores the command (it names no reply, and an unhandled type only reaches its business dispatcher), so a new client on an old host keeps the old reading."
+    },
+    "contentRequest": {
+      "x-rust-name": "content_request",
+      "x-rust-type": "Option<serde_json::Value>",
+      "default": null,
+      "x-ts-type": "{ databaseId: string; restoreGeneration: string; epoch: number; cursor: number; field: string; offset?: number; maxBytes?: number }",
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "get_event_content_range: session/run scoped immutable event field and UTF-8 page coordinates."
+    },
+    "fusionSettings": {
+      "x-rust-name": "fusion_settings",
+      "x-rust-type": "serde_json::Value",
+      "default": null,
+      "x-ts-type": "Record<string, unknown>",
+      "description": "Host-owned Fusion settings patch with expected_revision."
     }
   },
   "$defs": {

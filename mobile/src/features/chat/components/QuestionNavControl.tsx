@@ -10,12 +10,12 @@ import { layout, spacing } from "../../../theme/tokens";
 import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
 
 /**
- * "↑ previous question / ↓ next passage" for a long transcript.
+ * "↑ previous question / ↓ next question" for a long transcript.
  *
- * The pair is deliberately not symmetric: ↑ walks the reader's own prompts,
- * skipping whatever answer lies between two of them, while ↓ takes the next item
- * below of either kind — so ↓ reads as the transcript written out, input,
- * output, input… (see `useQuestionNav`).
+ * Both directions walk the reader's own prompts, and only those: a press is
+ * asking what else was asked, so it never comes to rest inside an answer — a
+ * long reply costs one press to pass, not one per screenful (see
+ * `useQuestionNav`).
  *
  * Two round buttons stacked on the right edge (the chosen of four options on the
  * style sheet): at 44px each they are the platform's minimum touch target, and

@@ -175,7 +175,7 @@ where
         Ok(balance) => BalancePass::Balance(balance),
         Err(error) => {
             let rejected = crate::future_login::is_auth_rejection(&error);
-            eprintln!("FutureOS scheduled balance refresh failed: {error}");
+            tracing::warn!(event = "balance_pass", error = %error,"FutureOS scheduled balance refresh failed: {error}");
             if rejected {
                 BalancePass::AccountChanged
             } else {
@@ -209,12 +209,15 @@ async fn refresh_future_catalogue_if_signed_in() {
         return;
     }
     match crate::agent_bridge::sync_future_models().await {
-        Ok(result) if result.synced => eprintln!(
+        Ok(result) if result.synced => tracing::debug!(
+            event = "refresh_future_catalogue_if_signed_in",
             "FutureOS: Future model catalogue refreshed ({} models).",
             result.model_count
         ),
         Ok(_) => {}
-        Err(error) => eprintln!("FutureOS scheduled model refresh failed: {error}"),
+        Err(error) => {
+            tracing::warn!(event = "refresh_future_catalogue_if_signed_in", error = %error,"FutureOS scheduled model refresh failed: {error}")
+        }
     }
 }
 
@@ -260,6 +263,35 @@ mod tests {
         assert_eq!(APP_UPDATE_INTERVAL, Duration::from_secs(86_400));
         assert_eq!(FUTURE_BALANCE_INTERVAL, Duration::from_secs(3_600));
         assert_eq!(FUTURE_MODELS_INTERVAL, Duration::from_secs(86_400));
+    }
+
+    /// The three intervals above are only policy if the global jobs are built
+    /// from them: a job constructed through its lazy must report its first run
+    /// one configured interval out, never a smaller default.
+    #[test]
+    fn the_global_jobs_are_built_on_the_configured_intervals() {
+        // Dereference every lazy before taking `now`: each job anchors its
+        // first run at construction, which is later than anything measured
+        // before it.
+        let jobs = [
+            (&*APP_UPDATE_JOB, APP_UPDATE_INTERVAL),
+            (&*FUTURE_BALANCE_JOB, FUTURE_BALANCE_INTERVAL),
+            (&*FUTURE_MODELS_JOB, FUTURE_MODELS_INTERVAL),
+        ];
+        let now = Instant::now();
+        for (job, interval) in jobs {
+            let due = job.next_due();
+            assert!(
+                due > now,
+                "the first run is one interval out: due in {:?}",
+                due - now
+            );
+            assert!(
+                due <= now + interval,
+                "a job must not wait longer than its configured interval: due in {:?}, interval {interval:?}",
+                due - now
+            );
+        }
     }
 
     /// A job's own delegation must agree with the schedule it wraps — the
