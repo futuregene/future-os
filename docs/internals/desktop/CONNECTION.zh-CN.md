@@ -172,8 +172,15 @@ type=get_session_entries session=… elapsed=…ms exec=…ms send=…ms`，二�
 往返数据库的次数——每个字段、每个块、每条正文各算一次，工具密集的 entry 要几十次，一页上万次量级。
 `db_job_ms` 是这些闭包里的实际工作量（即 `readerJob`/`readerQueue` 在进程级统计的那部分，这里按页归属）。
 `db_handoff_ms` 是往返里的其余部分：等池子里的读连接、把作业交给阻塞池、再唤醒回异步任务。
-它不被任何其它指标覆盖，且随进程内其它工作变长——所以同一页在裸 Agent 里 10 ms、在桌面内嵌的
-Agent 里 42 ms。
+`db_reads` 这一项最后变成了一份缺陷报告：一页过去是**每个字段、每个块、每条正文各一次**往返，
+109 条 entry 共 1,426 次——因为每一片都要单独读取、单独限界、单独校验。现在一页**只一次**
+（`db_reads = 1`）：header、块、引用、正文四句话在该页本就持有的读租约里一次取回，JSON 在 Rust 侧组装；
+同一页在桌面进程里从 39–56 ms 降到 5 ms，而字节完全不变（两个会话、11–399 条 entry 的规范化哈希
+逐字一致）。`db_job_ms` 是这次读取里的作业，`db_handoff_ms` 是其余部分，两者现在都是个位数。
+
+一页读取也是**全有或全无**：四句话共用一个 savepoint，定位之后某条 entry 消失会让整页失败，
+而不是悄悄少一条——悄悄少一条会被读成“本该没有的历史”，那恰恰是读取器最不能凭空发明的东西；
+用例 `a_page_read_fails_as_a_whole_when_one_entry_disappeared` 把这一点钉住。
 
 **凭证与归属。** 客户端的凭证簿与宿主侧完全分开：
 `~/.future/remote_peers.json`（本次新增；宿主侧的 `remote_pairing.json` 不变）。

@@ -621,15 +621,22 @@ no boundary to measure.
 one row per history page read — `history_page_read_completed` at `debug`, and
 `history_page_read_slow` when it takes a second or more — carrying three fields
 beyond `elapsed_ms`: `db_reads`, `db_job_ms`, `db_handoff_ms`. `db_reads` counts
-the round trips the page made to the database, which is one per field, block and
-content body it materialises, so a tool-heavy entry costs dozens and a page
-costs thousands. `db_job_ms` is the work inside those closures — what
-`readerJob`/`readerQueue` already report process-wide, here attributed to one
-page. `db_handoff_ms` is everything else in those round trips: waiting for a
-pooled read connection, the handoff into the blocking pool and the wake-up back
-into the async task. It is invisible to every other metric, and it grows with
-whatever else the process is doing, which is why the same page can read in 10 ms
-from a bare Agent and 42 ms from the desktop's embedded one.
+the round trips the page made to the database, which is what turned the last of
+them into a bug report: a page used to open one round trip per field, block and
+content body — 1,426 of them for 109 entries — because every piece was read,
+bounded and checked on its own. A page is now **one** read (`db_reads = 1`):
+headers, blocks, references and bodies come back in four statements inside the
+lease the page already held, and the values are assembled in Rust outside it.
+That took a 109-entry page from 39–56 ms to 5 ms on the desktop process, with the
+JSON unchanged byte for byte (two conversations, 11–399 entries, canonical
+hash). `db_job_ms` is the work inside that read; `db_handoff_ms` is the rest of
+the round trip — pool wait, handoff, wake-up — and both are now single-digit.
+
+A page read is also **all or nothing**: the four statements share one savepoint,
+so an entry that disappeared between locating the page and reading it fails the
+whole read instead of shortening the page. A page that quietly dropped an entry
+would read as history that never existed, which is the one outcome a reader must
+not invent; `a_page_read_fails_as_a_whole_when_one_entry_disappeared` pins it.
 
 **Credentials and ownership.** The client's credential book is entirely
 separate from the host's: `~/.future/remote_peers.json` (new; the host side's

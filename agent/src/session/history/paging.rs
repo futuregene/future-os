@@ -355,6 +355,33 @@ fn materialize_display_page(
     let mut next = page.next_offset;
     let mut more = page.has_more;
     let row_count = page.rows.len();
+    // Every canonical row this page will materialise, in one database read
+    // instead of one per entry (see `Snapshot::display_page`). Rows whose body
+    // the fragment cache already holds are left out, so a warm page still costs
+    // no database round trip at all.
+    let mut materialised = std::collections::HashMap::new();
+    if let Some(snapshot) = &page.snapshot {
+        let mut missing: Vec<reader::Entry> = Vec::new();
+        for row in &page.rows {
+            let Some(entry) = row.canonical_entry.as_ref() else {
+                continue;
+            };
+            let key = snapshot.render_key(entry, &row.index_payload);
+            if cache.is_some_and(|cache| cache.lock().get(&key).is_some()) {
+                continue;
+            }
+            missing.push(entry.clone());
+        }
+        if !missing.is_empty() {
+            let values = snapshot.display_page(
+                store.ok_or_else(|| anyhow::anyhow!("canonical page has no reader"))?,
+                &missing,
+            )?;
+            for (entry, value) in missing.iter().zip(values) {
+                materialised.insert(entry.position, value);
+            }
+        }
+    }
     for DisplayPageRow {
         ordinal,
         index_payload: overlay,
@@ -378,13 +405,9 @@ fn materialize_display_page(
             let canonical = canonical_entry.is_some();
             let entry = if let Some(locator) = canonical_entry {
                 Some(serde_json::from_value(
-                    page.snapshot
-                        .as_ref()
-                        .ok_or_else(|| anyhow::anyhow!("canonical page has no snapshot"))?
-                        .display(
-                            store.ok_or_else(|| anyhow::anyhow!("canonical page has no reader"))?,
-                            &locator,
-                        )?,
+                    materialised.remove(&locator.position).ok_or_else(|| {
+                        anyhow::anyhow!("page row was not materialised with its page")
+                    })?,
                 )?)
             } else if overlay["kind"] == "session_info" {
                 None
