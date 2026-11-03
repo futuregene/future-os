@@ -1,3 +1,29 @@
+// Flake note (2026-11-03, unreproduced).
+//
+// This suite once reported `29 passed; 1 failed` in the run immediately after a
+// `cargo fmt` rebuilt the test binary in a worktree that was also running a
+// measurement agent; the failing test's name was not captured. Thirty runs
+// afterwards were green — 20 with the default parallel harness and 10 with
+// `--test-threads=1`, all `30 passed` — so nothing here reproduces on demand,
+// and nothing was changed on the strength of one unnamed failure.
+//
+// If it recurs, read the test name the harness prints before anything else, then
+// look at these three, which depend on real timing rather than stored state:
+//
+//   * `a_concurrent_append_never_produces_an_inconsistent_snapshot` — a background
+//     appender racing the fold. Fails as a snapshot whose events disagree with
+//     the journal, not as a timeout.
+//   * `transactions::a_pinned_reader_blocks_the_checkpoint_but_not_the_reclamation`
+//     — asserts a reader is still in flight when the checkpointer runs. Fails as
+//     the checkpoint succeeding.
+//   * `scheduling::a_start_folds_the_backlog_and_a_failed_fold_is_not_retried` —
+//     watches a retry clock. Fails as an extra or missing attempt.
+//
+// The snapshot cache added for replay reads is *not* a suspect for this suite:
+// `run_snapshot_cache` is written only from `broadcaster::replay::run_snapshot`,
+// which none of these tests call, and that write is the only one off-thread
+// (`spawn_blocking`); the cache helpers these tests do exercise go through the
+// synchronous `db.call_as` queue.
 use super::*;
 use crate::rpc::SseBroadcaster;
 use serde_json::json;
