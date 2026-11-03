@@ -64,6 +64,11 @@ trusted unsigned test build is blocked, follow its included first-launch note.
 For an unexpected warning on an official signed release, verify the source and
 redownload before overriding security controls.
 
+Quit a running FutureOS before upgrading: both the install script and a manual
+drag-and-drop only replace the `/Applications/FutureOS.app` bundle, and neither
+ends an instance that is already running — it keeps serving the old version until
+you quit it yourself. After the replacement, reopen it with `open -a FutureOS`.
+
 ### Windows
 
 - **Installer:** run the `.exe` and follow the prompts.
