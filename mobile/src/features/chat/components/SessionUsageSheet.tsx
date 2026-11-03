@@ -8,7 +8,7 @@ import {
   View,
 } from "react-native";
 import type { TFunction } from "i18next";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { RemoteSessionUsage } from "../../../remote/types";
 import { layout, radius, spacing } from "../../../theme/tokens";
 import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
@@ -38,6 +38,10 @@ export function SessionUsageSheet({
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
+  // A Modal is its own native window, so a `SafeAreaView` here would resolve no
+  // insets (see `previewInsets.ts`); the provider's context describes the window
+  // the sheet is actually drawn in.
+  const insets = useSafeAreaInsets();
   const priced = usage
     ? usage.costInputCny + usage.costOutputCny + usage.costCacheReadCny + usage.costCacheWriteCny > 0
     : false;
@@ -58,7 +62,14 @@ export function SessionUsageSheet({
 
   return (
     <Modal animationType="slide" onRequestClose={onClose} transparent visible={visible}>
-      <SafeAreaView style={styles.overlay}>
+      <View
+        style={[styles.overlay, {
+          paddingTop: insets.top + layout.gutter,
+          paddingBottom: insets.bottom + layout.gutter,
+          paddingLeft: insets.left + layout.gutter,
+          paddingRight: insets.right + layout.gutter,
+        }]}
+      >
         <Pressable accessible={false} onPress={onClose} style={StyleSheet.absoluteFill} />
         <View accessibilityViewIsModal style={styles.sheet}>
           <View style={styles.header}>
@@ -113,7 +124,7 @@ export function SessionUsageSheet({
             ) : null}
           </ScrollView>
         </View>
-      </SafeAreaView>
+      </View>
     </Modal>
   );
 }
@@ -122,7 +133,6 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   overlay: {
     flex: 1,
     justifyContent: "flex-end",
-    padding: layout.gutter,
     backgroundColor: theme.colors.overlay,
   },
   sheet: {

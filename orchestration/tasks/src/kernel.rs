@@ -550,7 +550,12 @@ fn run_settings_line(task: &Task) -> String {
             // so it is stated with its consequence, not just its name.
             crate::types::SessionPolicy::New => "session=new (fresh conversation per run)",
             crate::types::SessionPolicy::Existing => {
-                "session=existing (one conversation kept across runs, compacted before this one)"
+                // The reused conversation is appended to, never compacted first
+                // (host/src/tasks.rs: "A reused conversation is *not* compacted
+                // first"). Saying "compacted" here told the model its context had
+                // been summarised away, so saying so is the point of the line —
+                // and so is saying it is *not* done.
+                "session=existing (one conversation kept across runs, appended with no pre-run compaction)"
             }
         }
         .to_string(),
@@ -1268,6 +1273,36 @@ mod tests {
         assert!(
             header.contains("model=(app default) | thinking=(app default)"),
             "a task without a model says what it falls back to: {header}"
+        );
+    }
+
+    #[test]
+    fn the_envelope_never_claims_the_reused_conversation_was_compacted() {
+        // h2-C2: the trusted run context is the only place a run learns what its
+        // conversation is, so it must describe what actually happens. Nothing
+        // compacts a reused conversation before a run — the host appends the
+        // prompt directly ("A reused conversation is *not* compacted first",
+        // host/src/tasks.rs) and its own test asserts no compaction request is
+        // made. The line used to read "compacted before this one", which told the
+        // model its earlier context had been summarised away when all of it was
+        // still there.
+        let mut t = task(serde_json::json!({}), TriggerKind::Manual);
+        t.session_policy = SessionPolicy::Existing;
+        let header = compose_envelope_header(&t, crate::types::RunKind::Main, None, None);
+        assert!(
+            !header.to_lowercase().contains("compacted"),
+            "a reused conversation is never compacted before a run: {header}"
+        );
+        assert!(header.contains("session=existing"), "{header}");
+        assert!(
+            header.contains("one conversation kept across runs"),
+            "{header}"
+        );
+        // The negation has to be stated, not merely omitted: "session=existing"
+        // alone leaves the reader free to assume a summarised context.
+        assert!(
+            header.contains("no pre-run compaction"),
+            "the envelope says the context was left alone: {header}"
         );
     }
 

@@ -35,7 +35,11 @@ export interface TerminalServerHandle {
   maxSessions: number;
 }
 
-/** Control-frame payload sent after a replay (`0x00` + JSON on the wire). */
+/**
+ * Control-frame payload sent after a replay. On the wire the frame is the
+ * server's control type byte (`0x00`) followed by this JSON; output frames
+ * carry `0x01` and the PTY's bytes (`desktop/src-tauri/src/terminal/protocol.rs`).
+ */
 export interface TerminalFrameMeta {
   /** Absolute output cursor the client must store and resume from. */
   cursor: number;
