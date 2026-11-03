@@ -27,8 +27,26 @@ pub(crate) fn is_event_rejected(error: &anyhow::Error) -> bool {
 
 /// `bail!` for the deterministic refusals below, so the writer can tell them
 /// apart from a transient SQLite failure without matching on message text.
-fn reject(message: &str) -> anyhow::Error {
+pub(crate) fn reject(message: &str) -> anyhow::Error {
     anyhow::Error::new(EventRejected(message.to_owned()))
+}
+
+/// A canonical batch's only retryable failure is a storage one. Everything else
+/// a batch can fail with — a content gap, a divergent retry, a seal over
+/// different bytes — describes *this* batch's content and reproduces exactly on
+/// every retry. Naming it a refusal is what lets the writer drop that one event
+/// and keep the session's journal live, instead of leaving every later batch
+/// queued behind a poisoned one until the agent restarts.
+pub(crate) fn refusal_unless_storage(error: anyhow::Error) -> anyhow::Error {
+    let storage = error.chain().any(|cause| {
+        cause.downcast_ref::<rusqlite::Error>().is_some()
+            || cause.downcast_ref::<std::io::Error>().is_some()
+    });
+    if storage || is_event_rejected(&error) {
+        error
+    } else {
+        reject(&format!("{error:#}"))
+    }
 }
 
 pub(crate) struct StoredEventRow {

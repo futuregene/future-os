@@ -317,6 +317,48 @@ fn a_live_delta_over_the_text_budget_is_delivered_as_bounded_pieces() {
     assert_eq!(assembled, text, "the pieces must tile the original text");
 }
 
+/// A batch whose content conflicts with what is already durable fails the same
+/// way on every retry. Held as a storage failure it blocked every later batch —
+/// and every cancel, whose run terminal commits through the same journal — so
+/// one bad seal left the session unwritable and unstoppable until a restart.
+/// The journal's contract is the other way round: name it, drop that event, and
+/// keep everything else landing.
+#[test]
+fn a_refused_canonical_seal_is_dropped_instead_of_wedging_the_session() {
+    let (_root, manager, _store) = canonical_store();
+    let broadcaster = SseBroadcaster::new();
+    broadcaster.configure_journal("s", &manager).unwrap();
+    broadcaster.start_run("run".into(), 1);
+    broadcaster.broadcast(SseEvent::new("message_start", json!({"entry_id": "m"})));
+    broadcaster.broadcast(SseEvent::new("text_chunk", json!({"text": "hello"})));
+    broadcaster.flush_journal().unwrap();
+    // The durable body and the producer's rolling digest now disagree, which is
+    // what a seal compares — and what made the seal impossible to commit.
+    manager.test_execute("UPDATE content_objects SET byte_length=byte_length+1");
+    broadcaster.broadcast(SseEvent::new("text_end", json!({})));
+    // A durable session event flushes the batch holding the refusal, as a
+    // status change or a run terminal would.
+    broadcaster.broadcast_session(SseEvent::new(
+        "permission_level_changed",
+        json!({"level": "workspace"}),
+    ));
+    assert_eq!(
+        broadcaster.persistence_error(),
+        None,
+        "one refused seal must not fail the session's journal"
+    );
+    assert_eq!(
+        broadcaster.session_events_since(-1).unwrap().len(),
+        1,
+        "the event after the refusal must still land"
+    );
+    assert_eq!(
+        broadcaster.read_journal("run").unwrap().len(),
+        2,
+        "only the refused seal is dropped; the run's earlier changes stay"
+    );
+}
+
 /// A canonical event whose payload is not JSON never reaches the store *or* a
 /// subscriber: the payload is parsed before the stamping lock is taken, so the
 /// refusal is immediate and recorded on the journal, and no frame the store

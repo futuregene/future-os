@@ -14,6 +14,66 @@ fn store() -> (tempfile::TempDir, SqliteStore) {
     (root, store)
 }
 
+/// A seal whose digest disagrees with the durable body is a fact about this
+/// batch, not a storage failure: every retry reproduces it. Reported as a plain
+/// error it held every later batch behind it — and every cancel, which must
+/// commit a run terminal through the same journal — until the agent restarted.
+#[test]
+fn a_seal_over_different_bytes_is_a_permanent_refusal() {
+    let (_root, store) = store();
+    let text = event(
+        0,
+        "text_chunk",
+        json!({"entry_id":"m","content_key":"m:text:0","content_offset":0,"content_bytes":3,"text":"one"}),
+    );
+    let seal = event(
+        1,
+        "text_end",
+        json!({"entry_id":"m","content_key":"m:text:0","content_offset":3,"content_bytes":0,"content_seal":true}),
+    );
+    let mut writer = Writer::default();
+    writer.persist(&store, "s", [&text]).unwrap();
+    store
+        .db
+        .call(|db| {
+            db.execute("UPDATE content_objects SET byte_length=byte_length+1", [])?;
+            Ok(())
+        })
+        .unwrap();
+    let error = writer.persist(&store, "s", [&seal]).unwrap_err();
+    assert!(
+        crate::session::sqlite_store::is_event_rejected(&error),
+        "a conflicting seal must not be retried forever: {error:#}"
+    );
+}
+
+/// The other side of that rule: a storage failure is what a retry can clear, so
+/// it must keep its place in the batch instead of being dropped as a refusal.
+#[test]
+fn a_storage_failure_stays_retryable() {
+    let (_root, store) = store();
+    let text = event(
+        0,
+        "text_chunk",
+        json!({"entry_id":"m","content_key":"m:text:0","content_offset":0,"content_bytes":3,"text":"one"}),
+    );
+    store
+        .db
+        .call(|db| {
+            db.execute_batch(
+                "CREATE TRIGGER reject_change BEFORE INSERT ON stream_changes BEGIN SELECT RAISE(ABORT,'injected'); END;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let mut writer = Writer::default();
+    let error = writer.persist(&store, "s", [&text]).unwrap_err();
+    assert!(
+        !crate::session::sqlite_store::is_event_rejected(&error),
+        "a storage failure must stay retryable: {error:#}"
+    );
+}
+
 #[test]
 fn metadata_byte_admission_counts_escaping_unicode_and_numeric_boundaries() {
     let controls: String = (0u8..=31).map(char::from).collect();
