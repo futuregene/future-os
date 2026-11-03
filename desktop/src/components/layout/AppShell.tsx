@@ -1065,23 +1065,32 @@ function ReadyAppShell({
   }
 
   /**
-   * The first-archive guide's trigger.
+   * Show the archive guide: the pulse on the entry plus its coachmark.
    *
-   * The pulse and the coachmark appear once per installation: the flag is app
-   * settings (the same path `skillIntroDismissed` uses), written when the guide
-   * is shown rather than when it is dismissed, so a crash mid-bubble cannot
-   * teach it twice.
+   * One-time per installation, which the flag decides — but "one-time" must not
+   * mean "unrecoverable", so the archived view can ask for it again (see
+   * `onShowArchiveGuide` below). A manual re-show writes nothing: the flag is
+   * already set.
+   */
+  function showArchiveGuide() {
+    setArchiveGuideVisible(true);
+    setArchivePulse(true);
+    window.setTimeout(setArchivePulse, 2900, false);
+    window.setTimeout(setArchiveGuideVisible, 8000, false);
+  }
+
+  /**
+   * The first-archive trigger: teach it once, then never again.
+   *
+   * The flag is app settings (the same path `skillIntroDismissed` uses),
+   * written when the guide is shown rather than when it is dismissed, so a
+   * crash mid-bubble cannot teach it twice.
    */
   function handleFirstArchive() {
     if (appSettings.archiveGuideSeen)
       return;
-    setArchiveGuideVisible(true);
-    setArchivePulse(true);
-    window.setTimeout(setArchivePulse, 2900, false);
-    window.setTimeout(() => {
-      setArchiveGuideVisible(false);
-      void changeSettings({ archiveGuideSeen: true });
-    }, 8000);
+    void changeSettings({ archiveGuideSeen: true });
+    showArchiveGuide();
   }
 
   async function handleArchiveWorkspace(workspace: StoredWorkspace) {
@@ -1593,17 +1602,14 @@ function ReadyAppShell({
     onBatchArchiveThreads: archiveThreads,
     archiveGuide: {
       visible: archiveGuideVisible,
-      onDismiss: () => {
-        setArchiveGuideVisible(false);
-        void changeSettings({ archiveGuideSeen: true });
-      },
+      onDismiss: () => setArchiveGuideVisible(false),
       onView: () => {
         setArchiveGuideVisible(false);
-        void changeSettings({ archiveGuideSeen: true });
         setSection("chat");
       },
     },
     archivePulse,
+    onShowArchiveGuide: showArchiveGuide,
     ensureThreadScope: ensureScope,
     loadMoreThreadScope: loadMore,
     threadScopeHasMore: scopeHasMore,

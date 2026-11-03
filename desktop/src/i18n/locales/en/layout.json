@@ -86,7 +86,8 @@
     "archivedThreadsEmpty": "No archived conversations.",
     "loadMoreWorkspaces": "Load more workspaces",
     "archiveSelected": "Archive",
-    "loading": "Loading…"
+    "loading": "Loading…",
+    "archiveGuideAgain": "Show the archive guide again"
   },
   "appShell": {
     "storeInitFailed": "FutureOS local storage failed to initialize: ",
