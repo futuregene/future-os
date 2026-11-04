@@ -431,31 +431,59 @@ fn a_spec_parses_the_same_spelling_the_wire_uses() {
     assert_eq!(spec.scale["entries"], json!(14531));
 }
 
+/// Run a test body on a thread with a big stack.
+///
+/// `run_spec` awaits `measure_once` at three call sites (the cold call, the
+/// warmup loop, the measured loop), and a debug build lays a full copy of that
+/// ~140 KB state machine into the frame at each one: the chain asks for more
+/// than 1.75 MB of the 2 MB a `cargo test` thread gets. Linux and macOS fit in
+/// that margin, a Windows debug frame does not, and the abort
+/// (`STATUS_STACK_OVERFLOW`) takes the whole test binary with it instead of
+/// failing one test. A release build's frames are a fraction of that, which is
+/// why the measured path never notices. Depth is bounded, so this is headroom
+/// rather than a mask: nothing about what the test asserts changes.
+fn with_big_stack<T: Send + 'static>(body: impl FnOnce() -> T + Send + 'static) -> T {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(body)
+        .expect("a test thread")
+        .join()
+        .expect("the test body did not panic")
+}
+
 /// The runner derives ids from the snapshot, so a spec that lost a field is a
 /// possibility worth failing loudly on: a command missing its session would
 /// measure an error reply and report it as a fast open.
-#[tokio::test]
-async fn an_unparseable_command_is_reported_not_timed_as_a_read() {
-    let spec: ProbeSpec = serde_json::from_value(json!({
-        "label": "broken",
-        "iterations": 1,
-        "command": {"type": "list_tasks", "limit": "not a number"}
-    }))
-    .expect("the spec still parses");
-    let result = run_spec(spec, false).await;
-    assert!(
-        result
-            .parse_error
-            .as_deref()
-            .is_some_and(|error| error.starts_with("unparseable command:")),
-        "a spec whose command does not parse is named, not timed: {:?}",
-        result.parse_error
-    );
-    assert_eq!(
-        result.samples.len(),
-        1,
-        "the failure is still a recorded run"
-    );
+#[test]
+fn an_unparseable_command_is_reported_not_timed_as_a_read() {
+    with_big_stack(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a test runtime")
+            .block_on(async {
+                let spec: ProbeSpec = serde_json::from_value(json!({
+                    "label": "broken",
+                    "iterations": 1,
+                    "command": {"type": "list_tasks", "limit": "not a number"}
+                }))
+                .expect("the spec still parses");
+                let result = run_spec(spec, false).await;
+                assert!(
+                    result
+                        .parse_error
+                        .as_deref()
+                        .is_some_and(|error| error.starts_with("unparseable command:")),
+                    "a spec whose command does not parse is named, not timed: {:?}",
+                    result.parse_error
+                );
+                assert_eq!(
+                    result.samples.len(),
+                    1,
+                    "the failure is still a recorded run"
+                );
+            })
+    });
 }
 
 /// Nearest rank, not interpolation: the p95 of eight samples is the largest of
