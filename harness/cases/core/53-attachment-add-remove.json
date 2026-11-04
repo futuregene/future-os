@@ -3,7 +3,11 @@
   "title": "在输入框添加附件卡片并移除",
   "area": "compose",
   "priority": "P1",
-  "tags": ["conversation", "attachment", "composer"],
+  "tags": [
+    "conversation",
+    "attachment",
+    "composer"
+  ],
   "description": "打开一条会话，用输入框的回形针（添加附件）选一个本地文本文件：输入框上方应出现一张带文件名的附件卡片，标题是可读的完整文件名；点卡片上的移除按钮，卡片立刻消失，不发消息、不留提示。文件选择走的是 harness 的对话框桩（每个用例拿到自己目录下一个真实存在的 attachment.txt），所以这条用例验证的是选择之后的分类、卡片与移除，而不是系统文件对话框本身。",
   "preconditions": "应用已启动；已打开一条会话；对话框桩为本次用例提供一个真实存在的文件 attachment.txt。",
   "expectations": [
@@ -14,43 +18,99 @@
     "全程没有「无法读取 / 已忽略」之类的错误提示"
   ],
   "steps": [
-    { "wait": 1200 },
+    {
+      "wait": 1200
+    },
     {
       "eval": "window.__rows = [...document.querySelectorAll('[aria-label$=\" 的操作\"]')].map(el => el.getAttribute('aria-label').replace(/ 的操作$/, '')); window.__rows.length",
       "as": "rowCount",
       "capture": false
     },
-    { "assert": { "expr": "window.__rows.length >= 1", "message": "首屏至少一行会话" } },
-    { "eval": "window.__rows[0]", "as": "target", "capture": false },
-    { "click": { "aria": "{{target}}" } },
-    { "wait": 1500 },
-    { "assert": { "expr": "!document.querySelector('[aria-label=\"移除 attachment.txt\"]')", "message": "初始没有附件卡片" } },
-    { "click": { "aria": "添加附件" } },
-    { "waitFor": { "selector": "[aria-label=\"移除 attachment.txt\"]" }, "timeout": 8000 },
+    {
+      "assert": {
+        "expr": "window.__rows.length >= 1",
+        "message": "首屏至少一行会话"
+      },
+      "capture": false
+    },
+    {
+      "eval": "window.__rows[0]",
+      "as": "target",
+      "capture": false
+    },
+    {
+      "click": {
+        "aria": "{{target}}"
+      },
+      "capture": false
+    },
+    {
+      "wait": 1500
+    },
+    {
+      "assert": {
+        "expr": "!document.querySelector('[aria-label=\"移除 attachment.txt\"]')",
+        "message": "初始没有附件卡片"
+      },
+      "capture": false
+    },
+    {
+      "click": {
+        "aria": "添加附件"
+      },
+      "capture": false
+    },
+    {
+      "waitFor": {
+        "selector": "[aria-label=\"移除 attachment.txt\"]"
+      },
+      "capture": false,
+      "timeout": 8000
+    },
     {
       "assert": {
         "expr": "(() => { const b = document.querySelector('[aria-label=\"移除 attachment.txt\"]'); const chip = b ? b.closest('span[title]') : null; return !!chip && chip.getAttribute('title') === 'attachment.txt'; })()",
         "message": "附件卡片带着完整文件名"
-      }
+      },
+      "capture": false
     },
-    { "shot": "attachment-added" },
-    { "click": { "aria": "移除 attachment.txt" } },
-    { "wait": 500 },
+    {
+      "shot": "attachment-added"
+    },
+    {
+      "click": {
+        "aria": "移除 attachment.txt"
+      },
+      "capture": false
+    },
+    {
+      "wait": 500
+    },
     {
       "assert": {
         "expr": "!document.querySelector('[aria-label=\"移除 attachment.txt\"]')",
         "message": "移除后卡片消失"
-      }
+      },
+      "capture": false
     },
     {
       "assert": {
         "expr": "!document.body.innerText.includes('attachment.txt')",
         "message": "移除后页面上不再有该文件名"
-      }
+      },
+      "capture": false
     },
-    { "expectAbsent": "无法读取" },
-    { "expectAbsent": "已忽略" },
-    { "shot": "attachment-removed" }
+    {
+      "expectAbsent": "无法读取",
+      "capture": false
+    },
+    {
+      "expectAbsent": "已忽略",
+      "capture": false
+    },
+    {
+      "shot": "attachment-removed"
+    }
   ],
   "judge": {
     "criteria": [
