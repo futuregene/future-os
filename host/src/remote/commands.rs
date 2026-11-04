@@ -636,9 +636,21 @@ mod bridge_tests {
             .await;
         assert_eq!(reply["success"], json!(true), "got: {reply}");
         assert_eq!(reply["data"]["confirmed"], json!(true));
+        // Everything this build always speaks, in order. `terminal_v1` is
+        // filtered out because it is the one capability a *process* decides
+        // (`terminal::install_service`), and another test in this binary may
+        // have installed a registry already; its composition is pinned in
+        // `remote_server::commands::feature_tests`.
+        let features: Vec<&str> = reply["data"]["features"]
+            .as_array()
+            .expect("a feature list")
+            .iter()
+            .map(|feature| feature.as_str().expect("a feature name"))
+            .filter(|feature| *feature != future_remote_protocol::TERMINAL_FEATURE)
+            .collect();
         assert_eq!(
-            reply["data"]["features"],
-            json!([
+            features,
+            vec![
                 "file_transfer_v1",
                 "file_download_v2",
                 "approval_tier_v1",
@@ -660,7 +672,7 @@ mod bridge_tests {
                 // frame carrier after finding it here.
                 "read_binary_v1",
                 "segmented_content_v1"
-            ])
+            ]
         );
         assert!(bridge.handshake.active_flag().load(Ordering::Acquire));
         assert!(crate::remote::pairing::load_creds().is_some());

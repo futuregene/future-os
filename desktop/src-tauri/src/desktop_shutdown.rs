@@ -30,9 +30,7 @@ fn perform_stop(
 ) -> Result<(), crate::AppError> {
     let mut services = future_host::shutdown::ServiceStop::prepare(operation, reason, || {
         #[cfg(all(feature = "gui", not(test)))]
-        if let Some(manager) = crate::terminal::server::manager() {
-            manager.freeze();
-        }
+        crate::terminal::server::manager().freeze();
     })?;
     let cleanup_runtime = match build() {
         Ok(runtime) => Some(runtime),
@@ -45,10 +43,10 @@ fn perform_stop(
         runtime.block_on(services.disconnect());
     }
     #[cfg(all(feature = "gui", not(test)))]
-    if let Some(manager) = crate::terminal::server::manager() {
+    {
         operation.stage("terminals");
-        if let Err(error) =
-            manager.shutdown_checked(operation.remaining(crate::terminal::manager::CLOSE_GRACE))
+        if let Err(error) = crate::terminal::server::manager()
+            .shutdown_checked(operation.remaining(future_host::terminal::manager::CLOSE_GRACE))
         {
             services.record_error(error);
         }

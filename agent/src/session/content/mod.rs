@@ -621,6 +621,18 @@ pub(crate) fn install_functions(db: &Connection) -> Result<()> {
         },
     )?;
     db.create_scalar_function(
+        "future_gunzip",
+        1,
+        FunctionFlags::SQLITE_UTF8
+            | FunctionFlags::SQLITE_DETERMINISTIC
+            | FunctionFlags::SQLITE_INNOCUOUS,
+        |context| {
+            let body: Vec<u8> = context.get(0)?;
+            compress::decompress(&body)
+                .map_err(|error| rusqlite::Error::UserFunctionError(error.into()))
+        },
+    )?;
+    db.create_scalar_function(
         "future_restore_content_json",
         2,
         FunctionFlags::SQLITE_UTF8

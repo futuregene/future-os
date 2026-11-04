@@ -42,6 +42,11 @@ const RECHUNK_BATCH_OBJECTS: i64 = 64;
 /// Bodies compressed per sweep call. Each is a read of one body plus a gzip and
 /// a two-statement transaction, so a small batch keeps a slice responsive.
 const COMPRESS_BATCH_OBJECTS: i64 = 16;
+/// Blocks compressed per sweep call.
+const BLOCK_BODY_BATCH: i64 = 32;
+/// A block smaller than this keeps its text inline: the body row costs more than
+/// the text saves.
+const BLOCK_BODY_MIN_BYTES: i64 = 2048;
 
 /// Runs one startup catch-up may fold. A completion notification already
 /// handles the normal case, so this only mops up what a crash or a stop left
@@ -342,6 +347,116 @@ pub(crate) fn fold_settled_journals(db: &mut Connection, limit: i64) -> Result<(
         }
     }
     Ok((runs, before, after))
+}
+
+/// Blocks whose text or tool arguments are big enough to store compressed:
+/// `(rows, bytes)`.
+pub(crate) fn plan_block_bodies(db: &Connection) -> Result<(i64, i64)> {
+    Ok(db.query_row(
+        &format!(
+            "SELECT count(*),coalesce(sum(size),0) FROM (
+                 SELECT max(length(CAST(coalesce(text,'') AS BLOB)),
+                            length(CAST(coalesce(arguments_json,'') AS BLOB))) size
+                   FROM message_blocks
+                  WHERE length(CAST(coalesce(text,'') AS BLOB))>={BLOCK_BODY_MIN_BYTES}
+                     OR length(CAST(coalesce(arguments_json,'') AS BLOB))>={BLOCK_BODY_MIN_BYTES})"
+        ),
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?)
+}
+
+/// One block the sweep may move: stored key, position, ordinal, and the fields
+/// large enough to be worth encoding.
+type BlockBodyCandidate = (
+    rusqlite::types::Value,
+    i64,
+    i64,
+    Option<String>,
+    Option<String>,
+);
+
+/// Compress up to `limit` blocks, largest first.
+///
+/// Returns `(rows, bytes before, bytes after)`, counting the moved text only.
+/// Each block is one maintenance transaction; the body row and the cleared
+/// column land together, so a read never sees a block whose text is neither
+/// inline nor stored.
+pub(crate) fn compress_block_bodies(db: &mut Connection, limit: i64) -> Result<(i64, i64, i64)> {
+    let candidates: Vec<BlockBodyCandidate> = {
+        let mut statement = db.prepare_cached(&format!(
+            "SELECT session_id,entry_position,ordinal,
+                    CASE WHEN length(CAST(coalesce(text,'') AS BLOB))>={BLOCK_BODY_MIN_BYTES}
+                         THEN text END,
+                    CASE WHEN length(CAST(coalesce(arguments_json,'') AS BLOB))>={BLOCK_BODY_MIN_BYTES}
+                         THEN arguments_json END
+               FROM message_blocks
+              WHERE length(CAST(coalesce(text,'') AS BLOB))>={BLOCK_BODY_MIN_BYTES}
+                 OR length(CAST(coalesce(arguments_json,'') AS BLOB))>={BLOCK_BODY_MIN_BYTES}
+              ORDER BY max(length(CAST(coalesce(text,'') AS BLOB)),
+                           length(CAST(coalesce(arguments_json,'') AS BLOB))) DESC
+              LIMIT ?1"
+        ))?;
+        let rows = statement
+            .query_map(params![limit], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let (mut blocks, mut before, mut after) = (0i64, 0i64, 0i64);
+    for (session, position, ordinal, text, arguments) in candidates {
+        let done = super::database::try_maintenance_transaction(db, |tx| {
+            let mut plain = 0i64;
+            let mut stored = 0i64;
+            for (field, value) in [("text", text.as_deref()), ("args", arguments.as_deref())] {
+                let Some(value) = value else { continue };
+                let body = super::content::compress::encode(value.as_bytes())?;
+                // A block whose field does not pay for itself keeps its text.
+                if body.len() * 10 >= value.len() * 9 {
+                    continue;
+                }
+                tx.execute(
+                    "INSERT INTO message_block_bodies(session_id,entry_position,ordinal,field,encoding,body)
+                     VALUES (?1,?2,?3,?4,'gzip',?5)
+                     ON CONFLICT(session_id,entry_position,ordinal,field) DO UPDATE SET body=excluded.body",
+                    params![session, position, ordinal, field, body.as_slice()],
+                )?;
+                plain += value.len() as i64;
+                stored += body.len() as i64;
+            }
+            if plain == 0 {
+                return Ok(None);
+            }
+            if text.is_some() && plain > 0 {
+                tx.execute(
+                    "UPDATE message_blocks SET text=NULL WHERE session_id=?1 AND entry_position=?2 AND ordinal=?3
+                       AND EXISTS(SELECT 1 FROM message_block_bodies x WHERE x.session_id=?1 AND x.entry_position=?2 AND x.ordinal=?3 AND x.field='text')",
+                    params![session, position, ordinal],
+                )?;
+            }
+            if arguments.is_some() {
+                tx.execute(
+                    "UPDATE message_blocks SET arguments_json=NULL WHERE session_id=?1 AND entry_position=?2 AND ordinal=?3
+                       AND EXISTS(SELECT 1 FROM message_block_bodies x WHERE x.session_id=?1 AND x.entry_position=?2 AND x.ordinal=?3 AND x.field='args')",
+                    params![session, position, ordinal],
+                )?;
+            }
+            Ok(Some((plain, stored)))
+        })?;
+        if let Some((plain, stored)) = done {
+            blocks += 1;
+            before += plain;
+            after += stored;
+        }
+    }
+    Ok((blocks, before, after))
 }
 
 impl SqliteStore {
@@ -767,6 +882,29 @@ impl SqliteStore {
             .map(|plan| plan.1)
             .unwrap_or(0);
 
+        // 7. Legacy blocks whose text or tool arguments are large: the body moves
+        //    to its own row and the projection hydrates it. Same bytes, same
+        //    read.
+        let pending_block_bodies = self.db.call(|db| plan_block_bodies(db))?;
+        let (compressed_blocks, block_bytes_before, block_bytes_after) =
+            if dry_run || pending_block_bodies.0 == 0 || started.elapsed() >= budget {
+                (0i64, 0i64, 0i64)
+            } else {
+                self.db
+                    .call_as("journal_reclaim", move |db| {
+                        compress_block_bodies(db, BLOCK_BODY_BATCH)
+                    })
+                    .unwrap_or_else(|error| {
+                        tracing::warn!(%error, "block body compression failed");
+                        (0, 0, 0)
+                    })
+            };
+        let blocks_pending = self
+            .db
+            .call(|db| plan_block_bodies(db))
+            .map(|plan| plan.1)
+            .unwrap_or(0);
+
         // `hasMore` promises *more work this sweep can do*, not "some settled run
         // still keeps a journal": a run that cannot be representationally
         // reclaimed (its last event is not `agent_end`, its envelope is unknown)
@@ -786,6 +924,7 @@ impl SqliteStore {
                 || folds_pending > 0
                 || segments_pending > 0
                 || compress_pending > 0
+                || blocks_pending > 0
         };
 
         // Fold freed pages back into the file where this database can do it
@@ -834,6 +973,12 @@ impl SqliteStore {
                 "compressedObjects": compressed_objects,
                 "bytesBefore": plain_bytes,
                 "bytesAfter": stored_bytes,
+            },
+            "blockEncoding": {
+                "pendingBytes": blocks_pending,
+                "compressedBlocks": compressed_blocks,
+                "bytesBefore": block_bytes_before,
+                "bytesAfter": block_bytes_after,
             },
             "hasMore": has_more,
             "quickCheck": quick_check,

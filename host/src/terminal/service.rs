@@ -1,11 +1,12 @@
-//! The Desktop's terminal registry, seen by the remote control plane.
+//! This process's terminal registry, seen by the remote control plane.
 //!
-//! `Manager` is the whole implementation: a paired desktop drives the same
-//! shells the person at this machine sees, scoped to the same conversations, and
-//! torn down by the same rules (deleting a conversation closes its shells).
-//! Nothing here duplicates state; the trait exists because the control plane
-//! lives in `future-host`, which must not depend on a GUI crate
-//! (`host/src/terminal_service.rs`).
+//! `Manager` is the whole implementation: a paired device drives the same shells
+//! the person at this machine sees — in a window, or on a box running
+//! `future host` with no GUI at all — scoped to the same conversations, and torn
+//! down by the same rules (deleting a conversation closes its shells). Nothing
+//! here duplicates state; the trait it implements
+//! (`crate::terminal_service::TerminalService`) is the seam a test can replace
+//! with a registry that spawns nothing.
 //!
 //! Two details are load-bearing:
 //!
@@ -20,7 +21,7 @@
 //!   error that reached the wire as a sentence would turn a restartable tab into
 //!   an unexplained failure.
 
-use future_host::terminal_service::{TerminalError, TerminalInfo, TerminalPage, TerminalService};
+use crate::terminal_service::{TerminalError, TerminalInfo, TerminalPage, TerminalService};
 
 use super::manager::{Manager, ManagerError};
 use super::session::Status;

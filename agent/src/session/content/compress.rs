@@ -46,7 +46,7 @@ pub(crate) fn decompress(blob: &[u8]) -> Result<String> {
     Ok(text)
 }
 
-fn compress(bytes: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn encode(bytes: &[u8]) -> Result<Vec<u8>> {
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(bytes)?;
     Ok(encoder.finish()?)
@@ -105,7 +105,7 @@ pub(crate) fn apply(db: &mut Connection, limit: i64) -> Result<(i64, i64, i64)> 
             let plain: i64 = segments.iter().map(|s| s.len() as i64).sum();
             let mut encoded: Vec<(i64, Vec<u8>)> = Vec::with_capacity(chunks.len());
             for (offset, chunk) in chunks {
-                encoded.push((offset, compress(&chunk)?));
+                encoded.push((offset, encode(&chunk)?));
             }
             let compressed: i64 = encoded.iter().map(|(_, body)| body.len() as i64).sum();
             if compressed * 10 >= plain * 9 {

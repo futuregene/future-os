@@ -3,9 +3,11 @@
 Status: implemented for **Linux** (verified by automated tests); macOS/Windows
 paths exist but are **not verified** on this machine — see §Platforms.
 
-The terminal is a PTY registry owned by the desktop main process and served to
-the app's own webview over a **loopback-only HTTP/WebSocket listener**. It is
-deliberately not a Tauri-IPC message pump.
+The terminal is a PTY registry owned by the host process and served two ways: to
+the app's own webview over a **loopback-only HTTP/WebSocket listener**, and to a
+paired device over the remote control plane (§[Remote](#remote)). The registry
+lives in `future-host`, so `future host` — a machine with no window at all —
+serves the same shells. It is deliberately not a Tauri-IPC message pump.
 
 ## Why a socket
 
@@ -270,17 +272,20 @@ closes its shells, wherever the delete came from).
 
 | Layer | Where |
 | --- | --- |
-| The registry, as the control plane sees it | `host/src/terminal_service.rs` (trait + install slot) |
-| The Desktop's implementation of it | `desktop/src-tauri/src/terminal/service.rs` |
+| The registry | `host/src/terminal/` (`manager`, `session`, `pty`, `shell`, `cwd`) |
+| It, as the control plane sees it | `host/src/terminal/service.rs`, trait + slot in `host/src/terminal_service.rs` |
+| Installed by | `future_host::terminal::install_service()` — the window and `future host` alike |
 | The wire commands | `host/src/remote_host/business/terminal.rs` |
 | The capability | `future_remote_protocol::TERMINAL_FEATURE` (`terminal_v1`) |
 | The client half | `desktop/src/features/terminal/remoteTerminal.ts` |
 | The transport seam | `desktop/src/features/terminal/transport.ts` |
 
 **Advertised, not assumed.** The handshake lists `terminal_v1` only from a
-process that installed a registry (`services::set_terminal_available`). A paired
-desktop shows the panel only on a host that advertised it, so a host with no PTY
-— `future host` — never presents a button that could only produce
+process that installed a registry (`services::set_terminal_available`), and both
+entry points do: `AppState::initialize_process_state` in the window, and
+`headless::session` before the remote bridge starts. A paired desktop shows the
+panel only on a host that advertised it, so a build that never installed a
+registry shows nothing rather than a button whose every press answers
 `Unsupported command`.
 
 **It is a paged pull, not a stream.** Commands travel the ordinary control-plane
@@ -304,6 +309,13 @@ surface — a prompt passes through approval rules, a shell does not. The gate
 that stays is *control*: `commands.rs` refuses every business command from a
 standby device before a handler sees it, so only the device the user handed the
 machine to can open or type into a shell.
+
+**A headless host is a first-class target.** `future host` installs the registry
+before it starts serving, so a server box reached from a paired desktop has real
+shells in the same conversation directories the agent works in, and its shutdown
+path freezes the registry and tears the children down with the rest of the
+services (`cli/src/headless/mod.rs::stop`). The working directory still resolves
+from the *store*, which is the same `~/.future` store the window uses.
 
 **Cost, stated plainly.** Output costs one round trip per page (polled at 16 ms
 while a shell is producing and 250 ms while it is idle — the client only polls

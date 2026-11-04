@@ -2,7 +2,9 @@
 
 [中文](bots.zh-CN.md)
 
-Status: design draft, not implemented. Updated: 2026-11-04.
+Status: design draft. **Implementation has not started**: this document is for
+review and scheduling only, and the work begins as a separate task. Updated:
+2026-11-04.
 
 This document is design only: no code changes, no configuration changes, no bot
 is created, and nothing under `~/.future/` is touched. "Supported today" always
@@ -343,7 +345,7 @@ few hundred tokens, and no tools. So `eager` asking every member costs far less
 than "every member runs a full turn", which is exactly where Grok Bot's
 group-chat cost comes from
 ([ANTIPATTERNS §35](https://github.com/unicodef1wn/grokbot-field-notes/blob/main/ANTIPATTERNS.md)).
-The exact ratio needs measurement (§15).
+The exact ratio needs measurement (§16).
 
 **The default is `router`.** A new channel includes the chief as a member (§9.2)
 and lets it judge; when the user declines to create a chief the channel falls back
@@ -602,9 +604,47 @@ creating several at once, also from its guidance.
 The chief calls `future bot new --name … --job …` in its own private
 conversation; once the write succeeds the bot exists, and the desktop refreshes
 on `bots-updated`. Because bot sessions are fully permitted by default (§10), the
-command is not blocked by the sandbox and needs no extra confirmation step.
-Optional setting: `bots.confirm_create` (default on) — the chief restates the job
-and waits for the user to say "create" first.
+command is not blocked by the sandbox.
+
+### 9.4 One to three sentences: the three creation paths
+
+The target feel: the user picks no directory, chooses no model and writes no job
+template. The three paths differ only in **who produces the job**.
+
+| Path | What the user does | What happens underneath | Cost |
+|---|---|---|---|
+| **A First-run card** | click "Set up your chief" | create the directory, write `AGENTS.md` from the skeleton, write the row, open the conversation | Covers only the first bot, and it is the one click worth paying |
+| **B One line in the composer** | type `New bot: owns the launch post, takes Writer's tone, writes but does not review` | name derived from the job (numbered on clash) → create the directory → write `AGENTS.md` from the skeleton → write the row → open the chat | The job comes from the user's own words; nothing is inferred |
+| **C Create, then grow** | create a placeholder bot and let **the first message be its job** | at the end of the first turn the executor compresses that message into `AGENTS.md` using the skeleton; the bot is greyed out until it has a job | Costs one conversation; depends on the skeleton's quality |
+
+```
+you:  You own turning each week's launch notes into a short post, in the style of the last one
+it:   (writes that into its own AGENTS.md, restates three boundaries, asks one necessary question)
+```
+
+**Confirmation rule** (§12 item 8):
+
+- The user **stated the job** ("add one that owns the launch post") → create it,
+  no question.
+- The chief **inferred** that a new bot is warranted ("this deserves a long-lived
+  owner") → ask once before creating.
+
+The "rosters only grow" guardrail stays, but no longer sits on the main path.
+
+**Three guardrails**:
+
+1. **The skeleton is slots, not prose** — the model fills fields, it does not
+   write paragraphs. This is exactly the failure Grok Bot recorded: "a bot-factory
+   bot writes it for new bots and tends to overfit it to the one scenario it was
+   created for"
+   ([PRODUCT](https://github.com/unicodef1wn/grokbot-field-notes/blob/main/reference/PRODUCT.md)).
+   The job file is an ordinary readable, editable file, which is the structural
+   advantage over a server-side record.
+2. **A placeholder bot with no job is greyed out**: it is not a default channel
+   member and starts no routine.
+3. **The default workspace is `<home>/bots/workspaces/<slug>/`**; pointing it at
+   an existing project is `future bot set <id> --workspace <path>`, never a
+   rebuild.
 
 ---
 
@@ -719,14 +759,15 @@ reached.
 | 1 | **Full access by default**: bot sessions carry no `sandbox_tier` and `permission_level='all'` (§10.1) | The person running the bot owns the machine; breaking a config costs a reinstall, while a policy layer that must be maintained forever costs continuously | The day bots are offered to someone other than the machine's owner: switch to "layer 0 only" (no touching model config or credentials) |
 | 2 | **Point at the config first, hoist later**: v1 adds a config-directory override so the bot instance reads the user's `models.json`, `auth.json` and app-scope skills; moving all three into `~/.future/config/` is a separate follow-up task | The override is one change with the same behaviour as hoisting, while hoisting touches a released data layout and drags in migration, the backup manifest, the sandbox's hard-deny paths and the docs | Once the second instance has run stably, hoist as its own task; the two then share by construction and the override field retires |
 | 3 | **`settings.json` stays per instance** | It carries the default model, the approval tier and compaction thresholds; a bot may want a cheaper model than you, and a bot editing it must not edit yours | If the two sides turn out to be identical for a long time and the upkeep becomes a burden, revisit sharing the read-only fields |
-| 4 | **Default speaking policy `router`** (with a chief); `mention_only` without one; `eager` off by default (§5) | One judgement of a few hundred tokens removes the largest friction — the human doing the routing every turn — at almost no cost | The measured misjudgement rate (§15 item 6) is high enough that a user would rather name speakers |
+| 4 | **Default speaking policy `router`** (with a chief); `mention_only` without one; `eager` off by default (§5) | One judgement of a few hundred tokens removes the largest friction — the human doing the routing every turn — at almost no cost | The measured misjudgement rate (§16 item 6) is high enough that a user would rather name speakers |
 | 5 | **`eager` is capped at 6 members and judged by a cheap model** (§5) | A group's value is a few viewpoints, not a crowd; the judge only needs to know whether a job is involved, not to reason hard | Measurement shows a cheap judge misjudges far more than a strong one *and* users turn `eager` on often |
 | 6 | **`@` on the bot and channel surfaces lists bots only** (§11.3) | In a channel, `@` means "call someone"; making a person first think about what `@` points at now costs more than one missing menu group | Users need to cite files there often enough that dragging and typed paths are not enough, and the file group comes back |
 | 7 | **Private-chat context is off by default inside a channel**, with a per-channel switch (§4.4) | The leak is silent: others in the group see a sentence and never learn it came from a private chat | Users complain about re-explaining background every time and accept a visible "this turn cited private context" mark |
-| 8 | **The chief confirms before creating a bot**, switchable off (§9.2) | A roster that only grows is this system's characteristic disease; one confirmation is far cheaper than the cleanup | A user creates several bots a day and confirmation becomes the burden: then confirm only batch creation |
+| 8 | **The chief creates immediately when the user stated the job, and asks only when it inferred one itself** (§9.4) | A roster that only grows is this system's characteristic disease, but a confirmation on the path where the user has already decided is pure friction | Inferred creations become frequent and the question feels redundant: fall back to confirming only batch creation |
+| 9 | **"Create, then grow" is allowed**: a placeholder bot with no job can exist, and the first turn generates its `AGENTS.md` from the skeleton (§9.4) | This is the step that makes "setup is a message" true: the user does not have to finish writing the job before creating | If placeholders pile up and never acquire a job, require a job before first use |
 
-Only the second item carries real work (one config override); the rest are
-parameter choices over mechanisms that already exist.
+Of the nine, only the second carries real work (one config override); the rest
+are parameter choices over mechanisms that already exist.
 
 ## 13. Cross-machine bots: not doing it, and what is missing
 
@@ -757,11 +798,76 @@ one explicit message instead of pretending it can participate.
 
 ---
 
-## 14. Phases and acceptance
+## 14. Where the code lives
+
+In one line: **the kernel is a crate, the executor sits in the host, the UI sits in
+the desktop app** — the same shape as goal / tasks / fusion, with no new
+top-level directory.
+
+| Location | What goes there | Mirrors |
+|---|---|---|
+| `orchestration/bots/` | data model, the `bots.db` store, the pure routing kernel, the application service, the speaking rules and the fixed skeleton (crate `future-bots`) | `orchestration/tasks/`, `orchestration/fusion/` |
+| `host/src/bots/` | the executor (tick, serial within a channel), the startup sweep, `bots-updated` | `host/src/tasks.rs`, `host/src/tasks/service.rs` |
+| `cli/src/commands/bot.rs`, `channel.rs` | `future bot …`, `future channel …` | the existing subcommands under `cli/src/commands/` |
+| `desktop/src-tauri/src/commands/bots.rs` | a thin Tauri adapter that only calls the host service | `commands/tasks.rs` |
+| `desktop/src/features/bots/` | the bots surface, the channel view, `useBots`, the backend bridge | `features/tasks/` |
+| `desktop/src/i18n/locales/{en,zh}/bots.json` | UI strings | `tasks.json` |
+| `ActivityRail.tsx` and `ActivitySection` | the navigation button, and `"bots"` added to the view union | the existing tasks / remote buttons |
+| `packages/remote-protocol/src/handshake.rs` | the `bots_v1` capability (phone and a paired desktop) | `tasks_v1` |
+| the root `Cargo.toml` `members` | one line, `"orchestration/bots"`; `default-members` unchanged | the existing three orchestration entries |
+
+Runtime data is not code: `~/.future/bots/{bots.db, agent-home/, workspaces/}`
+(§3.3, §8.3).
+
+```
+orchestration/bots/
+  Cargo.toml            # name = "future-bots"
+  src/lib.rs
+  src/model.rs          # Bot / Channel / Binding / Turn
+  src/store.rs          # bots.db: schema, migrate, open
+  src/kernel.rs         # pure: mentions / enqueue / judge / should_stop
+  src/service.rs        # application service, shared by host and CLI
+  src/rules.rs          # speaking rules and the fixed skeleton
+  tests/
+host/src/bots/
+  mod.rs
+  executor.rs           # serial per channel, at most two in parallel
+  sweep.rs              # startup sweep: orphans, dangling references
+  notify.rs             # bots-updated
+```
+
+There is exactly one dependency direction:
+
+```
+orchestration/bots  ←── host ──→ desktop/src-tauri ←── desktop(TS)
+        ↑                ↑
+       cli ──────────────┘   (calls the service, never assembles SQL)
+```
+
+`future-bots` depends on neither `host` nor `agent`: it is pure logic plus its own
+store, so the kernel is unit-testable and reusable. `host` is the single writer of
+`bots.db`, the same assumption tasks makes.
+
+No new top-level `bots/`: workspace members are grouped by *what they are* —
+`host` is the shared backend, `agent` the process, `channels` the IM bridge,
+`orchestration/*` the control planes, `packages/*` shared libraries, plus `tui`,
+`cli` and `desktop/*`. A top-level `bots/` would sit beside `channels/` and force
+every mention to explain which "channel" it means; under `orchestration/` it is
+the same kind of thing as goal, tasks and fusion.
+
+Protocol: v1 does not change `packages/rpc/proto/future.proto`. Every bot action
+goes through the existing `prompt` / `new_session` / `set_session` /
+`list_sessions`; the rest lives in `bots.db` and the CLI. Only the "layer 0 only"
+tier of §10.3 would touch the proto. The phone needs a capability bit, no message
+change.
+
+---
+
+## 15. Phases and acceptance
 
 | Phase | Deliverable | Observable acceptance |
 |---|---|---|
-| **P1 Bot** | `bots.db` and its schema, **the bot's own agent instance and config override**, the private thread, navigation entry, bot list, one-click chief, `future bot` CLI | create a bot, talk three turns, restart and both name and memory are intact; its private conversation is absent from Recent and Workspace; **the user-side `future session list` does not contain it at all**; the bot can use the user's configured models and installed skills; `future data` backs up `bots/bots.db` and the bot `agent-home` |
+| **P1 Bot** | `bots.db` and its schema, **the bot's own agent instance and config override**, the private thread, navigation entry, bot list, one-click chief, one-line creation from the composer, `future bot` CLI | create a bot, talk three turns, restart and both name and memory are intact; its private conversation is absent from Recent and Workspace; **the user-side `future session list` does not contain it at all**; the bot can use the user's configured models and installed skills; **one line — `new bot: owns the launch post` — yields a working bot with no dialog, no naming step and no model choice**; `future data` backs up `bots/bots.db` and the bot `agent-home` |
 | **P2 Channel** | `channels` / `members` / `bindings` / `turns`, `threads.scope`, routing kernel, three policies, executor, channel view, startup sweep | two bots and me: `@`-ing one gets exactly one reply; a bot `@`-ing another stops at chain depth 2; a 9-turn message is cut by the budget with a stated reason; under `router`, nobody @-ed still yields the right speaker with a visible reason; all nine entry points of §8.5 pass; deleting a bot's thread by hand degrades the bot to "conversation deleted, can be recreated" instead of erroring |
 | **P3 Memory and routines** | observable memory writes, channel summary, routines bound to a bot, growth from a conversation | ask a bot to remember a preference and it holds in a new channel the next day; create a daily routine for a bot and read its run ledger; a conversation turned into a bot shows up on the roster |
 | **P4 Optional tightening** | hoisting config into `~/.future/config/` (a separate task), the layer-0-only tier (only if bots are offered to others), cross-channel handoff, duplication and sharing | both instances read one config and the override field is gone; a bot cannot read `models.json`; A hands a result to B and B's answer lands where expected; a duplicated bot carries no memory |
@@ -771,7 +877,7 @@ control, `@bot` from X, wiring a channel into an IM bridge, cross-machine bots.
 
 ---
 
-## 15. Points that code must verify, not this document
+## 16. Points that code must verify, not this document
 
 Each is an **assumption** of this design. Paper cannot settle them; each needs a
 measurement or a test.
@@ -814,7 +920,11 @@ measurement or a test.
 13. **Cross-database repair is genuinely idempotent**: kill the process between
     each of the three writes that create a bot, and verify the startup sweep
     reclaims the orphan and that a second run changes nothing.
-14. **Backup covers the new database and home**: `future data` restores
+14. **Does the generated job overfit**: create five bots with five different jobs
+    in one line each and compare their `AGENTS.md` — if they collapse into the
+    same boilerplate, the skeleton's slots are too soft and the template needs
+    tightening rather than the user patching each file.
+15. **Backup covers the new database and home**: `future data` restores
     `bots/bots.db`, the bot `agent-home` and the channel transcripts; deliberately
     omitting either must fail rather than pass silently.
 
