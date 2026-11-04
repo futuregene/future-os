@@ -1,0 +1,190 @@
+{
+  "id": "fork-conversation",
+  "title": "从一条回复分叉：新会话从该点开始，原会话不变",
+  "area": "conversation",
+  "priority": "P1",
+  "tags": [
+    "conversation",
+    "fork"
+  ],
+  "description": "打开一条会话，鼠标移到助手的回复上，点「分叉」。应得到一条新会话：它在侧边栏存在（挂在原会话之下，标题带 (fork) 后缀），并被打开；它的内容从分叉点（这条回复对应的那次提问）开始，分叉点之后的助手回复不再带过来。原会话必须原封不动：重新点开它，一问一答都还在。分叉是「保留这段上下文、换一个方向重来」的唯一入口，起点错了会带错上下文，原会话被改动则会毁掉历史。",
+  "preconditions": "应用已启动；首屏至少一条会话，且该会话有一问一答（夹具的确定性转录）。",
+  "expectations": [
+    "悬停助手回复后出现分叉按钮",
+    "分叉后数据库多出一条标题以 (fork) 结尾的会话，其 parent 指向原会话的 agent session",
+    "分叉出的会话被打开，内容从分叉点开始（只有那次提问，没有之后的助手回复）",
+    "原会话内容不变，重新打开仍是一问一答"
+  ],
+  "steps": [
+    {
+      "wait": 1200
+    },
+    {
+      "eval": "window.__rows = [...document.querySelectorAll('[aria-label$=\" 的操作\"]')].map(el => el.getAttribute('aria-label').replace(/ 的操作$/, '')); window.__rows.length",
+      "as": "rowCount",
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "window.__rows.length >= 1",
+        "message": "首屏至少一行会话"
+      },
+      "capture": false
+    },
+    {
+      "eval": "window.__rows[0]",
+      "as": "target",
+      "capture": false
+    },
+    {
+      "click": {
+        "aria": "{{target}}"
+      },
+      "capture": false
+    },
+    {
+      "wait": 1500
+    },
+    {
+      "db": {
+        "sql": "SELECT agent_session_id FROM threads WHERE title = '{{target}}' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1",
+        "as": "sourceSession"
+      },
+      "capture": false
+    },
+    {
+      "db": {
+        "sql": "SELECT COUNT(*) AS n FROM threads WHERE deleted_at IS NULL AND status != 'deleted'",
+        "as": "threadCount"
+      },
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('已读取工作区的文件')",
+        "message": "原会话加载出了助手回复（作为分叉前的内容）"
+      },
+      "capture": false
+    },
+    {
+      "hover": {
+        "selector": "main article:last-of-type"
+      },
+      "capture": false
+    },
+    {
+      "wait": 400
+    },
+    {
+      "assert": {
+        "expr": "(() => { const b = document.querySelector('main article:last-of-type button[title=\"分叉\"]'); return !!b && getComputedStyle(b).opacity === '1'; })()",
+        "message": "悬停回复后出现分叉按钮"
+      },
+      "capture": false
+    },
+    {
+      "shot": "fork-hover"
+    },
+    {
+      "click": {
+        "selector": "main article:last-of-type button[title=\"分叉\"]"
+      },
+      "capture": false
+    },
+    {
+      "waitFor": {
+        "text": "(fork)"
+      },
+      "capture": false,
+      "timeout": 10000
+    },
+    {
+      "wait": 1500
+    },
+    {
+      "db": {
+        "sql": "SELECT COUNT(*) AS n FROM threads WHERE deleted_at IS NULL AND status != 'deleted'",
+        "delta": 1,
+        "message": "分叉写库：多出一条会话"
+      },
+      "capture": false
+    },
+    {
+      "db": {
+        "sql": "SELECT title FROM threads WHERE deleted_at IS NULL AND deleted_at IS NULL AND title = '{{target}} (fork)' ORDER BY created_at DESC LIMIT 1",
+        "expect": "{{target}} (fork)",
+        "message": "新会话标题沿用 agent 的分叉命名"
+      },
+      "capture": false
+    },
+    {
+      "db": {
+        "sql": "SELECT parent_session_id FROM threads WHERE title = '{{target}} (fork)' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1",
+        "expect": "{{sourceSession}}",
+        "message": "新会话的 parent 指向原会话的 agent session"
+      },
+      "capture": false
+    },
+    {
+      "shot": "forked"
+    },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('继续处理「{{target}}」这件事')",
+        "message": "分叉会话从分叉点的提问开始"
+      },
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "!document.body.innerText.includes('已读取工作区的文件')",
+        "message": "分叉点之后的助手回复没有带过来"
+      },
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "!!document.querySelector('[aria-label=\"{{target}} (fork)\"]')",
+        "message": "分叉会话出现在侧边栏"
+      },
+      "capture": false
+    },
+    {
+      "click": {
+        "aria": "{{target}}"
+      },
+      "capture": false
+    },
+    {
+      "wait": 1500
+    },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('继续处理「{{target}}」这件事') && document.body.innerText.includes('已读取工作区的文件')",
+        "message": "原会话一问一答都还在"
+      },
+      "capture": false
+    },
+    {
+      "db": {
+        "sql": "SELECT COUNT(*) AS n FROM threads WHERE title = '{{target}}' AND deleted_at IS NULL",
+        "expect": 1,
+        "message": "原会话没有被改名或复制"
+      },
+      "capture": false
+    },
+    {
+      "shot": "original-intact"
+    }
+  ],
+  "judge": {
+    "criteria": [
+      "分叉出的会话被打开，它的内容从那条提问开始，没有把分叉点之后的回复一起带过来",
+      "原会话重新打开时一问一答都在，标题没有变成 (fork)",
+      "侧边栏里新会话出现在合理的位置（原会话之下或列表内），没有出现两条同名或空白的行",
+      "整体看起来像一个正常工作的产品（对齐、层级、文案一致）",
+      "会话正文由夹具的确定性转录提供，正文措辞本身不是判据"
+    ],
+    "maxImages": 8
+  }
+}

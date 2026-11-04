@@ -5,7 +5,7 @@
  * harness only replaces the Tauri boundary. If a server is already listening on
  * the port it is reused and left running, which is the normal interactive case.
  */
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer, Socket } from "node:net";
@@ -20,6 +20,25 @@ export const ASSETS_PORT = 7392;
 export const TERMINAL_PORT = 7391;
 /** The mobile workspace, overridable because a worktree may not have node_modules. */
 export const MOBILE_ROOT = process.env.FUTURE_MOBILE_ROOT || resolve(REPO_ROOT, "mobile");
+
+/**
+ * The main checkout root, for files git does not carry.
+ *
+ * `desktop/shot/assets/*.png` are generated demo figures and `.gitignore`d, and
+ * `node_modules` is installed per checkout — so a fresh worktree has neither.
+ * The figures are inputs to the mocks (not branch code), so falling back to the
+ * main checkout's copy is correct; without it every mobile/remote run died with
+ * "demo assets missing" after a worktree checkout.
+ */
+export function mainCheckout() {
+  try {
+    const commonDir = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: REPO_ROOT, encoding: "utf8" }).trim();
+    return resolve(commonDir, "..");
+  }
+  catch {
+    return REPO_ROOT;
+  }
+}
 
 async function reachable(url, timeout = 1200) {
   try {
@@ -117,6 +136,22 @@ export async function ensureMobileServer({ port = null, reuse = false, root = MO
     return { url, reused: true, stop: async () => {} };
   if (!existsSync(resolve(root, "package.json")))
     throw new Error(`mobile workspace not found: ${root}`);
+  // Metro watches `node_modules` and dies with ENOENT if it is missing — in a
+  // fresh git worktree the npm workspaces root has none. That surfaced as a hang
+  // (the page never became ready) rather than as "install the deps", so check
+  // first and say what to run.
+  const depsRoot = resolve(root, "..");
+  if (!existsSync(resolve(depsRoot, "node_modules")) && !existsSync(resolve(root, "node_modules")))
+    throw new Error(`mobile surface needs installed dependencies in ${depsRoot}\nrun: npm install  (in ${depsRoot})`);
+  // Expo web needs `react-native-web`, which this repo consumes but does not
+  // declare: it sits in the main checkout's node_modules and is absent from the
+  // lockfile, so a fresh checkout fails inside Metro with an
+  // `UnableToResolveError` served as HTTP 500 — a white page, which reads as
+  // "the app is blank", the most misleading shape a failure can take. Name it.
+  const missing = ["react-native-web"].filter(name =>
+    !existsSync(resolve(depsRoot, "node_modules", name)) && !existsSync(resolve(root, "node_modules", name)));
+  if (missing.length)
+    throw new Error(`mobile web surface needs ${missing.join(", ")} in ${depsRoot}\nnot declared by the repo; install with: npm install --no-save ${missing.join(" ")}\nor point FUTURE_MOBILE_ROOT at a checkout that has it`);
 
   const child = spawn("npm", ["exec", "--", "expo", "start", "--web", "--port", String(chosen)], {
     cwd: root,
@@ -157,9 +192,13 @@ export async function ensureAssetServer({ port = ASSETS_PORT } = {}) {
   if (await reachable(probe))
     return { url: `http://127.0.0.1:${port}`, reused: true, stop: async () => {} };
 
-  const root = resolve(REPO_ROOT, "desktop", "shot", "assets");
-  if (!existsSync(root))
-    throw new Error(`demo assets missing: ${root}`);
+  const candidates = [
+    resolve(REPO_ROOT, "desktop", "shot", "assets"),
+    resolve(mainCheckout(), "desktop", "shot", "assets"),
+  ];
+  const root = candidates.find(dir => existsSync(dir));
+  if (!root)
+    throw new Error(`demo assets missing (looked in ${candidates.join(", ")})`);
 
   const server = createHttpServer((req, res) => {
     const name = decodeURIComponent(String(req.url ?? "/").split("?")[0]).replace(/^\/+/, "");

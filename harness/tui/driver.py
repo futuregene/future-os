@@ -18,6 +18,7 @@ import json
 import os
 import pty
 import select
+import shutil
 import signal
 import socket
 import struct
@@ -133,6 +134,25 @@ KEYS = {
 }
 
 
+def key_bytes(name: str) -> bytes | None:
+    """The bytes a named key writes, or ``None`` when the name is not a key.
+
+    ``ctrl+<letter>`` is derived instead of listed. The table above spells out
+    only the chords some case happened to need first, so every other one —
+    ``ctrl+q`` opens the preferences box, ``ctrl+p`` the palette — could not be
+    pressed at all and a step asking for it failed with "unknown key". Xterm
+    sends ctrl + letter as the letter's position in the alphabet.
+    """
+    if name in KEYS:
+        return KEYS[name]
+    if len(name) == 1:
+        return name.encode()
+    letter = name.removeprefix("ctrl+")
+    if letter != name and len(letter) == 1 and "a" <= letter <= "z":
+        return bytes([ord(letter) - 96])
+    return None
+
+
 class Session:
     def __init__(self, bin_path: str, agent: str, port: int, cols: int, rows: int, home: Path):
         self.cols, self.rows = cols, rows
@@ -222,6 +242,13 @@ def main() -> int:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     home = out_dir / "home"
+    # Every case starts from a clean `FUTURE_HOME`. Re-running a case under the
+    # same run name reuses this directory, and `tui/settings.json` outlives the
+    # process (`sidebarVisible`, `language`, `themeId`, folded workspaces): the
+    # second run of a case that changes a preference otherwise starts in the
+    # state the first run left behind, which reads as the product forgetting a
+    # setting it was just asked to keep.
+    shutil.rmtree(home, ignore_errors=True)
     home.mkdir(parents=True, exist_ok=True)
 
     port = free_port()
@@ -252,12 +279,10 @@ def main() -> int:
                     session.drain(float(step["wait"]) / 1000)
                 elif action == "press":
                     key = str(step["press"]).lower()
-                    if key in KEYS:
-                        session.send(KEYS[key])
-                    elif len(key) == 1:
-                        session.send(key.encode())
-                    else:
+                    data = key_bytes(key)
+                    if data is None:
                         raise RuntimeError(f"unknown key {step['press']!r}")
+                    session.send(data)
                 elif action == "keys":
                     session.send(str(step["keys"]).encode())
                 elif action == "type":
@@ -286,7 +311,7 @@ def main() -> int:
                     t0 = time.time()
                     if inner == "press":
                         key = str(measure_spec["press"]).lower()
-                        session.send(KEYS.get(key, key.encode() if len(key) == 1 else b""))
+                        session.send(key_bytes(key) or b"")
                     elif inner == "type":
                         session.send(str(measure_spec["type"]).encode())
                     else:
@@ -314,6 +339,17 @@ def main() -> int:
                     entry["value"] = value
                     if not ok:
                         raise RuntimeError(f"TUI performance expectation failed: {metric} = {value}, expected <= {limit} ({reason})")
+                elif action == "restart":
+                    # Quit `future tui` and start it again against the same agent
+                    # and the same `FUTURE_HOME`: the only way to see that a
+                    # preference (`tui/settings.json`) survived the cut, since a
+                    # single process cannot show what the next one reads back.
+                    # `wait` (ms) is the settle time for the new process.
+                    session.close()
+                    session = Session(
+                        future_bin(), str(agent), port, args.cols, args.rows, home
+                    )
+                    session.drain(float(step.get("wait", 2000)) / 1000)
                 elif action == "shot":
                     entry["shot"] = session.shot(out_dir / "shots" / f"{index:02d}-{step['shot']}.png")
                 else:

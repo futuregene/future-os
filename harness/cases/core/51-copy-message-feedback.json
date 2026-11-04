@@ -1,0 +1,166 @@
+{
+  "id": "copy-message-feedback",
+  "title": "复制一条消息：按钮给出「已复制」反馈",
+  "area": "conversation",
+  "priority": "P1",
+  "tags": [
+    "conversation",
+    "copy",
+    "clipboard"
+  ],
+  "description": "打开一条真实会话，把鼠标移到助手回复上，复制按钮才出现（不悬停时不挡阅读）。点复制，按钮应立即给出「已复制」的反馈（图标变成对勾）并自动复原，且不能弹「复制到剪贴板失败」。同一操作对用户自己发的消息也成立——两处按钮分别属于回复自己和消息头部，任何一处错位都会让读者点空。这里不读系统剪贴板（headless 下不可靠），断言的是产品给出的反馈与不出现失败提示。",
+  "preconditions": "应用已启动；首屏至少一条会话（会话内至少一问一答，由夹具的确定性转录提供）。",
+  "expectations": [
+    "悬停助手回复后复制按钮出现在该回复上，未悬停时不显示",
+    "点复制后按钮图标变成对勾，且不出现「复制到剪贴板失败」",
+    "用户消息上的复制按钮同样可用并给出对勾反馈",
+    "反馈约 1.4 秒后自动复原，页面没有残留提示或报错"
+  ],
+  "steps": [
+    {
+      "wait": 1200
+    },
+    {
+      "eval": "window.__rows = [...document.querySelectorAll('[aria-label$=\" 的操作\"]')].map(el => el.getAttribute('aria-label').replace(/ 的操作$/, '')); window.__rows.length",
+      "as": "rowCount",
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "window.__rows.length >= 1",
+        "message": "首屏至少一行会话"
+      },
+      "capture": false
+    },
+    {
+      "eval": "window.__rows[0]",
+      "as": "target",
+      "capture": false
+    },
+    {
+      "click": {
+        "aria": "{{target}}"
+      },
+      "capture": false
+    },
+    {
+      "wait": 1500
+    },
+    {
+      "eval": "JSON.stringify([...document.querySelectorAll('main article')].map((a, i) => ({ i, copy: [...a.querySelectorAll('button[aria-label=\"复制\"]')].length, txt: (a.innerText || '').slice(0, 20) })))",
+      "as": "articles",
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "document.querySelectorAll('main article').length >= 2",
+        "message": "会话里至少一问一答两条消息"
+      },
+      "capture": false
+    },
+    {
+      "eval": "(() => { const b = document.querySelector('main article:last-of-type button[aria-label=\"复制\"]'); return b ? getComputedStyle(b).opacity : 'missing'; })()",
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "(() => { const b = document.querySelector('main article:last-of-type button[aria-label=\"复制\"]'); return !!b && getComputedStyle(b).opacity === '0'; })()",
+        "message": "未悬停时复制按钮不显示"
+      },
+      "capture": false
+    },
+    {
+      "hover": {
+        "selector": "main article:last-of-type"
+      },
+      "capture": false
+    },
+    {
+      "wait": 400
+    },
+    {
+      "assert": {
+        "expr": "(() => { const b = document.querySelector('main article:last-of-type button[aria-label=\"复制\"]'); return !!b && getComputedStyle(b).opacity === '1' && !!b.querySelector('svg.lucide-clipboard'); })()",
+        "message": "悬停后回复上的复制按钮出现（剪贴板图标）"
+      },
+      "capture": false
+    },
+    {
+      "shot": "hover-copy"
+    },
+    {
+      "click": {
+        "selector": "main article:last-of-type button[aria-label=\"复制\"]"
+      },
+      "capture": false
+    },
+    {
+      "wait": 350
+    },
+    {
+      "assert": {
+        "expr": "(() => { const b = document.querySelector('main article:last-of-type button[aria-label=\"复制\"]'); return !!b && !!b.querySelector('svg.lucide-check'); })()",
+        "message": "点复制后按钮变成对勾，给出已复制反馈"
+      },
+      "capture": false
+    },
+    {
+      "expectAbsent": "复制到剪贴板失败",
+      "capture": false
+    },
+    {
+      "shot": "copied-reply"
+    },
+    {
+      "wait": 1800
+    },
+    {
+      "assert": {
+        "expr": "(() => { const b = document.querySelector('main article:last-of-type button[aria-label=\"复制\"]'); return !!b && !!b.querySelector('svg.lucide-clipboard'); })()",
+        "message": "反馈约 1.4 秒后自动复原为剪贴板图标"
+      },
+      "capture": false
+    },
+    {
+      "hover": {
+        "selector": "main article:first-of-type"
+      },
+      "capture": false
+    },
+    {
+      "wait": 400
+    },
+    {
+      "click": {
+        "selector": "main article:first-of-type button[aria-label=\"复制\"]"
+      },
+      "capture": false
+    },
+    {
+      "wait": 350
+    },
+    {
+      "assert": {
+        "expr": "(() => { const b = document.querySelector('main article:first-of-type button[aria-label=\"复制\"]'); return !!b && !!b.querySelector('svg.lucide-check'); })()",
+        "message": "用户消息上的复制按钮同样给出对勾反馈"
+      },
+      "capture": false
+    },
+    {
+      "expectAbsent": "复制到剪贴板失败",
+      "capture": false
+    },
+    {
+      "shot": "copied-user"
+    }
+  ],
+  "judge": {
+    "criteria": [
+      "复制反馈出现在被复制的那条消息旁，按钮呈对勾状态，没有贴错消息",
+      "界面上没有「复制到剪贴板失败」之类的报错或提示条",
+      "未悬停的消息上不显示复制按钮，正文没有被按钮遮挡",
+      "整体对齐、层级、文案一致，看起来像一个正常工作的产品"
+    ],
+    "maxImages": 8
+  }
+}

@@ -1,0 +1,215 @@
+{
+  "id": "tool-call-fold-expand",
+  "title": "工具调用折叠行：点开看到这条调用读的文件，再收起只剩摘要",
+  "area": "conversation",
+  "priority": "P1",
+  "tags": [
+    "conversation",
+    "tool-call",
+    "fold"
+  ],
+  "query": {
+    "toolRun": "1"
+  },
+  "description": "新开一条对话发一句话。这一轮回复先调用一次 read 工具再给答案：回复结束后，调用不该铺在正文里，而应折成一行「查看过程 · 工具调用 1 次」，正文只留下答案。点这一行展开，能看到这条调用本身（「已读取」），再点开这一条，能看到它读的是哪个文件；每层的按钮文案与箭头都要随之切换。再逐层收起，页面回到折叠态。折叠是会话内容区读长回复的基本手段：折叠层数或展开态出错，答案会被工作过程挤走，或者整段内容再也打不开。",
+  "preconditions": "应用已启动；回复由 shot mock 流式返回，?toolRun=1 让这一轮包含一次 read 工具调用（读 src/parser.ts）。",
+  "expectations": [
+    "回复结束后工具调用被折成一行摘要，正文只留答案",
+    "摘要写明工具调用次数（工具调用 1 次）",
+    "点开摘要能看到这条调用「已读取」，文案变成「收起过程」且箭头朝上",
+    "再点开这条调用能看到它读的文件 src/parser.ts",
+    "逐层收起后调用内容消失，摘要行恢复为「查看过程」",
+    "整个过程没有残留加载态、空白块或报错文案"
+  ],
+  "steps": [
+    {
+      "wait": 900
+    },
+    {
+      "db": {
+        "sql": "SELECT COUNT(*) AS n FROM threads WHERE deleted_at IS NULL AND status != 'deleted'",
+        "as": "startCount"
+      },
+      "capture": false
+    },
+    {
+      "click": {
+        "aria": "新建对话"
+      },
+      "capture": false
+    },
+    {
+      "waitFor": {
+        "text": "欢迎使用"
+      },
+      "capture": false,
+      "timeout": 5000
+    },
+    {
+      "click": {
+        "selector": "[role=textbox]"
+      },
+      "capture": false
+    },
+    {
+      "type": "折叠演示：看一下解析器的实现",
+      "capture": false
+    },
+    {
+      "click": {
+        "aria": "发送"
+      },
+      "capture": false
+    },
+    {
+      "waitFor": {
+        "text": "查看过程"
+      },
+      "capture": false,
+      "timeout": 20000
+    },
+    {
+      "wait": 700
+    },
+    {
+      "eval": "(() => { const a = [...document.querySelectorAll('main article')].at(-1); return a ? a.innerText : ''; })()",
+      "as": "reply",
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "(() => { const a = [...document.querySelectorAll('main article')].at(-1); const t = a ? a.innerText : ''; return t.includes('查看过程') && t.includes('工具调用 1 次'); })()",
+        "message": "工具调用折成一行摘要，并写明调用次数"
+      },
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "(() => { const a = [...document.querySelectorAll('main article')].at(-1); const t = a ? a.innerText : ''; return !t.includes('已读取') && !t.includes('src/parser.ts'); })()",
+        "message": "收起时调用与它的目标都不在正文里"
+      },
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "(() => { const b = [...document.querySelectorAll('main button')].find(el => (el.innerText || '').trim().startsWith('查看过程')); return !!b && b.getAttribute('aria-expanded') === 'false' && !!b.querySelector('svg.lucide-chevron-down'); })()",
+        "message": "摘要行初始是收起态，箭头朝下"
+      },
+      "capture": false
+    },
+    {
+      "shot": "folded"
+    },
+    {
+      "click": {
+        "text": "查看过程"
+      },
+      "capture": false
+    },
+    {
+      "wait": 500
+    },
+    {
+      "assert": {
+        "expr": "(() => { const a = [...document.querySelectorAll('main article')].at(-1); return !!a && a.innerText.includes('已读取'); })()",
+        "message": "展开后出现这条调用"
+      },
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "(() => { const b = [...document.querySelectorAll('main button')].find(el => (el.innerText || '').trim().startsWith('收起过程')); return !!b && b.getAttribute('aria-expanded') === 'true' && !!b.querySelector('svg.lucide-chevron-up'); })()",
+        "message": "摘要文案切到「收起过程」，箭头朝上"
+      },
+      "capture": false
+    },
+    {
+      "shot": "expanded-process"
+    },
+    {
+      "click": {
+        "selector": "main article:last-of-type button",
+        "text": "已读取"
+      },
+      "capture": false
+    },
+    {
+      "wait": 500
+    },
+    {
+      "assert": {
+        "expr": "(() => { const a = [...document.querySelectorAll('main article')].at(-1); return !!a && a.innerText.includes('src/parser.ts'); })()",
+        "message": "点开这条调用后能看到它读的文件"
+      },
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "(() => { const b = [...document.querySelectorAll('main article:last-of-type button')].find(el => (el.innerText || '').trim().startsWith('已读取')); return !!b && b.getAttribute('aria-expanded') === 'true'; })()",
+        "message": "这条调用自身也是展开态"
+      },
+      "capture": false
+    },
+    {
+      "shot": "tool-target"
+    },
+    {
+      "click": {
+        "selector": "main article:last-of-type button",
+        "text": "已读取"
+      },
+      "capture": false
+    },
+    {
+      "wait": 500
+    },
+    {
+      "assert": {
+        "expr": "(() => { const a = [...document.querySelectorAll('main article')].at(-1); return !!a && !a.innerText.includes('src/parser.ts'); })()",
+        "message": "再点一次收起了文件路径"
+      },
+      "capture": false
+    },
+    {
+      "click": {
+        "text": "收起过程"
+      },
+      "capture": false
+    },
+    {
+      "wait": 500
+    },
+    {
+      "assert": {
+        "expr": "(() => { const a = [...document.querySelectorAll('main article')].at(-1); const t = a ? a.innerText : ''; return t.includes('查看过程') && !t.includes('已读取'); })()",
+        "message": "收起后回到只有摘要的折叠态"
+      },
+      "capture": false
+    },
+    {
+      "shot": "collapsed-again"
+    },
+    {
+      "db": {
+        "sql": "SELECT COUNT(*) AS n FROM threads WHERE deleted_at IS NULL AND status != 'deleted'",
+        "delta": 1,
+        "message": "这一轮确实创建了新会话"
+      },
+      "capture": false
+    },
+    {
+      "expectAbsent": "复制到剪贴板失败",
+      "capture": false
+    }
+  ],
+  "judge": {
+    "criteria": [
+      "折叠态只有一行摘要（查看过程 · 工具调用 1 次）加箭头，正文是答案本身，没有铺开的工具输出",
+      "展开态能看到这条读取调用的目标文件 src/parser.ts，文字完整可读、没有被截成残片",
+      "收起后回到折叠态，答案仍在，没有空白块、没有残留的加载指示或报错",
+      "各层缩进与对齐有层次，文案一致，看起来像一个正常工作的产品",
+      "回复正文是夹具固定的演示文案（与提问是否切题不是本例判据），只看折叠/展开的呈现、层级与可读性"
+    ],
+    "maxImages": 8
+  }
+}
