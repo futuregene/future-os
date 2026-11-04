@@ -61,6 +61,12 @@ function tierIcon(tier: ApprovalChipTier, className: string) {
 
 interface Props {
   disabled?: boolean;
+  /**
+   * The send path is not ready yet (the model catalogue is still loading). The
+   * editor stays editable — the draft must survive — so this only holds the send
+   * button back and puts the reason on screen.
+   */
+  preparing?: boolean;
   modelId?: string;
   modelOptions: AgentModelOption[];
   modelsEmptyReason?: "no_models" | "all_disabled";
@@ -94,7 +100,7 @@ interface Props {
   };
 }
 
-export function ComposerControls({ disabled, modelId, modelOptions, modelsEmptyReason, onModelChange, thinkingLevel, onThinkingLevelChange, approvalTier, futureSessionStatus, onChangeApprovalTier, sending, onAbort, handleAttachFiles, inputEmpty, attachmentCount, sendPending, recommendPending, compactionPending, queue }: Props) {
+export function ComposerControls({ disabled, preparing, modelId, modelOptions, modelsEmptyReason, onModelChange, thinkingLevel, onThinkingLevelChange, approvalTier, futureSessionStatus, onChangeApprovalTier, sending, onAbort, handleAttachFiles, inputEmpty, attachmentCount, sendPending, recommendPending, compactionPending, queue }: Props) {
   const { t, i18n } = useTranslation("agent");
   const sandboxAvailability = useSandboxAvailability();
   const writeOnlySandbox = isWriteOnlySandbox(sandboxAvailability);
@@ -429,11 +435,27 @@ export function ComposerControls({ disabled, modelId, modelOptions, modelsEmptyR
                         </span>
                       )
                     : null}
+                  {/* The composer cannot send yet (the model catalogue is still
+                      loading). Say so next to the button: a disabled button with
+                      no explanation is indistinguishable from a broken one, and
+                      the draft sitting in the box must not look unsendable for
+                      no reason. */}
+                  {preparing
+                    ? (
+                        <span
+                          className="shrink-0 text-xs whitespace-nowrap text-ink-muted"
+                          role="status"
+                        >
+                          {t("composer.preparing")}
+                        </span>
+                      )
+                    : null}
                   <button
                     className="inline-flex size-7 items-center justify-center rounded-md bg-accent-fill text-white transition-colors hover:bg-accent-fill-hover disabled:bg-accent-fill-disabled"
                     disabled={
                       (inputEmpty && attachmentCount === 0)
                       || disabled
+                      || preparing
                       || sendPending
                       || compactionPending
                       || recommendPending
@@ -444,7 +466,9 @@ export function ComposerControls({ disabled, modelId, modelOptions, modelsEmptyR
                       : compactionPending ? t("composer.compacting") : t("composer.send")}
                     title={recommendPending
                       ? t("composer.recommending")
-                      : compactionPending ? t("composer.compacting") : t("composer.send")}
+                      : compactionPending
+                        ? t("composer.compacting")
+                        : preparing ? t("composer.preparing") : t("composer.send")}
                   >
                     {recommendPending || compactionPending
                       ? <Loader2 className="size-3.5 animate-spin" />
