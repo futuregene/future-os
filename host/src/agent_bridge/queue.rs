@@ -80,12 +80,19 @@ pub fn queue_state_json(state: &Value) -> Value {
     let recent = field(state, "recentTerminalAcks", "recent_terminal_acks")
         .and_then(|rows| rows.as_array().cloned())
         .unwrap_or_default();
-    // A display window, not an audit log: keep the newest ones and drop the rest,
-    // so one long-lived conversation cannot grow every queue answer without
-    // bound.
-    let recent = recent
+    // The same window also holds how the run that *did* run ended (`settled`).
+    // That is the reply the reader just watched finish, not a row that left the
+    // queue, so it is not news a client can announce: forwarded, it says a
+    // waiting message went missing when nothing was waiting. Dropped before the
+    // cap, so finished turns cannot push the real acks out of the window.
+    let mut recent = recent
         .iter()
-        .skip(recent.len().saturating_sub(QUEUE_ACK_WINDOW))
+        .filter(|row| {
+            field(row, "reason", "reason")
+                .and_then(|v| v.as_str().map(str::to_string))
+                .as_deref()
+                != Some("settled")
+        })
         .map(|row| {
             json!({
                 "runId": field(row, "runId", "run_id").and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
@@ -94,6 +101,10 @@ pub fn queue_state_json(state: &Value) -> Value {
             })
         })
         .collect::<Vec<_>>();
+    // A display window, not an audit log: keep the newest ones and drop the rest,
+    // so one long-lived conversation cannot grow every queue answer without
+    // bound.
+    recent.drain(..recent.len().saturating_sub(QUEUE_ACK_WINDOW));
     json!({ "activeRunId": active_run_id, "queued": queued, "recentTerminalAcks": recent })
 }
 
@@ -179,5 +190,48 @@ mod tests {
         let idle = queue_state_json(&json!({}));
         assert_eq!(idle["queued"].as_array().expect("a list").len(), 0);
         assert_eq!(empty_queue(), idle);
+    }
+
+    /// The run that actually ran ends as `settled`. A client reads this list as
+    /// "rows that left the queue without running", so that ack says the wrong
+    /// thing: a waiting message would go missing when nothing was waiting. It is
+    /// dropped, and the reasons that are news pass through untouched.
+    #[test]
+    fn a_finished_turn_is_not_a_row_that_left_the_queue() {
+        let state = json!({
+            "recentTerminalAcks": [
+                { "runId": "run_ran", "state": "terminal", "reason": "settled" },
+                { "runId": "run_merged", "state": "terminal", "reason": "merged" },
+                { "runId": "run_taken_back", "state": "cancelled", "reason": "cancelled" }
+            ]
+        });
+        let acks = queue_state_json(&state)["recentTerminalAcks"]
+            .as_array()
+            .expect("a list")
+            .clone();
+        let reasons: Vec<&str> = acks
+            .iter()
+            .map(|ack| ack["reason"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            reasons,
+            vec!["merged", "cancelled"],
+            "only the rows that left the queue without running are news"
+        );
+    }
+
+    /// Finished turns are the common case, so they must not spend the window: a
+    /// long conversation would otherwise push out every real ack it still wants
+    /// announced.
+    #[test]
+    fn finished_turns_do_not_crowd_out_the_rows_that_really_left() {
+        let mut acks: Vec<Value> = (0..30)
+            .map(|index| json!({"runId": format!("run_{index}"), "state": "terminal", "reason": "settled"}))
+            .collect();
+        acks.push(json!({"runId": "run_last", "state": "terminal", "reason": "merged"}));
+        let snapshot = queue_state_json(&json!({ "recentTerminalAcks": acks }));
+        let rows = snapshot["recentTerminalAcks"].as_array().expect("a list");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["runId"], "run_last");
     }
 }
