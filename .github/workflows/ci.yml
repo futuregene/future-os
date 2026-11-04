@@ -3,8 +3,6 @@ name: CI
 on:
   pull_request:
   merge_group:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       projects:
@@ -22,10 +20,10 @@ permissions:
   contents: read
   actions: read
 
-# PRs cancel stale runs. Main runs serialize so their cache-save steps finish.
+# Cancel stale runs for the same event and ref.
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'push' }}
+  cancel-in-progress: true
 
 jobs:
   affected:
@@ -55,7 +53,6 @@ jobs:
         env:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
-          PUSH_BASE: ${{ github.event.before }}
           MERGE_BASE: ${{ github.event.merge_group.base_sha }}
         run: |
           node --input-type=module <<'JS'
@@ -68,8 +65,8 @@ jobs:
               { encoding: 'utf8' }).trim();
             files = execFileSync('git', ['diff', '--name-only', '--no-renames', '-z', base, process.env.PR_HEAD],
               { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }).split('\0').filter(Boolean);
-          } else if (['push', 'merge_group'].includes(process.env.GITHUB_EVENT_NAME)) {
-            const base = process.env.MERGE_BASE || process.env.PUSH_BASE;
+          } else if (process.env.GITHUB_EVENT_NAME === 'merge_group') {
+            const base = process.env.MERGE_BASE;
             if (!base || /^0+$/.test(base)) throw new Error('Missing diff base');
             files = execFileSync('git', ['diff', '--name-only', '--no-renames', '-z', base, 'HEAD'],
               { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }).split('\0').filter(Boolean);
