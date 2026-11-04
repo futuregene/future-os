@@ -394,7 +394,6 @@ function ReadyAppShell({
     recentThreadIds,
     refreshStore,
     ensureScope,
-    loadMore,
     loadRemaining,
     scopeHasMore,
     scopeLoading,
@@ -1680,7 +1679,6 @@ function ReadyAppShell({
     // set, so a released build cannot reach this handler.
     onShowArchiveGuide: DEV ? showArchiveGuide : undefined,
     ensureThreadScope: ensureScope,
-    loadMoreThreadScope: loadMore,
     loadRemainingThreadScope: loadRemaining,
     threadScopeHasMore: scopeHasMore,
     threadScopeLoading: scopeLoading,

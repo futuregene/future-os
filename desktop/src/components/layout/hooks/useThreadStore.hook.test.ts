@@ -257,22 +257,6 @@ describe("useThreadStore", () => {
     h.unmount();
   });
 
-  it("loadMore advances a scope's cursor and reports when it is exhausted", async () => {
-    listThreadsPage.mockResolvedValueOnce(pageOf([thread("t1")], "cursor-1"));
-    const h = await mountStore();
-    expect(h.current.scopeHasMore("chat")).toBe(true);
-
-    listThreadsPage.mockResolvedValueOnce(pageOf([thread("t2")], null));
-    await act(async () => {
-      await h.current.loadMore("chat");
-    });
-    expect(listThreadsPage.mock.calls[1]![0]).toBe("chat");
-    expect(listThreadsPage.mock.calls[1]![1]).toBe("cursor-1");
-    expect(h.current.threads.map(t => t.id).sort()).toEqual(["t1", "t2"]);
-    expect(h.current.scopeHasMore("chat")).toBe(false);
-    h.unmount();
-  });
-
   /**
    * The recent view's own stream.
    *

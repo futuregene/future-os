@@ -68,7 +68,7 @@
     "reorderView": "拖到另一项上可交换位置",
     "recentActive": "活跃",
     "recentEarlier": "更早",
-    "recentShowMore": "再显示 {{count}} 个",
+    "showMore": "再显示 {{count}} 个",
     "recentJustNow": "刚刚",
     "recentActions": "最近列表操作",
     "archive": "归档",

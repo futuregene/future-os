@@ -390,7 +390,7 @@ export function MergedRows({
         {recentMore !== undefined && recentMore > 0
           ? (
               <button
-                aria-label={t("activityRail.recentShowMore", { count: recentMore })}
+                aria-label={t("activityRail.showMore", { count: recentMore })}
                 disabled={recentMoreBusy}
                 // Accent ink on its own soft fill: the palette contract holds
                 // that pair to AA, whereas `surface-subtle` left it short in six
@@ -401,7 +401,7 @@ export function MergedRows({
                 onClick={onShowMoreRecent}
                 type="button"
               >
-                {t("activityRail.recentShowMore", { count: recentMore })}
+                {t("activityRail.showMore", { count: recentMore })}
               </button>
             )
           : null}
