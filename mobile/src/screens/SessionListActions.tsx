@@ -1,4 +1,4 @@
-import { ListChecks, MoreHorizontal, Search } from "lucide-react-native";
+import { Archive, ListChecks, MoreHorizontal, Search } from "lucide-react-native";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, StyleSheet } from "react-native";
@@ -21,12 +21,18 @@ import { createThemedStyles, useTheme } from "../theme/ThemeContext";
  * on screen. This is only the way in.
  */
 export function SessionListActions({
+  archivedOpen,
   onSearch,
   onSelect,
+  onToggleArchived,
   canSelect,
 }: {
+  /** Whether the archived view is the one being shown (the row then closes it). */
+  archivedOpen: boolean;
   onSearch(): void;
   onSelect(): void;
+  /** Switch the list between the default pages and the archived view. */
+  onToggleArchived(): void;
   /**
    * Whether a batch has anything it may hold.
    *
@@ -64,6 +70,14 @@ export function SessionListActions({
             icon: <ListChecks size={18} color={colors.inkSoft} />,
             disabled: !canSelect,
             onPress: onSelect,
+          },
+          {
+            // A destination, not a mode of the page: the archived view replaces
+            // the three default pages, so its own row says which way the switch
+            // goes — the same statement the desktop's archived entry makes.
+            label: archivedOpen ? t("sessions.backToActive") : t("sessions.archived"),
+            icon: <Archive size={18} color={colors.inkSoft} />,
+            onPress: onToggleArchived,
           },
         ]}
       />
