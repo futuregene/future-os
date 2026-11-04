@@ -571,7 +571,13 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             payload: typed_payload,
         };
 
-        Ok(tonic::Response::new(proto_resp))
+        let mut response = tonic::Response::new(proto_resp);
+        let mode = self.state.session_manager.storage_mode();
+        response.metadata_mut().insert(
+            future_rpc::storage::STORAGE_MODE_HEADER,
+            mode.as_str().parse().expect("static storage mode"),
+        );
+        Ok(response)
     }
 
     #[allow(clippy::result_large_err)]

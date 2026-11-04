@@ -14,6 +14,27 @@ pub struct SqliteStore {
 }
 
 impl SqliteStore {
+    /// Publish a genuinely fresh, bounded metadata-only conversation in one
+    /// transaction. Large extension bodies keep the existing leased staging path.
+    pub(crate) fn create_initial(&self, session: &str, entry: Value) -> Result<()> {
+        if !super::content::entries::inline_initial(&entry) {
+            self.bind_events(session)?;
+            return self.replace(session, vec![entry]);
+        }
+        let session = session.to_owned();
+        self.db.call_as("session_create", move |db| {
+            let tx = super::database::begin_write_transaction(db)?;
+            let id = super::identity::BoundIdentity::fresh_session(&tx, &session)?;
+            let reserved: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1) OR EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1) OR EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1)", [&id], |row| row.get(0))?;
+            anyhow::ensure!(!reserved, "session identity is already reserved or deleted");
+            tx.execute("INSERT INTO sessions(id,revision) VALUES (?1,-1)", [&id])?;
+            super::content::enable(&tx, &id)?;
+            rewrite_transcript_rows(&tx, &session, vec![entry])?;
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
     /// A transcript can be absent while its session-scoped events exist.
     pub fn contains(&self, session: &str) -> Result<bool> {
         let session = session.to_owned();

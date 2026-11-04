@@ -50,6 +50,15 @@ impl Manager {
         }
     }
 
+    /// Readiness must never touch the filesystem or wait for storage.
+    pub(crate) fn storage_mode(&self) -> future_rpc::storage::StorageMode {
+        if self.store.get().is_some_and(|store| store.db.is_nfs()) {
+            future_rpc::storage::StorageMode::Nfs
+        } else {
+            future_rpc::storage::StorageMode::Wal
+        }
+    }
+
     pub fn default_for(cwd: &str) -> Self {
         Self::new(default_session_dir(cwd))
     }
@@ -451,6 +460,29 @@ impl Manager {
             tx.commit()?;
             Ok(())
         })
+    }
+
+    pub(crate) fn create_initial(&self, session: &Session) -> Result<()> {
+        #[cfg(test)]
+        if self
+            .fail_saves_remaining
+            .try_update(
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+                |count| count.checked_sub(1),
+            )
+            .is_ok()
+        {
+            return Err(anyhow!("injected session save failure"));
+        }
+        anyhow::ensure!(
+            session.entries.len() == 1,
+            "fresh session must contain one metadata entry"
+        );
+        self.storage()?
+            .create_initial(&session.id, serde_json::to_value(&session.entries[0])?)?;
+        self.invalidate_display_projection(&session.id);
+        Ok(())
     }
 
     pub fn save(&self, session: &Session) -> Result<()> {
