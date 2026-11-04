@@ -1297,6 +1297,16 @@ mod gui {
         if let Err(error) = terminal::server::bind() {
             tracing::error!(event = "initialize_process_state", error = %error,"FutureOS terminal server bind failed: {error}");
         }
+        // A paired desktop drives these same shells (see
+        // `docs/internals/desktop/embedded-terminal.md` §Remote). What the
+        // control plane may offer is advertised in the handshake, so a machine
+        // without a registry — `future host` — never offers a panel it cannot
+        // fill.
+        if let Some(manager) = terminal::server::manager() {
+            if future_host::terminal_service::install(manager.clone()) {
+                future_remote_server::services::set_terminal_available(true);
+            }
+        }
         Ok(())
     }
 

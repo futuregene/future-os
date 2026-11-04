@@ -26,6 +26,20 @@ pub const CATALOG_ACTIVITY_FEATURE: &str = "catalog_activity_v1";
 pub const CATALOG_DELTA_FEATURE: &str = "catalog_delta_v1";
 pub const REPLY_GZIP_FEATURE: &str = "reply_gzip_v1";
 
+/// Whether a host serves the embedded terminal over the control plane.
+///
+/// Advertised by the *host*, not declared by a client: a paired desktop shows
+/// the terminal entry point only on a host that says it can open a shell. A
+/// host without a PTY registry (a headless `future host`, or a desktop build
+/// that never installed one) leaves it out, so the client hides the panel
+/// instead of collecting `Unsupported command` on every keystroke.
+///
+/// Terminal commands travel the ordinary command lane (list/create/update/
+/// delete/read/write), which is why a client that never sends them needs no
+/// change at all. Nothing about the lane is binary: a read page and a keystroke
+/// are base64 in the same JSON envelope every other command uses.
+pub const TERMINAL_FEATURE: &str = "terminal_v1";
+
 /// Clients that declare this capability keep proving they are still there:
 /// a `client_presence` beat while they are, and `client_disconnect` when they
 /// leave. A client that does not declare it is never presumed gone for being

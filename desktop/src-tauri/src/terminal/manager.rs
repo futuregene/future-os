@@ -406,7 +406,12 @@ impl Manager {
         }
     }
 
-    fn session(&self, id: &str) -> Result<Arc<Session>, ManagerError> {
+    /// The session behind an id.
+    ///
+    /// `pub(crate)` so the remote control plane's adapter (`terminal::service`)
+    /// can read a page and write input without going through an `Attachment` it
+    /// would have to register and drop per call.
+    pub(crate) fn session(&self, id: &str) -> Result<Arc<Session>, ManagerError> {
         let registry = self.registry.lock().unwrap();
         registry
             .sessions

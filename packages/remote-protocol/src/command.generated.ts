@@ -100,6 +100,18 @@ export interface RemoteCommand {
   contentRequest?: { databaseId: string; restoreGeneration: string; epoch: number; cursor: number; field: string; offset?: number; maxBytes?: number };
   /** Host-owned Fusion settings patch with expected_revision. */
   fusionSettings?: Record<string, unknown>;
+  /** Embedded terminal: the session's id on the host that owns it (`terminal_list` / `terminal_read` / `terminal_write` / `terminal_update` / `terminal_delete`). */
+  terminalId?: string;
+  /** Embedded terminal: the absolute output byte offset the client already applied; -1 tails from the current end. */
+  terminalCursor?: number;
+  /** Embedded terminal: base64 bytes — keyboard input on `terminal_write`. */
+  terminalData?: string;
+  /** Embedded terminal tab title (`terminal_create` / `terminal_update`). */
+  title?: string;
+  /** Embedded terminal viewport width in cells (`terminal_create` / `terminal_update`). */
+  cols?: number;
+  /** Embedded terminal viewport height in cells (`terminal_create` / `terminal_update`). */
+  rows?: number;
 }
 
 export interface UploadReference {

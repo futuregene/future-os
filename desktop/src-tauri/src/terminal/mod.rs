@@ -23,6 +23,7 @@ pub mod manager;
 pub mod protocol;
 pub mod pty;
 pub mod server;
+pub mod service;
 pub mod session;
 pub mod shell;
 pub mod ticket;
