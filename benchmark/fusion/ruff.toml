@@ -1,0 +1,2 @@
+# Keep the vendored upstream scorer byte-for-byte identical to its pinned source.
+extend-exclude = ["third_party"]

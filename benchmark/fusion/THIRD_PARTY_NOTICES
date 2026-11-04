@@ -1,0 +1,37 @@
+Frozen benchmark inputs
+=======================
+
+suites/*.cases.json contains normalized excerpts from these pinned upstream
+datasets. The original question text and reference answers are preserved; row
+identifiers, scorer names and provenance metadata are added by this harness.
+No model answers or benchmark results are included.
+
+ZebraLogic, WildEval
+  https://huggingface.co/datasets/WildEval/ZebraLogic
+  Revision: 0a473f5a0054835754ed156d5a79c6ce27178bb1
+  Source: grid_mode/test-00000-of-00001.parquet
+  Paper: https://arxiv.org/abs/2502.01100
+  The downloaded dataset card contains citation information but no explicit
+  license field. This notice does not assign a new license to those inputs.
+
+BigBench Extra Hard (BBEH), Google DeepMind / Google LLC
+  https://github.com/google-deepmind/bbeh
+  Revision: 80d12ca916b7158f22293fcf3144f4d3d854d4be
+  Source: bbeh/mini/data.json
+  Apache License 2.0; license text retained at third_party/bbeh/LICENSE.
+  third_party/bbeh/evaluate.py is copied unchanged from bbeh/evaluate.py at
+  the same revision, with original copyright and license notices preserved.
+  third_party/bbeh/source.json records its original path and file hashes.
+
+Omni-MATH, KbsdJames/Omni-MATH contributors
+  https://huggingface.co/datasets/KbsdJames/Omni-MATH
+  Revision: 40ba231d8f16e29ecd40e6407e2c8640145a8f62
+  Source: test.jsonl
+  Paper: https://arxiv.org/abs/2410.07985
+  The upstream dataset card declares Apache License 2.0; the standard license
+  text is retained at third_party/bbeh/LICENSE.
+
+Full upstream datasets, their downloaded documentation and any future MuSR
+inputs remain in the ignored data/ cache unless selected into a frozen suite.
+sources.lock.json pins the download locations and versions. Per-file upstream
+hashes and per-question hashes are retained with the frozen suites.

@@ -12,6 +12,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
 import { readNativeClipboardFilePaths, readNativeClipboardImage, savePastedFile, savePastedImage } from "../../integrations/storage/threadStore";
+import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { cn } from "../../lib/cn";
 import { EMPTY_EDITOR_ATTR } from "../../lib/editableTarget";
 import { errorMessage } from "../../lib/errors";
@@ -280,6 +281,7 @@ export function RemoteComposer({
   const { t } = useTranslation("remotePeer");
   const { t: fusionT } = useTranslation("agent");
   const fusionAvailable = useRemoteFusionAvailability(peer);
+  const build = useBuildInfo();
   const [text, setText] = useState("");
   /**
    * Whether another paired device drives the host, which is what closes every
@@ -872,7 +874,7 @@ export function RemoteComposer({
   );
 
   const commands = useRemoteCommands({
-    canFusion: fusionAvailable,
+    canFusion: build.data?.isRelease === false && fusionAvailable,
     // A compact request is a command to the host too, and a host another device
     // drives refuses it. Left out of the menu rather than drawn disabled: a
     // slash menu is a list of things you can ask for.

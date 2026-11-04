@@ -26,6 +26,8 @@ vi.mock("./remotePeerClient", async (importOriginal) => {
 // here. Their calls land on the Tauri boundary, which is mocked instead.
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock("../../integrations/tauri/invoke", () => ({ invokeCommand: invoke }));
+const build = vi.hoisted(() => ({ data: null as { isRelease: boolean } | null }));
+vi.mock("../../integrations/tauri/useBuildInfo", () => ({ useBuildInfo: () => build }));
 // The sub-pages' panels are their own concerns; they are covered where they live.
 vi.mock("./RemoteModelsPanel", () => ({
   RemoteModelsPanel: (props: { hidden: string[]; onChangeHidden: (next: string[]) => void }) => (
@@ -144,12 +146,24 @@ async function settle(): Promise<void> {
 }
 
 beforeEach(() => {
+  build.data = { isRelease: false };
   listeners = [];
   document.body.innerHTML = "";
   request.mockReset();
   invoke.mockReset();
   invoke.mockResolvedValue(undefined);
   answerHost();
+});
+
+it.each([null, { isRelease: true }, { isRelease: false }])("shows the remote Fusion settings entry only on a known test build (%s)", async (buildInfo) => {
+  build.data = buildInfo;
+  const view = await mount({ peer: peer({ features: ["fusion_settings_v1"] }) });
+  try {
+    expect(view.container.querySelector("[aria-label=\"Fusion · Studio iMac\"]") !== null).toBe(buildInfo?.isRelease === false);
+  }
+  finally {
+    await view.unmount();
+  }
 });
 
 /** The counts are the host's answer, not a guess from what this machine has. */

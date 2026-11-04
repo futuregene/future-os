@@ -564,6 +564,123 @@ async fn an_isolated_recovery_refuses_direct_and_queued_work_before_any_model_or
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn long_reasoning_disconnect_retries_without_resealing_a_closed_message() {
+    // Cover both an omitted provider end and an explicit end before EOF. The
+    // production broadcaster and segmented journal must retain the same UTF-8
+    // prefix, publish a terminal outcome, and admit a subsequent ordinary run.
+    for provider_closes in [false, true] {
+        let fragment = "思考🙂".repeat(2048);
+        let mut first = vec![ModelStreamEvent::ReasoningStart { id: "r".into() }];
+        for _ in 0..64 {
+            first.push(ModelStreamEvent::ReasoningDelta {
+                id: "r".into(),
+                text: fragment.clone(),
+            });
+        }
+        if provider_closes {
+            first.push(ModelStreamEvent::ReasoningEnd {
+                id: "r".into(),
+                provider_metadata: Default::default(),
+            });
+        }
+        first.push(ModelStreamEvent::Error {
+            message: format!("{} synthetic EOF", crate::llm::UPSTREAM_DISCONNECTED),
+        });
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(first),
+            text_turn("recovered"),
+            text_turn("next"),
+        ]);
+        let fixture = run_fixture_with_id(
+            provider.clone(),
+            "long-reasoning-retry",
+            &uuid::Uuid::new_v4().to_string(),
+        );
+        let mut session = fixture.session;
+        let lease = session.prompt("first", &[], &[], None, None).unwrap();
+        wait_for_run_end(&session).await;
+        assert!(session.broadcaster.persistence_error().is_none());
+        assert_eq!(provider.requests.lock().unwrap().len(), 2);
+        let stored = session.session_manager.load(&session.session_id).unwrap();
+        let messages = crate::session::entries_to_agent_messages(&stored.entries, false);
+        let thoughts: Vec<_> = messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|block| {
+                if let crate::types::ContentBlock::Reasoning { text, .. } = block {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(thoughts, vec![fragment.repeat(64)]);
+        let terminal = session
+            .session_manager
+            .run_terminal(&session.session_id, &lease.run_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(terminal["state"], "completed");
+        session.prompt("second", &[], &[], None, None).unwrap();
+        wait_for_run_end(&session).await;
+        assert!(session.broadcaster.persistence_error().is_none());
+        assert_eq!(session.messages.read().last().unwrap().text(), "next");
+    }
+}
+
+#[test]
+fn fusion_policy_reaches_the_provider_and_does_not_leak_to_an_ordinary_run() {
+    let _home = crate::test_support::TestHome::new();
+    let store = future_fusion::Store::open(&crate::utils::future_home()).unwrap();
+    let provider = ScriptedProvider::new(vec![text_turn("first"), text_turn("second")]);
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let fixture = run_fixture_with_id(
+                provider.clone(),
+                "fusion-system-policy",
+                &uuid::Uuid::new_v4().to_string(),
+            );
+            let mut session = fixture.session;
+            session.set_system_prompt("A custom system prompt.");
+            store.heartbeat("prompt-policy-fixture").unwrap();
+            session
+                .prompt("/fusion Think through this request", &[], &[], None, None)
+                .unwrap();
+            wait_for_run_end(&session).await;
+            session
+                .prompt("Ordinary follow-up", &[], &[], None, None)
+                .unwrap();
+            wait_for_run_end(&session).await;
+        });
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0]
+        .system_prompt
+        .contains("A custom system prompt."));
+    assert!(requests[0]
+        .system_prompt
+        .contains(future_fusion::DISCUSSION_POLICY));
+    assert_eq!(
+        requests[0]
+            .tools
+            .iter()
+            .filter(|tool| tool.function.name == "fusion")
+            .count(),
+        1
+    );
+    assert!(!requests[1]
+        .system_prompt
+        .contains(future_fusion::DISCUSSION_POLICY));
+    assert!(!requests[1]
+        .tools
+        .iter()
+        .any(|tool| tool.function.name == "fusion"));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn prompt_text_run_completes_and_persists() {
     let fixture = run_fixture(
         ScriptedProvider::new(vec![text_turn("the answer")]),

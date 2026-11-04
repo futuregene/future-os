@@ -97,6 +97,15 @@ export type TimelineItem =
        * that has no entry yet simply has none.
        */
       sourceEntryId?: string;
+      /**
+       * When the human wrote this prompt, ISO — the persisted entry's own
+       * creation time, or the moment this client handed a prompt to a desktop
+       * that has not made it durable yet. Set on user bubbles only: a reply's
+       * clock is its run (`startedAt` / `durationMs`), so an assistant row
+       * carries none. Absent on a projection with no durable record (the model
+       * context view), and the row then draws no timestamp at all.
+       */
+      createdAt?: string;
       // Live "in-flight" flag for assistant replies, mirroring the desktop app's
       // per-message `status === "streaming"`. While true the footer shows the
       // generating indicator instead of the copy button. Driven by agent_start /

@@ -1,0 +1,92 @@
+{
+  "schema": 1,
+  "purpose": "development pilot; not a headline capability claim",
+  "seed": "future-fusion-pilot-v1",
+  "sources_lock_sha256": "7cacf4a2d56b34da931c63cc2ab50d89a739d644cee480b989dd0b6310f98f71",
+  "cases": [
+    {
+      "id": "zebra:lgp-test-3x6-35",
+      "dataset": "zebra",
+      "stratum": "3*6",
+      "question_sha256": "d00bc9049f40cfa01d1d36db1375fd0c54bdcc907179e51560bd306033a3c071",
+      "answer_sha256": "ca0858d9caaf1db209c7c4cdc251642d8357913bdee5b360dde3e8f2ef8c088b"
+    },
+    {
+      "id": "zebra:lgp-test-2x5-19",
+      "dataset": "zebra",
+      "stratum": "2*5",
+      "question_sha256": "a0037646c8d92b1b5bfa65df8f3f7583af376cf626560d2384a5c2478240403e",
+      "answer_sha256": "e6d66ff17d6ffa2b64376ef90c20dad974c7f3f291265af418a480dcdfa6c256"
+    },
+    {
+      "id": "zebra:lgp-test-3x2-39",
+      "dataset": "zebra",
+      "stratum": "3*2",
+      "question_sha256": "f7eb9f707ed6ab7a9aa5090ed70e10f5e59e28a257949ffae7d6cf9718f562bc",
+      "answer_sha256": "5cf8bdc4c41466b0703d48a1a10732381de52e38115d7421b4dcc59fff365f08"
+    },
+    {
+      "id": "zebra:lgp-test-3x4-16",
+      "dataset": "zebra",
+      "stratum": "3*4",
+      "question_sha256": "9adaf57563fce96a87548c1735c96367fb59a400db327540ad2320706bcf87f2",
+      "answer_sha256": "d78d18ed890de8f319a7ee8aa4356e999e79aca470f1c0425b60ec54d4913eb7"
+    },
+    {
+      "id": "bbeh:189",
+      "dataset": "bbeh",
+      "stratum": "mini",
+      "question_sha256": "cbd440a46b50aa4dd9362b88e95dc553c353c2f28a8afea8060cd219b86ff255",
+      "answer_sha256": "0e4bf8aa7acc25b1fc387c16d216b64fead7967c6b3da01e0faf1dc286463fb8"
+    },
+    {
+      "id": "bbeh:12",
+      "dataset": "bbeh",
+      "stratum": "mini",
+      "question_sha256": "977e2a5cc24c60e10b832051b7b5deee26080b7b006f33852fabac1d3d58a3da",
+      "answer_sha256": "184fda5c980b9d9cb375f42a528817c6235fbd4f79775a8018fae5afcbdf2a63"
+    },
+    {
+      "id": "bbeh:83",
+      "dataset": "bbeh",
+      "stratum": "mini",
+      "question_sha256": "2ab6d5a9fea5c6273c274981d6391fb6230a94455ea99579d48f7382d6d4eedd",
+      "answer_sha256": "cc11310c456c3690d5a74c23aa31cc25b4e74cdae146c71e54ad9dbc1d109fde"
+    },
+    {
+      "id": "bbeh:207",
+      "dataset": "bbeh",
+      "stratum": "mini",
+      "question_sha256": "34f47f46903c419e8160e6e7f38f67f06a80fb2635e1f1fc51bd51d995b187ed",
+      "answer_sha256": "92e9e7e5922d26e17e48f0869ab25cc99499fdab722c065de8e0965c96c68e86"
+    },
+    {
+      "id": "omni:3792",
+      "dataset": "omni",
+      "stratum": "9.0",
+      "question_sha256": "59d502ec36d706be50344578d4ff9449fd040a187ce5a1f4550e29448798f095",
+      "answer_sha256": "a4aab3f1f08004e907d2357fafe74cab56359bcb32e23f52e7eb1d3a9c0a2ad3"
+    },
+    {
+      "id": "omni:1792",
+      "dataset": "omni",
+      "stratum": "7.0",
+      "question_sha256": "7339be3e78395f5356f01d7c885c946f57e5804cc8570c5e2a5b8972b8462a33",
+      "answer_sha256": "8422fd83e7fb8842e0d56d9612ef66b31b4a03ee7d56e9a982f5cb0e72d52e50"
+    },
+    {
+      "id": "omni:6",
+      "dataset": "omni",
+      "stratum": "8.0",
+      "question_sha256": "b8203321eec42eb0166043f137a3d85a838938ac5ed8ce943b9fb2f6155d0998",
+      "answer_sha256": "fd758ee420fe529b1d80852c77a195bd00a1be2202bac6a370b9151633b57497"
+    },
+    {
+      "id": "omni:3157",
+      "dataset": "omni",
+      "stratum": "1.5",
+      "question_sha256": "1df56b4c286cfc0eb1132b6536d92d8cd1e0b5261f3d7d7894933f3fcd817a81",
+      "answer_sha256": "046419ca5ecebeb34fdfe9dde8106ccee5ce39f8e4dd115e8ef20b869f8bed82"
+    }
+  ]
+}
