@@ -100,3 +100,7 @@ coverage-agent-lcov.info
 
 # Python bytecode (scripts)
 __pycache__/
+
+# UI harness: base DB snapshot, per-run evidence and issue drafts
+/harness/.data/
+/harness/runs/
