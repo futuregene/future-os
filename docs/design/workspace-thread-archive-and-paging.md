@@ -182,15 +182,21 @@ descendants are all visible", so the descendant query needs no status filtering.
 
 - **Tree view**: a collapsed workspace **does not load its conversations**
   (collapse becomes real lazy loading, not just visual); expanding fetches the
-  first page. Each workspace group and the chat section offer "load more" at the
-  bottom.
+  first page, and so does a group that starts expanded. Each workspace group and
+  the chat section offer "load more" at the bottom.
 - **Recent view**: the active stretch comes from `list_active_threads` (unpaged,
   naturally small); the earlier stretch uses the `recent` scope's global cursor
   stream, replacing the client-side `recentLimit` window;
-  `RECENT_PAGE_SIZE = 30` stays as the page size.
+  `RECENT_PAGE_SIZE = 30` stays as the page size. Every page reports the scope's
+  own root count (`ThreadsPage.total_roots`), so the control under the list names
+  the real remainder and one click loads all of it — a cursor alone cannot say
+  how much is left, and naming the loaded part was the defect.
 - **Archived view**: flat, `archived_at DESC`, 50 trees per page.
-- **Workspace list**: same cursor mechanism (`archived_at IS NULL` by default);
-  pinned workspaces are also fetched separately in full.
+- **Workspace list**: read whole at startup, not paged, and the section does not
+  fold. The list holds user workspaces only (a chat's temporary workspace never
+  appears in it), so it is one or two requests; a "load more workspaces" under
+  the last group hid workspaces behind a click the reader had no reason to make.
+  Pinned workspaces are also fetched separately in full.
 
 ### 4.5 Event-driven updates replace full reloads (a prerequisite)
 
@@ -401,7 +407,7 @@ and slide animations are disabled while the bubble still appears.
 | Phase | Scope | Acceptance |
 |---|---|---|
 | **P1 Archive loop** | Tree archive + workspace archive (schema migration) + archived view + read-only detail + first-archive guide | Archive → hidden → searchable → detail view → restore → history intact and continuable; migration idempotent on old databases |
-| **P2 Pagination** | `store-changed` events + store rework + cursor paging for all three list kinds + collapse lazy-loading + recent-view rework | With 1000 conversations, startup fetches only pinned + first pages; mutations no longer trigger full reloads |
+| **P2 Pagination** | `store-changed` events + store rework + cursor paging for the conversation scopes + collapse lazy-loading + recent-view rework (its own `recent` stream, true remainder) + the workspace list read whole | With 1000 conversations, startup fetches only pinned + the chat page; the recent view pages the whole store 30 at a time; mutations no longer trigger full reloads |
 | **P3 Search & propagation** | Server-side search (with archived partition) + remote-catalogue `archived` flag | Unloaded rows are findable |
 | **P4 As needed** | Agent `list_sessions` paging, TUI/mobile, render virtualization, opt-in auto-archive | — |
 
