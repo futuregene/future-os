@@ -444,22 +444,47 @@ async function visionFindings(result, runDir, { limit = 3, native = false, model
 
 /** Ordered evidence for one case: actions first, then the whole recording. */
 async function judgeEvidence(result, runDir, { limit = 8 } = {}) {
-  const images = [];
+  const all = [];
   for (const step of result.steps ?? []) {
     if (!step.shot && !step.failureShot)
       continue;
     const path = step.failureShot ?? step.shot;
-    if (!path || images.some(item => item.path === path))
+    if (!path || all.some(item => item.path === path))
       continue;
-    images.push({ path, label: `第 ${step.index} 步 · ${step.action}${step.note ? ` · ${step.note}` : ""}${step.ok === false ? "（失败现场）" : ""}` });
+    all.push({ path, label: `第 ${step.index} 步 · ${step.action}${step.note ? ` · ${step.note}` : ""}${step.ok === false ? "（失败现场）" : ""}` });
+  }
+  // Keep the final state, always.
+  //
+  // A case can take 20+ screenshots; slicing to the first N dropped the one that
+  // shows how things ended, and the filmstrip alone was too coarse to read a
+  // closing overlay from — the model reported "the picker is still covering the
+  // list" on a case whose last screenshot showed it closed. Sampling now keeps
+  // the first frame, evenly spaced middle frames, and the last one, labelled.
+  let images = all;
+  if (all.length > limit) {
+    const picked = [all[0]];
+    const middle = Math.max(1, limit - 2);
+    for (let i = 1; i <= middle; i++)
+      picked.push(all[Math.round((i * (all.length - 1)) / (middle + 1))]);
+    picked.push(all.at(-1));
+    images = picked.filter((item, index, list) => list.findIndex(other => other.path === item.path) === index);
+    images[images.length - 1] = { ...images.at(-1), label: `最终状态 · ${images.at(-1).label}` };
+  }
+  else if (images.length) {
+    images[images.length - 1] = { ...images.at(-1), label: `最终状态 · ${images.at(-1).label}` };
   }
   const dir = join(runDir, "vision", result.id);
   mkdirSync(dir, { recursive: true });
   const videoPath = result.artifacts?.dir ? join(result.artifacts.dir, "video.mp4") : null;
   const strip = videoPath ? await filmstrip(videoPath, join(dir, "judge-filmstrip.png"), { frames: 12 }) : null;
-  if (strip)
-    images.push({ path: strip, label: "整段操作录像的 12 帧拼图（从左到右、从上到下，按真实时间）" });
-  return images.slice(0, limit + 1);
+  // The filmstrip goes just before the final-state screenshot, so the image the
+  // model reads last is unambiguously "how the run ended".
+  if (strip) {
+    const final = images.at(-1);
+    const head = images.slice(0, -1);
+    images = [...head, { path: strip, label: "整段操作录像的 12 帧拼图（从左到右、从上到下，按真实时间；抽帧可能与最终状态帧不同步，以标有「最终状态」的那张为准）" }, ...(final ? [final] : [])];
+  }
+  return images;
 }
 
 /**
