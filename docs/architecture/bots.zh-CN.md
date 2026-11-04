@@ -1,4 +1,4 @@
-# 机器人与频道（Bots and Channels）设计
+# 机器人与机器人组（Bots and Bot Groups）设计
 
 [English](bots.md)
 
@@ -6,7 +6,7 @@
 
 本文只描述设计：不含代码改动，不改任何实际配置，不创建任何 bot，也不触碰 `~/.future/` 下的运行数据。文中"现状即可支撑"一律指仓库里**已有**的机制，逐条给出代码位置与命令行；需要改动的地方单独成节，不与现状混写。
 
-设计要解决的问题：在桌面端把"bot"与"频道"做成一等对象，让用户按角色而不是按任务组织工作，并保证机器人一侧的会话与用户自己的会话**完全隔离**。
+设计要解决的问题：在桌面端把「bot」与「机器人组」做成一等对象，让用户按角色而不是按任务组织工作，并保证机器人一侧的会话与用户自己的会话**完全隔离**。
 
 ---
 
@@ -57,11 +57,13 @@
 | 概念 | 定义 |
 |---|---|
 | **Bot** | 一个 workspace（`AGENTS.md` 写职责、`FUTURE.md` 是记忆索引、`.future/memory/*.md` 是细节）+ 模型与思考级别 + 名字头像 + **一条私聊会话** |
-| **Channel** | 成员（≥ 2 个 bot，可加人）+ **频道 workspace**（共享板）+ 转录账本 + 宪章 + 发言策略 |
-| **Binding** | `(bot × channel)` 的会话：这个 bot 在这个频道里的上下文容器，懒创建 |
+| **机器人组（下文简称"组"）** | 成员（≥ 2 个 bot，可加人）+ **组工作区**（共享板）+ 转录账本 + 宪章 + 发言策略。**不是** `channels/` 那个 IM 渠道 |
+| **Binding** | `(bot × 组)` 的会话：这个 bot 在这个组里的上下文容器，懒创建 |
 | **Turn** | 路由内核派发的一次发言：一次真实 run，结束时把最终文本写入转录 |
 | **总管 Bot** | 一个 `is_primary` 的 bot，职责是路由、维护名册、替用户创建新 bot。它不是特权 agent，只是职责不同的 bot |
-| **会话总管** | 用户自己的普通会话里那个 agent。它必须看不见、也碰不到机器人与频道的会话（§8） |
+| **会话总管** | 用户自己的普通会话里那个 agent。它必须看不见、也碰不到机器人与组的会话（§8） |
+
+命名说明：本设计此前容易与代码里的 `channels/`（IM 桥：飞书、钉钉）混淆，因此对象叫**机器人组**，代码与 CLI 一律用 `group`（表 `bot_groups`、命令 `future group`、界面"机器人组"）。Grok Bot 把自己的同类对象叫 *group chat*，名字接近但语义不同：它由模型决定谁接话，本文由内核决定（§5）。
 
 Bot 恰好等于一个 workspace 是刻意的：`cwd` = bot workspace 时，现有提示词组装器会自动注入 `AGENTS.md`（职责）与 `FUTURE.md`（记忆索引），见 §10.1。
 
@@ -87,7 +89,7 @@ bots(
 );
 CREATE UNIQUE INDEX bots_one_primary ON bots(is_primary) WHERE is_primary = 1;
 
-channels(
+bot_groups(
   id TEXT PRIMARY KEY, name TEXT NOT NULL,
   charter TEXT NOT NULL DEFAULT '',
   workspace_id TEXT NOT NULL,                    -- 软引用 app.db workspaces.id
@@ -100,16 +102,16 @@ channels(
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, archived_at INTEGER, deleted_at INTEGER
 );
 
-channel_members(channel_id TEXT NOT NULL, bot_id TEXT NOT NULL,
+group_members(group_id TEXT NOT NULL, bot_id TEXT NOT NULL,
   role_note TEXT NOT NULL DEFAULT '', joined_at INTEGER NOT NULL,
-  PRIMARY KEY (channel_id, bot_id));
+  PRIMARY KEY (group_id, bot_id));
 
-channel_bindings(channel_id TEXT NOT NULL, bot_id TEXT NOT NULL,
+group_bindings(group_id TEXT NOT NULL, bot_id TEXT NOT NULL,
   session_id TEXT, persona_hash TEXT,
-  PRIMARY KEY (channel_id, bot_id));
+  PRIMARY KEY (group_id, bot_id));
 
-channel_turns(
-  id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, seq INTEGER NOT NULL,
+group_turns(
+  id TEXT PRIMARY KEY, group_id TEXT NOT NULL, seq INTEGER NOT NULL,
   author_kind TEXT NOT NULL,                 -- user | bot | system
   bot_id TEXT, text TEXT NOT NULL,
   run_id TEXT, session_id TEXT,
@@ -117,19 +119,19 @@ channel_turns(
   mentioned_json TEXT NOT NULL DEFAULT '[]',
   wake_reason TEXT,                          -- 谁或哪条规则把它叫醒的
   error_message TEXT, created_at INTEGER NOT NULL, finished_at INTEGER);
-CREATE UNIQUE INDEX channel_turns_seq ON channel_turns(channel_id, seq);
+CREATE UNIQUE INDEX group_turns_seq ON group_turns(group_id, seq);
 ```
 
 对既有表的唯一改动（在 `app.db`）：
 
 ```sql
 -- host/src/store/migrations.rs 的版本化迁移；schema.rs 同步给新库
-ALTER TABLE threads ADD COLUMN scope TEXT NOT NULL DEFAULT 'user';  -- user | bot | channel
+ALTER TABLE threads ADD COLUMN scope TEXT NOT NULL DEFAULT 'user';  -- user | bot | group
 ```
 
-`scope` 是隔离机制的唯一真相列（§8），不是派生字段：`bots.dm_thread_id` 与 `channel_bindings` 里出现过的线程，`scope` 必须与之一致，并由一致性检查兜底（§3.3）。
+`scope` 是隔离机制的唯一真相列（§8），不是派生字段：`bots.dm_thread_id` 与 `group_bindings` 里出现过的线程，`scope` 必须与之一致，并由一致性检查兜底（§3.3）。
 
-复用而非新建：`workspaces`（bot 与频道各占一行 `kind='user'`，出现在侧栏是可接受的，也让人能直接打开目录）、`threads`（bot 私聊就是一条普通 thread）、会话本身仍归 agent 的库（`created_by='bot'` 只是多一个标记）。
+复用而非新建：`workspaces`（bot 与组各占一行 `kind='user'`，出现在侧栏是可接受的，也让人能直接打开目录）、`threads`（bot 私聊就是一条普通 thread）、会话本身仍归 agent 的库（`created_by='bot'` 只是多一个标记）。
 
 ### 3.3 跨库一致性
 
@@ -138,8 +140,8 @@ ALTER TABLE threads ADD COLUMN scope TEXT NOT NULL DEFAULT 'user';  -- user | bo
 | 操作 | 顺序 | 崩在中间的表现与修复 |
 |---|---|---|
 | 建 bot | ① 写 workspaces 行 → ② 建 thread（`scope='bot'`）→ ③ 写 bots 行 | ①②之后崩：孤儿 workspace／thread，被启动扫到的清理器按 `scope='bot'` 且无 bots 行判定回收 |
-| 建频道 | ① 写 workspaces 行 → ② 写 channels 行 | 孤儿 workspace 同上回收 |
-| 删 bot／频道 | ① stop 执行器并清队列 → ② 删 bots.db 行（软删）→ ③ 删 thread 与 workspace | ②之后崩：库里没有 bot、thread 还在——它已被 `scope='bot'` 排除在用户列表外，启动扫描补删 |
+| 建组 | ① 写 workspaces 行 → ② 写 bot_groups 行 | 孤儿 workspace 同上回收 |
+| 删 bot／组 | ① stop 执行器并清队列 → ② 删 bots.db 行（软删）→ ③ 删 thread 与 workspace | ②之后崩：库里没有 bot、thread 还在——它已被 `scope='bot'` 排除在用户列表外，启动扫描补删 |
 
 三条规则：
 
@@ -163,7 +165,7 @@ ALTER TABLE threads ADD COLUMN scope TEXT NOT NULL DEFAULT 'user';  -- user | bo
 
 ```
 future bot list|show|new|rename|set|hide|delete
-future channel list|show|new|add|remove|post|policy
+future group list|show|new|add|remove|post|policy
 ```
 
 `future bot new` 是"一句话建 bot"的唯一入口：人和 bot 走同一条路。
@@ -177,12 +179,12 @@ future channel list|show|new|add|remove|post|policy
 | 层 | 内容 | 生命周期 | 注入方式 |
 |---|---|---|---|
 | **L1 bot 私有** | 职责（`AGENTS.md`）、记忆索引（`FUTURE.md`，按 30 条 / 100 行 / 12 KB 上限 lint）、细节记忆（按需 `read`）、私聊会话历史 | 永久 | `cwd` 自动注入前两项；私聊历史在 bot 自己的会话里 |
-| **L2 频道共享** | 宪章、成员花名册（名字 + 一句话职责）、全体机器人花名册、频道 workspace 路径、频道摘要、发言策略、说话规则 | 频道存活期；内容 hash 变化才刷新 | 会话级 `append_system_prompt` |
+| **L2 组共享** | 宪章、成员花名册（名字 + 一句话职责）、全体机器人花名册、组工作区路径、组摘要、发言策略、说话规则 | 组存活期；内容 hash 变化才刷新 | 会话级 `append_system_prompt` |
 | **L3 本回合信封** | 谁叫醒你、那条消息原文、转录窗口、本回合要求 | 单回合 | 用户消息正文前缀 |
 
 ### 4.2 装配形状
 
-系统提示词（每个 `(bot × channel)` binding 一份）：
+系统提示词（每个 `(bot × 组)` binding 一份）：
 
 ```
 <现有身份段 / 工具段 / 审批段 / 通讯段 —— 不变>
@@ -191,31 +193,31 @@ future channel list|show|new|add|remove|post|policy
 # Workspace Memory           ← cwd 的 FUTURE.md（bot 的记忆索引）
 # Available Skills           ← 全局技能库（全账号共享）
 
-<append_system_prompt —— 频道层>
+<append_system_prompt —— 组层>
 
-# 频道：Launch
+# 组：Launch
 宪章：<charter>
 成员（按发言策略决定谁接话）：
 - @Writer（写发布稿）
 - @Reviewer（只列阻塞问题）
 - @你（Research）
-本机其他机器人（不在本频道，仅供你判断该找谁）：
+本机其他机器人（不在本组，仅供你判断该找谁）：
 - @Support（客户问题）
-频道工作区：<channel-workspace>（与所有人共享）
-频道摘要：<summary>
+组工作区：<group-workspace>（与所有人共享）
+组摘要：<summary>
 
 # 说话规则
-- 你的回合以一条频道消息结束；直接给结论，不要复述别人说过的话
+- 你的回合以一条组消息结束；直接给结论，不要复述别人说过的话
 - 要别人参与就 @ 他，并说清要他做什么；不 @ 等于没叫
-- 频道工作区可以自由读写；你自己的 workspace 是私有的，不要把私密内容写进频道
+- 组工作区可以自由读写；你自己的 workspace 是私有的，不要把私密内容写进组
 - 你要别人手里的文件，给出绝对路径并 @ 他，不要假设对方读得到
-- 不要列举、打开或引用本机用户的会话；你只看得见本频道与你的名册
+- 不要列举、打开或引用本机用户的会话；你只看得见本组与你的名册
 ```
 
 用户消息（每回合）：
 
 ```
-[频道最近 N 条]
+[组最近 N 条]
 Research · 10:02 · <正文，单条截断 800 字>
 Writer   · 10:04 · <正文>
 [现在] @Research 说：<原文>
@@ -224,7 +226,7 @@ Writer   · 10:04 · <正文>
 
 ### 4.3 放置规则（有代码依据）
 
-1. **append 段在 project context 与 workspace memory 之后**，因此它可以覆盖 bot 自己的 `AGENTS.md`。频道层必须**只做加法**：不复述、不改写职责。依据：`agent/src/prompt/mod.rs::build_prompt` 的段序，以及 `agent/src/rpc/session_prompt.rs::build_system_prompt` 把 append 段读在 context 与 memory 之后。
+1. **append 段在 project context 与 workspace memory 之后**，因此它可以覆盖 bot 自己的 `AGENTS.md`。组层必须**只做加法**：不复述、不改写职责。依据：`agent/src/prompt/mod.rs::build_prompt` 的段序，以及 `agent/src/rpc/session_prompt.rs::build_system_prompt` 把 append 段读在 context 与 memory 之后。
 2. **稳定前缀优先**：L1、L2 放系统提示词，L3 放用户消息；L2 只在 `AGENTS.md`／`FUTURE.md`／宪章／成员变化时刷新（内容 hash）。本仓实测：替换系统提示词、去掉工具定义或多加一行，已预热前缀上的命中从 93.7% 掉到 **0%**，整段对话重新按全量计费（[压缩设计](../internals/compaction/compaction.zh-CN.md)，缓存与前缀一节）。
 3. **身份不重复注入**：L1 由 `cwd` 提供，L2 不再抄一遍，否则同一份职责出现两次，模型会按更靠后的那条行事。
 
@@ -234,14 +236,14 @@ Writer   · 10:04 · <正文>
 |---|---|---|
 | 转录窗口 | 3k token，按模型上下文自适应 | 从最旧的整条消息开始裁，不裁半条 |
 | 单条消息 | 800 字，head…tail | 与 `task_runs.result_text` 同一形状 |
-| 滚动摘要 | `channels.summary`，≤ 1200 字 | 代表被裁掉的消息，由一次独立摘要 run 写入 |
+| 滚动摘要 | `bot_groups.summary`，≤ 1200 字 | 代表被裁掉的消息，由一次独立摘要 run 写入 |
 | 摘要触发 | 被裁消息累计 > 2000 字或 > 8 条 | 避免每回合都摘要 |
-| 私聊上下文 | 默认**不进**频道 | 频道开关 `allow_private_context`，默认 0 |
+| 私聊上下文 | 默认**不进**组 | 组开关 `allow_private_context`，默认 0 |
 
 ### 4.5 融合规则
 
-- **记忆只能自己写**：bot 只写自己 workspace 的 `FUTURE.md` 与 `.future/memory/`。跨 bot 传递只能通过"说出来的话"或频道工作区的文件，与 Grok Bot 的"除非一个 bot 给另一个发消息，否则什么都不共享"一致（[PRODUCT.md](https://github.com/unicodef1wn/grokbot-field-notes/blob/main/reference/PRODUCT.md)）。
-- **频道摘要不是记忆**：`channels.summary` 是频道的事实，只注入在该频道发言的回合，不写进任何 bot 的 `FUTURE.md`。
+- **记忆只能自己写**：bot 只写自己 workspace 的 `FUTURE.md` 与 `.future/memory/`。跨 bot 传递只能通过"说出来的话"或组工作区的文件，与 Grok Bot 的"除非一个 bot 给另一个发消息，否则什么都不共享"一致（[PRODUCT.md](https://github.com/unicodef1wn/grokbot-field-notes/blob/main/reference/PRODUCT.md)）。
+- **组摘要不是记忆**：`bot_groups.summary` 是组的事实，只注入在该组发言的回合，不写进任何 bot 的 `FUTURE.md`。
 - **过程不进转录**：一个回合贡献最终文本 + 一行活动摘要，完整工具过程留在 binding 会话里可展开。代价是看不到别人正在做什么，用一行状态补。
 - **失败进转录**：`failed`／`cancelled` 写一条 system 消息，说明谁失败、为什么、怎么重试。Grok Bot 的群聊没有这个位置，现场表现是"看起来没人理你"。
 
@@ -249,7 +251,7 @@ Writer   · 10:04 · <正文>
 
 ## 5. 发言策略
 
-`channels.speak_policy` 三档，差别只在"判断"与"干活"是否分开：
+`bot_groups.speak_policy` 三档，差别只在"判断"与"干活"是否分开：
 
 | 策略 | 每条用户消息的模型调用 | 手感 | 成本量级 |
 |---|---|---|---|
@@ -259,15 +261,15 @@ Writer   · 10:04 · <正文>
 
 关键差别在量级：真实 run 带身份段、工具定义、技能清单、记忆索引，是数十 KB 级；判定请求只带"一句职责 + 最近 3 条 + 这条消息"，几百 token，且不带工具。因此 `eager` 把每个成员都问一遍，总代价仍远小于"每个成员跑一次完整 run"——这正是 Grok Bot 的群聊成本来源（[ANTIPATTERNS §35](https://github.com/unicodef1wn/grokbot-field-notes/blob/main/ANTIPATTERNS.md)）。具体倍率要实测（§16）。
 
-**默认是 `router`。** 新建频道默认把总管计入成员（§9.2），由它判定；用户拒绝创建总管时退到 `mention_only`，不会在没有判定器的情况下假装 `router`。`eager` 默认关闭，作为频道级选项保留。
+**默认是 `router`。** 新建组默认把总管计入成员（§9.2），由它判定；用户拒绝创建总管时退到 `mention_only`，不会在没有判定器的情况下假装 `router`。`eager` 默认关闭，作为组级选项保留。
 
 判定器的契约：
 
-- 输入只有：本机花名册（名字 + 一句话职责）、本频道成员、最近 3 条消息、这条新消息、自己的职责一句话。
+- 输入只有：本机花名册（名字 + 一句话职责）、本组成员、最近 3 条消息、这条新消息、自己的职责一句话。
 - 输出只有：`(bot_id, 一句理由)` 列表，或"无人接话"。
 - 不带工具、不读记忆、不读工作区，因此会误判。两条缝：判定可以回 `maybe`，只有在预算尚有余量时才落地为真实 run；被误唤醒的 bot 有权在自己的回复里说"这条不该我"，并计入预算。
 - 判定失败（超时、模型报错）→ 退回 `mention_only`，并写一条 system 消息，绝不静默不回。
-- `wake_reason` 记进 `channel_turns`，让"为什么它接了"可解释。
+- `wake_reason` 记进 `group_turns`，让"为什么它接了"可解释。
 
 ---
 
@@ -310,12 +312,12 @@ should_stop(queue, budget, seen) -> Option<StopReason>
 
 `host/src/bots/executor.rs`，与 `host/src/tasks.rs` 的 tick 循环同构（GUI 与 headless 共享同一份服务，Tauri 侧只是薄适配，参见 `desktop/src-tauri/src/commands/tasks.rs`）。
 
-- **同频道串行**，保证转录顺序；**跨频道最多 2 路并行**，与 fusion 的并发上限一致。
+- **同组串行**，保证转录顺序；**跨组最多 2 路并行**，与 fusion 的并发上限一致。
 - **一个回合 = 一次真实 run**：按 binding 会话发 `future run --session <sid> --model … --thinking … "<信封>"`。
-- **回合结束**：最终文本写入 `channel_turns`（`status='done'`），解析其 `@` 时按 `speak_policy` 决定是否再跑判定，然后派发；无人 @ 且判定也说没人接，链结束。
+- **回合结束**：最终文本写入 `group_turns`（`status='done'`），解析其 `@` 时按 `speak_policy` 决定是否再跑判定，然后派发；无人 @ 且判定也说没人接，链结束。
 - **超时**：单回合 600 秒量级；超时先 abort，再写 system 消息。
-- **审批**：bot 的动作可能停在审批上。频道里只显示"等待批准"一行，审批卡回到 bot 私聊与全局待办（与 Grok Bot 的"审批不进群"一致）。因此**人不在时频道会停下来**——这是设计意图，必须让人看得见（§11.2）。
-- **取消**：删除频道或关闭 bot 时先 stop 再 delete，遵循 goal 平面"delete 先 stop"的教训。
+- **审批**：bot 的动作可能停在审批上。组里只显示"等待批准"一行，审批卡回到 bot 私聊与全局待办（与 Grok Bot 的"审批不进群"一致）。因此**人不在时组会停下来**——这是设计意图，必须让人看得见（§11.2）。
+- **取消**：删除组或关闭 bot 时先 stop 再 delete，遵循 goal 平面"delete 先 stop"的教训。
 - **刷新**：任何写操作成功后发 `bots-updated`，与 `tasks-updated` 同一做法——否则"手机端口建了一个 bot、桌面上看不见"会复现任务面板当年的现场报告（见 [tasks.md](tasks.zh-CN.md) §11）。
 
 ---
@@ -326,7 +328,7 @@ should_stop(queue, budget, seen) -> Option<StopReason>
 
 1. "最近"与"工作区"列表**不得**包含机器人创建的会话；
 2. 机器人页面**不得**包含"最近"与"工作区"的会话；
-3. 用户会话里的 agent（会话总管）**不得**触碰机器人与频道的会话。
+3. 用户会话里的 agent（会话总管）**不得**触碰机器人与组的会话。
 
 ### 8.1 两层，各用各的手段
 
@@ -341,9 +343,9 @@ should_stop(queue, budget, seen) -> Option<StopReason>
 
 ### 8.2 线程层
 
-- `threads.scope`（`user` | `bot` | `channel`）是唯一真相列；`list_threads` 及其同类查询加 `scope = 'user'`，机器人页走 `scope <> 'user'`。一处同时满足要求 1 与要求 2。
-- `#` 会话提及在机器人与频道表面**整段禁用**（要求 2 的落点；bot 之间用 `@`，语义不冲突）。频道里的 `@` 菜单只含机器人，不含用户的会话。
-- `scope` 不是派生字段：`bots.dm_thread_id` 与 `channel_bindings` 里出现过的线程必须带对应 `scope`，由 §3.3 的一致性扫描兜底。
+- `threads.scope`（`user` | `bot` | `group`）是唯一真相列；`list_threads` 及其同类查询加 `scope = 'user'`，机器人页走 `scope <> 'user'`。一处同时满足要求 1 与要求 2。
+- `#` 会话提及在机器人与组表面**整段禁用**（要求 2 的落点；bot 之间用 `@`，语义不冲突）。组里的 `@` 菜单只含机器人，不含用户的会话。
+- `scope` 不是派生字段：`bots.dm_thread_id` 与 `group_bindings` 里出现过的线程必须带对应 `scope`，由 §3.3 的一致性扫描兜底。
 
 ### 8.3 会话层：bot 的独立 agent 实例
 
@@ -360,7 +362,7 @@ bot 的会话跑在**第二个 agent 实例**里，状态根为 `<home>/bots/age
   workspaces/<slug>/            # 各 bot 的默认工作区
 ```
 
-由此得到三件事：用户侧 agent 的会话表里没有 bot 会话（不可枚举，而非被过滤）；频道转录与 bot 会话的增长不拖慢用户的 `agent.db`（本仓有过 run journal 撑到 4.4 GiB 的现场）；两个实例可以独立重启，一个崩溃循环不拖另一个。
+由此得到三件事：用户侧 agent 的会话表里没有 bot 会话（不可枚举，而非被过滤）；组转录与 bot 会话的增长不拖慢用户的 `agent.db`（本仓有过 run journal 撑到 4.4 GiB 的现场）；两个实例可以独立重启，一个崩溃循环不拖另一个。
 
 **配置共享**（本方案唯一需要改 agent 的地方）：`models.json`、`auth.json`、技能目录都在 `<home>/agent/` 下，`FUTURE_HOME` 一换就变成两份——加 provider、登出、装技能都要做两次。v1 的做法是加一个**配置目录覆盖**（指向用户那份 `agent/` 配置目录），只影响读取、不动数据。不用符号链接（Windows 需要特权或开发者模式），也不用复制（两份会漂移）。技能上：`~/.future/agent/skills` 跟着 home 走，而 `~/.agents/skills` 本来就在真实用户 home 下、不受影响——用同一个覆盖把它们指回同一路径，bot 与用户看到同一套技能。此后的目标形态是把 `models.json`、`auth.json`、`skills/` 提到 `~/.future/config/`，两边天然共享、覆盖字段作废；那是一次改动已发布布局的任务（迁移、备份清单、沙箱硬拒路径、文档），与机器人功能分开排（§12 第 2 条）。`settings.json` 不进共享：每实例一份（§12 第 3 条）。
 
@@ -400,13 +402,13 @@ bot 的会话跑在**第二个 agent 实例**里，状态根为 `<home>/bots/age
 
 ### 9.1 总管是一个职责不同的 bot，不是特权 agent
 
-它建 bot 的能力就是它本来就能跑的 CLI（`future bot new`、`future channel new`）。没有第二条权限路径，也没有它专属的后门。
+它建 bot 的能力就是它本来就能跑的 CLI（`future bot new`、`future group new`）。没有第二条权限路径，也没有它专属的后门。
 
 | 项 | 设计 |
 |---|---|
 | 唯一性 | `bots.is_primary`，部分唯一索引保证每个 home 至多一个 |
 | 创建 | 首次进入机器人视图时给一张卡："设置你的总管"，一键创建（默认工作区 `<home>/bots/workspaces/chief/`、默认模型、默认职责模板），或从现有 bot 指定一个。对齐 [Grok Bot 的 primary Bot](https://docs.x.ai/grok-bot/bots) |
-| 职责 | 路由（`channels.router_bot_id` 为空时由它判定）、维护名册、替用户建 bot 与频道、汇报进展。**不是**通用助手 |
+| 职责 | 路由（`bot_groups.router_bot_id` 为空时由它判定）、维护名册、替用户建 bot 与组、汇报进展。**不是**通用助手 |
 | 记什么 | 名册、谁在做什么、上次派活的结果（写在它自己的 `FUTURE.md`） |
 | 不该做什么 | 不列举、不读取、不引用用户的会话；不代为回答用户会话里的问题 |
 
@@ -416,7 +418,7 @@ bot 的会话跑在**第二个 agent 实例**里，状态根为 `<home>/bots/age
 |---|---|
 | 一键建总管 | 目录、模型、职责模板全给默认值 |
 | 一句话建成员 | 在总管私聊里说"再建一个负责发布稿的"，总管按**固定骨架**写 `AGENTS.md`（职责／边界／输入来源／验收／何时找谁），不是自由发挥——这正是对治"bot 工厂过拟合"的做法（[PRODUCT.md](https://github.com/unicodef1wn/grokbot-field-notes/blob/main/reference/PRODUCT.md)） |
-| 建频道自带默认成员 | 新建频道默认把总管算进去，"至少两个 bot"由"总管 + 1"满足 |
+| 建组自带默认成员 | 新建组默认把总管算进去，"至少两个 bot"由"总管 + 1"满足 |
 | 从会话长出来 | 一段会话在承担长期职责时，给一条建议："要把这件事固化成 bot 吗？" |
 
 一条护栏：**名册只增不减是这套系统的典型病**。名册页显示"谁是总管 / 谁最近 7 天没被用过"，建议归档而不是删除——隐藏代替删除是 Grok Bot 明确写下的做法（[Create and manage Bots](https://docs.x.ai/grok-bot/bots)：想留着就隐藏，别删）。总管一次建多个之前先问一句，同样来自它的建议。
@@ -450,7 +452,7 @@ bot 的会话跑在**第二个 agent 实例**里，状态根为 `<home>/bots/age
 **三条护栏**：
 
 1. **固定骨架只填槽位**，不让模型自由写段落——这正是 Grok Bot 自己踩过的坑："bot 工厂给新 bot 写描述，倾向于按它刚创建的那个场景过拟合"（[PRODUCT](https://github.com/unicodef1wn/grokbot-field-notes/blob/main/reference/PRODUCT.md)）。职责文件是可读可改的普通文件，这是相对它的结构性优势。
-2. **占位 bot 无职责时标灰**，不参与频道默认成员，也不自动开 routine。
+2. **占位 bot 无职责时标灰**，不参与组默认成员，也不自动开 routine。
 3. **默认工作区** `<home>/bots/workspaces/<slug>/`；要指向现有项目时用 `future bot set <id> --workspace <path>`，不重建。
 
 ---
@@ -463,9 +465,9 @@ bot 会话创建时 `permission_level='all'`，且**不传 `sandbox_tier`**。�
 
 由此得到三个明确结论：
 
-1. **双根问题消失**：bot workspace 与频道 workspace 都能直接读写，不需要 `extra_roots`，也不需要生成规则文件。
+1. **双根问题消失**：bot workspace 与组工作区都能直接读写，不需要 `extra_roots`，也不需要生成规则文件。
 2. **层 0 也不生效**：`models.json`、`approval_rule.json` 的硬拒同样不评估，bot 可以改自己的模型配置与规则文件。这是"完全访问"的字面含义，写在这里避免误读。
-3. **`future bot new` / `future channel new` 不需要审批**，因此"一句话建 bot"是零摩擦的。
+3. **`future bot new` / `future group new` 不需要审批**，因此"一句话建 bot"是零摩擦的。
 
 ### 10.2 由此产生的不对称
 
@@ -490,25 +492,25 @@ bot 会话创建时 `permission_level='all'`，且**不传 `sandbox_tier`**。�
 
 - 结构上没有死锁：唤醒只由 `@` 或判定器触发，且由内核决定；一个 bot 的回合**不能阻塞等待**另一个 bot 的回合，它只能产出文本。没有等待边就没有死锁。
 - 会卡住的有三种，都必须可见：
-  1. **A 把结果写在自己的 workspace 然后 `@B` 说"看结果"。** B 读那个路径要么失败、要么按 §10 读到（全访问下读得到，但这也意味着"私有"只是约定）。要么 B 回一句"我需要这个文件，请贴出来或放到频道工作区"，要么在没有证据的情况下作答。
+  1. **A 把结果写在自己的 workspace 然后 `@B` 说"看结果"。** B 读那个路径要么失败、要么按 §10 读到（全访问下读得到，但这也意味着"私有"只是约定）。要么 B 回一句"我需要这个文件，请贴出来或放到组工作区"，要么在没有证据的情况下作答。
   2. **两个 bot 互相 @ 到预算耗尽。** 终止是确定性的：链深到 2 或回合到 8 时内核停止，写一条 system 消息说明原因，最后两条发言留在转录里。人看到的是"它们聊了 4 条然后停了"。
-  3. **回合结束既没 `@` 也没回答问题。** 最难区分的一种。缓解：把"你的回合以一条频道消息结束"写进 L2，并在 `done` 却无文本时补一条 system 消息。
+  3. **回合结束既没 `@` 也没回答问题。** 最难区分的一种。缓解：把"你的回合以一条组消息结束"写进 L2，并在 `done` 却无文本时补一条 system 消息。
 
 ### 11.2 一个回合停在审批上
 
-- 症状：该回合停在 `ask`，频道显示"等待批准"，run 不结束；人不在时一直停到超时被 abort。
-- 缓解：说话规则要求写前先判断目标位置；频道里等待批准的回合可点击，直接跳到私聊的审批卡；单回合超时后 abort 并写 system 消息，一个 bot 不能拖垮整个频道；**频道内不允许批量批准**。
+- 症状：该回合停在 `ask`，组显示"等待批准"，run 不结束；人不在时一直停到超时被 abort。
+- 缓解：说话规则要求写前先判断目标位置；组里等待批准的回合可点击，直接跳到私聊的审批卡；单回合超时后 abort 并写 system 消息，一个 bot 不能拖垮整个组；**组内不允许批量批准**。
 
 ### 11.3 `@` 语义与既有文件引用的兼容性
 
-现状：在用户会话的编辑器里，`@` 是工作区文件提及（`desktop/src/features/agent/MentionEditor.tsx`，文件 pill 序列化为 `[name](./path)`），`#` 是会话提及。**在此基础上，机器人与频道表面只有一件事不同：`@` 只叫人，不叫文件。**
+现状：在用户会话的编辑器里，`@` 是工作区文件提及（`desktop/src/features/agent/MentionEditor.tsx`，文件 pill 序列化为 `[name](./path)`），`#` 是会话提及。**在此基础上，机器人与组表面只有一件事不同：`@` 只叫人，不叫文件。**
 
 | 既有行为 | 改动后 | 结论 |
 |---|---|---|
 | 已存草稿与消息里的文件 pill | 序列化为 markdown 链接，不经过提及解析 | 不受影响 |
-| `#` 会话提及 | 用户会话里不变；机器人与频道里整段禁用 | 符合隔离要求（§8.2） |
+| `#` 会话提及 | 用户会话里不变；机器人与组里整段禁用 | 符合隔离要求（§8.2） |
 | 用户会话里的 `@` | 不变：仍提工作区文件 | 两套界面各管各的 |
-| 机器人与频道编辑器里的 `@` | **只列机器人**：本频道成员 → 其他机器人 | 菜单里没有文件组（§12 第 6 条） |
+| 机器人与组编辑器里的 `@` | **只列机器人**：本组成员 → 其他机器人 | 菜单里没有文件组（§12 第 6 条） |
 | 机器人表面要给文件 | 拖入，或直接写路径 | 文件是工具层的事，不是叫人 |
 | 手打 `@./src/main.rs` | 不匹配花名册，按普通文本处理 | 不报错、不唤醒 |
 | bot 自己写的 `@Writer`（纯文本） | 内核可解析 | CLI、手机、bot 生成的消息都是纯文本 |
@@ -529,8 +531,8 @@ bot 会话创建时 `permission_level='all'`，且**不传 `sandbox_tier`**。�
 | 3 | **`settings.json` 每实例一份** | 里面有默认模型、审批档位、压缩阈值；bot 想用便宜模型、你想用强的，而且 bot 改它不该改到你 | 若发现两边设置长期完全一致且维护成本成为负担，再评估共享其中的只读字段 |
 | 4 | **默认发言策略 `router`**（有总管）；无总管退 `mention_only`；`eager` 默认关（§5） | 一次几百 token 的判定换掉了"每回合都要人做路由"这个最大摩擦，成本几乎不变 | 判定器的误判率实测（§16 第 6 条）高到用户宁可变频点名时 |
 | 5 | **`eager` 最多 6 个成员，判官用便宜模型**（§5） | 群聊的价值是几个视角而不是人多；判官只需判断职责相关，不需强推理 | 实测发现便宜判官误判明显高于强模型，且用户频繁开 `eager` 时 |
-| 6 | **机器人与频道里 `@` 只列机器人**（§11.3） | 在频道里 `@` 的动作就是叫人；让人先想"这个 `@` 现在指什么"比少一个菜单组贵 | 用户在机器人表面频繁需要引用文件、而拖拽/路径不足以覆盖时，再加回文件组 |
-| 7 | **频道里默认不能引用私聊上下文**，频道级开关（§4.4） | 这个泄漏是静默的：群里其他人只看到一句话，不会知道它来自私聊 | 用户抱怨每次都要重新交代背景、且能接受在转录里标注引用来源时 |
+| 6 | **机器人与组里 `@` 只列机器人**（§11.3） | 在组里 `@` 的动作就是叫人；让人先想"这个 `@` 现在指什么"比少一个菜单组贵 | 用户在机器人表面频繁需要引用文件、而拖拽/路径不足以覆盖时，再加回文件组 |
+| 7 | **组里默认不能引用私聊上下文**，组级开关（§4.4） | 这个泄漏是静默的：群里其他人只看到一句话，不会知道它来自私聊 | 用户抱怨每次都要重新交代背景、且能接受在转录里标注引用来源时 |
 | 8 | **总管建 bot：说出职责就直接建，只有它自己推断时先问一句**（§9.4） | "名册只增不减"是这类系统的通病；但确认卡在用户已经想清楚的主路径上，就只剩下摩擦 | 推断类创建频发且用户觉得问得多余时，退成"只对一次建多个确认" |
 | 9 | **允许"先建后长"**：无职责的占位 bot 可以存在，第一轮对话结束时按骨架生成 `AGENTS.md`（§9.4） | 这是"setup is a message"的关键一步：用户不必在建之前把职责写完整 | 实测发现占位 bot 大量堆叠且从不补职责时，改为强制在首次使用前补完 |
 
@@ -538,7 +540,7 @@ bot 会话创建时 `permission_level='all'`，且**不传 `sandbox_tier`**。�
 
 ## 13. 跨机 bot：不做，以及缺什么
 
-"A 机器上的 bot 进入 B 机器上的频道"。v1 只做单机（宿主所在机器），不是因为复杂，而是下面五件事一件都没有，缺任意一件就只能做成半成品：
+"A 机器上的 bot 进入 B 机器上的组"。v1 只做单机（宿主所在机器），不是因为复杂，而是下面五件事一件都没有，缺任意一件就只能做成半成品：
 
 1. **可寻址的 bot 句柄**：`future run --session <id>` 只在本机 agent 上解析会话；remote 协议是配对桌面之间的通道，没有"另一台机器上的某个 bot 是可寻址对象"这个概念。
 2. **跨机回合协议**：谁持有转录顺序、谁判预算、A 的回合如何写进 B 的转录并去重（需要 `turn_id` + 幂等键 + 时钟裁决）。现有 remote 协议只有 peer presence 与请求/应答。
@@ -557,10 +559,10 @@ bot 会话创建时 `permission_level='all'`，且**不传 `sandbox_tier`**。�
 | 位置 | 放什么 | 同构对象 |
 |---|---|---|
 | `orchestration/bots/` | 数据模型、`bots.db` 的 store、纯函数路由内核、应用服务、说话规则与固定骨架（crate `future-bots`） | `orchestration/tasks/`、`orchestration/fusion/` |
-| `host/src/bots/` | 执行器（tick、同频道串行）、启动扫描修复、`bots-updated` | `host/src/tasks.rs`、`host/src/tasks/service.rs` |
-| `cli/src/commands/bot.rs`、`channel.rs` | `future bot …`、`future channel …` | `cli/src/commands/` 下的既有子命令 |
+| `host/src/bots/` | 执行器（tick、同组串行）、启动扫描修复、`bots-updated` | `host/src/tasks.rs`、`host/src/tasks/service.rs` |
+| `cli/src/commands/bot.rs`、`group.rs` | `future bot …`、`future group …` | `cli/src/commands/` 下的既有子命令 |
 | `desktop/src-tauri/src/commands/bots.rs` | Tauri 薄适配，只转调 host service | `commands/tasks.rs` |
-| `desktop/src/features/bots/` | 机器人页、频道视图、`useBots`、后端桥接 | `features/tasks/` |
+| `desktop/src/features/bots/` | 机器人页、组视图、`useBots`、后端桥接 | `features/tasks/` |
 | `desktop/src/i18n/locales/{en,zh}/bots.json` | 界面文案 | `tasks.json` |
 | `ActivityRail.tsx` 与 `ActivitySection` | 导航按钮，以及视图枚举新增 `"bots"` | 现有的 tasks / remote 按钮 |
 | `packages/remote-protocol/src/handshake.rs` | 能力位 `bots_v1`（手机与另一台桌面） | `tasks_v1` |
@@ -572,7 +574,7 @@ bot 会话创建时 `permission_level='all'`，且**不传 `sandbox_tier`**。�
 orchestration/bots/
   Cargo.toml            # name = "future-bots"
   src/lib.rs
-  src/model.rs          # Bot / Channel / Binding / Turn
+  src/model.rs          # Bot / Group / Binding / Turn
   src/store.rs          # bots.db：schema、migrate、open
   src/kernel.rs         # 纯函数：mentions / enqueue / judge / should_stop
   src/service.rs        # 应用服务：host 与 CLI 共用
@@ -580,7 +582,7 @@ orchestration/bots/
   tests/
 host/src/bots/
   mod.rs
-  executor.rs           # 每频道串行，跨频道 ≤ 2 并行
+  executor.rs           # 每组串行，跨组 ≤ 2 并行
   sweep.rs              # 启动扫描：孤儿回收、悬空引用降级
   notify.rs             # bots-updated
 ```
@@ -606,11 +608,11 @@ orchestration/bots  ←── host ──→ desktop/src-tauri ←── desktop
 | 阶段 | 交付 | 可观测的验收 |
 |---|---|---|
 | **P1 Bot** | `bots.db` + 库结构、**bot 的独立 agent 实例与配置覆盖**、私聊 thread、导航入口、机器人列表、一键建总管、输入框一句话创建、`future bot` CLI | 建一个 bot、对话三轮、重启后名字与记忆都在；它的私聊不出现在「最近」与「工作区」；**用户侧 `future session list` 里根本没有它**；bot 能用用户已配置的模型与已安装技能；**用一句“新机器人：负责发布稿”建出一个无需任何弹窗、命名与模型选择、且能直接接活的 bot**；`future data` 备份包含 `bots/bots.db` 与 bot 的 `agent-home` |
-| **P2 Channel** | `channels`／`members`／`bindings`／`turns`、`threads.scope`、路由内核、三档策略、执行器、频道视图、启动扫描修复器 | 两个 bot + 我：`@` 一个只有一个回；bot `@` 另一个，链深到 2 自动停；一条消息 9 回合被预算截断并说明原因；`router` 档下无人 @ 也能选出该接话的人，且理由可见；§8.5 的九处入口逐个通过；手动删一个 bot 的 thread 后，bots.db 里的 bot 降级为"会话已删除、可重建"而不是报错 |
-| **P3 记忆与日常** | 记忆写回可观测、频道摘要、routine 绑 bot、从会话长出来 | 让 bot 记住一条偏好，隔天在新频道里生效；给 bot 建一条每日 routine 并看到运行记录；一段会话固化成 bot 后名册可见 |
-| **P4 可选收紧** | 配置提升到 `~/.future/config/`（独立任务）、仅层 0 的 tier（仅对外开放 bot 时）、跨频道 handoff、复制与分享 | 两个实例读同一份配置，覆盖字段删除；bot 读不到 `models.json`；A 把结果交给 B 且 B 的答复回到指定位置；复制出的 bot 不带记忆 |
+| **P2 组** | `bot_groups`／`group_members`／`group_bindings`／`group_turns`、`threads.scope`、路由内核、三档策略、执行器、组视图、启动扫描修复器 | 两个 bot + 我：`@` 一个只有一个回；bot `@` 另一个，链深到 2 自动停；一条消息 9 回合被预算截断并说明原因；`router` 档下无人 @ 也能选出该接话的人，且理由可见；§8.5 的九处入口逐个通过；手动删一个 bot 的 thread 后，bots.db 里的 bot 降级为"会话已删除、可重建"而不是报错 |
+| **P3 记忆与日常** | 记忆写回可观测、组摘要、routine 绑 bot、从会话长出来 | 让 bot 记住一条偏好，隔天在新组里生效；给 bot 建一条每日 routine 并看到运行记录；一段会话固化成 bot 后名册可见 |
+| **P4 可选收紧** | 配置提升到 `~/.future/config/`（独立任务）、仅层 0 的 tier（仅对外开放 bot 时）、跨组 handoff、复制与分享 | 两个实例读同一份配置，覆盖字段删除；bot 读不到 `models.json`；A 把结果交给 B 且 B 的答复回到指定位置；复制出的 bot 不带记忆 |
 
-**不做**（明确写下，避免反复确认）：语音通话、浏览器／桌面操控、从 X 触发、把频道接入 IM 桥、跨机 bot。
+**不做**（明确写下，避免反复确认）：语音通话、浏览器／桌面操控、从 X 触发、把组接入 IM 桥、跨机 bot。
 
 ---
 
@@ -624,15 +626,15 @@ orchestration/bots  ←── host ──→ desktop/src-tauri ←── desktop
 4. **独立实例真的跑起来了**：第二个 agent 拿到自己的锁、`agent.db` 与 socket；用户侧实例的会话表里没有它；两个实例可独立重启，一个崩溃不影响另一个。
 5. **配置覆盖生效**：bot 实例能读到用户新增的 provider 与刚安装的 app 作用域技能，且不需要第二次配置；用户登出后 bot 也拿不到旧凭据。
 6. **判定器的误判率**：在 `router` 与 `eager` 下各跑 20 条真实消息，统计"该叫的没叫"与"不该叫的叫了"，据此决定 `eager` 是否值得默认开放。
-7. **频道串行 + 预算截断**：桩 agent 跑 9 回合链，验顺序、终止点与那条 system 消息。
+7. **组串行 + 预算截断**：桩 agent 跑 9 回合链，验顺序、终止点与那条 system 消息。
 8. **摘要后的可回答性**：把依赖第 3 条消息的提问放到第 40 条之后，验证摘要 + 窗口仍能答对，而不是"看起来答了"。
-9. **同一 bot 被两个频道同时 @**：两个 binding 会话互不干扰；排队语义（`append` 默认）是否需要 `--steer`，实测确认不互相打断。
-10. **停审批时不拖垮频道**：一个回合停在审批上，同频道其他回合继续，超时后能 abort 并写出 system 消息。
+9. **同一 bot 被两个组同时 @**：两个 binding 会话互不干扰；排队语义（`append` 默认）是否需要 `--steer`，实测确认不互相打断。
+10. **停审批时不拖垮组**：一个回合停在审批上，同组其他回合继续，超时后能 abort 并写出 system 消息。
 11. **总管建 bot 的零摩擦**：`future bot new` 在 bot 的独立实例里不弹审批，桌面通过 `bots-updated` 在 1 秒内看到新 bot。
 12. **手机端能力位**：老 host 没有 `bots_v1` 时，客户端显示"这台电脑不支持"而不是空列表。
 13. **跨库修复真的幂等**：在"建 bot 三写"的每一步之间人为杀掉进程，验证启动扫描能把孤儿清理掉、并且重复跑不产生新改动。
 14. **生成出来的职责是否过拟合**：连续用一句话建 5 个不同职责的 bot，对比它们的 `AGENTS.md`——若退化成同一段套话，说明骨架的槽位不够硬，需要收紧模板而不是靠用户逐句修。
-15. **备份覆盖新库与新 home**：`future data` 备份出来能恢复 `bots/bots.db`、bot 的 `agent-home` 与频道转录；故意漏掉时应当失败而不是静默跳过。
+15. **备份覆盖新库与新 home**：`future data` 备份出来能恢复 `bots/bots.db`、bot 的 `agent-home` 与组转录；故意漏掉时应当失败而不是静默跳过。
 
 ---
 
@@ -642,6 +644,6 @@ orchestration/bots  ←── host ──→ desktop/src-tauri ←── desktop
 |---|---|
 | Scheduled tasks（[tasks.zh-CN.md](tasks.zh-CN.md)） | routine 直接复用；bot 只给 task 一个归属。注意 `future task` 按设计是**全权限**运行，与 bot 的红线一致，不会绕过 |
 | Fusion（[fusion.zh-CN.md](fusion.zh-CN.md)） | 同一次 run 内的多模型讨论，不是多 bot 对话；共享"确定性内核 + 宿主执行器"的形状，但 fusion 只读且单回合 |
-| Goal control plane（[goal-control-plane.zh-CN.md](goal-control-plane.zh-CN.md)） | 长期目标与人工闸门；频道是多主体在同一会话里协作，不引入目标状态 |
-| IM 渠道（`channels/` crate） | 只共享"频道"这个词：那是把外部 IM 接进 agent，这里是 agent 之间与人与 agent 之间的会话 |
+| Goal control plane（[goal-control-plane.zh-CN.md](goal-control-plane.zh-CN.md)） | 长期目标与人工闸门；组是多主体在同一会话里协作，不引入目标状态 |
+| IM 渠道（`channels/` crate） | 与本文的**组**无关：那是把外部 IM（飞书、钉钉）接进 agent，服务的是外部聊天平台；本文的组是 bot 与人之间的会话容器。两者刻意不共用任何名字 |
 | 工作区与会话 | bot 私聊是一条普通 thread，但 `scope='bot'`，与用户会话双向隔离（§8） |
