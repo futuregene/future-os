@@ -53,12 +53,16 @@ import { useRailSelection } from "./hooks/useRailSelection";
 import { useRailView } from "./hooks/useRailView";
 import { MergedRows } from "./MergedRows";
 import { RailDisclosure, RailHeaderButton } from "./RailChrome";
+import { RailLoadMoreRow } from "./RailRow";
 import { RailViewSwitch } from "./RailViewSwitch";
 import { expandRecent, isActiveRun, recentSplit, recentTree } from "./recentOrder";
 import { ThreadListItem } from "./ThreadListItem";
 import { buildThreadTree, buildTree, threadParentIds, visibleThreadRows, visibleTreeRows } from "./threadTree";
 
 export type ActivitySection = "chat" | "workspace" | "skill" | "tasks" | "remote" | "settings";
+
+/** Development builds only: a packaged app strips the controls gated on this. */
+const DEV = import.meta.env.DEV;
 
 interface ActivityRailProps {
   active: ActivitySection;
@@ -148,9 +152,9 @@ interface ActivityRailProps {
   /**
    * Show the archive guide again, from the archived view.
    *
-   * The guide is one-time by design, but "one-time" must not mean "lost": a
-   * reader who dismissed it before archiving anything has no way to learn the
-   * destination, so the view it explains offers to show it again.
+   * A development affordance only: the released build renders this link only
+   * when Vite's DEV flag is set, so a packaged app carries no control whose
+   * whole purpose is to replay onboarding.
    */
   onShowArchiveGuide?: () => void;
   /** Ask for a scope's first page (lazy workspace groups). */
@@ -855,10 +859,12 @@ export function ActivityRail({
    * sessions, under the same filter the tree draws with. The local half is then
    * narrowed to the rows the `recent` stream has actually paged in — otherwise
    * the list would rank whatever a workspace group was expanded earlier, which
-   * is neither the view's page nor the whole store. A row the view must never
-   * drop: one whose run is in flight (the active stretch is read whole from
-   * `list_active_threads`) and a pinned one (fetched whole as a shortcut, and a
-   * pin is a marker here, not a place). Hosts' rows are not paged this way.
+   * is neither the view's page nor the whole store. Only one row is exempt: one
+   * whose run is in flight, because the active stretch is read whole. A pinned
+   * conversation is *not* exempt — the tree keeps the pinned section, and drawing
+   * a pin the stream has not reached interleaved a twelve-day-old conversation
+   * under yesterday's rows, which read as a hole in the list. Hosts' rows are not
+   * paged this way.
    * A run's state is read per row: this machine's threads from the rail's own
    * per-thread run statuses (the same source the row's indicator uses), a host's
    * from what it reports on its row.
@@ -892,8 +898,11 @@ export function ActivityRail({
         row.desktopId !== null
         || !recentThreadIds
         || recentThreadIds.has(row.id)
-        || row.active
-        || row.pinned);
+        // A run in flight is drawn even before its page arrives: the active
+        // stretch is read whole from `list_active_threads`, so a conversation
+        // the reader just started (here or on the phone) is never missing from
+        // the top of the list.
+        || row.active);
     const tree = recentTree(rows);
     const split = recentSplit(tree.roots, -1);
     // One fold state, in the list's vocabulary: a local row's own expansion is
@@ -1892,16 +1901,16 @@ export function ActivityRail({
                                         ))}
                                   {!archivedThreadsCollapsed && archiveView.hasMoreThreads
                                     ? (
-                                        <button
-                                          className="w-full rounded-md px-2 py-1 text-left text-xs text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+                                        <RailLoadMoreRow
+                                          compact
+                                          label={t("activityRail.loadMore")}
                                           onClick={() => void archiveView.loadMoreThreads()}
-                                          type="button"
-                                        >
-                                          {t("activityRail.loadMore")}
-                                        </button>
+                                        />
                                       )
                                     : null}
-                                  {onShowArchiveGuide
+                                  {/* Development only: a released build has no
+                                      "show the guide again" control. */}
+                                  {DEV && onShowArchiveGuide
                                     ? (
                                         <button
                                           className="mt-2 w-full rounded-md px-2 py-1 text-left text-xs text-ink-muted underline decoration-line-soft underline-offset-2 transition-colors hover:text-ink-soft"
@@ -2070,14 +2079,12 @@ export function ActivityRail({
                                                 ))}
                                                 {more
                                                   ? (
-                                                      <button
-                                                        className="w-full rounded-md px-2 py-1 text-left text-xs text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+                                                      <RailLoadMoreRow
+                                                        compact
                                                         disabled={loading}
+                                                        label={t("activityRail.loadMore")}
                                                         onClick={() => void loadMoreThreadScope?.(`workspace:${workspace.id}`)}
-                                                        type="button"
-                                                      >
-                                                        {t("activityRail.loadMore")}
-                                                      </button>
+                                                      />
                                                     )
                                                   : null}
                                               </div>
@@ -2127,14 +2134,11 @@ export function ActivityRail({
                                     {visibleChatThreads.map(({ thread, depth, hasChildren }) => renderLocalRow(thread, depth, hasChildren))}
                                     {(threadScopeHasMore?.("chat") ?? false)
                                       ? (
-                                          <button
-                                            className="w-full rounded-md px-2 py-1 text-left text-xs text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+                                          <RailLoadMoreRow
                                             disabled={threadScopeLoading?.("chat") ?? false}
+                                            label={t("activityRail.loadMore")}
                                             onClick={() => void loadMoreThreadScope?.("chat")}
-                                            type="button"
-                                          >
-                                            {t("activityRail.loadMore")}
-                                          </button>
+                                          />
                                         )
                                       : null}
                                   </div>

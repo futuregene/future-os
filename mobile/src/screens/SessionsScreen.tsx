@@ -293,6 +293,15 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   const listRef = useRef<SessionListHandle>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [menuSession, setMenuSession] = useState<SessionRow | null>(null);
+  /**
+   * Whether the list is showing the archived view.
+   *
+   * A destination rather than a fourth page: the tab row is already tight on a
+   * phone, and "archived" is not another way of ranking the same conversations —
+   * it is the other shelf. The default pages hide archived rows entirely (see
+   * `SessionList`), so this is the only way to see them.
+   */
+  const [archivedOpen, setArchivedOpen] = useState(false);
   // Which conversation a dialog is editing, and which machine owns it: every
   // action below is addressed to that machine, not to the phone.
   const [renameTarget, setRenameTarget] = useState<SessionRow | null>(null);
@@ -309,6 +318,9 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
       setRenameTarget(null);
       setNewWorkspaceOpen(false);
       setNewWorkspaceError(null);
+      // The archived view is a place the reader went to; leaving the screen
+      // leaves it, so coming back lands on the page the app opens on.
+      setArchivedOpen(false);
       setNewDeviceStep(false);
       setNewDeviceId(null);
       setDeviceWorkspaces(null);
@@ -955,9 +967,10 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
    * still selectable, which is why the list answers this question the same way.
    * The page matters as much as on the list: pinned conversations are shortcuts
    * only on the tree pages, so a catalogue of nothing but pins can be selected
-   * from the recency page and not from the other two.
+   * from the recency page and not from the other two. The archived shelf has no
+   * batch at all — restoring is the desktop's — so the item goes away there.
    */
-  const canSelect = selectableTargets(
+  const canSelect = !archivedOpen && selectableTargets(
     listTargets(showMerged ? mergedRows : undefined, remote.sessions),
     commandsFor,
     tab !== "recent",
@@ -1020,9 +1033,11 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
             }}
           />
           <SessionListActions
+            archivedOpen={archivedOpen}
             canSelect={canSelect}
             onSearch={() => listRef.current?.startSearch()}
             onSelect={() => listRef.current?.startSelecting()}
+            onToggleArchived={() => setArchivedOpen(open => !open)}
           />
           <View style={styles.topActions}>
             <Pressable
@@ -1055,7 +1070,8 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           />
         ) : <SessionList
           ref={listRef}
-          key={tab}
+          key={archivedOpen ? `archived:${tab}` : tab}
+          archived={archivedOpen}
           tab={tab}
           active={active}
           onTabChange={setTab}

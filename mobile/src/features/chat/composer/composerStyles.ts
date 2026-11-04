@@ -17,6 +17,24 @@ export const useStyles = createThemedStyles(theme => StyleSheet.create({
     height: COMPOSER_FADE_CLEARANCE + 4,
   },
   backToLatest: { top: -56 },
+  /**
+   * The "this conversation is archived" line, where the composer would be.
+   *
+   * Muted ink on the subtle surface rather than the warning pair: being archived
+   * is a state the reader asked for, not a fault to fix.
+   */
+  archivedBanner: {
+    marginHorizontal: spacing.md,
+    marginBottom: spacing.xs,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.md,
+    color: theme.colors.inkSoft,
+    backgroundColor: theme.colors.surfaceSubtle,
+    fontSize: theme.font(12),
+    lineHeight: theme.font(17),
+    textAlign: "center",
+  },
   offlineComposer: {
     marginHorizontal: spacing.md,
     marginBottom: spacing.xs,

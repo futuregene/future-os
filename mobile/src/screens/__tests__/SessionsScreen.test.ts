@@ -121,7 +121,7 @@ jest.mock("../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }
 jest.mock("../../update/prompt", () => ({ promptUpgrade: jest.fn() }));
 jest.mock("../../update/update", () => ({ checkForUpdate: jest.fn() }));
 jest.mock("lucide-react-native", () => Object.fromEntries(
-  ["ArrowLeft", "ChevronLeft", "ChevronRight", "ChevronDown", "Check", "Folder", "Layers", "ListChecks", "LogOut", "MessageCircle", "Monitor", "MonitorOff", "MoreHorizontal", "Plus", "Pin", "Pencil", "Search", "Trash2", "Settings", "Unplug", "X"].map(name => [name, name]),
+  ["Archive", "ArrowLeft", "ChevronLeft", "ChevronRight", "ChevronDown", "Check", "Folder", "Layers", "ListChecks", "LogOut", "MessageCircle", "Monitor", "MonitorOff", "MoreHorizontal", "Plus", "Pin", "Pencil", "Search", "Trash2", "Settings", "Unplug", "X"].map(name => [name, name]),
 ));
 jest.mock("react-native-safe-area-context", () => ({
   SafeAreaView: "SafeAreaView",

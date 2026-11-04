@@ -698,6 +698,7 @@ export function ChatScreen() {
                     setSelector={setSelector}
                     onCompactContext={compactContext.compact}
                     compactionPending={compactContext.pending}
+                    archived={selectedSession?.archived === true}
                     skillSuggestion={skillRecommendation.suggestion}
                     skillEvaluating={skillRecommendation.evaluating}
                     skillInstalling={installingSkill}
