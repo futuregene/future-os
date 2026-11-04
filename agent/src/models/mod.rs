@@ -154,13 +154,37 @@ pub fn cache_hit_rate(prompt_tokens: i64, cache_read_tokens: i64) -> Option<f64>
     Some(cached as f64 / prompt_tokens as f64)
 }
 
+/// Compat key marking a model that always reasons and cannot be told to stop.
+///
+/// A marked model answers any request that disables the thinking toggle with
+/// `HTTP 400 …该模型始终思考，不支持关闭思考；请使用 low、high 或 max`, so `off`
+/// is never offered for it — even when the catalogue's level list still
+/// contains it.
+pub const ALWAYS_THINKING_COMPAT_KEY: &str = "alwaysThinking";
+/// The wire value that asks a model to stop reasoning.
+const OFF_THINKING_LEVEL: &str = "off";
+
 impl Model {
+    /// Whether this model always reasons (see [`ALWAYS_THINKING_COMPAT_KEY`]).
+    pub fn always_thinking(&self) -> bool {
+        self.compat
+            .get(ALWAYS_THINKING_COMPAT_KEY)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    }
+
     /// The levels clients offer for this model, in display order: the implicit
     /// `default` first, then the configured wire values.
     pub fn allowed_thinking_levels(&self) -> Vec<String> {
+        let always_thinking = self.always_thinking();
         let mut levels = Vec::with_capacity(self.thinking_levels.len() + 1);
         levels.push(crate::llm::schema::DEFAULT_THINKING_LEVEL.to_string());
-        levels.extend(self.thinking_levels.iter().cloned());
+        levels.extend(
+            self.thinking_levels
+                .iter()
+                .filter(|level| !(always_thinking && level.as_str() == OFF_THINKING_LEVEL))
+                .cloned(),
+        );
         levels
     }
 
@@ -181,8 +205,25 @@ impl Model {
 
     /// Clamp a stored/requested level onto this model's list. `default` is
     /// always allowed; anything the model does not offer becomes `default`.
+    ///
+    /// Replacement, not rejection: a level saved before the vocabulary narrowed
+    /// (or saved for another model) must still run, so an unoffered level is
+    /// downgraded here and recorded once instead of failing the request.
     pub fn clamp_thinking_level(&self, level: &str) -> String {
-        crate::llm::schema::clamp_thinking_level(level, &self.allowed_thinking_levels())
+        let clamped =
+            crate::llm::schema::clamp_thinking_level(level, &self.allowed_thinking_levels());
+        let requested = level.trim();
+        if !requested.is_empty() && clamped != requested {
+            tracing::info!(
+                provider = %self.provider,
+                model = %self.id,
+                %requested,
+                %clamped,
+                always_thinking = self.always_thinking(),
+                "thinking level is not available for this model; continuing at a supported level"
+            );
+        }
+        clamped
     }
 }
 

@@ -497,6 +497,27 @@ fn fetch_future_models(api_key: &str, base_url: &str) -> Option<Vec<Model>> {
     .ok()?
 }
 
+/// Future-platform models that always reason: the access path rejects any
+/// request that disables the thinking toggle (`HTTP 400 …该模型始终思考，
+/// 不支持关闭思考；请使用 low、high 或 max`), although the platform's
+/// `/v1/models` payload still advertises `off` among the model's levels.
+/// The payload has no field for this fact yet, so it is declared here; drop the
+/// entry once the platform can state it.
+const FUTURE_ALWAYS_THINKING_MODELS: &[&str] = &["glm-5.3"];
+
+/// Record the always-thinking fact in a Future catalogue model's compat.
+fn apply_always_thinking(compat: &mut HashMap<String, serde_json::Value>, id: &str) {
+    if FUTURE_ALWAYS_THINKING_MODELS
+        .iter()
+        .any(|known| known.eq_ignore_ascii_case(id))
+    {
+        compat.insert(
+            super::ALWAYS_THINKING_COMPAT_KEY.into(),
+            serde_json::json!(true),
+        );
+    }
+}
+
 /// Derive the protocol-shape compat for a Future platform model from its
 /// supported_parameters list and tokenizer.
 ///
@@ -584,7 +605,8 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
         .architecture
         .as_ref()
         .and_then(|a| a.tokenizer.as_deref());
-    let compat = derive_thinking_compat(&supported_params, tokenizer);
+    let mut compat = derive_thinking_compat(&supported_params, tokenizer);
+    apply_always_thinking(&mut compat, &entry.id);
     // The catalogue declares the exact wire values this access path accepts.
     // They are stored verbatim (normalized) and are the only source of levels.
     let thinking_levels = crate::llm::schema::normalize_thinking_levels(
@@ -710,7 +732,14 @@ fn parse_price_string(value: &Option<String>, price_unit: f64) -> f64 {
 fn load_future_models_cache() -> Option<FutureModelsCache> {
     let path = future_models_cache_path();
     let contents = std::fs::read_to_string(&path).ok()?;
-    serde_json::from_str(&contents).ok()
+    let mut cache: FutureModelsCache = serde_json::from_str(&contents).ok()?;
+    // A cache written before a model was marked keeps advertising `off`.
+    // Re-apply the declaration on read so the narrowed vocabulary takes effect
+    // without waiting for the next network refresh.
+    for model in &mut cache.models {
+        apply_always_thinking(&mut model.compat, &model.id);
+    }
+    Some(cache)
 }
 
 /// Save future models cache to disk (internal helper).
@@ -2153,5 +2182,66 @@ mod tests {
             fetched_at: 1,
             models: vec![],
         });
+    }
+
+    /// The platform catalogue lists `off` for `glm-5.3`, but the access path
+    /// rejects a disabled thinking toggle with HTTP 400. The conversion must
+    /// record that fact so no client offers the level.
+    #[test]
+    fn conversion_marks_an_always_thinking_platform_model() {
+        let model = convert_future_model(
+            serde_json::from_str(
+                r#"{"id":"glm-5.3","supported_parameters":["thinking_budget"],
+                    "thinking_levels":["off","low","medium","high","max"]}"#,
+            )
+            .unwrap(),
+            "https://future-os.cn/api",
+        );
+        assert!(model.always_thinking());
+        assert_eq!(
+            model.allowed_thinking_levels(),
+            vec!["default", "low", "medium", "high", "max"]
+        );
+
+        let ordinary = convert_future_model(
+            serde_json::from_str(r#"{"id":"kimi-k3","thinking_levels":["off","low","high"]}"#)
+                .unwrap(),
+            "https://future-os.cn/api",
+        );
+        assert!(!ordinary.always_thinking());
+        assert!(ordinary
+            .allowed_thinking_levels()
+            .iter()
+            .any(|l| l == "off"));
+    }
+
+    /// A cache written before the mark existed still advertises `off`; reading
+    /// it must apply the declaration instead of waiting for a network refresh.
+    #[test]
+    fn a_cache_written_before_the_mark_is_corrected_on_read() {
+        let _guard = future_test_lock();
+        let home = crate::test_support::TestHome::new();
+        reset_future_cache_state();
+        std::fs::create_dir_all(home.path().join(".future/agent")).unwrap();
+
+        let mut stale = convert_future_model(
+            serde_json::from_str(r#"{"id":"glm-5.3","thinking_levels":["off","low","high"]}"#)
+                .unwrap(),
+            "https://future-os.cn/api",
+        );
+        // Reproduce the pre-change record: no `alwaysThinking` key at all.
+        stale
+            .compat
+            .remove(super::super::ALWAYS_THINKING_COMPAT_KEY);
+        save_future_models_cache_inner(&FutureModelsCache {
+            fetched_at: 1,
+            models: vec![stale],
+        });
+
+        let cache = load_future_models_cache().expect("disk cache");
+        let model = &cache.models[0];
+        assert!(model.always_thinking());
+        assert!(!model.allowed_thinking_levels().iter().any(|l| l == "off"));
+        drop(home);
     }
 }
