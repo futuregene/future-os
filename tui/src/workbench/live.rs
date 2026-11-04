@@ -20,6 +20,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
+use future_rpc::proto::Attachment;
 use serde_json::Value;
 
 use crate::components::chat_area::{
@@ -105,6 +106,22 @@ pub const APP_COMMANDS: [&str; 20] = [
 struct DraftSnapshot {
     editor: super::editor::EditorState,
     pending: crate::components::input::PendingDraft,
+}
+
+/// A submission the surface has accepted and echoed, waiting for the round
+/// trips that hand it to the agent ([`Live::begin_submit`] and
+/// [`Live::flush_submit`]).
+struct PendingSend {
+    /// The id the acknowledgement binds the run to: the frame draws the card
+    /// only once the agent has actually started the turn.
+    message_id: String,
+    /// What the transcript keeps — the draft with its `@path` mentions left as
+    /// the reader typed them.
+    typed: String,
+    /// What the agent is asked: the same text with those mentions inlined.
+    prompt: String,
+    /// The pictures and files that travel with it.
+    attachments: Vec<Attachment>,
 }
 
 /// How many conversations the adapter keeps ready to paint.
@@ -345,6 +362,10 @@ pub struct Live {
     /// nobody drives (tests, the demos): those doors wait for their own answers
     /// instead.
     load_tx: Option<tokio::sync::mpsc::UnboundedSender<Loaded>>,
+    /// A submission the surface has echoed and not yet handed over (see
+    /// [`Self::begin_submit`]): the driver paints the reader's line first, then
+    /// spends the round trips on it.
+    pending_submit: Option<PendingSend>,
 }
 
 /// One read the surface started and does not wait for, on its way back to the
@@ -497,6 +518,7 @@ impl Live {
             state_refresh: false,
             git_rev: 0,
             load_tx: None,
+            pending_submit: None,
         };
 
         if let Some(id) = session.filter(|id| !id.is_empty()) {
@@ -2101,12 +2123,30 @@ impl Live {
     /// until it goes out, are what make "queued" visible instead of looking
     /// already sent.
     async fn submit(&mut self, text: &str) {
+        if self.begin_submit(text) {
+            self.flush_submit().await;
+        }
+    }
+
+    /// The local half of a submission: take the reader's line out of the draft,
+    /// put it in the transcript, and say on the activity row that it is on its
+    /// way. Everything here is work this process can do without asking anyone,
+    /// which is the whole point of the split: the driver paints the frame this
+    /// leaves behind *before* it calls [`Self::flush_submit`], so `enter` costs
+    /// a frame and not a round trip.
+    ///
+    /// That gap is not cosmetic. Every unary call to the agent is its own
+    /// connect plus readiness handshake (`execute_unary`), and under CPU
+    /// pressure that is seconds — the reported "press enter and the composer
+    /// sits there". The echo and the spinner are what tell the reader the key
+    /// landed. Returns whether the agent is owed a prompt.
+    pub fn begin_submit(&mut self, text: &str) -> bool {
         // A compaction owns the session: the agent answers a prompt with
         // `session_busy` until the checkpoint lands, and the draft is the
         // reader's, so it stays where it is with the reason on the notice row.
         if self.compacting() {
             self.notice = Some(t(self.lang, Key::ComposerCompacting).into());
-            return;
+            return false;
         }
         self.draft.editor.record_submission();
         // The draft is read first because it is what carries the folded pastes
@@ -2133,28 +2173,44 @@ impl Live {
             .trim()
             .to_string();
         if typed.is_empty() {
-            return;
+            return false;
         }
-        let message = expand_mentions(&typed, &self.local_cwd);
-        // The launchpad's first message: there is no session to send it to yet,
-        // so create one in the folder the surface is showing before sending.
-        // `/new` left the previous session attached on the agent's side, which
-        // is exactly why this asks for a *new* one instead of reusing it.
-        if self.launchpad || self.state.session_id.is_empty() {
-            self.new_session().await;
-            if self.state.session_id.is_empty() || self.launchpad {
-                // `new_session` reports its own failure; this is the other
-                // half — the agent made a session but this client did not end
-                // up attached to one. Returning silently here is what makes the
-                // launchpad's first message look like a key that does nothing:
-                // the draft stays (that is deliberate, it can be sent again) and
-                // the reader is owed the reason.
-                if self.notice.is_none() {
-                    self.notice = Some(t(self.lang, Key::NoticeSessionNotStarted).into());
-                }
-                return;
-            }
+        let prompt = expand_mentions(&typed, &self.local_cwd);
+        // The launchpad's first message has no session to go to yet, so its
+        // line waits for one to exist: `flush_submit` creates it, and only
+        // then does the reader's text leave the composer (a session that fails
+        // to start leaves the text where it is, to be sent again). Everything
+        // else is echoed now.
+        let start_session = self.launchpad || self.client.get_current_session_id().is_empty();
+        // The id the acknowledgement binds the run to: the frame draws this
+        // card only once the agent has actually started the turn (see
+        // [`Self::reconcile_queue`]).
+        let message_id = crate::session_rows::random_id();
+        let mut send = PendingSend {
+            message_id,
+            typed,
+            prompt,
+            attachments: Vec::new(),
+        };
+        // The activity row says the line is on its way from this moment. It
+        // keeps whatever it was showing when a run is already narrating (a
+        // supplement sent mid-turn says nothing about that turn's progress),
+        // and it only starts a clock of its own when there is nothing else.
+        if self.activity.kind == ActivityKind::Idle {
+            self.mark(ActivityKind::Sending);
         }
+        if !start_session {
+            send.attachments = self.echo(&send.message_id, &send.typed);
+        }
+        self.pending_submit = Some(send);
+        true
+    }
+
+    /// Put the reader's line in the transcript and take the draft off the
+    /// screen. Returns the attachments that travel with the prompt — the
+    /// pictures among them are drawn from the same list, so the bubble the
+    /// reader just sent shows its thumbnail before the agent has recorded it.
+    fn echo(&mut self, message_id: &str, typed: &str) -> Vec<Attachment> {
         let pending = self.draft.editor.take_pending();
         let attachments = pending.attachments().to_vec();
         self.drafts.remove(&self.draft_key());
@@ -2163,11 +2219,7 @@ impl Live {
             self.draft.placeholder.clone(),
         );
         self.revision = self.revision.wrapping_add(1);
-        let mut sent = ChatMessage::new(crate::session_rows::random_id(), ChatRole::User, &typed);
-        // The id the acknowledgement binds the run to: the frame draws this
-        // card only once the agent has actually started the turn (see
-        // [`Self::reconcile_queue`]).
-        let message_id = sent.id.clone();
+        let mut sent = ChatMessage::new(message_id.to_string(), ChatRole::User, typed);
         // The pictures travel with the bubble the reader just sent. The agent
         // records them on the entry and the history replays them from its
         // metadata, but that is a round trip away: the thumbnail is owed now.
@@ -2180,17 +2232,41 @@ impl Live {
             })
             .collect();
         self.chat.add_message(sent);
-        self.mark(ActivityKind::Thinking);
+        attachments
+    }
+
+    /// Is a submission waiting for the loop to hand it over?
+    pub fn submit_pending(&self) -> bool {
+        self.pending_submit.is_some()
+    }
+
+    /// Hand the echoed submission to the agent. Called by the driver after the
+    /// frame that carries the reader's line is on screen; a surface nobody
+    /// drives calls it from [`Self::submit`] with nothing painted in between.
+    pub async fn flush_submit(&mut self) {
+        let Some(send) = self.pending_submit.take() else {
+            return;
+        };
+        let Some(send) = self.start_session_for(send).await else {
+            return;
+        };
+        let message_id = send.message_id.clone();
         match self
             .client
             .prompt(
-                &message,
+                &send.prompt,
                 crate::rpc::types::BUSY_ENQUEUE_COALESCING,
-                attachments,
+                send.attachments,
             )
             .await
         {
             Ok(ack) => {
+                // The prompt is accepted: whatever the row says from here is
+                // the run's to say, and a submission that is still the only
+                // news on that row stops claiming it is being sent.
+                if self.activity.kind == ActivityKind::Sending {
+                    self.mark(ActivityKind::Thinking);
+                }
                 if !ack.run_id.is_empty() {
                     if self.completion_candidates.len() == 32 {
                         self.completion_candidates.pop_front();
@@ -2209,7 +2285,16 @@ impl Live {
                         RunState::Queued,
                         ack.queue_position.map(|position| position as u32),
                     );
-                    self.refresh_state().await;
+                    // The queue band is the agent's answer, but the loop that
+                    // paints it can wait for that answer: a second round trip
+                    // here is exactly the freeze the echo above exists to
+                    // avoid. A surface nobody drives (tests, the demos) takes
+                    // it inline instead.
+                    if self.load_tx.is_none() {
+                        self.refresh_state().await;
+                    } else {
+                        self.begin_state_refresh();
+                    }
                 }
             }
             Err(error) => {
@@ -2220,7 +2305,7 @@ impl Live {
                 // acknowledgement never arrived, and the notice says to check
                 // before retrying.
                 self.chat
-                    .mark_last_message_run_state(RunState::NotAcknowledged);
+                    .mark_message_run_state(&message_id, RunState::NotAcknowledged);
                 self.notice = Some(i18n::render(
                     self.lang,
                     Key::NoticeSendUnacknowledged,
@@ -2230,6 +2315,40 @@ impl Live {
                 self.activity_start = None;
             }
         }
+    }
+
+    /// The session a submission needs before it can be handed over: the
+    /// launchpad's first message has none yet. `None` means the session could
+    /// not be started and the surface has already said why — the draft is still
+    /// the reader's, and the submission is dropped rather than sent nowhere.
+    async fn start_session_for(&mut self, mut send: PendingSend) -> Option<PendingSend> {
+        if !self.launchpad && !self.client.get_current_session_id().is_empty() {
+            return Some(send);
+        }
+        // `/new` left the previous session attached on the agent's side, which
+        // is exactly why this asks for a *new* one instead of reusing it.
+        self.new_session().await;
+        // The client publishes the session the agent named, so this asks
+        // whether *this* client ended up attached to one — the question the
+        // frame's own state answers only after a read.
+        if self.launchpad || self.client.get_current_session_id().is_empty() {
+            // `new_session` reports its own failure; this is the other half —
+            // the agent made a session but this client did not end up attached
+            // to one. Returning silently here is what makes the launchpad's
+            // first message look like a key that does nothing: the draft stays
+            // (that is deliberate, it can be sent again) and the reader is owed
+            // the reason.
+            if self.notice.is_none() {
+                self.notice = Some(t(self.lang, Key::NoticeSessionNotStarted).into());
+            }
+            if self.activity.kind == ActivityKind::Sending {
+                self.activity = Activity::default();
+                self.activity_start = None;
+            }
+            return None;
+        }
+        send.attachments = self.echo(&send.message_id, &send.typed);
+        Some(send)
     }
 
     /// The `/…` commands the palette and the key bindings can run. Anything else
@@ -3448,7 +3567,17 @@ impl Live {
             )
             .await
         {
-            Ok(_) => {
+            Ok(created) => {
+                // The id the agent named is the session this surface is
+                // attached to from here on. Taking it from the answer, rather
+                // than from the `get_state` read that used to follow, is what
+                // lets the launchpad's first prompt go out before that read
+                // lands: a surface whose session id is still empty paints the
+                // launchpad, and the reader's first message would disappear
+                // from the screen for a tick.
+                if let Some(id) = created.get("sessionId").and_then(Value::as_str) {
+                    self.state.session_id = id.to_string();
+                }
                 self.launchpad = false;
                 self.drafts.remove("launchpad");
                 // The workspace and approval mode are spent once the session
@@ -3486,11 +3615,30 @@ impl Live {
                         self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]));
                     }
                 }
-                self.refresh_state().await;
+                // The state and the listing are the frame's to have, not the
+                // prompt's to wait for: on the launchpad the very next thing
+                // this call does is send the reader's first message, and both
+                // reads are round trips of their own. A surface nobody drives
+                // (tests, the demos) still takes them inline — there is no
+                // loop to land them.
+                if self.load_tx.is_some() {
+                    self.begin_state_refresh();
+                } else {
+                    self.refresh_state().await;
+                }
                 // A brand-new session has no run of its own, and the one this
                 // client left behind (the launchpad's `/new`) is not its.
                 self.forget_run();
-                self.refresh_sessions().await;
+                if self.load_tx.is_some() {
+                    self.begin_sessions_refresh();
+                } else {
+                    self.refresh_sessions().await;
+                }
+                // The transcript is not a read this can leave behind: a new
+                // session starts empty, and the rows above the composer are the
+                // previous conversation's until this lands (`show_page` replaces
+                // them). Sending into a transcript that still shows somebody
+                // else's messages would be the echo in the wrong conversation.
                 self.load_tail().await;
             }
             Err(error) => self.notice = Some(format!("Could not start a session: {error}")),
@@ -5525,6 +5673,89 @@ mod tests {
 
     use crate::components::chat_area::{ChatMessage, ChatRole, RowAction};
     use crate::rpc::types::SessionSummary;
+
+    /// `enter` is a frame, not a round trip: the reader's line is in the
+    /// transcript and the activity row is clocking the wait *before* the first
+    /// call to the agent. That split is the whole fix for "press enter on a
+    /// loaded machine and the composer sits there" — every unary call is a
+    /// connect plus readiness handshake, and the submission used to hold the
+    /// key until it came back.
+    #[tokio::test]
+    async fn a_submission_is_echoed_before_the_agent_is_asked() {
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("get_state", r#"{"sessionId":"s1","model":"future/old"}"#),
+            ("get_session_entries", r#"{"entries":[]}"#),
+            (
+                "prompt",
+                r#"{"run_id":"r-1","run_epoch":1,"accepted_state":"running"}"#,
+            ),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the test agent");
+        live.set_draft("hello there".into(), 11);
+
+        // The local half: no agent in it.
+        assert!(live.begin_submit("hello there"));
+        let painted = live.chat.render_all(80).join("\n");
+        assert!(
+            painted.contains("hello there"),
+            "the reader's line is not on screen yet:\n{painted}"
+        );
+        assert!(
+            live.draft.editor.text().is_empty(),
+            "the draft is off the composer"
+        );
+        assert_eq!(
+            live.activity_kind(),
+            ActivityKind::Sending,
+            "the row does not say the line is on its way"
+        );
+        assert!(live.submit_pending(), "the prompt is owed to the agent");
+        assert!(
+            !seen.lock().unwrap().iter().any(|kind| kind == "prompt"),
+            "the agent was asked before the echo could be painted"
+        );
+
+        // The half that waits: the same submission, handed over.
+        live.flush_submit().await;
+        assert!(
+            seen.lock().unwrap().iter().any(|kind| kind == "prompt"),
+            "the submission never reached the agent"
+        );
+        assert!(!live.submit_pending(), "and it is not handed over twice");
+        assert_eq!(
+            live.activity_kind(),
+            ActivityKind::Thinking,
+            "the acknowledgement hands the row to the run"
+        );
+        live.client.disconnect();
+    }
+
+    /// A compaction holds the session: the draft stays, the notice says why, and
+    /// nothing is queued for a later flush.
+    #[tokio::test]
+    async fn a_submission_while_compacting_is_refused_before_anything_is_echoed() {
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("get_state", r#"{"sessionId":"s1","model":"future/old"}"#),
+            ("get_session_entries", r#"{"entries":[]}"#),
+            ("compact", r#"{"accepted":true}"#),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the test agent");
+        live.begin_compaction();
+        live.set_draft("hello".into(), 5);
+
+        assert!(!live.begin_submit("hello"), "a compaction owns the session");
+        assert!(live.notice.is_some(), "the reader is told why");
+        assert_eq!(live.draft.editor.text(), "hello", "the draft is theirs");
+        assert!(!live.submit_pending());
+        assert!(!seen.lock().unwrap().iter().any(|kind| kind == "prompt"));
+        live.client.disconnect();
+    }
 
     /// The launchpad's first message must create the session and send the
     /// prompt.

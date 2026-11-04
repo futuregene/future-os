@@ -1662,8 +1662,20 @@ fn activity_row(
     } else {
         palette.dim("· ")
     };
+    // The two kinds whose label carries its own clock: a compaction makes no
+    // tool calls, and a submission the agent has not acknowledged has not
+    // started a run — the `· {n} 工具` tail below would count a zero at both,
+    // and the seconds are the only thing either row can say.
+    let clocked = |key: Key| {
+        palette.text(
+            palette.amber,
+            &i18n::render(workbench.lang, key, &[&activity.elapsed_secs]),
+        )
+    };
     let kind = match activity.kind {
         ActivityKind::Idle => palette.dim(t(workbench.lang, Key::ActivityIdle)),
+        ActivityKind::Compacting => clocked(Key::ActivityCompacting),
+        ActivityKind::Sending => clocked(Key::ActivitySending),
         ActivityKind::Thinking => {
             palette.text(palette.amber, t(workbench.lang, Key::ActivityThinking))
         }
@@ -1671,22 +1683,16 @@ fn activity_row(
         ActivityKind::Streaming => {
             palette.text(palette.accent, t(workbench.lang, Key::ActivityStreaming))
         }
-        // The clock is inside the label: a compaction makes no tool calls, so
-        // the `· {n} 工具` tail below would count a zero at it.
-        ActivityKind::Compacting => palette.text(
-            palette.amber,
-            &i18n::render(
-                workbench.lang,
-                Key::ActivityCompacting,
-                &[&activity.elapsed_secs],
-            ),
-        ),
     };
     let mut left = format!(" {spinner}{kind}");
     if !activity.detail.is_empty() {
         left.push_str(&palette.dim(&format!(" {}", activity.detail)));
     }
-    if activity.kind != ActivityKind::Compacting && (activity.is_busy() || activity.tools > 0) {
+    let counts_tools = !matches!(
+        activity.kind,
+        ActivityKind::Compacting | ActivityKind::Sending
+    );
+    if counts_tools && (activity.is_busy() || activity.tools > 0) {
         left.push_str(&palette.dim(&i18n::render(
             workbench.lang,
             Key::ActivityTools,
@@ -4435,6 +4441,36 @@ mod tests {
             "{joined}"
         );
         assert!(joined.contains(t(lang, Key::InputHintChat)), "{joined}");
+    }
+
+    /// A submission the agent has not acknowledged says so on the row, with its
+    /// clock — and without the tool tally, which no run has started to fill.
+    #[test]
+    fn a_submission_in_flight_says_so_on_the_activity_row() {
+        let mut workbench = Workbench::new();
+        workbench.set_language(crate::workbench::i18n::LanguagePreference::Zh);
+        let mut data = crate::workbench::demo::chat();
+        data.activity = crate::workbench::state::Activity {
+            kind: crate::workbench::state::ActivityKind::Sending,
+            detail: String::new(),
+            elapsed_secs: 3,
+            tools: 0,
+        };
+        let rows = workbench.render(&data, 120, 38);
+        let joined: Vec<String> = rows.iter().map(|row| plain(row)).collect();
+        let joined = joined.join("\n");
+        assert!(
+            joined.contains(&crate::workbench::i18n::render(
+                workbench.lang,
+                Key::ActivitySending,
+                &[&3u64]
+            )),
+            "the row names the send and its clock:\n{joined}"
+        );
+        assert!(
+            !joined.contains("· 0 工具") && !joined.contains("· 0 tools"),
+            "nothing has run yet, so there is no tally to draw:\n{joined}"
+        );
     }
 
     /// The mention menu's own frame is one rectangle: the left border is in one
