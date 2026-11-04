@@ -1,0 +1,90 @@
+{
+  "phase": "cold",
+  "agentAddress": "http://127.0.0.1:61259",
+  "home": "/Users/geilige/future-os/.worktrees/perf-remote-scale/target/remote-latency/scale/homes/threads-2000",
+  "machine": {
+    "os": "macos",
+    "arch": "aarch64",
+    "cpus": 32
+  },
+  "cargoProfile": "--release",
+  "builtAt": "2026-11-04T09:36:51",
+  "results": [
+    {
+      "label": "list_sessions",
+      "command": "list_sessions",
+      "parseError": null,
+      "scale": {
+        "threads": 2000
+      },
+      "iterations": 1,
+      "spacingMs": 1100,
+      "cold": {
+        "ms": 40.193,
+        "parseMs": 0.069,
+        "encodeMs": 2.691,
+        "replyBytes": 103513,
+        "jsonBytes": 882378,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 39.797,
+          "parseMs": 0.026,
+          "encodeMs": 2.75,
+          "replyBytes": 103513,
+          "jsonBytes": 882378,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 39.797,
+      "p95Ms": 39.797,
+      "maxMs": 39.797,
+      "minMs": 39.797,
+      "encodeP50Ms": 2.75,
+      "replyBytes": 103513,
+      "jsonBytes": 882378,
+      "replies": 1
+    },
+    {
+      "label": "list_workspaces",
+      "command": "list_workspaces",
+      "parseError": null,
+      "scale": {
+        "threads": 2000
+      },
+      "iterations": 1,
+      "spacingMs": 1100,
+      "cold": {
+        "ms": 3.111,
+        "parseMs": 0.023,
+        "encodeMs": 0.032,
+        "replyBytes": 5459,
+        "jsonBytes": 5459,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 3.834,
+          "parseMs": 0.025,
+          "encodeMs": 0.038,
+          "replyBytes": 5459,
+          "jsonBytes": 5459,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 3.834,
+      "p95Ms": 3.834,
+      "maxMs": 3.834,
+      "minMs": 3.834,
+      "encodeP50Ms": 0.038,
+      "replyBytes": 5459,
+      "jsonBytes": 5459,
+      "replies": 1
+    }
+  ]
+}

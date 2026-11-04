@@ -1,5 +1,7 @@
 # 远端桌面只读命令的数据库读取审计（T2，代码级）
 
+> 本章有订正，订正依据见 05-verification.md section 7；以 05 与最终报告为准。
+
 审计对象：远端（手机）发给桌面宿主机的每一条**只读命令**，它落到 `app.db` / `agent.db`（经 gRPC）/
 `tasks.db` / Fusion 库上的读取路径。目标不是提出修复方案，而是给出可核对的判定：**哪条读是 O(1)，
 哪条随哪个基数增长，增长多少**。
@@ -734,29 +736,62 @@ in a Markdown preview"。⇒ 老客户端（只发 path）会为"一张内联图
 
 ---
 
-### 3.12 `get_state` — 温路径 **O(1)**；冷路径 O(1) 但含会话装配
+### 3.12 `get_state` — 温路径 **O(会话条目)**（两条 legacy 专属全量读）；冷路径 O(条目) 含首次 hydrate
 
 入口 `business/settings.rs:94` → `agent_bridge/queries.rs:524` → agent `rpc/commands/observability.rs:96`
 → `agent/src/rpc/mod.rs:446` `get_state_internal`。
 
-- 命令主体（`rpc/mod.rs:452-560`）**只读内存**：模型注册表（`state.model_registry`，进程内缓存）、
-  `AtomicI64` 计数器、`cumulative_cost`。**无 SQL。**
-- 但它要求会话已在 `state.sessions` 里：`commands/mod.rs:342` `state.try_get_session`，
-  冷会话会走 `rpc/mod.rs:126-217`：`contains()`（`sqlite_store/mod.rs:18-24`，2 次点查：
-  `sessions` 主键 + `legacy_imports` 主键）→ `switch_session_metadata`（读 `sessions` 行与 metadata）
-  → 必要时 `set_model` 写一条 `session_info`。
-- `get_state` 在 `commands/mod.rs:431-460` 的白名单里，**不触发整会话 hydrate**
-  ——这是它比 `get_messages` 好的地方，值得作为对照。
+- 命令主体（`rpc/mod.rs:452-560`）**没有显式的表读**：模型注册表（`state.model_registry`，进程内缓存）、
+  `AtomicI64` 计数器、`cumulative_cost` 都在内存里。**"无 SQL"只对常量部分成立**：空闲会话（没有活动 run，
+  也就是用户点开会话时最常见的状态）在命令体内部还有**两处按条目数工作的读**，两处都按
+  `session_formats.format != 2` 分流，只对 legacy 会话生效：
+  1. `rpc/mod.rs:540` `sess.session_manager.state_metadata(&session_id)` →
+     `agent/src/session/manager/loading.rs:13` `state_metadata`：格式不是 2 就落进 `:26`
+     `self.load_metadata(id)` → `:68`；legacy 分支在 `:100` 执行
+     `SELECT payload FROM history_shapes WHERE session_id=?1 ORDER BY position`，**取全部行并逐行
+     `serde_json::from_str`**，只为数出"user 条目几条"和取一个 parent id。会话已 hydrate 时这个结果
+     基本不被使用（`query_count` 只在 `!history_loaded` 时用它，`parentSessionId` 在内存字段为空时才用它）。
+  2. `rpc/mod.rs:635` `.unterminated_run_id(&session_id)` → `agent/src/session/manager/mod.rs:321` →
+     `agent/src/session/sqlite_store/transcript.rs:203` `read_run_marker_headers`：格式不是 2 就 `:206`
+     `run_marker_rows(db, session, "entry_records")`。**`entry_records` 是一个视图**（2,324 B SQL、五个 CTE），
+     语句是 `SELECT payload FROM entry_records WHERE session_id=?1 AND entry_type IN (...)`——视图不可索引，
+     SQLite 必须先把该会话的行摊出来再按 `entry_type` 过滤。
+- 两处都只对 legacy 会话生效；canonical（format=2）会话走 `entries` 计数（`loading.rs:19`）与
+  `entry_header_records` 的定点读（`transcript.rs:210`），所以**同一份数据里 canonical 会话是平的**：
+  1 条 3.58 ms → 2,043 条 3.94 ms，跨 2,043 条只动 0.36 ms（05 §3.3）。
+- 会话装配部分仍在：`get_state` 要求会话已在 `state.sessions` 里，`commands/mod.rs:342`
+  `state.try_get_session` 冷会话会走 `rpc/mod.rs:126-217`：`contains()`（`sqlite_store/mod.rs:18-24`，
+  2 次点查：`sessions` 主键 + `legacy_imports` 主键）→ `switch_session_metadata`（读 `sessions` 行与
+  metadata）→ 必要时 `set_model` 写一条 `session_info`。
+- `get_state` 在 `commands/mod.rs:431-460` 的白名单里，**不触发整会话 hydrate**——这是它比
+  `get_messages` 好的地方，值得作为对照；但"不 hydrate"不等于"没有整会话读"，见上面的两处。
 
-**复杂度**：O(1)，与会话长度无关；冷启动多付约 3-5 次点查 + 一次会话装配。
+**复杂度**：温路径 **O(会话条目)**（仅 legacy 会话；canonical 会话 O(1)）；冷路径另加一次首次 hydrate
+（O(条目)，每个会话只付一次）+ 约 3-5 次点查与会话装配。
 
-**端到端与一个未解释的常数（§1.1）**：最大会话 22.9/22.0 ms，中位会话 4.5/4.2 ms。
-按上面的代码，它本该是亚毫秒级（全内存）——但桌面的 `get_session_state`（`queries.rs:524-536`）在
-发 `get_state` 之前还做了两件事：`verify_session_database`（`presence.rs:118-133`：2 次点查 +
-**一次额外的 gRPC**）和 `ensure_observer_for_session`（`settings.rs:96` → `observer.rs:265-277`：
-又一次 `find_thread_by_agent_session`）；而 `get_state` 本身在 **`PAGES` 道之外**、不需会话 hydrate，
-却需要 `try_get_session` 命中或装配。所以这条命令是 **3 次串行往返 + 3-4 次点查**，不是"1 次内存读"。
-“最大 22 ms / 中位 4 ms”的差异说明它还随会话冷热变化；本报告不把 22 ms 归因到单一语句上（§7）。
+**端到端与归因（§1.1、05 §3.3）**：最大会话 22.9/22.0 ms，中位会话 4.5/4.2 ms。桌面的
+`get_session_state`（`queries.rs:524-536`）在发 `get_state` 之前还做了 `verify_session_database`
+（`presence.rs:118-133`：2 次点查 + **一次额外的 gRPC**）和 `ensure_observer_for_session`
+（`settings.rs:96` → `observer.rs:265-277`：又一次 `find_thread_by_agent_session`），所以这条命令是
+**3 次串行往返 + 3-4 次点查**；但**它们不是斜率来源**：在同一台机器上把上面两处读摘掉之后
+（05 §3.2 的 A、B、A+B 三个变体），这些装配逻辑仍在、仍每次执行，而各档的 Δ 都归零。
+归因结果（Δ = p50 − 同轮 canonical 地板，ms）：
+
+| 变体 | Δ@14,531 | Δ@25,000 | Δ@50,000 | 斜率 |
+| --- | ---: | ---: | ---: | ---: |
+| baseline | **17.61** | **29.76** | **59.80** | 1.19 µs/条目 |
+| A（只摘 `state_metadata`） | 5.96 | 8.91 | **19.35** | 0.39 µs/条目 |
+| B（只摘 run-marker 视图扫描） | 11.88 | 20.88 | 41.92 | 0.84 µs/条目 |
+| **A+B** | **−0.12** | **0.06** | **0.05** | **0.01 µs/条目** |
+
+两段可加（50,000 条：40.45 + 17.88 ≈ 58.33 ≈ 59.80），说明是两段互不重叠的读；`state_metadata` 占 68%，
+`entry_records` 视图扫描占 30%。A+B 之后 41 条 4.18/4.64 ms、50,000 条 4.52/4.64 ms，与会话长度无关。
+因此修复判据是**两处都改**：只改 `state_metadata` 时 50,000 条仍有 19.35 ms，不满足"与会话长度无关"。
+
+**cold 是另一条原因**（05 §3.5）：cold 的主体是**首次 hydrate 该会话**（`typed_entries` 读全量转写），
+语义上就是 O(条目)、每个会话付一次；A+B 只拿掉约 25%（50,000 条 173.7 → 127.8 ms）。要压 cold 只能压
+hydrate 本身（分片 hydrate，或单独读出首页所需的最小状态），它与温路径那两处不是同一个判据，
+不要并成一条根因。
 
 ---
 
@@ -892,6 +927,9 @@ SELECT %COLUMNS% FROM task_runs WHERE task_id = ?1 ORDER BY started_at DESC LIMI
      `workspace_path_for_thread`（`agent_bridge/session.rs:263-269`）又 `get_thread` 一次同一行（§3.10）。
    - `list_sessions`：`active_run_sessions` 与 `latest_run_infos` 是**两次扫 `runs`**（一次回答
      "哪些在跑"，一次回答"每个 thread 最新一次"），可以用一次窗口函数查询同时回答（§3.1）。
+     但注意 `latest_run_infos` 本身已经是**单条窗口函数查询**（`host/src/store/runs.rs:297-320`，
+     `ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY created_at DESC, id DESC)`），
+     **不是"每 thread 一次查询"**；能合并的是那两次扫，不要把它当成 N+1 去"改成一条聚合"。
    - `get_state` 冷路径：`contains()` 查 `sessions` 存在性，随后 `switch_session_metadata` 再读同一行（§3.12）。
 3. **视图的重复编译**：`entry_records` / `resolved_message_blocks` 是深层视图（5 个 CTE + 每行
    json 与相关子查询）。`agent/src/session/sqlite_store/transcript.rs:66-70` 的注释记录了测量：
@@ -946,7 +984,7 @@ SELECT %COLUMNS% FROM task_runs WHERE task_id = ?1 ORDER BY started_at DESC LIMI
 | 3 | `list_available_skills` | **99 ms**（max 121） | 手机 `/` 菜单、技能页（01 §2.3） | **用户可触及**，且是纯网络——已接近 100 ms 预算 |
 | 4 | `list_models`（三别名同价） | **21 ms** | 重连恢复、设置页、可见性变更（01 §2.3） | 用户可触及；常数偏大（§3.14） |
 | 5 | `list_sessions` | **20.6 ms** | 手机 10 min + 版本前进；**桌面每 5 s × 每台主机**（01 §4） | 用户可触及，且是高频重复 |
-| 6 | `get_state` | **22 ms**（最大会话）/ 4.2 ms（中位） | 打开会话时与历史页**并发**发出（01 §2.1） | 关键路径； 22 ms 的构成尚未完全解释（§3.12） |
+| 6 | `get_state` | **22 ms**（最大会话）/ 4.2 ms（中位） | 打开会话时与历史页**并发**发出（01 §2.1） | 关键路径；22 ms 已归因：两条 legacy 专属全量读（68% / 30%），与会话长度线性（§3.12） |
 | 7 | `get_session_entries`（`before`） | **11.6-12.3 ms** | 手机/桌面的主路径 | 关键路径，形状健康 |
 | 8 | `list_workspaces` | 3.4 ms | 同 `list_sessions` | 不急 |
 | 9 | `list_tasks` / `get_task` / `list_task_runs` | 2.8 / 1.4 / 1.7 ms | 任务页 | 绝对值小，但增长律是坏的（§3.17） |
@@ -965,8 +1003,8 @@ agent 上 `get_run_snapshot` 直接失败而不是变慢；§1.1 里的 1.7 ms �
 **是 O(1) 的（作为对照）**：`get_tool_call_args`（6 次点查）、`get_event_content_range`（点查 + 范围）、
 `get_read_chunk`（内存切片）、`get_desktop_settings` / `get_settings`（12 次点查）、`list_task_deps`（常量）、
 `list_task_revisions`（索引直出顺序）、`list_providers`（只读 JSON 文件）、
-`get_session_entries` 的 `before` 路径（keyset，页内成本固定）。`get_state` 属于“复杂度 O(1)、
-但常数 22 ms”（§3.12），`list_models` 属于“不随账户数据长、但随目录模型数线性”（§3.14），
+`get_session_entries` 的 `before` 路径（keyset，页内成本固定）。`get_state` 的温路径是 **O(会话条目)**
+（仅 legacy；两处全量读，§3.12），`list_models` 属于“不随账户数据长、但随目录模型数线性”（§3.14），
 所以两者都不在这份 O(1) 名单里。
 
 ---
@@ -982,7 +1020,7 @@ agent 上 `get_run_snapshot` 直接失败而不是变慢；§1.1 里的 1.7 ms �
 | **单 run 的事件数** | `get_events_since`（非 chunked）、`get_run_snapshot`（未命中） | 线性 O(events) | 10,855 事件 4.9 ms（≈0.45 µs/事件）；水位点查 0.003 ms |
 | **threads 数** | `list_sessions`（含 `list_threads` + `latest_run_infos`） | 线性 O(T)，两条 SQL 各自线性 | 682→0.70 ms；2,000→1.92；5,000→5.20；20,000→21.09（list_threads，≈1.05 µs/行）；latest_run_infos 1.28→42.82（≈2.1 µs/行） |
 | **workspaces 数** | `list_workspaces`、`list_sessions`（取 id→name 映射那一遍） | 线性 + 排序 O(W log W) | 703 行 0.88 ms（≈1.2 µs/行） |
-| **runs 表行数** | `list_sessions`（`active_run_sessions` 全表过滤；`latest_run_infos` 按 thread 汇总） | `active_run_sessions` 线性于 runs；`latest_run_infos` 线性于 threads（每 thread 一次索引 seek） | 1,970 runs → 0.61 ms（active）；682 threads → 3.00 ms（latest） |
+| **runs 表行数** | `list_sessions`（`active_run_sessions` 全表过滤；`latest_run_infos` 按 thread 汇总） | `active_run_sessions` 线性于 runs；`latest_run_infos` 是单条窗口函数查询，排序行数随 threads 线性（**不是每 thread 一次查询**） | 1,970 runs → 0.61 ms（active）；682 threads → 3.00 ms（latest） |
 | **单任务运行次数** | `list_task_runs`、`get_task`、`list_tasks`（每行一次） | 线性 + 排序 O(R log R)，**LIMIT 无效** | 20→0.022 ms；356→0.095；1,000→0.238；5,000→0.991；20,000→3.286（≈0.16 µs/run）；`LIMIT 1` 与 `LIMIT 20` 同价 |
 | **任务数** | `list_tasks` | 线性 + 排序 + 每任务一次 latest-run | 11 任务 0.010 ms SQL（N+1 部分另计） |
 | **已安装技能数** | `list_skills`、`list_available_skills` | 线性 + 每技能一次文件读 | 未测（样本太小） |

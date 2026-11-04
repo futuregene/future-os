@@ -1,0 +1,131 @@
+{
+  "phase": "cold",
+  "agentAddress": "http://127.0.0.1:59237",
+  "home": "/Users/geilige/future-os/.worktrees/perf-remote-scale/target/remote-latency/scale/homes/task-runs-2000",
+  "machine": {
+    "os": "macos",
+    "arch": "aarch64",
+    "cpus": 32
+  },
+  "cargoProfile": "--release",
+  "builtAt": "2026-11-04T09:25:54",
+  "results": [
+    {
+      "label": "list_tasks",
+      "command": "list_tasks",
+      "parseError": null,
+      "scale": {
+        "tasks": 33,
+        "runsOfBusiest": 2000
+      },
+      "iterations": 1,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 4.112,
+        "parseMs": 0.01,
+        "encodeMs": 0.035,
+        "replyBytes": 8866,
+        "jsonBytes": 8866,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 3.316,
+          "parseMs": 0.002,
+          "encodeMs": 0.022,
+          "replyBytes": 8866,
+          "jsonBytes": 8866,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 3.316,
+      "p95Ms": 3.316,
+      "maxMs": 3.316,
+      "minMs": 3.316,
+      "encodeP50Ms": 0.022,
+      "replyBytes": 8866,
+      "jsonBytes": 8866,
+      "replies": 1
+    },
+    {
+      "label": "get_task",
+      "command": "get_task",
+      "parseError": null,
+      "scale": {
+        "taskId": "tsk_ca72453d023540d49b4c407b530c72d6",
+        "runs": 2000
+      },
+      "iterations": 1,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 2.054,
+        "parseMs": 0.002,
+        "encodeMs": 0.282,
+        "replyBytes": 24665,
+        "jsonBytes": 40673,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 2.035,
+          "parseMs": 0.001,
+          "encodeMs": 0.23,
+          "replyBytes": 24665,
+          "jsonBytes": 40673,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 2.035,
+      "p95Ms": 2.035,
+      "maxMs": 2.035,
+      "minMs": 2.035,
+      "encodeP50Ms": 0.23,
+      "replyBytes": 24665,
+      "jsonBytes": 40673,
+      "replies": 1
+    },
+    {
+      "label": "list_task_runs",
+      "command": "list_task_runs",
+      "parseError": null,
+      "scale": {
+        "taskId": "tsk_ca72453d023540d49b4c407b530c72d6",
+        "runs": 2000
+      },
+      "iterations": 1,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 2.323,
+        "parseMs": 0.001,
+        "encodeMs": 0.023,
+        "replyBytes": 11691,
+        "jsonBytes": 11691,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 2.28,
+          "parseMs": 0.001,
+          "encodeMs": 0.019,
+          "replyBytes": 11691,
+          "jsonBytes": 11691,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 2.28,
+      "p95Ms": 2.28,
+      "maxMs": 2.28,
+      "minMs": 2.28,
+      "encodeP50Ms": 0.019,
+      "replyBytes": 11691,
+      "jsonBytes": 11691,
+      "replies": 1
+    }
+  ]
+}
