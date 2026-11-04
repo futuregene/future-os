@@ -12,7 +12,9 @@
 //! golden diff tests accept for remote commands.
 
 use crate::output::Output;
-use future_rpc::proto::{AuthUpdate, ProviderUpsert, RpcCommand, StreamEvent, StreamRequest};
+use future_rpc::proto::{
+    Attachment, AuthUpdate, ProviderUpsert, RpcCommand, StreamEvent, StreamRequest,
+};
 use serde_json::{json, Map, Value};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -913,6 +915,7 @@ impl RunClient {
         message: &str,
         session_id: &str,
         busy_policy: &str,
+        images: &[String],
     ) -> Result<Value, String> {
         if let Some(task) = future_fusion::fusion_prompt(message) {
             if task.is_empty() {
@@ -928,9 +931,27 @@ impl RunClient {
                 return Err("Fusion is unavailable: start or upgrade the FutureOS host".into());
             }
         }
+        let attachments: Vec<Attachment> = images
+            .iter()
+            .map(|path| {
+                let absolute =
+                    std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path));
+                let name = absolute
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| absolute.to_string_lossy().into_owned());
+                Attachment {
+                    path: absolute.to_string_lossy().into_owned(),
+                    kind: "image".to_string(),
+                    name,
+                    thumbnail: String::new(),
+                }
+            })
+            .collect();
         let cmd = RpcCommand {
             message: message.to_string(),
             busy_policy: busy_policy.to_string(),
+            attachments,
             ..Default::default()
         };
         self.execute_command("prompt", cmd, Some(session_id), 30)
@@ -1266,7 +1287,7 @@ impl RunClient {
             // the ack (run id / accepted state / queue position) but does not
             // subscribe to the event stream.
             let ack = self
-                .prompt(&config.message, &session_id, busy_policy)
+                .prompt(&config.message, &session_id, busy_policy, &config.images)
                 .await?;
             if config.mode == "json" {
                 let mut result = Map::new();
@@ -1331,7 +1352,7 @@ impl RunClient {
             });
 
             // 5. Send prompt (must target the same session as streamEvents)
-            self.prompt(&config.message, &session_id, busy_policy)
+            self.prompt(&config.message, &session_id, busy_policy, &config.images)
                 .await?;
 
             // 6. Wait for events to complete
@@ -1342,7 +1363,7 @@ impl RunClient {
             // only. The agent queues (or, for steering, aborts the active run
             // and queues) the new prompt, so its events arrive after the ack.
             let ack = self
-                .prompt(&config.message, &session_id, busy_policy)
+                .prompt(&config.message, &session_id, busy_policy, &config.images)
                 .await?;
             let target = ack
                 .get("run_id")
@@ -1638,6 +1659,11 @@ pub struct RunConfig {
     pub permission: Option<String>,
     pub no_session: bool,
     pub mode: String,
+    /// Absolute paths of images attached to this prompt (`--image`). The agent
+    /// reads and encodes them itself, and only sends `image_url` when the
+    /// active model accepts image input; otherwise they degrade to a path
+    /// reference. Empty means a text-only prompt.
+    pub images: Vec<String>,
     /// Explicit `--cwd <dir>`. `None` means the caller did not ask for a
     /// working directory: a session created by this run then starts in the
     /// current directory, while an existing session keeps the cwd it already
@@ -1676,6 +1702,7 @@ impl Default for RunConfig {
             permission: None,
             no_session: false,
             mode: String::new(),
+            images: Vec::new(),
             cwd: None,
             verbose: false,
             message: String::new(),
@@ -2201,7 +2228,10 @@ mod tests {
         client.set_ephemeral(true, "s1").await.unwrap();
         client.set_permission_level("full", "s1").await.unwrap();
         client.set_cwd("/work", "s1").await.unwrap();
-        client.prompt("hi", "s1", "enqueue_if_busy").await.unwrap();
+        client
+            .prompt("hi", "s1", "enqueue_if_busy", &[])
+            .await
+            .unwrap();
 
         let seen = agent.seen.lock().expect("seen").clone();
         let by_type = |t: &str| seen.iter().find(|c| c.r#type == t).expect(t).clone();

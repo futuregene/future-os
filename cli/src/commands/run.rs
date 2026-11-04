@@ -42,6 +42,8 @@ struct RunArgs {
     no_session: bool,
     mode: String,
     cwd: Option<String>,
+    /// Image paths attached with `--image` (repeatable).
+    images: Vec<String>,
     verbose: bool,
     auto_title: bool,
     busy_policy: String,
@@ -117,6 +119,10 @@ Prompt control:
                            argument. Use this for scripted or agent-to-agent
                            dispatch, where the other side must see a bare user
                            turn; use @<file> when a human attaches a file.
+  --image <path>           Attach an image to this prompt (repeatable). The
+                           agent reads and encodes it, and sends it as image_url
+                           when the active model accepts image input; otherwise
+                           it degrades to a path reference.
 
 Output:
   --mode <mode>            text (default): stream to stdout; json: one JSON object on exit
@@ -179,6 +185,7 @@ fn parse_run_args(args: &[String], out: &Output) -> Option<RunArgs> {
         no_session: false,
         mode: "text".to_string(),
         cwd: None,
+        images: Vec::new(),
         verbose: false,
         auto_title: true,
         busy_policy: String::new(),
@@ -303,6 +310,19 @@ fn parse_run_args(args: &[String], out: &Output) -> Option<RunArgs> {
                     i += 1;
                     result.cwd = Some(args[i].clone());
                 }
+            }
+            "--image" => {
+                if i + 1 >= args.len() {
+                    out.log_err("--image requires a path");
+                    return None;
+                }
+                i += 1;
+                let path = args[i].clone();
+                if !std::path::Path::new(&path).is_file() {
+                    out.log_err(&format!("Image not found: {path}"));
+                    return None;
+                }
+                result.images.push(path);
             }
             "--message-file" => {
                 if i + 1 >= args.len() {
@@ -503,6 +523,7 @@ pub async fn run_command(args: &[String], out: &Output) -> Result<(), String> {
         // from an explicit cwd, so attaching to an existing session leaves its
         // recorded working directory alone.
         cwd: parsed.cwd,
+        images: parsed.images,
         verbose: parsed.verbose,
         auto_title: parsed.auto_title,
         busy_policy: parsed.busy_policy,
@@ -548,6 +569,19 @@ mod tests {
         assert_eq!(parsed.messages, vec!["hello", "world"]);
         assert_eq!(parsed.mode, "text");
         assert_eq!(parsed.grpc_addr, "auto");
+    }
+
+    #[test]
+    fn parse_image_attachments() {
+        let path = std::env::temp_dir().join("future-run-image-parse-test.png");
+        std::fs::write(&path, b"\x89PNG\r\n").expect("write temp image");
+        let image = path.to_string_lossy().to_string();
+        let parsed = parse(&["--image", &image, "describe this"]).unwrap();
+        assert_eq!(parsed.images, vec![image.clone()]);
+        assert_eq!(parsed.messages, vec!["describe this"]);
+        let missing = parse(&["--image", "/nonexistent/future-image.png", "hi"]);
+        assert!(missing.is_none());
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -838,6 +872,7 @@ mod tests {
         // bytes as the message, `@<file>` wraps them. The help has to say which
         // is which, or the difference is only discoverable by experiment.
         assert!(stdout.contains("--message-file <path>"), "stdout: {stdout}");
+        assert!(stdout.contains("--image <path>"), "stdout: {stdout}");
         assert!(
             stdout.contains("no <file> wrapper"),
             "the help must contrast --message-file with @<file>: {stdout}"
