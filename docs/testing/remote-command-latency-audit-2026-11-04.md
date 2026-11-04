@@ -20,7 +20,7 @@
 > 和**一个本该 O(1) 的元数据读退化成整会话加载**（`get_state` 每次调用都载入整个 legacy 会话，
 > 22 ms 随会话线性到 72 ms）。
 >
-> **如果只做三件事**：①把 `get_state` 的元数据读改回真正的 O(1)（P0-1，最安全）；
+> **如果只做三件事**：①把 `get_state` 的**两处**整段读改回真正的 O(1)（P0-1，最安全）；
 > ②退役 `get_session_entries` 的 offset 路径与 `get_messages`（P0-2/P0-3，它们今天已经超预算，
 > 放大后失效）；③给 `list_session_files` 加分页（P1-4，一个 `node_modules` 就能把这条命令推到 229 ms）。
 > 三件做完，剩下五条全部落在 100 ms 以内且斜率≈0。
@@ -67,15 +67,14 @@
 **问题一：读数据库的时候是不是 O(1)？**
 
 不是。按主键/唯一索引点查的命令确实是 O(1)（`get_tool_call_args`、`get_event_content_range`、
-`get_read_chunk`、`get_desktop_settings`、`list_task_deps`…），但**有 5 条读路径不是**，而且它们
-分属两种不同的错误：
+`get_read_chunk`、`get_desktop_settings`、`list_task_deps`…），但**有 6 处读路径不是**（归为 5 类错误），它们分属两种不同的毛病：
 
 | 类型 | 具体位置 | 复杂度 | 是否在关键路径 |
 | --- | --- | --- | --- |
 | **整段加载冒充元数据读**（两处，都只在 legacy 会话上触发） | ①`agent/src/session/manager/loading.rs:13` `state_metadata()` → `:68` `load_metadata()`：`SELECT payload FROM history_shapes WHERE session_id=? ORDER BY position` **全部行**读出并逐行 `serde_json::from_str`，只为数出「用户消息几条」和取一个 `parent_session_id`（占温路径超额 **68%**）。②`agent/src/session/manager/mod.rs:321` `unterminated_run_id()` → `transcript.rs:203` `read_run_marker_headers()` 的 legacy 分支走 `run_marker_rows(db, session, "entry_records")`，而 **`entry_records` 是一个视图**——SQLite 必须先把该会话的行摊出来再过滤（占 **30%**） | O(会话条目) | **是**（`get_state` 每次调用都走两条，且①的结果在已加载会话上根本没被用到） |
 | **假分页（先全取再切）** | `host/src/remote_host/business/history.rs:65` `get_messages`：`get_session_messages()` 取**整段**再 `paginate_messages()` 内存切片；`:96-160` `get_session_entries` 的 offset 路径：`fetch_all_session_entries_with_client()` 以 250 条/页**串行拉完整段**（最大会话 59 次 gRPC）再丢掉 99% | O(会话条目) + O(条目/250) 次往返 | 否（当前手机走游标路径），但同一条命令发得出去 |
 | **offset 分页** | `agent/src/session/history/paging.rs:215-219`：`before=None` 时 `start = offset`，SQL 仍然是 `ordinal BETWEEN start AND end`，要靠索引走到第 n 条 | O(offset) | 否（同上） |
-| **全表扫描 + 窗口函数** | `host/src/store/threads.rs:49`（682 行 threads，表达式排序）、`host/src/store/runs.rs:305`（`ROW_NUMBER() OVER (PARTITION BY thread_id)`）、`packages/app-workspaces`（每行一个相关子查询） | O(threads + runs)，实测已随规模放大（见 02 表 B：20,000 线程 21 ms + 43 ms） | 是（桌面端每 60 s/台、手机 10 min） |
+| **全表扫描 + 窗口函数**（同一次读里做了两遍） | `host/src/store/threads.rs:49`（682 行 threads，表达式排序）、`host/src/store/runs.rs:305`（`ROW_NUMBER() OVER (PARTITION BY thread_id)`）、`packages/app-workspaces`（每行一个相关子查询）。注意：窗口函数那条**本来就是一条查询**，不是 N+1（复核已纠正，见 05 §7.1） | O(threads + runs)。02 章的合成标定：20,000 线程时 `list_threads` 21 ms + `latest_run_infos` 43 ms | 是（桌面端每 60 s/台、手机 10 min） |
 | **`LIMIT` 不省成本** | `tasks` 的 `task_runs` 上无 `(task_id, started_at)` 索引，`ORDER BY started_at DESC LIMIT 20` 先排序再截断（`LIMIT 1` 与 `LIMIT 20` 同价） | O(该任务运行次数) | 否（任务面板） |
 
 一句话：**"库有多大"不影响任何命令，"这个会话/这个 run/这个任务有多长"决定了一批命令的延迟**。
