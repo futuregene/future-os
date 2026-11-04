@@ -5,6 +5,7 @@ import { SessionsScreen } from "../SessionsScreen";
 import { SessionList } from "../SessionList";
 import { ActionMenu } from "../../components/ActionMenu";
 import type { MachineSummary } from "../../remote/desktopStatus";
+import type { RemoteSession } from "../../remote/types";
 
 /**
  * The header's two page tools, wired to the list they act on.
@@ -23,7 +24,7 @@ const mockRemote = {
   sessions: [
     { sessionId: "s1", threadId: "t1", title: "First", streaming: false },
     { sessionId: "s2", threadId: "t2", title: "Second", streaming: false },
-  ],
+  ] as RemoteSession[],
   unreadSessions: new Set<string>(),
   connectionPresentation: {
     level: "connected",
@@ -91,7 +92,7 @@ jest.mock("react-i18next", () => ({
 }));
 jest.mock("lucide-react-native", () => Object.fromEntries(
   [
-    "ArrowLeft", "Check", "CheckCheck", "ChevronDown", "ChevronLeft", "ChevronRight",
+    "Archive", "ArrowLeft", "Check", "CheckCheck", "ChevronDown", "ChevronLeft", "ChevronRight",
     "CircleAlert", "Folder", "Layers", "ListChecks", "LogOut", "MessageCircle", "Minus",
     "Monitor", "MonitorOff", "MoreHorizontal", "Pencil", "Pin", "Plus", "Search",
     "Settings", "Trash2", "Unplug", "X",
@@ -230,4 +231,43 @@ test("a machine that cannot answer offers no batch to hold", () => {
   openHeaderMenu();
   expect(item("sessions.select").props.disabled).toBe(true);
   mockRemote.desktopOnline = true;
+});
+
+/**
+ * The archived shelf is a place the header leads to, and it takes the batch with
+ * it.
+ *
+ * The shelf draws the other half of the catalogue, where nothing can be restored
+ * or archived from the phone, so a batch entry offered there would enter a mode
+ * whose only action the view refuses. And the list has to be told it is the
+ * shelf at all: the header owns the mode, the rows are the list's.
+ */
+test("the header's archived item puts the list on the shelf, where no batch may open", () => {
+  mockRemote.sessions = [
+    { sessionId: "a1", threadId: "ta1", title: "Shelved", streaming: false, archived: true },
+  ];
+  mockRemote.workspaces = [];
+  act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
+
+  openHeaderMenu();
+  pressItem("sessions.archived");
+  expect(tree.root.findByType(SessionList).props.archived).toBe(true);
+
+  // The batch entry is gone rather than merely disabled: the shelf has no batch.
+  openHeaderMenu();
+  expect(item("sessions.select").props.disabled).toBe(true);
+
+  // And the same item says which way the switch now goes.
+  expect(headerMenu().findAll(node => node.props.accessibilityLabel === "sessions.backToActive").length)
+    .toBeGreaterThan(0);
+  act(() => headerMenu().findByType(Modal).props.onDismiss());
+
+  openHeaderMenu();
+  pressItem("sessions.backToActive");
+  expect(tree.root.findByType(SessionList).props.archived).toBe(false);
+
+  mockRemote.sessions = [
+    { sessionId: "s1", threadId: "t1", title: "First", streaming: false },
+    { sessionId: "s2", threadId: "t2", title: "Second", streaming: false },
+  ];
 });

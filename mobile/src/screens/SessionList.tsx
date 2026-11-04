@@ -1,4 +1,5 @@
 import {
+  Archive,
   Check,
   CheckCheck,
   ChevronDown,
@@ -42,7 +43,15 @@ import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 import { formatRelativeTime } from "./relativeTime";
 import { RECENT_PAGE_SIZE, recentRows } from "./recentRows";
 import type { MergedSessionRow } from "../remote/mergeSessions";
-import { catalogRows, mergedRows as sessionTreeMergedRows, type CatalogRow } from "./sessionTree";
+import { activeWorkspaces, ARCHIVED_PAGE_SIZE, isArchivedSession } from "./archived";
+import {
+  archivedRows,
+  catalogRows,
+  filterArchivedRows,
+  mergedRows as sessionTreeMergedRows,
+  pageArchivedRows,
+  type CatalogRow,
+} from "./sessionTree";
 import { listTargets, selectableTargets, type SessionTarget } from "./sessionSelection";
 import { swipeTarget, TAB_LABEL, TABS, type Tab } from "./sessionTabs";
 import { useCollapsedWorkspaces } from "./useCollapsedWorkspaces";
@@ -119,9 +128,34 @@ function groupByMachine(targets: SessionTarget[]): Map<string | null, SessionTar
   return byMachine;
 }
 
+/**
+ * The footer under a paged list.
+ *
+ * One control for both windows — the recency page's and the archived shelf's —
+ * because they say the same thing and a reader should not have to learn the
+ * difference: how much is held back, and the way to ask for it.
+ */
+function ShowMore({ count, onPress }: { count: number; onPress(): void }) {
+  const styles = useStyles();
+  const { t } = useTranslation();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={t("sessions.showMore")}
+      onPress={onPress}
+      style={({ pressed }) => [styles.showMore, pressed && styles.pressed]}
+    >
+      <Text style={styles.showMoreLabel}>
+        {t("sessions.showMoreCount", { count })}
+      </Text>
+    </Pressable>
+  );
+}
+
 export function SessionList({
   tab,
   active = true,
+  archived = false,
   onTabChange,
   empty,
   merged,
@@ -133,6 +167,15 @@ export function SessionList({
 }: {
   tab: Tab;
   active?: boolean;
+  /**
+   * Whether the list is showing the archived shelf in place of its pages.
+   *
+   * A mode rather than a second list: the archived view draws the same rows, in
+   * the same rows' shape, from the same catalogue — what changes is which half
+   * of it, and that nothing there can be written to. The phone can read the
+   * shelf; restoring or archiving is the desktop's, so no row here offers it.
+   */
+  archived?: boolean;
   onTabChange: (tab: Tab) => void;
   empty: ReactNode;
   /**
@@ -193,7 +236,7 @@ export function SessionList({
   const { t, i18n } = useTranslation();
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
-  const listKey = `${remote.credentials?.pairId ?? ""}:${tab}`;
+  const listKey = `${remote.credentials?.pairId ?? ""}:${tab}${archived ? ":archived" : ""}`;
   const {
     listRef,
     initialOffset,
@@ -266,8 +309,8 @@ export function SessionList({
    * so one ordering rule serves both shapes.
    */
   const recentSource = useMemo<MergedSessionRow[]>(() => {
-    if (merged !== undefined) return [...merged];
-    return remote.sessions.map(session => {
+    if (merged !== undefined) return merged.filter(row => !isArchivedSession(row.session));
+    return remote.sessions.filter(session => !isArchivedSession(session)).map(session => {
       const lastMessageAt = typeof session.lastMessageAt === "number"
         ? session.lastMessageAt
         : null;
@@ -298,15 +341,70 @@ export function SessionList({
       : null),
     [tab, recentSource, query, recentLimit, expanded, activeDesktopId],
   );
+  /**
+   * What the default pages may draw.
+   *
+   * Archived conversations and archived workspaces belong to the archived
+   * view: the desktop hides both from its own default lists, and a page here
+   * that drew them would put one conversation in two different places depending
+   * on the device. The rows stay in the catalogue (one fetch serves both views),
+   * so this is a filter, not a second read.
+   */
+  const activeSessions = useMemo(
+    () => remote.sessions.filter(session => !isArchivedSession(session)),
+    [remote.sessions],
+  );
+  const listedWorkspaces = useMemo(
+    () => activeWorkspaces(remote.workspaces),
+    [remote.workspaces],
+  );
+  const activeMerged = useMemo(
+    () => (merged !== undefined ? merged.filter(row => !isArchivedSession(row.session)) : undefined),
+    [merged],
+  );
+  /**
+   * The archived shelf, rebuilt from the catalogue under the current fold set.
+   *
+   * While a search is on the shelves are drawn open: a match hidden inside a
+   * folded group is a match the reader cannot see, and the default pages'
+   * search overrides their folds for the same reason.
+   */
+  const archivedSource = useMemo(
+    () => (archived
+      ? archivedRows(
+        remote.sessions,
+        remote.workspaces,
+        () => true,
+        query.trim() ? new Set<string>() : collapsed,
+      )
+      : []),
+    [archived, remote.sessions, remote.workspaces, collapsed, query],
+  );
+  /**
+   * How many archived conversations the shelf draws.
+   *
+   * The recency page's window, for the same reason: a shelf is somewhere to look
+   * something up, not somewhere to scroll. It starts over whenever the view does.
+   */
+  const [archivedLimit, setArchivedLimit] = useState(ARCHIVED_PAGE_SIZE);
+  const archivedPage = useMemo(
+    () => (archived
+      ? pageArchivedRows(filterArchivedRows(archivedSource, query), archivedLimit)
+      : null),
+    [archived, archivedSource, query, archivedLimit],
+  );
   const rows = useMemo(() => {
     // `recent` is this page's own rows, computed above under the same conditions
     // — narrowed on `tab` here so the two tree builders keep their own two-page
-    // contract.
-    const built = tab === "recent"
+    // contract. The archived shelf is neither page: it is drawn from its own
+    // catalogue half, whole shelves at a time (see `pageArchivedRows`).
+    const built = archivedPage
+      ? archivedPage.rows
+      : tab === "recent"
       ? (recent ? recent.rows : [])
-      : merged !== undefined
-        ? sessionTreeMergedRows(merged, query, activeDesktopId, tab, collapsed, expanded)
-        : catalogRows(remote.sessions, remote.workspaces, tab, collapsed, expanded, query);
+      : activeMerged !== undefined
+        ? sessionTreeMergedRows(activeMerged, query, activeDesktopId, tab, collapsed, expanded)
+        : catalogRows(activeSessions, listedWorkspaces, tab, collapsed, expanded, query);
     // Every row the list draws belongs to a machine, and every row says which
     // one it is: the single-machine tree is built from the connected desktop's
     // own catalogue and so carries no source of its own, which would leave it
@@ -315,9 +413,10 @@ export function SessionList({
     // that knows which desktop this connection is to.
     return activeDesktopId ? built.map(row => withMachine(row, activeDesktopId)) : built;
   }, [
-    remote.sessions,
-    remote.workspaces,
-    merged,
+    archivedPage,
+    activeSessions,
+    listedWorkspaces,
+    activeMerged,
     tab,
     collapsed,
     expanded,
@@ -334,8 +433,11 @@ export function SessionList({
    * to make, and one function answering for both is what keeps them agreeing.
    */
   const allSessions = useMemo<SessionTarget[]>(
-    () => listTargets(merged, remote.sessions),
-    [merged, remote.sessions],
+    () => (archived ? [] : listTargets(
+      merged !== undefined ? merged.filter(row => !isArchivedSession(row.session)) : undefined,
+      remote.sessions.filter(session => !isArchivedSession(session)),
+    )),
+    [archived, merged, remote.sessions],
   );
   /**
    * Whether a pinned conversation is a shortcut on this page rather than an
@@ -349,6 +451,14 @@ export function SessionList({
    * one row of that list beyond the batch for no reason the reader could see.
    */
   const pinnedAreShortcuts = tab !== "recent";
+  /**
+   * Whether rows are drawn in the recency page's two-line shape.
+   *
+   * The shelf borrows the workspace pages' one-line row even when the reader
+   * arrived from the recency page: its rows are grouped under shelves, and a
+   * two-line row there would put an age under a heading that has no time.
+   */
+  const recentLayout = tab === "recent" && !archived;
   // What a batch may hold: the rows above, on a machine that can take the
   // command. A machine that cannot answer is left out because a checkbox would
   // promise a delete it would refuse.
@@ -357,12 +467,14 @@ export function SessionList({
   // `commandsFor`, whose answer can change while that callback's identity stays
   // put — a memo keyed on the callback would keep offering a checkbox after the
   // machine behind it went away.
-  const selectableRows = rows.filter(
-    (row): row is SessionRow =>
-      row.kind === "session"
-      && (!pinnedAreShortcuts || !row.session.pinned)
-      && commandsFor(row.desktopId ?? null) !== null,
-  );
+  const selectableRows: SessionRow[] = archived
+    ? []
+    : rows.filter(
+      (row): row is SessionRow =>
+        row.kind === "session"
+        && (!pinnedAreShortcuts || !row.session.pinned)
+        && commandsFor(row.desktopId ?? null) !== null,
+    );
   /**
    * Whether the list holds anything a batch may reach *at all*, folded away or
    * not — which is a different question from the one `selectableRows` answers.
@@ -377,7 +489,9 @@ export function SessionList({
    * conversations; the desktop rail's own "select conversations" is offered
    * throughout.
    */
-  const batchTargets = selectableTargets(allSessions, commandsFor, pinnedAreShortcuts);
+  const batchTargets = archived
+    ? []
+    : selectableTargets(allSessions, commandsFor, pinnedAreShortcuts);
   /** The conversations the batch holds, folded away or not. */
   const targets = allSessions.filter(target => selected.has(target.key));
   const allSelected =
@@ -437,7 +551,7 @@ export function SessionList({
   // back out of them. Ignored while the toolbar is searching or selecting — the
   // tab bar is hidden then, so the swipe would change mode unseen.
   const swipe = useTabSwipe({
-    enabled: !searching && !selecting,
+    enabled: !searching && !selecting && !archived,
     hasPage: direction => swipeTarget(tab, direction) !== null,
     onSwitch: direction => {
       const next = swipeTarget(tab, direction);
@@ -725,16 +839,21 @@ export function SessionList({
             {item.workspace.pinned && <Pin size={13} color={colors.accent} />}
             <Text style={styles.count}>{item.count}</Text>
           </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t("sessions.workspaceActions", { title: name })}
-            accessibilityState={{ disabled: deleting || !commands }}
-            disabled={deleting || !commands}
-            onPress={() => openWorkspaceMenu(item)}
-            style={[styles.iconButton, (deleting || !commands) && styles.disabled]}
-          >
-            <MoreHorizontal size={18} color={colors.inkMuted} />
-          </Pressable>
+          {/* A shelved shelf offers no actions: renaming, pinning, adding a
+              conversation to it and deleting it are all writes to the desktop,
+              and a shelved workspace takes them only after being restored. */}
+          {!archived && (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("sessions.workspaceActions", { title: name })}
+              accessibilityState={{ disabled: deleting || !commands }}
+              disabled={deleting || !commands}
+              onPress={() => openWorkspaceMenu(item)}
+              style={[styles.iconButton, (deleting || !commands) && styles.disabled]}
+            >
+              <MoreHorizontal size={18} color={colors.inkMuted} />
+            </Pressable>
+          )}
         </View>
       );
     }
@@ -768,7 +887,7 @@ export function SessionList({
         // The recency page's rows are addressed by key in the screenshot
         // scenario, which asserts how many of them the window draws and where
         // the footer under them sits.
-        {...(tab === "recent" ? { testID: `recent-row:${item.section ?? "earlier"}:${item.key}` } : {})}
+        {...(recentLayout ? { testID: `recent-row:${item.section ?? "earlier"}:${item.key}` } : {})}
       >
         {selecting
           ? selectable
@@ -843,15 +962,18 @@ export function SessionList({
             void remote.selectSession(session.sessionId);
           }}
           onLongPress={() => {
-            if (!selecting) onMenu(session, item.desktopId ?? null);
+            // The shelf's rows offer no actions: a long press would open the
+            // same sheet whose button this view hides, and every item in it is a
+            // write to the desktop.
+            if (!selecting && !archived) onMenu(session, item.desktopId ?? null);
           }}
           onPressIn={() => setPressedSessionId(session.sessionId)}
           onPressOut={() =>
             setPressedSessionId(current => (current === session.sessionId ? null : current))
           }
-          style={[styles.sessionBody, tab === "recent" && styles.recentBody]}
+          style={[styles.sessionBody, recentLayout && styles.recentBody]}
         >
-          {tab === "recent" ? (
+          {recentLayout ? (
             <>
               {/* Two lines, because this page's row has more to say than a
                   title: when the conversation last moved, and where it lives.
@@ -910,7 +1032,7 @@ export function SessionList({
             </>
           )}
         </Pressable>
-        {!selecting && (
+        {!selecting && !archived && (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={t("sessions.actions", {
@@ -1108,6 +1230,16 @@ export function SessionList({
               <Text style={styles.actionText}>{t("chat.cancel")}</Text>
             </Pressable>
           </>
+        ) : archived ? (
+          // The shelf is not another page of the three: the tab row would invite
+          // the reader to swipe between a place they went to and the pages it
+          // replaced. One plain caption says which shelf this is.
+          <View style={styles.archivedCaption}>
+            <Archive size={16} color={colors.inkSoft} />
+            <Text style={styles.archivedCaptionText} numberOfLines={1}>
+              {t("sessions.archived")}
+            </Text>
+          </View>
         ) : (
           <View style={styles.tabs}>
             {TABS.map(value => (
@@ -1160,25 +1292,28 @@ export function SessionList({
           ListEmptyComponent={
             query.trim() ? (
               <Text style={styles.noResults}>{t("sessions.noResults")}</Text>
+            ) : archived ? (
+              <Text style={styles.noResults}>{t("sessions.archivedEmpty")}</Text>
             ) : (
               <>{empty}</>
             )
           }
-          ListFooterComponent={recent && recent.more > 0 ? (
-            // The window's edge. It says how much is held back rather than
-            // opening silently on scroll: the page is meant to be short, and a
-            // reader who wants the rest asks for it.
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={t("sessions.showMore")}
-              onPress={() => setRecentLimit(current => current + RECENT_PAGE_SIZE)}
-              style={({ pressed }) => [styles.showMore, pressed && styles.pressed]}
-            >
-              <Text style={styles.showMoreLabel}>
-                {t("sessions.showMoreCount", { count: recent.more })}
-              </Text>
-            </Pressable>
-          ) : undefined}
+          ListFooterComponent={
+            // The window's edge, whichever window it is. It says how much is
+            // held back rather than opening silently on scroll: both lists are
+            // meant to be short, and a reader who wants the rest asks for it.
+            archivedPage && archivedPage.more > 0 ? (
+              <ShowMore
+                count={archivedPage.more}
+                onPress={() => setArchivedLimit(current => current + ARCHIVED_PAGE_SIZE)}
+              />
+            ) : recent && recent.more > 0 ? (
+              <ShowMore
+                count={recent.more}
+                onPress={() => setRecentLimit(current => current + RECENT_PAGE_SIZE)}
+              />
+            ) : undefined
+          }
         />
       </Animated.View>
     </View>
@@ -1197,6 +1332,22 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     gap: spacing.sm,
     paddingHorizontal: layout.gutter,
     paddingBottom: spacing.md,
+  },
+  // The archived shelf's caption in place of the tab row: the same height, so
+  // the rows below it do not jump when the reader moves between the two.
+  archivedCaption: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    minHeight: layout.touchTarget,
+    paddingHorizontal: spacing.sm,
+  },
+  archivedCaptionText: {
+    color: theme.colors.inkSoft,
+    fontSize: theme.font(14),
+    fontWeight: "600",
   },
   tabs: {
     flex: 1,
