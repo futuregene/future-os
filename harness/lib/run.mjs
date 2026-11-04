@@ -95,6 +95,7 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
       dbPath: dbPath || BASE_DB,
       modelsPath,
       logPath: serverLogPath,
+      slowModelsMs: Number(testCase.query?.slowModels ?? 0),
     }));
 
   const startedAt = Date.now();
@@ -136,6 +137,7 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
     ...(fixture ? { fixture: fixture.url } : {}),
     lang: testCase.lang ?? "zh",
     ...(testCase.theme ? { theme: testCase.theme } : {}),
+    ...(testCase.query ?? {}),
   });
   const url = `${testCase.baseUrl ?? "http://localhost:5299/shot/"}?${params.toString()}`;
 

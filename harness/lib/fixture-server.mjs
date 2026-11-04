@@ -191,7 +191,7 @@ function syntheticEntries(thread) {
   ];
 }
 
-export function createFixtureServer({ dbPath, modelsPath, logPath }) {
+export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs = 0 }) {
   const db = new DatabaseSync(dbPath);
   db.exec("PRAGMA journal_mode=WAL");
   db.exec("PRAGMA foreign_keys=ON");
@@ -334,7 +334,11 @@ export function createFixtureServer({ dbPath, modelsPath, logPath }) {
     refresh_skills: () => null,
     sync_skills: () => null,
     list_streaming_thread_ids: () => [],
-    list_agent_models: () => models,
+    list_agent_models: async () => {
+      if (slowModelsMs > 0)
+        await new Promise(resolve => setTimeout(resolve, slowModelsMs));
+      return models;
+    },
     list_models: () => ({ models }),
     get_available_models: () => ({ models }),
     list_settings_models: () => ({ models }),
@@ -639,7 +643,7 @@ export function createFixtureServer({ dbPath, modelsPath, logPath }) {
       return;
     }
 
-    readBody(req).then((body) => {
+    readBody(req).then(async (body) => {
       const command = String(body?.command ?? "");
       const args = body?.args ?? {};
       const started = performance.now();
@@ -650,7 +654,7 @@ export function createFixtureServer({ dbPath, modelsPath, logPath }) {
       }
       else {
         try {
-          const value = handler(args);
+          const value = await handler(args);
           payload = { handled: true, value: value ?? null };
         }
         catch (error) {
