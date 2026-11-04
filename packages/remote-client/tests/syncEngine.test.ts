@@ -331,6 +331,42 @@ describe("SyncEngine", () => {
     } finally { h.engine.clear(); }
   });
 
+  test("a session that stopped compacting closes its stranded standalone divider", async () => {
+    // The agent restarted (or was killed) while a manual compaction's summary
+    // was in flight: the divider's start arrived, its terminal never will, and
+    // there is no durable checkpoint to fold it into. The session snapshot is
+    // the authority between turns — `isCompacting: false` must end the divider
+    // instead of leaving it reading "compacting" for the rest of the session.
+    const h = new Harness("r");
+    h.journal.add(agentStart("r"));
+    h.journal.add(textChunk("r", 1, "reply"));
+    try {
+      await h.engine.open("s");
+      await h.settle();
+      h.active("");
+      h.isCompacting = true;
+      h.engine.event("s", {
+        type: "compaction_started",
+        runId: "",
+        idx: -1,
+        data: JSON.stringify({ operation_id: "cmp", trigger: "manual", phase: "standalone" }),
+      });
+      await h.settle();
+      expect(h.timelineOf("s").items.at(-1)).toMatchObject({
+        id: "compaction:cmp",
+        segments: [{ status: "running" }],
+      });
+
+      h.isCompacting = false;
+      h.engine.reconcile("s", "resend");
+      await h.settle();
+      const divider = h.timelineOf("s").items.find(item =>
+        item.kind === "message" && item.id === "compaction:cmp");
+      expect(divider).toMatchObject({ segments: [{ status: "interrupted" }] });
+      expect(h.timelineOf("s").compacting).toBe(false);
+    } finally { h.engine.clear(); }
+  });
+
   test.each(["compaction_committed", "compaction_failed", "compaction_unchanged"])("restores compaction on open and releases it on %s", async terminal => {
     const h = new Harness();
     h.isCompacting = true;

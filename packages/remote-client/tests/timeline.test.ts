@@ -8,6 +8,7 @@ import {
   markApprovalDecision,
   mergeHistoryAttachments,
   normalizeReplayEvents,
+  settleInterruptedStandaloneCompactions,
   stripRunItems,
   timelineFromEntries,
   timelineFromHistory,
@@ -1869,6 +1870,83 @@ describe("shared-projection semantic flags", () => {
       segments: [{ id: "seg_cp-manual_compaction", kind: "compaction", tokensBefore: 33_064, trigger: "manual", status: "completed" }],
     });
     expect(messages[1]?.runId).toBeUndefined();
+  });
+
+  test("a session-scoped compaction keeps its terminal, which never had a run position", () => {
+    // A manual compaction between runs is session fan-out: the wire spells it
+    // `runId: ""` with `idx: -1` (`build_event_body` always writes runId).
+    // Keying those frames by run+idx collapsed every session-scoped frame of a
+    // lane onto `":-1"`, so the terminal was discarded as a duplicate of its
+    // own start — the divider read "compacting" under a finished reply and never
+    // settled.
+    const started = {
+      type: "compaction_started",
+      runId: "",
+      idx: -1,
+      data: JSON.stringify({ operation_id: "cmp-manual", trigger: "manual", phase: "standalone" }),
+    };
+    const committed = {
+      type: "compaction_committed",
+      runId: "",
+      idx: -1,
+      data: JSON.stringify({
+        operation_id: "cmp-manual",
+        checkpoint_id: "cp-manual",
+        tokens_before: 41_000,
+        tokens_after: 9_000,
+        trigger: "manual",
+        phase: "standalone",
+      }),
+    };
+    let state = applyStreamEvent(emptyTimeline(), started);
+    expect(state.compacting).toBe(true);
+    expect(state.items).toHaveLength(1);
+
+    state = applyStreamEvent(state, committed);
+    expect(state.compacting).toBe(false);
+    const messages = state.items.filter(item => item.kind === "message");
+    expect(messages.map(item => item.id)).toEqual(["m_cp-manual"]);
+    expect(messages[0]).toMatchObject({
+      segments: [expect.objectContaining({ status: "completed", tokensBefore: 41_000, tokensAfter: 9_000 })],
+    });
+  });
+
+  test("a stranded manual divider settles as interrupted and still takes a late terminal", () => {
+    // The agent restarted mid-summary (or the frame was lost): no terminal is
+    // coming, and the session reports it is no longer compacting. The divider
+    // must stop reading as in flight without inventing a checkpoint.
+    const started = {
+      type: "compaction_started",
+      runId: "",
+      idx: -1,
+      data: JSON.stringify({ operation_id: "cmp-lost", trigger: "manual", phase: "standalone" }),
+    };
+    const state = applyStreamEvent(emptyTimeline(), started);
+    const settled = settleInterruptedStandaloneCompactions(state.items);
+    expect(settled[0]).toMatchObject({
+      id: "compaction:cmp-lost",
+      segments: [{ status: "interrupted" }],
+    });
+    // No checkpoint is invented: the row still has no durable identity.
+    const segment = (settled[0] as { segments?: { checkpointId?: string }[] }).segments?.[0];
+    expect(segment?.checkpointId).toBeUndefined();
+
+    // The identity is unchanged, so a terminal that does arrive late still
+    // replaces it with the committed divider instead of adding a second one.
+    const late = applyStreamEvent({ ...state, items: settled }, {
+      type: "compaction_committed",
+      runId: "",
+      idx: -1,
+      data: JSON.stringify({
+        operation_id: "cmp-lost",
+        checkpoint_id: "cp-late",
+        tokens_before: 12_000,
+        tokens_after: 3_000,
+        trigger: "manual",
+        phase: "standalone",
+      }),
+    });
+    expect(late.items.map(item => item.id)).toEqual(["m_cp-late"]);
   });
 
   test("a mid-turn compaction stays inside the running reply", () => {

@@ -42,6 +42,7 @@ import {
   applyReplayEvents,
   dropSupersededCompactionDividers,
   foldLiveCompactionPlaceholdersIntoHistory,
+  settleInterruptedStandaloneCompactions,
   emptyTimeline,
   stripRunItems,
   upsertTruncationNotice,
@@ -714,9 +715,22 @@ export class SyncEngine {
       // Historical run events may describe an older compaction. The session
       // snapshot owns the baseline; live events queued during this reconcile
       // are applied afterwards and can release or acquire the fence.
-      if (lane.timeline && (lane.timeline.compacting === true) !== (state.isCompacting === true)) {
-        lane.timeline = { ...lane.timeline, compacting: state.isCompacting === true };
-        this.commit(lane);
+      if (lane.timeline) {
+        // A manual compaction that the session says is no longer running owes
+        // its divider a terminal frame this client may never receive (the agent
+        // restarted mid-summary, the stream dropped). Between turns the
+        // snapshot is the authority, so the placeholder is closed here rather
+        // than left reading "compacting" for the rest of the session. The
+        // running fence itself is only ever *released* by this answer, never
+        // acquired, so a compaction still in flight keeps its divider.
+        const items = state.isCompacting === true
+          ? lane.timeline.items
+          : settleInterruptedStandaloneCompactions(lane.timeline.items);
+        const compacting = state.isCompacting === true;
+        if (items !== lane.timeline.items || (lane.timeline.compacting === true) !== compacting) {
+          lane.timeline = { ...lane.timeline, items, compacting };
+          this.commit(lane);
+        }
       }
       lane.established = true;
       outcome = "success";

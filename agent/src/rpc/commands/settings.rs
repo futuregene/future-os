@@ -296,7 +296,15 @@ pub(crate) fn handle_compact(
                             == Some(true) =>
                 {
                     in_progress.store(false, Ordering::Release);
-                    broadcaster.broadcast(SseEvent::new(
+                    // Session scope, like every other manual-compaction frame
+                    // (`ServerSession::broadcast_compaction_event`): a manual
+                    // compaction only ever starts between runs, and the
+                    // broadcaster still holds the settled run whose journal
+                    // compaction already retired. Stamping this terminal with
+                    // that run made the append permanently impossible, and the
+                    // refusal drops the frame before any subscriber sees it —
+                    // the client's "compacting" divider then never settles.
+                    broadcaster.broadcast_session(SseEvent::new(
                         "compaction_unchanged",
                         serde_json::json!({
                             "operation_id": worker_operation_id,
@@ -321,7 +329,10 @@ pub(crate) fn handle_compact(
                 Ok(Ok(_)) | Ok(Err(_)) => {}
                 Err(_) => {
                     in_progress.store(false, Ordering::Release);
-                    broadcaster.broadcast(SseEvent::new(
+                    // Session scope for the same reason as the unchanged
+                    // terminal above: a run-stamped append to the retired run
+                    // would be refused and the frame dropped.
+                    broadcaster.broadcast_session(SseEvent::new(
                         "compaction_failed",
                         serde_json::json!({
                             "operation_id": worker_operation_id,

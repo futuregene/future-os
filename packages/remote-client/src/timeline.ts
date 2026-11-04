@@ -9,6 +9,7 @@ export {
   commitAcknowledgedUserMessage,
   dropSupersededCompactionDividers,
   foldLiveCompactionPlaceholdersIntoHistory,
+  settleInterruptedStandaloneCompactions,
   emptyTimeline,
   markApprovalDecision,
   mergeHistoryAttachments,
